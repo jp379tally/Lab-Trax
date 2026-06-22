@@ -86,7 +86,20 @@ export default function CustomersScreen() {
       renderItem={(d) => {
         const caseCount = displayCount(d);
         return (
-          <Card style={styles.row}>
+          <Card
+            style={styles.row}
+            onPress={() =>
+              router.push({
+                pathname: "/finance/doctor-cases",
+                params: {
+                  doctorName: d.doctorName,
+                  providerOrganizationId: d.providerOrganizationId ?? "",
+                  practiceName: d.practiceName ?? "",
+                  initialViewMode: viewMode,
+                },
+              } as never)
+            }
+          >
             <View style={styles.main}>
               <Text style={styles.name} numberOfLines={1}>
                 {d.doctorName || "Unknown doctor"}
@@ -97,25 +110,11 @@ export default function CustomersScreen() {
                 </Text>
               ) : null}
             </View>
-            <TouchableOpacity
-              onPress={() =>
-                router.push({
-                  pathname: "/finance/doctor-cases",
-                  params: {
-                    doctorName: d.doctorName,
-                    providerOrganizationId: d.providerOrganizationId ?? "",
-                    practiceName: d.practiceName ?? "",
-                    initialViewMode: viewMode,
-                  },
-                } as never)
-              }
-              style={[styles.badge, caseCount === 0 && styles.badgeEmpty]}
-              hitSlop={8}
-            >
+            <View style={[styles.badge, caseCount === 0 && styles.badgeEmpty]}>
               <Text style={[styles.badgeText, caseCount === 0 && styles.badgeTextEmpty]}>
                 {caseCount}{viewMode === "open" ? " open" : ""} case{caseCount === 1 ? "" : "s"}
               </Text>
-            </TouchableOpacity>
+            </View>
           </Card>
         );
       }}

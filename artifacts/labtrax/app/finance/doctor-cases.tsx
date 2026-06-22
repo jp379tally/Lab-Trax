@@ -3,10 +3,12 @@ import {
   View,
   Text,
   FlatList,
+  ScrollView,
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
   RefreshControl,
+  Linking,
 } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -21,6 +23,7 @@ import { useMe, primaryLabOrgId } from "@/lib/auth-me";
 import { formatDate, formatMoney, titleCase } from "@/lib/format";
 
 type ViewMode = "open" | "all";
+type InvoiceFilter = "all" | "open" | "paid" | "overdue" | "void";
 
 interface CaseEntry {
   id: string;
@@ -43,10 +46,33 @@ interface InvoiceEntry {
   dueAt?: string | null;
 }
 
+interface OrgDetails {
+  id?: string | null;
+  name?: string | null;
+  displayName?: string | null;
+  platformAccountNumber?: string | null;
+  accountNumber?: string | null;
+  phone?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+}
+
 type ListItem =
   | { kind: "sectionHeader"; label: string }
   | { kind: "case"; data: CaseEntry }
+  | { kind: "invoiceFilterRow" }
   | { kind: "invoice"; data: InvoiceEntry };
+
+const INVOICE_FILTER_OPTIONS: { key: InvoiceFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "open", label: "Open" },
+  { key: "paid", label: "Paid" },
+  { key: "overdue", label: "Overdue" },
+  { key: "void", label: "Void" },
+];
 
 function patientName(c: CaseEntry): string {
   const name = `${c.patientFirstName ?? ""} ${c.patientLastName ?? ""}`.trim();
@@ -73,6 +99,43 @@ function invoiceVariant(status: string | null | undefined): BadgeVariant {
   return "unpaid";
 }
 
+function matchesInvoiceFilter(inv: InvoiceEntry, filter: InvoiceFilter): boolean {
+  if (filter === "all") return true;
+  const s = (inv.status ?? "").toLowerCase().trim();
+  // Normalise token-based checks: "paid" must NOT match "unpaid".
+  // Use word-boundary-safe helpers: isPaid = exactly "paid" or "fully_paid" etc.
+  const isPaid = s === "paid" || s === "fully_paid";
+  const isOverdue = s.includes("overdue") || s.includes("past_due") || s === "past";
+  const isVoid = s.includes("void") || s.includes("cancel");
+  const isDraft = s === "draft";
+
+  if (filter === "paid") return isPaid;
+  if (filter === "overdue") return isOverdue;
+  if (filter === "void") return isVoid;
+  // open = unpaid, not overdue, not void/cancelled, not draft, not paid
+  if (filter === "open") return !isPaid && !isOverdue && !isVoid && !isDraft;
+  return true;
+}
+
+function formatAddress(org: OrgDetails): string | null {
+  const parts: string[] = [];
+  if (org.addressLine1) parts.push(org.addressLine1);
+  if (org.addressLine2) parts.push(org.addressLine2);
+  const cityStateZip = [org.city, org.state, org.zip].filter(Boolean).join(", ");
+  if (cityStateZip) parts.push(cityStateZip);
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+function hasContactInfo(org: OrgDetails): boolean {
+  return !!(
+    org.platformAccountNumber ||
+    org.accountNumber ||
+    org.phone ||
+    org.addressLine1 ||
+    org.city
+  );
+}
+
 export default function DoctorCasesScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
@@ -92,8 +155,22 @@ export default function DoctorCasesScreen() {
   const [viewMode, setViewMode] = useState<ViewMode>(
     params.initialViewMode === "all" ? "all" : "open",
   );
+  const [invoiceFilter, setInvoiceFilter] = useState<InvoiceFilter>("all");
+
   const me = useMe().data;
   const labOrgId = primaryLabOrgId(me);
+
+  const orgQuery = useQuery<OrgDetails | null>({
+    queryKey: ["org-detail", providerOrganizationId],
+    enabled: !!providerOrganizationId,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const data = await getJson<OrgDetails>(
+        `/api/organizations/${encodeURIComponent(providerOrganizationId)}`,
+      );
+      return data ?? null;
+    },
+  });
 
   const casesQuery = useQuery<CaseEntry[]>({
     queryKey: ["doctor-cases", labOrgId ?? "", doctorName, providerOrganizationId, viewMode],
@@ -135,8 +212,12 @@ export default function DoctorCasesScreen() {
     // no caseId are excluded (no reliable way to attribute them to a single
     // doctor within a shared practice).
     const doctorCaseIds = new Set(cases.map((c) => c.id));
-    const invoices = allInvoices.filter(
+    const scopedInvoices = allInvoices.filter(
       (inv) => inv.caseId != null && doctorCaseIds.has(inv.caseId),
+    );
+
+    const filteredInvoices = scopedInvoices.filter((inv) =>
+      matchesInvoiceFilter(inv, invoiceFilter),
     );
 
     const result: ListItem[] = [];
@@ -144,12 +225,20 @@ export default function DoctorCasesScreen() {
       result.push({ kind: "sectionHeader", label: `Cases (${cases.length})` });
       for (const c of cases) result.push({ kind: "case", data: c });
     }
-    if (invoices.length > 0) {
-      result.push({ kind: "sectionHeader", label: `Invoices (${invoices.length})` });
-      for (const inv of invoices) result.push({ kind: "invoice", data: inv });
+    if (scopedInvoices.length > 0) {
+      result.push({ kind: "invoiceFilterRow" });
+      const filterLabel =
+        invoiceFilter !== "all"
+          ? ` · ${INVOICE_FILTER_OPTIONS.find((o) => o.key === invoiceFilter)?.label ?? ""}`
+          : "";
+      result.push({
+        kind: "sectionHeader",
+        label: `Invoices (${filteredInvoices.length}${filterLabel})`,
+      });
+      for (const inv of filteredInvoices) result.push({ kind: "invoice", data: inv });
     }
     return result;
-  }, [casesQuery.data, invoicesQuery.data]);
+  }, [casesQuery.data, invoicesQuery.data, invoiceFilter]);
 
   const isLoading = casesQuery.isLoading || invoicesQuery.isLoading;
   const isError = casesQuery.isError || invoicesQuery.isError;
@@ -162,12 +251,49 @@ export default function DoctorCasesScreen() {
     ? `${caseCount} open case${caseCount === 1 ? "" : "s"}`
     : `${caseCount} case${caseCount === 1 ? "" : "s"}`;
 
+  const orgData = orgQuery.data;
+  const showInfoCard = !!orgData && hasContactInfo(orgData);
+  const accountNum = orgData?.platformAccountNumber ?? orgData?.accountNumber ?? null;
+  const formattedAddress = orgData ? formatAddress(orgData) : null;
+
   function renderItem({ item }: { item: ListItem }) {
     if (item.kind === "sectionHeader") {
       return (
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionLabel}>{item.label}</Text>
         </View>
+      );
+    }
+    if (item.kind === "invoiceFilterRow") {
+      return (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterRow}
+          style={styles.filterScroll}
+        >
+          {INVOICE_FILTER_OPTIONS.map((opt, i) => {
+            const isActive = invoiceFilter === opt.key;
+            const isFirst = i === 0;
+            const isLast = i === INVOICE_FILTER_OPTIONS.length - 1;
+            return (
+              <TouchableOpacity
+                key={opt.key}
+                style={[
+                  styles.filterBtn,
+                  isFirst && styles.filterBtnFirst,
+                  isLast && styles.filterBtnLast,
+                  isActive && styles.filterBtnActive,
+                ]}
+                onPress={() => setInvoiceFilter(opt.key)}
+              >
+                <Text style={[styles.filterText, isActive && styles.filterTextActive]}>
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
       );
     }
     if (item.kind === "case") {
@@ -251,6 +377,38 @@ export default function DoctorCasesScreen() {
         </View>
       </View>
 
+      {showInfoCard ? (
+        <View style={styles.infoCard}>
+          {accountNum ? (
+            <View style={styles.infoRow}>
+              <Ionicons name="card-outline" size={14} color={colors.textSecondary} style={styles.infoIcon} />
+              <Text style={styles.infoText} numberOfLines={1}>
+                {accountNum}
+              </Text>
+            </View>
+          ) : null}
+          {orgData?.phone ? (
+            <TouchableOpacity
+              style={styles.infoRow}
+              onPress={() => Linking.openURL(`tel:${orgData.phone}`)}
+            >
+              <Ionicons name="call-outline" size={14} color={colors.textSecondary} style={styles.infoIcon} />
+              <Text style={[styles.infoText, styles.infoLink]} numberOfLines={1}>
+                {orgData.phone}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+          {formattedAddress ? (
+            <View style={styles.infoRow}>
+              <Ionicons name="location-outline" size={14} color={colors.textSecondary} style={styles.infoIcon} />
+              <Text style={styles.infoText} numberOfLines={2}>
+                {formattedAddress}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
       {isLoading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.tint} />
@@ -286,6 +444,7 @@ export default function DoctorCasesScreen() {
           data={listItems}
           keyExtractor={(item, i) => {
             if (item.kind === "sectionHeader") return `section-${i}`;
+            if (item.kind === "invoiceFilterRow") return "invoice-filter-row";
             return `${item.kind}-${item.data.id}`;
           }}
           renderItem={renderItem}
@@ -348,6 +507,61 @@ function makeStyles(c: ThemeColors) {
     toggleBtnActive: { backgroundColor: c.tint },
     toggleText: { ...Typography.captionSemibold, color: c.textSecondary },
     toggleTextActive: { color: "#fff" },
+    infoCard: {
+      marginHorizontal: Spacing.lg,
+      marginTop: Spacing.sm,
+      marginBottom: Spacing.xs,
+      padding: Spacing.sm,
+      backgroundColor: c.surface,
+      borderRadius: Radius.md,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      gap: Spacing.xs,
+    },
+    infoRow: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: Spacing.xs,
+    },
+    infoIcon: {
+      marginTop: 1,
+    },
+    infoText: {
+      ...Typography.caption,
+      color: c.textSecondary,
+      flex: 1,
+    },
+    infoLink: {
+      color: c.tint,
+    },
+    filterScroll: {
+      marginHorizontal: Spacing.lg,
+      marginTop: Spacing.xs,
+      marginBottom: Spacing.xs,
+    },
+    filterRow: {
+      flexDirection: "row",
+      gap: 0,
+      borderRadius: Radius.sm,
+      borderWidth: 1,
+      borderColor: c.border,
+      overflow: "hidden",
+      alignSelf: "flex-start",
+    },
+    filterBtn: {
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.xs,
+      backgroundColor: c.surface,
+      borderLeftWidth: StyleSheet.hairlineWidth,
+      borderLeftColor: c.border,
+    },
+    filterBtnFirst: {
+      borderLeftWidth: 0,
+    },
+    filterBtnLast: {},
+    filterBtnActive: { backgroundColor: c.tint },
+    filterText: { ...Typography.captionSemibold, color: c.textSecondary },
+    filterTextActive: { color: "#fff" },
     sectionHeader: {
       paddingHorizontal: Spacing.lg,
       paddingVertical: Spacing.xs,
