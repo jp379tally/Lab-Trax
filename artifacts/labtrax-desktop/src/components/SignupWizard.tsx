@@ -4,6 +4,7 @@ import { useAuth } from "@/lib/auth-context";
 import {
   ApiError,
   apiFetch,
+  checkEmailAvailable,
   checkUsernameAvailable,
   lookupLabs,
   sendEmailVerificationCode,
@@ -149,6 +150,9 @@ export default function SignupWizard({ onCancel }: Props) {
   const [confirm, setConfirm] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [pwTouched, setPwTouched] = useState(false);
+  const [emailCheckLoading, setEmailCheckLoading] = useState(false);
+  const [emailConflictError, setEmailConflictError] = useState<string | null>(null);
+  const [emailConflict409, setEmailConflict409] = useState(false);
 
   // User type
   const [userType, setUserType] = useState<"lab" | "provider" | null>(null);
@@ -338,6 +342,23 @@ export default function SignupWizard({ onCancel }: Props) {
     if (error) setError(null);
   }
 
+  async function handleEmailBlur() {
+    const trimmed = email.trim();
+    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return;
+    setEmailCheckLoading(true);
+    setEmailConflictError(null);
+    try {
+      const available = await checkEmailAvailable(trimmed);
+      if (!available) {
+        setEmailConflictError("An account with this email already exists.");
+      }
+    } catch {
+      // Silently ignore — server-side check at submit will catch it.
+    } finally {
+      setEmailCheckLoading(false);
+    }
+  }
+
   async function handleCredentialsNext(e: FormEvent) {
     e.preventDefault();
     if (!username.trim() || !email.trim() || !password) {
@@ -350,6 +371,9 @@ export default function SignupWizard({ onCancel }: Props) {
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       return fail("Please enter a valid email address.");
+    }
+    if (emailConflictError) {
+      return fail("Please use a different email address — that one is already taken.");
     }
     const pw = validatePassword(password);
     if (!pw.length || !pw.upper || !pw.lower || !pw.special) {
@@ -576,7 +600,10 @@ export default function SignupWizard({ onCancel }: Props) {
       }
       // Auth context flips to "authed" — the app router will replace this screen.
     } catch (err) {
-      if (err instanceof ApiError) {
+      if (err instanceof ApiError && err.status === 409 && /email/i.test(err.message)) {
+        setEmailConflict409(true);
+        fail(err.message);
+      } else if (err instanceof ApiError) {
         fail(err.message);
       } else {
         fail((err as Error)?.message || "Registration failed.");
@@ -613,6 +640,20 @@ export default function SignupWizard({ onCancel }: Props) {
             className="mb-4 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md"
           >
             {error}
+            {emailConflict409 && (
+              <button
+                type="button"
+                className="block mt-1.5 underline text-destructive hover:opacity-80 text-sm font-medium"
+                onClick={() => {
+                  setError(null);
+                  setEmailConflict409(false);
+                  setEmailConflictError("An account with this email already exists.");
+                  setStep("credentials");
+                }}
+              >
+                Go back to fix your email →
+              </button>
+            )}
           </div>
         )}
 
@@ -682,16 +723,26 @@ export default function SignupWizard({ onCancel }: Props) {
             </div>
             <div>
               <label className={labelClass}>Email</label>
-              <input
-                type="email"
-                className={inputClass}
-                value={email}
-                autoComplete="email"
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  clearError();
-                }}
-              />
+              <div className="relative">
+                <input
+                  type="email"
+                  className={`${inputClass} ${emailConflictError ? "border-destructive focus:border-destructive focus:ring-destructive" : ""}`}
+                  value={email}
+                  autoComplete="email"
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    setEmailConflictError(null);
+                    clearError();
+                  }}
+                  onBlur={handleEmailBlur}
+                />
+                {emailCheckLoading && (
+                  <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
+                )}
+              </div>
+              {emailConflictError && (
+                <p className="mt-1 text-xs text-destructive">{emailConflictError}</p>
+              )}
             </div>
             <div>
               <label className={labelClass}>Password</label>
@@ -746,8 +797,12 @@ export default function SignupWizard({ onCancel }: Props) {
                 }}
               />
             </div>
-            <button type="submit" disabled={busy} className={primaryBtnClass}>
-              {busy ? "Checking…" : "Continue"}
+            <button
+              type="submit"
+              disabled={busy || emailCheckLoading || !!emailConflictError}
+              className={primaryBtnClass}
+            >
+              {busy ? "Checking…" : emailCheckLoading ? "Checking email…" : "Continue"}
             </button>
           </form>
         )}

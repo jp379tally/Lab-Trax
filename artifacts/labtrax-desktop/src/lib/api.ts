@@ -1234,6 +1234,15 @@ export async function checkUsernameAvailable(username: string): Promise<boolean>
   return !!body?.available;
 }
 
+export async function checkEmailAvailable(email: string): Promise<boolean> {
+  const r = await fetch(apiUrl(`/auth/check-email?email=${encodeURIComponent(email)}`), {
+    method: "GET",
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(body?.error || "Failed to check email.", r.status);
+  return body?.data?.available !== false;
+}
+
 export async function logout(): Promise<void> {
   // Cancel any pending refresh so it can't resurrect the session post-logout.
   refreshInFlight = null;
