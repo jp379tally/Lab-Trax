@@ -2509,7 +2509,7 @@ interface PricingTiersResponse {
   tiers: PricingTierRecord[];
 }
 
-function ConnectionTierSection({
+export function ConnectionTierSection({
   providerOrg,
   currentUserId,
 }: {
@@ -2534,22 +2534,40 @@ function ConnectionTierSection({
     [connections]
   );
 
+  // NOTE: this query key is intentionally namespaced ("practice-default-tier")
+  // so it never collides with PracticeDoctorsSection's per-lab tiers query,
+  // which returns a different response shape. A shared key would let React
+  // Query dedupe the two and hand one section the other's data, silently
+  // emptying the dropdown.
   const tiersByLabQueries = useQuery({
-    queryKey: ["pricing-tiers-for-labs", labIds.sort().join(",")],
+    queryKey: ["practice-default-tier", "tiers-by-lab", labIds.sort().join(",")],
     enabled: labIds.length > 0,
     queryFn: async () => {
       const results = await Promise.all(
-        labIds.map((labId) =>
-          apiFetch<PricingTiersResponse>(
-            `/pricing/tiers?labOrganizationId=${encodeURIComponent(labId)}`
-          ).catch(() => null)
-        )
+        labIds.map(async (labId) => {
+          try {
+            const r = await apiFetch<PricingTiersResponse>(
+              `/pricing/tiers?labOrganizationId=${encodeURIComponent(labId)}`
+            );
+            return { labId, tiers: r.tiers ?? [], error: null as string | null };
+          } catch (e) {
+            return {
+              labId,
+              tiers: [] as PricingTierRecord[],
+              error:
+                (e as Error)?.message ||
+                "Could not load this lab's pricing tiers.",
+            };
+          }
+        })
       );
       const map: Record<string, PricingTierRecord[]> = {};
-      results.forEach((r, i) => {
-        if (r) map[labIds[i]] = r.tiers ?? [];
-      });
-      return map;
+      const errors: Record<string, string> = {};
+      for (const r of results) {
+        map[r.labId] = r.tiers;
+        if (r.error) errors[r.labId] = r.error;
+      }
+      return { map, errors };
     },
   });
 
@@ -2610,7 +2628,12 @@ function ConnectionTierSection({
 
       <div className="border border-border rounded-md divide-y divide-border">
         {connections.map((c) => {
-          const tiers = tiersByLabQueries.data?.[c.labOrganizationId] ?? [];
+          const tiers =
+            tiersByLabQueries.data?.map?.[c.labOrganizationId] ?? [];
+          const tierError =
+            tiersByLabQueries.data?.errors?.[c.labOrganizationId] ?? null;
+          const noTiers =
+            !tiersByLabQueries.isLoading && !tierError && tiers.length === 0;
           const labName =
             c.labOrganization?.displayName ||
             c.labOrganization?.name ||
@@ -2619,40 +2642,49 @@ function ConnectionTierSection({
             tierMutation.isPending &&
             tierMutation.variables?.connectionId === c.id;
           return (
-            <div
-              key={c.id}
-              className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="font-medium truncate">{labName}</div>
-                <div className="text-xs text-muted-foreground">
-                  Status: {c.status}
+            <div key={c.id} className="px-3 py-2 text-sm space-y-1.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium truncate">{labName}</div>
+                  <div className="text-xs text-muted-foreground">
+                    Status: {c.status}
+                  </div>
                 </div>
-              </div>
-              <select
-                value={c.tierName ?? ""}
-                disabled={isBusy || tiersByLabQueries.isLoading}
-                onChange={(e) =>
-                  tierMutation.mutate({
-                    connectionId: c.id,
-                    tierName: e.target.value === "" ? null : e.target.value,
-                  })
-                }
-                className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[160px]"
-              >
-                <option value="">— No default tier —</option>
-                {tiers.map((t) => (
-                  <option key={t.id} value={t.name}>
-                    {t.name}
-                  </option>
-                ))}
-                {c.tierName &&
-                  !tiers.some((t) => t.name === c.tierName) && (
-                    <option value={c.tierName}>
-                      {c.tierName} (missing)
+                <select
+                  value={c.tierName ?? ""}
+                  disabled={isBusy || tiersByLabQueries.isLoading}
+                  onChange={(e) =>
+                    tierMutation.mutate({
+                      connectionId: c.id,
+                      tierName: e.target.value === "" ? null : e.target.value,
+                    })
+                  }
+                  className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[160px]"
+                >
+                  <option value="">— No default tier —</option>
+                  {tiers.map((t) => (
+                    <option key={t.id} value={t.name}>
+                      {t.name}
                     </option>
-                  )}
-              </select>
+                  ))}
+                  {c.tierName &&
+                    !tiers.some((t) => t.name === c.tierName) && (
+                      <option value={c.tierName}>
+                        {c.tierName} (missing)
+                      </option>
+                    )}
+                </select>
+              </div>
+              {tierError && (
+                <div className="text-xs text-destructive bg-destructive/10 px-2 py-1 rounded">
+                  Couldn't load pricing tiers for {labName}: {tierError}
+                </div>
+              )}
+              {noTiers && (
+                <div className="text-xs text-muted-foreground">
+                  No tiers yet — create one on the Pricing page.
+                </div>
+              )}
             </div>
           );
         })}
@@ -2884,8 +2916,12 @@ function PracticeDoctorsSection({
     enabled: !!currentUserId,
   });
 
+  // NOTE: keep this key namespaced ("practice-doctors") so it does not collide
+  // with ConnectionTierSection's tiers-by-lab query, which caches a different
+  // response shape under the same lab id. Sharing a key let React Query hand
+  // one section the other's data and silently emptied the dropdown.
   const tiersQuery = useQuery({
-    queryKey: ["pricing-tiers-for-labs", labOrganizationId ?? ""],
+    queryKey: ["practice-doctors", "tiers", labOrganizationId ?? ""],
     enabled: !!labOrganizationId,
     queryFn: () =>
       apiFetch<PracticeTiersResponse>(
@@ -2893,6 +2929,15 @@ function PracticeDoctorsSection({
       ),
   });
   const tiers = tiersQuery.data?.tiers ?? [];
+  const tiersError = tiersQuery.error
+    ? (tiersQuery.error as Error).message ||
+      "Could not load this lab's pricing tiers."
+    : null;
+  const noTiers =
+    !!labOrganizationId &&
+    !tiersQuery.isLoading &&
+    !tiersError &&
+    tiers.length === 0;
 
   const overridesQuery = useQuery({
     queryKey: ["pricing-overrides", labOrganizationId ?? ""],
@@ -2977,6 +3022,19 @@ function PracticeDoctorsSection({
         Each doctor can have their own pricing tier or individual item prices
         that override the practice default. Click a doctor to expand and edit.
       </p>
+
+      {tiersError && (
+        <div className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+          Couldn't load pricing tiers: {tiersError}
+        </div>
+      )}
+
+      {noTiers && (
+        <div className="text-xs text-muted-foreground border border-border rounded-md px-3 py-2">
+          No tiers yet — create one on the Pricing page. Doctors can still get
+          individual item prices below.
+        </div>
+      )}
 
       {labOrganizationId && isLoading && (
         <div className="text-sm text-muted-foreground">Loading doctors…</div>
