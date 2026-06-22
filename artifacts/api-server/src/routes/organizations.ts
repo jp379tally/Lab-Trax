@@ -1493,6 +1493,8 @@ router.get(
                 .lastName,
               initials: allUsers.find((user) => user.id === membership.userId)!
                 .initials,
+              platformAccountNumber: allUsers.find((user) => user.id === membership.userId)!
+                .platformAccountNumber ?? null,
             }
           : null,
       }))

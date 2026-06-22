@@ -22,7 +22,7 @@ import {
 import { useUndoDoctorMerge } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
+import type { Invoice, LabCase, MeResponse, Organization, OrgMemberRow } from "@/lib/types";
 import { formatMoney, relativeTime } from "@/lib/format";
 import type { DoctorRow, MergeSourceInput, UndoToast, MergeDialogResult } from "@/pages/doctors";
 import { DoctorDrawer, MergeDialog } from "@/pages/doctors";
@@ -201,6 +201,42 @@ export default function AccountsPage() {
   const orgs = orgsQuery.data ?? [];
   const cases = casesQuery.data ?? [];
   const invoices = invoicesQuery.data ?? [];
+
+  const practiceOrgIds = useMemo(
+    () => orgs.filter((o) => o.type === "provider" || o.type === "lab").map((o) => o.id),
+    [orgs],
+  );
+
+  const memberAccountsQuery = useQuery({
+    queryKey: ["practice-members-accounts", practiceOrgIds],
+    queryFn: async () => {
+      const results = await Promise.all(
+        practiceOrgIds.map((orgId) =>
+          apiFetch<OrgMemberRow[]>(`/organizations/${orgId}/members`)
+            .then((members) => ({ orgId, members }))
+            .catch(() => ({ orgId, members: [] as OrgMemberRow[] })),
+        ),
+      );
+      return results;
+    },
+    enabled: practiceOrgIds.length > 0,
+  });
+
+  const doctorAccountMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const { orgId, members } of memberAccountsQuery.data ?? []) {
+      for (const m of members) {
+        if (!m.user?.platformAccountNumber) continue;
+        const firstName = m.user.firstName ?? "";
+        const lastName = m.user.lastName ?? "";
+        const fullName = [firstName, lastName].filter(Boolean).join(" ").trim();
+        if (fullName) {
+          map.set(`${fullName.toLowerCase()}|${orgId}`, m.user.platformAccountNumber);
+        }
+      }
+    }
+    return map;
+  }, [memberAccountsQuery.data]);
 
   const practiceStats = useMemo<Map<string, PracticeStats>>(() => {
     const map = new Map<string, PracticeStats>();
@@ -465,6 +501,7 @@ export default function AccountsPage() {
               <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
                 <th className="w-8"></th>
                 <th className="text-left font-medium px-4 py-2.5">Practice / Doctor</th>
+                <th className="text-left font-medium py-2.5">Account #</th>
                 <th className="text-left font-medium py-2.5">Contact</th>
                 <th className="text-left font-medium py-2.5">Location</th>
                 <th className="text-right font-medium py-2.5">
@@ -534,7 +571,7 @@ export default function AccountsPage() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={10} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={11} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading accounts…
                   </td>
@@ -542,7 +579,7 @@ export default function AccountsPage() {
               )}
               {!isLoading && filteredPractices.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={11} className="px-5 py-12 text-center text-muted-foreground">
                     No practices match the current filters.
                   </td>
                 </tr>
@@ -625,6 +662,9 @@ export default function AccountsPage() {
                       </div>
                     </td>
                     <td className="py-3 text-muted-foreground text-xs">
+                      {org.accountNumber || "—"}
+                    </td>
+                    <td className="py-3 text-muted-foreground text-xs">
                       <div>{org.billingEmail || "—"}</div>
                       <div>{org.phone || ""}</div>
                     </td>
@@ -694,6 +734,9 @@ export default function AccountsPage() {
                             )}
                             <span className="text-sm font-medium">{doctor.doctorName}</span>
                           </div>
+                        </td>
+                        <td className="py-2.5 text-muted-foreground text-xs font-mono">
+                          {doctorAccountMap.get(`${doctor.doctorName.toLowerCase()}|${doctor.practiceId}`) || "—"}
                         </td>
                         <td className="py-2.5 text-muted-foreground text-xs">—</td>
                         <td className="py-2.5 text-muted-foreground text-xs">—</td>

@@ -511,6 +511,7 @@ export interface OrgMemberRow {
     firstName?: string | null;
     lastName?: string | null;
     initials?: string | null;
+    platformAccountNumber?: string | null;
   } | null;
 }
 
