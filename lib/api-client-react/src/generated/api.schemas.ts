@@ -1773,28 +1773,6 @@ export interface MarkReadInput {
   lastMessageId: string;
 }
 
-export type AiChatMessageRole =
-  (typeof AiChatMessageRole)[keyof typeof AiChatMessageRole];
-
-export const AiChatMessageRole = {
-  user: "user",
-  assistant: "assistant",
-} as const;
-
-export interface AiChatMessage {
-  role: AiChatMessageRole;
-  /** @maxLength 2000 */
-  content: string;
-}
-
-export interface AiChatInput {
-  /**
-   * @minItems 1
-   * @maxItems 20
-   */
-  messages: AiChatMessage[];
-}
-
 export type AiChatHistoryMessageRole =
   (typeof AiChatHistoryMessageRole)[keyof typeof AiChatHistoryMessageRole];
 
@@ -1896,12 +1874,35 @@ export interface PatientSimilarityResult {
   data?: PatientSimilarityResultData;
 }
 
-export interface SuccessResult {
-  success: boolean;
+export interface ProviderMatchItem {
+  orgId: string;
+  practiceName: string;
+  labName?: string | null;
+  platformAccountNumber?: string | null;
+  city?: string | null;
+  state?: string | null;
 }
 
-export interface AiChatResult {
-  reply: string;
+export type ProviderMatchListResultData = {
+  matches: ProviderMatchItem[];
+};
+
+export interface ProviderMatchListResult {
+  ok: boolean;
+  data: ProviderMatchListResultData;
+}
+
+export type CheckEmailResultData = {
+  available: boolean;
+};
+
+export interface CheckEmailResult {
+  ok: boolean;
+  data: CheckEmailResultData;
+}
+
+export interface SuccessResult {
+  success: boolean;
 }
 
 export interface LabLocation {
@@ -2642,6 +2643,15 @@ export type GetConversationMessagesParams = {
    * @maximum 100
    */
   limit?: number;
+};
+
+export type LookupProviderMatchesParams = {
+  phone?: string;
+  city?: string;
+};
+
+export type CheckEmailAvailabilityParams = {
+  email: string;
 };
 
 export type ListAuditLogsParams = {

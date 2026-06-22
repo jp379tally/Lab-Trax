@@ -22,8 +22,6 @@ import type {
   AddCaseNoteInput,
   AddCaseRestorationInput,
   AiChatHistoryResult,
-  AiChatInput,
-  AiChatResult,
   AiMemoryCandidateItemResult,
   AiMemoryCandidateListResult,
   AiMemoryItemResult,
@@ -54,6 +52,8 @@ import type {
   CaseRestorationResult,
   ChangeCaseLocationInput,
   ChatMessageResult,
+  CheckEmailAvailabilityParams,
+  CheckEmailResult,
   ConversationListResult,
   CreateAiMemoryInput,
   CreateCaseAttachmentInput,
@@ -124,6 +124,7 @@ import type {
   ListVendorsParams,
   LoginInput,
   LoginResult,
+  LookupProviderMatchesParams,
   MarkAllNotificationsRead200,
   MarkReadInput,
   MembershipResult,
@@ -135,6 +136,7 @@ import type {
   OpenInvoiceListResult,
   OrganizationResult,
   PatientSimilarityResult,
+  ProviderMatchListResult,
   ReceivePaymentsInput,
   ReceivePaymentsResult,
   RefreshSessionInput,
@@ -2051,92 +2053,6 @@ export const useDeleteLocation = <
   TContext
 > => {
   return useMutation(getDeleteLocationMutationOptions(options));
-};
-
-/**
- * @summary Send a message to the context-aware AI assistant
- */
-export const getPostAiChatUrl = () => {
-  return `/api/ai-chat`;
-};
-
-export const postAiChat = async (
-  aiChatInput: AiChatInput,
-  options?: RequestInit,
-): Promise<AiChatResult> => {
-  return customFetch<AiChatResult>(getPostAiChatUrl(), {
-    ...options,
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...options?.headers },
-    body: JSON.stringify(aiChatInput),
-  });
-};
-
-export const getPostAiChatMutationOptions = <
-  TError = ErrorType<void>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof postAiChat>>,
-    TError,
-    { data: BodyType<AiChatInput> },
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationOptions<
-  Awaited<ReturnType<typeof postAiChat>>,
-  TError,
-  { data: BodyType<AiChatInput> },
-  TContext
-> => {
-  const mutationKey = ["postAiChat"];
-  const { mutation: mutationOptions, request: requestOptions } = options
-    ? options.mutation &&
-      "mutationKey" in options.mutation &&
-      options.mutation.mutationKey
-      ? options
-      : { ...options, mutation: { ...options.mutation, mutationKey } }
-    : { mutation: { mutationKey }, request: undefined };
-
-  const mutationFn: MutationFunction<
-    Awaited<ReturnType<typeof postAiChat>>,
-    { data: BodyType<AiChatInput> }
-  > = (props) => {
-    const { data } = props ?? {};
-
-    return postAiChat(data, requestOptions);
-  };
-
-  return { mutationFn, ...mutationOptions };
-};
-
-export type PostAiChatMutationResult = NonNullable<
-  Awaited<ReturnType<typeof postAiChat>>
->;
-export type PostAiChatMutationBody = BodyType<AiChatInput>;
-export type PostAiChatMutationError = ErrorType<void>;
-
-/**
- * @summary Send a message to the context-aware AI assistant
- */
-export const usePostAiChat = <
-  TError = ErrorType<void>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof postAiChat>>,
-    TError,
-    { data: BodyType<AiChatInput> },
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationResult<
-  Awaited<ReturnType<typeof postAiChat>>,
-  TError,
-  { data: BodyType<AiChatInput> },
-  TContext
-> => {
-  return useMutation(getPostAiChatMutationOptions(options));
 };
 
 /**
@@ -9392,6 +9308,212 @@ export const useMarkConversationRead = <
 > => {
   return useMutation(getMarkConversationReadMutationOptions(options));
 };
+
+/**
+ * @summary Look up existing provider orgs matching phone and city (unauthenticated, rate-limited)
+ */
+export const getLookupProviderMatchesUrl = (
+  params?: LookupProviderMatchesParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/auth/lookup-provider-matches?${stringifiedParams}`
+    : `/api/auth/lookup-provider-matches`;
+};
+
+export const lookupProviderMatches = async (
+  params?: LookupProviderMatchesParams,
+  options?: RequestInit,
+): Promise<ProviderMatchListResult> => {
+  return customFetch<ProviderMatchListResult>(
+    getLookupProviderMatchesUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getLookupProviderMatchesQueryKey = (
+  params?: LookupProviderMatchesParams,
+) => {
+  return [
+    `/api/auth/lookup-provider-matches`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getLookupProviderMatchesQueryOptions = <
+  TData = Awaited<ReturnType<typeof lookupProviderMatches>>,
+  TError = ErrorType<void>,
+>(
+  params?: LookupProviderMatchesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof lookupProviderMatches>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getLookupProviderMatchesQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof lookupProviderMatches>>
+  > = ({ signal }) =>
+    lookupProviderMatches(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof lookupProviderMatches>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type LookupProviderMatchesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof lookupProviderMatches>>
+>;
+export type LookupProviderMatchesQueryError = ErrorType<void>;
+
+/**
+ * @summary Look up existing provider orgs matching phone and city (unauthenticated, rate-limited)
+ */
+
+export function useLookupProviderMatches<
+  TData = Awaited<ReturnType<typeof lookupProviderMatches>>,
+  TError = ErrorType<void>,
+>(
+  params?: LookupProviderMatchesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof lookupProviderMatches>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getLookupProviderMatchesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Check if an email address is already registered (unauthenticated)
+ */
+export const getCheckEmailAvailabilityUrl = (
+  params: CheckEmailAvailabilityParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/auth/check-email?${stringifiedParams}`
+    : `/api/auth/check-email`;
+};
+
+export const checkEmailAvailability = async (
+  params: CheckEmailAvailabilityParams,
+  options?: RequestInit,
+): Promise<CheckEmailResult> => {
+  return customFetch<CheckEmailResult>(getCheckEmailAvailabilityUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getCheckEmailAvailabilityQueryKey = (
+  params?: CheckEmailAvailabilityParams,
+) => {
+  return [`/api/auth/check-email`, ...(params ? [params] : [])] as const;
+};
+
+export const getCheckEmailAvailabilityQueryOptions = <
+  TData = Awaited<ReturnType<typeof checkEmailAvailability>>,
+  TError = ErrorType<void>,
+>(
+  params: CheckEmailAvailabilityParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof checkEmailAvailability>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getCheckEmailAvailabilityQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof checkEmailAvailability>>
+  > = ({ signal }) =>
+    checkEmailAvailability(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof checkEmailAvailability>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type CheckEmailAvailabilityQueryResult = NonNullable<
+  Awaited<ReturnType<typeof checkEmailAvailability>>
+>;
+export type CheckEmailAvailabilityQueryError = ErrorType<void>;
+
+/**
+ * @summary Check if an email address is already registered (unauthenticated)
+ */
+
+export function useCheckEmailAvailability<
+  TData = Awaited<ReturnType<typeof checkEmailAvailability>>,
+  TError = ErrorType<void>,
+>(
+  params: CheckEmailAvailabilityParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof checkEmailAvailability>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getCheckEmailAvailabilityQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
 
 /**
  * @summary Register a new user account (base role only; 14-day trial starts)

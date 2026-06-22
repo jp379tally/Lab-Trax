@@ -516,28 +516,6 @@ paths:
                     required: [deleted]
                     properties:
                       deleted: { type: boolean }
-  /ai-chat:
-    post:
-      operationId: postAiChat
-      tags: [ai]
-      summary: Send a message to the context-aware AI assistant
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AiChatInput"
-      responses:
-        "200":
-          description: AI assistant reply
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AiChatResult"
-        "400":
-          description: Bad request
-        "503":
-          description: AI not configured
   /ai-stt:
     post:
       operationId: transcribeAudio
@@ -5211,26 +5189,6 @@ components:
       required: [lastMessageId]
       properties:
         lastMessageId: { type: string }
-    AiChatMessage:
-      type: object
-      required: [role, content]
-      properties:
-        role:
-          type: string
-          enum: [user, assistant]
-        content:
-          type: string
-          maxLength: 2000
-    AiChatInput:
-      type: object
-      required: [messages]
-      properties:
-        messages:
-          type: array
-          items:
-            $ref: "#/components/schemas/AiChatMessage"
-          minItems: 1
-          maxItems: 20
     AiChatHistoryMessage:
       type: object
       required: [id, role, content, createdAt]
@@ -5381,12 +5339,6 @@ components:
       properties:
         success:
           type: boolean
-    AiChatResult:
-      type: object
-      required: [reply]
-      properties:
-        reply:
-          type: string
     LabLocation:
       type: object
       required: [id, organizationId, name, code, isActive, sortOrder, createdAt, updatedAt]

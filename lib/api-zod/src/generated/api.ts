@@ -403,29 +403,6 @@ export const DeleteLocationResponse = zod.object({
 });
 
 /**
- * @summary Send a message to the context-aware AI assistant
- */
-export const postAiChatBodyMessagesItemContentMax = 2000;
-
-export const postAiChatBodyMessagesMax = 20;
-
-export const PostAiChatBody = zod.object({
-  messages: zod
-    .array(
-      zod.object({
-        role: zod.enum(["user", "assistant"]),
-        content: zod.string().max(postAiChatBodyMessagesItemContentMax),
-      }),
-    )
-    .min(1)
-    .max(postAiChatBodyMessagesMax),
-});
-
-export const PostAiChatResponse = zod.object({
-  reply: zod.string(),
-});
-
-/**
  * @summary Transcribe audio to text via OpenAI Whisper (STT)
  */
 export const TranscribeAudioBody = zod.object({
@@ -3355,6 +3332,30 @@ export const MarkConversationReadParams = zod.object({
 
 export const MarkConversationReadBody = zod.object({
   lastMessageId: zod.string(),
+});
+
+/**
+ * @summary Look up existing provider orgs matching phone and city (unauthenticated, rate-limited)
+ */
+export const LookupProviderMatchesQueryParams = zod.object({
+  phone: zod.coerce.string().optional(),
+  city: zod.coerce.string().optional(),
+});
+
+export const LookupProviderMatchesResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    matches: zod.array(
+      zod.object({
+        orgId: zod.string(),
+        practiceName: zod.string(),
+        labName: zod.string().nullish(),
+        platformAccountNumber: zod.string().nullish(),
+        city: zod.string().nullish(),
+        state: zod.string().nullish(),
+      }),
+    ),
+  }),
 });
 
 /**

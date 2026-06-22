@@ -18,11 +18,7 @@
  * - POST /ai-agent knowledge audit: knowledgeSectionIds present for privacy-signal query
  * - POST /ai-agent knowledge audit: retentionDisclaimer present for retention-signal query
  * - POST /ai-agent knowledge audit: knowledgeSectionIds absent for unrelated query
- * - POST /ai-chat knowledge audit: knowledgeSectionIds present for privacy-signal query
- * - POST /ai-chat knowledge audit: retentionDisclaimer present for retention-signal query
- * - POST /ai-chat knowledge audit: knowledgeSectionIds absent for unrelated query
  * - POST /ai-agent rate limiting: 429 after exceeding 10 req/min per user
- * - POST /ai-chat rate limiting: 429 after exceeding 20 req/min per user
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
@@ -35,7 +31,6 @@ import {
   type ToolContext,
 } from "../lib/ai-agent-tools";
 import { registerAiAgentRoutes, _testInjectPendingAction } from "./ai-agent";
-import { registerAiChatRoutes } from "./ai-chat";
 
 // ─── OpenAI mock (hoisted so the module-level singleton is initialised with it)
 // Returns a minimal text completion with no tool_calls so routes take the
@@ -142,20 +137,6 @@ function makeApp(userId?: string) {
 
   const router = express.Router();
   registerAiAgentRoutes(router);
-  app.use("/api", router);
-  return app;
-}
-
-/** Minimal Express app for ai-chat route tests. */
-function makeAiChatApp(userId?: string, userType = "lab") {
-  const app = express();
-  app.use(bodyParser.json());
-  app.use((req: any, _res, next) => {
-    if (userId) req.user = { id: userId, userType };
-    next();
-  });
-  const router = express.Router();
-  registerAiChatRoutes(router);
   app.use("/api", router);
   return app;
 }
@@ -672,91 +653,6 @@ describe("POST /api/ai-agent — knowledge audit metadata", () => {
   });
 });
 
-// ─── Knowledge audit metadata: POST /api/ai-chat ─────────────────────────────
-//
-// Same guard rail for the ai-chat route. The DB mock returns empty memberships
-// (user is "not a member of any active lab") so context assembly succeeds.
-// OpenAI returns a mocked text reply so res.body.reply is populated.
-
-describe("POST /api/ai-chat — knowledge audit metadata", () => {
-  beforeAll(() => {
-    process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ??= "test-key-for-knowledge-audit";
-  });
-
-  beforeEach(() => {
-    mockCompletionsCreate.mockClear();
-    mockCompletionsCreate.mockResolvedValue({
-      choices: [{ message: { content: "Mocked chat reply." } }],
-    });
-  });
-
-  it("includes knowledgeSectionIds for a privacy-signal query", async () => {
-    const app = makeAiChatApp("user-chat-ka-1");
-    const res = await request(app)
-      .post("/api/ai-chat")
-      .send({
-        messages: [{ role: "user", content: "Can I share a patient photo with anyone?" }],
-      });
-
-    expect(res.status).toBe(200);
-    expect(typeof res.body.reply).toBe("string");
-    expect(Array.isArray(res.body.knowledgeSectionIds)).toBe(true);
-    expect(res.body.knowledgeSectionIds.length).toBeGreaterThan(0);
-    for (const id of res.body.knowledgeSectionIds) {
-      expect(typeof id).toBe("string");
-    }
-  });
-
-  it("includes retentionDisclaimer:true for a retention-signal query", async () => {
-    const app = makeAiChatApp("user-chat-ka-2");
-    const res = await request(app)
-      .post("/api/ai-chat")
-      .send({
-        messages: [
-          {
-            role: "user",
-            content: "What are the state law requirements for how long I must retain dental records?",
-          },
-        ],
-      });
-
-    expect(res.status).toBe(200);
-    expect(typeof res.body.reply).toBe("string");
-    expect(res.body.retentionDisclaimer).toBe(true);
-  });
-
-  it("omits knowledgeSectionIds for an unrelated query", async () => {
-    const app = makeAiChatApp("user-chat-ka-3");
-    const res = await request(app)
-      .post("/api/ai-chat")
-      .send({
-        messages: [
-          { role: "user", content: "zzzzz qqqqq wwwww unrelated gibberish 12345" },
-        ],
-      });
-
-    expect(res.status).toBe(200);
-    expect(typeof res.body.reply).toBe("string");
-    expect(res.body.knowledgeSectionIds).toBeUndefined();
-    expect(res.body.retentionDisclaimer).toBeUndefined();
-  });
-
-  it("knowledgeSectionIds is absent when retentionDisclaimer is absent (pure non-knowledge query)", async () => {
-    const app = makeAiChatApp("user-chat-ka-4");
-    const res = await request(app)
-      .post("/api/ai-chat")
-      .send({
-        // Random gibberish that matches no dental/HIPAA knowledge section keywords.
-        messages: [{ role: "user", content: "aaabbb cccddd eeefff 99887766" }],
-      });
-
-    expect(res.status).toBe(200);
-    // Gibberish carries no HIPAA/retention signal — both fields must be absent.
-    expect(res.body.knowledgeSectionIds).toBeUndefined();
-    expect(res.body.retentionDisclaimer).toBeUndefined();
-  });
-});
-
 // ─── Rate limiting: POST /api/ai-agent ───────────────────────────────────────
 //
 // createUserRateLimit is intentionally NOT disabled under Vitest so tests can
@@ -825,68 +721,6 @@ describe("POST /api/ai-agent — rate limiting", () => {
     // A different user must still be allowed
     const allowed = await request(other)
       .post("/api/ai-agent")
-      .send({ messages: [{ role: "user", content: "hello" }] });
-    expect(allowed.status).not.toBe(429);
-  });
-});
-
-// ─── Rate limiting: POST /api/ai-chat ────────────────────────────────────────
-
-describe("POST /api/ai-chat — rate limiting", () => {
-  beforeAll(() => {
-    process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ??= "test-key-for-chat-rl";
-  });
-
-  beforeEach(() => {
-    mockCompletionsCreate.mockResolvedValue({
-      choices: [{ message: { content: "Mocked chat reply." } }],
-    });
-  });
-
-  it("returns 429 with Retry-After after exceeding 20 requests per minute", async () => {
-    const userId = "user-rl-chat-flood-1";
-    const app = makeAiChatApp(userId);
-
-    // Send 20 allowed requests (limit is 20/min)
-    for (let i = 0; i < 20; i++) {
-      const r = await request(app)
-        .post("/api/ai-chat")
-        .send({ messages: [{ role: "user", content: "hello" }] });
-      expect(r.status).not.toBe(429);
-    }
-
-    // 21st request must be throttled
-    const throttled = await request(app)
-      .post("/api/ai-chat")
-      .send({ messages: [{ role: "user", content: "hello" }] });
-
-    expect(throttled.status).toBe(429);
-    expect(throttled.headers["retry-after"]).toBeDefined();
-    expect(throttled.body.ok).toBe(false);
-    expect(typeof throttled.body.error).toBe("string");
-  });
-
-  it("does not throttle a different user when one user hits the limit", async () => {
-    const flooderId = "user-rl-chat-flood-2";
-    const otherId = "user-rl-chat-other-1";
-
-    const flooder = makeAiChatApp(flooderId);
-    const other = makeAiChatApp(otherId);
-
-    // Exhaust the flooder's quota
-    for (let i = 0; i < 20; i++) {
-      await request(flooder)
-        .post("/api/ai-chat")
-        .send({ messages: [{ role: "user", content: "flood" }] });
-    }
-    const throttled = await request(flooder)
-      .post("/api/ai-chat")
-      .send({ messages: [{ role: "user", content: "flood" }] });
-    expect(throttled.status).toBe(429);
-
-    // A different user must still be allowed
-    const allowed = await request(other)
-      .post("/api/ai-chat")
       .send({ messages: [{ role: "user", content: "hello" }] });
     expect(allowed.status).not.toBe(429);
   });

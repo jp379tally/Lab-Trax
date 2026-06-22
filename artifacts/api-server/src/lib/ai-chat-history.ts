@@ -1,12 +1,13 @@
 /**
  * Shared server-side AI chat history persistence.
  *
- * Both the legacy chat endpoint (`/ai-chat`) and the agentic endpoints
- * (`/ai-agent`, `/ai-agent/stream`) persist each user+assistant exchange into
- * the `ai_chat_history` table so a user's conversation follows them across
- * devices (second device, reinstall, mobile↔desktop). `GET /ai-chat/history`
- * reads it back. Keeping the writer in one place ensures every entry point uses
- * the same shape, trimming, and disclaimer metadata.
+ * The agentic endpoints (`/ai-agent`, `/ai-agent/stream`) persist each
+ * user+assistant exchange into the `ai_chat_history` table so a user's
+ * conversation follows them across devices (second device, reinstall,
+ * mobile↔desktop). `GET /ai-chat/history` reads it back. This lib is the single
+ * writer of `ai_chat_history`, ensuring every entry point uses the same shape,
+ * trimming, and disclaimer metadata. (The legacy `POST /ai-chat` endpoint that
+ * originally wrote here has been retired.)
  */
 
 import { db } from "@workspace/db";
