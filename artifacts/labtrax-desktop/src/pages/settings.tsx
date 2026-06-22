@@ -883,6 +883,8 @@ function ProfilePanel() {
                     >
                       {phoneVerifyStep === "sending" ? (
                         <><Loader2 size={12} className="animate-spin" />Sending…</>
+                      ) : phoneVerifyStep === "otp" ? (
+                        "Verify"
                       ) : resendCountdown > 0 ? (
                         `Try again in ${resendCountdown}s`
                       ) : (
