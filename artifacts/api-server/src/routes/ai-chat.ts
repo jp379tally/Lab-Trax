@@ -467,12 +467,9 @@ async function buildProviderContext(userId: string): Promise<string> {
  * When `userId` and `userType` are supplied the function enforces access
  * control before returning any case data:
  *  - provider users: the case's providerOrganizationId must belong to one
- *    of the caller's linked provider orgs — enforced here.
- *  - lab users: no additional per-case ownership check is applied here;
- *    the caller is expected to be an authenticated lab member, but the
- *    caseId is not validated against the user's active lab org(s).
- *    TODO: add lab-side ownership enforcement analogous to the provider
- *    path (require caseRow.labOrganizationId ∈ getActiveLabIds(userId)).
+ *    of the caller's linked provider orgs.
+ *  - lab users: the case's labOrganizationId must be one of the user's
+ *    active lab memberships.
  *
  * Returns an empty string (instead of throwing) when access is denied so
  * the caller can silently omit the single-case block rather than fail the
@@ -491,15 +488,24 @@ async function buildSingleCaseContext(
 
   if (!caseRow) return "Case not found.";
 
-  // --- provider access check -------------------------------------------
-  if (userId && userType === "provider") {
-    const { providerOrgIds } = await getProviderOrgIdsForUserAndLinks(userId);
-    const caseProviderOrgId = caseRow.providerOrganizationId ?? null;
-    if (!caseProviderOrgId || !providerOrgIds.includes(caseProviderOrgId)) {
-      return "";
+  if (userId) {
+    if (userType === "provider") {
+      // --- provider access check ---------------------------------------
+      const { providerOrgIds } = await getProviderOrgIdsForUserAndLinks(userId);
+      const caseProviderOrgId = caseRow.providerOrganizationId ?? null;
+      if (!caseProviderOrgId || !providerOrgIds.includes(caseProviderOrgId)) {
+        return "";
+      }
+    } else {
+      // --- lab user access check ---------------------------------------
+      // The case must belong to one of the user's active lab orgs.
+      const activeLabIds = await getActiveLabIds(userId);
+      const caseLabId = caseRow.labOrganizationId ?? null;
+      if (!caseLabId || !activeLabIds.includes(caseLabId)) {
+        return "";
+      }
     }
   }
-  // ---------------------------------------------------------------------
 
   const [restRows, noteRows, attachmentRows] = await Promise.all([
     db
