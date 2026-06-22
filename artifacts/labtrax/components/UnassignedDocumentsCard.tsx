@@ -2,16 +2,22 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
+import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
+import * as FileSystem from "expo-file-system";
 import {
   useListLabInboxFiles,
   useAssignLabInboxFile,
@@ -43,6 +49,35 @@ function mimeIcon(mimeType: string): string {
   if (mimeType.includes("spreadsheet") || mimeType.includes("excel"))
     return "grid-outline";
   return "attach-outline";
+}
+
+function defaultPhotoFilename(): string {
+  const now = new Date();
+  const pad = (n: number, d = 2) => String(n).padStart(d, "0");
+  const dateStr = [
+    now.getFullYear(),
+    pad(now.getMonth() + 1),
+    pad(now.getDate()),
+  ].join("-");
+  const timeStr = [
+    pad(now.getHours()),
+    pad(now.getMinutes()),
+    pad(now.getSeconds()),
+  ].join("");
+  return `photo-${dateStr}-${timeStr}.jpg`;
+}
+
+function sanitizeFilename(input: string, fallback: string): string {
+  const ext = fallback.match(/\.[^.]+$/)?.[0] ?? ".jpg";
+  let name = input
+    .replace(/[/\\:*?"<>|\x00]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!name) return fallback;
+  if (!name.toLowerCase().endsWith(ext.toLowerCase())) {
+    name = name.replace(/\.[^.]*$/, "") + ext;
+  }
+  return name || fallback;
 }
 
 type QuickCase = {
@@ -392,6 +427,16 @@ export function UnassignedDocumentsCard() {
 
   const [collapsed, setCollapsed] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+
+  // ── Camera / rename modal state ──────────────────────────────────────────
+  const [capturedUri, setCapturedUri] = useState<string | null>(null);
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const defaultNameRef = useRef("");
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [photoUploadProgress, setPhotoUploadProgress] = useState<number | null>(null);
+  const [photoError, setPhotoError] = useState<string | null>(null);
 
   const filesQuery = useListLabInboxFiles(
     { labOrganizationId: labOrgId },
@@ -419,10 +464,12 @@ export function UnassignedDocumentsCard() {
       if (!asset) return;
 
       setIsUploading(true);
+      setUploadProgress(0);
       const uploadResult = await chunkedUploadCaseMedia(
         asset.uri,
         asset.name,
         asset.mimeType ?? "application/octet-stream",
+        (fraction) => setUploadProgress(Math.round(fraction * 100)),
       );
 
       if (!uploadResult.ok) {
@@ -453,8 +500,168 @@ export function UnassignedDocumentsCard() {
       );
     } finally {
       setIsUploading(false);
+      setUploadProgress(null);
     }
   }, [isUploading, labOrgId, qc, collapsed]);
+
+  const handleTakePhoto = useCallback(async () => {
+    if (isUploadingPhoto || !labOrgId) return;
+
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Camera Permission Required",
+        "LabTrax needs camera access to capture documents. Please enable it in your device Settings.",
+      );
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: "images",
+      quality: 0.85,
+      allowsEditing: false,
+    });
+
+    if (result.canceled || !result.assets?.length) return;
+
+    const asset = result.assets[0];
+    if (!asset?.uri) return;
+
+    const resized = await ImageManipulator.manipulateAsync(
+      asset.uri,
+      [{ resize: { width: 1200 } }],
+      { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG },
+    );
+
+    const defaultName = defaultPhotoFilename();
+    defaultNameRef.current = defaultName;
+    setCapturedUri(resized.uri);
+    setRenameValue(defaultName);
+    setPhotoError(null);
+    setShowRenameModal(true);
+  }, [isUploadingPhoto, labOrgId]);
+
+  const handleRenameConfirm = useCallback(async () => {
+    if (!capturedUri || !labOrgId) return;
+
+    const defaultName = defaultNameRef.current;
+    const finalName = sanitizeFilename(renameValue.trim(), defaultName);
+
+    setShowRenameModal(false);
+    setIsUploadingPhoto(true);
+    setPhotoUploadProgress(0);
+    setPhotoError(null);
+
+    try {
+      const uploadResult = await chunkedUploadCaseMedia(
+        capturedUri,
+        finalName,
+        "image/jpeg",
+        (fraction) => setPhotoUploadProgress(Math.round(fraction * 100)),
+      );
+
+      if (!uploadResult.ok) {
+        setPhotoError("Upload failed. Tap to retry.");
+        return;
+      }
+
+      let sizeBytes = 0;
+      try {
+        const info = await FileSystem.getInfoAsync(capturedUri);
+        if (info.exists && "size" in info) sizeBytes = info.size ?? 0;
+      } catch {
+        // size metadata is best-effort; upload still succeeds without it
+      }
+
+      await resilientFetch("/api/lab-inbox/finalize-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          storagePath: uploadResult.url,
+          originalFilename: finalName,
+          mimeType: "image/jpeg",
+          sizeBytes,
+          labOrganizationId: labOrgId,
+        }),
+      });
+
+      void qc.invalidateQueries({
+        queryKey: getListLabInboxFilesQueryKey({ labOrganizationId: labOrgId }),
+      });
+      if (collapsed) setCollapsed(false);
+      setCapturedUri(null);
+    } catch (err) {
+      setPhotoError(
+        err instanceof Error ? err.message : "Upload failed. Tap to retry.",
+      );
+    } finally {
+      setIsUploadingPhoto(false);
+      setPhotoUploadProgress(null);
+    }
+  }, [capturedUri, renameValue, labOrgId, qc, collapsed]);
+
+  const handleRenameCancel = useCallback(() => {
+    setShowRenameModal(false);
+    setCapturedUri(null);
+    setRenameValue("");
+    setPhotoError(null);
+  }, []);
+
+  const handleRetryPhotoUpload = useCallback(async () => {
+    if (!capturedUri || isUploadingPhoto || !labOrgId) return;
+    const finalName = sanitizeFilename(renameValue.trim(), defaultNameRef.current);
+    setIsUploadingPhoto(true);
+    setPhotoUploadProgress(0);
+    setPhotoError(null);
+
+    try {
+      const uploadResult = await chunkedUploadCaseMedia(
+        capturedUri,
+        finalName,
+        "image/jpeg",
+        (fraction) => setPhotoUploadProgress(Math.round(fraction * 100)),
+      );
+
+      if (!uploadResult.ok) {
+        setPhotoError("Upload failed. Tap to retry.");
+        return;
+      }
+
+      let sizeBytes = 0;
+      try {
+        const info = await FileSystem.getInfoAsync(capturedUri);
+        if (info.exists && "size" in info) sizeBytes = info.size ?? 0;
+      } catch {
+        // size metadata is best-effort
+      }
+
+      await resilientFetch("/api/lab-inbox/finalize-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          storagePath: uploadResult.url,
+          originalFilename: finalName,
+          mimeType: "image/jpeg",
+          sizeBytes,
+          labOrganizationId: labOrgId,
+        }),
+      });
+
+      void qc.invalidateQueries({
+        queryKey: getListLabInboxFilesQueryKey({ labOrganizationId: labOrgId }),
+      });
+      if (collapsed) setCollapsed(false);
+      setCapturedUri(null);
+      setPhotoError(null);
+    } catch (err) {
+      setPhotoError(
+        err instanceof Error ? err.message : "Upload failed. Tap to retry.",
+      );
+    } finally {
+      setIsUploadingPhoto(false);
+      setPhotoUploadProgress(null);
+    }
+  }, [capturedUri, renameValue, isUploadingPhoto, labOrgId, qc, collapsed]);
 
   const handleAssigned = useCallback(() => {
     void qc.invalidateQueries({
@@ -468,6 +675,55 @@ export function UnassignedDocumentsCard() {
 
   return (
     <View style={styles.card}>
+      {/* ── Rename modal ─────────────────────────────────────────────────── */}
+      <Modal
+        visible={showRenameModal}
+        transparent
+        animationType="fade"
+        onRequestClose={handleRenameCancel}
+      >
+        <Pressable style={styles.modalOverlay} onPress={handleRenameCancel}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.modalKav}
+          >
+            <Pressable style={styles.modalBox} onPress={() => {}}>
+              <Text style={styles.modalTitle}>Name your photo</Text>
+              <Text style={styles.modalSubtitle}>
+                You can rename this photo before uploading it.
+              </Text>
+              <TextInput
+                style={styles.modalInput}
+                value={renameValue}
+                onChangeText={setRenameValue}
+                autoFocus
+                autoCapitalize="none"
+                autoCorrect={false}
+                selectTextOnFocus
+                returnKeyType="done"
+                onSubmitEditing={handleRenameConfirm}
+                placeholderTextColor={colors.textTertiary}
+              />
+              <View style={styles.modalButtons}>
+                <Pressable
+                  style={[styles.modalBtn, styles.modalBtnCancel]}
+                  onPress={handleRenameCancel}
+                >
+                  <Text style={styles.modalBtnCancelText}>Discard</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.modalBtn, styles.modalBtnConfirm]}
+                  onPress={handleRenameConfirm}
+                >
+                  <Text style={styles.modalBtnConfirmText}>Upload</Text>
+                </Pressable>
+              </View>
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Pressable>
+      </Modal>
+
+      {/* ── Header ───────────────────────────────────────────────────────── */}
       <Pressable
         style={styles.header}
         onPress={() => setCollapsed((v) => !v)}
@@ -483,11 +739,26 @@ export function UnassignedDocumentsCard() {
         </View>
 
         <View style={styles.headerRight}>
+          {/* Camera button */}
+          <Pressable
+            onPress={handleTakePhoto}
+            hitSlop={8}
+            style={styles.addBtn}
+            disabled={isUploadingPhoto || isUploading}
+          >
+            {isUploadingPhoto ? (
+              <ActivityIndicator size={14} color={colors.tint} />
+            ) : (
+              <Ionicons name="camera-outline" size={16} color={colors.tint} />
+            )}
+          </Pressable>
+
+          {/* File picker button */}
           <Pressable
             onPress={handlePickAndUpload}
             hitSlop={8}
             style={styles.addBtn}
-            disabled={isUploading}
+            disabled={isUploading || isUploadingPhoto}
           >
             {isUploading ? (
               <ActivityIndicator size={14} color={colors.tint} />
@@ -495,6 +766,7 @@ export function UnassignedDocumentsCard() {
               <Ionicons name="add" size={16} color={colors.tint} />
             )}
           </Pressable>
+
           <Ionicons
             name={collapsed ? "chevron-down" : "chevron-up"}
             size={16}
@@ -502,6 +774,33 @@ export function UnassignedDocumentsCard() {
           />
         </View>
       </Pressable>
+
+      {/* ── Upload progress banners ───────────────────────────────────────── */}
+      {isUploading && uploadProgress !== null && (
+        <View style={styles.progressBanner}>
+          <ActivityIndicator size={12} color={colors.tint} />
+          <Text style={styles.progressText}>
+            Uploading… {uploadProgress}%
+          </Text>
+        </View>
+      )}
+
+      {isUploadingPhoto && photoUploadProgress !== null && (
+        <View style={styles.progressBanner}>
+          <ActivityIndicator size={12} color={colors.tint} />
+          <Text style={styles.progressText}>
+            Uploading photo… {photoUploadProgress}%
+          </Text>
+        </View>
+      )}
+
+      {photoError && capturedUri && (
+        <Pressable style={styles.errorBanner} onPress={handleRetryPhotoUpload}>
+          <Ionicons name="alert-circle-outline" size={14} color="#EF4444" />
+          <Text style={styles.errorBannerText}>{photoError}</Text>
+          <Text style={styles.errorBannerRetry}>Retry</Text>
+        </Pressable>
+      )}
 
       {!collapsed && (
         <View style={styles.body}>
@@ -511,7 +810,7 @@ export function UnassignedDocumentsCard() {
             </View>
           ) : count === 0 ? (
             <Text style={styles.emptyText}>
-              No unassigned documents. Tap + to add a file.
+              No unassigned documents. Tap + or 📷 to add.
             </Text>
           ) : (
             files.map((file) => (
@@ -587,6 +886,43 @@ function makeStyles(colors: ThemeColors) {
       alignItems: "center",
       justifyContent: "center",
     },
+    progressBanner: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: 6,
+      backgroundColor: colors.tint + "12",
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.border,
+    },
+    progressText: {
+      ...Typography.caption,
+      color: colors.tint,
+      fontSize: 12,
+    },
+    errorBanner: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: 7,
+      backgroundColor: "rgba(239,68,68,0.08)",
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: "rgba(239,68,68,0.3)",
+    },
+    errorBannerText: {
+      flex: 1,
+      ...Typography.caption,
+      color: "#EF4444",
+      fontSize: 12,
+    },
+    errorBannerRetry: {
+      ...Typography.caption,
+      color: "#EF4444",
+      fontWeight: "700",
+      fontSize: 12,
+    },
     body: {
       paddingHorizontal: Spacing.md,
       paddingBottom: Spacing.sm,
@@ -600,6 +936,79 @@ function makeStyles(colors: ThemeColors) {
       color: colors.textTertiary,
       textAlign: "center",
       paddingVertical: Spacing.sm,
+    },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.5)",
+      justifyContent: "center",
+      alignItems: "center",
+    },
+    modalKav: {
+      width: "100%",
+      justifyContent: "center",
+      alignItems: "center",
+      paddingHorizontal: Spacing.lg,
+    },
+    modalBox: {
+      width: "100%",
+      backgroundColor: colors.surface,
+      borderRadius: Radius.lg,
+      padding: Spacing.lg,
+      gap: Spacing.sm,
+    },
+    modalTitle: {
+      ...Typography.bodySemibold,
+      fontSize: 16,
+      color: colors.text,
+    },
+    modalSubtitle: {
+      ...Typography.caption,
+      color: colors.textSecondary,
+      fontSize: 13,
+    },
+    modalInput: {
+      ...Typography.body,
+      fontSize: 14,
+      color: colors.text,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: 10,
+      backgroundColor: colors.background,
+      marginTop: Spacing.xs,
+    },
+    modalButtons: {
+      flexDirection: "row",
+      gap: Spacing.sm,
+      marginTop: Spacing.xs,
+    },
+    modalBtn: {
+      flex: 1,
+      height: 42,
+      borderRadius: Radius.sm,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    modalBtnCancel: {
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.background,
+    },
+    modalBtnConfirm: {
+      backgroundColor: colors.tint,
+    },
+    modalBtnCancelText: {
+      ...Typography.body,
+      fontSize: 14,
+      color: colors.textSecondary,
+      fontWeight: "600",
+    },
+    modalBtnConfirmText: {
+      ...Typography.body,
+      fontSize: 14,
+      color: colors.textInverse,
+      fontWeight: "600",
     },
   });
 }
