@@ -22,10 +22,9 @@ import { getToolCallLabel } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch, getApiUrl, refreshAndGetAccessToken } from "@/lib/query-client";
+import { loadChatSession, saveChatSession, clearChatSession } from "@/lib/ai-chat-session";
 
 const AI_VOICE_MODE_KEY = "labtrax_ai_voice_mode_v1";
-const AI_CHAT_HISTORY_KEY_PREFIX = "labtrax_ai_chat_history_v1";
-const MAX_HISTORY_MESSAGES = 50;
 
 /** Decode the payload of a JWT (no signature check — just for reading claims). */
 function getJwtUserId(token: string | null): string | null {
@@ -742,13 +741,14 @@ export default function AiAssistantScreen() {
   const sendMessageRef = useRef<((text: string) => Promise<void>) | null>(null);
   // Tracks whether the AsyncStorage load has completed so we don't write false on mount.
   const voiceModeLoadedRef = useRef(false);
+  // Tracks whether the saved chat session has finished loading so the persist
+  // effect doesn't write before we've had a chance to restore.
+  const sessionLoadedRef = useRef(false);
 
   // ─── Chat history persistence ───────────────────────────────────────────────
-  // Keyed per user so switching accounts on the same device doesn't mix history.
-  const chatHistoryKeyRef = useRef<string | null>(null);
-  // Set to true only after the initial load attempt completes (success or fail),
-  // so the save effect doesn't overwrite stored history before we've read it.
-  const chatHistoryLoadedRef = useRef(false);
+  // The signed-in user id, resolved on mount and used to scope the stored
+  // session per user so switching accounts on one device never mixes history.
+  const chatHistoryUserIdRef = useRef<string | null>(null);
 
   const showPrompts = messages.length === 1;
 
@@ -756,58 +756,41 @@ export default function AiAssistantScreen() {
     messagesRef.current = messages;
   }, [messages]);
 
-  // ─── Load chat history on mount ────────────────────────────────────────────
+  // Restore the last chat session on mount (or leave the welcome message when
+  // there is none / it expired). History is keyed per user so switching
+  // accounts on the same device never mixes one user's chat into another's.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      let userId: string | null = null;
       try {
         const token = await refreshAndGetAccessToken();
-        const userId = getJwtUserId(token);
-        const storageKey = userId
-          ? `${AI_CHAT_HISTORY_KEY_PREFIX}_${userId}`
-          : AI_CHAT_HISTORY_KEY_PREFIX;
-        chatHistoryKeyRef.current = storageKey;
-
-        const raw = await AsyncStorage.getItem(storageKey);
-        if (cancelled) return;
-
-        if (raw) {
-          const parsed = JSON.parse(raw) as ChatMessage[];
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            const restored = sanitizeRestoredMessages(parsed);
-            // Always ensure welcome is the first message.
-            const hasWelcome = restored[0]?.id === "welcome";
-            setMessages(hasWelcome ? restored : [WELCOME_MSG, ...restored]);
-          }
-        }
+        userId = getJwtUserId(token);
       } catch {
-        // Non-fatal: fall back to in-memory only.
+        // Non-fatal: fall back to the unkeyed session.
+      }
+      chatHistoryUserIdRef.current = userId;
+      try {
+        const stored = await loadChatSession<ChatMessage>(userId);
+        if (!cancelled && stored && stored.length > 0) {
+          setMessages([WELCOME_MSG, ...stored]);
+        }
       } finally {
-        if (!cancelled) chatHistoryLoadedRef.current = true;
+        if (!cancelled) sessionLoadedRef.current = true;
       }
     })();
-    return () => { cancelled = true; };
-    // Run once on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // ─── Save chat history after each completed exchange ───────────────────────
+  // Persist the conversation after it settles (i.e. once a reply finishes or a
+  // proposed action resolves). Skipped while sending and before the initial
+  // load completes; welcome-only conversations are a no-op inside saveChatSession.
   useEffect(() => {
-    // Don't save before the initial load completes (avoids overwriting stored history).
-    if (!chatHistoryLoadedRef.current) return;
-    // Don't save while a response is streaming (wait for the final settled state).
+    if (!sessionLoadedRef.current) return;
     if (sending) return;
-
-    const key = chatHistoryKeyRef.current;
-    if (!key) return;
-
-    // Keep the most recent MAX_HISTORY_MESSAGES messages (always include welcome).
-    const toSave =
-      messages.length > MAX_HISTORY_MESSAGES
-        ? [WELCOME_MSG, ...messages.slice(-(MAX_HISTORY_MESSAGES - 1))]
-        : messages;
-
-    AsyncStorage.setItem(key, JSON.stringify(toSave)).catch(() => {});
+    void saveChatSession(messages, chatHistoryUserIdRef.current);
   }, [messages, sending]);
 
   // Load voice mode preference from AsyncStorage on mount.
@@ -1353,8 +1336,7 @@ export default function AiAssistantScreen() {
           <Pressable
             onPress={() => {
               setMessages([WELCOME_MSG]);
-              const key = chatHistoryKeyRef.current;
-              if (key) AsyncStorage.removeItem(key).catch(() => {});
+              void clearChatSession(chatHistoryUserIdRef.current);
             }}
             hitSlop={10}
             style={s.clearBtn}
