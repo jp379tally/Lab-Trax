@@ -577,6 +577,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   const [messages, setMessages] = useState<ChatMsg[]>([buildWelcome(initialCases)]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [streamingToolCall, setStreamingToolCall] = useState<string | null>(null);
   const [promptsDismissed, setPromptsDismissed] = useState(false);
 
   const messagesRef = useRef<ChatMsg[]>([buildWelcome(initialCases)]);
@@ -1139,7 +1140,13 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           let evt: Record<string, unknown>;
           try { evt = JSON.parse(line.slice(6)) as Record<string, unknown>; } catch { continue; }
 
+          if (evt.tool_call && typeof evt.tool_call === "object") {
+            const tc = evt.tool_call as { name?: string };
+            setStreamingToolCall(tc.name ?? null);
+          }
+
           if (typeof evt.token === "string") {
+            if (!fullContent) setStreamingToolCall(null);
             fullContent += evt.token;
             setMessages((prev) =>
               prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
@@ -1218,6 +1225,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       persistSession([...currentMessages, errMsg], sessionId, snapshotPinnedCases);
     } finally {
       setSending(false);
+      setStreamingToolCall(null);
     }
   }
 
@@ -1723,7 +1731,19 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                       : "bg-secondary text-foreground rounded-bl-sm"
                   }`}
                 >
-                  {bubbleContent}
+                  {bubbleContent || (
+                    !isUser &&
+                    sending &&
+                    streamingToolCall &&
+                    msg === messages[messages.length - 1]
+                      ? (
+                        <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
+                          <Loader2 size={11} className="animate-spin" />
+                          Looking up…
+                        </span>
+                      )
+                      : null
+                  )}
                 </div>
                 )}
                 {draftText && (

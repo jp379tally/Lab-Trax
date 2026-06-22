@@ -660,6 +660,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
           }
 
           if (tool.kind === "readonly") {
+            sendEvent({ tool_call: { name: toolName } });
             try {
               const result = await tool.execute(args, toolCtx);
               toolResults.push({
