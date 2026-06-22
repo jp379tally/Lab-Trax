@@ -79,9 +79,9 @@ import AiAssistantScreen from "@/app/ai-assistant";
 afterEach(async () => {
   cleanup();
   resetMockAppState();
-  // Persisted chat sessions live in the mocked AsyncStorage, which is shared
-  // across tests in this file. Clear it so one test's restored conversation
-  // never bleeds into the next test's mount-time session restore.
+  // Persisted chat sessions live in the mocked AsyncStorage, which is a
+  // module-level Map shared across tests in this file. Clear it so one test's
+  // restored conversation never bleeds into the next test's mount-time restore.
   await AsyncStorage.clear();
   vi.clearAllMocks();
   // Restore default successful permission for subsequent tests.
@@ -467,5 +467,176 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
     fireEvent.press(getByLabelText("Send message"));
 
     await findByText("Something went wrong. Please try again.");
+  });
+});
+
+// ─── Voice (speech-to-text) round-trip tests ─────────────────────────────────
+
+/**
+ * Mock XMLHttpRequest used by uploadAudioForTranscript. The module-level
+ * uploadAudioForTranscript helper is not exported, so its behaviour is driven
+ * by intercepting the XHR layer it depends on. Each test seeds `mockXhrState`
+ * to control whether the STT request loads successfully (returning a transcript
+ * JSON body) or fires its `onerror` handler (simulating a network failure).
+ */
+const { mockXhrState } = vi.hoisted(() => ({
+  mockXhrState: {
+    mode: "load" as "load" | "error",
+    status: 200,
+    responseText: JSON.stringify({ ok: true, transcript: "" }),
+  },
+}));
+
+class MockXHR {
+  status = 0;
+  responseText = "";
+  withCredentials = false;
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  open(): void {}
+  setRequestHeader(): void {}
+  send(): void {
+    setTimeout(() => {
+      if (mockXhrState.mode === "error") {
+        this.onerror?.();
+        return;
+      }
+      this.status = mockXhrState.status;
+      this.responseText = mockXhrState.responseText;
+      this.onload?.();
+    }, 0);
+  }
+}
+
+describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let realXHR: typeof globalThis.XMLHttpRequest;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+    realXHR = globalThis.XMLHttpRequest;
+    (globalThis as unknown as { XMLHttpRequest: unknown }).XMLHttpRequest = MockXHR;
+    // Reset to a successful load with an empty transcript; each test overrides.
+    mockXhrState.mode = "load";
+    mockXhrState.status = 200;
+    mockXhrState.responseText = JSON.stringify({ ok: true, transcript: "" });
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    resetMockFetchHandler();
+    (globalThis as unknown as { XMLHttpRequest: unknown }).XMLHttpRequest = realXHR;
+  });
+
+  /** Drives the record → stop → STT chain: presses mic, waits for the
+   *  "listening" state, then presses again to stop and trigger transcription. */
+  async function recordAndStop(
+    getByLabelText: (label: string) => unknown,
+  ): Promise<void> {
+    fireEvent.press(getByLabelText("Speak to Maynard") as Parameters<typeof fireEvent.press>[0]);
+    await waitFor(() => {
+      expect(getByLabelText("Stop recording")).toBeTruthy();
+    });
+    fireEvent.press(getByLabelText("Stop recording") as Parameters<typeof fireEvent.press>[0]);
+  }
+
+  it("transcribes recorded audio and sends it as a message through the AI stream", async () => {
+    mockXhrState.responseText = JSON.stringify({
+      ok: true,
+      transcript: "show me overdue cases",
+    });
+
+    // SSE reply dispatched after the transcript is sent.
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        makeSSEStream([{ token: "Here are your overdue cases." }, { done: true }]),
+        { status: 200 },
+      ),
+    );
+
+    const { getByLabelText, findByText } = render(<AiAssistantScreen />);
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    await recordAndStop(getByLabelText);
+
+    // The transcript is rendered as the user's message …
+    await findByText("show me overdue cases");
+    // … and the AI streamed reply follows.
+    await findByText("Here are your overdue cases.");
+
+    // The stream endpoint was called exactly once with the transcript.
+    const streamCall = fetchSpy.mock.calls.find(([url]: unknown[]) =>
+      String(url).includes("/api/ai-agent/stream"),
+    );
+    expect(streamCall).toBeTruthy();
+    const body = JSON.parse(String((streamCall![1] as RequestInit).body));
+    const lastMsg = body.messages[body.messages.length - 1];
+    expect(lastMsg).toMatchObject({ role: "user", content: "show me overdue cases" });
+  });
+
+  it("does not send a message when the transcript is empty", async () => {
+    mockXhrState.responseText = JSON.stringify({ ok: true, transcript: "   " });
+
+    const { getByLabelText } = render(<AiAssistantScreen />);
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    await recordAndStop(getByLabelText);
+
+    // The mic returns to its idle label without dispatching a stream request.
+    await waitFor(() => {
+      expect(getByLabelText("Speak to Maynard")).toBeTruthy();
+    });
+    const streamCall = fetchSpy.mock.calls.find(([url]: unknown[]) =>
+      String(url).includes("/api/ai-agent/stream"),
+    );
+    expect(streamCall).toBeUndefined();
+  });
+
+  it("shows the transcription error state when the STT request fails", async () => {
+    mockXhrState.mode = "error";
+
+    const { getByLabelText, findByText } = render(<AiAssistantScreen />);
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    await recordAndStop(getByLabelText);
+
+    // The error banner text and the mic error label both surface.
+    await findByText("Could not transcribe audio. Please try again.");
+    await waitFor(() => {
+      expect(getByLabelText("Microphone error — tap to dismiss")).toBeTruthy();
+    });
+
+    // No stream request was dispatched.
+    const streamCall = fetchSpy.mock.calls.find(([url]: unknown[]) =>
+      String(url).includes("/api/ai-agent/stream"),
+    );
+    expect(streamCall).toBeUndefined();
+  });
+
+  it("shows the transcription error state when STT returns a non-200 status", async () => {
+    mockXhrState.status = 500;
+    mockXhrState.responseText = JSON.stringify({ ok: false });
+
+    const { getByLabelText, findByText } = render(<AiAssistantScreen />);
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    await recordAndStop(getByLabelText);
+
+    await findByText("Could not transcribe audio. Please try again.");
+    await waitFor(() => {
+      expect(getByLabelText("Microphone error — tap to dismiss")).toBeTruthy();
+    });
   });
 });

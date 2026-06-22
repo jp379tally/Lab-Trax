@@ -181,6 +181,7 @@ export const Animated = {
   parallel: () => animation,
   sequence: () => animation,
   loop: () => animation,
+  delay: () => animation,
   event: () => () => {},
 };
 
