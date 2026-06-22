@@ -1164,6 +1164,15 @@ export default function CaseDetailScreen() {
         colors={colors}
         right={
           <View style={styles.headerRightGroup}>
+            <Pressable
+              onPress={() => router.push(`/ai-assistant?caseId=${id}` as never)}
+              hitSlop={8}
+              style={styles.headerIconBtn}
+              testID="case-ask-maynard-btn"
+              accessibilityLabel="Ask Maynard about this case"
+            >
+              <Ionicons name="sparkles-outline" size={20} color={colors.tint} />
+            </Pressable>
             {isAdminOfCase && (
               <Pressable
                 onPress={() => setShowDeleteModal(true)}

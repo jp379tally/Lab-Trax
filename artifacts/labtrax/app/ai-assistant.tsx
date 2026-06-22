@@ -12,7 +12,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { Audio } from "expo-av";
@@ -43,30 +43,6 @@ function getJwtUserId(token: string | null): string | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Sanitize messages when loading from storage.
- * Pending/confirmed proposed actions expire server-side after 5 min, so any
- * that survived a navigation round-trip must be shown as expired.
- */
-function sanitizeRestoredMessages(msgs: ChatMessage[]): ChatMessage[] {
-  return msgs.map((m) => {
-    if (
-      m.proposedAction &&
-      (m.proposedAction.state === "pending" || m.proposedAction.state === "confirmed")
-    ) {
-      return {
-        ...m,
-        proposedAction: {
-          ...m.proposedAction,
-          state: "done" as const,
-          error: "This action expired before it could be confirmed.",
-        },
-      };
-    }
-    return m;
-  });
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -714,10 +690,21 @@ function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending, 
 
 // ─── Screen ──────────────────────────────────────────────────────────────────
 
+interface CaseContextInfo {
+  caseNumber: string | null;
+  patientName: string | null;
+}
+
 export default function AiAssistantScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const s = useMemo(() => makeStyles(colors), [colors]);
+
+  const { caseId } = useLocalSearchParams<{ caseId?: string }>();
+
+  const [caseContext, setCaseContext] = useState<CaseContextInfo | null>(null);
+  const caseIdRef = useRef<string | undefined>(caseId);
+  caseIdRef.current = caseId;
 
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MSG]);
   const [input, setInput] = useState("");
@@ -792,6 +779,40 @@ export default function AiAssistantScreen() {
     if (sending) return;
     void saveChatSession(messages, chatHistoryUserIdRef.current);
   }, [messages, sending]);
+
+  // Fetch minimal case info when caseId is provided so we can display the context pill.
+  useEffect(() => {
+    if (!caseId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await refreshAndGetAccessToken();
+        const baseUrl = getApiUrl();
+        const url = new URL(`api/cases/${caseId}`, baseUrl).toString();
+        const headers: Record<string, string> = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const res = await fetch(url, { headers });
+        if (!res.ok || cancelled) return;
+        const body = await res.json() as {
+          data?: {
+            caseNumber?: string | null;
+            patientFirstName?: string | null;
+            patientLastName?: string | null;
+          };
+        };
+        if (cancelled) return;
+        const d = body?.data;
+        const pName = [d?.patientFirstName, d?.patientLastName].filter(Boolean).join(" ") || null;
+        setCaseContext({
+          caseNumber: d?.caseNumber ?? null,
+          patientName: pName,
+        });
+      } catch {
+        // non-fatal — context pill just won't show case details
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [caseId]);
 
   // Load voice mode preference from AsyncStorage on mount.
   useEffect(() => {
@@ -1025,12 +1046,16 @@ export default function AiAssistantScreen() {
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         if (token) headers["Authorization"] = `Bearer ${token}`;
 
+        const activeCaseId = caseIdRef.current;
+        const streamBody: Record<string, unknown> = { messages: buildHistory(currentMessages) };
+        if (activeCaseId) streamBody.caseId = activeCaseId;
+
         let resp: Response;
         try {
           resp = await fetch(url, {
             method: "POST",
             headers,
-            body: JSON.stringify({ messages: buildHistory(currentMessages) }),
+            body: JSON.stringify(streamBody),
           });
         } catch {
           setMessages((prev) =>
@@ -1310,11 +1335,27 @@ export default function AiAssistantScreen() {
           <View style={[s.headerIcon, { backgroundColor: colors.tint + "1A" }]}>
             <Ionicons name="sparkles" size={14} color={colors.tint} />
           </View>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={[s.headerTitle, { color: colors.text }]}>AI Assistant</Text>
-            <Text style={[s.headerSubtitle, { color: colors.textSecondary }]}>
-              Ask anything about your lab
-            </Text>
+            {caseId ? (
+              <View style={s.contextPill}>
+                <Ionicons name="document-text-outline" size={10} color={colors.tint} />
+                <Text style={[s.contextPillText, { color: colors.tint }]} numberOfLines={1}>
+                  {caseContext
+                    ? [
+                        caseContext.caseNumber ? `#${caseContext.caseNumber}` : null,
+                        caseContext.patientName,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ") || "Case context active"
+                    : "Loading case…"}
+                </Text>
+              </View>
+            ) : (
+              <Text style={[s.headerSubtitle, { color: colors.textSecondary }]}>
+                Ask anything about your lab
+              </Text>
+            )}
           </View>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
@@ -1639,6 +1680,17 @@ function makeStyles(colors: ThemeColors) {
       height: 36,
       alignItems: "center",
       justifyContent: "center",
+    },
+    contextPill: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+      marginTop: 1,
+    },
+    contextPillText: {
+      fontSize: 11,
+      fontWeight: "500",
+      flexShrink: 1,
     },
     messageList: {
       paddingVertical: Spacing.sm,
