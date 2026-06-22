@@ -1,0 +1,171 @@
+### Replit Build Brief
+
+**Objective**
+Fold the useful invoice-viewing behavior into the main Accounts area, remove the separate flawed Customer Center, and rename the Accounts tab to **Customer Center**.
+
+**User-visible problem**
+The current app has both **Accounts** and **Customer Center**, which overlap. The existing Customer Center is unreliable, including invoices assigned to the wrong doctors. The better direction is to make the Accounts table become the true Customer Center, with practice/doctor selection and invoice viewing from that screen.
+
+**Requested behavior**
+On the current Accounts page:
+
+* Add a checkbox next to each **practice** row, not just individual doctor rows.
+* Keep checkboxes next to individual doctors.
+* Add a top action: **View invoices for selected**.
+* If the user selects a practice, the action should show all invoices tied to that practice.
+* If the user selects one or more doctors, the action should show invoices tied to those doctors.
+* The invoice view should support invoice statuses: **open**, **closed**, and **overdue**.
+* Remove the existing separate **Customer Center** section/page from the Financial navigation.
+* Rename the left-nav **Accounts** tab to **Customer Center**.
+* The renamed Customer Center should use the current Accounts-style practice/doctor table as the source of truth.
+
+**Exact parts of the app/code to inspect**
+Search for:
+
+`Accounts`, `Customer Center`, `Financial`, `Invoices`, `practice`, `doctor`, `provider`, `selected`, `open invoices`, `closed invoices`, `overdue`, `reassign all invoices`, `account balance`.
+
+Likely areas:
+
+* Left sidebar/nav config
+* Accounts page/table component
+* Practice row component
+* Doctor nested row component
+* Customer Center route/page
+* Invoice list/query API
+* Invoice-to-practice/provider/doctor assignment logic
+* Routing paths such as `/desktop/accounts`, `/desktop/customer-center`, `/desktop/financial/customer-center`
+
+**Implementation plan**
+
+1. Rename the visible sidebar label **Accounts** to **Customer Center**.
+2. Keep the existing Accounts route if needed for compatibility, but update labels and page heading to Customer Center.
+3. Remove the old Customer Center nav item under Financial.
+4. Disable or redirect the old Customer Center route so users do not land on the flawed invoice assignment screen.
+5. Add a checkbox to every practice row in the Accounts table.
+6. Preserve doctor-level checkboxes under expanded practices.
+7. Add selected-state handling that supports mixed selections:
+
+   * selected practice IDs
+   * selected doctor/provider IDs
+8. Add a top toolbar button: **View invoices for selected**.
+9. Disable the button until at least one practice or doctor is selected.
+10. When clicked, open or navigate to an invoice list filtered by the selected practice/doctor IDs.
+11. The invoice list must include filters/tabs for **Open**, **Closed**, **Overdue**, and ideally **All**.
+12. Make invoice lookup use the actual selected practice/doctor relationships, not the old Customer Center assignment logic.
+13. Add regression checks so invoices do not appear under the wrong doctor.
+
+**Important constraints / guardrails**
+
+* Do not reuse the old Customer Center invoice assignment logic if it is known to assign invoices to the wrong doctors.
+* Selection should be clear and predictable:
+
+  * Selecting a practice means “include invoices for this whole practice.”
+  * Selecting an individual doctor means “include invoices for this doctor only.”
+* If a practice and one of its doctors are both selected, avoid duplicate invoices.
+* Do not show invoices from unrelated practices or unrelated doctors.
+* The invoice query should filter by stable IDs, not display names.
+* Overdue should be calculated from due date plus unpaid/open balance, not just invoice status label.
+* Closed invoices should include paid/closed invoices even if open balance is zero.
+
+**Acceptance criteria**
+
+* The old Financial → Customer Center nav item is gone.
+* The old flawed Customer Center page is no longer accessible from normal navigation.
+* The existing Accounts tab is renamed **Customer Center**.
+* Practice rows have checkboxes.
+* Doctor rows still have checkboxes.
+* A **View invoices for selected** action appears at the top of the table.
+* Selecting one practice and clicking the action shows invoices for that practice.
+* Selecting one doctor and clicking the action shows invoices for that doctor.
+* Selecting multiple practices/doctors shows a combined, deduplicated invoice list.
+* The invoice view can show open, closed, and overdue invoices for the current selection.
+* Invoices are not assigned to or displayed under the wrong doctors.
+
+**Regression risks to check**
+
+* Existing invoices page should still work.
+* Existing account/practice search should still work.
+* Expanding/collapsing practice rows should not clear selections unexpectedly.
+* Archived practices should follow the existing archived visibility rules.
+* Invoice balances and open balances should match the Financial → Invoices source of truth.
+* Any old Customer Center links/bookmarks should redirect safely to the new Customer Center or show a not-found page.
+
+### Copy-Ready Replit Prompt
+
+Please update the LabTracks desktop app navigation and Accounts/Customer Center workflow.
+
+Current problem:
+The app currently has an **Accounts** page that lists practices and doctors, and a separate **Financial → Customer Center** page that overlaps with it. The separate Customer Center is flawed and has invoice assignment problems, including invoices assigned to the wrong doctors. We want to remove that old Customer Center entirely and make the current Accounts-style page become the real Customer Center.
+
+Requested changes:
+
+1. Rename the sidebar **Accounts** tab to **Customer Center**.
+2. Remove the existing **Customer Center** item from the Financial submenu.
+3. Remove, disable, or redirect the old Customer Center page/route so users do not use the flawed version anymore.
+4. On the current Accounts table, add a checkbox next to each practice row.
+5. Keep the checkbox next to each individual doctor row.
+6. Add a top action button above the table: **View invoices for selected**.
+7. The button should be disabled until at least one practice or doctor is selected.
+8. Selecting a practice means the invoice view should include invoices for that whole practice.
+9. Selecting an individual doctor means the invoice view should include invoices for that doctor.
+10. If multiple practices/doctors are selected, show a combined deduplicated invoice list.
+11. The invoice view must support open, closed, and overdue invoices for the selected practices/doctors.
+12. Do not reuse the old flawed Customer Center invoice assignment logic. Use the reliable invoice/case/provider relationships from the Accounts and Invoices data model.
+13. Make sure invoice filtering uses stable IDs, such as practice ID and doctor/provider ID, not display names.
+14. If both a practice and one of its doctors are selected, avoid duplicate invoices.
+15. Add regression checks for selecting a practice, selecting a doctor, selecting multiple rows, and verifying invoices are not shown under the wrong doctor.
+
+Please inspect files related to:
+
+* sidebar/navigation
+* Accounts page
+* practice rows
+* doctor rows
+* Customer Center route/page
+* invoice queries
+* invoice status/open balance/overdue logic
+
+Search terms:
+`Accounts`, `Customer Center`, `Financial`, `Invoices`, `practice`, `doctor`, `provider`, `selected`, `open`, `closed`, `overdue`, `balance`, `reassign all invoices`.
+
+Before finishing, explain:
+
+* which old Customer Center code was removed or bypassed
+* which route now serves the renamed Customer Center
+* how practice and doctor selection is stored
+* how invoice filtering works
+* how duplicate invoices are avoided
+* what tests or manual checks were run
+
+### Debug Analysis
+
+**Probable root cause**
+The app has two overlapping customer/account concepts: the Accounts table and the Financial Customer Center. The old Customer Center appears to have its own invoice grouping or assignment logic, which is producing incorrect doctor associations. The safer fix is to retire that surface and build invoice viewing from the Accounts table, where practice/doctor hierarchy is already clearer.
+
+**Supporting evidence from screenshots**
+The Accounts page already lists practices with expandable doctor rows and doctor-level checkboxes. The old Customer Center separately lists practices and invoices, includes a “Reassign all invoices...” action, and appears to be doing its own customer-to-invoice mapping. That separate mapping is the risky part.
+
+**Alternate hypotheses worth checking**
+
+* The invoice assignment bug may be in a shared invoice query used by both Customer Center and Invoices.
+* The old Customer Center may be grouping invoices by practice name instead of provider/practice IDs.
+* Some invoices may be linked to cases, while others may be manually created and linked differently.
+* Overdue may currently be calculated inconsistently across invoice screens.
+
+**Why the recommended approach is best**
+It removes the duplicate flawed workflow and makes the practice/doctor hierarchy the single place where users choose whose invoices they want to see. That gives users a cleaner mental model and reduces the chance of invoices being shown under the wrong doctor.
+
+### Step-by-Step Fix Plan
+
+1. Find and update the sidebar nav config.
+2. Rename **Accounts** to **Customer Center**.
+3. Remove the Financial submenu item for the old Customer Center.
+4. Find the old Customer Center route and either remove it or redirect it to the renamed Accounts/Customer Center page.
+5. Add practice-level checkboxes to the Accounts table.
+6. Store selected practice IDs and selected doctor/provider IDs separately.
+7. Add the **View invoices for selected** button above the table.
+8. Build or reuse an invoice list view that accepts selected practice/provider IDs.
+9. Query invoices by stable practice/provider/case relationships.
+10. Add status filters for open, closed, overdue, and optionally all.
+11. Deduplicate invoices when a practice and doctor selection overlap.
+12. Test with known practices like Blissful Dental Spa and Brittney K Craig DMD to confirm invoices show under the correct selection only.

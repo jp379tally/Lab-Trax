@@ -25,6 +25,15 @@ interface Plan {
   planType: "lab" | "provider" | null;
 }
 
+interface ProviderMatchItem {
+  orgId: string;
+  practiceName: string;
+  labName: string | null;
+  platformAccountNumber: string | null;
+  city: string | null;
+  state: string | null;
+}
+
 function groupWizardPlans(plans: Plan[]): { lab: Plan[]; provider: Plan[] } {
   return {
     lab: plans.filter((p) => p.planType === "lab"),
@@ -39,6 +48,7 @@ type Step =
   | "lab_info"
   | "license"
   | "practice_info"
+  | "provider_match"
   | "email_verify"
   | "updates_opt_in"
   | "phone_entry"
@@ -100,6 +110,7 @@ const STEP_HEADINGS: Record<Step, { title: string; sub: string }> = {
   lab_info: { title: "Lab details", sub: "Tell us about your lab." },
   license: { title: "License number", sub: "Required for verification." },
   practice_info: { title: "Practice details", sub: "Tell us about your practice." },
+  provider_match: { title: "We found a matching practice", sub: "Select your practice or create a new account." },
   email_verify: { title: "Verify your email", sub: "Enter the 6-digit code we sent." },
   updates_opt_in: { title: "Case updates", sub: "Want SMS updates from your lab?" },
   phone_entry: { title: "Your phone number", sub: "We'll text a 6-digit code." },
@@ -175,13 +186,10 @@ export default function SignupWizard({ onCancel }: Props) {
   const [zipCode, setZipCode] = useState("");
   const [practicePhone, setPracticePhone] = useState("");
 
-  // Claim mode (provider only)
-  const [claimMode, setClaimMode] = useState(false);
-  const [claimLabSearch, setClaimLabSearch] = useState("");
-  const [claimLabResults, setClaimLabResults] = useState<LabLookupResult[]>([]);
-  const [claimLabLoading, setClaimLabLoading] = useState(false);
-  const [claimLab, setClaimLab] = useState<{ id: string; displayName: string } | null>(null);
-  const [claimAccountNumber, setClaimAccountNumber] = useState("");
+  // Provider match (auto phone+city matching)
+  const [providerMatches, setProviderMatches] = useState<ProviderMatchItem[]>([]);
+  const [matchLookupLoading, setMatchLookupLoading] = useState(false);
+  const [selectedMatchOrgId, setSelectedMatchOrgId] = useState<string | null>(null);
 
   // Verification
   const [emailCode, setEmailCode] = useState("");
@@ -244,32 +252,6 @@ export default function SignupWizard({ onCancel }: Props) {
     };
   }, [step, wizardPlans.length, wizardPlansLoading]);
 
-  // Debounced claim lab search
-  useEffect(() => {
-    if (!claimMode) return;
-    const q = claimLabSearch.trim();
-    if (q.length < 2 || claimLab) {
-      setClaimLabResults([]);
-      return;
-    }
-    let cancelled = false;
-    setClaimLabLoading(true);
-    const handle = setTimeout(async () => {
-      try {
-        const labs = await lookupLabs(q);
-        if (!cancelled) setClaimLabResults(labs);
-      } catch {
-        if (!cancelled) setClaimLabResults([]);
-      } finally {
-        if (!cancelled) setClaimLabLoading(false);
-      }
-    }, 300);
-    return () => {
-      cancelled = true;
-      clearTimeout(handle);
-    };
-  }, [claimLabSearch, claimMode, claimLab]);
-
   useEffect(() => {
     if (step !== "join_group") return;
     const q = labSearchFilter.trim();
@@ -310,11 +292,24 @@ export default function SignupWizard({ onCancel }: Props) {
   const stepSequence = useMemo<Step[]>(() => {
     if (userType === "lab") return LAB_STEPS;
     if (userType === "provider") {
+      const hasMatches = providerMatches.length > 0;
+      const isMatched = !!selectedMatchOrgId;
       const base = wantsUpdates ? PROVIDER_STEPS_WITH_UPDATES : PROVIDER_STEPS_NO_UPDATES;
-      return claimMode ? base.filter((s) => s !== "join_group" && s !== "plan_select") : base;
+      if (hasMatches) {
+        const withMatch: Step[] = [];
+        for (const s of base) {
+          withMatch.push(s);
+          if (s === "practice_info") withMatch.push("provider_match");
+        }
+        if (isMatched) {
+          return withMatch.filter((s) => s !== "join_group" && s !== "plan_select" && s !== "role_select");
+        }
+        return withMatch;
+      }
+      return base;
     }
     return ["welcome", "credentials", "user_type"];
-  }, [userType, wantsUpdates, claimMode]);
+  }, [userType, wantsUpdates, providerMatches.length, selectedMatchOrgId]);
 
   const currentIdx = Math.max(0, stepSequence.indexOf(step));
   const totalSteps = stepSequence.length;
@@ -442,12 +437,6 @@ export default function SignupWizard({ onCancel }: Props) {
 
   async function handlePracticeInfoNext(e: FormEvent) {
     e.preventDefault();
-    if (claimMode) {
-      if (!claimLab) return fail("Please pick your lab from the search results.");
-      if (!claimAccountNumber.trim()) return fail("Please enter the account number from your lab.");
-      await sendEmail();
-      return;
-    }
     if (
       !practiceName.trim() ||
       !doctorName.trim() ||
@@ -458,6 +447,23 @@ export default function SignupWizard({ onCancel }: Props) {
     ) {
       return fail("Please fill in all fields.");
     }
+    setMatchLookupLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams({ phone: practicePhone.trim(), city: city.trim() });
+      const result = await apiFetch<{ matches: ProviderMatchItem[] }>(`/auth/lookup-provider-matches?${params}`);
+      const matches = result.matches ?? [];
+      if (matches.length > 0) {
+        setProviderMatches(matches);
+        setSelectedMatchOrgId(null);
+        setMatchLookupLoading(false);
+        setStep("provider_match");
+        return;
+      }
+    } catch {
+      // Lookup error — proceed normally (non-blocking)
+    }
+    setMatchLookupLoading(false);
     await sendEmail();
   }
 
@@ -480,6 +486,8 @@ export default function SignupWizard({ onCancel }: Props) {
     setError(null);
     if (wants && userType === "provider") {
       setStep("phone_entry");
+    } else if (userType === "provider" && selectedMatchOrgId) {
+      setStep("hipaa_disclaimer");
     } else {
       setStep("role_select");
     }
@@ -521,7 +529,11 @@ export default function SignupWizard({ onCancel }: Props) {
     e.preventDefault();
     if (!phoneContactName.trim()) return fail("Please enter a contact name.");
     setError(null);
-    setStep("role_select");
+    if (userType === "provider" && selectedMatchOrgId) {
+      setStep("hipaa_disclaimer");
+    } else {
+      setStep("role_select");
+    }
   }
 
   function selectRole(role: "user" | "admin") {
@@ -539,7 +551,7 @@ export default function SignupWizard({ onCancel }: Props) {
     setError(null);
     try {
       const isLab = userType === "lab";
-      const isClaim = !isLab && claimMode && !!claimLab && !!claimAccountNumber.trim();
+      const isMatchedJoin = !isLab && !!selectedMatchOrgId;
       const resolvedAddress = isLab
         ? [labStreet.trim(), labCity.trim(), labState.trim(), labZip.trim()].filter(Boolean).join(", ")
         : [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", ");
@@ -560,19 +572,17 @@ export default function SignupWizard({ onCancel }: Props) {
         wantsUpdates: !!wantsUpdates,
         userType,
         licenseNumber: licenseNumber.trim() || undefined,
-        practiceName: isLab ? labName.trim() : isClaim ? undefined : practiceName.trim(),
+        practiceName: isLab ? labName.trim() : isMatchedJoin ? undefined : practiceName.trim(),
         doctorName: isLab ? undefined : doctorName.trim() || undefined,
-        practiceAddress: isClaim ? undefined : resolvedAddress,
-        practicePhone: isClaim ? undefined : resolvedPhone,
+        practiceAddress: isMatchedJoin ? undefined : resolvedAddress,
+        practicePhone: isMatchedJoin ? undefined : resolvedPhone,
         phoneContactName:
           wantsUpdates && userType === "provider" ? phoneContactName.trim() || undefined : undefined,
         role: selectedRole || "user",
         accountNumber: acctNum,
-        createOrganization: !isClaim && !joinTargetOrgId,
-        joinOrganizationId: joinTargetOrgId || undefined,
-        claimProvider: isClaim
-          ? { labId: claimLab!.id, accountNumber: claimAccountNumber.trim() }
-          : undefined,
+        createOrganization: !isMatchedJoin && !joinTargetOrgId,
+        joinOrganizationId: isMatchedJoin ? selectedMatchOrgId : (joinTargetOrgId || undefined),
+        claimProvider: undefined,
       });
       // Registration succeeded — tokens are now set. If the user picked a
       // plan during sign-up, open Stripe checkout in a new tab before the
@@ -958,129 +968,57 @@ export default function SignupWizard({ onCancel }: Props) {
 
         {step === "practice_info" && (
           <form onSubmit={handlePracticeInfoNext} className="space-y-3">
-            <label className="flex items-start gap-2.5 cursor-pointer select-none p-3 rounded-md border border-input">
-              <input
-                type="checkbox"
-                checked={claimMode}
-                onChange={(e) => {
-                  setClaimMode(e.target.checked);
-                  clearError();
-                }}
-                className="mt-0.5 h-4 w-4 rounded border-input accent-primary cursor-pointer"
-              />
-              <span className="text-xs text-foreground leading-relaxed">
-                My lab already created my practice — I have an account number
-              </span>
-            </label>
-
-            {claimMode ? (
-              <>
+            <>
+              <div>
+                <label className={labelClass}>Practice Name</label>
+                <input
+                  className={inputClass}
+                  value={practiceName}
+                  onChange={(e) => {
+                    setPracticeName(e.target.value);
+                    clearError();
+                  }}
+                />
+              </div>
+              <div>
+                <label className={labelClass}>Doctor Name</label>
+                <input
+                  className={inputClass}
+                  value={doctorName}
+                  onChange={(e) => {
+                    setDoctorName(e.target.value);
+                    clearError();
+                  }}
+                />
+              </div>
+              <div>
+                <label className={labelClass}>Street Address</label>
+                <input
+                  className={inputClass}
+                  value={streetAddress}
+                  onChange={(e) => {
+                    setStreetAddress(e.target.value);
+                    clearError();
+                  }}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className={labelClass}>Find your lab</label>
+                  <label className={labelClass}>City</label>
                   <input
                     className={inputClass}
-                    placeholder="Search by name"
-                    value={claimLab ? claimLab.displayName : claimLabSearch}
+                    value={city}
                     onChange={(e) => {
-                      if (claimLab) setClaimLab(null);
-                      setClaimLabSearch(e.target.value);
-                      clearError();
-                    }}
-                  />
-                  {claimLabLoading && (
-                    <p className="text-xs text-muted-foreground mt-1">Searching…</p>
-                  )}
-                  {!claimLab && claimLabResults.length > 0 && (
-                    <div className="mt-2 border border-input rounded-md max-h-44 overflow-auto">
-                      {claimLabResults.map((lab) => (
-                        <button
-                          key={lab.id}
-                          type="button"
-                          onClick={() => {
-                            setClaimLab({ id: lab.id, displayName: lab.displayName });
-                            setClaimLabSearch(lab.displayName);
-                            setClaimLabResults([]);
-                          }}
-                          className="block w-full text-left px-3 py-2 text-sm hover:bg-muted border-b border-border last:border-b-0"
-                        >
-                          <div className="font-medium">{lab.displayName}</div>
-                          {(lab.city || lab.state) && (
-                            <div className="text-xs text-muted-foreground">
-                              {[lab.city, lab.state].filter(Boolean).join(", ")}
-                            </div>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <label className={labelClass}>Account number</label>
-                  <input
-                    className={inputClass}
-                    value={claimAccountNumber}
-                    onChange={(e) => {
-                      setClaimAccountNumber(e.target.value.toUpperCase());
-                      clearError();
-                    }}
-                  />
-                  <p className="text-xs text-muted-foreground mt-1.5">
-                    Ask your lab for the account number on your practice. Once they approve, you'll see your existing cases.
-                  </p>
-                </div>
-              </>
-            ) : (
-              <>
-                <div>
-                  <label className={labelClass}>Practice Name</label>
-                  <input
-                    className={inputClass}
-                    value={practiceName}
-                    onChange={(e) => {
-                      setPracticeName(e.target.value);
+                      setCity(e.target.value);
                       clearError();
                     }}
                   />
                 </div>
                 <div>
-                  <label className={labelClass}>Doctor Name</label>
+                  <label className={labelClass}>ZIP</label>
                   <input
                     className={inputClass}
-                    value={doctorName}
-                    onChange={(e) => {
-                      setDoctorName(e.target.value);
-                      clearError();
-                    }}
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>Street Address</label>
-                  <input
-                    className={inputClass}
-                    value={streetAddress}
-                    onChange={(e) => {
-                      setStreetAddress(e.target.value);
-                      clearError();
-                    }}
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className={labelClass}>City</label>
-                    <input
-                      className={inputClass}
-                      value={city}
-                      onChange={(e) => {
-                        setCity(e.target.value);
-                        clearError();
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label className={labelClass}>ZIP</label>
-                    <input
-                      className={inputClass}
-                      value={zipCode}
+                    value={zipCode}
                       maxLength={5}
                       onChange={(e) => {
                         setZipCode(e.target.value);
@@ -1101,12 +1039,78 @@ export default function SignupWizard({ onCancel }: Props) {
                   />
                 </div>
               </>
-            )}
 
-            <button type="submit" disabled={busy} className={primaryBtnClass}>
-              {busy ? "Sending code…" : "Continue"}
+            <button type="submit" disabled={busy || matchLookupLoading} className={primaryBtnClass}>
+              {matchLookupLoading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Looking up practice…
+                </span>
+              ) : busy ? "Sending code…" : "Continue"}
             </button>
           </form>
+        )}
+
+        {step === "provider_match" && (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              We found practices matching your phone number and city. Select yours to connect, or create a new account.
+            </p>
+            {providerMatches.map((match) => {
+              const isSelected = selectedMatchOrgId === match.orgId;
+              return (
+                <button
+                  key={match.orgId}
+                  type="button"
+                  onClick={() => {
+                    setSelectedMatchOrgId(isSelected ? null : match.orgId);
+                    setError(null);
+                  }}
+                  className={`w-full text-left p-4 rounded-md border transition-colors ${
+                    isSelected
+                      ? "border-primary bg-primary/5"
+                      : "border-input hover:border-primary hover:bg-muted/50"
+                  }`}
+                >
+                  <div className="text-sm font-semibold">{match.practiceName}</div>
+                  {match.labName && (
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Lab: {match.labName}
+                    </div>
+                  )}
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    {[match.city, match.state].filter(Boolean).join(", ")}
+                    {match.platformAccountNumber && (
+                      <span className="ml-2 font-mono">#{match.platformAccountNumber}</span>
+                    )}
+                  </div>
+                  {isSelected && (
+                    <div className="text-xs text-primary font-medium mt-1">✓ Selected</div>
+                  )}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              disabled={busy || !selectedMatchOrgId}
+              onClick={() => void sendEmail()}
+              className={primaryBtnClass}
+            >
+              {busy ? "Sending code…" : "Continue"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setSelectedMatchOrgId(null);
+                setProviderMatches([]);
+                void sendEmail();
+              }}
+              className={secondaryBtnClass}
+            >
+              None of these — create a new account
+            </button>
+          </div>
         )}
 
         {step === "email_verify" && (
