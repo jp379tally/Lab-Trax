@@ -5,7 +5,6 @@ import {
   ApiError,
   apiFetch,
   checkUsernameAvailable,
-  fetchLabGroups,
   lookupLabs,
   sendEmailVerificationCode,
   sendPhoneVerificationCode,
@@ -267,6 +266,43 @@ export default function SignupWizard({ onCancel }: Props) {
     };
   }, [claimLabSearch, claimMode, claimLab]);
 
+  useEffect(() => {
+    if (step !== "join_group") return;
+    const q = labSearchFilter.trim();
+    if (q.length < 2) {
+      setLabGroups([]);
+      setGroupsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const handle = setTimeout(async () => {
+      setGroupsLoading(true);
+      try {
+        const results = await lookupLabs(q);
+        if (!cancelled) {
+          setLabGroups(
+            results.map((r: LabLookupResult) => ({
+              organizationId: r.id,
+              practiceName: r.displayName || r.name,
+              username: "",
+              practiceAddress: [r.city, r.state].filter(Boolean).join(", "),
+              memberCount: 0,
+            })),
+          );
+        }
+      } catch {
+        if (!cancelled) setLabGroups([]);
+      } finally {
+        if (!cancelled) setGroupsLoading(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+      setGroupsLoading(false);
+    };
+  }, [labSearchFilter, step]);
+
   const stepSequence = useMemo<Step[]>(() => {
     if (userType === "lab") return LAB_STEPS;
     if (userType === "provider") {
@@ -467,20 +503,6 @@ export default function SignupWizard({ onCancel }: Props) {
     setSelectedRole(role);
     setError(null);
     setStep("join_group");
-    void loadLabGroups();
-  }
-
-  async function loadLabGroups() {
-    if (labGroups.length > 0) return;
-    setGroupsLoading(true);
-    try {
-      const groups = await fetchLabGroups();
-      setLabGroups(groups);
-    } catch {
-      setLabGroups([]);
-    } finally {
-      setGroupsLoading(false);
-    }
   }
 
   async function completeRegistration() {
@@ -1234,37 +1256,36 @@ export default function SignupWizard({ onCancel }: Props) {
                 <p className="text-xs text-muted-foreground p-4 text-center">Loading labs…</p>
               )}
               {!groupsLoading &&
-                labGroups
-                  .filter(
-                    (g) =>
-                      !labSearchFilter ||
-                      g.practiceName.toLowerCase().includes(labSearchFilter.toLowerCase()),
-                  )
-                  .map((g) => {
-                    const selected = joinTargetOrgId === g.organizationId;
-                    return (
-                      <button
-                        key={g.organizationId}
-                        type="button"
-                        onClick={() =>
-                          setJoinTargetOrgId(selected ? null : g.organizationId)
-                        }
-                        className={`block w-full text-left px-3 py-2 text-sm border-b border-border last:border-b-0 hover:bg-muted ${
-                          selected ? "bg-primary/10" : ""
-                        }`}
-                      >
-                        <div className="font-medium">{g.practiceName}</div>
-                        {g.practiceAddress && (
-                          <div className="text-xs text-muted-foreground truncate">
-                            {g.practiceAddress}
-                          </div>
-                        )}
-                      </button>
-                    );
-                  })}
-              {!groupsLoading && labGroups.length === 0 && (
+                labGroups.map((g) => {
+                  const selected = joinTargetOrgId === g.organizationId;
+                  return (
+                    <button
+                      key={g.organizationId}
+                      type="button"
+                      onClick={() =>
+                        setJoinTargetOrgId(selected ? null : g.organizationId)
+                      }
+                      className={`block w-full text-left px-3 py-2 text-sm border-b border-border last:border-b-0 hover:bg-muted ${
+                        selected ? "bg-primary/10" : ""
+                      }`}
+                    >
+                      <div className="font-medium">{g.practiceName}</div>
+                      {g.practiceAddress && (
+                        <div className="text-xs text-muted-foreground truncate">
+                          {g.practiceAddress}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              {!groupsLoading && labGroups.length === 0 && labSearchFilter.trim().length >= 2 && (
                 <p className="text-xs text-muted-foreground p-4 text-center">
                   No registered labs found.
+                </p>
+              )}
+              {!groupsLoading && labSearchFilter.trim().length < 2 && (
+                <p className="text-xs text-muted-foreground p-4 text-center">
+                  Type to search for labs…
                 </p>
               )}
             </div>
