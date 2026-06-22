@@ -96,6 +96,8 @@ type DraftLine = {
   toothNumber?: number | null;
   toothLabel?: string | null;
   subItems?: DraftLine[];
+  catalogItemKey?: string | null;
+  missingCatalogItem?: boolean;
 };
 
 function readDisplayMetadata(inv: Invoice | undefined | null): InvoiceDisplayMetadata {
@@ -1360,6 +1362,8 @@ export function InvoiceEditor({
         unitPrice: Number(it.unitPrice ?? 0),
         toothNumber: (it as any).toothNumber ?? null,
         toothLabel: (it as any).toothLabel ?? null,
+        catalogItemKey: (metaItems[idx] as any)?.catalogItemKey ?? null,
+        missingCatalogItem: (metaItems[idx] as any)?.missingCatalogItem ?? false,
         subItems: ((it as any).subItems ?? []).map((sub: any, sidx: number) => ({
           id: sub.id,
           item: (metaItems[idx]?.subItems as any[])?.[sidx]?.item ?? "",
@@ -2588,6 +2592,14 @@ export function InvoiceEditor({
                   )}
                   {items.map((it, idx) => (
                     <Fragment key={idx}>
+                    {it.missingCatalogItem && (
+                      <tr className="border-t border-border bg-amber-50/60 dark:bg-amber-900/20">
+                        <td colSpan={7} className="px-3 py-1 text-xs text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                          <span className="font-semibold">⚠</span>
+                          No catalog price found for &ldquo;{it.item || it.description}&rdquo; — add it to the pricing tier to auto-fill the rate.
+                        </td>
+                      </tr>
+                    )}
                     <tr className="border-t border-border">
                       <td className="px-3 py-1.5 align-top">
                         <ItemCombobox

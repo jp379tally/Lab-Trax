@@ -191,6 +191,37 @@ export interface GroupedLineItemInsert {
   unitPrice: string;
   lineTotal: string;
   sortOrder: number;
+  /**
+   * The price key (e.g. "pfm_crown") that was resolved for this line item.
+   * Null when the material/type is not in the standard price key catalog.
+   * Stored in displayMetadataJson.lineItems — NOT a DB column.
+   */
+  catalogItemKey?: string | null;
+  /**
+   * The human-readable tier label for the catalog item (e.g. "PFM High Noble").
+   * Stored in displayMetadataJson.lineItems so the Item picker pre-selects it.
+   * NOT a DB column.
+   */
+  catalogItemLabel?: string | null;
+  /**
+   * True when the price key was recognized but no pricing-tier entry (or doctor
+   * tier) has a price > 0 for it. Frontend renders an amber warning prompting
+   * the user to add the item to the tier. NOT a DB column.
+   */
+  missingCatalogItem?: boolean;
+}
+
+/**
+ * Strip the catalog-metadata-only fields from a GroupedLineItemInsert array
+ * before passing to Drizzle's `.values()`. Those fields are not DB columns and
+ * must not appear in the INSERT payload.
+ */
+export function toInvoiceLineItemValues(
+  items: GroupedLineItemInsert[],
+): Array<Omit<GroupedLineItemInsert, "catalogItemKey" | "catalogItemLabel" | "missingCatalogItem">> {
+  return items.map(
+    ({ catalogItemKey: _ck, catalogItemLabel: _cl, missingCatalogItem: _mc, ...rest }) => rest,
+  );
 }
 
 type AiRestoration = {
@@ -297,12 +328,13 @@ export function buildGroupedLineItemsForInvoice(
 
       if (toUse.length === 0) continue;
 
-      const pk = materialToPriceKey(toUse[0]!.material, toUse[0]!.restorationType)
-        ?? toUse[0]!.restorationType;
+      const catalogItemKey = materialToPriceKey(toUse[0]!.material, toUse[0]!.restorationType);
+      const pk = catalogItemKey ?? toUse[0]!.restorationType;
       const label = resolveItemLabelFromMap(labelCache, pk);
       const unitPrice = toUse[0]!.unitPrice;
       const lineTotal = (qty * Number(unitPrice)).toFixed(2);
       const isSingle = qty === 1;
+      const missingCatalogItem = !!catalogItemKey && Number(unitPrice) <= 0;
 
       items.push({
         invoiceId,
@@ -316,6 +348,9 @@ export function buildGroupedLineItemsForInvoice(
         unitPrice,
         lineTotal,
         sortOrder: i,
+        catalogItemKey,
+        catalogItemLabel: label,
+        missingCatalogItem,
       });
 
       for (const r of toUse) used.add(r.id);
@@ -365,9 +400,11 @@ function buildGroupedFromRows(
   for (const key of order) {
     const { rows } = groupMap.get(key)!;
     const first = rows[0]!;
-    const pk = materialToPriceKey(first.material, first.restorationType) ?? first.restorationType;
+    const catalogItemKey = materialToPriceKey(first.material, first.restorationType);
+    const pk = catalogItemKey ?? first.restorationType;
     const label = resolveItemLabelFromMap(labelCache, pk);
     const unitPrice = first.unitPrice;
+    const missingCatalogItem = !!catalogItemKey && Number(unitPrice) <= 0;
 
     if (rows.length === 1) {
       const qty = Number(first.quantity ?? 1);
@@ -381,6 +418,9 @@ function buildGroupedFromRows(
         unitPrice,
         lineTotal: (qty * Number(unitPrice)).toFixed(2),
         sortOrder: idx++,
+        catalogItemKey,
+        catalogItemLabel: label,
+        missingCatalogItem,
       });
     } else {
       const qty = rows.reduce((s, r) => s + Number(r.quantity ?? 1), 0);
@@ -399,6 +439,9 @@ function buildGroupedFromRows(
         unitPrice,
         lineTotal: (qty * Number(unitPrice)).toFixed(2),
         sortOrder: idx++,
+        catalogItemKey,
+        catalogItemLabel: label,
+        missingCatalogItem,
       });
     }
   }

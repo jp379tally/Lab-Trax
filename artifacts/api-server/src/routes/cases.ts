@@ -34,7 +34,7 @@ import AdmZip from "adm-zip";
 import { writeAuditLog } from "../lib/audit";
 import { resolveCaseDueDate } from "../lib/case-due-date";
 import { calculateLineTotal, sumMoney } from "../lib/case";
-import { syncInvoiceFromRestorations, buildGroupedLineItemsForInvoice } from "../lib/invoice-sync";
+import { syncInvoiceFromRestorations, buildGroupedLineItemsForInvoice, toInvoiceLineItemValues } from "../lib/invoice-sync";
 import {
   addAlloyChargeToCase,
   removeAlloyChargeFromCase,
@@ -3576,10 +3576,6 @@ router.post(
             material: materialList,
             caseNotes: caseNotesText,
             credits: 0,
-            lineItems: billableRestorations.map((r) => ({
-              item: r.restorationType,
-              description: `${r.restorationType} - Tooth ${r.toothNumber}`,
-            })),
           };
 
           const [newInvoice] = await db
@@ -3604,6 +3600,12 @@ router.post(
             .onConflictDoNothing()
             .returning();
           if (newInvoice) {
+            const lineItemsMeta: Array<{
+              item: string;
+              description: string;
+              catalogItemKey: string | null;
+              missingCatalogItem: boolean;
+            }> = [];
             if (hasLines) {
               // Batch-fetch all custom labels for this lab in one query so
               // the per-restoration label resolution below is N×0 DB calls
@@ -3613,11 +3615,17 @@ router.post(
               );
               await db.insert(invoiceLineItems).values(
                 billableRestorations.map((r, idx) => {
-                  const pk =
-                    materialToPriceKey(r.material, r.restorationType) ??
-                    r.restorationType;
+                  const catalogItemKey = materialToPriceKey(r.material, r.restorationType);
+                  const pk = catalogItemKey ?? r.restorationType;
                   const baseLabel = resolveItemLabelFromMap(labLabelMap, pk);
                   const baseDesc = buildLineItemDescription(r.toothNumber, baseLabel);
+                  const effectiveUnitPrice = noChargeRemake ? "0.00" : r.unitPrice;
+                  lineItemsMeta.push({
+                    item: baseLabel,
+                    description: baseDesc,
+                    catalogItemKey,
+                    missingCatalogItem: !!catalogItemKey && Number(effectiveUnitPrice) <= 0,
+                  });
                   return {
                     invoiceId: newInvoice.id,
                     caseRestorationId: r.id,
@@ -3625,7 +3633,7 @@ router.post(
                       ? `${baseDesc} (no-charge remake)`
                       : baseDesc,
                     quantity: r.quantity,
-                    unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
+                    unitPrice: effectiveUnitPrice,
                     lineTotal: noChargeRemake
                       ? "0.00"
                       : calculateLineTotal(r.quantity, r.unitPrice),
@@ -3645,6 +3653,7 @@ router.post(
                 total: subtotal,
                 balanceDue: subtotal,
                 updatedByUserId: (req as any).auth.userId,
+                displayMetadataJson: { ...displayMetadata, lineItems: lineItemsMeta },
               })
               .where(eq(invoices.id, newInvoice.id))
               .returning();
@@ -8289,7 +8298,13 @@ router.post(
                   sortOrder: 0,
                 },
               ];
-          await tx.insert(invoiceLineItems).values(itemsToInsert);
+          const lineItemsMeta = itemsToInsert.map((it) => ({
+            item: it.catalogItemLabel ?? it.description,
+            description: it.description,
+            catalogItemKey: it.catalogItemKey ?? null,
+            missingCatalogItem: it.missingCatalogItem ?? false,
+          }));
+          await tx.insert(invoiceLineItems).values(toInvoiceLineItemValues(itemsToInsert));
           const subtotal = itemsToInsert
             .reduce((acc, it) => acc + Number(it.lineTotal), 0)
             .toFixed(2);
@@ -8299,6 +8314,7 @@ router.post(
               subtotal,
               total: subtotal,
               balanceDue: subtotal,
+              displayMetadataJson: { ...displayMetadataJson, lineItems: lineItemsMeta },
             })
             .where(eq(invoices.id, autoInvoice.id));
           autoInvoiceId = autoInvoice.id;
@@ -9280,13 +9296,24 @@ router.post(
                   sortOrder: 0,
                 },
               ];
-          await tx.insert(invoiceLineItems).values(itemsToInsert);
+          const lineItemsMeta = itemsToInsert.map((it) => ({
+            item: it.catalogItemLabel ?? it.description,
+            description: it.description,
+            catalogItemKey: it.catalogItemKey ?? null,
+            missingCatalogItem: it.missingCatalogItem ?? false,
+          }));
+          await tx.insert(invoiceLineItems).values(toInvoiceLineItemValues(itemsToInsert));
           const subtotal = itemsToInsert
             .reduce((acc, it) => acc + Number(it.lineTotal), 0)
             .toFixed(2);
           await tx
             .update(invoices)
-            .set({ subtotal, total: subtotal, balanceDue: subtotal })
+            .set({
+              subtotal,
+              total: subtotal,
+              balanceDue: subtotal,
+              displayMetadataJson: { ...displayMetadataJson, lineItems: lineItemsMeta },
+            })
             .where(eq(invoices.id, autoInvoice.id));
           autoInvoiceId = autoInvoice.id;
         }
@@ -9873,9 +9900,15 @@ async function processOneIteroZipFile(
               extracted.restorations,
             )
           : [{ invoiceId: autoInvoice.id, caseRestorationId: null, toothNumber: null, toothLabel: null, description: "[AI placeholder] Restorations could not be extracted — replace with actual line items.", quantity: 1, unitPrice: "0.00", lineTotal: "0.00", sortOrder: 0 }];
-        await tx.insert(invoiceLineItems).values(itemsToInsert);
+        const lineItemsMeta = itemsToInsert.map((it) => ({
+          item: it.catalogItemLabel ?? it.description,
+          description: it.description,
+          catalogItemKey: it.catalogItemKey ?? null,
+          missingCatalogItem: it.missingCatalogItem ?? false,
+        }));
+        await tx.insert(invoiceLineItems).values(toInvoiceLineItemValues(itemsToInsert));
         const subtotal = itemsToInsert.reduce((acc, it) => acc + Number(it.lineTotal), 0).toFixed(2);
-        await tx.update(invoices).set({ subtotal, total: subtotal, balanceDue: subtotal }).where(eq(invoices.id, autoInvoice.id));
+        await tx.update(invoices).set({ subtotal, total: subtotal, balanceDue: subtotal, displayMetadataJson: { ...displayMetadataJson, lineItems: lineItemsMeta } }).where(eq(invoices.id, autoInvoice.id));
         autoInvoiceId = autoInvoice.id;
       }
     } catch (invoiceErr) {
