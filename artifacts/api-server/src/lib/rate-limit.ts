@@ -133,6 +133,77 @@ export function createUserRateLimit(opts: {
 }
 
 /**
+ * Dual-key rate limiter for `GET /api/auth/check-email`.
+ *
+ * Two independent limits are enforced before the handler runs:
+ *  1. **Per-email** — at most `maxPerEmail` requests per `windowMs` for the
+ *     same canonicalised email value (stops targeted enumeration of a single
+ *     address).
+ *  2. **Per-IP** — at most `maxPerIp` requests per `windowMs` from the same
+ *     source IP (stops one host spraying many addresses).
+ *
+ * Like {@link createRateLimit}, this is disabled under Vitest to avoid
+ * order-dependent throttling across test files.
+ *
+ * If the query string contains no usable `email` value the request falls
+ * through so the handler can return its own 400.
+ */
+export function createCheckEmailThrottle(opts: {
+  windowMs: number;
+  maxPerEmail: number;
+  maxPerIp: number;
+}) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (process.env["VITEST"]) {
+      next();
+      return;
+    }
+
+    const rawEmail = typeof req.query?.["email"] === "string" ? req.query["email"] : "";
+    const email = rawEmail.trim().toLowerCase();
+    if (!email) {
+      next();
+      return;
+    }
+
+    const ip = getClientIp(req);
+    const now = Date.now();
+
+    const reject = (message: string): void => {
+      res.status(429).json({ error: message });
+    };
+
+    // 1. Per-email rolling window.
+    const emailKey = `checkEmail:email:${email}`;
+    let emailEntry = store.get(emailKey);
+    if (!emailEntry || emailEntry.resetAt < now) {
+      emailEntry = { count: 0, resetAt: now + opts.windowMs };
+      store.set(emailKey, emailEntry);
+    }
+    emailEntry.count++;
+    if (emailEntry.count > opts.maxPerEmail) {
+      reject("Too many email checks for this address. Please wait a minute and try again.");
+      return;
+    }
+
+    // 2. Per-IP rolling window.
+    const ipKey = `checkEmail:ip:${ip}`;
+    let ipEntry = store.get(ipKey);
+    if (!ipEntry || ipEntry.resetAt < now) {
+      ipEntry = { count: 0, resetAt: now + opts.windowMs };
+      store.set(ipKey, ipEntry);
+    }
+    ipEntry.count++;
+    if (ipEntry.count > opts.maxPerIp) {
+      reject("Too many email checks. Please wait a minute and try again.");
+      return;
+    }
+
+    next();
+  };
+}
+
+/**
  * Abuse control for the public-ish verification-code send endpoints
  * (`/api/send-email-code`, `/api/send-phone-code`). Each outbound request can
  * trigger a real email/SMS, so these are a denial-of-service and cost-abuse

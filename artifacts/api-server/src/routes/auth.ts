@@ -4,7 +4,7 @@ import fs from "node:fs";
 import multer from "multer";
 import sharp from "sharp";
 import { Router } from "express";
-import { createRateLimit } from "../lib/rate-limit";
+import { createRateLimit, createCheckEmailThrottle } from "../lib/rate-limit";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -63,10 +63,10 @@ const registerRateLimit = createRateLimit({
   max: 5,
   message: "Too many registration attempts. Please wait a minute and try again.",
 });
-const checkEmailRateLimit = createRateLimit({
+const checkEmailThrottle = createCheckEmailThrottle({
   windowMs: 60_000,
-  max: 20,
-  message: "Too many email checks. Please wait a minute and try again.",
+  maxPerEmail: 5,
+  maxPerIp: 20,
 });
 
 const profilePhotoUpload = multer({
@@ -307,16 +307,24 @@ const registerSchema = z.object({
 
 router.get(
   "/check-email",
-  checkEmailRateLimit,
+  checkEmailThrottle,
   asyncHandler(async (req, res) => {
     const email = typeof req.query.email === "string" ? req.query.email.trim() : "";
     if (!email || !email.includes("@")) {
       throw new HttpError(400, "A valid email address is required.");
     }
+    // Enforce a minimum response time so "email exists" and "email not found"
+    // paths cannot be distinguished by a timing oracle.
+    const minMs = 200;
+    const startedAt = Date.now();
     const match = await db.query.users.findFirst({
       where: sql`lower(${users.email}) = ${email.toLowerCase()}`,
       columns: { id: true },
     });
+    const elapsed = Date.now() - startedAt;
+    if (elapsed < minMs) {
+      await new Promise<void>((resolve) => setTimeout(resolve, minMs - elapsed));
+    }
     ok(res, { available: !match });
   })
 );
