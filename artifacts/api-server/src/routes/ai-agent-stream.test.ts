@@ -631,6 +631,214 @@ describe("POST /api/ai-agent/stream — readonly tool inline execution", () => {
   });
 });
 
+// ─── Auto-execute mode ───────────────────────────────────────────────────────
+
+describe("POST /api/ai-agent/stream — auto-execute mode", () => {
+  beforeAll(() => {
+    process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ??= "test-stream-key";
+  });
+
+  beforeEach(() => {
+    mockStreamCreate.mockReset();
+  });
+
+  it("executes impactful tool inline when auto_execute=true and emits auto_executed + done", async () => {
+    const tool = TOOL_BY_NAME.get("mark_invoice_paid")!;
+    const executeSpy = vi
+      .spyOn(tool, "execute")
+      .mockResolvedValueOnce({ invoiceId: "inv-ae-001", status: "paid" });
+    const summarizeSpy = vi
+      .spyOn(tool, "summarize")
+      .mockResolvedValueOnce("Mark invoice INV-AE-001 as paid");
+
+    let callCount = 0;
+    mockStreamCreate.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return makeAsyncIterable([
+          {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: "tc-ae-001",
+                  type: "function",
+                  function: { name: "mark_invoice_paid", arguments: "" },
+                }],
+              },
+            }],
+          },
+          {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  function: { arguments: JSON.stringify({ invoiceId: "inv-ae-001" }) },
+                }],
+              },
+            }],
+          },
+          { choices: [{ delta: {} }] },
+        ]);
+      }
+      return makeAsyncIterable([
+        { choices: [{ delta: { content: "Done!" } }] },
+        { choices: [{ delta: {} }] },
+      ]);
+    });
+
+    const app = makeApp("user-ae1");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({
+        messages: [{ role: "user", content: "Mark invoice INV-AE-001 as paid" }],
+        auto_execute: true,
+      });
+
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(res.body as string);
+
+    // Must execute inline
+    expect(executeSpy).toHaveBeenCalledOnce();
+
+    // Must emit auto_executed event
+    const autoEvent = events.find((e) => e.auto_executed != null);
+    expect(autoEvent).toBeDefined();
+    const ae = autoEvent!.auto_executed as { toolName?: string; summary?: string };
+    expect(ae.toolName).toBe("mark_invoice_paid");
+    expect(ae.summary).toBe("Mark invoice INV-AE-001 as paid");
+
+    // Must NOT emit proposed_action
+    expect(events.some((e) => "proposed_action" in e)).toBe(false);
+
+    // Must emit a done event (loop continued)
+    expect(events.filter((e) => e.done === true).length).toBe(1);
+
+    // Must have token events (second iteration text)
+    const tokens = events.filter((e) => typeof e.token === "string");
+    expect(tokens.length).toBeGreaterThan(0);
+    expect(tokens.map((e) => e.token).join("")).toBe("Done!");
+
+    executeSpy.mockRestore();
+    summarizeSpy.mockRestore();
+  });
+
+  it("still emits proposed_action when auto_execute=false (default)", async () => {
+    const tool = TOOL_BY_NAME.get("mark_invoice_paid")!;
+    vi.spyOn(tool, "summarize").mockResolvedValueOnce("Mark invoice INV-DF-001 as paid");
+
+    mockStreamCreate.mockImplementation(() =>
+      makeAsyncIterable([
+        {
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "tc-df-001",
+                type: "function",
+                function: { name: "mark_invoice_paid", arguments: "" },
+              }],
+            },
+          }],
+        },
+        {
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                function: { arguments: JSON.stringify({ invoiceId: "INV-DF-001" }) },
+              }],
+            },
+          }],
+        },
+        { choices: [{ delta: {} }] },
+      ]),
+    );
+
+    const app = makeApp("user-df1");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({ messages: [{ role: "user", content: "Mark invoice INV-DF-001 as paid" }] });
+
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(res.body as string);
+    expect(events.some((e) => "proposed_action" in e)).toBe(true);
+    expect(events.some((e) => "auto_executed" in e)).toBe(false);
+  });
+
+  it("handles auto-execute failure gracefully and continues the loop", async () => {
+    const tool = TOOL_BY_NAME.get("mark_invoice_paid")!;
+    const executeSpy = vi
+      .spyOn(tool, "execute")
+      .mockRejectedValueOnce(new Error("Invoice already paid"));
+    const summarizeSpy = vi
+      .spyOn(tool, "summarize")
+      .mockResolvedValueOnce("Mark invoice INV-ERR-001 as paid");
+
+    let callCount = 0;
+    mockStreamCreate.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return makeAsyncIterable([
+          {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: "tc-err-001",
+                  type: "function",
+                  function: { name: "mark_invoice_paid", arguments: "" },
+                }],
+              },
+            }],
+          },
+          {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  function: { arguments: JSON.stringify({ invoiceId: "inv-err-001" }) },
+                }],
+              },
+            }],
+          },
+          { choices: [{ delta: {} }] },
+        ]);
+      }
+      return makeAsyncIterable([
+        { choices: [{ delta: { content: "I couldn't complete that action." } }] },
+        { choices: [{ delta: {} }] },
+      ]);
+    });
+
+    const app = makeApp("user-err1");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({
+        messages: [{ role: "user", content: "Mark invoice INV-ERR-001 as paid" }],
+        auto_execute: true,
+      });
+
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(res.body as string);
+
+    // No auto_executed event on failure
+    expect(events.some((e) => "auto_executed" in e)).toBe(false);
+
+    // The loop should still continue (tool error is fed back to model)
+    expect(events.filter((e) => e.done === true).length).toBe(1);
+
+    executeSpy.mockRestore();
+    summarizeSpy.mockRestore();
+  });
+});
+
 // ─── Edge cases: empty content and upstream failure ──────────────────────────
 
 describe("POST /api/ai-agent/stream — edge cases", () => {

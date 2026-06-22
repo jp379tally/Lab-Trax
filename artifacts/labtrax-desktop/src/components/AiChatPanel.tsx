@@ -655,6 +655,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   const [messages, setMessages] = useState<ChatMsg[]>([buildWelcome(initialCases)]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [autoExecute, setAutoExecute] = useState(false);
   const [streamingToolCall, setStreamingToolCall] = useState<string | null>(null);
   const [promptsDismissed, setPromptsDismissed] = useState(false);
 
@@ -1162,7 +1163,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   ) {
     setSending(true);
 
-    const body: Record<string, unknown> = { messages: buildHistory(currentMessages) };
+    const body: Record<string, unknown> = { messages: buildHistory(currentMessages), auto_execute: autoExecute };
     if (snapshotPinnedCases.length === 1) {
       body.caseId = snapshotPinnedCases[0]!.caseId;
     } else if (snapshotPinnedCases.length > 1) {
@@ -1238,6 +1239,21 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
               prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
             );
             break outer;
+          }
+
+          // Auto-executed action — executed inline, no confirm needed
+          if (evt.auto_executed && typeof evt.auto_executed === "object") {
+            const ae = evt.auto_executed as {
+              toolName?: string;
+              summary?: string;
+              result?: unknown;
+            };
+            // Append a small system indicator to the streaming message
+            const indicator = `\n✅ *Auto-executed: ${ae.summary || ae.toolName || "action"}*\n`;
+            fullContent += indicator;
+            setMessages((prev) =>
+              prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
+            );
           }
 
           // Proposed action — show ConfirmCard and stop streaming
@@ -1917,6 +1933,25 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
 
       {/* Input */}
       <div className="shrink-0 border-t border-border p-3 bg-card">
+        {/* Auto-execute toggle */}
+        <div className="flex items-center gap-1.5 mb-2">
+          <button
+            type="button"
+            onClick={() => setAutoExecute((prev) => !prev)}
+            title={autoExecute ? "Auto-execute is ON — impactful actions run without confirmation" : "Auto-execute is OFF — Maynard will ask for confirmation"}
+            className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border transition-colors ${
+              autoExecute
+                ? "bg-amber-50 border-amber-300 text-amber-700"
+                : "bg-secondary border-input text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Zap size={10} />
+            Auto-execute
+          </button>
+          <span className="text-[10px] text-muted-foreground/60">
+            {autoExecute ? "Maynard will run actions without asking" : "Maynard will ask before changing data"}
+          </span>
+        </div>
         <div className="flex gap-2 items-end">
           <textarea
             ref={inputRef}

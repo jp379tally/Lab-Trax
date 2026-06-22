@@ -797,6 +797,7 @@ export default function AiAssistantScreen() {
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MSG]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [autoExecute, setAutoExecute] = useState(false);
 
   // ─── Session list state ──────────────────────────────────────────────────────
   const [allSessions, setAllSessions] = useState<StoredChatSession<ChatMessage>[]>([]);
@@ -1203,7 +1204,7 @@ export default function AiAssistantScreen() {
         if (token) headers["Authorization"] = `Bearer ${token}`;
 
         const activeCaseId = caseIdRef.current;
-        const streamBody: Record<string, unknown> = { messages: buildHistory(currentMessages) };
+        const streamBody: Record<string, unknown> = { messages: buildHistory(currentMessages), auto_execute: autoExecute };
         if (activeCaseId) streamBody.caseId = activeCaseId;
 
         let resp: Response;
@@ -1280,6 +1281,14 @@ export default function AiAssistantScreen() {
               break outer;
             } else if (evt.done) {
               if (typeof evt.disclaimer === "string") finalDisclaimer = evt.disclaimer;
+            } else if (evt.auto_executed && typeof evt.auto_executed === "object") {
+              const ae = evt.auto_executed as { toolName?: string; summary?: string; result?: unknown };
+              const indicator = `\n✅ *Auto-executed: ${ae.summary || ae.toolName || "action"}*\n`;
+              fullContent += indicator;
+              setMessages((prev) =>
+                prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
+              );
+              scrollToBottom();
             } else if (evt.proposed_action && typeof evt.proposed_action === "object") {
               const pa = evt.proposed_action as { actionId?: string; toolName?: string; summary?: string };
               if (pa.actionId && pa.summary) {
@@ -1687,6 +1696,19 @@ export default function AiAssistantScreen() {
               </Pressable>
             </View>
           ) : null}
+          {/* Auto-execute toggle */}
+          <View style={s.autoExecuteRow}>
+            <Pressable
+              onPress={() => setAutoExecute((prev) => !prev)}
+              style={[s.autoExecuteChip, { borderColor: autoExecute ? "#d97706" : colors.border, backgroundColor: autoExecute ? "#fef3c7" : colors.surfaceSecondary }]}
+            >
+              <Ionicons name={autoExecute ? "flash" : "flash-outline"} size={10} color={autoExecute ? "#b45309" : colors.textSecondary} />
+              <Text style={[s.autoExecuteText, { color: autoExecute ? "#b45309" : colors.textSecondary }]}>Auto-execute</Text>
+            </Pressable>
+            <Text style={[s.autoExecuteHint, { color: colors.textSecondary }]}>
+              {autoExecute ? "Maynard will run actions without asking" : "Maynard will ask before changing data"}
+            </Text>
+          </View>
           <View style={s.inputRow}>
             <TextInput
               style={[s.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}
@@ -2068,6 +2090,27 @@ function makeStyles(colors: ThemeColors) {
       alignItems: "center",
       justifyContent: "center",
       flexShrink: 0,
+    },
+    autoExecuteRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    autoExecuteChip: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+    },
+    autoExecuteText: {
+      fontSize: 10,
+      fontWeight: "500",
+    },
+    autoExecuteHint: {
+      fontSize: 10,
     },
     micErrorBanner: {
       flexDirection: "row",

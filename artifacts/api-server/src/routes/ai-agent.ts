@@ -24,8 +24,8 @@ import {
   type ToolContext,
 } from "../lib/ai-agent-tools";
 import { db } from "@workspace/db";
-import { organizations, organizationMemberships, pricingTiers } from "@workspace/db";
-import { eq, and, inArray } from "drizzle-orm";
+import { organizations, organizationMemberships, pricingTiers, invoices, cases } from "@workspace/db";
+import { eq, and, inArray, ilike } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock, RETENTION_LEGAL_DISCLAIMER } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
@@ -84,6 +84,78 @@ function cleanExpiredActions(): void {
   }
 }
 
+// ─── Auto-verify helper for impactful tools ──────────────────────────────────
+
+async function verifyImpactfulTool(
+  toolName: string,
+  _args: Record<string, unknown>,
+  result: unknown,
+  ctx: ToolContext,
+): Promise<unknown> {
+  const resultData = result as any;
+  try {
+    switch (toolName) {
+      case "mark_invoice_paid":
+      case "void_invoice": {
+        const invoiceId = resultData?.invoiceId;
+        if (!invoiceId) return { message: "No invoice ID available for verification" };
+        const inv = await db.query.invoices.findFirst({
+          where: and(
+            eq(invoices.id, String(invoiceId)),
+            eq(invoices.labOrganizationId, ctx.labOrganizationId ?? ""),
+          ),
+        });
+        return inv
+          ? { status: inv.status, balanceDue: inv.balanceDue, invoiceNumber: inv.invoiceNumber }
+          : { notFound: true };
+      }
+      case "create_case":
+      case "update_case_status":
+      case "update_case": {
+        const caseId = resultData?.caseId;
+        if (!caseId) return { message: "No case ID available for verification" };
+        const c = await db.query.cases.findFirst({
+          where: and(
+            eq(cases.id, String(caseId)),
+            eq(cases.labOrganizationId, ctx.labOrganizationId ?? ""),
+          ),
+        });
+        return c
+          ? {
+              caseNumber: c.caseNumber,
+              patientName: `${c.patientFirstName} ${c.patientLastName}`.trim(),
+              doctorName: c.doctorName,
+              status: c.status,
+            }
+          : { notFound: true };
+      }
+      case "send_statements": {
+        return { sentCount: resultData?.sentCount };
+      }
+      case "merge_doctors": {
+        return {
+          sourceDoctorName: resultData?.sourceDoctorName,
+          targetDoctorName: resultData?.targetDoctorName,
+          casesMoved: resultData?.casesMoved,
+        };
+      }
+      case "set_practice_pricing_tier": {
+        return { practiceName: resultData?.practiceName, tierName: resultData?.tierName };
+      }
+      case "create_pricing_override": {
+        return { doctorName: resultData?.doctorName, tierName: resultData?.tierName, updated: resultData?.updated };
+      }
+      case "reset_invoice_layout": {
+        return { message: resultData?.message };
+      }
+      default:
+        return { message: `No verification logic for tool "${toolName}"` };
+    }
+  } catch (err: any) {
+    return { error: err?.message ?? "Verification failed", toolName };
+  }
+}
+
 // ─── Context assembly (minimal — just lab org) ─────────────────────────────
 
 interface SystemPromptResult {
@@ -97,6 +169,7 @@ async function buildSystemPrompt(
   userId: string,
   userType: string,
   userMessage = "",
+  autoExecute = false,
 ): Promise<SystemPromptResult> {
   let contextBlock = "";
   // Track lab org ids in scope so we can append admin-curated per-lab memory.
@@ -161,6 +234,10 @@ PRICING TIERS: ${tiers.map((t) => t.name).join(", ") || "none"}`;
   const materialBlock = buildMaterialSuggestionBlock(userMessage);
   const memoryBlock = await buildLabMemoryBlock(memoryLabIds);
 
+  const autoExecuteNote = autoExecute
+    ? "- AUTO-EXECUTE MODE is active. When you call an impactful tool, it will execute immediately without user confirmation. The system will verify the result and feed it back to you. You may chain multiple impactful actions in one turn."
+    : "- When you call an impactful tool, the system will pause and ask the user to confirm before anything is changed. You do not need to warn the user separately.\n- Handle ONE impactful action per turn. If the user asks for multiple impactful actions, propose the first one and tell the user to confirm it before you proceed with the next.";
+
   const prompt = `You are Maynard, an action-taking assistant for dental lab management.
 You can answer questions AND perform real operations using the tools available to you.
 Today's date: ${new Date().toLocaleDateString()}.
@@ -170,8 +247,7 @@ ${knowledgeMeta.block}${materialBlock}${memoryBlock}
 IMPORTANT RULES:
 - For factual questions, answer directly using your tools or known context.
 - For operations that change data (mark paid, void, merge, send statements, etc.) always call the appropriate tool — do NOT describe how to do it manually.${isProvider ? "\n- You are in provider mode. Limit yourself to read-only tools (lookup_case, lookup_invoice) unless the user is clearly a lab admin." : ""}
-- When you call an impactful tool, the system will pause and ask the user to confirm before anything is changed. You do not need to warn the user separately.
-- Handle ONE impactful action per turn. If the user asks for multiple impactful actions, propose the first one and tell the user to confirm it before you proceed with the next.
+${autoExecuteNote}
 - Be concise and action-oriented. After calling tools, summarize what happened or what is proposed.
 - If you cannot complete a request with the available tools, explain clearly what you can and cannot do.`;
 
@@ -198,6 +274,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
       messages?: Array<{ role: "user" | "assistant"; content: string }>;
       caseId?: string;
       caseIds?: string[];
+      auto_execute?: boolean;
     };
 
     if (!Array.isArray(body?.messages) || body.messages.length === 0) {
@@ -209,6 +286,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
     }
 
     const userType: string = req.user.userType ?? "lab";
+    const autoExecute = body.auto_execute === true;
 
     // Resolve org context in parallel for both lab and provider users.
     const [labMemberships, providerCtx] = await Promise.all([
@@ -256,6 +334,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
       userId,
       userType,
       String(lastMsg.content ?? ""),
+      autoExecute,
     );
     const { prompt: systemPrompt, knowledgeSectionIds, retentionDisclaimer, privacyDisclaimer } = systemPromptResult;
 
@@ -371,36 +450,63 @@ export function registerAiAgentRoutes(router: IRouter): void {
               });
             }
           } else {
-            // Impactful — return as proposed action (first one wins)
-            if (!proposedAction) {
-              cleanExpiredActions();
-              const actionId = generateActionId();
-              let summary = `${toolName} action`;
+            if (autoExecute) {
+              // Auto-execute mode: run impactful tool inline, then verify
               try {
-                summary = await tool.summarize(args, toolCtx);
-              } catch {
-                // fallback summary
+                const result = await tool.execute(args, toolCtx);
+                accumulatedToolOutputs.push({ name: toolName, result });
+                const verificationResult = await verifyImpactfulTool(toolName, args, result, toolCtx);
+                toolResults.push({
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  content: JSON.stringify({
+                    success: true,
+                    result,
+                    verification: verificationResult,
+                  }),
+                });
+              } catch (err: any) {
+                toolResults.push({
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  content: JSON.stringify({
+                    error: err?.message ?? "Tool execution failed.",
+                    suggestion: "Please check the inputs and try again.",
+                  }),
+                });
               }
-              pendingActions.set(actionId, {
-                actionId,
-                userId,
-                toolName,
-                args,
-                summary,
-                createdAt: Date.now(),
+            } else {
+              // Impactful — return as proposed action (first one wins)
+              if (!proposedAction) {
+                cleanExpiredActions();
+                const actionId = generateActionId();
+                let summary = `${toolName} action`;
+                try {
+                  summary = await tool.summarize(args, toolCtx);
+                } catch {
+                  // fallback summary
+                }
+                pendingActions.set(actionId, {
+                  actionId,
+                  userId,
+                  toolName,
+                  args,
+                  summary,
+                  createdAt: Date.now(),
+                });
+                proposedAction = { actionId, toolName, summary, args };
+              }
+              // Put a placeholder in tool results so the loop doesn't stall
+              toolResults.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: JSON.stringify({ status: "awaiting_confirmation", actionId: proposedAction.actionId }),
               });
-              proposedAction = { actionId, toolName, summary, args };
             }
-            // Put a placeholder in tool results so the loop doesn't stall
-            toolResults.push({
-              role: "tool",
-              tool_call_id: toolCall.id,
-              content: JSON.stringify({ status: "awaiting_confirmation", actionId: proposedAction.actionId }),
-            });
           }
         }
 
-        // If we have a proposed action, return it immediately without looping further
+        // If we have a proposed action (not auto-execute), return it immediately
         if (proposedAction) {
           return res.json({
             type: "proposed_action",
@@ -462,6 +568,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
       messages?: Array<{ role: "user" | "assistant"; content: string }>;
       caseId?: string;
       caseIds?: string[];
+      auto_execute?: boolean;
     };
 
     if (!Array.isArray(body?.messages) || body.messages.length === 0) {
@@ -473,6 +580,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
     }
 
     const userType: string = req.user.userType ?? "lab";
+    const autoExecute = body.auto_execute === true;
 
     // Resolve org context in parallel (identical to POST /ai-agent)
     const [labMemberships, providerCtx] = await Promise.all([
@@ -515,7 +623,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
 
     let systemPromptResult: Awaited<ReturnType<typeof buildSystemPrompt>>;
     try {
-      systemPromptResult = await buildSystemPrompt(userId, userType, learnUserMessage);
+      systemPromptResult = await buildSystemPrompt(userId, userType, learnUserMessage, autoExecute);
     } catch (err: any) {
       req.log?.error({ err }, "[AI AGENT STREAM] system prompt build error");
       return res.status(500).json({ error: "Failed to assemble context. Please try again." });
@@ -695,34 +803,72 @@ export function registerAiAgentRoutes(router: IRouter): void {
               });
             }
           } else {
-            // Impactful — propose action (first one wins)
-            if (!proposedAction) {
-              cleanExpiredActions();
-              const actionId = generateActionId();
-              let summary = `${toolName} action`;
+            if (autoExecute) {
+              // Auto-execute mode: run impactful tool inline, then verify
               try {
-                summary = await tool.summarize(args, toolCtx);
-              } catch {
-                // fallback summary
+                const result = await tool.execute(args, toolCtx);
+                accumulatedToolOutputs.push({ name: toolName, result });
+
+                // Emit auto_executed event so client knows it happened
+                sendEvent({
+                  auto_executed: {
+                    toolName,
+                    summary: await tool.summarize(args, toolCtx).catch(() => `${toolName} action`),
+                    result,
+                  },
+                });
+
+                // Auto-verify: re-read the affected entity
+                const verificationResult = await verifyImpactfulTool(toolName, args, result, toolCtx);
+                toolResults.push({
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  content: JSON.stringify({
+                    success: true,
+                    result,
+                    verification: verificationResult,
+                  }),
+                });
+              } catch (err: any) {
+                toolResults.push({
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  content: JSON.stringify({
+                    error: err?.message ?? "Tool execution failed.",
+                    suggestion: "Please check the inputs and try again.",
+                  }),
+                });
               }
-              pendingActions.set(actionId, {
-                actionId,
-                userId,
-                toolName,
-                args,
-                summary,
-                createdAt: Date.now(),
+            } else {
+              // Impactful — propose action (first one wins)
+              if (!proposedAction) {
+                cleanExpiredActions();
+                const actionId = generateActionId();
+                let summary = `${toolName} action`;
+                try {
+                  summary = await tool.summarize(args, toolCtx);
+                } catch {
+                  // fallback summary
+                }
+                pendingActions.set(actionId, {
+                  actionId,
+                  userId,
+                  toolName,
+                  args,
+                  summary,
+                  createdAt: Date.now(),
+                });
+                proposedAction = { actionId, toolName, summary, args };
+              }
+              toolResults.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: JSON.stringify({
+                  status: "awaiting_confirmation",
+                  actionId: proposedAction.actionId,
+                }),
               });
-              proposedAction = { actionId, toolName, summary, args };
             }
-            toolResults.push({
-              role: "tool",
-              tool_call_id: toolCall.id,
-              content: JSON.stringify({
-                status: "awaiting_confirmation",
-                actionId: proposedAction.actionId,
-              }),
-            });
           }
         }
 
