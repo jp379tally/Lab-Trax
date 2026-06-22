@@ -163,23 +163,28 @@ function countUserMessages(session: StoredChatSession<ChatMessage>): number {
  * The route replies with `{ messages }` directly (not the `{ ok, data }`
  * envelope), so the body is read as `{ messages }`.
  */
-async function loadServerHistory(): Promise<ChatMessage[]> {
+async function loadServerHistory(
+  before?: string,
+): Promise<{ messages: ChatMessage[]; hasMore: boolean }> {
   try {
-    const resp = await resilientFetch("/api/ai-chat/history");
-    if (!resp.ok) return [];
+    const qs = before ? `?before=${encodeURIComponent(before)}&limit=50` : "";
+    const resp = await resilientFetch(`/api/ai-chat/history${qs}`);
+    if (!resp.ok) return { messages: [], hasMore: false };
     const body = (await resp.json()) as {
       messages?: Array<{ id?: string; role?: string; content?: string }>;
+      hasMore?: boolean;
     };
     const rows = body?.messages ?? [];
-    return rows
+    const messages = rows
       .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
       .map((m) => ({
         id: m.id ?? genId(),
         role: m.role as "user" | "assistant",
         content: m.content as string,
       }));
+    return { messages, hasMore: !!body?.hasMore };
   } catch {
-    return [];
+    return { messages: [], hasMore: false };
   }
 }
 
@@ -811,6 +816,12 @@ export default function AiAssistantScreen() {
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const messagesRef = useRef<ChatMessage[]>([WELCOME_MSG]);
 
+  // ─── Older-history pagination ("load earlier messages") ──────────────────────
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  // Oldest server message id currently held — the cursor for the next page.
+  const historyCursorRef = useRef<string | null>(null);
+
   // ─── Voice state ───────────────────────────────────────────────────────────
   type MicState = "idle" | "listening" | "processing" | "error";
   const [voiceMode, setVoiceMode] = useState(false);
@@ -881,8 +892,10 @@ export default function AiAssistantScreen() {
           currentSessionIdRef.current = generateSessionId();
         }
         // Reconcile with the server so history follows the user across devices.
-        const serverMsgs = await loadServerHistory();
+        const { messages: serverMsgs, hasMore } = await loadServerHistory();
         if (cancelled || serverMsgs.length === 0) return;
+        historyCursorRef.current = serverMsgs[0]?.id ?? null;
+        setHasMoreHistory(hasMore);
         if (serverMsgs.length > localMsgs.length) {
           setMessages([WELCOME_MSG, ...serverMsgs]);
         }
@@ -1014,6 +1027,33 @@ export default function AiAssistantScreen() {
       listRef.current?.scrollToEnd({ animated: true });
     }, 80);
   }, []);
+
+  // Fetch the page of messages immediately older than those already shown and
+  // prepend them, keeping the welcome message pinned at the top.
+  const loadEarlierMessages = useCallback(async () => {
+    if (loadingEarlier) return;
+    const cursor = historyCursorRef.current;
+    if (!cursor) return;
+    setLoadingEarlier(true);
+    try {
+      const { messages: older, hasMore } = await loadServerHistory(cursor);
+      setHasMoreHistory(hasMore);
+      if (older.length === 0) return;
+      historyCursorRef.current = older[0]?.id ?? cursor;
+      setMessages((prev) => {
+        const seen = new Set(prev.map((m) => m.id));
+        const dedup = older.filter((m) => !seen.has(m.id));
+        if (dedup.length === 0) return prev;
+        const [first, ...rest] = prev;
+        if (first && first.id === WELCOME_MSG.id) {
+          return [first, ...dedup, ...rest];
+        }
+        return [...dedup, ...prev];
+      });
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [loadingEarlier]);
 
   // ─── Voice helpers ─────────────────────────────────────────────────────────
 
@@ -1656,6 +1696,27 @@ export default function AiAssistantScreen() {
           renderItem={renderItem}
           contentContainerStyle={s.messageList}
           onLayout={scrollToBottom}
+          maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+          ListHeaderComponent={
+            hasMoreHistory ? (
+              <View style={s.loadEarlierContainer}>
+                <Pressable
+                  style={[s.loadEarlierBtn, { borderColor: colors.border, backgroundColor: colors.surface }]}
+                  onPress={loadEarlierMessages}
+                  disabled={loadingEarlier}
+                >
+                  {loadingEarlier ? (
+                    <ActivityIndicator size="small" color={colors.textSecondary} />
+                  ) : (
+                    <Ionicons name="time-outline" size={14} color={colors.textSecondary} />
+                  )}
+                  <Text style={[s.loadEarlierText, { color: colors.textSecondary }]}>
+                    {loadingEarlier ? "Loading…" : "Load earlier messages"}
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null
+          }
           ListFooterComponent={
             <>
               {showPrompts && (
@@ -2047,6 +2108,24 @@ function makeStyles(colors: ThemeColors) {
     messageList: {
       paddingVertical: Spacing.sm,
       paddingBottom: Spacing.xl,
+    },
+    loadEarlierContainer: {
+      alignItems: "center",
+      paddingTop: Spacing.sm,
+      paddingBottom: Spacing.xs,
+    },
+    loadEarlierBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      borderWidth: 1,
+      borderRadius: Radius.full,
+      paddingHorizontal: 14,
+      paddingVertical: 6,
+    },
+    loadEarlierText: {
+      fontSize: Typography.tiny.fontSize,
+      fontWeight: "500",
     },
     promptsContainer: {
       paddingHorizontal: Spacing.md,

@@ -9,4 +9,6 @@ import type { AiChatHistoryMessage } from "./aiChatHistoryMessage";
 
 export interface AiChatHistoryResult {
   messages: AiChatHistoryMessage[];
+  /** True when older messages exist before the oldest returned row. */
+  hasMore?: boolean;
 }

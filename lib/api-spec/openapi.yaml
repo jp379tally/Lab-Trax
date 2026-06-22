@@ -149,6 +149,17 @@ paths:
       operationId: getAiChatHistory
       tags: [ai]
       summary: Fetch recent AI chat history for the authenticated user
+      parameters:
+        - in: query
+          name: limit
+          description: Max messages to return in this page (clamped server-side).
+          schema: { type: integer, minimum: 1, maximum: 100 }
+        - in: query
+          name: before
+          description: >-
+            Cursor for "load earlier": the id of the oldest message the client
+            already holds. Returns only messages older than this row.
+          schema: { type: string }
       responses:
         "200":
           description: Chat history messages
@@ -5219,6 +5230,9 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AiChatHistoryMessage"
+        hasMore:
+          type: boolean
+          description: True when older messages exist before the oldest returned row.
     ExtractedRxData:
       type: object
       properties:

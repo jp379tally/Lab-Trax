@@ -286,6 +286,31 @@ function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
+/**
+ * Map raw `/ai-chat/history` rows (which carry the real server ids needed for
+ * pagination) into the panel's ChatMsg shape, preserving the admin audit
+ * fields. Server rows arrive oldest-first.
+ */
+function mapServerHistory(
+  rows: Array<{
+    id: string;
+    role: string;
+    content: string;
+    knowledgeSectionIds?: string[] | null;
+    retentionDisclaimer?: boolean | null;
+  }>,
+): ChatMsg[] {
+  return rows.map((m) => ({
+    id: m.id,
+    role: m.role as "user" | "assistant",
+    content: m.content,
+    ...(m.knowledgeSectionIds && m.knowledgeSectionIds.length > 0
+      ? { knowledgeSectionIds: m.knowledgeSectionIds }
+      : {}),
+    ...(m.retentionDisclaimer ? { retentionDisclaimer: true } : {}),
+  }));
+}
+
 const WELCOME_MSG: ChatMsg = {
   id: "welcome",
   role: "assistant",
@@ -659,6 +684,11 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   const [autoExecute, setAutoExecute] = useState(false);
   const [streamingToolCall, setStreamingToolCall] = useState<string | null>(null);
   const [promptsDismissed, setPromptsDismissed] = useState(false);
+  // Pagination for older server-side history ("load earlier messages").
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  // Oldest server message id currently held — the cursor for the next page.
+  const historyCursorRef = useRef<string | null>(null);
 
   const messagesRef = useRef<ChatMsg[]>([buildWelcome(initialCases)]);
   const pinnedCasesRef = useRef<AiCaseContext[]>(initialCases);
@@ -751,24 +781,37 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       setPinnedCases(cases);
       setMessages([buildWelcome(cases), ...latest.messages]);
       setPromptsDismissed(latest.messages.some((m) => m.role === "user"));
-    } else {
-      // No localStorage session for this key — try to restore from server history so that
-      // knowledge-section audit fields (knowledgeSectionIds, retentionDisclaimer) survive
-      // beyond the 7-day localStorage TTL.
-      apiFetch<{ messages: Array<{ id: string; role: string; content: string; knowledgeSectionIds?: string[] | null; retentionDisclaimer?: boolean | null; createdAt: string }> }>(
+      // The local cache is only a fast-load layer; the server is the source of
+      // truth and carries the real ids needed to page older history. Reconcile:
+      // adopt the server copy when it holds at least as many messages as the
+      // local cache (e.g. another device), and always record the paging cursor.
+      apiFetch<{ messages: Array<{ id: string; role: string; content: string; knowledgeSectionIds?: string[] | null; retentionDisclaimer?: boolean | null; createdAt: string }>; hasMore?: boolean }>(
         "/ai-chat/history",
       ).then((data) => {
         const serverMsgs = data.messages ?? [];
         if (serverMsgs.length === 0) return;
-        const chatMsgs: ChatMsg[] = serverMsgs.map((m) => ({
-          id: m.id,
-          role: m.role as "user" | "assistant",
-          content: m.content,
-          ...(m.knowledgeSectionIds && m.knowledgeSectionIds.length > 0
-            ? { knowledgeSectionIds: m.knowledgeSectionIds }
-            : {}),
-          ...(m.retentionDisclaimer ? { retentionDisclaimer: true } : {}),
-        }));
+        const chatMsgs = mapServerHistory(serverMsgs);
+        historyCursorRef.current = chatMsgs[0]?.id ?? null;
+        setHasMoreHistory(!!data.hasMore);
+        if (serverMsgs.length >= latest.messages.length) {
+          setMessages([buildWelcome(cases), ...chatMsgs]);
+          setPromptsDismissed(chatMsgs.some((m) => m.role === "user"));
+        }
+      }).catch(() => {
+        // Server history unavailable; keep the local cache as-is.
+      });
+    } else {
+      // No localStorage session for this key — restore from server history so that
+      // knowledge-section audit fields (knowledgeSectionIds, retentionDisclaimer) survive
+      // beyond the 7-day localStorage TTL.
+      apiFetch<{ messages: Array<{ id: string; role: string; content: string; knowledgeSectionIds?: string[] | null; retentionDisclaimer?: boolean | null; createdAt: string }>; hasMore?: boolean }>(
+        "/ai-chat/history",
+      ).then((data) => {
+        const serverMsgs = data.messages ?? [];
+        if (serverMsgs.length === 0) return;
+        const chatMsgs = mapServerHistory(serverMsgs);
+        historyCursorRef.current = chatMsgs[0]?.id ?? null;
+        setHasMoreHistory(!!data.hasMore);
         setMessages([buildWelcome(initialCases), ...chatMsgs]);
         setPromptsDismissed(chatMsgs.some((m) => m.role === "user"));
       }).catch(() => {
@@ -777,6 +820,38 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Fetch the page of messages immediately older than the ones already shown
+  // and prepend them, keeping the welcome message pinned at the top.
+  const loadEarlierMessages = useCallback(async () => {
+    if (loadingEarlier) return;
+    const cursor = historyCursorRef.current;
+    if (!cursor) return;
+    setLoadingEarlier(true);
+    try {
+      const data = await apiFetch<{ messages: Array<{ id: string; role: string; content: string; knowledgeSectionIds?: string[] | null; retentionDisclaimer?: boolean | null; createdAt: string }>; hasMore?: boolean }>(
+        `/ai-chat/history?before=${encodeURIComponent(cursor)}&limit=50`,
+      );
+      const older = mapServerHistory(data.messages ?? []);
+      setHasMoreHistory(!!data.hasMore);
+      if (older.length === 0) return;
+      historyCursorRef.current = older[0]!.id;
+      setMessages((prev) => {
+        const seen = new Set(prev.map((m) => m.id));
+        const dedup = older.filter((m) => !seen.has(m.id));
+        if (dedup.length === 0) return prev;
+        const [first, ...rest] = prev;
+        if (first && first.id === "welcome") {
+          return [first, ...dedup, ...rest];
+        }
+        return [...dedup, ...prev];
+      });
+    } catch {
+      // Leave the current view unchanged on failure.
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [loadingEarlier]);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -1720,6 +1795,23 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           if (showCasePicker) { setShowCasePicker(false); setCaseSearchQuery(""); }
         }}
       >
+        {hasMoreHistory && (
+          <div className="flex justify-center pb-1">
+            <button
+              type="button"
+              onClick={loadEarlierMessages}
+              disabled={loadingEarlier}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-secondary/60 text-xs text-muted-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loadingEarlier ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Clock size={12} />
+              )}
+              {loadingEarlier ? "Loading…" : "Load earlier messages"}
+            </button>
+          </div>
+        )}
         {messages.map((msg) => {
           const isUser = msg.role === "user";
 

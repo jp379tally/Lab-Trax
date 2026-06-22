@@ -1792,6 +1792,8 @@ export interface AiChatHistoryMessage {
 
 export interface AiChatHistoryResult {
   messages: AiChatHistoryMessage[];
+  /** True when older messages exist before the oldest returned row. */
+  hasMore?: boolean;
 }
 
 export interface ExtractedRxData {
@@ -2142,6 +2144,19 @@ export type ListLabInboxFilesParams = {
 export type UploadLabInboxFileBody = {
   file: Blob;
   labOrganizationId: string;
+};
+
+export type GetAiChatHistoryParams = {
+  /**
+   * Max messages to return in this page (clamped server-side).
+   * @minimum 1
+   * @maximum 100
+   */
+  limit?: number;
+  /**
+   * Cursor for "load earlier": the id of the oldest message the client already holds. Returns only messages older than this row.
+   */
+  before?: string;
 };
 
 export type GetLocationsParams = {

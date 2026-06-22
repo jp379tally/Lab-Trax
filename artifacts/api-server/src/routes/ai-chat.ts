@@ -20,9 +20,18 @@ export function registerAiChatRoutes(router: IRouter): void {
   /** GET /ai-chat/history — returns the last N stored messages for this user */
   router.get("/ai-chat/history", requireAuth, async (req: any, res: any) => {
     const userId: string = req.user.id;
+    const before =
+      typeof req.query.before === "string" && req.query.before.length > 0
+        ? req.query.before
+        : undefined;
+    let limit: number | undefined;
+    if (typeof req.query.limit === "string") {
+      const parsed = Number.parseInt(req.query.limit, 10);
+      if (Number.isFinite(parsed)) limit = parsed;
+    }
     try {
-      const rows = await loadHistory(userId);
-      return res.json({ messages: rows });
+      const { messages, hasMore } = await loadHistory(userId, { before, limit });
+      return res.json({ messages, hasMore });
     } catch (err: any) {
       req.log?.error({ err }, "AI chat history fetch error");
       return res.status(500).json({ error: "Failed to load chat history." });

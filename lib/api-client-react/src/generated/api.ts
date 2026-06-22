@@ -83,6 +83,7 @@ import type {
   EmailPreferencesResult,
   FinalizeLabInboxSessionInput,
   GenerateInvoiceForCaseBody,
+  GetAiChatHistoryParams,
   GetAiMemoryCandidatesParams,
   GetAiMemoryParams,
   GetCaseByBarcode200,
@@ -571,41 +572,60 @@ export const useAssignLabInboxFile = <
 /**
  * @summary Fetch recent AI chat history for the authenticated user
  */
-export const getGetAiChatHistoryUrl = () => {
-  return `/api/ai-chat/history`;
+export const getGetAiChatHistoryUrl = (params?: GetAiChatHistoryParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/ai-chat/history?${stringifiedParams}`
+    : `/api/ai-chat/history`;
 };
 
 export const getAiChatHistory = async (
+  params?: GetAiChatHistoryParams,
   options?: RequestInit,
 ): Promise<AiChatHistoryResult> => {
-  return customFetch<AiChatHistoryResult>(getGetAiChatHistoryUrl(), {
+  return customFetch<AiChatHistoryResult>(getGetAiChatHistoryUrl(params), {
     ...options,
     method: "GET",
   });
 };
 
-export const getGetAiChatHistoryQueryKey = () => {
-  return [`/api/ai-chat/history`] as const;
+export const getGetAiChatHistoryQueryKey = (
+  params?: GetAiChatHistoryParams,
+) => {
+  return [`/api/ai-chat/history`, ...(params ? [params] : [])] as const;
 };
 
 export const getGetAiChatHistoryQueryOptions = <
   TData = Awaited<ReturnType<typeof getAiChatHistory>>,
   TError = ErrorType<void>,
->(options?: {
-  query?: UseQueryOptions<
-    Awaited<ReturnType<typeof getAiChatHistory>>,
-    TError,
-    TData
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}) => {
+>(
+  params?: GetAiChatHistoryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAiChatHistory>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
-  const queryKey = queryOptions?.queryKey ?? getGetAiChatHistoryQueryKey();
+  const queryKey =
+    queryOptions?.queryKey ?? getGetAiChatHistoryQueryKey(params);
 
   const queryFn: QueryFunction<
     Awaited<ReturnType<typeof getAiChatHistory>>
-  > = ({ signal }) => getAiChatHistory({ signal, ...requestOptions });
+  > = ({ signal }) => getAiChatHistory(params, { signal, ...requestOptions });
 
   return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
     Awaited<ReturnType<typeof getAiChatHistory>>,
@@ -626,15 +646,18 @@ export type GetAiChatHistoryQueryError = ErrorType<void>;
 export function useGetAiChatHistory<
   TData = Awaited<ReturnType<typeof getAiChatHistory>>,
   TError = ErrorType<void>,
->(options?: {
-  query?: UseQueryOptions<
-    Awaited<ReturnType<typeof getAiChatHistory>>,
-    TError,
-    TData
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
-  const queryOptions = getGetAiChatHistoryQueryOptions(options);
+>(
+  params?: GetAiChatHistoryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAiChatHistory>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAiChatHistoryQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

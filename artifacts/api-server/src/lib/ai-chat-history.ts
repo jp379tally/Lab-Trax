@@ -16,11 +16,19 @@ import { eq, and, desc, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { wrapDbError } from "./http";
 
-/** Max stored messages per user (50 turns = 100 messages). */
-export const MAX_HISTORY_ROWS = 100;
+/**
+ * Max stored messages per user. Raised from 100 → 1000 so that, with the
+ * "load earlier messages" pagination on both clients, long-time users can
+ * scroll meaningfully far back through their conversation rather than hitting
+ * the old 50-turn ceiling.
+ */
+export const MAX_HISTORY_ROWS = 1000;
 
 /** Number of recent messages to load and send to the AI / client as context. */
 export const HISTORY_LOAD_LIMIT = 50;
+
+/** Hard cap on a single history page so a client can't request unbounded rows. */
+export const HISTORY_PAGE_MAX = 100;
 
 export function generateHistoryId(): string {
   return randomBytes(16).toString("hex");
@@ -91,19 +99,74 @@ export async function persistAiChatExchange(
     );
 }
 
-/** Load recent history for a user, oldest-first for chat display. */
+export interface AiChatHistoryRow {
+  id: string;
+  role: string;
+  content: string;
+  knowledgeSectionIds: string[] | null;
+  retentionDisclaimer: boolean | null;
+  createdAt: Date;
+}
+
+export interface LoadAiChatHistoryOptions {
+  /** Max messages to return in this page (clamped to {@link HISTORY_PAGE_MAX}). */
+  limit?: number;
+  /**
+   * Cursor for "load earlier": the id of the oldest message the client already
+   * holds. Only messages strictly older than this row are returned, so repeated
+   * calls page backwards through the full stored history.
+   */
+  before?: string;
+}
+
+export interface LoadAiChatHistoryResult {
+  /** This page of messages, oldest-first for chat display. */
+  messages: AiChatHistoryRow[];
+  /** True when older messages exist before the oldest row in this page. */
+  hasMore: boolean;
+}
+
+/**
+ * Load a page of history for a user, oldest-first for chat display.
+ *
+ * Without `before` this returns the most recent {@link HISTORY_LOAD_LIMIT}
+ * messages (the original behaviour). With `before` set to the oldest message id
+ * the client currently holds, it returns the page of messages immediately
+ * older than that, enabling a "load earlier messages" affordance. `hasMore`
+ * reports whether still-older messages remain so the client can hide the
+ * affordance at the start of the conversation.
+ */
 export async function loadAiChatHistory(
   userId: string,
-): Promise<
-  Array<{
-    id: string;
-    role: string;
-    content: string;
-    knowledgeSectionIds: string[] | null;
-    retentionDisclaimer: boolean | null;
-    createdAt: Date;
-  }>
-> {
+  opts: LoadAiChatHistoryOptions = {},
+): Promise<LoadAiChatHistoryResult> {
+  const requested = opts.limit ?? HISTORY_LOAD_LIMIT;
+  const limit = Math.max(1, Math.min(HISTORY_PAGE_MAX, Math.floor(requested)));
+
+  // Resolve the cursor row (oldest message the client already holds) so we can
+  // page strictly backwards from it. Scoped to userId so a foreign id is inert.
+  let cursor: { createdAt: Date; id: string } | null = null;
+  if (opts.before) {
+    const [c] = await db
+      .select({ createdAt: aiChatHistory.createdAt, id: aiChatHistory.id })
+      .from(aiChatHistory)
+      .where(
+        and(eq(aiChatHistory.userId, userId), eq(aiChatHistory.id, opts.before)),
+      )
+      .limit(1);
+    if (c) cursor = { createdAt: c.createdAt, id: c.id };
+  }
+
+  const conditions = [eq(aiChatHistory.userId, userId)];
+  if (cursor) {
+    // (createdAt, id) tuple comparison keeps paging stable even if two rows
+    // share a createdAt timestamp.
+    conditions.push(
+      sql`(${aiChatHistory.createdAt} < ${cursor.createdAt} OR (${aiChatHistory.createdAt} = ${cursor.createdAt} AND ${aiChatHistory.id} < ${cursor.id}))`,
+    );
+  }
+
+  // Fetch one extra row to detect whether older messages remain.
   const rows = await db
     .select({
       id: aiChatHistory.id,
@@ -114,9 +177,11 @@ export async function loadAiChatHistory(
       createdAt: aiChatHistory.createdAt,
     })
     .from(aiChatHistory)
-    .where(eq(aiChatHistory.userId, userId))
-    .orderBy(desc(aiChatHistory.createdAt))
-    .limit(HISTORY_LOAD_LIMIT);
+    .where(and(...conditions))
+    .orderBy(desc(aiChatHistory.createdAt), desc(aiChatHistory.id))
+    .limit(limit + 1);
 
-  return rows.reverse();
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  return { messages: page.reverse(), hasMore };
 }

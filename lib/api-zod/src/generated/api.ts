@@ -80,6 +80,23 @@ export const AssignLabInboxFileResponse = zod.object({
 /**
  * @summary Fetch recent AI chat history for the authenticated user
  */
+export const getAiChatHistoryQueryLimitMax = 100;
+
+export const GetAiChatHistoryQueryParams = zod.object({
+  limit: zod.coerce
+    .number()
+    .min(1)
+    .max(getAiChatHistoryQueryLimitMax)
+    .optional()
+    .describe("Max messages to return in this page (clamped server-side)."),
+  before: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      'Cursor for \"load earlier\": the id of the oldest message the client already holds. Returns only messages older than this row.',
+    ),
+});
+
 export const GetAiChatHistoryResponse = zod.object({
   messages: zod.array(
     zod.object({
@@ -91,6 +108,10 @@ export const GetAiChatHistoryResponse = zod.object({
       retentionDisclaimer: zod.boolean().nullish(),
     }),
   ),
+  hasMore: zod
+    .boolean()
+    .optional()
+    .describe("True when older messages exist before the oldest returned row."),
 });
 
 /**

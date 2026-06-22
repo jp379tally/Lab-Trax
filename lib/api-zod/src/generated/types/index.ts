@@ -132,6 +132,7 @@ export * from "./emailPreferencesResult";
 export * from "./extractedRxData";
 export * from "./finalizeLabInboxSessionInput";
 export * from "./generateInvoiceForCaseBody";
+export * from "./getAiChatHistoryParams";
 export * from "./getAiMemoryCandidatesParams";
 export * from "./getAiMemoryCandidatesStatus";
 export * from "./getAiMemoryKind";
