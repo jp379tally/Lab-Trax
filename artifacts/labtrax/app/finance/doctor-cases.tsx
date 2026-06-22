@@ -60,9 +60,16 @@ interface OrgDetails {
   zip?: string | null;
 }
 
+interface InvoiceSummary {
+  totalInvoiced: number;
+  totalPaid: number;
+  outstanding: number;
+}
+
 type ListItem =
   | { kind: "sectionHeader"; label: string }
   | { kind: "case"; data: CaseEntry }
+  | { kind: "invoiceSummary"; summary: InvoiceSummary }
   | { kind: "invoiceFilterRow" }
   | { kind: "invoice"; data: InvoiceEntry };
 
@@ -222,12 +229,20 @@ export default function DoctorCasesScreen() {
       matchesInvoiceFilter(inv, invoiceFilter),
     );
 
+    // Summary computed from all scoped invoices (full set, ignoring the active filter)
+    // so the snapshot always reflects the doctor's complete financial picture.
+    const totalInvoiced = scopedInvoices.reduce((sum, inv) => sum + Number(inv.total ?? 0), 0);
+    const outstanding = scopedInvoices.reduce((sum, inv) => sum + Number(inv.balanceDue ?? 0), 0);
+    const totalPaid = totalInvoiced - outstanding;
+    const summary: InvoiceSummary = { totalInvoiced, totalPaid, outstanding };
+
     const result: ListItem[] = [];
     if (cases.length > 0) {
       result.push({ kind: "sectionHeader", label: `Cases (${cases.length})` });
       for (const c of cases) result.push({ kind: "case", data: c });
     }
     if (scopedInvoices.length > 0) {
+      result.push({ kind: "invoiceSummary", summary });
       result.push({ kind: "invoiceFilterRow" });
       const filterLabel =
         invoiceFilter !== "all"
@@ -269,6 +284,31 @@ export default function DoctorCasesScreen() {
       return (
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionLabel}>{item.label}</Text>
+        </View>
+      );
+    }
+    if (item.kind === "invoiceSummary") {
+      const { totalInvoiced, totalPaid, outstanding } = item.summary;
+      return (
+        <View style={styles.summaryCard}>
+          <View style={styles.summaryCol}>
+            <Text style={styles.summaryLabel}>Invoiced</Text>
+            <Text style={styles.summaryValue}>{formatMoney(totalInvoiced)}</Text>
+          </View>
+          <View style={styles.summarySep} />
+          <View style={styles.summaryCol}>
+            <Text style={styles.summaryLabel}>Paid</Text>
+            <Text style={[styles.summaryValue, totalPaid > 0 && styles.summaryValuePaid]}>
+              {formatMoney(totalPaid)}
+            </Text>
+          </View>
+          <View style={styles.summarySep} />
+          <View style={styles.summaryCol}>
+            <Text style={styles.summaryLabel}>Outstanding</Text>
+            <Text style={[styles.summaryValue, outstanding > 0 && styles.summaryValueDue]}>
+              {formatMoney(outstanding)}
+            </Text>
+          </View>
         </View>
       );
     }
@@ -321,29 +361,32 @@ export default function DoctorCasesScreen() {
         </Card>
       );
     }
-    const inv = item.data;
-    return (
-      <Card style={styles.row} onPress={() => router.push(`/invoice-editor/${inv.id}` as never)}>
-        <View style={styles.rowMain}>
-          <Text style={styles.rowName} numberOfLines={1}>
-            {inv.invoiceNumber || "Invoice"}
-          </Text>
-          <Text style={styles.rowMeta} numberOfLines={1}>
-            Issued {formatDate(inv.issuedAt)} · Due {formatDate(inv.dueAt)}
-          </Text>
-        </View>
-        <View style={styles.rowRight}>
-          <Text style={styles.rowAmount}>
-            {formatMoney(Number(inv.balanceDue ?? inv.total ?? 0))}
-          </Text>
-          <StatusBadge
-            label={titleCase(inv.status ?? "unpaid")}
-            variant={invoiceVariant(inv.status)}
-            size="sm"
-          />
-        </View>
-      </Card>
-    );
+    if (item.kind === "invoice") {
+      const inv = item.data;
+      return (
+        <Card style={styles.row} onPress={() => router.push(`/invoice-editor/${inv.id}` as never)}>
+          <View style={styles.rowMain}>
+            <Text style={styles.rowName} numberOfLines={1}>
+              {inv.invoiceNumber || "Invoice"}
+            </Text>
+            <Text style={styles.rowMeta} numberOfLines={1}>
+              Issued {formatDate(inv.issuedAt)} · Due {formatDate(inv.dueAt)}
+            </Text>
+          </View>
+          <View style={styles.rowRight}>
+            <Text style={styles.rowAmount}>
+              {formatMoney(Number(inv.balanceDue ?? inv.total ?? 0))}
+            </Text>
+            <StatusBadge
+              label={titleCase(inv.status ?? "unpaid")}
+              variant={invoiceVariant(inv.status)}
+              size="sm"
+            />
+          </View>
+        </Card>
+      );
+    }
+    return null;
   }
 
   return (
@@ -453,6 +496,7 @@ export default function DoctorCasesScreen() {
           keyExtractor={(item, i) => {
             if (item.kind === "sectionHeader") return `section-${i}`;
             if (item.kind === "invoiceFilterRow") return "invoice-filter-row";
+            if (item.kind === "invoiceSummary") return "invoice-summary";
             return `${item.kind}-${item.data.id}`;
           }}
           renderItem={renderItem}
@@ -540,6 +584,46 @@ function makeStyles(c: ThemeColors) {
       flex: 1,
     },
     infoLink: {
+      color: c.tint,
+    },
+    summaryCard: {
+      flexDirection: "row",
+      alignItems: "stretch",
+      marginHorizontal: Spacing.lg,
+      marginTop: Spacing.sm,
+      marginBottom: Spacing.xs,
+      backgroundColor: c.surface,
+      borderRadius: Radius.md,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      overflow: "hidden",
+    },
+    summaryCol: {
+      flex: 1,
+      alignItems: "center",
+      paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.xs,
+      gap: 3,
+    },
+    summarySep: {
+      width: StyleSheet.hairlineWidth,
+      backgroundColor: c.border,
+      alignSelf: "stretch",
+    },
+    summaryLabel: {
+      ...Typography.caption,
+      color: c.textTertiary,
+      textAlign: "center" as const,
+    },
+    summaryValue: {
+      ...Typography.bodySemibold,
+      color: c.text,
+      textAlign: "center" as const,
+    },
+    summaryValuePaid: {
+      color: "#22c55e",
+    },
+    summaryValueDue: {
       color: c.tint,
     },
     filterScroll: {
