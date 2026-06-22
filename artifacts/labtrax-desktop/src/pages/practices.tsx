@@ -20,6 +20,7 @@ interface PracticeMember {
     firstName?: string | null;
     lastName?: string | null;
     initials?: string | null;
+    platformAccountNumber?: string | null;
   } | null;
 }
 
@@ -2903,16 +2904,22 @@ function PracticeDoctorsSection({
   });
   const allOverrides = overridesQuery.data?.overrides ?? [];
 
-  // Registered doctor accounts at this practice (gives platform account numbers).
-  const eligibleQuery = useQuery({
-    queryKey: ["organization", providerOrg.id, "eligible-doctors"],
+  // Actual doctor accounts active at this practice (gives platform account numbers).
+  const membersQuery = useQuery({
+    queryKey: ["organization", providerOrg.id, "members"],
     queryFn: () =>
-      apiFetch<EligibleDoctor[]>(
-        `/organizations/${providerOrg.id}/eligible-doctors`,
+      apiFetch<PracticeMember[]>(
+        `/organizations/${providerOrg.id}/members`,
       ),
     enabled: !!currentUserId,
   });
-  const registeredDoctors = (eligibleQuery.data ?? []).filter((d) => !d.virtual);
+  const registeredDoctors = (membersQuery.data ?? []).map((m) => ({
+    id: m.userId,
+    username: m.user?.username ?? "",
+    firstName: m.user?.firstName ?? null,
+    lastName: m.user?.lastName ?? null,
+    platformAccountNumber: m.user?.platformAccountNumber ?? null,
+  }));
 
   // Merge all sources: registered accounts → case history → existing overrides.
   // Priority: registered name wins over case-string; account number shown when available.
@@ -2921,9 +2928,7 @@ function PracticeDoctorsSection({
 
     // 1. Registered doctor accounts (have platform account numbers)
     for (const d of registeredDoctors) {
-      const name = [d.firstName, d.lastName].filter(Boolean).join(" ").trim() ||
-        (d.doctorName || "").trim() ||
-        d.username;
+      const name = [d.firstName, d.lastName].filter(Boolean).join(" ").trim() || d.username;
       if (!name) continue;
       const k = name.toLowerCase();
       if (!map.has(k)) {
@@ -2960,7 +2965,7 @@ function PracticeDoctorsSection({
     connectionsQuery.isLoading ||
     overridesQuery.isLoading ||
     casesQuery.isLoading ||
-    eligibleQuery.isLoading;
+    membersQuery.isLoading;
 
   return (
     <section className="space-y-3">
