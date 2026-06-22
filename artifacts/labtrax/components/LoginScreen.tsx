@@ -82,6 +82,8 @@ export default function LoginScreen() {
   const [signUpError, setSignUpError] = useState<string | null>(null);
   const [signUpLoading, setSignUpLoading] = useState(false);
   const [passwordTouched, setPasswordTouched] = useState(false);
+  const [emailCheckLoading, setEmailCheckLoading] = useState(false);
+  const [emailConflictError, setEmailConflictError] = useState<string | null>(null);
 
   const [phoneCode, setPhoneCode] = useState("");
   const [emailCode, setEmailCode] = useState("");
@@ -168,6 +170,8 @@ export default function LoginScreen() {
     setWantsUpdates(false);
     setSignUpError(null);
     setPasswordTouched(false);
+    setEmailCheckLoading(false);
+    setEmailConflictError(null);
     setPhoneCode("");
     setEmailCode("");
     setError(null);
@@ -329,6 +333,22 @@ export default function LoginScreen() {
     }
   }
 
+  async function handleEmailBlur() {
+    const email = signUpEmail.trim();
+    if (!email || !email.includes("@")) return;
+    setEmailCheckLoading(true);
+    setEmailConflictError(null);
+    try {
+      const res = await apiRequest("GET", `/api/auth/check-email?email=${encodeURIComponent(email)}`);
+      const data = await res.json();
+      if (data?.data?.available === false) {
+        setEmailConflictError("An account with this email already exists.");
+      }
+    } catch {
+    }
+    setEmailCheckLoading(false);
+  }
+
   async function handleCredentialsNext() {
     if (!signUpUsername.trim()) {
       setSignUpError("Please enter a username.");
@@ -352,6 +372,9 @@ export default function LoginScreen() {
     }
     if (!signUpEmail.trim() || !signUpEmail.includes("@")) {
       setSignUpError("Please enter a valid email address.");
+      return;
+    }
+    if (emailConflictError) {
       return;
     }
 
@@ -2069,6 +2092,7 @@ export default function LoginScreen() {
   }
 
   function renderHipaaDisclaimer() {
+    const isEmailConflict = !!signUpError && signUpError.includes("email already exists");
     return (
       <View style={styles.formSection}>
         {signUpError && (
@@ -2076,6 +2100,17 @@ export default function LoginScreen() {
             <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
             <Text style={styles.errorText}>{signUpError}</Text>
           </View>
+        )}
+        {isEmailConflict && (
+          <Pressable
+            onPress={() => { setSignUpStep("credentials"); setSignUpError(null); }}
+            style={({ pressed }) => [{ alignSelf: "center", marginTop: 8, opacity: pressed ? 0.6 : 1 }]}
+            testID="hipaa-fix-email-link"
+          >
+            <Text style={{ color: "#60A5FA", fontSize: 14, fontFamily: "Inter_500Medium", textDecorationLine: "underline" }}>
+              Go back to fix your email
+            </Text>
+          </Pressable>
         )}
 
         <View style={styles.hipaaCard}>
@@ -2278,7 +2313,8 @@ export default function LoginScreen() {
             <TextInput
               style={styles.input}
               value={signUpEmail}
-              onChangeText={(t) => { setSignUpEmail(t); setSignUpError(null); }}
+              onChangeText={(t) => { setSignUpEmail(t); setSignUpError(null); setEmailConflictError(null); }}
+              onBlur={handleEmailBlur}
               placeholder="Email Address"
               placeholderTextColor="rgba(255,255,255,0.3)"
               autoCapitalize="none"
@@ -2289,7 +2325,18 @@ export default function LoginScreen() {
               editable={!signUpLoading}
               testID="signup-email"
             />
+            {emailCheckLoading && (
+              <ActivityIndicator size="small" color="rgba(255,255,255,0.4)" style={{ marginRight: 8 }} />
+            )}
           </View>
+          {emailConflictError && (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4, paddingTop: 4 }}>
+              <Ionicons name="alert-circle" size={14} color={Colors.light.error} />
+              <Text style={{ color: Colors.light.error, fontSize: 12, fontFamily: "Inter_400Regular", flex: 1 }} testID="email-conflict-error">
+                {emailConflictError}
+              </Text>
+            </View>
+          )}
 
           <View style={styles.inputWrapper}>
             <Ionicons name="lock-closed-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
@@ -2351,8 +2398,8 @@ export default function LoginScreen() {
 
         <Pressable
           onPress={handleCredentialsNext}
-          disabled={signUpLoading}
-          style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }, signUpLoading && { opacity: 0.6 }]}
+          disabled={signUpLoading || emailCheckLoading || !!emailConflictError}
+          style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }, (signUpLoading || emailCheckLoading || !!emailConflictError) && { opacity: 0.6 }]}
           testID="signup-next-btn"
         >
           {signUpLoading ? (

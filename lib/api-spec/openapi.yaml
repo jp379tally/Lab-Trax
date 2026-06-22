@@ -2802,6 +2802,27 @@ paths:
       responses:
         "200":
           description: Marked as read
+  /auth/check-email:
+    get:
+      operationId: checkEmailAvailability
+      tags: [auth]
+      summary: Check if an email address is already registered (unauthenticated)
+      parameters:
+        - in: query
+          name: email
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Availability result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckEmailResult"
+        "400":
+          description: Missing or invalid email
+        "429":
+          description: Rate limited
   /auth/register:
     post:
       operationId: registerUser
@@ -5298,6 +5319,16 @@ components:
             totalFound:
               type: integer
               description: Total number of hits before the cap was applied. Only present when truncated is true.
+    CheckEmailResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [available]
+          properties:
+            available: { type: boolean }
     SuccessResult:
       type: object
       required: [success]

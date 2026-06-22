@@ -3358,6 +3358,20 @@ export const MarkConversationReadBody = zod.object({
 });
 
 /**
+ * @summary Check if an email address is already registered (unauthenticated)
+ */
+export const CheckEmailAvailabilityQueryParams = zod.object({
+  email: zod.coerce.string(),
+});
+
+export const CheckEmailAvailabilityResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    available: zod.boolean(),
+  }),
+});
+
+/**
  * @summary Register a new user account (base role only; 14-day trial starts)
  */
 export const registerUserBodyUsernameMin = 3;

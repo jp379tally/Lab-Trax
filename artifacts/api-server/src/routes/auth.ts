@@ -63,6 +63,11 @@ const registerRateLimit = createRateLimit({
   max: 5,
   message: "Too many registration attempts. Please wait a minute and try again.",
 });
+const checkEmailRateLimit = createRateLimit({
+  windowMs: 60_000,
+  max: 20,
+  message: "Too many email checks. Please wait a minute and try again.",
+});
 
 const profilePhotoUpload = multer({
   storage: multer.memoryStorage(),
@@ -299,6 +304,22 @@ const registerSchema = z.object({
     .optional(),
   clientType: z.enum(["web", "mobile", "desktop"]).optional(),
 });
+
+router.get(
+  "/check-email",
+  checkEmailRateLimit,
+  asyncHandler(async (req, res) => {
+    const email = typeof req.query.email === "string" ? req.query.email.trim() : "";
+    if (!email || !email.includes("@")) {
+      throw new HttpError(400, "A valid email address is required.");
+    }
+    const match = await db.query.users.findFirst({
+      where: sql`lower(${users.email}) = ${email.toLowerCase()}`,
+      columns: { id: true },
+    });
+    ok(res, { available: !match });
+  })
+);
 
 router.post(
   "/register",
