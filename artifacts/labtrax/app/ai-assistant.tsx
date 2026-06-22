@@ -900,78 +900,151 @@ export default function AiAssistantScreen() {
     [],
   );
 
-  /** Call the AI endpoint with a given message list and append the response. */
-  const dispatchAiRequest = useCallback(
+  /** Stream a reply from /ai-agent/stream (SSE) and update the UI token-by-token. */
+  const dispatchAiStream = useCallback(
     async (currentMessages: ChatMessage[]) => {
       setSending(true);
       scrollToBottom();
-      try {
-        const res = await resilientFetch("/api/ai-agent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: buildHistory(currentMessages) }),
-        });
 
-        if (!res.ok) {
-          const status = res.status;
-          const errText =
-            status === 503
-              ? "AI assistant is not set up on this server. Contact your administrator."
-              : status === 429
-              ? "Please slow down — try again in a moment."
-              : "Something went wrong. Please try again.";
-          setMessages((prev) => [
-            ...prev,
-            { id: genId(), role: "assistant", content: errText, isError: true },
-          ]);
+      const streamingId = genId();
+      const streamingMsg: ChatMessage = { id: streamingId, role: "assistant", content: "" };
+      setMessages([...currentMessages, streamingMsg]);
+      scrollToBottom();
+
+      try {
+        const token = await refreshAndGetAccessToken();
+        const baseUrl = getApiUrl();
+        const url = new URL("api/ai-agent/stream", baseUrl).toString();
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+
+        let resp: Response;
+        try {
+          resp = await fetch(url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ messages: buildHistory(currentMessages) }),
+          });
+        } catch {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === streamingId
+                ? { ...m, content: "Sorry, I'm having trouble connecting right now. Please try again.", isError: true }
+                : m,
+            ),
+          );
           scrollToBottom();
           return;
         }
 
-        const data = (await res.json()) as ApiReply;
-
-        let assistantMsg: ChatMessage;
-        if (data.type === "proposed_action" && data.summary && data.actionId) {
-          assistantMsg = {
-            id: genId(),
-            role: "assistant",
-            content: "",
-            proposedAction: {
-              actionId: data.actionId,
-              toolName: data.toolName ?? "",
-              summary: data.summary,
-              state: "pending",
-              expiresAt: Date.now() + PENDING_TTL_MS,
-            },
-          };
-        } else {
-          assistantMsg = {
-            id: genId(),
-            role: "assistant",
-            content: data.content ?? "I couldn't generate a response. Please try again.",
-            ...(data.toolOutputs && data.toolOutputs.length > 0
-              ? { toolOutputs: data.toolOutputs }
-              : {}),
-            ...(data.disclaimer ? { disclaimer: data.disclaimer } : {}),
-          };
+        if (!resp.ok) {
+          const errText =
+            resp.status === 503
+              ? "AI assistant is not set up on this server. Contact your administrator."
+              : resp.status === 429
+              ? "Please slow down — try again in a moment."
+              : "Something went wrong. Please try again.";
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === streamingId ? { ...m, content: errText, isError: true } : m,
+            ),
+          );
+          scrollToBottom();
+          return;
         }
 
-        setMessages((prev) => [...prev, assistantMsg]);
+        if (!resp.body) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === streamingId
+                ? { ...m, content: "Something went wrong. Please try again.", isError: true }
+                : m,
+            ),
+          );
+          scrollToBottom();
+          return;
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let fullContent = "";
+        let finalDisclaimer: string | undefined;
+        let proposedActionHandled = false;
+
+        outer: while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop()!;
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            let evt: Record<string, unknown>;
+            try { evt = JSON.parse(line.slice(6)) as Record<string, unknown>; } catch { continue; }
+
+            if (typeof evt.token === "string") {
+              fullContent += evt.token;
+              setMessages((prev) =>
+                prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
+              );
+            } else if (evt.error) {
+              const errMsg = typeof evt.error === "string" ? evt.error : "Something went wrong. Please try again.";
+              setMessages((prev) =>
+                prev.map((m) => m.id === streamingId ? { ...m, content: errMsg, isError: true } : m),
+              );
+              scrollToBottom();
+              return;
+            } else if (evt.done) {
+              if (typeof evt.disclaimer === "string") finalDisclaimer = evt.disclaimer;
+            } else if (evt.proposed_action && typeof evt.proposed_action === "object") {
+              const pa = evt.proposed_action as { actionId?: string; toolName?: string; summary?: string };
+              if (pa.actionId && pa.summary) {
+                proposedActionHandled = true;
+                const actionMsg: ChatMessage = {
+                  id: streamingId,
+                  role: "assistant",
+                  content: fullContent || "",
+                  proposedAction: {
+                    actionId: pa.actionId,
+                    toolName: pa.toolName ?? "",
+                    summary: pa.summary,
+                    state: "pending",
+                    expiresAt: Date.now() + PENDING_TTL_MS,
+                  },
+                };
+                setMessages((prev) =>
+                  prev.map((m) => m.id === streamingId ? actionMsg : m),
+                );
+                scrollToBottom();
+                break outer;
+              }
+            }
+          }
+        }
+
+        if (proposedActionHandled) return;
+
+        if (!fullContent) fullContent = "I couldn't generate a response. Please try again.";
+        const finalMsg: ChatMessage = {
+          id: streamingId,
+          role: "assistant",
+          content: fullContent,
+          ...(finalDisclaimer ? { disclaimer: finalDisclaimer } : {}),
+        };
+        setMessages((prev) => prev.map((m) => m.id === streamingId ? finalMsg : m));
         scrollToBottom();
-        // Auto-play TTS in voice mode for plain text replies
-        if (voiceMode && assistantMsg.content && !assistantMsg.proposedAction) {
-          void speakText(assistantMsg.content);
+        if (voiceMode && fullContent) {
+          void speakText(fullContent);
         }
       } catch {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: genId(),
-            role: "assistant",
-            content: "Sorry, I'm having trouble connecting right now. Please try again.",
-            isError: true,
-          },
-        ]);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === streamingId
+              ? { ...m, content: "Sorry, I'm having trouble connecting right now. Please try again.", isError: true }
+              : m,
+          ),
+        );
         scrollToBottom();
       } finally {
         setSending(false);
@@ -1024,7 +1097,7 @@ export default function AiAssistantScreen() {
       setMessages(updatedMessages);
 
       if (data.success) {
-        await dispatchAiRequest(updatedMessages);
+        await dispatchAiStream(updatedMessages);
       }
     } catch {
       setMessages((prev) =>
@@ -1042,7 +1115,7 @@ export default function AiAssistantScreen() {
         ),
       );
     }
-  }, [dispatchAiRequest]);
+  }, [dispatchAiStream]);
 
   const rejectAction = useCallback(async (actionId: string) => {
     setMessages((prev) =>
@@ -1073,9 +1146,9 @@ export default function AiAssistantScreen() {
       setMessages(nextMessages);
       setInput("");
       scrollToBottom();
-      await dispatchAiRequest(nextMessages);
+      await dispatchAiStream(nextMessages);
     },
-    [messages, sending, dispatchAiRequest, scrollToBottom],
+    [messages, sending, dispatchAiStream, scrollToBottom],
   );
 
   // Keep the ref current so stopRecording (defined earlier) can always call
