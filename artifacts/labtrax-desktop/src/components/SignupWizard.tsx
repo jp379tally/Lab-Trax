@@ -306,10 +306,11 @@ export default function SignupWizard({ onCancel }: Props) {
   const stepSequence = useMemo<Step[]>(() => {
     if (userType === "lab") return LAB_STEPS;
     if (userType === "provider") {
-      return wantsUpdates ? PROVIDER_STEPS_WITH_UPDATES : PROVIDER_STEPS_NO_UPDATES;
+      const base = wantsUpdates ? PROVIDER_STEPS_WITH_UPDATES : PROVIDER_STEPS_NO_UPDATES;
+      return claimMode ? base.filter((s) => s !== "join_group" && s !== "plan_select") : base;
     }
     return ["welcome", "credentials", "user_type"];
-  }, [userType, wantsUpdates]);
+  }, [userType, wantsUpdates, claimMode]);
 
   const currentIdx = Math.max(0, stepSequence.indexOf(step));
   const totalSteps = stepSequence.length;
@@ -502,7 +503,9 @@ export default function SignupWizard({ onCancel }: Props) {
   function selectRole(role: "user" | "admin") {
     setSelectedRole(role);
     setError(null);
-    setStep("join_group");
+    const roleIdx = stepSequence.indexOf("role_select");
+    const next = stepSequence[roleIdx + 1] ?? "join_group";
+    setStep(next);
   }
 
   async function completeRegistration() {
