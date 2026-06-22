@@ -4,6 +4,7 @@ import {
   Animated,
   FlatList,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -22,7 +23,13 @@ import { getToolCallLabel } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch, getApiUrl, refreshAndGetAccessToken } from "@/lib/query-client";
-import { loadChatSession, saveChatSession, clearChatSession } from "@/lib/ai-chat-session";
+import {
+  loadChatSessions,
+  saveChatSession,
+  deleteChatSession,
+  generateSessionId,
+  type StoredChatSession,
+} from "@/lib/ai-chat-session";
 
 const AI_VOICE_MODE_KEY = "labtrax_ai_voice_mode_v1";
 
@@ -43,6 +50,30 @@ function getJwtUserId(token: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Sanitize messages when loading from storage.
+ * Pending/confirmed proposed actions expire server-side after 5 min, so any
+ * that survived a navigation round-trip must be shown as expired.
+ */
+function sanitizeRestoredMessages(msgs: ChatMessage[]): ChatMessage[] {
+  return msgs.map((m) => {
+    if (
+      m.proposedAction &&
+      (m.proposedAction.state === "pending" || m.proposedAction.state === "confirmed")
+    ) {
+      return {
+        ...m,
+        proposedAction: {
+          ...m.proposedAction,
+          state: "done" as const,
+          error: "This action expired before it could be confirmed.",
+        },
+      };
+    }
+    return m;
+  });
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -93,6 +124,33 @@ let _msgCounter = 0;
 function genId() {
   _msgCounter += 1;
   return `msg-${Date.now()}-${_msgCounter}`;
+}
+
+// ─── Session list helpers ──────────────────────────────────────────────────────
+
+/** "Just now" / "5m ago" / "3h ago" / "2d ago" relative-time label. */
+function formatRelativeTime(ms: number): string {
+  const diff = Date.now() - ms;
+  const mins = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${days}d ago`;
+}
+
+/** First user message (truncated) as a one-line preview of a stored session. */
+function getSessionPreview(session: StoredChatSession<ChatMessage>): string {
+  const first = session.messages.find((m) => m.role === "user");
+  const text = first?.content ?? "";
+  if (!text) return "Empty conversation";
+  return text.length > 60 ? text.slice(0, 57) + "…" : text;
+}
+
+/** Count of user-authored messages in a stored session. */
+function countUserMessages(session: StoredChatSession<ChatMessage>): number {
+  return session.messages.filter((m) => m.role === "user").length;
 }
 
 // ─── Voice helpers ────────────────────────────────────────────────────────────
@@ -709,6 +767,14 @@ export default function AiAssistantScreen() {
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MSG]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+
+  // ─── Session list state ──────────────────────────────────────────────────────
+  const [allSessions, setAllSessions] = useState<StoredChatSession<ChatMessage>[]>([]);
+  const [showSessions, setShowSessions] = useState(false);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  // The active conversation id. Generated lazily on mount; a session row is only
+  // written once it has at least one real (non-welcome) message.
+  const currentSessionIdRef = useRef<string | null>(null);
   const [streamingToolCall, setStreamingToolCall] = useState<string | null>(null);
   const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
@@ -743,9 +809,10 @@ export default function AiAssistantScreen() {
     messagesRef.current = messages;
   }, [messages]);
 
-  // Restore the last chat session on mount (or leave the welcome message when
-  // there is none / it expired). History is keyed per user so switching
-  // accounts on the same device never mixes one user's chat into another's.
+  // Restore past chat sessions on mount and reopen the most recent one (or leave
+  // the welcome message when there are none). History is keyed per user so
+  // switching accounts on the same device never mixes one user's chats into
+  // another's. A fresh session id is generated when there is nothing to resume.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -754,13 +821,19 @@ export default function AiAssistantScreen() {
         const token = await refreshAndGetAccessToken();
         userId = getJwtUserId(token);
       } catch {
-        // Non-fatal: fall back to the unkeyed session.
+        // Non-fatal: fall back to the unkeyed sessions.
       }
       chatHistoryUserIdRef.current = userId;
       try {
-        const stored = await loadChatSession<ChatMessage>(userId);
-        if (!cancelled && stored && stored.length > 0) {
-          setMessages([WELCOME_MSG, ...stored]);
+        const stored = await loadChatSessions<ChatMessage>(userId);
+        if (cancelled) return;
+        setAllSessions(stored);
+        const latest = stored[0];
+        if (latest && latest.messages.length > 0) {
+          currentSessionIdRef.current = latest.id;
+          setMessages([WELCOME_MSG, ...sanitizeRestoredMessages(latest.messages)]);
+        } else {
+          currentSessionIdRef.current = generateSessionId();
         }
       } finally {
         if (!cancelled) sessionLoadedRef.current = true;
@@ -771,13 +844,17 @@ export default function AiAssistantScreen() {
     };
   }, []);
 
-  // Persist the conversation after it settles (i.e. once a reply finishes or a
-  // proposed action resolves). Skipped while sending and before the initial
+  // Persist the active conversation after it settles (i.e. once a reply finishes
+  // or a proposed action resolves). Skipped while sending and before the initial
   // load completes; welcome-only conversations are a no-op inside saveChatSession.
   useEffect(() => {
     if (!sessionLoadedRef.current) return;
     if (sending) return;
-    void saveChatSession(messages, chatHistoryUserIdRef.current);
+    const sessionId = currentSessionIdRef.current;
+    if (!sessionId) return;
+    void saveChatSession(messages, sessionId, chatHistoryUserIdRef.current).then(
+      (updated) => setAllSessions(updated),
+    );
   }, [messages, sending]);
 
   // Fetch minimal case info when caseId is provided so we can display the context pill.
@@ -813,6 +890,46 @@ export default function AiAssistantScreen() {
     })();
     return () => { cancelled = true; };
   }, [caseId]);
+
+  // ─── Session actions ───────────────────────────────────────────────────────
+
+  /** Start a fresh conversation, keeping past ones saved. */
+  const startNewChat = useCallback(() => {
+    currentSessionIdRef.current = generateSessionId();
+    setMessages([WELCOME_MSG]);
+    setInput("");
+    setDeletingSessionId(null);
+    setShowSessions(false);
+  }, []);
+
+  /** Reopen a stored conversation, restoring its messages. */
+  const loadSession = useCallback((session: StoredChatSession<ChatMessage>) => {
+    currentSessionIdRef.current = session.id;
+    setMessages([WELCOME_MSG, ...sanitizeRestoredMessages(session.messages)]);
+    setInput("");
+    setDeletingSessionId(null);
+    setShowSessions(false);
+  }, []);
+
+  /** Two-tap delete: first tap arms, second tap removes the session. */
+  const handleDeleteSession = useCallback(
+    (sessionId: string) => {
+      if (deletingSessionId !== sessionId) {
+        setDeletingSessionId(sessionId);
+        return;
+      }
+      setDeletingSessionId(null);
+      void deleteChatSession<ChatMessage>(sessionId, chatHistoryUserIdRef.current).then(
+        (remaining) => setAllSessions(remaining),
+      );
+      if (sessionId === currentSessionIdRef.current) {
+        currentSessionIdRef.current = generateSessionId();
+        setMessages([WELCOME_MSG]);
+        setInput("");
+      }
+    },
+    [deletingSessionId],
+  );
 
   // Load voice mode preference from AsyncStorage on mount.
   useEffect(() => {
@@ -1374,19 +1491,104 @@ export default function AiAssistantScreen() {
               color={voiceMode ? colors.tint : colors.textSecondary}
             />
           </Pressable>
+          {allSessions.length > 0 && (
+            <Pressable
+              onPress={() => { setShowSessions(true); setDeletingSessionId(null); }}
+              hitSlop={10}
+              style={s.clearBtn}
+              accessibilityLabel="Past conversations"
+            >
+              <Ionicons name="time-outline" size={20} color={colors.textSecondary} />
+            </Pressable>
+          )}
           <Pressable
-            onPress={() => {
-              setMessages([WELCOME_MSG]);
-              void clearChatSession(chatHistoryUserIdRef.current);
-            }}
+            onPress={startNewChat}
             hitSlop={10}
             style={s.clearBtn}
-            accessibilityLabel="Clear chat"
+            accessibilityLabel="New chat"
           >
-            <Ionicons name="refresh-outline" size={20} color={colors.textSecondary} />
+            <Ionicons name="create-outline" size={20} color={colors.textSecondary} />
           </Pressable>
         </View>
       </View>
+
+      {/* Past conversations picker */}
+      <Modal
+        visible={showSessions}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowSessions(false)}
+      >
+        <Pressable style={s.sessionsBackdrop} onPress={() => setShowSessions(false)}>
+          <Pressable
+            style={[s.sessionsSheet, { backgroundColor: colors.surface, borderColor: colors.border, marginTop: insets.top + 56 }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={[s.sessionsHeader, { borderBottomColor: colors.border }]}>
+              <Text style={[s.sessionsTitle, { color: colors.text }]}>Past Conversations</Text>
+              <Pressable
+                onPress={startNewChat}
+                hitSlop={8}
+                style={s.sessionsNewBtn}
+                accessibilityLabel="New chat"
+              >
+                <Ionicons name="create-outline" size={14} color={colors.tint} />
+                <Text style={[s.sessionsNewBtnText, { color: colors.tint }]}>New chat</Text>
+              </Pressable>
+            </View>
+            <FlatList
+              data={allSessions}
+              keyExtractor={(item) => item.id}
+              style={{ maxHeight: 360 }}
+              ListEmptyComponent={
+                <Text style={[s.sessionsEmpty, { color: colors.textSecondary }]}>
+                  No past conversations yet.
+                </Text>
+              }
+              renderItem={({ item }) => {
+                const isActive = item.id === currentSessionIdRef.current;
+                const isDeleting = item.id === deletingSessionId;
+                const count = countUserMessages(item);
+                return (
+                  <Pressable
+                    onPress={() => loadSession(item)}
+                    style={[
+                      s.sessionRow,
+                      { borderBottomColor: colors.border },
+                      isActive && { backgroundColor: colors.tint + "0D" },
+                    ]}
+                    accessibilityLabel={`Open conversation: ${getSessionPreview(item)}`}
+                  >
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text
+                        numberOfLines={1}
+                        style={[s.sessionPreview, { color: isActive ? colors.tint : colors.text }]}
+                      >
+                        {getSessionPreview(item)}
+                      </Text>
+                      <Text style={[s.sessionMeta, { color: colors.textSecondary }]}>
+                        {formatRelativeTime(item.lastActive)} · {count} message{count !== 1 ? "s" : ""}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => handleDeleteSession(item.id)}
+                      hitSlop={8}
+                      style={[
+                        s.sessionDeleteBtn,
+                        isDeleting && { backgroundColor: "#fde8e8" },
+                      ]}
+                      accessibilityLabel={isDeleting ? "Confirm delete conversation" : "Delete conversation"}
+                    >
+                      <Ionicons name="trash-outline" size={15} color={isDeleting ? "#c53030" : colors.textSecondary} />
+                      {isDeleting && <Text style={s.sessionDeleteText}>Sure?</Text>}
+                    </Pressable>
+                  </Pressable>
+                );
+              }}
+            />
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Messages */}
       <KeyboardAvoidingView
@@ -1691,6 +1893,73 @@ function makeStyles(colors: ThemeColors) {
       fontSize: 11,
       fontWeight: "500",
       flexShrink: 1,
+    },
+    sessionsBackdrop: {
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.25)",
+      alignItems: "flex-end",
+    },
+    sessionsSheet: {
+      width: 300,
+      marginRight: Spacing.md,
+      borderRadius: Radius.lg,
+      borderWidth: 1,
+      overflow: "hidden",
+    },
+    sessionsHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: Spacing.md,
+      paddingVertical: 12,
+      borderBottomWidth: 1,
+    },
+    sessionsTitle: {
+      fontSize: Typography.bodyMedium.fontSize,
+      fontWeight: "600",
+    },
+    sessionsNewBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+    },
+    sessionsNewBtnText: {
+      fontSize: Typography.caption.fontSize,
+      fontWeight: "600",
+    },
+    sessionsEmpty: {
+      textAlign: "center",
+      paddingVertical: Spacing.lg,
+      fontSize: Typography.caption.fontSize,
+    },
+    sessionRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    sessionPreview: {
+      fontSize: Typography.caption.fontSize,
+      fontWeight: "500",
+    },
+    sessionMeta: {
+      fontSize: Typography.tiny.fontSize,
+      marginTop: 2,
+    },
+    sessionDeleteBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+      paddingHorizontal: 6,
+      paddingVertical: 4,
+      borderRadius: Radius.sm,
+    },
+    sessionDeleteText: {
+      fontSize: Typography.tiny.fontSize,
+      color: "#c53030",
+      fontWeight: "600",
     },
     messageList: {
       paddingVertical: Spacing.sm,

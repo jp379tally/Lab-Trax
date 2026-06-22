@@ -21,6 +21,7 @@
 import React from "react";
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, fireEvent, waitFor, cleanup, act } from "@testing-library/react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { resetMockAppState, setMockFetchHandler, resetMockFetchHandler } from "../../vitest.setup";
 
 // ─── Hoisted mock factories ───────────────────────────────────────────────────
@@ -75,9 +76,13 @@ import AiAssistantScreen from "@/app/ai-assistant";
 
 // ─── Test lifecycle ───────────────────────────────────────────────────────────
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   resetMockAppState();
+  // Persisted chat sessions live in the mocked AsyncStorage, which is shared
+  // across tests in this file. Clear it so one test's restored conversation
+  // never bleeds into the next test's mount-time session restore.
+  await AsyncStorage.clear();
   vi.clearAllMocks();
   // Restore default successful permission for subsequent tests.
   mockRequestPermissionsAsync.mockResolvedValue({ status: "granted", granted: true });

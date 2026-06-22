@@ -76,3 +76,4 @@
 - [Invoice sync rebuilds from restorations](invoice-sync-rebuilds-from-restorations.md) — syncInvoiceFromRestorations wipes+rebuilds all invoice lines from case_restorations; any persistent auto charge (alloy etc.) must be a restoration row, not a manual line.
 - [Protected-table mock fanout](protected-table-mock-fanout.md) — adding a table to soft-delete PROTECTED_DRIZZLE_EXPORTS throws "No <table> export" in every hand-listed @workspace/db mock; add it to each test's tables record.
 - [AI memory auto-learn](ai-memory-auto-learn.md) — chat-learned memory is proposed for admin approval, never written to ai_memory directly; learn hook is fire-and-forget and must not touch the AI reply contract.
+- [Mobile AsyncStorage test bleed](mobile-asyncstorage-test-bleed.md) — shared mock Map persists across tests in a file; persist+restore-on-mount features bleed prior-test state; clear AsyncStorage in afterEach.
