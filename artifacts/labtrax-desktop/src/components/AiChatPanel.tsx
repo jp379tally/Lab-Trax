@@ -604,6 +604,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   type MicState = "idle" | "listening" | "processing" | "error";
   const [micState, setMicState] = useState<MicState>("idle");
   const [micErrorMsg, setMicErrorMsg] = useState<string | null>(null);
+  const [micErrorKind, setMicErrorKind] = useState<"permission" | "other">("other");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceMode, setVoiceMode] = useState<boolean>(() => readVoicePrefs().voiceMode);
   const [ttsVoice, setTtsVoice] = useState<TtsVoice>(() => readVoicePrefs().ttsVoice);
@@ -980,6 +981,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       recognitionRef.current = null;
     }
     setMicErrorMsg(null);
+    setMicErrorKind("other");
 
     let stream: MediaStream;
     try {
@@ -988,11 +990,13 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       const name = (e as { name?: string }).name ?? "";
       if (name === "NotAllowedError" || name === "PermissionDeniedError" || name === "SecurityError") {
         setMicState("error");
+        setMicErrorKind("permission");
         setMicErrorMsg(
           "Microphone access is blocked. Please allow microphone access in your browser or OS settings, then try again.",
         );
       } else {
         setMicState("error");
+        setMicErrorKind("other");
         setMicErrorMsg("Could not access microphone. Please try again.");
       }
       return;
@@ -1021,6 +1025,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         });
         if (!resp.ok) {
           setMicState("error");
+          setMicErrorKind("other");
           setMicErrorMsg("Could not transcribe audio. Please try again.");
           return;
         }
@@ -1036,6 +1041,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         }
       } catch {
         setMicState("error");
+        setMicErrorKind("other");
         setMicErrorMsg("Could not transcribe audio. Please try again.");
       }
     };
@@ -1043,6 +1049,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
       recognitionRef.current = null;
       setMicState("error");
+      setMicErrorKind("other");
       setMicErrorMsg("Recording failed. Please try again.");
     };
 
@@ -1800,7 +1807,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                 : micState === "processing"
                 ? "Processing…"
                 : micState === "error"
-                ? (micErrorMsg?.toLowerCase().includes("blocked") ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss")
+                ? micErrorKind === "permission" ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss"
                 : isSpeaking
                 ? "Interrupt Maynard and speak"
                 : "Speak to Maynard"
@@ -1811,7 +1818,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                 : micState === "processing"
                 ? "Processing…"
                 : micState === "error"
-                ? (micErrorMsg?.toLowerCase().includes("blocked") ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss")
+                ? micErrorKind === "permission" ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss"
                 : isSpeaking
                 ? "Interrupt Maynard and speak"
                 : "Speak to Maynard"

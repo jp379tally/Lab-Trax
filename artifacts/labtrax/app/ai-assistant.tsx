@@ -672,6 +672,7 @@ export default function AiAssistantScreen() {
   const [voiceMode, setVoiceMode] = useState(false);
   const [micState, setMicState] = useState<MicState>("idle");
   const [micErrorMsg, setMicErrorMsg] = useState<string | null>(null);
+  const [micErrorKind, setMicErrorKind] = useState<"permission" | "other">("other");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const recordingRef = useRef<Audio.Recording | null>(null);
   const soundRef = useRef<Audio.Sound | null>(null);
@@ -820,6 +821,7 @@ export default function AiAssistantScreen() {
             }
           } catch {
             setMicState("error");
+            setMicErrorKind("other");
             setMicErrorMsg("Could not transcribe audio. Please try again.");
             return;
           }
@@ -833,9 +835,11 @@ export default function AiAssistantScreen() {
       const msg = e?.message ?? "";
       if (msg.includes("Permission") || msg.includes("permission") || msg.includes("NotAllowed")) {
         setMicState("error");
+        setMicErrorKind("permission");
         setMicErrorMsg("Microphone permission is required. Please grant access in Settings and try again.");
       } else {
         setMicState("error");
+        setMicErrorKind("other");
         setMicErrorMsg("Could not start recording. Please try again.");
       }
     }
@@ -861,6 +865,7 @@ export default function AiAssistantScreen() {
           }
         } catch {
           setMicState("error");
+          setMicErrorKind("other");
           setMicErrorMsg("Could not transcribe audio. Please try again.");
           return;
         }
@@ -1258,7 +1263,7 @@ export default function AiAssistantScreen() {
                   : micState === "processing"
                   ? "Processing…"
                   : micState === "error"
-                  ? "Microphone blocked — tap to dismiss"
+                  ? micErrorKind === "permission" ? "Microphone blocked — tap to dismiss" : "Microphone error — tap to dismiss"
                   : "Speak to Maynard"
               }
             >
