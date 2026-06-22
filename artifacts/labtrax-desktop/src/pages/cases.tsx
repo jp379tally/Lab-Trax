@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useAiPanel } from "@/lib/ai-panel-context";
-import { useColumnWidths } from "@/hooks/useColumnWidths";
+import { useTableColumns, type ColumnDef } from "@/hooks/useTableColumns";
+import { ColumnSettingsPopover } from "@/components/ColumnSettingsPopover";
 import { useLocation, useSearch } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -1686,9 +1687,6 @@ export default function CasesPage() {
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
   const [bulkDeleteCaseIds, setBulkDeleteCaseIds] = useState<string[]>([]);
 
-  const CASES_COL_DEFAULTS = [120, 100, 160, 140, 140, 120, 100, 90, 130, 100, 90, 200] as const;
-  const { widths: caseColWidths, resizingCol: resizingCaseCol, startResize: startCaseResize, resetColumn: resetCaseColumn } =
-    useColumnWidths([...CASES_COL_DEFAULTS], "labtrax_cases_col_widths_v2");
   const [iteroActiveBatch, setIteroActiveBatch] = useState<{ batchId: string; caseIds: string[]; importedAt: string; label: string } | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const scrollRestoredRef = useRef(false);
@@ -2061,6 +2059,64 @@ export default function CasesPage() {
     }
   }
 
+  const caseCols = useTableColumns<LabCase>(
+    [
+      { id: "createdAt", label: <SortHeader k="createdAt">Created</SortHeader>, menuLabel: "Created", align: "left", defaultWidth: 100, render: (c) => <span className="text-muted-foreground">{formatShortDate(c.createdAt)}</span> },
+      { id: "caseNumber", label: <SortHeader k="caseNumber">Case #</SortHeader>, menuLabel: "Case #", align: "left", defaultWidth: 160, render: (c) => (
+        <div className="flex items-center gap-1.5">
+          {c.needsAiReview && (
+            <span
+              title={`Auto-imported from ${c.aiImportSource ?? "AI"} — needs review`}
+              className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400"
+              aria-label="Needs AI review"
+            >
+              <Sparkles size={11} />
+            </span>
+          )}
+          <span className="font-mono text-xs">{c.caseNumber}</span>
+        </div>
+      ) },
+      { id: "patient", label: "Patient", menuLabel: "Patient", align: "left", defaultWidth: 140, render: (c) => `${c.patientFirstName} ${c.patientLastName}` },
+      { id: "doctor", label: <SortHeader k="doctorName">Doctor</SortHeader>, menuLabel: "Doctor", align: "left", defaultWidth: 140, render: (c) => <span className="text-muted-foreground">{c.doctorName}</span> },
+      { id: "type", label: "Type", menuLabel: "Type", align: "left", defaultWidth: 120, render: (c) => <span className="text-muted-foreground truncate max-w-[140px] block" title={c.restorationTypes ?? ""}>{c.restorationTypes || "—"}</span> },
+      { id: "material", label: "Material", menuLabel: "Material", align: "left", defaultWidth: 100, render: (c) => <span className="text-muted-foreground truncate max-w-[120px] block" title={c.restorationMaterials ?? ""}>{c.restorationMaterials || "—"}</span> },
+      { id: "teeth", label: "Teeth", menuLabel: "Teeth", align: "left", defaultWidth: 90, render: (c) => <span className="text-muted-foreground truncate max-w-[100px] block" title={c.teeth ?? ""}>{c.teeth || "—"}</span> },
+      { id: "priority", label: "Priority", menuLabel: "Priority", align: "left", defaultWidth: 90, render: (c) =>
+        c.priority === "rush" ? (
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive bg-destructive/10 px-2 py-0.5 rounded-full">Rush</span>
+        ) : (
+          <span className="text-xs text-muted-foreground">Normal</span>
+        ) },
+      { id: "status", label: <SortHeader k="status">Status</SortHeader>, menuLabel: "Status", align: "left", defaultWidth: 130, render: (c) => <StatusBadge status={c.status} /> },
+      { id: "pan", label: "Pan", menuLabel: "Pan", align: "left", defaultWidth: 100, render: (c) => (
+        <div className="flex items-center gap-1.5 text-muted-foreground font-mono text-xs">
+          <span>{c.casePanBarcode ? (c.casePanBarcode.length > 12 ? c.casePanBarcode.slice(0, 12) + "…" : c.casePanBarcode) : "—"}</span>
+          {isConflicting(c) && (
+            <span
+              title="This pan barcode is shared with another active case — possible duplicate."
+              aria-label="Barcode conflict"
+              className="inline-flex items-center gap-0.5 px-1.5 h-5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wide"
+            >
+              <AlertTriangle size={10} />
+              Conflict
+            </span>
+          )}
+        </div>
+      ) },
+      { id: "due", label: <SortHeader k="dueDate">Due</SortHeader>, menuLabel: "Due", align: "left", defaultWidth: 90, render: (c) => <span className="text-muted-foreground">{formatShortDate(c.dueDate)}</span> },
+      { id: "price", label: <SortHeader k="totalPrice">Price</SortHeader>, menuLabel: "Price", align: "right", defaultWidth: 130, render: (c) => <span className="tabular-nums">{Number(c.totalPrice ?? 0) > 0 ? formatMoney(c.totalPrice) : "—"}</span> },
+      { id: "notes", label: "Notes", menuLabel: "Notes", align: "left", defaultWidth: 200, render: (c) => <span className="text-muted-foreground truncate max-w-[200px] text-xs block" title={c.caseNotes ?? ""}>{c.caseNotes || "—"}</span> },
+    ],
+    "labtrax_cases_columns_v3",
+  );
+
+  const caseColumnOptions = caseCols.defs.map((d) => ({
+    id: d.id,
+    label: d.menuLabel,
+    visible: !caseCols.state.hidden.includes(d.id),
+    index: caseCols.state.order.indexOf(d.id),
+  }));
+
   function SortHeader({ k, children }: { k: SortKey; children: React.ReactNode }) {
     return (
       <button
@@ -2261,6 +2317,13 @@ export default function CasesPage() {
             )}
           </button>
 
+          <ColumnSettingsPopover
+            columns={caseColumnOptions}
+            onToggle={caseCols.toggleColumn}
+            onMove={caseCols.moveColumn}
+            onReset={caseCols.resetAll}
+          />
+
           <div className="ml-auto flex items-center gap-1.5 shrink-0">
             {scanMode ? (
               <>
@@ -2406,20 +2469,11 @@ export default function CasesPage() {
           </div>
         )}
         <div className="overflow-x-auto relative">
-          {resizingCaseCol !== null && (
-            <div
-              className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
-              style={{
-                left: 36 + caseColWidths.slice(0, resizingCaseCol + 1).reduce((a, b) => a + b, 0) - 1,
-                width: 2,
-              }}
-            />
-          )}
-          <table className="text-sm" style={{ width: 36 + caseColWidths.reduce((a, b) => a + b, 0), tableLayout: "fixed" }}>
+          <table className="text-sm" style={{ tableLayout: "fixed", width: 36 + caseCols.visible.reduce((sum, c) => sum + caseCols.getWidth(c.id), 0) }}>
             <colgroup>
               <col style={{ width: 36 }} />
-              {caseColWidths.map((w, i) => (
-                <col key={i} style={{ width: w }} />
+              {caseCols.visible.map((col) => (
+                <col key={col.id} style={{ width: caseCols.getWidth(col.id) }} />
               ))}
             </colgroup>
             <thead>
@@ -2447,30 +2501,16 @@ export default function CasesPage() {
                     className="rounded border-border"
                   />
                 </th>
-                {([
-                  { label: <SortHeader k="createdAt">Created</SortHeader>, align: "left" },
-                  { label: <SortHeader k="caseNumber">Case #</SortHeader>, align: "left" },
-                  { label: "Patient", align: "left" },
-                  { label: <SortHeader k="doctorName">Doctor</SortHeader>, align: "left" },
-                  { label: "Type", align: "left" },
-                  { label: "Material", align: "left" },
-                  { label: "Teeth", align: "left" },
-                  { label: "Priority", align: "left" },
-                  { label: <SortHeader k="status">Status</SortHeader>, align: "left" },
-                  { label: "Pan", align: "left" },
-                  { label: <SortHeader k="dueDate">Due</SortHeader>, align: "left" },
-                  { label: <SortHeader k="totalPrice">Price</SortHeader>, align: "right" },
-                  { label: "Notes", align: "left" },
-                ] as const).map((col, i) => (
+                {caseCols.visible.map((col) => (
                   <th
-                    key={i}
-                    className={`${col.align === "right" ? "text-right" : "text-left"} ${i === 0 ? "px-5" : ""} py-2.5 relative`}
+                    key={col.id}
+                    className={`${col.align === "right" ? "text-right" : "text-left"} py-2.5 relative`}
                     style={{ overflow: "hidden" }}
                   >
                     {col.label}
                     <div
-                      onMouseDown={(e) => startCaseResize(i, e)}
-                      onDoubleClick={() => resetCaseColumn(i)}
+                      onMouseDown={(e) => caseCols.startResize(col.id, e)}
+                      onDoubleClick={() => caseCols.resetWidth(col.id)}
                       className="group/resize"
                       style={{
                         position: "absolute",
@@ -2486,7 +2526,7 @@ export default function CasesPage() {
                       }}
                     >
                       <span
-                        className={`w-0.5 transition-colors duration-100 ${resizingCaseCol === i ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
+                        className={`w-0.5 transition-colors duration-100 ${caseCols.resizingId === col.id ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
                         style={{ display: "block", height: "100%" }}
                       />
                     </div>
@@ -2497,7 +2537,7 @@ export default function CasesPage() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={14} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={1 + caseCols.visible.length} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading cases…
                   </td>
@@ -2505,14 +2545,14 @@ export default function CasesPage() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={14} className="px-5 py-12 text-center text-destructive">
+                  <td colSpan={1 + caseCols.visible.length} className="px-5 py-12 text-center text-destructive">
                     {(error as Error).message}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={14} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={1 + caseCols.visible.length} className="px-5 py-12 text-center text-muted-foreground">
                     No cases match the current filters.
                   </td>
                 </tr>
@@ -2539,75 +2579,11 @@ export default function CasesPage() {
                       className="rounded border-border"
                     />
                   </td>
-                  <td className="px-5 py-3 text-muted-foreground">{formatShortDate(c.createdAt)}</td>
-                  <td className="px-5 py-3 font-mono text-xs">
-                    <div className="flex items-center gap-1.5">
-                      {c.needsAiReview && (
-                        <span
-                          title={`Auto-imported from ${c.aiImportSource ?? "AI"} — needs review`}
-                          className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400"
-                          aria-label="Needs AI review"
-                        >
-                          <Sparkles size={11} />
-                        </span>
-                      )}
-                      <span>{c.caseNumber}</span>
-                    </div>
-                  </td>
-                  <td className="py-3">
-                    {c.patientFirstName} {c.patientLastName}
-                  </td>
-                  <td className="py-3 text-muted-foreground">{c.doctorName}</td>
-                  <td className="py-3 text-muted-foreground truncate max-w-[140px]" title={c.restorationTypes ?? ""}>
-                    {c.restorationTypes || "—"}
-                  </td>
-                  <td className="py-3 text-muted-foreground truncate max-w-[120px]" title={c.restorationMaterials ?? ""}>
-                    {c.restorationMaterials || "—"}
-                  </td>
-                  <td className="py-3 text-muted-foreground truncate max-w-[100px]" title={c.teeth ?? ""}>
-                    {c.teeth || "—"}
-                  </td>
-                  <td className="py-3">
-                    {c.priority === "rush" ? (
-                      <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive bg-destructive/10 px-2 py-0.5 rounded-full">
-                        Rush
-                      </span>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">Normal</span>
-                    )}
-                  </td>
-                  <td className="py-3"><StatusBadge status={c.status} /></td>
-                  <td className="py-3 text-muted-foreground font-mono text-xs">
-                    <div className="flex items-center gap-1.5">
-                      <span>
-                        {c.casePanBarcode
-                          ? c.casePanBarcode.length > 12
-                            ? c.casePanBarcode.slice(0, 12) + "…"
-                            : c.casePanBarcode
-                          : "—"}
-                      </span>
-                      {isConflicting(c) && (
-                        <span
-                          title="This pan barcode is shared with another active case — possible duplicate."
-                          aria-label="Barcode conflict"
-                          className="inline-flex items-center gap-0.5 px-1.5 h-5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wide"
-                        >
-                          <AlertTriangle size={10} />
-                          Conflict
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="py-3 text-muted-foreground">{formatShortDate(c.dueDate)}</td>
-                  <td className="py-3 text-right tabular-nums">
-                    {Number(c.totalPrice ?? 0) > 0 ? formatMoney(c.totalPrice) : "—"}
-                  </td>
-                  <td
-                    className="py-3 text-muted-foreground truncate max-w-[200px] text-xs"
-                    title={c.caseNotes ?? ""}
-                  >
-                    {c.caseNotes || "—"}
-                  </td>
+                  {caseCols.visible.map((col) => (
+                    <td key={col.id} className={`py-3 ${col.align === "right" ? "px-5 text-right" : "px-5 text-left"}`}>
+                      {col.render(c)}
+                    </td>
+                  ))}
                 </tr>
               ))}
             </tbody>

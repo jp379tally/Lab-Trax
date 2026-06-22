@@ -21,6 +21,8 @@ import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { InvoiceEditor } from "./invoices";
 import { downloadStatementPdf } from "@/lib/export";
+import { useTableColumns } from "@/hooks/useTableColumns";
+import { ColumnSettingsPopover } from "@/components/ColumnSettingsPopover";
 
 const today = () => new Date();
 
@@ -300,6 +302,68 @@ export default function CustomerCenterPage() {
   }, [selectedPracticeInvoices, selectedId, filterBy, rangeFrom, rangeTo]);
 
   const isLoading = orgsQuery.isLoading || openInvoicesQuery.isLoading;
+
+  const invCols = useTableColumns<Invoice>(
+    [
+      { id: "invoiceNumber", label: "Num", menuLabel: "Num", align: "left", defaultWidth: 100, render: (inv) => <span className="font-mono text-xs">{inv.invoiceNumber}</span> },
+      { id: "issuedAt", label: "Date", menuLabel: "Date", align: "left", defaultWidth: 100, render: (inv) => <span className="text-muted-foreground">{formatDate(inv.issuedAt)}</span> },
+      { id: "patient", label: "Patient", menuLabel: "Patient", align: "left", defaultWidth: 130, render: (inv) => {
+        const patientName = inv.displayMetadata?.patientName ?? inv.displayMetadataJson?.patientName ?? null;
+        return patientName ?? <span className="text-muted-foreground/50">—</span>;
+      } },
+      { id: "lineItem", label: "Line Item", menuLabel: "Line Item", align: "left", defaultWidth: 160, render: (inv) => {
+        const lineItem = inv.items?.[0]?.description ?? inv.displayMetadata?.lineItems?.[0]?.description ?? inv.displayMetadataJson?.lineItems?.[0]?.description ?? null;
+        return lineItem ? (
+          <span className="truncate block max-w-[160px]" title={lineItem}>{lineItem}</span>
+        ) : (
+          <span className="text-muted-foreground/50">—</span>
+        );
+      } },
+      { id: "dueDate", label: "Due Date", menuLabel: "Due Date", align: "left", defaultWidth: 100, render: (inv) => <span className="text-muted-foreground">{formatDate(inv.dueAt ?? inv.dueDate)}</span> },
+      { id: "caseCompleted", label: "Case Completed", menuLabel: "Case Completed", align: "left", defaultWidth: 130, render: (inv) => {
+        const caseCompletedAt = inv.caseCompletedAt
+          ? new Date(inv.caseCompletedAt).toLocaleString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+            })
+          : null;
+        return caseCompletedAt ?? <span className="text-muted-foreground/50">—</span>;
+      } },
+      { id: "status", label: "Status", menuLabel: "Status", align: "left", defaultWidth: 110, render: (inv) => <StatusBadge status={inv.status} /> },
+      { id: "aging", label: "Aging", menuLabel: "Aging", align: "right", defaultWidth: 80, render: (inv) => {
+        const aging = agingDays(inv);
+        return aging != null ? (
+          <span className="inline-flex items-center gap-1 text-destructive text-xs font-medium">
+            <AlertCircle size={11} />
+            {aging}d
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        );
+      } },
+      { id: "amount", label: "Amount", menuLabel: "Amount", align: "right", defaultWidth: 100, render: (inv) => <span className="tabular-nums font-medium">{formatMoney(inv.total)}</span> },
+      { id: "openBalance", label: "Open Balance", menuLabel: "Open Balance", align: "right", defaultWidth: 110, render: (inv) => {
+        return Number(inv.balanceDue ?? inv.total ?? 0) > 0 ? (
+          <span className="text-warning font-medium tabular-nums">
+            {formatMoney(inv.balanceDue ?? inv.total)}
+          </span>
+        ) : (
+          <span className="text-muted-foreground tabular-nums">{formatMoney(0)}</span>
+        );
+      } },
+    ],
+    "labtrax_customer_center_cols_v1",
+  );
+
+  const invColumnOptions = invCols.defs.map((d) => ({
+    id: d.id,
+    label: d.menuLabel,
+    visible: !invCols.state.hidden.includes(d.id),
+    index: invCols.state.order.indexOf(d.id),
+  }));
 
   function handleExportStatementPdf() {
     if (!selected) return;
@@ -597,6 +661,12 @@ export default function CustomerCenterPage() {
                 {practiceInvoices.length} row
                 {practiceInvoices.length !== 1 ? "s" : ""}
               </span>
+              <ColumnSettingsPopover
+                columns={invColumnOptions}
+                onToggle={invCols.toggleColumn}
+                onMove={invCols.moveColumn}
+                onReset={invCols.resetAll}
+              />
               {isAdmin && (
                 <button
                   type="button"
@@ -617,28 +687,52 @@ export default function CustomerCenterPage() {
 
             {/* Transaction table */}
             <div className="flex-1 overflow-auto scrollbar-thin">
-              <table className="w-full text-sm">
+              <table className="text-sm" style={{ tableLayout: "fixed", width: invCols.visible.reduce((sum, c) => sum + invCols.getWidth(c.id), 0) }}>
+                <colgroup>
+                  {invCols.visible.map((col) => (
+                    <col key={col.id} style={{ width: invCols.getWidth(col.id) }} />
+                  ))}
+                </colgroup>
                 <thead className="sticky top-0 z-10 bg-secondary/80 backdrop-blur-sm">
                   <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                    <th className="text-left font-medium px-5 py-2.5">Num</th>
-                    <th className="text-left font-medium py-2.5">Date</th>
-                    <th className="text-left font-medium py-2.5">Patient</th>
-                    <th className="text-left font-medium py-2.5">Line Item</th>
-                    <th className="text-left font-medium py-2.5">Due Date</th>
-                    <th className="text-left font-medium py-2.5">Case Completed</th>
-                    <th className="text-left font-medium py-2.5">Status</th>
-                    <th className="text-right font-medium py-2.5">Aging</th>
-                    <th className="text-right font-medium py-2.5">Amount</th>
-                    <th className="text-right font-medium px-5 py-2.5">
-                      Open Balance
-                    </th>
+                    {invCols.visible.map((col) => (
+                      <th
+                        key={col.id}
+                        className={`${col.align === "right" ? "text-right" : "text-left"} px-3 py-2.5 relative font-medium`}
+                        style={{ overflow: "hidden" }}
+                      >
+                        {col.label}
+                        <div
+                          onMouseDown={(e) => invCols.startResize(col.id, e)}
+                          onDoubleClick={() => invCols.resetWidth(col.id)}
+                          className="group/resize"
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            right: 0,
+                            width: 6,
+                            height: "100%",
+                            cursor: "col-resize",
+                            userSelect: "none",
+                            display: "flex",
+                            alignItems: "stretch",
+                            justifyContent: "flex-end",
+                          }}
+                        >
+                          <span
+                            className={`w-0.5 transition-colors duration-100 ${invCols.resizingId === col.id ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
+                            style={{ display: "block", height: "100%" }}
+                          />
+                        </div>
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {practiceInvoicesQuery.isLoading && (
                     <tr>
                       <td
-                        colSpan={10}
+                        colSpan={Math.max(1, invCols.visible.length)}
                         className="px-5 py-12 text-center text-muted-foreground"
                       >
                         <Loader2
@@ -652,92 +746,27 @@ export default function CustomerCenterPage() {
                   {!practiceInvoicesQuery.isLoading && practiceInvoices.length === 0 && (
                     <tr>
                       <td
-                        colSpan={10}
+                        colSpan={Math.max(1, invCols.visible.length)}
                         className="px-5 py-12 text-center text-muted-foreground"
                       >
                         No transactions match the current filters.
                       </td>
                     </tr>
                   )}
-                  {practiceInvoices.map((inv) => {
-                    const aging = agingDays(inv);
-                    const patientName =
-                      inv.displayMetadata?.patientName ??
-                      inv.displayMetadataJson?.patientName ??
-                      null;
-                    const lineItem =
-                      inv.items?.[0]?.description ??
-                      inv.displayMetadata?.lineItems?.[0]?.description ??
-                      inv.displayMetadataJson?.lineItems?.[0]?.description ??
-                      null;
-                    const caseCompletedAt = inv.caseCompletedAt
-                      ? new Date(inv.caseCompletedAt).toLocaleString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                          hour: "numeric",
-                          minute: "2-digit",
-                        })
-                      : null;
-                    return (
-                      <tr
-                        key={inv.id}
-                        onClick={() => setEditingInvoice(inv)}
-                        onDoubleClick={() => setEditingInvoice(inv)}
-                        className="border-t border-border cursor-pointer hover:bg-secondary/40"
-                      >
-                        <td className="px-5 py-2.5 font-mono text-xs">
-                          {inv.invoiceNumber}
+                  {practiceInvoices.map((inv) => (
+                    <tr
+                      key={inv.id}
+                      onClick={() => setEditingInvoice(inv)}
+                      onDoubleClick={() => setEditingInvoice(inv)}
+                      className="border-t border-border cursor-pointer hover:bg-secondary/40"
+                    >
+                      {invCols.visible.map((col) => (
+                        <td key={col.id} className={`px-3 py-2.5 ${col.align === "right" ? "text-right" : "text-left"}`}>
+                          {col.render(inv)}
                         </td>
-                        <td className="py-2.5 text-muted-foreground">
-                          {formatDate(inv.issuedAt)}
-                        </td>
-                        <td className="py-2.5 text-muted-foreground">
-                          {patientName ?? <span className="text-muted-foreground/50">—</span>}
-                        </td>
-                        <td className="py-2.5 text-muted-foreground max-w-[160px]">
-                          {lineItem ? (
-                            <span className="truncate block" title={lineItem}>{lineItem}</span>
-                          ) : (
-                            <span className="text-muted-foreground/50">—</span>
-                          )}
-                        </td>
-                        <td className="py-2.5 text-muted-foreground">
-                          {formatDate(inv.dueAt ?? inv.dueDate)}
-                        </td>
-                        <td className="py-2.5 text-muted-foreground">
-                          {caseCompletedAt ?? <span className="text-muted-foreground/50">—</span>}
-                        </td>
-                        <td className="py-2.5">
-                          <StatusBadge status={inv.status} />
-                        </td>
-                        <td className="py-2.5 text-right tabular-nums">
-                          {aging != null ? (
-                            <span className="inline-flex items-center gap-1 text-destructive text-xs font-medium">
-                              <AlertCircle size={11} />
-                              {aging}d
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">—</span>
-                          )}
-                        </td>
-                        <td className="py-2.5 text-right tabular-nums font-medium">
-                          {formatMoney(inv.total)}
-                        </td>
-                        <td className="px-5 py-2.5 text-right tabular-nums">
-                          {Number(inv.balanceDue ?? inv.total ?? 0) > 0 ? (
-                            <span className="text-warning font-medium">
-                              {formatMoney(inv.balanceDue ?? inv.total)}
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">
-                              {formatMoney(0)}
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                      ))}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
