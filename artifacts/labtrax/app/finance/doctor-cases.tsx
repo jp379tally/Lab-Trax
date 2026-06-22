@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   View,
   Text,
@@ -165,6 +166,29 @@ export default function DoctorCasesScreen() {
     params.initialViewMode === "all" ? "all" : "open",
   );
   const [invoiceFilter, setInvoiceFilter] = useState<InvoiceFilter>("all");
+
+  const filterStorageKey = providerOrganizationId
+    ? `invoice_filter_v1_${providerOrganizationId}`
+    : "invoice_filter_v1_global";
+
+  // Hydrate persisted filter on mount; skip writing back during initial load.
+  const hydratedRef = useRef(false);
+  useEffect(() => {
+    AsyncStorage.getItem(filterStorageKey).then((stored) => {
+      const valid: InvoiceFilter[] = ["all", "open", "paid", "overdue", "void"];
+      if (stored && (valid as string[]).includes(stored)) {
+        setInvoiceFilter(stored as InvoiceFilter);
+      }
+      hydratedRef.current = true;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterStorageKey]);
+
+  // Persist whenever the user changes the filter (skip the initial default write).
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    AsyncStorage.setItem(filterStorageKey, invoiceFilter);
+  }, [invoiceFilter, filterStorageKey]);
 
   const me = useMe().data;
   const labOrgId = primaryLabOrgId(me);
