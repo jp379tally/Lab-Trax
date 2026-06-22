@@ -416,6 +416,7 @@ const DEFAULT_USERS = [
   { username: "labadmin_demo", password: "LabTraxDemo#2026", userType: "lab", role: "admin", email: "labadmin_demo@labtrax.local", accountNumber: "LAB-001" },
   { username: "labtech_demo", password: "LabTraxDemo#2026", userType: "lab", role: "user", email: "labtech_demo@labtrax.local", accountNumber: "LAB-002" },
   { username: "master_demo", password: "LabTraxDemo#2026", userType: "master_admin", role: "admin", email: "master_demo@labtrax.local", accountNumber: "MA-001" },
+  { username: "drcraig", password: "LabTraxDemo#2026", userType: "provider", role: "user", email: "drcraig@labtrax.local" },
 ];
 
 async function seedDefaultUsers() {
@@ -441,6 +442,7 @@ async function seedDefaultUsers() {
       role: def.role,
       accountNumber: (def as any).accountNumber || null,
       initials: def.username.slice(0, 2).toUpperCase(),
+      emailVerifiedAt: new Date(),
     }).catch((err: unknown): never => wrapDbError(err, {
       duplicate: `Demo user '${def.username}' already exists.`,
       fallback: `Failed to seed demo user '${def.username}'.`,
@@ -448,6 +450,17 @@ async function seedDefaultUsers() {
     existingUsernames.add(def.username.toLowerCase());
     console.log(`[SEED] Created demo user: ${def.username}`);
   }
+
+  const demoUsernames = DEFAULT_USERS.map((u) => u.username.toLowerCase());
+  await db
+    .update(users)
+    .set({ emailVerifiedAt: new Date() })
+    .where(
+      and(
+        inArray(sql`lower(${users.username})`, demoUsernames),
+        isNull(users.emailVerifiedAt)
+      )
+    );
 }
 
 const casMediaDir = path.resolve(process.cwd(), "uploads", "case-media");
