@@ -108,6 +108,19 @@ export async function openCaseMediaObjectStream(
 }
 
 /**
+ * Check whether a case-media object exists in App Storage.
+ * Returns false when storage is not configured or the object is absent.
+ */
+export async function caseMediaObjectStorageKeyExists(
+  diskFilename: string,
+): Promise<boolean> {
+  const file = getObjectFile(diskFilename);
+  if (!file) return false;
+  const [exists] = await file.exists();
+  return exists;
+}
+
+/**
  * Delete a case-media object from App Storage.
  * Returns false when storage is not configured or the object did not exist.
  */

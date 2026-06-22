@@ -22,6 +22,7 @@ import { HttpError, ok, wrapDbError } from "../lib/http";
 import { notDeleted } from "../lib/soft-delete";
 import {
   caseMediaObjectStorageAvailable,
+  caseMediaObjectStorageKeyExists,
   openCaseMediaObjectStream,
   writeCaseMediaToObjectStorage,
 } from "../lib/case-media-object-storage";
@@ -192,9 +193,22 @@ router.post(
 
     await assertLabMembership(userId, labOrganizationId);
 
-    // The file is already on disk + object storage from the chunked upload session.
+    // Verify the chunked upload actually landed in object storage before committing
+    // the DB row.  Without this check, a failed or partial upload would register an
+    // inbox entry whose file is permanently missing after a server restart.
+    if (caseMediaObjectStorageAvailable()) {
+      const fileExists = await caseMediaObjectStorageKeyExists(storagePath);
+      if (!fileExists) {
+        throw new HttpError(
+          409,
+          "Upload not found in storage. The chunked upload may be incomplete — please retry the upload.",
+        );
+      }
+    }
+
+    // The file is already in object storage from the chunked upload session.
     // We just need to register it in the inbox so it appears in the unassigned list.
-    const objectStorageKey = storagePath; // chunked session always mirrors to object storage
+    const objectStorageKey = storagePath;
 
     const [row] = await db
       .insert(labInboxFiles)
