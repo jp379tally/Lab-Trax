@@ -330,6 +330,16 @@ function createWindow() {
     if (mainWindow === win) mainWindow = null;
   });
 
+  // Allow microphone access so the voice-mode recorder (getUserMedia + MediaRecorder)
+  // works inside the renderer. Without this handler Electron silently denies the
+  // media permission and the mic button shows "Microphone access is blocked".
+  win.webContents.session?.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === "media" || permission === "microphone");
+  });
+  win.webContents.session?.setPermissionCheckHandler((_wc, permission) => {
+    return permission === "media" || permission === "microphone";
+  });
+
   win.setMenuBarVisibility(false);
 
   if (isDev) {

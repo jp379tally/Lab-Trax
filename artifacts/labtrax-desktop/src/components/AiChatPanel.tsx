@@ -966,77 +966,96 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     setIsSpeaking(false);
   }
 
-  function startListening() {
-    const SpeechRecog =
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition;
-    if (!SpeechRecog) {
+  async function startListening() {
+    if (!navigator.mediaDevices?.getUserMedia) {
       setMicState("error");
-      setMicErrorMsg("Speech recognition is not supported in this browser. Try Chrome or Edge.");
+      setMicErrorMsg("Microphone recording is not supported in this browser.");
       return;
     }
     stopSpeaking();
-    if (recognitionRef.current) {
-      try { recognitionRef.current.abort(); } catch { /* ignore */ }
+    const prev = recognitionRef.current as { mr: MediaRecorder; stream: MediaStream } | null;
+    if (prev) {
+      try { prev.mr.stop(); } catch { /* ignore */ }
+      try { prev.stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
       recognitionRef.current = null;
     }
     setMicErrorMsg(null);
-    const recognition = new SpeechRecog();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognitionRef.current = recognition;
-    let finalTranscript = "";
-    recognition.onresult = (event: any) => {
-      let interim = "";
-      finalTranscript = "";
-      for (let i = 0; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
-        } else {
-          interim += event.results[i][0].transcript;
-        }
-      }
-      setInput(finalTranscript || interim);
-    };
-    recognition.onend = () => {
-      recognitionRef.current = null;
-      if (finalTranscript.trim()) {
-        setMicState("processing");
-        sendMessage(finalTranscript.trim())
-          .then(() => setMicState("idle"))
-          .catch(() => setMicState("idle"));
-      } else {
-        setMicState("idle");
-      }
-    };
-    recognition.onerror = (event: any) => {
-      recognitionRef.current = null;
-      if (event.error === "not-allowed" || event.error === "permission-denied") {
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e: unknown) {
+      const name = (e as { name?: string }).name ?? "";
+      if (name === "NotAllowedError" || name === "PermissionDeniedError" || name === "SecurityError") {
         setMicState("error");
         setMicErrorMsg(
           "Microphone access is blocked. Please allow microphone access in your browser or OS settings, then try again.",
         );
-      } else if (event.error === "no-speech") {
-        setMicState("idle");
       } else {
         setMicState("error");
-        setMicErrorMsg("Speech recognition encountered an error. Please try again.");
+        setMicErrorMsg("Could not access microphone. Please try again.");
+      }
+      return;
+    }
+
+    const chunks: BlobPart[] = [];
+    const mr = new MediaRecorder(stream);
+    recognitionRef.current = { mr, stream } as any;
+
+    mr.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+    mr.onstop = async () => {
+      try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+      if (recognitionRef.current && (recognitionRef.current as any).mr === mr) {
+        recognitionRef.current = null;
+      }
+      const blob = new Blob(chunks, { type: mr.mimeType || "audio/webm" });
+      setMicState("processing");
+      try {
+        const token = getAccessToken();
+        const formData = new FormData();
+        formData.append("audio", blob, "audio.webm");
+        const resp = await fetch(apiUrl("/ai-stt"), {
+          method: "POST",
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: formData,
+        });
+        if (!resp.ok) {
+          setMicState("error");
+          setMicErrorMsg("Could not transcribe audio. Please try again.");
+          return;
+        }
+        const body = await resp.json() as { ok?: boolean; transcript?: string };
+        const transcript = body.transcript?.trim() ?? "";
+        if (transcript) {
+          setInput(transcript);
+          sendMessage(transcript)
+            .then(() => setMicState("idle"))
+            .catch(() => setMicState("idle"));
+        } else {
+          setMicState("idle");
+        }
+      } catch {
+        setMicState("error");
+        setMicErrorMsg("Could not transcribe audio. Please try again.");
       }
     };
-    try {
-      recognition.start();
-      setMicState("listening");
-    } catch {
+    mr.onerror = () => {
+      try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+      recognitionRef.current = null;
       setMicState("error");
-      setMicErrorMsg("Could not start speech recognition. Please try again.");
-    }
+      setMicErrorMsg("Recording failed. Please try again.");
+    };
+
+    mr.start();
+    setMicState("listening");
   }
 
   function stopListening() {
-    if (recognitionRef.current) {
-      try { recognitionRef.current.abort(); } catch { /* ignore */ }
-      recognitionRef.current = null;
+    const rec = recognitionRef.current as { mr: MediaRecorder; stream: MediaStream } | null;
+    recognitionRef.current = null;
+    if (rec) {
+      try { rec.mr.stop(); } catch { /* ignore */ }
+      try { rec.stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
     }
     setMicState("idle");
   }

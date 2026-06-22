@@ -89,7 +89,16 @@ export function installElectronMock(overrides: Partial<ElectronMock> = {}): Elec
       function BrowserWindow() {
         return {
           loadURL: () => {},
-          webContents: { send: () => {}, openDevTools: () => {}, on: () => {}, once: () => {} },
+          webContents: {
+            send: () => {},
+            openDevTools: () => {},
+            on: () => {},
+            once: () => {},
+            session: {
+              setPermissionRequestHandler: () => {},
+              setPermissionCheckHandler: () => {},
+            },
+          },
           setMenuBarVisibility: () => {},
           isDestroyed: () => false,
           on: () => {},
