@@ -200,4 +200,40 @@ describe("POST /api/send-phone-code", () => {
     // Critical invariant: no code must be persisted when the SMS was not sent.
     expect(createVerificationCodeMock).not.toHaveBeenCalled();
   });
+
+  it("does NOT block a retry with 429 after a failed Twilio send", async () => {
+    // First call — Twilio errors out (500 from our handler).
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, _opts: unknown) =>
+        makeTwilioErrorResponse(),
+      ),
+    );
+
+    // Unique phone so the rolling-window limit is not a factor.
+    const phone = "5550004004";
+
+    const first = await request(app)
+      .post("/api/send-phone-code")
+      .send({ phone });
+
+    expect(first.status).toBe(500);
+
+    // Second call — Twilio now succeeds. Must NOT be blocked by the cooldown
+    // because the first call never successfully delivered an SMS.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, _opts: unknown) =>
+        makeTwilioSuccessResponse(),
+      ),
+    );
+
+    const second = await request(app)
+      .post("/api/send-phone-code")
+      .send({ phone });
+
+    expect(second.status).toBe(200);
+    expect(second.body.success).toBe(true);
+    expect(createVerificationCodeMock).toHaveBeenCalledOnce();
+  });
 });

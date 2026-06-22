@@ -226,8 +226,15 @@ export function createSendCodeThrottle(opts: {
       return;
     }
 
-    // Allowed — record the issue time for the cooldown gate.
-    cooldownStore.set(cooldownKey, now);
+    // Allowed — record the issue time for the cooldown gate ONLY after the
+    // handler completes successfully (2xx). If the SMS/email send fails the
+    // handler returns a non-2xx status and we must NOT consume the user's
+    // 30-second window, so they can retry immediately.
+    res.on("finish", () => {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        cooldownStore.set(cooldownKey, Date.now());
+      }
+    });
     next();
   };
 }

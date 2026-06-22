@@ -126,6 +126,8 @@ function clearPlatformAdminSecretCacheSafe() {
 export class ApiError extends Error {
   status: number;
   body: unknown;
+  /** Seconds until the client may retry, parsed from the Retry-After header. Only set on 429 responses. */
+  retryAfter?: number;
   constructor(message: string, status: number, body: unknown = null) {
     super(message);
     this.status = status;
@@ -655,7 +657,15 @@ export async function apiFetch<T = unknown>(
       (fromObj && typeof fromObj.message === "string" && fromObj.message) ||
       (fromObj && typeof fromObj.error === "string" && fromObj.error) ||
       `Request failed (${res.status})`;
-    throw new ApiError(msg, res.status, parsed);
+    const apiErr = new ApiError(msg, res.status, parsed);
+    if (res.status === 429) {
+      const ra = res.headers.get("Retry-After");
+      if (ra) {
+        const secs = parseInt(ra, 10);
+        if (!isNaN(secs) && secs > 0) apiErr.retryAfter = secs;
+      }
+    }
+    throw apiErr;
   }
 
   if (

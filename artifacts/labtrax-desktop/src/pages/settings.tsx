@@ -311,8 +311,8 @@ function ProfilePanel() {
     phone === user.phone
   );
 
-  function startResendTimer() {
-    setResendCountdown(60);
+  function startResendTimer(seconds = 60) {
+    setResendCountdown(seconds);
     if (resendTimerRef.current) clearInterval(resendTimerRef.current);
     resendTimerRef.current = setInterval(() => {
       setResendCountdown((c) => {
@@ -366,8 +366,13 @@ function ProfilePanel() {
     } catch (err: unknown) {
       const msg = (err as Error).message || "Failed to send verification code.";
       const is503 = err instanceof ApiError && err.status === 503 && msg.toLowerCase().includes("sms delivery");
+      const is429 = err instanceof ApiError && err.status === 429;
       if (is503) {
         setSmsUnavailable(true);
+        setOtpError(null);
+      } else if (is429) {
+        const waitSecs = (err as ApiError).retryAfter ?? 30;
+        startResendTimer(waitSecs);
         setOtpError(null);
       } else {
         setOtpError(msg);
@@ -873,11 +878,13 @@ function ProfilePanel() {
                     <button
                       type="button"
                       onClick={() => void handleSendVerificationCode()}
-                      disabled={phoneVerifyStep === "sending" || phoneVerifyStep === "otp"}
+                      disabled={phoneVerifyStep === "sending" || phoneVerifyStep === "otp" || resendCountdown > 0}
                       className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 disabled:opacity-60 transition-colors"
                     >
                       {phoneVerifyStep === "sending" ? (
                         <><Loader2 size={12} className="animate-spin" />Sending…</>
+                      ) : resendCountdown > 0 ? (
+                        `Try again in ${resendCountdown}s`
                       ) : (
                         "Verify"
                       )}

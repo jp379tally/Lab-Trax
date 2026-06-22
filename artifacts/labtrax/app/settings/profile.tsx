@@ -134,8 +134,8 @@ export default function ProfileScreen() {
     phone === user.phone
   );
 
-  function startResendTimer() {
-    setResendCountdown(60);
+  function startResendTimer(seconds = 60) {
+    setResendCountdown(seconds);
     if (resendTimerRef.current) clearInterval(resendTimerRef.current);
     resendTimerRef.current = setInterval(() => {
       setResendCountdown((c) => {
@@ -180,6 +180,18 @@ export default function ProfileScreen() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phone: phoneToVerify }),
       });
+      if (codeRes.status === 429) {
+        // Server throttled the request — start a countdown so the user knows
+        // when they can retry. Use the Retry-After header if present, otherwise
+        // default to 30 s (the server's cooldown window).
+        const ra = codeRes.headers.get("Retry-After");
+        const waitSecs = ra ? (parseInt(ra, 10) || 30) : 30;
+        startResendTimer(waitSecs);
+        const e = await codeRes.json().catch(() => ({}));
+        setOtpError((e as any)?.error || "Please wait before requesting another verification code.");
+        if (!isResend) setPhoneVerifyStep("idle");
+        return;
+      }
       if (!codeRes.ok) {
         const e = await codeRes.json().catch(() => ({}));
         throw new Error((e as any)?.error || "Failed to send verification code.");
@@ -574,11 +586,18 @@ export default function ProfileScreen() {
                 {/* Verify button — shown when phone is set and not yet verified (or edited) */}
                 {phoneVerifyStep === "idle" && phone.trim() !== "" && !isPhoneVerified && (
                   <Pressable
-                    style={[styles.verifyBtn, { borderColor: colors.tint, backgroundColor: colors.tint + "12" }]}
-                    onPress={handleSendVerificationCode}
+                    style={[
+                      styles.verifyBtn,
+                      { borderColor: colors.tint, backgroundColor: colors.tint + "12" },
+                      resendCountdown > 0 && { opacity: 0.5 },
+                    ]}
+                    onPress={resendCountdown > 0 ? undefined : handleSendVerificationCode}
+                    disabled={resendCountdown > 0}
                   >
                     <Ionicons name="shield-checkmark-outline" size={14} color={colors.tint} />
-                    <Text style={[styles.verifyBtnText, { color: colors.tint }]}>Verify phone number</Text>
+                    <Text style={[styles.verifyBtnText, { color: colors.tint }]}>
+                      {resendCountdown > 0 ? `Try again in ${resendCountdown}s` : "Verify phone number"}
+                    </Text>
                   </Pressable>
                 )}
 
