@@ -1,6 +1,11 @@
 /**
  * Tests for POST /ai-agent/stream — SSE streaming agentic endpoint.
  *
+ * The mobile streaming client mocks fetch entirely, so the server-side SSE
+ * contract is otherwise untested. These integration tests drive the real route
+ * handler with a mocked OpenAI *streaming* client (an async iterable of delta
+ * chunks) and assert the wire format the client depends on.
+ *
  * Coverage:
  * - POST /ai-agent/stream returns 401 when not authenticated
  * - POST /ai-agent/stream returns 503 when AI key is missing
@@ -11,6 +16,10 @@
  * - Readonly tool inline: tool executed, result fed back, final text streamed in done event
  * - Action proposal: impactful tool call emits proposed_action SSE event and stores pending action
  * - Action proposal: proposed_action actionId survives to be confirmed via POST /ai-agent/confirm
+ * - Action proposal: confirm by a different user → 403 (ownership)
+ * - Edge cases: exactly one terminal done event (no double-done), fallback token
+ *   when the model streams empty content, explicit tool_call event for readonly
+ *   tools, and a terminal error event when the OpenAI call throws
  */
 
 import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
@@ -143,6 +152,15 @@ function parseSseEvents(body: string): Record<string, unknown>[] {
   return events;
 }
 
+/** supertest .parse() helper that buffers the raw SSE stream into a string. */
+function bufferRawStream(res: any, callback: (err: Error | null, body: string) => void) {
+  let data = "";
+  res.on("data", (chunk: Buffer) => {
+    data += chunk.toString();
+  });
+  res.on("end", () => callback(null, data));
+}
+
 // ─── Auth and input validation ────────────────────────────────────────────────
 
 describe("POST /api/ai-agent/stream — auth and validation", () => {
@@ -174,10 +192,11 @@ describe("POST /api/ai-agent/stream — auth and validation", () => {
     expect(res.body.error).toMatch(/role.*user/i);
   });
 
-  it("returns 503 when AI key is not configured", async () => {
+  it("returns 503 (plain JSON, not SSE) when AI key is not configured", async () => {
     const savedKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
     delete process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
 
+    // Fresh module so the OpenAI singleton re-initialises without a key.
     vi.resetModules();
     const { registerAiAgentRoutes: freshRegister } = await import("./ai-agent");
     const freshApp = express();
@@ -194,8 +213,11 @@ describe("POST /api/ai-agent/stream — auth and validation", () => {
       .post("/api/ai-agent/stream")
       .send({ messages: [{ role: "user", content: "hello" }] });
     expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/not configured|administrator/i);
+    // 503 short-circuits before SSE headers are flushed.
+    expect(res.headers["content-type"]).not.toMatch(/event-stream/);
 
-    process.env.AI_INTEGRATIONS_OPENAI_API_KEY = savedKey;
+    if (savedKey !== undefined) process.env.AI_INTEGRATIONS_OPENAI_API_KEY = savedKey;
   });
 });
 
@@ -222,11 +244,7 @@ describe("POST /api/ai-agent/stream — happy path: text-only response", () => {
     const res = await request(app)
       .post("/api/ai-agent/stream")
       .buffer(true)
-      .parse((res, callback) => {
-        let data = "";
-        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-        res.on("end", () => callback(null, data));
-      })
+      .parse(bufferRawStream)
       .send({ messages: [{ role: "user", content: "Hello" }] });
 
     expect(res.status).toBe(200);
@@ -245,11 +263,7 @@ describe("POST /api/ai-agent/stream — happy path: text-only response", () => {
     const res = await request(app)
       .post("/api/ai-agent/stream")
       .buffer(true)
-      .parse((res, callback) => {
-        let data = "";
-        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-        res.on("end", () => callback(null, data));
-      })
+      .parse(bufferRawStream)
       .send({ messages: [{ role: "user", content: "Hello" }] });
 
     const events = parseSseEvents(res.body as string);
@@ -264,11 +278,7 @@ describe("POST /api/ai-agent/stream — happy path: text-only response", () => {
     const res = await request(app)
       .post("/api/ai-agent/stream")
       .buffer(true)
-      .parse((res, callback) => {
-        let data = "";
-        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-        res.on("end", () => callback(null, data));
-      })
+      .parse(bufferRawStream)
       .send({
         messages: [{ role: "user", content: "Can I share a patient photo with anyone?" }],
       });
@@ -286,15 +296,26 @@ describe("POST /api/ai-agent/stream — happy path: text-only response", () => {
     const res = await request(app)
       .post("/api/ai-agent/stream")
       .buffer(true)
-      .parse((res, callback) => {
-        let data = "";
-        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-        res.on("end", () => callback(null, data));
-      })
+      .parse(bufferRawStream)
       .send({ messages: [{ role: "user", content: "Hello" }] });
 
     const events = parseSseEvents(res.body as string);
     expect(events.some((e) => "proposed_action" in e)).toBe(false);
+  });
+
+  it("emits exactly one terminal done event (no double-done)", async () => {
+    const app = makeApp("user-tp5");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({ messages: [{ role: "user", content: "Hello" }] });
+
+    const events = parseSseEvents(res.body as string);
+    const doneEvents = events.filter((e) => e.done === true);
+    expect(doneEvents.length).toBe(1);
+    // done must be the last event — no trailing events follow it.
+    expect(events[events.length - 1].done).toBe(true);
   });
 });
 
@@ -348,11 +369,7 @@ describe("POST /api/ai-agent/stream — action proposal path", () => {
     const res = await request(app)
       .post("/api/ai-agent/stream")
       .buffer(true)
-      .parse((res, callback) => {
-        let data = "";
-        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-        res.on("end", () => callback(null, data));
-      })
+      .parse(bufferRawStream)
       .send({ messages: [{ role: "user", content: "Mark invoice INV-AP-001 as paid" }] });
 
     expect(res.status).toBe(200);
@@ -370,6 +387,7 @@ describe("POST /api/ai-agent/stream — action proposal path", () => {
     expect(pa.actionId.length).toBeGreaterThan(0);
     expect(pa.toolName).toBe("mark_invoice_paid");
     expect(typeof pa.summary).toBe("string");
+    expect(pa.args).toEqual({ invoiceId: "INV-AP-001" });
   });
 
   it("does NOT emit a done event when a proposed_action is present", async () => {
@@ -377,11 +395,7 @@ describe("POST /api/ai-agent/stream — action proposal path", () => {
     const res = await request(app)
       .post("/api/ai-agent/stream")
       .buffer(true)
-      .parse((res, callback) => {
-        let data = "";
-        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-        res.on("end", () => callback(null, data));
-      })
+      .parse(bufferRawStream)
       .send({ messages: [{ role: "user", content: "Mark invoice INV-AP-001 as paid" }] });
 
     const events = parseSseEvents(res.body as string);
@@ -395,11 +409,7 @@ describe("POST /api/ai-agent/stream — action proposal path", () => {
     const streamRes = await request(app)
       .post("/api/ai-agent/stream")
       .buffer(true)
-      .parse((res, callback) => {
-        let data = "";
-        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-        res.on("end", () => callback(null, data));
-      })
+      .parse(bufferRawStream)
       .send({ messages: [{ role: "user", content: "Mark invoice INV-AP-001 as paid" }] });
 
     const events = parseSseEvents(streamRes.body as string);
@@ -433,11 +443,7 @@ describe("POST /api/ai-agent/stream — action proposal path", () => {
     const streamRes = await request(ownerApp)
       .post("/api/ai-agent/stream")
       .buffer(true)
-      .parse((res, callback) => {
-        let data = "";
-        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-        res.on("end", () => callback(null, data));
-      })
+      .parse(bufferRawStream)
       .send({ messages: [{ role: "user", content: "Mark invoice INV-AP-001 as paid" }] });
 
     const events = parseSseEvents(streamRes.body as string);
@@ -510,11 +516,7 @@ describe("POST /api/ai-agent/stream — readonly tool inline execution", () => {
     const res = await request(app)
       .post("/api/ai-agent/stream")
       .buffer(true)
-      .parse((res, callback) => {
-        let data = "";
-        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
-        res.on("end", () => callback(null, data));
-      })
+      .parse(bufferRawStream)
       .send({ messages: [{ role: "user", content: "Look up invoice INV-RO-001" }] });
 
     expect(res.status).toBe(200);
@@ -524,16 +526,71 @@ describe("POST /api/ai-agent/stream — readonly tool inline execution", () => {
     // The readonly tool must have been executed
     expect(executeSpy).toHaveBeenCalledOnce();
 
+    // An explicit tool_call event is emitted for the readonly tool
+    const toolCallEvent = events.find((e) => e.tool_call != null);
+    expect(toolCallEvent).toBeDefined();
+    expect((toolCallEvent!.tool_call as { name: string }).name).toBe("lookup_invoice");
+
     // Must have token events (the second iteration's text reply)
     const tokenEvents = events.filter((e) => typeof e.token === "string");
     expect(tokenEvents.length).toBeGreaterThan(0);
     const fullText = tokenEvents.map((e) => e.token as string).join("");
     expect(fullText).toContain("not found");
 
-    // Must end with done:true (no proposed_action)
-    expect(events.some((e) => e.done === true)).toBe(true);
+    // Must end with exactly one done:true (no proposed_action)
+    expect(events.filter((e) => e.done === true).length).toBe(1);
     expect(events.some((e) => "proposed_action" in e)).toBe(false);
 
     executeSpy.mockRestore();
+  });
+});
+
+// ─── Edge cases: empty content and upstream failure ──────────────────────────
+
+describe("POST /api/ai-agent/stream — edge cases", () => {
+  beforeAll(() => {
+    process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ??= "test-stream-key";
+  });
+
+  beforeEach(() => {
+    mockStreamCreate.mockReset();
+  });
+
+  it("emits a fallback token when the model streams empty content", async () => {
+    mockStreamCreate.mockImplementation(() => makeAsyncIterable([]));
+
+    const app = makeApp("user-edge-empty");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({ messages: [{ role: "user", content: "say nothing" }] });
+
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(res.body as string);
+    const tokenEvents = events.filter((e) => typeof e.token === "string");
+    expect(tokenEvents.length).toBe(1);
+    expect(tokenEvents[0].token as string).toMatch(/not sure how to help/i);
+    expect(events.filter((e) => e.done === true).length).toBe(1);
+  });
+
+  it("emits a terminal error event (no done) when the OpenAI call throws", async () => {
+    mockStreamCreate.mockRejectedValueOnce(new Error("upstream exploded"));
+
+    const app = makeApp("user-edge-error");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({ messages: [{ role: "user", content: "trigger failure" }] });
+
+    // Headers were already flushed (200 + event-stream) before the failure, so
+    // the error surfaces as a terminal SSE error event, not an HTTP error code.
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(res.body as string);
+    const errorEvent = events.find((e) => typeof e.error === "string");
+    expect(errorEvent).toBeDefined();
+    expect(errorEvent!.error as string).toMatch(/AI request failed/i);
+    expect(events.some((e) => e.done === true)).toBe(false);
   });
 });
