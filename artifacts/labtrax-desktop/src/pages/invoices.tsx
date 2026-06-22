@@ -1329,6 +1329,8 @@ export function InvoiceEditor({
   useEffect(() => {
     const d = detailQuery.data;
     if (!d) return;
+    // Guard: reject stale cache entries keyed to a different invoice.
+    if (d.id !== invoice.id) return;
     const nextStatus = EDITABLE_STATUSES.includes(
       d.status as (typeof EDITABLE_STATUSES)[number],
     )
@@ -1433,6 +1435,13 @@ export function InvoiceEditor({
     mutationFn: async () => {
       if (!invoiceNumber.trim()) {
         throw new Error("Invoice number is required.");
+      }
+      // Safety guard: if React Query somehow served a stale entry for a
+      // different invoice, refuse to save rather than corrupt the wrong record.
+      if (detailQuery.data != null && detailQuery.data.id !== invoice.id) {
+        throw new Error(
+          "Invoice data mismatch — please close and reopen this invoice.",
+        );
       }
       const trimmedItems = items.map((it) => ({
         ...it,
@@ -2385,92 +2394,103 @@ export function InvoiceEditor({
 
           <section>
             <h3 className="text-sm font-semibold mb-3">Patient & billing details</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                  Patient name
-                </label>
-                <input
-                  type="text"
-                  value={patientName}
-                  onChange={(e) => setPatientName(e.target.value)}
-                  placeholder="Patient name"
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-                />
+            {detailQuery.isLoading ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4" aria-busy="true" aria-label="Loading patient and billing details">
+                {[...Array(6)].map((_, i) => (
+                  <div key={i} className={i === 4 ? "md:col-span-2" : undefined}>
+                    <div className="h-3 w-24 rounded bg-muted animate-pulse mb-2" />
+                    <div className="h-9 rounded-md bg-muted animate-pulse" />
+                  </div>
+                ))}
               </div>
-              <div>
-                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                  Bill to
-                </label>
-                <DoctorNamePicker
-                  value={billTo}
-                  onChange={(name) => setBillTo(name)}
-                  doctorNames={editorDoctorNames}
-                  placeholder="Select doctor…"
-                />
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                    Patient name
+                  </label>
+                  <input
+                    type="text"
+                    value={patientName}
+                    onChange={(e) => setPatientName(e.target.value)}
+                    placeholder="Patient name"
+                    className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                    Bill to
+                  </label>
+                  <DoctorNamePicker
+                    value={billTo}
+                    onChange={(name) => setBillTo(name)}
+                    doctorNames={editorDoctorNames}
+                    placeholder="Select doctor…"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                    Teeth
+                  </label>
+                  <input
+                    type="text"
+                    value={teeth}
+                    onChange={(e) => setTeeth(e.target.value)}
+                    placeholder="e.g. 8, 9, 10"
+                    className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                    Shade
+                  </label>
+                  <input
+                    type="text"
+                    value={shade}
+                    onChange={(e) => setShade(e.target.value)}
+                    placeholder="e.g. A2"
+                    className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                    Material
+                  </label>
+                  <input
+                    type="text"
+                    value={material}
+                    onChange={(e) => setMaterial(e.target.value)}
+                    placeholder="e.g. Zirconia"
+                    className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                    Case notes
+                  </label>
+                  <textarea
+                    value={caseNotes}
+                    onChange={(e) => setCaseNotes(e.target.value)}
+                    rows={2}
+                    placeholder="Case notes from the originating case"
+                    className="w-full px-3 py-2 rounded-md bg-background border border-input text-sm resize-y"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                    Credits
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={credits}
+                    onChange={(e) => setCredits(Number(e.target.value) || 0)}
+                    className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm text-right tabular-nums"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                  Teeth
-                </label>
-                <input
-                  type="text"
-                  value={teeth}
-                  onChange={(e) => setTeeth(e.target.value)}
-                  placeholder="e.g. 8, 9, 10"
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                  Shade
-                </label>
-                <input
-                  type="text"
-                  value={shade}
-                  onChange={(e) => setShade(e.target.value)}
-                  placeholder="e.g. A2"
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                  Material
-                </label>
-                <input
-                  type="text"
-                  value={material}
-                  onChange={(e) => setMaterial(e.target.value)}
-                  placeholder="e.g. Zirconia"
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                  Case notes
-                </label>
-                <textarea
-                  value={caseNotes}
-                  onChange={(e) => setCaseNotes(e.target.value)}
-                  rows={2}
-                  placeholder="Case notes from the originating case"
-                  className="w-full px-3 py-2 rounded-md bg-background border border-input text-sm resize-y"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                  Credits
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={credits}
-                  onChange={(e) => setCredits(Number(e.target.value) || 0)}
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm text-right tabular-nums"
-                />
-              </div>
-            </div>
+            )}
           </section>
 
           <section>
