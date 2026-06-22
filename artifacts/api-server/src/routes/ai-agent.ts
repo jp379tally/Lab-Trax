@@ -30,6 +30,7 @@ import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock, RETENTION_LEGAL_DISCLAIMER } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
 import { persistAiChatExchange } from "../lib/ai-chat-history";
+import { getAiClient } from "../lib/ai-openai-client";
 import { createUserRateLimit } from "../lib/rate-limit";
 
 // ─── Per-user rate limiter: 10 agent calls per minute ───────────────────────
@@ -39,19 +40,6 @@ const aiAgentRateLimit = createUserRateLimit({
   max: 10,
   message: "Too many requests. Please slow down.",
 });
-
-// ─── OpenAI client (shared singleton) ──────────────────────────────────────
-
-let _cachedOpenAI: OpenAI | null | undefined;
-
-function getAiClient(): OpenAI | null {
-  if (_cachedOpenAI !== undefined) return _cachedOpenAI;
-  const apiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
-  if (!apiKey) { _cachedOpenAI = null; return null; }
-  const baseURL = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL;
-  _cachedOpenAI = new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
-  return _cachedOpenAI;
-}
 
 // ─── Pending action store (in-memory, TTL 5 min) ───────────────────────────
 
