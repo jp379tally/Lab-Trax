@@ -575,7 +575,20 @@ ${restRows.length > 0 ? `  - ${resStr}` : "  None recorded."}
 STAFF NOTES (${noteRows.length} total):
 ${noteRows.length > 0 ? notesStr : "  None recorded."}
 
-ATTACHMENTS: ${attachmentRows.length} file(s) attached.
+ATTACHMENTS (${attachmentRows.length} total):
+${
+  attachmentRows.length > 0
+    ? attachmentRows
+        .map((a: any) => {
+          const ft = (a.fileType || "").toLowerCase();
+          const isImage =
+            ft.startsWith("image/") || /\.(jpe?g|png|gif|webp|bmp|heic|tiff?)$/i.test(a.fileName || "");
+          const label = isImage ? "📷 image" : ft || "file";
+          return `  - ${a.fileName || "unnamed"} (${label})`;
+        })
+        .join("\n")
+    : "  None."
+}
 `;
 
   return ctx;

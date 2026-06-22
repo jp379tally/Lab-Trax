@@ -50,10 +50,14 @@ export function registerAiSttRoutes(
 
     const openai = new OpenAI({ apiKey });
     try {
+      // Strip codec params (e.g. "audio/webm;codecs=opus" → "audio/webm").
+      // OpenAI Whisper only recognises base MIME types; sending codec params causes
+      // it to reject the file with an unsupported format error.
+      const baseType = (req.file.mimetype || "audio/webm").split(";")[0]!.trim() || "audio/webm";
       const file = await toFile(
         req.file.buffer,
         req.file.originalname || "audio.webm",
-        { type: req.file.mimetype || "audio/webm" },
+        { type: baseType },
       );
 
       const transcription = await openai.audio.transcriptions.create({
