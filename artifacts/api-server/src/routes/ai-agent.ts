@@ -661,8 +661,22 @@ export function registerAiAgentRoutes(router: IRouter): void {
 
           if (tool.kind === "readonly") {
             sendEvent({ tool_call: { name: toolName } });
+            const rawTimeout = Number(process.env.AI_TOOL_TIMEOUT_MS);
+            const TOOL_TIMEOUT_MS = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 10_000;
             try {
-              const result = await tool.execute(args, toolCtx);
+              let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+              const timeoutPromise = new Promise<never>((_, reject) => {
+                timeoutHandle = setTimeout(
+                  () => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT_MS / 1000} s.`)),
+                  TOOL_TIMEOUT_MS,
+                );
+              });
+              let result: Awaited<ReturnType<typeof tool.execute>>;
+              try {
+                result = await Promise.race([tool.execute(args, toolCtx), timeoutPromise]);
+              } finally {
+                clearTimeout(timeoutHandle);
+              }
               toolResults.push({
                 role: "tool",
                 tool_call_id: toolCall.id,
