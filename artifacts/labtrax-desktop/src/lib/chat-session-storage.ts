@@ -5,6 +5,12 @@ import type { AiCaseContext } from "@/lib/ai-panel-context";
 export interface ToolOutput {
   name: string;
   result: unknown;
+  /**
+   * Set on persisted messages whose result was reduced to label-only metadata
+   * (see `trimToolOutputForStorage`). Trimmed outputs still render the
+   * "Looked up: …" label but have no expandable raw-JSON detail on restore.
+   */
+  trimmed?: boolean;
 }
 
 export interface ChatMsg {
@@ -74,9 +80,38 @@ export function writeStoredSessions(sessions: StoredSession[]): void {
 // ─── Message sanitization ────────────────────────────────────────────────────
 
 /**
+ * Reduce a tool output to the minimal metadata needed to render its
+ * "Looked up: …" label (see `extractToolLabel` in AiChatPanel).
+ *
+ * Tool result payloads can be large (entire case/invoice objects with full
+ * timelines). Persisting them verbatim bloats stored sessions, slows
+ * localStorage reads, and can hit the storage quota. We only keep the few
+ * identifier fields the label needs (`found`, `case.caseNumber`,
+ * `invoice.invoiceNumber`) and drop the rest, flagging the output as `trimmed`
+ * so the UI knows there is no raw-JSON detail to expand on restore.
+ */
+function trimToolOutputForStorage(output: ToolOutput): ToolOutput {
+  if (output.trimmed) return output;
+  const r = (output.result ?? {}) as Record<string, unknown>;
+  const minimal: Record<string, unknown> = {};
+  if (typeof r.found === "boolean") minimal.found = r.found;
+  if (r.case && typeof r.case === "object") {
+    const caseNumber = (r.case as Record<string, unknown>).caseNumber;
+    if (typeof caseNumber === "string") minimal.case = { caseNumber };
+  }
+  if (r.invoice && typeof r.invoice === "object") {
+    const invoiceNumber = (r.invoice as Record<string, unknown>).invoiceNumber;
+    if (typeof invoiceNumber === "string") minimal.invoice = { invoiceNumber };
+  }
+  return { name: output.name, result: minimal, trimmed: true };
+}
+
+/**
  * Prepare messages for localStorage persistence.
  *
  * - Strips the synthetic "welcome" message (it is rebuilt on restore).
+ * - Trims tool outputs to label-only metadata so the full result JSON does not
+ *   bloat stored sessions (see `trimToolOutputForStorage`).
  * - Collapses any proposedAction whose state is still "pending" to "rejected"
  *   so that restored sessions never show an interactive confirmation card for
  *   an action whose server-side TTL has already expired.
@@ -85,15 +120,21 @@ export function sanitizeMessagesForStorage(msgs: ChatMsg[]): ChatMsg[] {
   return msgs
     .filter((m) => m.id !== "welcome")
     .map((m) => {
-      if (m.proposedAction?.state !== "pending") return m;
-      const now = Date.now();
-      return {
-        ...m,
-        proposedAction: {
-          ...m.proposedAction,
-          state: "rejected" as const,
-          expiresAt: now - 1,
-        },
-      };
+      let next = m;
+      if (m.toolOutputs && m.toolOutputs.length > 0) {
+        next = { ...next, toolOutputs: m.toolOutputs.map(trimToolOutputForStorage) };
+      }
+      if (next.proposedAction?.state === "pending") {
+        const now = Date.now();
+        next = {
+          ...next,
+          proposedAction: {
+            ...next.proposedAction,
+            state: "rejected" as const,
+            expiresAt: now - 1,
+          },
+        };
+      }
+      return next;
     });
 }

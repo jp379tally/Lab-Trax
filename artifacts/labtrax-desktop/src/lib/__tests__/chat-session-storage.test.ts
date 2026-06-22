@@ -185,6 +185,108 @@ describe("sanitizeMessagesForStorage", () => {
     expect(result[1]!.proposedAction!.state).toBe("done");
   });
 
+  it("trims a large tool result down to label-only metadata", () => {
+    const msg: ChatMsg = {
+      id: "t1",
+      role: "assistant",
+      content: "Here is case 1234.",
+      toolOutputs: [
+        {
+          name: "lookup_case",
+          result: {
+            found: true,
+            case: {
+              id: "abc",
+              caseNumber: "1234",
+              patientName: "Jane Doe",
+              doctorName: "Dr. Smith",
+              notes: "x".repeat(5000),
+            },
+          },
+        },
+      ],
+    };
+    const result = sanitizeMessagesForStorage([msg]);
+    const out = result[0]!.toolOutputs![0]!;
+    expect(out.name).toBe("lookup_case");
+    expect(out.trimmed).toBe(true);
+    expect(out.result).toEqual({ found: true, case: { caseNumber: "1234" } });
+  });
+
+  it("keeps invoiceNumber for a lookup_invoice tool output", () => {
+    const msg: ChatMsg = {
+      id: "t2",
+      role: "assistant",
+      toolOutputs: [
+        {
+          name: "lookup_invoice",
+          result: {
+            found: true,
+            invoice: { id: "i1", invoiceNumber: "INV-9", lineItems: [1, 2, 3], total: 999 },
+          },
+        },
+      ],
+    };
+    const out = sanitizeMessagesForStorage([msg])[0]!.toolOutputs![0]!;
+    expect(out.trimmed).toBe(true);
+    expect(out.result).toEqual({ found: true, invoice: { invoiceNumber: "INV-9" } });
+  });
+
+  it("trims a tool output with no recognizable identifiers to an empty result", () => {
+    const msg: ChatMsg = {
+      id: "t3",
+      role: "assistant",
+      toolOutputs: [
+        { name: "monthly_sales_snapshot", result: { rows: [{ a: 1 }], totalCents: 12345 } },
+      ],
+    };
+    const out = sanitizeMessagesForStorage([msg])[0]!.toolOutputs![0]!;
+    expect(out.name).toBe("monthly_sales_snapshot");
+    expect(out.trimmed).toBe(true);
+    expect(out.result).toEqual({});
+  });
+
+  it("trims every tool output when a message has several", () => {
+    const msg: ChatMsg = {
+      id: "t4",
+      role: "assistant",
+      toolOutputs: [
+        { name: "lookup_case", result: { found: true, case: { caseNumber: "1", extra: "drop" } } },
+        { name: "lookup_invoice", result: { found: true, invoice: { invoiceNumber: "INV-2", extra: "drop" } } },
+      ],
+    };
+    const outs = sanitizeMessagesForStorage([msg])[0]!.toolOutputs!;
+    expect(outs.every((o) => o.trimmed)).toBe(true);
+    expect(outs[0]!.result).toEqual({ found: true, case: { caseNumber: "1" } });
+    expect(outs[1]!.result).toEqual({ found: true, invoice: { invoiceNumber: "INV-2" } });
+  });
+
+  it("is idempotent — re-sanitizing an already-trimmed message keeps the metadata", () => {
+    const msg: ChatMsg = {
+      id: "t5",
+      role: "assistant",
+      toolOutputs: [
+        { name: "lookup_case", result: { found: true, case: { caseNumber: "1234", notes: "big" } } },
+      ],
+    };
+    const once = sanitizeMessagesForStorage([msg]);
+    const twice = sanitizeMessagesForStorage(once);
+    expect(twice[0]!.toolOutputs![0]!.trimmed).toBe(true);
+    expect(twice[0]!.toolOutputs![0]!.result).toEqual({ found: true, case: { caseNumber: "1234" } });
+  });
+
+  it("does not mutate the original toolOutputs results", () => {
+    const originalResult = { found: true, case: { caseNumber: "1234", notes: "keep" } };
+    const msg: ChatMsg = {
+      id: "t6",
+      role: "assistant",
+      toolOutputs: [{ name: "lookup_case", result: originalResult }],
+    };
+    sanitizeMessagesForStorage([msg]);
+    expect(originalResult.case.notes).toBe("keep");
+    expect(msg.toolOutputs![0]!.trimmed).toBeUndefined();
+  });
+
   it("does not mutate the original messages array", () => {
     const original: ChatMsg = {
       id: "x1",

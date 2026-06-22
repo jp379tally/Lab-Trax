@@ -557,26 +557,34 @@ function extractToolLabel(name: string, result: unknown): string {
   return base;
 }
 
-function ToolSourcesBadge({ toolOutputs }: { toolOutputs: Array<{ name: string; result: unknown }> }) {
+function ToolSourcesBadge({ toolOutputs }: { toolOutputs: Array<{ name: string; result: unknown; trimmed?: boolean }> }) {
   const [open, setOpen] = useState(false);
   const labels = toolOutputs.map((t) => extractToolLabel(t.name, t.result));
+  // Restored sessions persist only label metadata (trimmed), so the raw-JSON
+  // detail can only be expanded for live messages that still hold full results.
+  const expandable = toolOutputs.filter((t) => !t.trimmed);
+  const canExpand = expandable.length > 0;
 
   return (
     <div className="mt-0.5">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+        onClick={() => canExpand && setOpen((v) => !v)}
+        className={`flex items-center gap-1 text-[10px] text-muted-foreground/60 ${
+          canExpand ? "hover:text-muted-foreground transition-colors cursor-pointer" : "cursor-default"
+        }`}
         title="Data Maynard looked up to answer this"
       >
         <Search size={9} />
         <span>Looked up: {labels.join(", ")}</span>
-        <ChevronDown size={9} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+        {canExpand && (
+          <ChevronDown size={9} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+        )}
       </button>
-      {open && (
+      {open && canExpand && (
         <div className="mt-1 rounded-lg border border-border/60 bg-muted/40 px-2.5 py-2 max-w-[280px] space-y-2">
           <p className="text-[10px] font-semibold text-muted-foreground">Lookup results</p>
-          {toolOutputs.map((t, i) => (
+          {expandable.map((t, i) => (
             <div key={i}>
               <p className="text-[10px] font-mono text-foreground/60 mb-0.5">{t.name}</p>
               <pre className="text-[9px] font-mono text-foreground/70 whitespace-pre-wrap break-all leading-tight max-h-32 overflow-y-auto">
@@ -1734,10 +1742,12 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             );
           }
 
-          // Find case history tool output if present
-          const caseHistoryOutput = msg.toolOutputs?.find((t) => t.name === "get_case_history")
-            ?.result as CaseHistoryData | undefined;
-          const hasCaseHistory = !!caseHistoryOutput?.found;
+          // Find case history tool output if present. Restored sessions trim the
+          // result to label-only metadata, so the print button (which needs the
+          // full timeline) is only offered for live, non-trimmed outputs.
+          const caseHistoryToolOutput = msg.toolOutputs?.find((t) => t.name === "get_case_history");
+          const caseHistoryOutput = caseHistoryToolOutput?.result as CaseHistoryData | undefined;
+          const hasCaseHistory = !!caseHistoryOutput?.found && !caseHistoryToolOutput?.trimmed;
 
           // Find draft_message tool output if present
           const draftOutput = msg.toolOutputs?.find((t) => t.name === "draft_message")
