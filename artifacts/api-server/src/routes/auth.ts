@@ -5,7 +5,7 @@ import multer from "multer";
 import sharp from "sharp";
 import { Router } from "express";
 import { createRateLimit } from "../lib/rate-limit";
-import { and, asc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -16,6 +16,7 @@ import {
   userSessions,
   users,
   systemSettings,
+  verificationCodes,
 } from "@workspace/db";
 import {
   signAccessToken,
@@ -48,6 +49,7 @@ import {
 } from "../lib/match-and-invite";
 import { startBillingTrial } from "../lib/entitlement";
 import { sendSecurityAlertEmail } from "../lib/mail";
+import { normalizeEmailTarget } from "../lib/verification";
 
 const router = Router();
 
@@ -543,6 +545,40 @@ router.post(
       entityType: "user",
       entityId: user.id,
     });
+
+    // Backfill emailVerifiedAt when the user verified their email *before*
+    // their account existed (the unauthenticated pre-registration OTP flow).
+    // In that case, verify-email-code had no boundUserId and could not write
+    // emailVerifiedAt. We look for a consumed email verification code for the
+    // registration address within the last 30 minutes and, if found, stamp the
+    // field so requireVerifiedAccount passes from the moment the account exists.
+    if (input.email) {
+      const PRE_REG_WINDOW_MS = 30 * 60 * 1000;
+      const windowCutoff = new Date(Date.now() - PRE_REG_WINDOW_MS);
+      const normalizedEmail = normalizeEmailTarget(input.email);
+      const preRegCode = await db.query.verificationCodes.findFirst({
+        where: and(
+          eq(verificationCodes.channel, "email"),
+          eq(verificationCodes.target, normalizedEmail),
+          isNotNull(verificationCodes.consumedAt),
+          gt(verificationCodes.consumedAt, windowCutoff)
+        ),
+        orderBy: [desc(verificationCodes.consumedAt)],
+      });
+      if (preRegCode?.consumedAt) {
+        await db
+          .update(users)
+          .set({ emailVerifiedAt: preRegCode.consumedAt })
+          .where(eq(users.id, user.id));
+        await writeAuditLog({
+          req,
+          userId: user.id,
+          action: "email_verified",
+          entityType: "user",
+          entityId: user.id,
+        });
+      }
+    }
 
     // Start billing trials AFTER the account-creation transaction commits.
     // These are best-effort and must never roll back the new account.
