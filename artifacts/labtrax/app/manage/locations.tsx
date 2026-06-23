@@ -23,11 +23,13 @@ import { FormSheet } from "@/components/ui/FormSheet";
 import { TextField } from "@/components/ui/TextField";
 import { getJson, sendJson, isForbiddenError, ApiError } from "@/lib/read-api";
 import { useMe, primaryLabOrgId, canAdminAnyLab } from "@/lib/auth-me";
+import { CASE_STATIONS, stationLabelFor } from "@/lib/case-stations";
 
 interface LabLocation {
   id: string;
   name: string;
   code: string;
+  status: string;
   isActive: boolean;
   sortOrder: number;
 }
@@ -308,7 +310,7 @@ export default function LocationsScreen() {
                     {draggedItem.name}
                   </Text>
                   <Text style={[styles.rowCode, { color: colors.textTertiary }]} numberOfLines={1}>
-                    {draggedItem.code}
+                    {stationLabelFor(draggedItem.status)}
                   </Text>
                 </View>
                 <View style={styles.handle}>
@@ -453,7 +455,7 @@ function LocationRow({
               {item.name}
             </Text>
             <Text style={[styles.rowCode, { color: colors.textTertiary }]} numberOfLines={1}>
-              {item.code}
+              {stationLabelFor(item.status)}
             </Text>
           </View>
           {!item.isActive ? (
@@ -488,14 +490,14 @@ function LocationEditor({
   onSaved: () => void;
 }) {
   const [name, setName] = useState(location?.name ?? "");
-  const [code, setCode] = useState(location?.code ?? "");
+  const [status, setStatus] = useState(location?.status ?? "received");
   const [isActive, setIsActive] = useState(location?.isActive ?? true);
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
   useEffect(() => {
     setName(location?.name ?? "");
-    setCode(location?.code ?? "");
+    setStatus(location?.status ?? "received");
     setIsActive(location?.isActive ?? true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location?.id]);
@@ -505,14 +507,14 @@ function LocationEditor({
       if (location) {
         return sendJson("PATCH", `/api/locations/${location.id}`, {
           name: name.trim(),
-          code: code.trim(),
+          status,
           isActive,
         });
       }
       return sendJson("POST", "/api/locations", {
         organizationId: labOrgId,
         name: name.trim(),
-        code: code.trim(),
+        status,
         isActive,
       });
     },
@@ -537,7 +539,7 @@ function LocationEditor({
     );
   }
 
-  const canSave = name.trim().length > 0 && code.trim().length > 0;
+  const canSave = name.trim().length > 0 && status.trim().length > 0;
 
   return (
     <FormSheet
@@ -557,15 +559,39 @@ function LocationEditor({
         placeholder="e.g. In Porcelain"
         autoFocus
       />
-      <TextField
-        label="Code"
-        required
-        value={code}
-        onChangeText={setCode}
-        placeholder="e.g. in_porcelain"
-        autoCapitalize="none"
-        hint="Unique identifier used to track cases at this station."
-      />
+      <Text style={[styles.stageLabel, { color: colors.text }]}>
+        Workflow stage <Text style={{ color: colors.error }}>*</Text>
+      </Text>
+      <Text style={[styles.stageHint, { color: colors.textSecondary }]}>
+        Cases moved to this station are set to this stage.
+      </Text>
+      <View style={styles.stageGrid}>
+        {CASE_STATIONS.map((opt) => {
+          const selected = opt.value === status;
+          return (
+            <Pressable
+              key={opt.value}
+              onPress={() => setStatus(opt.value)}
+              style={[
+                styles.stageChip,
+                {
+                  backgroundColor: selected ? colors.tint : colors.surface,
+                  borderColor: selected ? colors.tint : colors.border,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.stageChipText,
+                  { color: selected ? colors.surface : colors.text },
+                ]}
+              >
+                {opt.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
       <View style={styles.toggleRow}>
         <View style={styles.toggleLabel}>
           <Text style={[styles.toggleTitle, { color: colors.text }]}>Active</Text>
@@ -643,6 +669,21 @@ function makeStyles(c: ThemeColors) {
     rowMain: { flex: 1, gap: 2 },
     rowName: { ...Typography.bodySemibold },
     rowCode: { ...Typography.caption },
+    stageLabel: { ...Typography.bodySemibold, marginBottom: 2 },
+    stageHint: { ...Typography.caption, marginBottom: Spacing.sm },
+    stageGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: Spacing.xs,
+      marginBottom: Spacing.md,
+    },
+    stageChip: {
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.md,
+      borderWidth: 1,
+    },
+    stageChipText: { ...Typography.caption },
     badge: {
       paddingHorizontal: Spacing.sm,
       paddingVertical: 2,

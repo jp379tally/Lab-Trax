@@ -7,8 +7,9 @@
  * Coverage:
  *  - GET /api/locations — seeds 14 built-in stations on first request for a new org
  *  - GET /api/locations?activeOnly=true — returns only active locations
- *  - POST /api/locations — creates a location (201)
- *  - PATCH /api/locations/:id — updates name, code, isActive, sortOrder
+ *  - POST /api/locations — creates a location with a mapped workflow stage (201)
+ *  - POST /api/locations — missing required `status` returns 400
+ *  - PATCH /api/locations/:id — updates name, status, isActive, sortOrder
  *  - DELETE /api/locations/:id — removes a location
  *  - POST /api/locations — duplicate code within same org returns a non-2xx error
  *  - POST /api/locations — non-admin org member returns 403
@@ -206,25 +207,26 @@ maybe("Locations (db integration)", () => {
     const r = await request(appMod.default)
       .post("/api/locations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name, code, isActive: true, sortOrder: 99 });
+      .send({ organizationId: labOrgId, name, code, status: "in_design", isActive: true, sortOrder: 99 });
 
     expect(r.status).toBe(201);
     expect(r.body.data).toBeDefined();
     expect(r.body.data.name).toBe(name);
     expect(r.body.data.code).toBe(code);
+    expect(r.body.data.status).toBe("in_design");
     expect(r.body.data.labOrganizationId).toBe(labOrgId);
     expect(r.body.data.isActive).toBe(true);
     expect(r.body.data.sortOrder).toBe(99);
   });
 
-  it("POST /api/locations — missing required fields returns 400", async () => {
+  it("POST /api/locations — missing required status returns 400", async () => {
     const { access } = await makeSession(adminId);
 
     const r = await request(appMod.default)
       .post("/api/locations")
       .set("Authorization", `Bearer ${access}`)
-      // missing `code`
-      .send({ organizationId: labOrgId, name: "No Code Station" });
+      // missing `status` (the mapped workflow stage is required)
+      .send({ organizationId: labOrgId, name: "No Status Station", code: rid("no_status") });
 
     expect(r.status).toBe(400);
   });
@@ -238,14 +240,14 @@ maybe("Locations (db integration)", () => {
     const first = await request(appMod.default)
       .post("/api/locations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name: "First Station", code });
+      .send({ organizationId: labOrgId, name: "First Station", code, status: "received" });
     expect(first.status).toBe(201);
 
     // Second insert with the same (organizationId, code) pair must fail
     const second = await request(appMod.default)
       .post("/api/locations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name: "Duplicate Station", code });
+      .send({ organizationId: labOrgId, name: "Duplicate Station", code, status: "received" });
     expect(second.status).toBeGreaterThanOrEqual(400);
   });
 
@@ -259,18 +261,19 @@ maybe("Locations (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/locations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name: rid("Before Patch"), code });
+      .send({ organizationId: labOrgId, name: rid("Before Patch"), code, status: "received" });
     expect(create.status).toBe(201);
     const id: string = create.body.data.id;
 
     const r = await request(appMod.default)
       .patch(`/api/locations/${id}`)
       .set("Authorization", `Bearer ${access}`)
-      .send({ name: updatedName, isActive: false, sortOrder: 50 });
+      .send({ name: updatedName, status: "in_design", isActive: false, sortOrder: 50 });
 
     expect(r.status).toBe(200);
     expect(r.body.data.id).toBe(id);
     expect(r.body.data.name).toBe(updatedName);
+    expect(r.body.data.status).toBe("in_design");
     expect(r.body.data.isActive).toBe(false);
     expect(r.body.data.sortOrder).toBe(50);
   });
@@ -295,7 +298,7 @@ maybe("Locations (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/locations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name: rid("To Delete"), code });
+      .send({ organizationId: labOrgId, name: rid("To Delete"), code, status: "received" });
     expect(create.status).toBe(201);
     const id: string = create.body.data.id;
 
@@ -333,7 +336,7 @@ maybe("Locations (db integration)", () => {
     const r = await request(appMod.default)
       .post("/api/locations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name: "Rejected", code: rid("na_code") });
+      .send({ organizationId: labOrgId, name: "Rejected", code: rid("na_code"), status: "received" });
 
     expect(r.status).toBe(403);
   });
@@ -344,7 +347,7 @@ maybe("Locations (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/locations")
       .set("Authorization", `Bearer ${adminAccess}`)
-      .send({ organizationId: labOrgId, name: rid("Admin Created"), code: rid("rbac_patch") });
+      .send({ organizationId: labOrgId, name: rid("Admin Created"), code: rid("rbac_patch"), status: "received" });
     expect(create.status).toBe(201);
     const id: string = create.body.data.id;
 
@@ -362,7 +365,7 @@ maybe("Locations (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/locations")
       .set("Authorization", `Bearer ${adminAccess}`)
-      .send({ organizationId: labOrgId, name: rid("Admin Created"), code: rid("rbac_del") });
+      .send({ organizationId: labOrgId, name: rid("Admin Created"), code: rid("rbac_del"), status: "received" });
     expect(create.status).toBe(201);
     const id: string = create.body.data.id;
 

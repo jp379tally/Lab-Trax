@@ -2234,6 +2234,14 @@ export const labLocations = pgTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     code: text("code").notNull(),
+    /**
+     * Mapped workflow stage — one of the canonical case-status enum values.
+     * This is what gets written to a case's `status` when a case is located
+     * at this station. The free-form `code` is for display/identity only and
+     * is NOT a valid case status for custom stations. Built-in stations have
+     * `status === code`. Defaults to "received" until backfilled.
+     */
+    status: text("status").default("received").notNull(),
     description: text("description"),
     isActive: boolean("is_active").default(true).notNull(),
     sortOrder: integer("sort_order").default(0).notNull(),

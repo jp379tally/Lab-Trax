@@ -3316,11 +3316,13 @@ export function CaseDrawer({
     queryKey: ["locations", labCase.labOrganizationId, "active"],
     queryFn: async () => {
       try {
-        const rows = await apiFetch<Array<{ code: string; name: string }>>(
+        const rows = await apiFetch<Array<{ code: string; name: string; status: string }>>(
           `/locations?organizationId=${labCase.labOrganizationId}&activeOnly=true`
         );
         if (!Array.isArray(rows) || rows.length === 0) return [];
-        return rows.map((r) => ({ value: r.code, label: r.name }));
+        // `value` is the mapped workflow stage (a valid case-status), NOT the
+        // free-form code — sending the code broke custom stations.
+        return rows.map((r) => ({ value: r.status, label: r.name }));
       } catch {
         return [];
       }

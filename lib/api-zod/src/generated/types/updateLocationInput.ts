@@ -5,10 +5,12 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { UpdateLocationInputStatus } from "./updateLocationInputStatus";
 
 export interface UpdateLocationInput {
   name?: string;
   code?: string;
+  status?: UpdateLocationInputStatus;
   isActive?: boolean;
   sortOrder?: number;
 }

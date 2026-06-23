@@ -5,11 +5,13 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { CreateLocationInputStatus } from "./createLocationInputStatus";
 
 export interface CreateLocationInput {
   organizationId: string;
   name: string;
-  code: string;
+  status: CreateLocationInputStatus;
+  code?: string;
   isActive?: boolean;
   sortOrder?: number;
 }

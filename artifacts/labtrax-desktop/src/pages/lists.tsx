@@ -105,6 +105,7 @@ interface Location {
   labOrganizationId: string;
   name: string;
   code: string;
+  status: string;
   description: string | null;
   isActive: boolean;
   sortOrder: number;
@@ -112,7 +113,7 @@ interface Location {
 
 interface LocationForm {
   name: string;
-  code: string;
+  status: string;
   isActive: boolean;
 }
 
@@ -142,9 +143,37 @@ interface CategoryForm {
 
 const emptyLocationForm = (): LocationForm => ({
   name: "",
-  code: "",
+  status: "received",
   isActive: true,
 });
+
+// Canonical workflow stages a station can map to. A station's `status` is the
+// value written to a case's `status` when it's located there — sending the
+// free-form code broke custom stations.
+const STAGE_OPTIONS: { value: string; label: string }[] = [
+  { value: "received", label: "Received" },
+  { value: "in_design", label: "In Design" },
+  { value: "scan", label: "Scan" },
+  { value: "in_milling", label: "In Milling" },
+  { value: "post_mill", label: "Post Mill" },
+  { value: "sintering_furnace", label: "Sintering Furnace" },
+  { value: "model_room", label: "Model Room" },
+  { value: "in_porcelain", label: "Porcelain" },
+  { value: "qc", label: "Quality Check" },
+  { value: "complete", label: "Complete" },
+  { value: "shipped", label: "Shipping" },
+  { value: "on_hold", label: "On Hold" },
+  { value: "delivered", label: "Delivered" },
+  { value: "remake", label: "Remake" },
+];
+
+function stageLabelFor(value: string | null | undefined): string {
+  if (!value) return "—";
+  return (
+    STAGE_OPTIONS.find((s) => s.value === value)?.label ??
+    value.replace(/[_-]+/g, " ").replace(/\b\w/g, (m) => m.toUpperCase()).trim()
+  );
+}
 
 const emptyVendorForm = (type: VendorType = "vendor"): VendorForm => ({
   name: "",
@@ -424,7 +453,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
         body: JSON.stringify({
           organizationId,
           name: form.name.trim(),
-          code: form.code.trim(),
+          status: form.status,
           isActive: form.isActive,
 
         }),
@@ -445,7 +474,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
         method: "PATCH",
         body: JSON.stringify({
           name: form.name.trim(),
-          code: form.code.trim(),
+          status: form.status,
           isActive: form.isActive,
 
         }),
@@ -574,7 +603,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     setDrawerVendor(null);
     setDrawerCategory(null);
     setDrawerLocation(loc);
-    setLocationForm({ name: loc.name, code: loc.code, isActive: loc.isActive });
+    setLocationForm({ name: loc.name, status: loc.status, isActive: loc.isActive });
     setShowDrawer(true);
   }
 
@@ -611,7 +640,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     (loc) =>
       !search.trim() ||
       loc.name.toLowerCase().includes(search.toLowerCase()) ||
-      loc.code.toLowerCase().includes(search.toLowerCase())
+      stageLabelFor(loc.status).toLowerCase().includes(search.toLowerCase())
   );
 
   const tabCounts: Record<Tab, number> = {
@@ -1037,7 +1066,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
                   onClick={() =>
                     updateLocationMut.mutate({ id: drawerLocation.id, form: locationForm })
                   }
-                  disabled={!locationForm.name.trim() || !locationForm.code.trim() || isLocationPending}
+                  disabled={!locationForm.name.trim() || !locationForm.status.trim() || isLocationPending}
                   className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
                 >
                   {isLocationPending && <Loader2 size={13} className="animate-spin" />}
@@ -1048,7 +1077,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
                 <button
                   type="button"
                   onClick={() => createLocationMut.mutate(locationForm)}
-                  disabled={!locationForm.name.trim() || !locationForm.code.trim() || isLocationPending}
+                  disabled={!locationForm.name.trim() || !locationForm.status.trim() || isLocationPending}
                   className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
                 >
                   {isLocationPending && <Loader2 size={13} className="animate-spin" />}
@@ -1499,7 +1528,7 @@ function LocationsTable({
                 </td>
               )}
               <td className="px-4 py-2.5 font-medium">{loc.name}</td>
-              <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground">{loc.code}</td>
+              <td className="px-3 py-2.5 text-xs text-muted-foreground">{stageLabelFor(loc.status)}</td>
               <td className="px-3 py-2.5 text-center">
                 {toggleActivePendingId === loc.id ? (
                   <Loader2 size={13} className="animate-spin text-muted-foreground inline-block" />
@@ -1570,16 +1599,20 @@ function LocationFormFields({
           autoFocus
         />
       </FieldRow>
-      <FieldRow label="Code *">
-        <input
+      <FieldRow label="Workflow stage *">
+        <select
           className={inputCls}
-          value={form.code}
-          onChange={(e) => set({ code: e.target.value.toUpperCase() })}
-          placeholder="e.g. WAX"
-          maxLength={20}
-        />
+          value={form.status}
+          onChange={(e) => set({ status: e.target.value })}
+        >
+          {STAGE_OPTIONS.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
         <p className="text-[11px] text-muted-foreground mt-0.5">
-          Short identifier used as the case status value. Must be unique per lab.
+          Cases moved to this station are set to this workflow stage.
         </p>
       </FieldRow>
       <FieldRow label="Status">

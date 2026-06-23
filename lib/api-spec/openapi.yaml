@@ -5618,12 +5618,15 @@ components:
           type: boolean
     LabLocation:
       type: object
-      required: [id, organizationId, name, code, isActive, sortOrder, createdAt, updatedAt]
+      required: [id, organizationId, name, code, status, isActive, sortOrder, createdAt, updatedAt]
       properties:
         id: { type: string }
         organizationId: { type: string }
         name: { type: string }
         code: { type: string }
+        status:
+          type: string
+          enum: [received, in_design, scan, in_milling, post_mill, sintering_furnace, model_room, in_porcelain, qc, complete, shipped, delivered, on_hold, remake, cancelled]
         isActive: { type: boolean }
         sortOrder: { type: integer }
         createdAt: { type: string, format: date-time }
@@ -5646,10 +5649,13 @@ components:
           $ref: "#/components/schemas/LabLocation"
     CreateLocationInput:
       type: object
-      required: [organizationId, name, code]
+      required: [organizationId, name, status]
       properties:
         organizationId: { type: string }
         name: { type: string }
+        status:
+          type: string
+          enum: [received, in_design, scan, in_milling, post_mill, sintering_furnace, model_room, in_porcelain, qc, complete, shipped, delivered, on_hold, remake, cancelled]
         code: { type: string }
         isActive: { type: boolean }
         sortOrder: { type: integer }
@@ -5658,6 +5664,9 @@ components:
       properties:
         name: { type: string }
         code: { type: string }
+        status:
+          type: string
+          enum: [received, in_design, scan, in_milling, post_mill, sintering_furnace, model_room, in_porcelain, qc, complete, shipped, delivered, on_hold, remake, cancelled]
         isActive: { type: boolean }
         sortOrder: { type: integer }
     VocabularyItem:

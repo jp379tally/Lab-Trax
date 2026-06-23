@@ -2045,11 +2045,33 @@ export interface SuccessResult {
   success: boolean;
 }
 
+export type LabLocationStatus =
+  (typeof LabLocationStatus)[keyof typeof LabLocationStatus];
+
+export const LabLocationStatus = {
+  received: "received",
+  in_design: "in_design",
+  scan: "scan",
+  in_milling: "in_milling",
+  post_mill: "post_mill",
+  sintering_furnace: "sintering_furnace",
+  model_room: "model_room",
+  in_porcelain: "in_porcelain",
+  qc: "qc",
+  complete: "complete",
+  shipped: "shipped",
+  delivered: "delivered",
+  on_hold: "on_hold",
+  remake: "remake",
+  cancelled: "cancelled",
+} as const;
+
 export interface LabLocation {
   id: string;
   organizationId: string;
   name: string;
   code: string;
+  status: LabLocationStatus;
   isActive: boolean;
   sortOrder: number;
   createdAt: string;
@@ -2066,17 +2088,61 @@ export interface LabLocationResult {
   data: LabLocation;
 }
 
+export type CreateLocationInputStatus =
+  (typeof CreateLocationInputStatus)[keyof typeof CreateLocationInputStatus];
+
+export const CreateLocationInputStatus = {
+  received: "received",
+  in_design: "in_design",
+  scan: "scan",
+  in_milling: "in_milling",
+  post_mill: "post_mill",
+  sintering_furnace: "sintering_furnace",
+  model_room: "model_room",
+  in_porcelain: "in_porcelain",
+  qc: "qc",
+  complete: "complete",
+  shipped: "shipped",
+  delivered: "delivered",
+  on_hold: "on_hold",
+  remake: "remake",
+  cancelled: "cancelled",
+} as const;
+
 export interface CreateLocationInput {
   organizationId: string;
   name: string;
-  code: string;
+  status: CreateLocationInputStatus;
+  code?: string;
   isActive?: boolean;
   sortOrder?: number;
 }
 
+export type UpdateLocationInputStatus =
+  (typeof UpdateLocationInputStatus)[keyof typeof UpdateLocationInputStatus];
+
+export const UpdateLocationInputStatus = {
+  received: "received",
+  in_design: "in_design",
+  scan: "scan",
+  in_milling: "in_milling",
+  post_mill: "post_mill",
+  sintering_furnace: "sintering_furnace",
+  model_room: "model_room",
+  in_porcelain: "in_porcelain",
+  qc: "qc",
+  complete: "complete",
+  shipped: "shipped",
+  delivered: "delivered",
+  on_hold: "on_hold",
+  remake: "remake",
+  cancelled: "cancelled",
+} as const;
+
 export interface UpdateLocationInput {
   name?: string;
   code?: string;
+  status?: UpdateLocationInputStatus;
   isActive?: boolean;
   sortOrder?: number;
 }

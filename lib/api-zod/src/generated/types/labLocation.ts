@@ -5,12 +5,14 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { LabLocationStatus } from "./labLocationStatus";
 
 export interface LabLocation {
   id: string;
   organizationId: string;
   name: string;
   code: string;
+  status: LabLocationStatus;
   isActive: boolean;
   sortOrder: number;
   createdAt: Date;

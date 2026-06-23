@@ -42,6 +42,7 @@ import * as DocumentPicker from "expo-document-picker";
 import * as Print from "expo-print";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { resilientFetch } from "@/lib/query-client";
+import { getJson } from "@/lib/read-api";
 import { uploadCaseAttachment } from "@/lib/uploadCaseAttachment";
 import {
   peekSharedFiles,
@@ -1684,6 +1685,40 @@ function OverviewSection({
   const [locating, setLocating] = useState(false);
   const [locateMsg, setLocateMsg] = useState<string | null>(null);
 
+  // Lab stations (locations) drive the locate picker. `status` is the mapped
+  // workflow stage (a valid case-status); sending the free-form `code` broke
+  // custom stations. Falls back to the built-in CASE_STATIONS when none load.
+  const [apiLocations, setApiLocations] = useState<
+    { id: string; name: string; code: string; status: string; isActive: boolean; sortOrder: number }[] | null
+  >(null);
+  const locationsOrgId = c.labOrganizationId ?? c.organizationId ?? null;
+  useEffect(() => {
+    if (!locationsOrgId) return;
+    let cancelled = false;
+    getJson<typeof apiLocations & object>(
+      `/api/locations?organizationId=${locationsOrgId}&activeOnly=true`,
+    )
+      .then((rows) => {
+        if (!cancelled) setApiLocations(Array.isArray(rows) ? rows : null);
+      })
+      .catch(() => {
+        if (!cancelled) setApiLocations(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [locationsOrgId]);
+
+  const stationOptions: { value: string; label: string }[] = useMemo(() => {
+    if (apiLocations && apiLocations.length > 0) {
+      return apiLocations
+        .slice()
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((loc) => ({ value: loc.status, label: loc.name }));
+    }
+    return STATUS_OPTIONS;
+  }, [apiLocations]);
+
   // ── Related cases (same patient only) with long-press locate ─────────────
   const relatedCasesQuery = useCases();
   const allCases = relatedCasesQuery.data ?? [];
@@ -2142,11 +2177,11 @@ function OverviewSection({
           <Text style={styles.cardHeading}>Locate Case</Text>
           <Text style={styles.locateCurrent}>
             Currently at{" "}
-            <Text style={styles.locateCurrentStrong}>{labelFor(STATUS_OPTIONS, c.status)}</Text>
+            <Text style={styles.locateCurrentStrong}>{labelFor(stationOptions, c.status)}</Text>
           </Text>
           <SelectRow
             label="Move to station"
-            valueLabel={locateTarget ? labelFor(STATUS_OPTIONS, locateTarget) : "Select station…"}
+            valueLabel={locateTarget ? labelFor(stationOptions, locateTarget) : "Select station…"}
             onPress={() => setPicker("locate")}
             styles={styles}
             colors={colors}
@@ -2274,7 +2309,7 @@ function OverviewSection({
       <OptionPickerModal
         visible={picker === "locate"}
         title="Locate Case"
-        options={STATUS_OPTIONS.filter((s) => s.value !== (c.status ?? "").toLowerCase())}
+        options={stationOptions.filter((s) => s.value !== (c.status ?? "").toLowerCase())}
         selected={locateTarget}
         onSelect={(v) => {
           setLocateTarget(v);

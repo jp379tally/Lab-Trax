@@ -47,6 +47,7 @@ interface LabLocation {
   id: string;
   name: string;
   code: string;
+  status: string;
   isActive: boolean;
   sortOrder: number;
 }
@@ -194,9 +195,11 @@ export function LocateCaseSheet(props: Props) {
   const stations: { value: string; label: string }[] =
     apiLocations !== null
       ? apiLocations
-          .filter((loc) => isBulk || loc.code.toLowerCase() !== currentStatus)
+          // Compare/send the mapped workflow stage (a valid case-status), NOT
+          // the free-form code — sending the code broke custom stations.
+          .filter((loc) => isBulk || loc.status !== currentStatus)
           .sort((a, b) => a.sortOrder - b.sortOrder)
-          .map((loc) => ({ value: loc.code.toLowerCase(), label: loc.name }))
+          .map((loc) => ({ value: loc.status, label: loc.name }))
       : CASE_STATIONS.filter((s) => isBulk || s.value !== currentStatus);
 
   const headerTitle = isBulk

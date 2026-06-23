@@ -43,6 +43,7 @@ interface LabLocation {
   id: string;
   name: string;
   code: string;
+  status: string;
   isActive: boolean;
   sortOrder: number;
 }
@@ -169,7 +170,9 @@ export default function BatchLocateScreen() {
     if (apiLocations !== null) {
       return apiLocations
         .sort((a, b) => a.sortOrder - b.sortOrder)
-        .map((loc) => ({ value: loc.code.toLowerCase(), label: loc.name }));
+        // `value` is the mapped workflow stage (a valid case-status), NOT the
+        // free-form code — sending the code broke custom stations.
+        .map((loc) => ({ value: loc.status, label: loc.name }));
     }
     return CASE_STATIONS;
   }, [apiLocations]);
@@ -706,7 +709,9 @@ export default function BatchLocateScreen() {
 
         {!allSucceeded && (
           <Text style={[styles.resultSubheading, { color: colors.textSecondary }]}>
-            Successfully moved to {result?.targetName}.{"\n"}
+            {succeeded > 0
+              ? `Successfully moved ${succeeded} case${succeeded === 1 ? "" : "s"} to ${result?.targetName}.\n`
+              : ""}
             The following case{failed === 1 ? "" : "s"} could not be updated:
           </Text>
         )}
