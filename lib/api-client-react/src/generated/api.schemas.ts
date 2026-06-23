@@ -1060,6 +1060,101 @@ export interface DoctorSearchResult {
   data?: DoctorSearchResultData;
 }
 
+/**
+ * What to do with the doctor's existing cases + invoices. `move` is
+only honoured when a destination is supplied.
+
+ */
+export type RemoveDoctorFromPracticeInputExistingCases =
+  (typeof RemoveDoctorFromPracticeInputExistingCases)[keyof typeof RemoveDoctorFromPracticeInputExistingCases];
+
+export const RemoveDoctorFromPracticeInputExistingCases = {
+  leave: "leave",
+  move: "move",
+} as const;
+
+export interface RemoveDoctorFromPracticeInput {
+  /** Real provider user id. Omit (or null) for a virtual (name-only)
+doctor — the server promotes them to a real account first.
+ */
+  userId?: string | null;
+  /** The doctor's display name used to match their cases/invoices.
+Required for virtual doctors; an optional override for real ones
+(defaults to the user's own doctorName).
+ */
+  doctorName?: string;
+  /** When supplied, the doctor is reassigned to this practice instead of
+being sent to the Unassigned holding area. Must be a sibling
+practice under the same lab.
+ */
+  destinationOrganizationId?: string | null;
+  /** What to do with the doctor's existing cases + invoices. `move` is
+only honoured when a destination is supplied.
+ */
+  existingCases: RemoveDoctorFromPracticeInputExistingCases;
+}
+
+export type RemoveDoctorFromPracticeResultData = {
+  userId?: string;
+  promotedFromVirtual?: boolean;
+  destinationPracticeId?: string | null;
+  casesMoved?: number;
+  invoicesMoved?: number;
+  unassigned?: boolean;
+};
+
+export interface RemoveDoctorFromPracticeResult {
+  ok?: boolean;
+  data?: RemoveDoctorFromPracticeResultData;
+}
+
+export interface UnassignedDoctorEntry {
+  id?: string;
+  userId?: string;
+  username?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  doctorName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  platformAccountNumber?: string | null;
+  removedFromOrganizationId?: string;
+  removedFromPracticeName?: string | null;
+  removedAt?: string | null;
+}
+
+export interface UnassignedDoctorsResult {
+  ok?: boolean;
+  data?: UnassignedDoctorEntry[];
+}
+
+export type ReassignUnassignedDoctorInputExistingCases =
+  (typeof ReassignUnassignedDoctorInputExistingCases)[keyof typeof ReassignUnassignedDoctorInputExistingCases];
+
+export const ReassignUnassignedDoctorInputExistingCases = {
+  leave: "leave",
+  move: "move",
+} as const;
+
+export interface ReassignUnassignedDoctorInput {
+  labOrganizationId: string;
+  userId: string;
+  destinationOrganizationId: string;
+  existingCases: ReassignUnassignedDoctorInputExistingCases;
+}
+
+export type ReassignUnassignedDoctorResultData = {
+  userId?: string;
+  destinationPracticeId?: string;
+  casesMoved?: number;
+  invoicesMoved?: number;
+};
+
+export interface ReassignUnassignedDoctorResult {
+  ok?: boolean;
+  data?: ReassignUnassignedDoctorResultData;
+}
+
 export interface LabProvider {
   id: string;
   name: string;

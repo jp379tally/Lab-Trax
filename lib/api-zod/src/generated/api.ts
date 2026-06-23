@@ -4043,6 +4043,126 @@ export const RemoveMembershipResponse = zod
   .describe("Generic enveloped success response (ok + data).");
 
 /**
+ * Detaches a doctor from the given practice without deleting the user
+account. The doctor either moves to another practice (when
+`destinationOrganizationId` is supplied) or lands in the per-lab
+"Unassigned doctors" holding area. The `existingCases` choice decides
+whether the doctor's existing cases + invoices stay with the old
+practice (`leave`) or follow the doctor (`move`); `move` is only
+honoured when a destination is supplied — sending to Unassigned always
+leaves cases behind. Virtual (name-only) doctors are promoted to a real
+provider account first. Lab-admin only.
+
+ * @summary Remove (detach) a doctor from a practice; optionally reassign
+ */
+export const RemoveDoctorFromPracticeParams = zod.object({
+  organizationId: zod.coerce.string(),
+});
+
+export const removeDoctorFromPracticeBodyExistingCasesDefault = `leave`;
+
+export const RemoveDoctorFromPracticeBody = zod.object({
+  userId: zod
+    .string()
+    .nullish()
+    .describe(
+      "Real provider user id. Omit (or null) for a virtual (name-only)\ndoctor — the server promotes them to a real account first.\n",
+    ),
+  doctorName: zod
+    .string()
+    .optional()
+    .describe(
+      "The doctor's display name used to match their cases\/invoices.\nRequired for virtual doctors; an optional override for real ones\n(defaults to the user's own doctorName).\n",
+    ),
+  destinationOrganizationId: zod
+    .string()
+    .nullish()
+    .describe(
+      "When supplied, the doctor is reassigned to this practice instead of\nbeing sent to the Unassigned holding area. Must be a sibling\npractice under the same lab.\n",
+    ),
+  existingCases: zod
+    .enum(["leave", "move"])
+    .default(removeDoctorFromPracticeBodyExistingCasesDefault)
+    .describe(
+      "What to do with the doctor's existing cases + invoices. `move` is\nonly honoured when a destination is supplied.\n",
+    ),
+});
+
+export const RemoveDoctorFromPracticeResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      userId: zod.string().optional(),
+      promotedFromVirtual: zod.boolean().optional(),
+      destinationPracticeId: zod.string().nullish(),
+      casesMoved: zod.number().optional(),
+      invoicesMoved: zod.number().optional(),
+      unassigned: zod.boolean().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary List the per-lab Unassigned doctors holding area (admin only)
+ */
+export const ListUnassignedDoctorsParams = zod.object({
+  labId: zod.coerce.string(),
+});
+
+export const ListUnassignedDoctorsResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .array(
+      zod.object({
+        id: zod.string().optional(),
+        userId: zod.string().optional(),
+        username: zod.string().nullish(),
+        firstName: zod.string().nullish(),
+        lastName: zod.string().nullish(),
+        doctorName: zod.string().nullish(),
+        email: zod.string().nullish(),
+        phone: zod.string().nullish(),
+        platformAccountNumber: zod.string().nullish(),
+        removedFromOrganizationId: zod.string().optional(),
+        removedFromPracticeName: zod.string().nullish(),
+        removedAt: zod.string().nullish(),
+      }),
+    )
+    .optional(),
+});
+
+/**
+ * Moves a doctor out of the per-lab Unassigned holding area and attaches
+them to a destination practice. The `existingCases` choice decides
+whether the doctor's cases + invoices at the practice they were removed
+from follow them (`move`) or stay put (`leave`). Lab-admin only.
+
+ * @summary Reassign an unassigned doctor to a practice (admin only)
+ */
+export const reassignUnassignedDoctorBodyExistingCasesDefault = `leave`;
+
+export const ReassignUnassignedDoctorBody = zod.object({
+  labOrganizationId: zod.string(),
+  userId: zod.string(),
+  destinationOrganizationId: zod.string(),
+  existingCases: zod
+    .enum(["leave", "move"])
+    .default(reassignUnassignedDoctorBodyExistingCasesDefault),
+});
+
+export const ReassignUnassignedDoctorResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      userId: zod.string().optional(),
+      destinationPracticeId: zod.string().optional(),
+      casesMoved: zod.number().optional(),
+      invoicesMoved: zod.number().optional(),
+    })
+    .optional(),
+});
+
+/**
  * @summary List audit-log entries for an organization (admin only). Contract for Phase 2 implementation.
  */
 export const listAuditLogsQueryLimitMax = 200;

@@ -20,8 +20,10 @@ import {
   useMergeDoctors,
   usePreviewDoctorMerge,
   useUndoDoctorMerge,
+  useListUnassignedDoctors,
   type DoctorMergeRequest,
   type DoctorSearchEntry,
+  type UnassignedDoctorEntry,
   searchDoctors,
 } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
@@ -29,6 +31,10 @@ import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatDate, formatMoney, formatPhone, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
+import {
+  RemoveDoctorDialog,
+  ReassignUnassignedDialog,
+} from "@/components/RemoveDoctorDialog";
 
 export interface MergeSourceInput {
   doctorName: string;
@@ -691,6 +697,10 @@ export default function DoctorsPage() {
         </div>
       )}
 
+      {Array.from(adminLabIds).map((labId) => (
+        <UnassignedDoctorsPanel key={labId} labOrganizationId={labId} />
+      ))}
+
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
           <div className="relative flex-1 min-w-[220px] max-w-md">
@@ -1018,6 +1028,85 @@ export default function DoctorsPage() {
   );
 }
 
+// Per-lab "Unassigned doctors" holding area. Only rendered for labs where the
+// current user is an admin. Each row can be reassigned to a practice.
+function UnassignedDoctorsPanel({
+  labOrganizationId,
+}: {
+  labOrganizationId: string;
+}) {
+  const unassignedQuery = useListUnassignedDoctors(labOrganizationId);
+  const [reassign, setReassign] = useState<{
+    userId: string;
+    doctorName: string;
+  } | null>(null);
+
+  const doctors = unassignedQuery.data?.data ?? [];
+  if (doctors.length === 0) return null;
+
+  const doctorLabel = (d: UnassignedDoctorEntry): string => {
+    const full = [d.firstName, d.lastName].filter(Boolean).join(" ").trim();
+    return d.doctorName?.trim() || full || d.username || "Unknown doctor";
+  };
+
+  return (
+    <div className="bg-card border border-border rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-border">
+        <h2 className="text-sm font-semibold flex items-center gap-2">
+          <Stethoscope size={14} />
+          Unassigned doctors
+          <span className="text-foreground/70">({doctors.length})</span>
+        </h2>
+        <p className="text-xs text-muted-foreground mt-1">
+          Doctors removed from a practice but not yet reassigned. Their existing
+          cases and invoices stayed with the practice they were removed from.
+        </p>
+      </div>
+      <ul className="divide-y divide-border">
+        {doctors.map((d) => (
+          <li
+            key={d.id ?? d.userId}
+            className="flex items-center justify-between gap-3 px-4 py-3"
+          >
+            <div className="min-w-0">
+              <div className="text-sm font-medium">{doctorLabel(d)}</div>
+              <div className="text-xs text-muted-foreground truncate">
+                {d.platformAccountNumber ? `${d.platformAccountNumber} · ` : ""}
+                {d.removedFromPracticeName
+                  ? `Removed from ${d.removedFromPracticeName}`
+                  : "Removed"}
+                {d.removedAt ? ` · ${relativeTime(d.removedAt)}` : ""}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                setReassign({
+                  userId: d.userId ?? "",
+                  doctorName: doctorLabel(d),
+                })
+              }
+              disabled={!d.userId}
+              className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60"
+            >
+              Reassign
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {reassign && (
+        <ReassignUnassignedDialog
+          labOrganizationId={labOrganizationId}
+          userId={reassign.userId}
+          doctorName={reassign.doctorName}
+          onClose={() => setReassign(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 interface PracticeFields {
   name: string;
   displayName: string;
@@ -1082,6 +1171,7 @@ export function DoctorDrawer({
   });
   const myMembership = labMembersQuery.data?.find((m) => m.userId === user?.id);
   const isLabAdmin = !!myMembership && ADMIN_ROLES.has(myMembership.role);
+  const [removeOpen, setRemoveOpen] = useState(false);
 
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -1140,6 +1230,42 @@ export function DoctorDrawer({
                 </button>
               </div>
             </section>
+          )}
+
+          {isLabAdmin && doctor.practiceId && (
+            <section className="border border-border rounded-md p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                    Remove from practice
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Detach this doctor from {doctor.practiceName} without
+                    deleting them. Send them to the Unassigned holding area or
+                    reassign them to another practice.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRemoveOpen(true)}
+                  className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-destructive/40 text-destructive text-sm hover:bg-destructive/10 shrink-0"
+                >
+                  <X size={14} />
+                  Remove
+                </button>
+              </div>
+            </section>
+          )}
+
+          {removeOpen && doctor.practiceId && (
+            <RemoveDoctorDialog
+              practiceId={doctor.practiceId}
+              practiceName={doctor.practiceName}
+              labOrganizationId={labId}
+              doctorName={doctor.doctorName}
+              onClose={() => setRemoveOpen(false)}
+              onDone={onClose}
+            />
           )}
 
           <section>

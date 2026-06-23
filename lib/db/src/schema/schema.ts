@@ -476,6 +476,46 @@ export const organizationMemberships = pgTable(
   })
 );
 
+// Holding area for provider users detached from a practice without being
+// deleted. A row here means "this doctor used to belong to a practice in this
+// lab and is now unassigned". It grants NO data access (unlike a membership) —
+// it is purely a relationship pointer the lab admin can later reassign.
+export const labUnassignedDoctors = pgTable(
+  "lab_unassigned_doctors",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    removedFromOrganizationId: varchar("removed_from_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    removedAt: timestamp("removed_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    removedByUserId: varchar("removed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (table) => ({
+    uniqueUnassignedPerLab: uniqueIndex("lab_unassigned_doctors_unique")
+      .on(table.labOrganizationId, table.userId)
+      .where(sql`deleted_at IS NULL`),
+    labIdx: index("lab_unassigned_doctors_lab_idx").on(
+      table.labOrganizationId
+    ),
+    userIdx: index("lab_unassigned_doctors_user_idx").on(table.userId),
+  })
+);
+
 export const organizationJoinRequests = pgTable(
   "join_requests",
   {

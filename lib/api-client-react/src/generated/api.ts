@@ -140,10 +140,14 @@ import type {
   OrganizationResult,
   PatientSimilarityResult,
   ProviderMatchListResult,
+  ReassignUnassignedDoctorInput,
+  ReassignUnassignedDoctorResult,
   ReceivePaymentsInput,
   ReceivePaymentsResult,
   RefreshSessionInput,
   RegisterUserInput,
+  RemoveDoctorFromPracticeInput,
+  RemoveDoctorFromPracticeResult,
   ResolveItemPrice200,
   ResolveItemPriceParams,
   RestoreBackupBody,
@@ -170,6 +174,7 @@ import type {
   TransactionCategoryListResult,
   TransactionCategoryResult,
   TranscribeAudioBody,
+  UnassignedDoctorsResult,
   UpdateAiMemoryInput,
   UpdateCase200,
   UpdateCaseInput,
@@ -11499,6 +11504,294 @@ export const useRemoveMembership = <
   TContext
 > => {
   return useMutation(getRemoveMembershipMutationOptions(options));
+};
+
+/**
+ * Detaches a doctor from the given practice without deleting the user
+account. The doctor either moves to another practice (when
+`destinationOrganizationId` is supplied) or lands in the per-lab
+"Unassigned doctors" holding area. The `existingCases` choice decides
+whether the doctor's existing cases + invoices stay with the old
+practice (`leave`) or follow the doctor (`move`); `move` is only
+honoured when a destination is supplied — sending to Unassigned always
+leaves cases behind. Virtual (name-only) doctors are promoted to a real
+provider account first. Lab-admin only.
+
+ * @summary Remove (detach) a doctor from a practice; optionally reassign
+ */
+export const getRemoveDoctorFromPracticeUrl = (organizationId: string) => {
+  return `/api/organizations/${organizationId}/doctors/remove`;
+};
+
+export const removeDoctorFromPractice = async (
+  organizationId: string,
+  removeDoctorFromPracticeInput: RemoveDoctorFromPracticeInput,
+  options?: RequestInit,
+): Promise<RemoveDoctorFromPracticeResult> => {
+  return customFetch<RemoveDoctorFromPracticeResult>(
+    getRemoveDoctorFromPracticeUrl(organizationId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(removeDoctorFromPracticeInput),
+    },
+  );
+};
+
+export const getRemoveDoctorFromPracticeMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removeDoctorFromPractice>>,
+    TError,
+    { organizationId: string; data: BodyType<RemoveDoctorFromPracticeInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof removeDoctorFromPractice>>,
+  TError,
+  { organizationId: string; data: BodyType<RemoveDoctorFromPracticeInput> },
+  TContext
+> => {
+  const mutationKey = ["removeDoctorFromPractice"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof removeDoctorFromPractice>>,
+    { organizationId: string; data: BodyType<RemoveDoctorFromPracticeInput> }
+  > = (props) => {
+    const { organizationId, data } = props ?? {};
+
+    return removeDoctorFromPractice(organizationId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RemoveDoctorFromPracticeMutationResult = NonNullable<
+  Awaited<ReturnType<typeof removeDoctorFromPractice>>
+>;
+export type RemoveDoctorFromPracticeMutationBody =
+  BodyType<RemoveDoctorFromPracticeInput>;
+export type RemoveDoctorFromPracticeMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Remove (detach) a doctor from a practice; optionally reassign
+ */
+export const useRemoveDoctorFromPractice = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof removeDoctorFromPractice>>,
+    TError,
+    { organizationId: string; data: BodyType<RemoveDoctorFromPracticeInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof removeDoctorFromPractice>>,
+  TError,
+  { organizationId: string; data: BodyType<RemoveDoctorFromPracticeInput> },
+  TContext
+> => {
+  return useMutation(getRemoveDoctorFromPracticeMutationOptions(options));
+};
+
+/**
+ * @summary List the per-lab Unassigned doctors holding area (admin only)
+ */
+export const getListUnassignedDoctorsUrl = (labId: string) => {
+  return `/api/organizations/${labId}/unassigned-doctors`;
+};
+
+export const listUnassignedDoctors = async (
+  labId: string,
+  options?: RequestInit,
+): Promise<UnassignedDoctorsResult> => {
+  return customFetch<UnassignedDoctorsResult>(
+    getListUnassignedDoctorsUrl(labId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getListUnassignedDoctorsQueryKey = (labId: string) => {
+  return [`/api/organizations/${labId}/unassigned-doctors`] as const;
+};
+
+export const getListUnassignedDoctorsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listUnassignedDoctors>>,
+  TError = ErrorType<unknown>,
+>(
+  labId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listUnassignedDoctors>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListUnassignedDoctorsQueryKey(labId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listUnassignedDoctors>>
+  > = ({ signal }) =>
+    listUnassignedDoctors(labId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!labId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof listUnassignedDoctors>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListUnassignedDoctorsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listUnassignedDoctors>>
+>;
+export type ListUnassignedDoctorsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List the per-lab Unassigned doctors holding area (admin only)
+ */
+
+export function useListUnassignedDoctors<
+  TData = Awaited<ReturnType<typeof listUnassignedDoctors>>,
+  TError = ErrorType<unknown>,
+>(
+  labId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listUnassignedDoctors>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListUnassignedDoctorsQueryOptions(labId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Moves a doctor out of the per-lab Unassigned holding area and attaches
+them to a destination practice. The `existingCases` choice decides
+whether the doctor's cases + invoices at the practice they were removed
+from follow them (`move`) or stay put (`leave`). Lab-admin only.
+
+ * @summary Reassign an unassigned doctor to a practice (admin only)
+ */
+export const getReassignUnassignedDoctorUrl = () => {
+  return `/api/organizations/unassigned-doctors/reassign`;
+};
+
+export const reassignUnassignedDoctor = async (
+  reassignUnassignedDoctorInput: ReassignUnassignedDoctorInput,
+  options?: RequestInit,
+): Promise<ReassignUnassignedDoctorResult> => {
+  return customFetch<ReassignUnassignedDoctorResult>(
+    getReassignUnassignedDoctorUrl(),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(reassignUnassignedDoctorInput),
+    },
+  );
+};
+
+export const getReassignUnassignedDoctorMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof reassignUnassignedDoctor>>,
+    TError,
+    { data: BodyType<ReassignUnassignedDoctorInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof reassignUnassignedDoctor>>,
+  TError,
+  { data: BodyType<ReassignUnassignedDoctorInput> },
+  TContext
+> => {
+  const mutationKey = ["reassignUnassignedDoctor"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof reassignUnassignedDoctor>>,
+    { data: BodyType<ReassignUnassignedDoctorInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return reassignUnassignedDoctor(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ReassignUnassignedDoctorMutationResult = NonNullable<
+  Awaited<ReturnType<typeof reassignUnassignedDoctor>>
+>;
+export type ReassignUnassignedDoctorMutationBody =
+  BodyType<ReassignUnassignedDoctorInput>;
+export type ReassignUnassignedDoctorMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Reassign an unassigned doctor to a practice (admin only)
+ */
+export const useReassignUnassignedDoctor = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof reassignUnassignedDoctor>>,
+    TError,
+    { data: BodyType<ReassignUnassignedDoctorInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof reassignUnassignedDoctor>>,
+  TError,
+  { data: BodyType<ReassignUnassignedDoctorInput> },
+  TContext
+> => {
+  return useMutation(getReassignUnassignedDoctorMutationOptions(options));
 };
 
 /**

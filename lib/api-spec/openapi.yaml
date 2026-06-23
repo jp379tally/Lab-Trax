@@ -3270,6 +3270,79 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuccessEnvelope"
+  /organizations/{organizationId}/doctors/remove:
+    post:
+      operationId: removeDoctorFromPractice
+      tags: [organizations]
+      summary: Remove (detach) a doctor from a practice; optionally reassign
+      description: |
+        Detaches a doctor from the given practice without deleting the user
+        account. The doctor either moves to another practice (when
+        `destinationOrganizationId` is supplied) or lands in the per-lab
+        "Unassigned doctors" holding area. The `existingCases` choice decides
+        whether the doctor's existing cases + invoices stay with the old
+        practice (`leave`) or follow the doctor (`move`); `move` is only
+        honoured when a destination is supplied — sending to Unassigned always
+        leaves cases behind. Virtual (name-only) doctors are promoted to a real
+        provider account first. Lab-admin only.
+      parameters:
+        - in: path
+          name: organizationId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoveDoctorFromPracticeInput"
+      responses:
+        "200":
+          description: Doctor removed or reassigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemoveDoctorFromPracticeResult"
+  /organizations/{labId}/unassigned-doctors:
+    get:
+      operationId: listUnassignedDoctors
+      tags: [organizations]
+      summary: List the per-lab Unassigned doctors holding area (admin only)
+      parameters:
+        - in: path
+          name: labId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Unassigned doctors
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnassignedDoctorsResult"
+  /organizations/unassigned-doctors/reassign:
+    post:
+      operationId: reassignUnassignedDoctor
+      tags: [organizations]
+      summary: Reassign an unassigned doctor to a practice (admin only)
+      description: |
+        Moves a doctor out of the per-lab Unassigned holding area and attaches
+        them to a destination practice. The `existingCases` choice decides
+        whether the doctor's cases + invoices at the practice they were removed
+        from follow them (`move`) or stay put (`leave`). Lab-admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReassignUnassignedDoctorInput"
+      responses:
+        "200":
+          description: Doctor reassigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReassignUnassignedDoctorResult"
   /audit-logs:
     get:
       operationId: listAuditLogs
@@ -4492,6 +4565,118 @@ components:
             total: { type: integer }
             offset: { type: integer }
             limit: { type: integer }
+    RemoveDoctorFromPracticeInput:
+      type: object
+      required: [existingCases]
+      properties:
+        userId:
+          type: string
+          nullable: true
+          description: |
+            Real provider user id. Omit (or null) for a virtual (name-only)
+            doctor — the server promotes them to a real account first.
+        doctorName:
+          type: string
+          description: |
+            The doctor's display name used to match their cases/invoices.
+            Required for virtual doctors; an optional override for real ones
+            (defaults to the user's own doctorName).
+        destinationOrganizationId:
+          type: string
+          nullable: true
+          description: |
+            When supplied, the doctor is reassigned to this practice instead of
+            being sent to the Unassigned holding area. Must be a sibling
+            practice under the same lab.
+        existingCases:
+          type: string
+          enum: [leave, move]
+          default: leave
+          description: |
+            What to do with the doctor's existing cases + invoices. `move` is
+            only honoured when a destination is supplied.
+    RemoveDoctorFromPracticeResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            userId: { type: string }
+            promotedFromVirtual: { type: boolean }
+            destinationPracticeId:
+              type: string
+              nullable: true
+            casesMoved: { type: integer }
+            invoicesMoved: { type: integer }
+            unassigned: { type: boolean }
+    UnassignedDoctorEntry:
+      type: object
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        username:
+          type: string
+          nullable: true
+        firstName:
+          type: string
+          nullable: true
+        lastName:
+          type: string
+          nullable: true
+        doctorName:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        platformAccountNumber:
+          type: string
+          nullable: true
+        removedFromOrganizationId: { type: string }
+        removedFromPracticeName:
+          type: string
+          nullable: true
+        removedAt:
+          type: string
+          nullable: true
+    UnassignedDoctorsResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnassignedDoctorEntry"
+    ReassignUnassignedDoctorInput:
+      type: object
+      required:
+        - labOrganizationId
+        - userId
+        - destinationOrganizationId
+        - existingCases
+      properties:
+        labOrganizationId: { type: string }
+        userId: { type: string }
+        destinationOrganizationId: { type: string }
+        existingCases:
+          type: string
+          enum: [leave, move]
+          default: leave
+    ReassignUnassignedDoctorResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            userId: { type: string }
+            destinationPracticeId: { type: string }
+            casesMoved: { type: integer }
+            invoicesMoved: { type: integer }
     LabProvider:
       type: object
       required: [id, name]

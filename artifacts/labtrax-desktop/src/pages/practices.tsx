@@ -7,6 +7,7 @@ import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatMoney, formatPhone, relativeTime } from "@/lib/format";
 
 import { DEFAULT_PRICE_KEYS, priceKeyLabel } from "@/lib/pricing-keys";
+import { RemoveDoctorDialog } from "@/components/RemoveDoctorDialog";
 
 interface PracticeMember {
   id: string;
@@ -2906,7 +2907,27 @@ function PracticeDoctorsSection({
     enabled: !!currentUserId,
   });
   const labOrganizationId =
-    connectionsQuery.data?.[0]?.labOrganizationId ?? null;
+    connectionsQuery.data?.[0]?.labOrganizationId ??
+    providerOrg.parentLabOrganizationId ??
+    null;
+
+  // Removing a doctor is lab-admin only. Resolve the caller's role at this
+  // practice's parent lab from their own membership list.
+  const meQuery = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+    enabled: !!currentUserId,
+  });
+  const isLabAdmin = useMemo(() => {
+    const labId = providerOrg.parentLabOrganizationId ?? labOrganizationId;
+    if (!labId) return false;
+    return (meQuery.data?.memberships ?? []).some(
+      (m) =>
+        m.status === "active" &&
+        ADMIN_ROLES.has(m.role) &&
+        m.organizationId === labId,
+    );
+  }, [meQuery.data, providerOrg.parentLabOrganizationId, labOrganizationId]);
   const practiceDefaultTierName: string | null =
     (connectionsQuery.data?.[0]?.tierName as string | null | undefined) ?? null;
 
@@ -3065,6 +3086,7 @@ function PracticeDoctorsSection({
                 existing={existing}
                 practiceDefaultTierName={practiceDefaultTierName}
                 readOnly={isArchived}
+                canRemove={isLabAdmin && !isArchived}
                 onSaved={() => {
                   queryClient.invalidateQueries({
                     queryKey: ["pricing-overrides", labOrganizationId],
@@ -3088,6 +3110,7 @@ function DoctorPricingRow({
   existing,
   practiceDefaultTierName,
   readOnly,
+  canRemove,
   onSaved,
 }: {
   doctorName: string;
@@ -3098,6 +3121,7 @@ function DoctorPricingRow({
   existing: PracticePricingOverride | null;
   practiceDefaultTierName: string | null;
   readOnly?: boolean;
+  canRemove?: boolean;
   onSaved: () => void;
 }) {
   // The "use practice default" option in the per-doctor dropdown resolves to
@@ -3113,6 +3137,7 @@ function DoctorPricingRow({
       ? `Tier: practice default (${practiceDefaultTierName})`
       : "Tier: practice default (no tier set)";
   const [open, setOpen] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
   const [tierName, setTierName] = useState<string>(existing?.tierName ?? "");
   const [prices, setPrices] = useState<Record<string, string>>(() => {
     const out: Record<string, string> = {};
@@ -3220,7 +3245,28 @@ function DoctorPricingRow({
             </option>
           )}
         </select>
+        {canRemove && (
+          <button
+            type="button"
+            onClick={() => setRemoveOpen(true)}
+            className="shrink-0 inline-flex items-center gap-1 h-8 px-2 rounded-md border border-input text-xs text-destructive hover:bg-destructive/10"
+            title="Remove from this practice"
+          >
+            <X size={13} />
+            Remove
+          </button>
+        )}
       </div>
+
+      {removeOpen && (
+        <RemoveDoctorDialog
+          labOrganizationId={labOrganizationId}
+          practiceId={providerOrg.id}
+          practiceName={providerOrg.displayName || providerOrg.name || ""}
+          doctorName={doctorName}
+          onClose={() => setRemoveOpen(false)}
+        />
+      )}
 
       {open && (
         <div className="pl-8 space-y-2">

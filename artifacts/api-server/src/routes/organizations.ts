@@ -32,13 +32,15 @@ import {
   DEFAULT_CORRESPONDENCE_TEMPLATE,
   correspondenceTemplateSchema,
 } from "../lib/correspondence-template";
-import { and, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
   auditLogs,
   cases,
+  invoices,
   labCases,
+  labUnassignedDoctors,
   organizationConnections,
   organizationInvites,
   organizationJoinRequests,
@@ -46,6 +48,7 @@ import {
   organizations,
   users,
 } from "@workspace/db";
+import { splitDisplayName } from "../lib/patient-similarity";
 import { generateInviteToken } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import {
@@ -1066,6 +1069,598 @@ router.post(
       },
       201
     );
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Remove a doctor from a practice (detach — never delete) + reassignment +
+// the per-lab "Unassigned doctors" holding area. (Task #2359.)
+//
+// Detaching a doctor drops their active membership at the source practice but
+// keeps the user account. They land either in another practice (reassign) or
+// in the per-lab `lab_unassigned_doctors` holding area. The caller chooses,
+// every time, whether the doctor's existing cases/invoices stay with the old
+// practice ("leave") or follow the doctor to the destination ("move"). Moving
+// is only possible when reassigning to a destination in the same step — a
+// doctor sent to Unassigned always leaves their cases behind. Virtual
+// (name-only) doctors are promoted to a real provider account first. Every
+// removal/reassignment writes an audit-log entry. Lab-admin only.
+// ---------------------------------------------------------------------------
+
+const removeDoctorSchema = z.object({
+  // Real provider user id. Omit/null for a virtual (name-only) doctor.
+  userId: z.string().min(1).nullable().optional(),
+  // The doctor's display name used to match their cases/invoices. Required for
+  // virtual doctors; optional override for real ones (defaults to the user's
+  // own doctorName).
+  doctorName: z.string().trim().min(1).optional(),
+  // When supplied, the doctor is reassigned to this practice instead of being
+  // sent to the Unassigned holding area. Must be a sibling practice under the
+  // same lab.
+  destinationOrganizationId: z.string().min(1).nullable().optional(),
+  // What to do with the doctor's existing cases/invoices. "move" is only
+  // honoured when a destination is supplied; sending to Unassigned forces
+  // "leave".
+  existingCases: z.enum(["leave", "move"]).default("leave"),
+});
+
+// Resolve the case/invoice-matching name for a provider user.
+function doctorMatchName(u: {
+  doctorName: string | null;
+  firstName: string | null;
+  lastName: string | null;
+}): string {
+  return (
+    (u.doctorName && u.doctorName.trim()) ||
+    `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim()
+  );
+}
+
+// Promote a virtual (name-only) doctor to a real provider user account. Does
+// NOT create any membership — the caller decides where the new account lands
+// (a destination practice or the Unassigned holding area).
+async function promoteVirtualDoctor(
+  tx: any,
+  doctorName: string,
+  practice: { name: string; displayName: string | null }
+): Promise<{
+  id: string;
+  username: string;
+  firstName: string | null;
+  lastName: string | null;
+  email: string | null;
+  phone: string | null;
+  doctorName: string | null;
+  platformAccountNumber: string | null;
+}> {
+  const { first, last } = splitDisplayName(doctorName);
+  const username = await generateUniqueDoctorUsername(first || doctorName, last);
+  const randomPassword = crypto.randomUUID() + crypto.randomUUID();
+  const hashed = await hashPassword(randomPassword);
+  const initials =
+    ((first.trim()[0] ?? "") + (last.trim()[0] ?? "")).toUpperCase() || "DR";
+
+  let platformAccountNumber: string | null = null;
+  try {
+    platformAccountNumber = await allocatePlatformAccountNumber(
+      "user",
+      deriveAccountNameParts({
+        firstName: first,
+        lastName: last,
+        doctorName,
+        practiceName: practice.displayName || practice.name,
+      })
+    );
+  } catch {
+    platformAccountNumber = null;
+  }
+
+  const [u] = await tx
+    .insert(users)
+    .values({
+      username,
+      password: hashed,
+      email: null,
+      phone: null,
+      firstName: first || null,
+      lastName: last || null,
+      initials,
+      userType: "provider",
+      doctorName: doctorName.trim(),
+      role: "user",
+      platformAccountNumber,
+    })
+    .returning();
+  return u;
+}
+
+// Move a doctor's cases + invoices from one practice to another inside a
+// transaction. Returns the counts moved.
+async function moveDoctorCasesAndInvoices(
+  tx: any,
+  labId: string,
+  matchName: string,
+  fromPracticeId: string,
+  toPracticeId: string
+): Promise<{ casesMoved: number; invoicesMoved: number }> {
+  const matchedCases = await tx
+    .select({ id: cases.id })
+    .from(cases)
+    .where(
+      and(
+        eq(cases.labOrganizationId, labId),
+        eq(cases.providerOrganizationId, fromPracticeId),
+        sql`lower(${cases.doctorName}) = lower(${matchName})`
+      )
+    );
+  const caseIds = matchedCases.map((c: { id: string }) => c.id);
+  if (caseIds.length > 0) {
+    await tx
+      .update(cases)
+      .set({ providerOrganizationId: toPracticeId })
+      .where(inArray(cases.id, caseIds));
+  }
+
+  // Invoices have no doctorName of their own — an invoice belongs to a doctor
+  // through its case. Move exactly the invoices tied to the cases we moved.
+  let invoicesMoved = 0;
+  if (caseIds.length > 0) {
+    const matchedInvoices = await tx
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.labOrganizationId, labId),
+          eq(invoices.providerOrganizationId, fromPracticeId),
+          inArray(invoices.caseId, caseIds)
+        )
+      );
+    const invoiceIds = matchedInvoices.map((i: { id: string }) => i.id);
+    if (invoiceIds.length > 0) {
+      await tx
+        .update(invoices)
+        .set({ providerOrganizationId: toPracticeId })
+        .where(inArray(invoices.id, invoiceIds));
+    }
+    invoicesMoved = invoiceIds.length;
+  }
+
+  return { casesMoved: caseIds.length, invoicesMoved };
+}
+
+// Create or restore an active membership for a user at a practice inside a
+// transaction (mirrors the doctors/link restore-in-place behaviour).
+async function ensureMembership(
+  tx: any,
+  practiceId: string,
+  userId: string,
+  callerId: string
+): Promise<string> {
+  const existing = await tx.query.organizationMemberships.findFirst({
+    where: and(
+      eq(organizationMemberships.labId, practiceId),
+      eq(organizationMemberships.userId, userId)
+    ),
+  });
+  if (existing) {
+    const [m] = await tx
+      .update(organizationMemberships)
+      .set({
+        status: "active",
+        role: existing.role || "user",
+        approvedByUserId: callerId,
+        joinedAt: new Date(),
+        deletedAt: null,
+        deletedByUserId: null,
+      })
+      .where(eq(organizationMemberships.id, existing.id))
+      .returning();
+    return m.id;
+  }
+  const [m] = await tx
+    .insert(organizationMemberships)
+    .values({
+      labId: practiceId,
+      userId,
+      role: "user",
+      status: "active",
+      approvedByUserId: callerId,
+      joinedAt: new Date(),
+    })
+    .returning();
+  return m.id;
+}
+
+router.post(
+  "/:organizationId/doctors/remove",
+  asyncHandler(async (req, res) => {
+    const organizationId = req.params.organizationId;
+    const callerId = (req as any).auth.userId as string;
+
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!practice || practice.deletedAt) {
+      throw new HttpError(404, "Practice not found.");
+    }
+    if (practice.type !== "provider") {
+      throw new HttpError(400, "Doctors only attach to provider practices.");
+    }
+    if (!practice.parentLabOrganizationId) {
+      throw new HttpError(400, "Practice has no parent lab.");
+    }
+    const labId = practice.parentLabOrganizationId;
+    await requireAnyRole(callerId, labId, ADMIN_ROLES);
+
+    const input = removeDoctorSchema.parse(req.body);
+
+    // Resolve the destination practice (if reassigning). Must be a sibling
+    // provider practice under the same lab and not the source itself.
+    let destination: { id: string; name: string; displayName: string | null } | null =
+      null;
+    if (input.destinationOrganizationId) {
+      if (input.destinationOrganizationId === organizationId) {
+        throw new HttpError(
+          400,
+          "Destination practice must differ from the current practice."
+        );
+      }
+      const dest = await db.query.organizations.findFirst({
+        where: eq(organizations.id, input.destinationOrganizationId),
+      });
+      if (!dest || dest.deletedAt) {
+        throw new HttpError(404, "Destination practice not found.");
+      }
+      if (
+        dest.type !== "provider" ||
+        dest.parentLabOrganizationId !== labId
+      ) {
+        throw new HttpError(
+          400,
+          "Destination practice must be under the same lab."
+        );
+      }
+      destination = {
+        id: dest.id,
+        name: dest.name,
+        displayName: dest.displayName,
+      };
+    }
+
+    // Sending to Unassigned always leaves cases behind.
+    const movecases = destination !== null && input.existingCases === "move";
+
+    const result = await db.transaction(async (tx) => {
+      // 1. Resolve the doctor → a real provider user. Promote a virtual one.
+      let user: {
+        id: string;
+        username: string;
+        firstName: string | null;
+        lastName: string | null;
+        email: string | null;
+        phone: string | null;
+        doctorName: string | null;
+        platformAccountNumber: string | null;
+      };
+      let promoted = false;
+
+      if (input.userId) {
+        const u = await tx.query.users.findFirst({
+          where: eq(users.id, input.userId),
+        });
+        if (!u) throw new HttpError(404, "Doctor account not found.");
+        if (u.userType !== "provider") {
+          throw new HttpError(400, "Only provider users can be removed.");
+        }
+        user = u;
+      } else {
+        const name = input.doctorName?.trim();
+        if (!name) {
+          throw new HttpError(
+            400,
+            "A doctor name is required to remove a name-only doctor."
+          );
+        }
+        user = await promoteVirtualDoctor(tx, name, {
+          name: practice.name,
+          displayName: practice.displayName,
+        });
+        promoted = true;
+      }
+
+      const matchName = input.doctorName?.trim() || doctorMatchName(user);
+
+      // 2. Drop the active membership at the source practice (real doctors
+      //    only — a virtual doctor never had one).
+      if (!promoted) {
+        const existing = await tx.query.organizationMemberships.findFirst({
+          where: and(
+            eq(organizationMemberships.labId, organizationId),
+            eq(organizationMemberships.userId, user.id),
+            isNull(organizationMemberships.deletedAt)
+          ),
+        });
+        if (existing) {
+          await tx
+            .update(organizationMemberships)
+            .set({
+              status: "removed",
+              deletedAt: new Date(),
+              deletedByUserId: callerId,
+            })
+            .where(eq(organizationMemberships.id, existing.id));
+        }
+      }
+
+      let casesMoved = 0;
+      let invoicesMoved = 0;
+
+      if (destination) {
+        // 3a. Reassign: optionally move cases/invoices, then attach the
+        //     doctor at the destination practice.
+        if (movecases) {
+          const moved = await moveDoctorCasesAndInvoices(
+            tx,
+            labId,
+            matchName,
+            organizationId,
+            destination.id
+          );
+          casesMoved = moved.casesMoved;
+          invoicesMoved = moved.invoicesMoved;
+        }
+        await ensureMembership(tx, destination.id, user.id, callerId);
+        // If the doctor was previously unassigned, clear that record.
+        await tx
+          .update(labUnassignedDoctors)
+          .set({ deletedAt: new Date() })
+          .where(
+            and(
+              eq(labUnassignedDoctors.labOrganizationId, labId),
+              eq(labUnassignedDoctors.userId, user.id),
+              isNull(labUnassignedDoctors.deletedAt)
+            )
+          );
+      } else {
+        // 3b. Unassigned: upsert the holding-area record (cases stay put).
+        const existing = await tx.query.labUnassignedDoctors.findFirst({
+          where: and(
+            eq(labUnassignedDoctors.labOrganizationId, labId),
+            eq(labUnassignedDoctors.userId, user.id)
+          ),
+        });
+        if (existing) {
+          await tx
+            .update(labUnassignedDoctors)
+            .set({
+              removedFromOrganizationId: organizationId,
+              removedAt: new Date(),
+              removedByUserId: callerId,
+              deletedAt: null,
+            })
+            .where(eq(labUnassignedDoctors.id, existing.id));
+        } else {
+          await tx.insert(labUnassignedDoctors).values({
+            labOrganizationId: labId,
+            userId: user.id,
+            removedFromOrganizationId: organizationId,
+            removedByUserId: callerId,
+          });
+        }
+      }
+
+      return { user, promoted, matchName, casesMoved, invoicesMoved };
+    });
+
+    await writeAuditLog({
+      req,
+      organizationId: labId,
+      action: destination
+        ? "practice_doctor_reassigned"
+        : "practice_doctor_removed",
+      entityType: "user",
+      entityId: result.user.id,
+      afterJson: {
+        userId: result.user.id,
+        doctorName: result.matchName,
+        sourcePracticeId: organizationId,
+        destinationPracticeId: destination?.id ?? null,
+        existingCases: movecases ? "move" : "leave",
+        casesMoved: result.casesMoved,
+        invoicesMoved: result.invoicesMoved,
+        promotedFromVirtual: result.promoted,
+      },
+    });
+
+    return ok(res, {
+      userId: result.user.id,
+      promotedFromVirtual: result.promoted,
+      destinationPracticeId: destination?.id ?? null,
+      casesMoved: result.casesMoved,
+      invoicesMoved: result.invoicesMoved,
+      unassigned: destination === null,
+    });
+  })
+);
+
+// List the per-lab "Unassigned doctors" holding area. Lab-admin only.
+router.get(
+  "/:labId/unassigned-doctors",
+  asyncHandler(async (req, res) => {
+    const labId = req.params.labId;
+    const callerId = (req as any).auth.userId as string;
+
+    const lab = await db.query.organizations.findFirst({
+      where: eq(organizations.id, labId),
+    });
+    if (!lab || lab.deletedAt) throw new HttpError(404, "Lab not found.");
+    if (lab.type !== "lab") {
+      throw new HttpError(400, "Unassigned doctors are tracked per lab.");
+    }
+    await requireAnyRole(callerId, labId, ADMIN_ROLES);
+
+    const rows = await db
+      .select({
+        id: labUnassignedDoctors.id,
+        userId: labUnassignedDoctors.userId,
+        removedFromOrganizationId:
+          labUnassignedDoctors.removedFromOrganizationId,
+        removedAt: labUnassignedDoctors.removedAt,
+        username: users.username,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        doctorName: users.doctorName,
+        email: users.email,
+        phone: users.phone,
+        platformAccountNumber: users.platformAccountNumber,
+      })
+      .from(labUnassignedDoctors)
+      .innerJoin(users, eq(users.id, labUnassignedDoctors.userId))
+      .where(
+        and(
+          eq(labUnassignedDoctors.labOrganizationId, labId),
+          isNull(labUnassignedDoctors.deletedAt)
+        )
+      )
+      .orderBy(desc(labUnassignedDoctors.removedAt));
+
+    const practiceIds = Array.from(
+      new Set(rows.map((r) => r.removedFromOrganizationId))
+    );
+    const practiceRows = practiceIds.length
+      ? await db
+          .select({
+            id: organizations.id,
+            name: organizations.name,
+            displayName: organizations.displayName,
+          })
+          .from(organizations)
+          .where(inArray(organizations.id, practiceIds))
+      : [];
+    const practiceMap = new Map(practiceRows.map((p) => [p.id, p]));
+
+    return ok(
+      res,
+      rows.map((r) => {
+        const pr = practiceMap.get(r.removedFromOrganizationId);
+        return {
+          ...r,
+          removedFromPracticeName: pr
+            ? pr.displayName || pr.name
+            : null,
+        };
+      })
+    );
+  })
+);
+
+// Reassign an unassigned doctor to a practice. Lab-admin only.
+const reassignUnassignedSchema = z.object({
+  labOrganizationId: z.string().min(1),
+  userId: z.string().min(1),
+  destinationOrganizationId: z.string().min(1),
+  existingCases: z.enum(["leave", "move"]).default("leave"),
+});
+
+router.post(
+  "/unassigned-doctors/reassign",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const input = reassignUnassignedSchema.parse(req.body);
+    const labId = input.labOrganizationId;
+
+    const lab = await db.query.organizations.findFirst({
+      where: eq(organizations.id, labId),
+    });
+    if (!lab || lab.deletedAt) throw new HttpError(404, "Lab not found.");
+    if (lab.type !== "lab") {
+      throw new HttpError(400, "Unassigned doctors are tracked per lab.");
+    }
+    await requireAnyRole(callerId, labId, ADMIN_ROLES);
+
+    const dest = await db.query.organizations.findFirst({
+      where: eq(organizations.id, input.destinationOrganizationId),
+    });
+    if (!dest || dest.deletedAt) {
+      throw new HttpError(404, "Destination practice not found.");
+    }
+    if (dest.type !== "provider" || dest.parentLabOrganizationId !== labId) {
+      throw new HttpError(
+        400,
+        "Destination practice must be under the same lab."
+      );
+    }
+
+    const user = await db.query.users.findFirst({
+      where: eq(users.id, input.userId),
+    });
+    if (!user) throw new HttpError(404, "Doctor account not found.");
+
+    const matchName = doctorMatchName(user);
+
+    const result = await db.transaction(async (tx) => {
+      const unassigned = await tx.query.labUnassignedDoctors.findFirst({
+        where: and(
+          eq(labUnassignedDoctors.labOrganizationId, labId),
+          eq(labUnassignedDoctors.userId, input.userId),
+          isNull(labUnassignedDoctors.deletedAt)
+        ),
+      });
+      if (!unassigned) {
+        throw new HttpError(404, "Doctor is not in the Unassigned list.");
+      }
+
+      let casesMoved = 0;
+      let invoicesMoved = 0;
+      if (input.existingCases === "move") {
+        const moved = await moveDoctorCasesAndInvoices(
+          tx,
+          labId,
+          matchName,
+          unassigned.removedFromOrganizationId,
+          dest.id
+        );
+        casesMoved = moved.casesMoved;
+        invoicesMoved = moved.invoicesMoved;
+      }
+
+      await ensureMembership(tx, dest.id, input.userId, callerId);
+
+      await tx
+        .update(labUnassignedDoctors)
+        .set({ deletedAt: new Date() })
+        .where(eq(labUnassignedDoctors.id, unassigned.id));
+
+      return {
+        casesMoved,
+        invoicesMoved,
+        sourcePracticeId: unassigned.removedFromOrganizationId,
+      };
+    });
+
+    await writeAuditLog({
+      req,
+      organizationId: labId,
+      action: "unassigned_doctor_reassigned",
+      entityType: "user",
+      entityId: input.userId,
+      afterJson: {
+        userId: input.userId,
+        doctorName: matchName,
+        sourcePracticeId: result.sourcePracticeId,
+        destinationPracticeId: dest.id,
+        existingCases: input.existingCases,
+        casesMoved: result.casesMoved,
+        invoicesMoved: result.invoicesMoved,
+      },
+    });
+
+    return ok(res, {
+      userId: input.userId,
+      destinationPracticeId: dest.id,
+      casesMoved: result.casesMoved,
+      invoicesMoved: result.invoicesMoved,
+    });
   })
 );
 
