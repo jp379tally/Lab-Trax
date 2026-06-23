@@ -208,7 +208,7 @@ describe("Practices page — both tier dropdowns share one QueryClient", () => {
     // Per-doctor dropdown (PracticeDoctorsSection) — expand the doctor row first.
     const doctorsSection = within(screen.getByTestId("doctors-section"));
     const expandBtn = await doctorsSection.findByRole("button", {
-      name: /expand/i,
+      name: /Adjust pricing/i,
     });
     fireEvent.click(expandBtn);
 
