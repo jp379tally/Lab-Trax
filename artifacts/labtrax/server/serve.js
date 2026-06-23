@@ -15,6 +15,7 @@ const path = require("path");
 
 const STATIC_ROOT = path.resolve(__dirname, "..", "static-build");
 const TEMPLATE_PATH = path.resolve(__dirname, "templates", "landing-page.html");
+const OG_IMAGE_PATH = path.resolve(__dirname, "templates", "og-image.svg");
 const basePath = (process.env.BASE_PATH || "/").replace(/\/+$/, "");
 
 const MIME_TYPES = {
@@ -72,8 +73,13 @@ function serveLandingPage(req, res, landingPageTemplate, appName) {
   const baseUrl = `${protocol}://${host}`;
   const expsUrl = `${host}`;
 
+  const canonicalUrl = `${baseUrl}${basePath || ""}`;
+  const ogImageUrl = `${baseUrl}${basePath || ""}/og-image.svg`;
+
   const html = landingPageTemplate
     .replace(/BASE_URL_PLACEHOLDER/g, baseUrl)
+    .replace(/CANONICAL_URL_PLACEHOLDER/g, canonicalUrl)
+    .replace(/OG_IMAGE_URL_PLACEHOLDER/g, ogImageUrl)
     .replace(/EXPS_URL_PLACEHOLDER/g, expsUrl)
     .replace(/APP_NAME_PLACEHOLDER/g, appName);
 
@@ -113,6 +119,16 @@ const server = http.createServer((req, res) => {
 
   if (basePath && pathname.startsWith(basePath)) {
     pathname = pathname.slice(basePath.length) || "/";
+  }
+
+  if (pathname === "/og-image.svg") {
+    const content = fs.readFileSync(OG_IMAGE_PATH);
+    res.writeHead(200, {
+      "content-type": "image/svg+xml",
+      "cache-control": "public, max-age=86400",
+    });
+    res.end(content);
+    return;
   }
 
   if (pathname === "/" || pathname === "/manifest") {
