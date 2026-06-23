@@ -81,3 +81,4 @@
 - [Practices tier dropdown cache collision](practices-tier-dropdown-cache-collision.md) — two sections sharing a React Query key but caching different shapes silently empties a dropdown; namespace keys, don't swallow per-item errors, add empty-state.
 - [Twilio-configured test failures](twilio-configured-test-failures.md) — account-epic-verification & signup-email-verification-backfill fail in workspace (real TWILIO_* set) not CI; env quirk not regression.
 - [Lab location status mapping](lab-location-status-mapping.md) — stations carry code + a mapped status enum; all locate/move flows must send station.status not lowercased code (custom stations broke otherwise).
+- [LabTrax publish promote-phase schema drift](labtrax-publish-promote-schema-drift.md) — clean build but publish fails in promote = dev/prod schema drift (post-merge=dev only); diff information_schema dev vs prod, fix=re-publish (never hand-write prod DDL).
