@@ -24,7 +24,7 @@ export const UNAUTHENTICATED_PATHS = new Set<string>([
   "/api/labs/groups",
   "/api/send-email-code",
   "/api/send-phone-code",
-  "/api/sms/twilio-inbound",
+  "/api/sms/sms-inbound",
   "/api/verify-email-code",
   "/api/verify-phone-code",
 ]);

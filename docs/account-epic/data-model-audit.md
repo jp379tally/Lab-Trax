@@ -64,9 +64,9 @@ User-initiated requests to join an org (the inverse of an invite): `labId`,
 `userId`, `requestedRole`, `message`, `status`, `reviewedByUserId`, `reviewedAt`.
 
 ### `account_link_invites` (~350–385) & `doctor_account_links` (~316–342)
-Cross-lab provider identity linking. `account_link_invites` tracks the Twilio
-SMS "is this you?" invite (`newUserId`, `existingUserId`, `matchedOn`,
-`sentToPhone`, Twilio SID/error fields, `status`). `doctor_account_links` is the
+Cross-lab provider identity linking. `account_link_invites` tracks the SMS
+"is this you?" invite (`newUserId`, `existingUserId`, `matchedOn`,
+`sentToPhone`, provider message-id/error fields, `status`). `doctor_account_links` is the
 confirmed symmetric pair (`userIdLow`/`userIdHigh` normalized ordering,
 `linkedVia` = `sms_yes|manual`).
 

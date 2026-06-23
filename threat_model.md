@@ -15,7 +15,7 @@ Production assumptions for future scans:
 - **Clinical and operational case data** — patient names/identifiers, doctor names, case notes, workflow state, uploaded media, and case attachments. This is the highest-sensitivity business data in the application.
 - **Organization and membership state** — lab/provider organizations, invites, join requests, and role assignments. Tampering here changes tenant boundaries and authorization decisions.
 - **Financial records** — invoices, statement PDFs, deposits, reconciliations, bank accounts, and transaction metadata. Exposure or modification directly affects billing integrity.
-- **Application secrets and third-party credentials** — `JWT_SECRET`, SMTP credentials, OpenAI key, Twilio credentials, OneDrive connector access, and scheduled-job shared secrets.
+- **Application secrets and third-party credentials** — `JWT_SECRET`, SMTP credentials, OpenAI key, Vonage credentials, OneDrive connector access, and scheduled-job shared secrets.
 - **Backups and exported archives** — ZIP backups and mirrored media contain broad cross-tenant datasets and must be treated as highly sensitive.
 
 ## Trust Boundaries
@@ -23,7 +23,7 @@ Production assumptions for future scans:
 - **Mobile/Desktop client → API** — all client input is untrusted. Authentication, authorization, validation, and business-rule enforcement must happen server-side.
 - **API → PostgreSQL** — the API has full database authority. Access-control bugs at the route layer can become full cross-tenant data exposure.
 - **API → filesystem (`uploads/case-media`)** — user-controlled files cross from request handlers into persistent storage and later back out through serving/download flows.
-- **API → external services** — SMTP, Twilio, OpenAI, and Microsoft Graph/OneDrive are privileged outbound integrations that can leak data or amplify abuse if invoked without adequate checks.
+- **API → external services** — SMTP, Vonage, OpenAI, and Microsoft Graph/OneDrive are privileged outbound integrations that can leak data or amplify abuse if invoked without adequate checks.
 - **Public/unauthenticated → authenticated/org-admin/system-admin surfaces** — the codebase mixes public routes, user-authenticated routes, organization-scoped admin routes, and global maintenance endpoints. This boundary is security-critical.
 - **Scheduled-job token callers → internal maintenance endpoints** — cron-style endpoints protected by shared secrets must remain isolated from normal user privileges and from public traffic.
 

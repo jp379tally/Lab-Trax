@@ -44,7 +44,7 @@
 - Codes are random numeric, single-use, 10-minute TTL. **Codes are hashed at
   rest** in the Phase 2 durable `verification_codes` table (today's in-memory
   Map stores plaintext, which Phase 2 replaces). Plaintext codes are returned in
-  responses **only** in development when the SMTP/Twilio provider is unconfigured
+  responses **only** in development when the SMTP/SMS provider is unconfigured
   (`demoCode`), never in production.
 - `verify-email-code` must, in Phase 2, persist `users.emailVerifiedAt` so the
   signal is durable and queryable. Verification is bound to the contact value of

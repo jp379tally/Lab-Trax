@@ -8787,8 +8787,8 @@ export const useEmailInvoice = <
 /**
  * Sends an SMS message to the practice's phone number (or the `to`
 override) notifying them of the invoice. Requires a billing role
-(owner, admin, or billing) on the lab. Returns 503 when Twilio is
-not configured.
+(owner, admin, or billing) on the lab. Returns 503 when the SMS
+provider is not configured.
 
  * @summary Send a single invoice notification via SMS
  */
