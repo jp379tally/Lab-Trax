@@ -167,25 +167,83 @@ interface ProviderPickerProps {
   onChange: (id: string, org: Organization | null) => void;
   providers: Organization[];
   disabled?: boolean;
+  parentLabOrganizationId?: string;
 }
 
-function ProviderPicker({ value, onChange, providers, disabled }: ProviderPickerProps) {
+function ProviderPicker({
+  value,
+  onChange,
+  providers,
+  disabled,
+  parentLabOrganizationId,
+}: ProviderPickerProps) {
+  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [newCity, setNewCity] = useState("");
+  const [newState, setNewState] = useState("");
+  const [newZip, setNewZip] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const selected = providers.find((o) => o.id === value) || null;
+
+  function resetCreate() {
+    setCreating(false);
+    setNewName("");
+    setNewPhone("");
+    setNewCity("");
+    setNewState("");
+    setNewZip("");
+    setCreateError(null);
+  }
 
   useEffect(() => {
     if (!open) return;
     function onDocClick(e: MouseEvent) {
       if (!containerRef.current?.contains(e.target as Node)) {
         setOpen(false);
+        resetCreate();
       }
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
+
+  const canCreate =
+    !!newName.trim() && !!newCity.trim() && !!newState.trim() && !!newZip.trim();
+
+  const createMutation = useMutation({
+    mutationFn: () => {
+      const payload: Record<string, unknown> = {
+        type: "provider",
+        name: newName.trim(),
+        city: newCity.trim(),
+        state: newState.trim(),
+        zip: newZip.trim(),
+      };
+      if (newPhone.trim()) payload.phone = newPhone.trim();
+      if (parentLabOrganizationId) {
+        payload.parentLabOrganizationId = parentLabOrganizationId;
+      }
+      return apiFetch<Organization>("/organizations", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: async (org) => {
+      await qc.invalidateQueries({ queryKey: ["organizations"] });
+      onChange(org.id, org);
+      resetCreate();
+      setOpen(false);
+      setSearch("");
+    },
+    onError: (err: Error) =>
+      setCreateError(err.message || "Could not create practice."),
+  });
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -213,8 +271,131 @@ function ProviderPicker({ value, onChange, providers, disabled }: ProviderPicker
 
       {open && (
         <div className="absolute z-50 left-0 right-0 mt-1 bg-card border border-border rounded-lg shadow-xl overflow-hidden">
-          <>
-            <div className="p-2 border-b border-border">
+          {creating ? (
+            <div className="p-3 space-y-2">
+              <div className="text-xs font-semibold text-foreground">
+                Add new practice
+              </div>
+              <input
+                autoFocus
+                type="text"
+                placeholder="Practice name"
+                value={newName}
+                onChange={(e) => {
+                  setNewName(e.target.value);
+                  setCreateError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newName.trim() && !createMutation.isPending) {
+                    e.preventDefault();
+                    createMutation.mutate();
+                  }
+                }}
+                className="w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+              />
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="City"
+                  value={newCity}
+                  onChange={(e) => {
+                    setNewCity(e.target.value);
+                    setCreateError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && canCreate && !createMutation.isPending) {
+                      e.preventDefault();
+                      createMutation.mutate();
+                    }
+                  }}
+                  className="flex-1 min-w-0 h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                />
+                <input
+                  type="text"
+                  placeholder="State"
+                  value={newState}
+                  onChange={(e) => {
+                    setNewState(e.target.value);
+                    setCreateError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && canCreate && !createMutation.isPending) {
+                      e.preventDefault();
+                      createMutation.mutate();
+                    }
+                  }}
+                  className="w-16 shrink-0 h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                />
+                <input
+                  type="text"
+                  placeholder="ZIP"
+                  value={newZip}
+                  onChange={(e) => {
+                    setNewZip(e.target.value);
+                    setCreateError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && canCreate && !createMutation.isPending) {
+                      e.preventDefault();
+                      createMutation.mutate();
+                    }
+                  }}
+                  className="w-20 shrink-0 h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                />
+              </div>
+              <input
+                type="tel"
+                placeholder="Phone (optional)"
+                value={newPhone}
+                onChange={(e) => setNewPhone(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && canCreate && !createMutation.isPending) {
+                    e.preventDefault();
+                    createMutation.mutate();
+                  }
+                }}
+                className="w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+              />
+              {createError && (
+                <div className="text-xs text-destructive">{createError}</div>
+              )}
+              <div className="flex gap-2 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => createMutation.mutate()}
+                  disabled={!canCreate || createMutation.isPending}
+                  className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {createMutation.isPending && (
+                    <Loader2 size={13} className="animate-spin" />
+                  )}
+                  Create
+                </button>
+                <button
+                  type="button"
+                  onClick={resetCreate}
+                  disabled={createMutation.isPending}
+                  className="h-8 px-3 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setCreating(true);
+                  setNewName(search.trim());
+                  setCreateError(null);
+                }}
+                className="w-full text-left px-3 py-2 text-sm font-medium text-primary hover:bg-secondary/60 flex items-center gap-2 border-b border-border"
+              >
+                <Plus size={14} className="shrink-0" />
+                Add new practice
+              </button>
+              <div className="p-2 border-b border-border">
                 <input
                   autoFocus
                   type="search"
@@ -257,6 +438,7 @@ function ProviderPicker({ value, onChange, providers, disabled }: ProviderPicker
                 })}
               </ul>
             </>
+          )}
         </div>
       )}
     </div>
@@ -839,6 +1021,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                 providers={providerOrgs}
                 onChange={(id) => set("providerOrganizationId", id)}
                 disabled={orgsQuery.isLoading}
+                parentLabOrganizationId={form.labOrganizationId || undefined}
               />
             </div>
 
@@ -4940,6 +5123,11 @@ export function CaseDrawer({
                         if (id) changeAiPracticeMutation.mutate(id);
                       }}
                       disabled={changeAiPracticeMutation.isPending}
+                      parentLabOrganizationId={
+                        data?.labOrganizationId ??
+                        labCase.labOrganizationId ??
+                        undefined
+                      }
                     />
                     {aiPracticeError && (
                       <div className="text-xs text-red-600 dark:text-red-400 mt-1">
@@ -5683,6 +5871,11 @@ export function CaseDrawer({
                             }));
                             setEditError(null);
                           }}
+                          parentLabOrganizationId={
+                            data?.labOrganizationId ??
+                            labCase.labOrganizationId ??
+                            undefined
+                          }
                         />
                       </div>
                     </div>

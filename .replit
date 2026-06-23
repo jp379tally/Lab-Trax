@@ -42,10 +42,6 @@ args = "api-test"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "desktop-test"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "mobile-test"
 
 [[workflows.workflow.tasks]]
@@ -118,17 +114,6 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pnpm --filter @workspace/api-server run test"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow]]
-name = "desktop-test"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/labtrax-desktop run test"
 
 [workflows.workflow.metadata]
 isValidation = true
