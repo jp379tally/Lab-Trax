@@ -2887,7 +2887,7 @@ interface MergedDoctor {
   accountNumber: string | null;
 }
 
-function PracticeDoctorsSection({
+export function PracticeDoctorsSection({
   providerOrg,
   currentUserId,
   isArchived,
