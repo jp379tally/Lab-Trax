@@ -191,6 +191,8 @@ async function findDoctorOverride(
       doctorName: pricingOverrides.doctorName,
       tierName: pricingOverrides.tierName,
       pricesJson: pricingOverrides.pricesJson,
+      discountPercent: pricingOverrides.discountPercent,
+      discountPercentsJson: pricingOverrides.discountPercentsJson,
     })
     .from(pricingOverrides)
     .where(
@@ -211,7 +213,52 @@ export interface ResolvedPriceContext {
   tierName?: string | null;
 }
 
-export type PriceSource = "default" | "tier" | "override" | "manual";
+export type PriceSource =
+  | "default"
+  | "tier"
+  | "override"
+  | "discount"
+  | "manual";
+
+/**
+ * Shape of the discount-bearing fields on a per-doctor override row.
+ */
+interface OverrideDiscountFields {
+  discountPercent?: string | number | null;
+  discountPercentsJson?: unknown;
+}
+
+/**
+ * Compute the effective discount percentage (0-100) for a single price key on
+ * a per-doctor override. A per-item entry in `discountPercentsJson` wins over
+ * the override's `discountPercent` default. Returns `null` when no discount
+ * applies (no default and no per-item entry), so callers can fall through to
+ * the normal tier chain.
+ */
+function effectiveDiscountPercent(
+  override: OverrideDiscountFields | null | undefined,
+  key: string,
+): number | null {
+  if (!override) return null;
+  const perItem = (override.discountPercentsJson ?? {}) as Record<
+    string,
+    unknown
+  >;
+  if (Object.prototype.hasOwnProperty.call(perItem, key)) {
+    const n = Number(perItem[key]);
+    if (Number.isFinite(n)) return Math.min(100, Math.max(0, n));
+  }
+  if (override.discountPercent !== null && override.discountPercent !== undefined) {
+    const d = Number(override.discountPercent);
+    if (Number.isFinite(d)) return Math.min(100, Math.max(0, d));
+  }
+  return null;
+}
+
+/** Round a currency amount to 2 decimals (avoids float drift like 89.99999). */
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
 
 export interface ResolvedPriceDetails {
   amount: number;
@@ -332,6 +379,28 @@ export async function resolveServerPriceWithSource(
       key,
     };
   };
+
+  // Percentage discount off the practice's default tier (the tier on the
+  // lab↔practice connection). Precedence: an exact dollar override (handled
+  // above) wins; otherwise a configured discount beats the doctor's assigned
+  // tier and the rest of the chain. When the practice-default-tier base price
+  // for this key can't be resolved (no connection tier, missing tier, or no
+  // price for the key), we skip the discount and fall through.
+  const discountPct = effectiveDiscountPercent(match, key);
+  if (match && discountPct !== null && connectionTierName) {
+    const baseTier = findByName(connectionTierName);
+    const basePrices = (baseTier?.pricesJson ?? {}) as Record<string, unknown>;
+    const baseValue = Number(basePrices[key]);
+    if (Number.isFinite(baseValue) && baseValue > 0) {
+      return {
+        amount: round2(baseValue * (1 - discountPct / 100)),
+        source: "discount",
+        sourceId: match.id,
+        sourceName: match.doctorName,
+        key,
+      };
+    }
+  }
 
   for (const name of candidateNames) {
     const v = tryTier(findByName(name), "tier");
@@ -553,6 +622,26 @@ export async function resolveAllPricesForContext(
           sourceId: overrideRow.id,
           sourceName: overrideRow.doctorName,
         };
+      }
+      // Percentage discount off the practice's default (connection) tier.
+      const discountPct = effectiveDiscountPercent(overrideRow, key);
+      if (discountPct !== null && connectionTierName) {
+        const baseTier = findTierByName(connectionTierName);
+        const basePrices = (baseTier?.pricesJson ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const baseValue = Number(basePrices[key]);
+        if (Number.isFinite(baseValue) && baseValue > 0) {
+          return {
+            key,
+            label: item.label,
+            unitPrice: round2(baseValue * (1 - discountPct / 100)),
+            source: "discount" as const,
+            sourceId: overrideRow.id,
+            sourceName: overrideRow.doctorName,
+          };
+        }
       }
     }
     for (const { tier, source } of candidateTiers) {

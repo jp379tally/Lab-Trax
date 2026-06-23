@@ -7350,6 +7350,11 @@ const PRICE_SOURCE_STYLES: Record<
     className: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
     title: "Came from a per-doctor pricing override.",
   },
+  discount: {
+    label: "Discount",
+    className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+    title: "Percentage discount off the practice's default tier.",
+  },
   tier: {
     label: "Tier",
     className: "bg-sky-500/15 text-sky-700 dark:text-sky-300",

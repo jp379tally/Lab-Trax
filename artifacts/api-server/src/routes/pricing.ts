@@ -89,6 +89,12 @@ async function resolveLabIdForMember(
 
 const pricesSchema = z.record(z.string(), z.coerce.number().min(0));
 
+// Per-item percentage discounts, keyed by price key. Each value is 0-100.
+const discountPercentsSchema = z.record(
+  z.string(),
+  z.coerce.number().min(0).max(100),
+);
+
 function sanitizePrices(input: Record<string, unknown>): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [k, v] of Object.entries(input ?? {})) {
@@ -96,6 +102,35 @@ function sanitizePrices(input: Record<string, unknown>): Record<string, number> 
     if (Number.isFinite(n) && n >= 0) out[k] = n;
   }
   return out;
+}
+
+/**
+ * Clamp a per-item discount map to finite values in the 0-100 range. Entries
+ * that aren't valid percentages are dropped.
+ */
+function sanitizeDiscountPercents(
+  input: Record<string, unknown>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(input ?? {})) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 0 && n <= 100) out[k] = n;
+  }
+  return out;
+}
+
+/**
+ * Coerce a default-discount-percent input to a stored value. Returns a numeric
+ * string (decimal column) when a valid 0-100 percentage is supplied, or `null`
+ * to clear the default discount.
+ */
+function sanitizeDiscountPercent(
+  input: number | null | undefined,
+): string | null {
+  if (input === null || input === undefined) return null;
+  const n = Number(input);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+  return n.toFixed(2);
 }
 
 // ---- Tiers ----
@@ -387,6 +422,11 @@ router.get(
         providerOrganizationId: r.providerOrganizationId,
         tierName: r.tierName,
         prices: r.pricesJson ?? {},
+        defaultDiscountPercent:
+          r.discountPercent === null || r.discountPercent === undefined
+            ? null
+            : Number(r.discountPercent),
+        discountPercents: r.discountPercentsJson ?? {},
         notes: r.notes,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
@@ -406,6 +446,13 @@ router.post(
         providerOrganizationId: z.string().nullable().optional(),
         tierName: z.string().max(80).nullable().optional(),
         prices: pricesSchema.optional(),
+        defaultDiscountPercent: z.coerce
+          .number()
+          .min(0)
+          .max(100)
+          .nullable()
+          .optional(),
+        discountPercents: discountPercentsSchema.optional(),
         notes: z.string().max(500).nullable().optional(),
       })
       .parse(req.body);
@@ -446,6 +493,10 @@ router.post(
         providerOrganizationId: input.providerOrganizationId ?? null,
         tierName: resolvedTierName,
         pricesJson: sanitizePrices(input.prices ?? {}),
+        discountPercent: sanitizeDiscountPercent(input.defaultDiscountPercent),
+        discountPercentsJson: sanitizeDiscountPercents(
+          input.discountPercents ?? {},
+        ),
         notes: input.notes ?? null,
         createdByUserId: (req as any).auth.userId,
       })
@@ -468,7 +519,14 @@ router.post(
         doctorName: created.doctorName,
         practiceName: created.practiceName,
         providerOrganizationId: created.providerOrganizationId,
+        tierName: created.tierName,
         prices: created.pricesJson ?? {},
+        defaultDiscountPercent:
+          created.discountPercent === null ||
+          created.discountPercent === undefined
+            ? null
+            : Number(created.discountPercent),
+        discountPercents: created.discountPercentsJson ?? {},
         notes: created.notes,
       },
       201
@@ -486,6 +544,13 @@ router.patch(
         providerOrganizationId: z.string().nullable().optional(),
         tierName: z.string().max(80).nullable().optional(),
         prices: pricesSchema.optional(),
+        defaultDiscountPercent: z.coerce
+          .number()
+          .min(0)
+          .max(100)
+          .nullable()
+          .optional(),
+        discountPercents: discountPercentsSchema.optional(),
         notes: z.string().max(500).nullable().optional(),
       })
       .parse(req.body);
@@ -508,6 +573,14 @@ router.patch(
     }
     if (input.prices !== undefined)
       update.pricesJson = sanitizePrices(input.prices);
+    if (input.defaultDiscountPercent !== undefined)
+      update.discountPercent = sanitizeDiscountPercent(
+        input.defaultDiscountPercent,
+      );
+    if (input.discountPercents !== undefined)
+      update.discountPercentsJson = sanitizeDiscountPercents(
+        input.discountPercents,
+      );
     if (input.notes !== undefined) update.notes = input.notes;
 
     const [updated] = await db
@@ -532,7 +605,14 @@ router.patch(
       doctorName: updated.doctorName,
       practiceName: updated.practiceName,
       providerOrganizationId: updated.providerOrganizationId,
+      tierName: updated.tierName,
       prices: updated.pricesJson ?? {},
+      defaultDiscountPercent:
+        updated.discountPercent === null ||
+        updated.discountPercent === undefined
+          ? null
+          : Number(updated.discountPercent),
+      discountPercents: updated.discountPercentsJson ?? {},
       notes: updated.notes,
     });
   })

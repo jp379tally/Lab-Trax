@@ -2867,6 +2867,8 @@ interface PracticePricingOverride {
   providerOrganizationId: string | null;
   tierName: string | null;
   prices: Record<string, number>;
+  defaultDiscountPercent: number | null;
+  discountPercents: Record<string, number>;
   notes: string | null;
 }
 
@@ -3139,26 +3141,30 @@ function DoctorPricingRow({
   const [open, setOpen] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [tierName, setTierName] = useState<string>(existing?.tierName ?? "");
-  const [prices, setPrices] = useState<Record<string, string>>(() => {
-    const out: Record<string, string> = {};
-    for (const k of DEFAULT_PRICE_KEYS) {
-      const v = Number(existing?.prices?.[k] ?? 0);
-      out[k] = v > 0 ? v.toFixed(2) : "";
-    }
-    return out;
-  });
+  const [prices, setPrices] = useState<Record<string, string>>(() =>
+    pricesToStrings(existing?.prices),
+  );
+  const [defaultDiscount, setDefaultDiscount] = useState<string>(() =>
+    discountToString(existing?.defaultDiscountPercent),
+  );
+  const [discountPercents, setDiscountPercents] = useState<
+    Record<string, string>
+  >(() => discountMapToStrings(existing?.discountPercents));
   const [error, setError] = useState<string | null>(null);
 
   // If the cached override changes (e.g. after another save), reset state.
   useEffect(() => {
     setTierName(existing?.tierName ?? "");
-    const out: Record<string, string> = {};
-    for (const k of DEFAULT_PRICE_KEYS) {
-      const v = Number(existing?.prices?.[k] ?? 0);
-      out[k] = v > 0 ? v.toFixed(2) : "";
-    }
-    setPrices(out);
-  }, [existing?.id, existing?.tierName, existing?.prices]);
+    setPrices(pricesToStrings(existing?.prices));
+    setDefaultDiscount(discountToString(existing?.defaultDiscountPercent));
+    setDiscountPercents(discountMapToStrings(existing?.discountPercents));
+  }, [
+    existing?.id,
+    existing?.tierName,
+    existing?.prices,
+    existing?.defaultDiscountPercent,
+    existing?.discountPercents,
+  ]);
 
   const nextPrices = useMemo(() => {
     const out: Record<string, number> = {};
@@ -3169,7 +3175,49 @@ function DoctorPricingRow({
     return out;
   }, [prices]);
 
+  const nextDiscountPercents = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(discountPercents)) {
+      if (typeof v !== "string" || v.trim() === "") continue;
+      const n = Number(v);
+      if (Number.isFinite(n) && n >= 0 && n <= 100) out[k] = n;
+    }
+    return out;
+  }, [discountPercents]);
+
+  const defaultDiscountNum = useMemo(() => {
+    if (defaultDiscount.trim() === "") return null;
+    const n = Number(defaultDiscount);
+    return Number.isFinite(n) && n >= 0 && n <= 100 ? n : null;
+  }, [defaultDiscount]);
+
   const customPriceCount = Object.keys(nextPrices).length;
+  const perItemDiscountCount = Object.keys(nextDiscountPercents).length;
+
+  // The base for percentage discounts is the practice's default tier (the tier
+  // on the lab↔practice connection), matching server-side resolution.
+  const practiceDefaultTier = useMemo(
+    () =>
+      practiceDefaultTierName
+        ? tiers.find(
+            (t) =>
+              t.name.toLowerCase() === practiceDefaultTierName.toLowerCase(),
+          ) ?? null
+        : null,
+    [tiers, practiceDefaultTierName],
+  );
+
+  // Build the collapsed-row summary: tier, then discount, then custom prices.
+  const summaryBits: string[] = [subtitleTier];
+  if (defaultDiscountNum !== null) summaryBits.push(`${defaultDiscountNum}% off`);
+  if (perItemDiscountCount > 0)
+    summaryBits.push(
+      `${perItemDiscountCount} item discount${perItemDiscountCount === 1 ? "" : "s"}`,
+    );
+  if (customPriceCount > 0)
+    summaryBits.push(
+      `${customPriceCount} custom price${customPriceCount === 1 ? "" : "s"}`,
+    );
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -3180,6 +3228,8 @@ function DoctorPricingRow({
         providerOrganizationId: providerOrg.id,
         tierName: tierName.trim() ? tierName.trim() : null,
         prices: nextPrices,
+        defaultDiscountPercent: defaultDiscountNum,
+        discountPercents: nextDiscountPercents,
       };
       if (existing) {
         return apiFetch<PracticePricingOverride>(
@@ -3209,42 +3259,22 @@ function DoctorPricingRow({
   return (
     <div className="px-3 py-2 text-sm space-y-2">
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="h-6 w-6 rounded hover:bg-secondary flex items-center justify-center"
-          aria-label={open ? "Collapse" : "Expand"}
-        >
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </button>
         <div className="min-w-0 flex-1">
           <div className="font-medium truncate">{doctorName}</div>
           <div className="text-[11px] text-muted-foreground truncate">
             {accountNumber && <span className="mr-1">#{accountNumber} ·</span>}
-            {subtitleTier}
-            {customPriceCount > 0
-              ? ` · ${customPriceCount} custom price${customPriceCount === 1 ? "" : "s"}`
-              : ""}
+            {summaryBits.join(" · ")}
           </div>
         </div>
-        <select
-          value={tierName}
-          onChange={(e) => setTierName(e.target.value)}
-          className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[160px]"
-          disabled={saveMutation.isPending || readOnly}
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="h-8 px-3 rounded-md border border-input bg-background text-xs font-medium hover:bg-secondary inline-flex items-center gap-1.5 shrink-0"
+          aria-expanded={open}
         >
-          <option value="">{practiceDefaultLabel}</option>
-          {tiers.map((t) => (
-            <option key={t.id} value={t.name}>
-              {t.name}
-            </option>
-          ))}
-          {tierMissing && (
-            <option value={existing!.tierName!}>
-              {existing!.tierName} (missing)
-            </option>
-          )}
-        </select>
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          Adjust pricing
+        </button>
         {canRemove && (
           <button
             type="button"
@@ -3269,80 +3299,228 @@ function DoctorPricingRow({
       )}
 
       {open && (
-        <div className="pl-8 space-y-2">
-          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
-            {DEFAULT_PRICE_KEYS.map((k) => {
-              const tierPrice = (() => {
-                // Doctor's selected tier wins; otherwise fall back to the
-                // practice's default tier so placeholders show the price the
-                // case will actually use when the field is left blank.
-                const effectiveTierName =
-                  tierName.trim() || practiceDefaultTierName || "";
-                if (!effectiveTierName) return 0;
-                const t = tiers.find(
-                  (tt) =>
-                    tt.name.toLowerCase() === effectiveTierName.toLowerCase(),
-                );
-                const n = Number(t?.prices?.[k] ?? 0);
-                return Number.isFinite(n) && n > 0 ? n : 0;
-              })();
-              return (
-                <label
-                  key={k}
-                  className="flex items-center justify-between gap-2 text-xs"
-                >
-                  <span className="text-muted-foreground truncate">
-                    {priceKeyLabel(k)}
-                  </span>
-                  <div className="relative">
-                    <DollarSign
-                      size={11}
-                      className="absolute left-1.5 top-1.5 text-muted-foreground pointer-events-none"
-                    />
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      step="0.01"
-                      min="0"
-                      placeholder={
-                        tierPrice > 0 ? formatMoney(tierPrice) : "—"
-                      }
-                      value={prices[k] ?? ""}
-                      onChange={(e) =>
-                        setPrices((p) => ({ ...p, [k]: e.target.value }))
-                      }
-                      className="h-7 pl-5 pr-2 w-24 rounded-md bg-background border border-input text-xs text-right"
-                      disabled={saveMutation.isPending || readOnly}
-                    />
-                  </div>
-                </label>
-              );
-            })}
-          </div>
-          {error && (
-            <div className="text-xs text-destructive bg-destructive/10 px-2 py-1 rounded">
-              {error}
-            </div>
-          )}
-          {!readOnly && (
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={() => saveMutation.mutate()}
-                disabled={saveMutation.isPending}
-                className="h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+        <div className="pl-2 space-y-3 border-l-2 border-border ml-2">
+          <div className="pl-3 space-y-3">
+            {/* Tier */}
+            <label className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-muted-foreground">Pricing tier</span>
+              <select
+                value={tierName}
+                onChange={(e) => setTierName(e.target.value)}
+                className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[200px]"
+                disabled={saveMutation.isPending || readOnly}
               >
-                {saveMutation.isPending && (
-                  <Loader2 size={12} className="animate-spin" />
+                <option value="">{practiceDefaultLabel}</option>
+                {tiers.map((t) => (
+                  <option key={t.id} value={t.name}>
+                    {t.name}
+                  </option>
+                ))}
+                {tierMissing && (
+                  <option value={existing!.tierName!}>
+                    {existing!.tierName} (missing)
+                  </option>
                 )}
-                Save pricing
-              </button>
+              </select>
+            </label>
+
+            {/* Default discount */}
+            <label className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-muted-foreground">
+                Default discount (off practice default tier)
+              </span>
+              <div className="relative">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  min="0"
+                  max="100"
+                  placeholder="—"
+                  value={defaultDiscount}
+                  onChange={(e) => setDefaultDiscount(e.target.value)}
+                  className="h-7 pl-2 pr-6 w-24 rounded-md bg-background border border-input text-xs text-right"
+                  disabled={saveMutation.isPending || readOnly}
+                />
+                <span className="absolute right-2 top-1.5 text-muted-foreground pointer-events-none">
+                  %
+                </span>
+              </div>
+            </label>
+            {!practiceDefaultTier && (
+              <div className="text-[11px] text-muted-foreground">
+                No practice default tier is set, so percentage discounts have no
+                base price to apply to. Set a tier on the practice connection or
+                use exact dollar prices below.
+              </div>
+            )}
+
+            {/* Per-item: exact price + per-item discount + effective hint */}
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+                <span className="flex-1">Item</span>
+                <span className="w-24 text-right">Exact $</span>
+                <span className="w-20 text-right">% off</span>
+              </div>
+              {DEFAULT_PRICE_KEYS.map((k) => {
+                const basePrice = Number(practiceDefaultTier?.prices?.[k] ?? 0);
+                const hasBase = Number.isFinite(basePrice) && basePrice > 0;
+                // Tier price the case would use if no discount/exact price set
+                // (doctor's selected tier, else practice default tier).
+                const tierPrice = (() => {
+                  const effectiveTierName =
+                    tierName.trim() || practiceDefaultTierName || "";
+                  if (!effectiveTierName) return 0;
+                  const t = tiers.find(
+                    (tt) =>
+                      tt.name.toLowerCase() === effectiveTierName.toLowerCase(),
+                  );
+                  const n = Number(t?.prices?.[k] ?? 0);
+                  return Number.isFinite(n) && n > 0 ? n : 0;
+                })();
+
+                const exact = Number(prices[k]);
+                const perItemPctRaw = discountPercents[k];
+                const effectivePct =
+                  typeof perItemPctRaw === "string" &&
+                  perItemPctRaw.trim() !== ""
+                    ? Number(perItemPctRaw)
+                    : defaultDiscountNum;
+
+                // Effective-price guidance string.
+                let hint = "";
+                if (Number.isFinite(exact) && exact > 0) {
+                  hint = `${formatMoney(exact)} (exact)`;
+                } else if (
+                  effectivePct !== null &&
+                  Number.isFinite(effectivePct) &&
+                  (effectivePct as number) >= 0 &&
+                  hasBase
+                ) {
+                  const amt =
+                    Math.round(
+                      basePrice * (1 - (effectivePct as number) / 100) * 100,
+                    ) / 100;
+                  hint = `${formatMoney(amt)} (${effectivePct}% off ${formatMoney(basePrice)})`;
+                } else if (tierPrice > 0) {
+                  hint = `${formatMoney(tierPrice)} (tier)`;
+                }
+
+                return (
+                  <div key={k} className="space-y-0.5">
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="flex-1 text-muted-foreground truncate">
+                        {priceKeyLabel(k)}
+                      </span>
+                      <div className="relative w-24">
+                        <DollarSign
+                          size={11}
+                          className="absolute left-1.5 top-1.5 text-muted-foreground pointer-events-none"
+                        />
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          min="0"
+                          placeholder={tierPrice > 0 ? formatMoney(tierPrice) : "—"}
+                          value={prices[k] ?? ""}
+                          onChange={(e) =>
+                            setPrices((p) => ({ ...p, [k]: e.target.value }))
+                          }
+                          className="h-7 pl-5 pr-2 w-24 rounded-md bg-background border border-input text-xs text-right"
+                          disabled={saveMutation.isPending || readOnly}
+                        />
+                      </div>
+                      <div className="relative w-20">
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          min="0"
+                          max="100"
+                          placeholder={
+                            defaultDiscountNum !== null
+                              ? String(defaultDiscountNum)
+                              : "—"
+                          }
+                          value={discountPercents[k] ?? ""}
+                          onChange={(e) =>
+                            setDiscountPercents((p) => ({
+                              ...p,
+                              [k]: e.target.value,
+                            }))
+                          }
+                          className="h-7 pl-2 pr-5 w-20 rounded-md bg-background border border-input text-xs text-right"
+                          disabled={saveMutation.isPending || readOnly}
+                        />
+                        <span className="absolute right-1.5 top-1.5 text-muted-foreground pointer-events-none text-[11px]">
+                          %
+                        </span>
+                      </div>
+                    </div>
+                    {hint && (
+                      <div className="text-[10px] text-muted-foreground text-right pr-1">
+                        {hint}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          )}
+
+            {error && (
+              <div className="text-xs text-destructive bg-destructive/10 px-2 py-1 rounded">
+                {error}
+              </div>
+            )}
+            {!readOnly && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => saveMutation.mutate()}
+                  disabled={saveMutation.isPending}
+                  className="h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+                >
+                  {saveMutation.isPending && (
+                    <Loader2 size={12} className="animate-spin" />
+                  )}
+                  Save pricing
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
   );
+}
+
+function pricesToStrings(
+  prices: Record<string, number> | null | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of DEFAULT_PRICE_KEYS) {
+    const v = Number(prices?.[k] ?? 0);
+    out[k] = v > 0 ? v.toFixed(2) : "";
+  }
+  return out;
+}
+
+function discountToString(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "";
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? String(n) : "";
+}
+
+function discountMapToStrings(
+  map: Record<string, number> | null | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of DEFAULT_PRICE_KEYS) {
+    const v = Number(map?.[k] ?? NaN);
+    out[k] = Number.isFinite(v) ? String(v) : "";
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

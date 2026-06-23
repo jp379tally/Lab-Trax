@@ -112,7 +112,12 @@ export interface PatientSimilarityHit {
   hasInvoice: boolean;
 }
 
-export type RestorationPriceSource = "default" | "tier" | "override" | "manual";
+export type RestorationPriceSource =
+  | "default"
+  | "tier"
+  | "override"
+  | "discount"
+  | "manual";
 
 export interface CaseRestoration {
   id: string;

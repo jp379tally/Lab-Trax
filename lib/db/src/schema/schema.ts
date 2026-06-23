@@ -1219,6 +1219,12 @@ export const pricingOverrides = pgTable(
     ),
     tierName: text("tier_name"),
     pricesJson: jsonb("prices_json").default({}).notNull(),
+    // Default percentage discount (0-100) applied to every item, calculated
+    // off the practice's default tier price. Nullable = no default discount.
+    discountPercent: decimal("discount_percent", { precision: 5, scale: 2 }),
+    // Per-item percentage discount overrides, keyed by price key. An entry
+    // here wins over `discountPercent` for that key. Each value is 0-100.
+    discountPercentsJson: jsonb("discount_percents_json").default({}).notNull(),
     notes: text("notes"),
     createdByUserId: varchar("created_by_user_id").references(() => users.id, {
       onDelete: "set null",
