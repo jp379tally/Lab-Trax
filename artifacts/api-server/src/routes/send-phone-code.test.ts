@@ -181,10 +181,10 @@ describe("POST /api/send-phone-code", () => {
     expect(createVerificationCodeMock).not.toHaveBeenCalled();
   });
 
-  it("returns 200 and persists the code only after Twilio succeeds", async () => {
+  it("returns 200 and persists the code only after provider succeeds", async () => {
     // Unique phone — avoids the 30-second per-identifier cooldown gate in
     // createSendCodeThrottle which is active even under VITEST.
-    // Default fetch stub already returns a Twilio success.
+    // Default fetch stub already returns a provider success.
     const r = await request(app)
       .post("/api/send-phone-code")
       .send({ phone: "5550002002" });
@@ -199,11 +199,11 @@ describe("POST /api/send-phone-code", () => {
     );
   });
 
-  it("returns 500 and does NOT persist a code when Twilio returns an error", async () => {
+  it("returns 500 and does NOT persist a code when provider returns an error", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: unknown, _opts: unknown) =>
-        makeTwilioErrorResponse(),
+        makeVonageErrorResponse(),
       ),
     );
 
@@ -218,12 +218,12 @@ describe("POST /api/send-phone-code", () => {
     expect(createVerificationCodeMock).not.toHaveBeenCalled();
   });
 
-  it("does NOT block a retry with 429 after a failed Twilio send", async () => {
-    // First call — Twilio errors out (500 from our handler).
+  it("does NOT block a retry with 429 after a failed provider send", async () => {
+    // First call — provider errors out (500 from our handler).
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: unknown, _opts: unknown) =>
-        makeTwilioErrorResponse(),
+        makeVonageErrorResponse(),
       ),
     );
 
@@ -236,12 +236,12 @@ describe("POST /api/send-phone-code", () => {
 
     expect(first.status).toBe(500);
 
-    // Second call — Twilio now succeeds. Must NOT be blocked by the cooldown
+    // Second call — provider now succeeds. Must NOT be blocked by the cooldown
     // because the first call never successfully delivered an SMS.
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: unknown, _opts: unknown) =>
-        makeTwilioSuccessResponse(),
+        makeVonageSuccessResponse(),
       ),
     );
 

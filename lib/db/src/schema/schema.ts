@@ -363,7 +363,7 @@ export const verificationCodes = pgTable(
  * user ids that have been confirmed as the same human doctor (e.g. the same
  * doctor working with two different labs). `userIdLow` is always the
  * lexicographically smaller user id so the unique index covers the unordered
- * pair. `linkedVia` records how the link was confirmed: "sms_yes" (Twilio
+ * pair. `linkedVia` records how the link was confirmed: "sms_yes" (SMS
  * YES reply), "manual" (provider clicked Link in the mobile portal), or
  * "admin_backfill".
  */
@@ -396,7 +396,7 @@ export const doctorAccountLinks = pgTable(
 );
 
 /**
- * Outbound Twilio SMS invites sent to existing platform doctors when a new
+ * Outbound SMS invites sent to existing platform doctors when a new
  * lab adds a matching email/phone doctor (Task #320). Used for both
  * idempotency (don't re-SMS the same pair) and for routing inbound YES
  * replies back to the originating link request.

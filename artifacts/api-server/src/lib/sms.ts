@@ -29,9 +29,11 @@ export function isConfigured(): boolean {
   return !!(key && secret && from);
 }
 
-function isDevOrTest(): boolean {
+export function isDevOrTest(): boolean {
   return (
-    process.env["NODE_ENV"] === "development" || !!process.env["VITEST"]
+    process.env["NODE_ENV"] === "development" ||
+    process.env["NODE_ENV"] === "test" ||
+    (!!process.env["VITEST"] && !process.env["NODE_ENV"])
   );
 }
 

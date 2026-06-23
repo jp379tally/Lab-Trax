@@ -348,7 +348,7 @@ function ProfilePanel() {
         await refresh();
       }
       // phoneToVerify is the canonical trimmed value sent to the API; store it in
-      // state so the OTP panel displays the exact number that was passed to Twilio.
+      // state so the OTP panel displays the exact number that was passed to the provider.
       await apiFetch("/send-phone-code", {
         method: "POST",
         body: JSON.stringify({ phone: phoneToVerify }),

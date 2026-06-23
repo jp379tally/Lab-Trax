@@ -6,7 +6,7 @@
  *
  * The verification module is mocked so no real DB writes or SMS calls are
  * needed for the OTP phase; SMS sending falls through to the dev-mode
- * console.warn path (no Twilio env vars configured in the test environment).
+ * console.warn path (no SMS provider env vars configured in the test environment).
  *
  * Skipped when DATABASE_URL is not configured (matches sibling suite convention).
  */

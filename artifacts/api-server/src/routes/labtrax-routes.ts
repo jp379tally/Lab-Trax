@@ -3307,15 +3307,15 @@ export async function registerRoutes(): Promise<IRouter> {
       return res.status(400).json({ error: "Phone number required" });
     }
 
-    const { isConfigured: smsConfigured } = await import("../lib/sms.js");
-    const isDev = process.env.NODE_ENV === "development";
+    const { isConfigured: smsConfigured, isDevOrTest } = await import("../lib/sms.js");
+    const inDevOrTest = isDevOrTest();
 
     if (!smsConfigured()) {
-      if (!isDev) {
+      if (!inDevOrTest) {
         req.log.error({ phone: `***${phone.slice(-4)}` }, "SMS verification failed: SMS provider not configured");
         return res.status(503).json({ error: "SMS delivery is not configured on this server." });
       }
-      req.log.info({ phone: `***${phone.slice(-4)}` }, "SMS verification: provider not configured, returning demo code (dev only)");
+      req.log.info({ phone: `***${phone.slice(-4)}` }, "SMS verification: provider not configured, returning demo code (dev/test)");
       const code = generateCode();
       await createVerificationCode({
         channel: "sms",
