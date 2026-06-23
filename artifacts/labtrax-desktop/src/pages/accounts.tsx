@@ -54,6 +54,24 @@ const OPEN_STATUSES = new Set([
 
 const ADMIN_ROLES = new Set(["owner", "admin"]);
 
+// Mirror of practices.tsx's normalizeDoctorName: strip the "Dr." honorific and
+// all non-alphanumerics so a case-history free-text name can be matched against
+// the lab's "Unassigned doctors" holding area regardless of formatting.
+function normalizeDoctorName(name: string): string {
+  return (name || "")
+    .toLowerCase()
+    .replace(/^dr\.?\s+/, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+interface UnassignedDoctorRow {
+  userId: string | null;
+  username: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  doctorName: string | null;
+}
+
 interface PracticeStats {
   caseCount: number;
   openBalance: number;
@@ -250,6 +268,74 @@ export default function AccountsPage() {
     return map;
   }, [memberAccountsQuery.data]);
 
+  // Per-lab "Unassigned doctors" holding area. A doctor moved here must vanish
+  // from every practice's doctor list (their cases/invoices stay behind) — this
+  // mirrors the exclusion PracticeDoctorsSection applies in the practice editor,
+  // so the Customer Center table and a practice's own overview stay in sync.
+  const unassignedQuery = useQuery({
+    queryKey: ["unassigned-doctors-accounts", adminLabOrgIds],
+    queryFn: async () => {
+      const results = await Promise.all(
+        adminLabOrgIds.map((labId) =>
+          apiFetch<UnassignedDoctorRow[]>(`/organizations/${labId}/unassigned-doctors`)
+            .then((rows) => ({ labId, rows }))
+            .catch(() => ({ labId, rows: [] as UnassignedDoctorRow[] })),
+        ),
+      );
+      return results;
+    },
+    enabled: adminLabOrgIds.length > 0,
+  });
+
+  const excludedNamesByLab = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const { labId, rows } of unassignedQuery.data ?? []) {
+      const set = map.get(labId) ?? new Set<string>();
+      for (const r of rows) {
+        const candidates = [
+          [r.firstName, r.lastName].filter(Boolean).join(" "),
+          r.doctorName ?? "",
+          r.username ?? "",
+        ];
+        for (const c of candidates) {
+          const n = normalizeDoctorName(c);
+          if (n) set.add(n);
+        }
+      }
+      map.set(labId, set);
+    }
+    return map;
+  }, [unassignedQuery.data]);
+
+  // Names of doctors with an ACTIVE membership at a given practice — a shared
+  // name must never hide a doctor who is genuinely assigned here.
+  const activeRegisteredNamesByPractice = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const { orgId, members } of memberAccountsQuery.data ?? []) {
+      const set = map.get(orgId) ?? new Set<string>();
+      for (const m of members) {
+        const name =
+          [m.user?.firstName, m.user?.lastName].filter(Boolean).join(" ").trim() ||
+          (m.user?.username ?? "");
+        const n = normalizeDoctorName(name);
+        if (n) set.add(n);
+      }
+      map.set(orgId, set);
+    }
+    return map;
+  }, [memberAccountsQuery.data]);
+
+  // Resolve each practice (provider org) to its parent lab so the correct
+  // per-lab unassigned set applies even when a (legacy) case lacks labOrganizationId.
+  const practiceLabId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const o of orgs) {
+      if (o.type === "lab") map.set(o.id, o.id);
+      else if (o.parentLabOrganizationId) map.set(o.id, o.parentLabOrganizationId);
+    }
+    return map;
+  }, [orgs]);
+
   const practiceStats = useMemo<Map<string, PracticeStats>>(() => {
     const map = new Map<string, PracticeStats>();
     for (const c of cases) {
@@ -278,6 +364,18 @@ export default function AccountsPage() {
     for (const c of cases) {
       const doc = (c.doctorName || "—").trim();
       const practiceId = c.providerOrganizationId || "";
+      // Drop doctors that were moved to the lab's "Unassigned" holding area so
+      // this table matches the practice editor's roster. Their cases still count
+      // toward practice-level stats (see practiceStats), only the doctor row goes.
+      const norm = normalizeDoctorName(doc);
+      const labId = c.labOrganizationId || practiceLabId.get(practiceId) || "";
+      if (
+        norm &&
+        excludedNamesByLab.get(labId)?.has(norm) &&
+        !activeRegisteredNamesByPractice.get(practiceId)?.has(norm)
+      ) {
+        continue;
+      }
       const key = `${doc.toLowerCase()}|${practiceId}`;
       const billed = billedByCase.get(c.id) ?? Number(c.totalPrice ?? 0);
       const created = c.createdAt || null;
@@ -317,7 +415,14 @@ export default function AccountsPage() {
       r.practiceName = orgNames.get(r.practiceId) || "Unknown practice";
     }
     return Array.from(map.values());
-  }, [cases, invoices, orgs]);
+  }, [
+    cases,
+    invoices,
+    orgs,
+    excludedNamesByLab,
+    activeRegisteredNamesByPractice,
+    practiceLabId,
+  ]);
 
   const doctorsByPractice = useMemo<Map<string, DoctorRow[]>>(() => {
     const map = new Map<string, DoctorRow[]>();

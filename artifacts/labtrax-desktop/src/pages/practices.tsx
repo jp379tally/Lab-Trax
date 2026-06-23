@@ -1020,10 +1020,6 @@ export function AddPracticeDialog({
       setError("Practice name is required.");
       return;
     }
-    if (!fields.city.trim() || !fields.state.trim() || !fields.zip.trim()) {
-      setError("Practice city, state, and ZIP are required.");
-      return;
-    }
     if (adminLabOrgIds.length > 1 && !fields.parentLabOrganizationId) {
       setError("Choose which lab this practice belongs to.");
       return;
@@ -1115,13 +1111,13 @@ export function AddPracticeDialog({
               <input value={fields.addressLine2} onChange={(e) => update("addressLine2", e.target.value)} className={inputCls} />
             </FormField>
             <FormField label="City">
-              <input value={fields.city} onChange={(e) => update("city", e.target.value)} className={inputCls} required />
+              <input value={fields.city} onChange={(e) => update("city", e.target.value)} className={inputCls} />
             </FormField>
             <FormField label="State">
-              <input value={fields.state} onChange={(e) => update("state", e.target.value)} className={inputCls} required />
+              <input value={fields.state} onChange={(e) => update("state", e.target.value)} className={inputCls} />
             </FormField>
             <FormField label="ZIP">
-              <input value={fields.zip} onChange={(e) => update("zip", e.target.value)} className={inputCls} required />
+              <input value={fields.zip} onChange={(e) => update("zip", e.target.value)} className={inputCls} />
             </FormField>
             <FormField label="Country">
               <input value={fields.country} onChange={(e) => update("country", e.target.value)} className={inputCls} />
@@ -1277,7 +1273,7 @@ export function AddPracticeDialog({
               </button>
               <button
                 type="submit"
-                disabled={createMutation.isPending || creatingDoctors || !fields.name.trim() || !fields.city.trim() || !fields.state.trim() || !fields.zip.trim()}
+                disabled={createMutation.isPending || creatingDoctors || !fields.name.trim()}
                 className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
               >
                 {createMutation.isPending
