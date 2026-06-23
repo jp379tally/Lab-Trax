@@ -4,8 +4,8 @@
  * Skipped when no DATABASE_URL is configured — same convention as
  * `cases-similarity.test.ts` and `cross-lab-doctor.test.ts`.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { createHash } from "node:crypto";
 import request from "supertest";
@@ -646,5 +646,347 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     await db
       .delete(pricingOverrides)
       .where(inArray(pricingOverrides.id, [ovId, newOvId]));
+  });
+});
+
+/**
+ * Task #2375 — Fix removing a non-provider doctor from a practice.
+ *
+ * The Doctors list on a practice shows every active member, but the
+ * remove-doctor endpoint previously hard-failed with
+ * `400 "Only provider users can be removed."` for members whose underlying
+ * account type is not `provider`. These tests reproduce that case and assert
+ * that removing → Unassigned and reassigning → sibling practice both succeed,
+ * while preserving the existing provider-doctor and virtual-doctor behaviour.
+ */
+maybe("Task #2375 remove non-provider doctor (db integration)", () => {
+  let dbMod: typeof import("@workspace/db");
+  let appMod: { default: import("express").Express };
+  let auth: typeof import("../lib/auth.js");
+
+  const labOrgId = rid("lab");
+  const practiceAId = rid("provA");
+  const practiceBId = rid("provB");
+  const adminUserId = rid("uadmin");
+
+  let adminToken = "";
+
+  async function makeSession(userId: string): Promise<string> {
+    const { db, userSessions } = dbMod as any;
+    const sessionId = rid("sess");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    const token = auth.signAccessToken(userId, sessionId);
+    const hash = createHash("sha256").update(token).digest("hex");
+    await db.insert(userSessions).values({
+      id: sessionId,
+      userId,
+      tokenHash: hash,
+      expiresAt,
+    });
+    return token;
+  }
+
+  // Per-test bookkeeping so each scenario cleans up only its own rows.
+  const trackUsers: string[] = [];
+  const trackCases: string[] = [];
+  const trackInvoices: string[] = [];
+
+  async function addNonProviderMember(name: {
+    first: string;
+    last: string;
+  }): Promise<string> {
+    const { db, users, organizationMemberships } = dbMod as any;
+    const userId = rid("unp");
+    await db.insert(users).values({
+      id: userId,
+      username: `np_${userId}`,
+      password: "x",
+      firstName: name.first,
+      lastName: name.last,
+      // Default userType is "lab" — explicitly a non-provider account.
+      userType: "lab",
+    });
+    await db.insert(organizationMemberships).values({
+      id: rid("m"),
+      labId: practiceAId,
+      userId,
+      role: "user",
+      status: "active",
+      joinedAt: new Date(),
+    });
+    trackUsers.push(userId);
+    return userId;
+  }
+
+  async function addCase(opts: {
+    doctorName: string;
+    practiceId: string;
+  }): Promise<string> {
+    const { db, cases } = dbMod as any;
+    const id = rid("c");
+    await db.insert(cases).values({
+      id,
+      caseNumber: rid("CN"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: opts.practiceId,
+      doctorName: opts.doctorName,
+      patientFirstName: "Pat",
+      patientLastName: "Test",
+      status: "draft",
+      createdByUserId: adminUserId,
+    });
+    trackCases.push(id);
+    return id;
+  }
+
+  async function addInvoice(opts: {
+    caseId: string;
+    practiceId: string;
+  }): Promise<string> {
+    const { db, invoices } = dbMod as any;
+    const id = rid("inv");
+    await db.insert(invoices).values({
+      id,
+      invoiceNumber: rid("IN"),
+      caseId: opts.caseId,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: opts.practiceId,
+      status: "draft",
+      createdByUserId: adminUserId,
+    });
+    trackInvoices.push(id);
+    return id;
+  }
+
+  beforeAll(async () => {
+    process.env["JWT_SECRET"] =
+      process.env["JWT_SECRET"] ?? "labtrax-test-secret-remove-doctor";
+    dbMod = await import("@workspace/db");
+    appMod = await import("../app.js");
+    auth = await import("../lib/auth.js");
+
+    const { db, organizations, users, organizationMemberships } = dbMod as any;
+
+    await db.insert(users).values([
+      { id: adminUserId, username: `adm_${adminUserId}`, password: "x" },
+    ]);
+    await db.insert(organizations).values([
+      { id: labOrgId, type: "lab", name: "Remove Doctor Lab" },
+      {
+        id: practiceAId,
+        type: "provider",
+        name: "Practice A",
+        parentLabOrganizationId: labOrgId,
+      },
+      {
+        id: practiceBId,
+        type: "provider",
+        name: "Practice B",
+        parentLabOrganizationId: labOrgId,
+      },
+    ]);
+    await db.insert(organizationMemberships).values([
+      {
+        id: rid("m"),
+        labId: labOrgId,
+        userId: adminUserId,
+        role: "admin",
+        status: "active",
+      },
+    ]);
+    adminToken = await makeSession(adminUserId);
+  });
+
+  beforeEach(async () => {
+    adminToken = await makeSession(adminUserId);
+  });
+
+  afterEach(async () => {
+    const {
+      db,
+      cases,
+      invoices,
+      organizationMemberships,
+      labUnassignedDoctors,
+      userSessions,
+      users,
+    } = dbMod as any;
+    if (trackInvoices.length) {
+      await db.delete(invoices).where(inArray(invoices.id, trackInvoices));
+    }
+    if (trackCases.length) {
+      await db.delete(cases).where(inArray(cases.id, trackCases));
+    }
+    if (trackUsers.length) {
+      await db
+        .delete(labUnassignedDoctors)
+        .where(inArray(labUnassignedDoctors.userId, trackUsers));
+      await db
+        .delete(organizationMemberships)
+        .where(inArray(organizationMemberships.userId, trackUsers));
+      await db
+        .delete(userSessions)
+        .where(inArray(userSessions.userId, trackUsers));
+      await db.delete(users).where(inArray(users.id, trackUsers));
+    }
+    trackInvoices.length = 0;
+    trackCases.length = 0;
+    trackUsers.length = 0;
+  });
+
+  afterAll(async () => {
+    if (!SHOULD_RUN) return;
+    const {
+      db,
+      auditLogs,
+      organizations,
+      users,
+      organizationMemberships,
+      userSessions,
+    } = dbMod as any;
+    await db.delete(auditLogs).where(eq(auditLogs.organizationId, labOrgId));
+    await db
+      .delete(organizationMemberships)
+      .where(eq(organizationMemberships.userId, adminUserId));
+    await db.delete(userSessions).where(eq(userSessions.userId, adminUserId));
+    await db
+      .delete(organizations)
+      .where(inArray(organizations.id, [labOrgId, practiceAId, practiceBId]));
+    await db.delete(users).where(eq(users.id, adminUserId));
+  });
+
+  it("removes a non-provider member to Unassigned (no holding-area record)", async () => {
+    const userId = await addNonProviderMember({ first: "John", last: "Phillips" });
+
+    const r = await request(appMod.default)
+      .post(`/api/organizations/${practiceAId}/doctors/remove`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ userId, doctorName: "John Phillips" });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data.unassigned).toBe(true);
+    expect(r.body.data.userId).toBe(userId);
+
+    const { db, organizationMemberships, labUnassignedDoctors } = dbMod as any;
+    // Active membership at the practice is dropped (soft-removed).
+    const membership = await db.query.organizationMemberships.findFirst({
+      where: and(
+        eq(organizationMemberships.labId, practiceAId),
+        eq(organizationMemberships.userId, userId),
+        isNull(organizationMemberships.deletedAt)
+      ),
+    });
+    expect(membership).toBeUndefined();
+
+    // No confusing holding-area entry is created for a non-provider user.
+    const holding = await db
+      .select()
+      .from(labUnassignedDoctors)
+      .where(eq(labUnassignedDoctors.userId, userId));
+    expect(holding.length).toBe(0);
+  });
+
+  it("reassigns a non-provider member to a sibling practice and moves cases", async () => {
+    const userId = await addNonProviderMember({ first: "Jane", last: "Doe" });
+    const caseId = await addCase({
+      doctorName: "Jane Doe",
+      practiceId: practiceAId,
+    });
+    const invoiceId = await addInvoice({ caseId, practiceId: practiceAId });
+
+    const r = await request(appMod.default)
+      .post(`/api/organizations/${practiceAId}/doctors/remove`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({
+        userId,
+        doctorName: "Jane Doe",
+        destinationOrganizationId: practiceBId,
+        existingCases: "move",
+      });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data.unassigned).toBe(false);
+    expect(r.body.data.destinationPracticeId).toBe(practiceBId);
+    expect(r.body.data.casesMoved).toBe(1);
+    expect(r.body.data.invoicesMoved).toBe(1);
+
+    const { db, cases, invoices, organizationMemberships } = dbMod as any;
+    // Case followed the doctor to the destination practice.
+    const [movedCase] = await db
+      .select()
+      .from(cases)
+      .where(eq(cases.id, caseId));
+    expect(movedCase.providerOrganizationId).toBe(practiceBId);
+
+    // The case's invoice followed it to the destination practice.
+    const [movedInvoice] = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.id, invoiceId));
+    expect(movedInvoice.providerOrganizationId).toBe(practiceBId);
+
+    // Active membership now exists at the destination practice.
+    const destMembership = await db.query.organizationMemberships.findFirst({
+      where: and(
+        eq(organizationMemberships.labId, practiceBId),
+        eq(organizationMemberships.userId, userId),
+        isNull(organizationMemberships.deletedAt)
+      ),
+    });
+    expect(destMembership).toBeDefined();
+    // Source membership was dropped.
+    const srcMembership = await db.query.organizationMemberships.findFirst({
+      where: and(
+        eq(organizationMemberships.labId, practiceAId),
+        eq(organizationMemberships.userId, userId),
+        isNull(organizationMemberships.deletedAt)
+      ),
+    });
+    expect(srcMembership).toBeUndefined();
+  });
+
+  it("404s for a non-provider user who is not a member of the practice", async () => {
+    const { db, users } = dbMod as any;
+    const strangerId = rid("ustr");
+    await db.insert(users).values({
+      id: strangerId,
+      username: `str_${strangerId}`,
+      password: "x",
+      userType: "lab",
+    });
+    trackUsers.push(strangerId);
+
+    const r = await request(appMod.default)
+      .post(`/api/organizations/${practiceAId}/doctors/remove`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ userId: strangerId, doctorName: "Some Stranger" });
+
+    expect(r.status).toBe(404);
+  });
+
+  it("still removes a virtual (name-only) doctor with no userId", async () => {
+    const caseId = await addCase({
+      doctorName: "Dr. Virtual Only",
+      practiceId: practiceAId,
+    });
+
+    const r = await request(appMod.default)
+      .post(`/api/organizations/${practiceAId}/doctors/remove`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ doctorName: "Dr. Virtual Only" });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data.promotedFromVirtual).toBe(true);
+    // Track the promoted provider user for cleanup.
+    if (r.body.data.userId) trackUsers.push(r.body.data.userId);
+    // Promoted virtual doctors are a provider concept → they DO get a
+    // holding-area record.
+    const { db, labUnassignedDoctors } = dbMod as any;
+    const holding = await db
+      .select()
+      .from(labUnassignedDoctors)
+      .where(eq(labUnassignedDoctors.userId, r.body.data.userId));
+    expect(holding.length).toBe(1);
+    void caseId;
   });
 });

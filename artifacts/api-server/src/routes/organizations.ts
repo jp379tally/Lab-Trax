@@ -1343,6 +1343,10 @@ router.post(
         platformAccountNumber: string | null;
       };
       let promoted = false;
+      // Whether the resolved doctor is a real provider-type account. The
+      // Unassigned holding area is a provider-doctor concept, so a
+      // non-provider member is detached without a holding-area record.
+      let isProviderUser = true;
 
       if (input.userId) {
         const u = await tx.query.users.findFirst({
@@ -1350,7 +1354,21 @@ router.post(
         });
         if (!u) throw new HttpError(404, "Doctor account not found.");
         if (u.userType !== "provider") {
-          throw new HttpError(400, "Only provider users can be removed.");
+          // The Doctors list shows every active member of the practice, not
+          // just provider-type accounts. A non-provider member can therefore
+          // be offered a Remove button. Allow removing them as long as they
+          // are (or were) a member of THIS practice — never an arbitrary,
+          // unrelated user account.
+          const membership = await tx.query.organizationMemberships.findFirst({
+            where: and(
+              eq(organizationMemberships.labId, organizationId),
+              eq(organizationMemberships.userId, u.id)
+            ),
+          });
+          if (!membership) {
+            throw new HttpError(404, "Doctor account not found.");
+          }
+          isProviderUser = false;
         }
         user = u;
       } else {
@@ -1421,8 +1439,11 @@ router.post(
               isNull(labUnassignedDoctors.deletedAt)
             )
           );
-      } else {
+      } else if (isProviderUser) {
         // 3b. Unassigned: upsert the holding-area record (cases stay put).
+        // Only provider-type doctors land in the Unassigned holding area —
+        // a non-provider member is simply detached (membership dropped above)
+        // and never appears in the per-lab Unassigned list.
         const existing = await tx.query.labUnassignedDoctors.findFirst({
           where: and(
             eq(labUnassignedDoctors.labOrganizationId, labId),
