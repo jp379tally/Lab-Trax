@@ -11,22 +11,19 @@ import {
   Plus,
   RotateCcw,
   Search,
-  Stethoscope,
   Trash2,
   Type,
   X,
 } from "lucide-react";
 import { ApiError, apiFetch } from "@/lib/api";
-import type { LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatMoney } from "@/lib/format";
 import {
   DEFAULT_PRICE_KEYS,
   formatPriceTwoDecimals,
-  isTierMissing,
   labelFor,
 } from "@/lib/pricing-keys";
 
-type Section = "tiers" | "overrides" | "labels";
+type Section = "tiers" | "labels";
 
 interface PricingTier {
   id: string;
@@ -35,27 +32,10 @@ interface PricingTier {
   prices: Record<string, number>;
 }
 
-interface PricingOverride {
-  id: string;
-  labOrganizationId: string;
-  doctorName: string;
-  practiceName: string | null;
-  providerOrganizationId: string | null;
-  prices: Record<string, number>;
-  tierName: string | null;
-  notes: string | null;
-}
-
 interface TiersResponse {
   labOrganizationId: string;
   keys: string[];
   tiers: PricingTier[];
-}
-
-interface OverridesResponse {
-  labOrganizationId: string;
-  keys: string[];
-  overrides: PricingOverride[];
 }
 
 // labelFor / PRICE_KEY_LABELS now imported from @/lib/pricing-keys.
@@ -410,8 +390,8 @@ export default function PricingPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Pricing</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Manage your lab's pricing tiers, per-doctor overrides, and what's
-            currently being billed across cases.
+            Manage your lab's pricing tiers and what's currently being billed
+            across cases.
           </p>
         </div>
       </div>
@@ -426,12 +406,6 @@ export default function PricingPage() {
           label="Pricing tiers"
         />
         <SectionTab
-          active={section === "overrides"}
-          onClick={() => setSection("overrides")}
-          icon={<Stethoscope size={14} />}
-          label="Per-doctor overrides"
-        />
-        <SectionTab
           active={section === "labels"}
           onClick={() => setSection("labels")}
           icon={<Type size={14} />}
@@ -440,7 +414,6 @@ export default function PricingPage() {
       </div>
 
       {section === "tiers" && <TiersSection />}
-      {section === "overrides" && <OverridesSection />}
       {section === "labels" && <ItemLabelsSection />}
     </div>
   );
@@ -532,8 +505,7 @@ function DefaultDoctorTierSetting({ tiers }: { tiers: PricingTier[] }) {
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium">Default tier for new doctors</div>
         <div className="text-xs text-muted-foreground mt-0.5">
-          Automatically assigned when a new doctor override is created without
-          an explicit tier.
+          Automatically assigned to a new doctor when no explicit tier is set.
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
@@ -621,8 +593,7 @@ function TiersSection() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
-          Tiers are price lists you can assign to client practices. Per-doctor
-          overrides take precedence over tiers.
+          Tiers are price lists you can assign to client practices.
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -1197,737 +1168,6 @@ function TierEditor({
   );
 }
 
-// ---- Overrides ----
-
-function OverridesSection() {
-  const queryClient = useQueryClient();
-  const [creating, setCreating] = useState(false);
-  const [editing, setEditing] = useState<PricingOverride | null>(null);
-  const [search, setSearch] = useState("");
-
-  const meQuery = useQuery({
-    queryKey: ["auth", "me"],
-    queryFn: () => apiFetch<MeResponse>("/auth/me"),
-  });
-  const overridesQuery = useQuery({
-    queryKey: ["pricing", "overrides"],
-    queryFn: () => apiFetch<OverridesResponse>("/pricing/overrides"),
-    retry: false,
-  });
-  const tiersQuery = useQuery({
-    queryKey: ["pricing", "tiers"],
-    queryFn: () => apiFetch<TiersResponse>("/pricing/tiers"),
-    retry: false,
-  });
-
-  const items = overridesQuery.data?.overrides ?? [];
-  const keys = overridesQuery.data?.keys ?? [];
-  const availableTiers = tiersQuery.data?.tiers ?? [];
-  const orphanCount = useMemo(
-    () =>
-      items.filter((o) => isTierMissing(o.tierName, availableTiers)).length,
-    [items, availableTiers],
-  );
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter(
-      (o) =>
-        o.doctorName.toLowerCase().includes(q) ||
-        (o.practiceName || "").toLowerCase().includes(q)
-    );
-  }, [items, search]);
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) =>
-      apiFetch(`/pricing/overrides/${id}`, { method: "DELETE" }),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["pricing", "overrides"] }),
-  });
-
-  // role check via memberships
-  const isAdmin = (meQuery.data?.memberships ?? []).some(
-    (m) =>
-      m.status === "active" &&
-      m.organization?.type === "lab" &&
-      (m.role === "owner" || m.role === "admin")
-  );
-
-  if (overridesQuery.isLoading) {
-    return (
-      <div className="text-sm text-muted-foreground py-12 text-center">
-        <Loader2 size={16} className="inline animate-spin mr-2" />
-        Loading overrides…
-      </div>
-    );
-  }
-  if (overridesQuery.error) {
-    const err = overridesQuery.error as ApiError;
-    return (
-      <div className="text-sm text-destructive bg-destructive/10 rounded-md px-3 py-2">
-        {err.message}
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[220px] max-w-md">
-          <Search
-            size={14}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-          />
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by doctor or practice…"
-            className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
-          />
-        </div>
-        <div className="text-xs text-muted-foreground flex-1">
-          Per-doctor prices override your tiers when new restorations are
-          billed.
-          {orphanCount > 0 && (
-            <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning/15 text-warning text-[10px] font-medium uppercase tracking-wide">
-              {orphanCount} on missing tier — click to reassign
-            </span>
-          )}
-        </div>
-        {isAdmin && (
-          <button
-            type="button"
-            onClick={() => setCreating(true)}
-            className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold inline-flex items-center gap-1.5 hover:bg-primary/90"
-          >
-            <Plus size={14} /> New override
-          </button>
-        )}
-      </div>
-
-      {filtered.length === 0 ? (
-        <div className="bg-card border border-border rounded-xl py-14 text-center">
-          <Stethoscope
-            size={28}
-            className="inline text-muted-foreground/50 mb-3"
-          />
-          <div className="text-sm font-medium">
-            {items.length === 0 ? "No overrides yet" : "No matches"}
-          </div>
-          <div className="text-xs text-muted-foreground mt-1">
-            {items.length === 0
-              ? "Add a per-doctor override to give a specific doctor or practice their own pricing."
-              : "Try a different search."}
-          </div>
-        </div>
-      ) : (
-        <div className="bg-card border border-border rounded-xl overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
-                <th className="text-left px-5 py-2.5 font-medium">Doctor</th>
-                <th className="text-left py-2.5 font-medium">Practice</th>
-                <th className="text-left py-2.5 font-medium">Tier</th>
-                <th className="text-right py-2.5 font-medium">Items priced</th>
-                <th className="px-5 py-2.5" />
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((o) => {
-                const tierMissing = isTierMissing(o.tierName, availableTiers);
-                return (
-                <tr
-                  key={o.id}
-                  onClick={() => setEditing(o)}
-                  className="border-t border-border hover:bg-secondary/40 cursor-pointer"
-                >
-                  <td className="px-5 py-3 font-medium">{o.doctorName}</td>
-                  <td className="py-3 text-muted-foreground">
-                    {o.practiceName || "—"}
-                  </td>
-                  <td className="py-3">
-                    {o.tierName ? (
-                      tierMissing ? (
-                        <span
-                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning/15 text-warning text-[11px] font-medium"
-                          title="This tier no longer exists. Click the row to pick a replacement."
-                        >
-                          {o.tierName} (missing — click to reassign)
-                        </span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">
-                          {o.tierName}
-                        </span>
-                      )
-                    ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    )}
-                  </td>
-                  <td className="py-3 text-right tabular-nums">
-                    {Object.values(o.prices).filter((v) => Number(v) > 0).length}{" "}
-                    / {keys.length}
-                  </td>
-                  <td className="px-5 py-3 text-right">
-                    <div className="inline-flex items-center gap-1">
-                      <span className="text-xs text-primary">
-                        <Pencil size={11} className="inline mr-1" />
-                        Edit
-                      </span>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (
-                            window.confirm(
-                              `Remove override for ${o.doctorName}?`,
-                            )
-                          ) {
-                            deleteMutation.mutate(o.id);
-                          }
-                        }}
-                        className="h-7 w-7 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex items-center justify-center ml-1"
-                        aria-label="Delete override"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {creating && (
-        <OverrideEditor
-          mode="create"
-          keys={keys}
-          override={null}
-          onClose={() => setCreating(false)}
-        />
-      )}
-      {editing && (
-        <OverrideEditor
-          mode="edit"
-          keys={keys}
-          override={editing}
-          onClose={() => setEditing(null)}
-        />
-      )}
-    </div>
-  );
-}
-
-function OverrideEditor({
-  mode,
-  keys,
-  override,
-  onClose,
-}: {
-  mode: "create" | "edit";
-  keys: string[];
-  override: PricingOverride | null;
-  onClose: () => void;
-}) {
-  const queryClient = useQueryClient();
-  const [doctorName, setDoctorName] = useState(override?.doctorName ?? "");
-  const [practiceName, setPracticeName] = useState(
-    override?.practiceName ?? ""
-  );
-  const [tierName, setTierName] = useState<string>(override?.tierName ?? "");
-  // Track the last tier we auto-filled from so we can tell user-typed
-  // values apart from tier-derived ones. Switching tiers replaces any
-  // values that came from the previous tier; values the user typed
-  // themselves are preserved.
-  const lastFilledTierRef = useRef<string>(override?.tierName ?? "");
-  const [notes, setNotes] = useState(override?.notes ?? "");
-
-  const tiersQuery = useQuery({
-    queryKey: ["pricing", "tiers"],
-    queryFn: () => apiFetch<TiersResponse>("/pricing/tiers"),
-  });
-  const availableTiers = tiersQuery.data?.tiers ?? [];
-
-  const casesQuery = useQuery({
-    queryKey: ["cases"],
-    queryFn: () => apiFetch<LabCase[]>("/cases"),
-    staleTime: 5 * 60 * 1000,
-  });
-  const orgsQuery = useQuery({
-    queryKey: ["organizations"],
-    queryFn: () => apiFetch<Organization[]>("/organizations"),
-    staleTime: 5 * 60 * 1000,
-  });
-
-  const distinctDoctors = useMemo(() => {
-    const names = new Set<string>();
-    for (const c of casesQuery.data ?? []) {
-      if (c.doctorName?.trim()) names.add(c.doctorName.trim());
-    }
-    return Array.from(names).sort();
-  }, [casesQuery.data]);
-
-  const distinctPractices = useMemo(() => {
-    const names = new Set<string>();
-    for (const o of orgsQuery.data ?? []) {
-      if (o.type === "provider") {
-        const n = (o.displayName || o.name)?.trim();
-        if (n) names.add(n);
-      }
-    }
-    return Array.from(names).sort();
-  }, [orgsQuery.data]);
-  const [prices, setPrices] = useState<Record<string, string>>(() => {
-    const out: Record<string, string> = {};
-    for (const k of keys) {
-      const v = Number(override?.prices?.[k] ?? 0);
-      out[k] = v > 0 ? v.toFixed(2) : "";
-    }
-    return out;
-  });
-  const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [restoring, setRestoring] = useState<AuditEntry | null>(null);
-
-  // Tier prices for the currently selected tier. Used both as the
-  // input placeholder and as the source for auto-fill when the user
-  // picks a tier.
-  const selectedTierPrices = useMemo<Record<string, number>>(() => {
-    if (!tierName) return {};
-    const t = availableTiers.find(
-      (x: any) => x.name?.trim().toLowerCase() === tierName.trim().toLowerCase()
-    );
-    return (t?.prices ?? {}) as Record<string, number>;
-  }, [tierName, availableTiers]);
-
-  // When the user switches the assigned tier, prefill the per-item
-  // boxes with the selected tier's prices. We only overwrite rows
-  // that are blank or that we previously auto-filled from another
-  // tier — values the user typed themselves are preserved.
-  useEffect(() => {
-    if (lastFilledTierRef.current === tierName) return;
-    if (availableTiers.length === 0 && tierName) return;
-    const prevTier = lastFilledTierRef.current;
-    const prevTierPrices: Record<string, number> = prevTier
-      ? (((availableTiers.find(
-          (x: any) =>
-            x.name?.trim().toLowerCase() === prevTier.trim().toLowerCase()
-        ) as any)?.prices ?? {}) as Record<string, number>)
-      : {};
-    setPrices((prev) => {
-      const next: Record<string, string> = { ...prev };
-      for (const k of keys) {
-        const current = prev[k] ?? "";
-        const fromPrev = Number(prevTierPrices[k] ?? 0);
-        const wasFromPrevTier =
-          current !== "" &&
-          fromPrev > 0 &&
-          Number(current).toFixed(2) === fromPrev.toFixed(2);
-        if (current === "" || wasFromPrevTier) {
-          const v = Number(selectedTierPrices[k] ?? 0);
-          next[k] = v > 0 ? v.toFixed(2) : "";
-        }
-      }
-      return next;
-    });
-    lastFilledTierRef.current = tierName;
-  }, [tierName, selectedTierPrices, availableTiers, keys]);
-
-  const nextPrices = useMemo(() => {
-    const out: Record<string, number> = {};
-    for (const [k, v] of Object.entries(prices)) {
-      const n = Number(v);
-      if (Number.isFinite(n) && n > 0) out[k] = n;
-    }
-    return out;
-  }, [prices]);
-
-  const diff = useMemo(
-    () => diffPrices(override?.prices ?? {}, nextPrices),
-    [override, nextPrices]
-  );
-
-  const metaChanges = useMemo(() => {
-    const m: { label: string; before: string; after: string }[] = [];
-    if (mode !== "edit" || !override) return m;
-    const trimmedPractice = practiceName.trim();
-    if ((override.practiceName ?? "") !== trimmedPractice) {
-      m.push({
-        label: "Practice",
-        before: override.practiceName ?? "",
-        after: trimmedPractice,
-      });
-    }
-    const trimmedNotes = notes.trim();
-    if ((override.notes ?? "") !== trimmedNotes) {
-      m.push({
-        label: "Notes",
-        before: override.notes ?? "",
-        after: trimmedNotes,
-      });
-    }
-    return m;
-  }, [mode, override, practiceName, notes]);
-
-  const restoreTargetPrices = useMemo<Record<string, number>>(() => {
-    const out: Record<string, number> = {};
-    for (const [k, v] of Object.entries(restoring?.afterPrices ?? {})) {
-      const n = Number(v);
-      if (Number.isFinite(n) && n > 0) out[k] = n;
-    }
-    return out;
-  }, [restoring]);
-
-  const restoreDiff = useMemo(
-    () => diffPrices(override?.prices ?? {}, restoreTargetPrices),
-    [override, restoreTargetPrices]
-  );
-
-  const restoreMetaChanges = useMemo(() => {
-    const m: { label: string; before: string; after: string }[] = [];
-    if (!restoring || !override) return m;
-    const targetPractice =
-      restoring.afterPracticeName ?? override.practiceName ?? "";
-    if ((override.practiceName ?? "") !== (targetPractice ?? "")) {
-      m.push({
-        label: "Practice",
-        before: override.practiceName ?? "",
-        after: targetPractice ?? "",
-      });
-    }
-    const targetNotes = restoring.afterNotes ?? override.notes ?? "";
-    if ((override.notes ?? "") !== (targetNotes ?? "")) {
-      m.push({
-        label: "Notes",
-        before: override.notes ?? "",
-        after: targetNotes ?? "",
-      });
-    }
-    return m;
-  }, [restoring, override]);
-
-  const mutation = useMutation({
-    mutationFn: async () => {
-      const payload: Record<string, unknown> = {
-        doctorName: doctorName.trim(),
-        practiceName: practiceName.trim() || null,
-        tierName: tierName.trim() ? tierName.trim() : null,
-        notes: notes.trim() || null,
-        prices: nextPrices,
-      };
-      if (mode === "create") {
-        return apiFetch<PricingOverride>("/pricing/overrides", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        });
-      }
-      return apiFetch<PricingOverride>(`/pricing/overrides/${override!.id}`, {
-        method: "PATCH",
-        body: JSON.stringify(payload),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["pricing", "overrides"] });
-      queryClient.invalidateQueries({ queryKey: ["pricing", "history"] });
-      setConfirming(false);
-      onClose();
-    },
-    onError: (err: Error) => {
-      setError(err.message || "Could not save override.");
-      setConfirming(false);
-    },
-  });
-
-  const restoreMutation = useMutation({
-    mutationFn: async () => {
-      if (!override || !restoring) throw new Error("Nothing to restore.");
-      const payload: Record<string, unknown> = {
-        practiceName:
-          (restoring.afterPracticeName ?? override.practiceName ?? null) ||
-          null,
-        notes: (restoring.afterNotes ?? override.notes ?? null) || null,
-        prices: restoreTargetPrices,
-      };
-      return apiFetch<PricingOverride>(`/pricing/overrides/${override.id}`, {
-        method: "PATCH",
-        body: JSON.stringify(payload),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["pricing", "overrides"] });
-      queryClient.invalidateQueries({ queryKey: ["pricing", "history"] });
-      setRestoring(null);
-      onClose();
-    },
-    onError: (err: Error) => {
-      setError(err.message || "Could not restore override.");
-      setRestoring(null);
-    },
-  });
-
-  function handleSaveClick() {
-    setError(null);
-    if (mode === "edit" && diff.length === 0 && metaChanges.length === 0) {
-      onClose();
-      return;
-    }
-    if (mode === "create") {
-      mutation.mutate();
-      return;
-    }
-    setConfirming(true);
-  }
-
-  return (
-    <SidePanel
-      title={
-        mode === "create" ? "New per-doctor override" : `Edit ${override?.doctorName}`
-      }
-      subtitle="Per-doctor pricing"
-      onClose={onClose}
-      footer={
-        <>
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleSaveClick}
-            disabled={mutation.isPending || !doctorName.trim()}
-            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
-          >
-            {mutation.isPending
-              ? "Saving…"
-              : mode === "edit"
-                ? "Review & save"
-                : "Save override"}
-          </button>
-        </>
-      }
-    >
-      <div>
-        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-          Doctor name
-        </label>
-        <input
-          type="text"
-          list={mode === "create" ? "override-doctor-names" : undefined}
-          value={doctorName}
-          onChange={(e) => setDoctorName(e.target.value)}
-          placeholder="Dr. Aris"
-          className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-          disabled={mode === "edit"}
-        />
-        {mode === "create" && (
-          <datalist id="override-doctor-names">
-            {distinctDoctors.map((n) => (
-              <option key={n} value={n} />
-            ))}
-          </datalist>
-        )}
-        {mode === "edit" && (
-          <p className="text-xs text-muted-foreground mt-1">
-            Doctor name can't be changed once an override exists. Delete and
-            recreate to reassign.
-          </p>
-        )}
-      </div>
-
-      <div>
-        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-          Practice (optional)
-        </label>
-        <input
-          type="text"
-          list="override-practice-names"
-          value={practiceName}
-          onChange={(e) => setPracticeName(e.target.value)}
-          placeholder="Elite Dental Group"
-          className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-        />
-        <datalist id="override-practice-names">
-          {distinctPractices.map((n) => (
-            <option key={n} value={n} />
-          ))}
-        </datalist>
-      </div>
-
-      <div>
-        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5 flex items-center gap-2">
-          Assigned tier (optional)
-          {tierName &&
-            availableTiers.length > 0 &&
-            !availableTiers.some(
-              (t) =>
-                t.name.trim().toLowerCase() ===
-                tierName.trim().toLowerCase(),
-            ) && (
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning/15 text-warning text-[10px] font-medium normal-case tracking-normal">
-                missing — pick a replacement
-              </span>
-            )}
-        </label>
-        <select
-          value={tierName}
-          onChange={(e) => setTierName(e.target.value)}
-          className={`w-full h-9 px-2.5 rounded-md bg-background border text-sm ${
-            tierName &&
-            availableTiers.length > 0 &&
-            !availableTiers.some(
-              (t) =>
-                t.name.trim().toLowerCase() ===
-                tierName.trim().toLowerCase(),
-            )
-              ? "border-warning"
-              : "border-input"
-          }`}
-        >
-          <option value="">— Use practice default / first tier —</option>
-          {availableTiers.map((t) => (
-            <option key={t.id} value={t.name}>
-              {t.name}
-            </option>
-          ))}
-          {tierName &&
-            availableTiers.length > 0 &&
-            !availableTiers.some(
-              (t) =>
-                t.name.trim().toLowerCase() ===
-                tierName.trim().toLowerCase(),
-            ) && (
-              <option value={tierName}>{tierName} (missing)</option>
-            )}
-        </select>
-        <p className="text-xs text-muted-foreground mt-1">
-          Per-item prices below still take precedence. Use this to put a doctor
-          on a specific tier without setting every price.
-        </p>
-      </div>
-
-      <div>
-        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-          Notes (optional)
-        </label>
-        <textarea
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          rows={2}
-          className="w-full px-2.5 py-2 rounded-md bg-background border border-input text-sm"
-        />
-      </div>
-
-      <div>
-        <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-          Item prices
-        </div>
-        <div className="space-y-2">
-          {keys.map((k) => {
-            const tierPrice = Number(selectedTierPrices[k] ?? 0);
-            return (
-              <PriceField
-                key={k}
-                label={labelFor(k)}
-                value={prices[k] ?? ""}
-                placeholder={tierPrice > 0 ? tierPrice.toFixed(2) : "0.00"}
-                onChange={(v) => setPrices((p) => ({ ...p, [k]: v }))}
-              />
-            );
-          })}
-        </div>
-        <p className="text-xs text-muted-foreground mt-2">
-          Picking a tier above auto-fills these from the tier's prices.
-          Edit any row to override just that item; clear a row to fall
-          back to the tier (or the lab default).
-        </p>
-      </div>
-
-      {mode === "edit" && (diff.length > 0 || metaChanges.length > 0) && (
-        <div className="rounded-md border border-border bg-secondary/30 p-3">
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">
-            Pending changes
-          </div>
-          {metaChanges.map((m) => (
-            <div key={m.label} className="text-xs mb-1">
-              <span className="text-muted-foreground">{m.label}: </span>
-              <span className="line-through text-muted-foreground">
-                {m.before || "—"}
-              </span>{" "}
-              → <span className="text-foreground">{m.after || "—"}</span>
-            </div>
-          ))}
-          <PriceDiffList diff={diff} />
-        </div>
-      )}
-
-      {mode === "edit" && override && (
-        <div>
-          <button
-            type="button"
-            onClick={() => setHistoryOpen((v) => !v)}
-            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
-          >
-            <History size={12} />
-            {historyOpen ? "Hide history" : "Show history"}
-            {historyOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-          </button>
-          {historyOpen && (
-            <div className="mt-3">
-              <HistoryPanel
-                endpoint={`/pricing/overrides/${override.id}/history`}
-                enabled={historyOpen}
-                onRestore={(entry) => {
-                  setError(null);
-                  setRestoring(entry);
-                }}
-              />
-            </div>
-          )}
-        </div>
-      )}
-
-      {error && (
-        <div className="text-sm rounded-md px-3 py-2 bg-destructive/10 text-destructive">
-          {error}
-        </div>
-      )}
-
-      {confirming && (
-        <ConfirmChangesDialog
-          title={
-            override
-              ? `${override.doctorName} (per-doctor override)`
-              : "Per-doctor override"
-          }
-          diff={diff}
-          metaChanges={metaChanges}
-          isPending={mutation.isPending}
-          onCancel={() => setConfirming(false)}
-          onConfirm={() => mutation.mutate()}
-        />
-      )}
-
-      {restoring && override && (
-        <ConfirmChangesDialog
-          title={`Restore ${override.doctorName} to ${formatRelativeDate(restoring.createdAt)}`}
-          diff={restoreDiff}
-          metaChanges={restoreMetaChanges}
-          isPending={restoreMutation.isPending}
-          onCancel={() => setRestoring(null)}
-          onConfirm={() => restoreMutation.mutate()}
-        />
-      )}
-    </SidePanel>
-  );
-}
-
 // ---- Shared UI ----
 
 export function PriceField({
@@ -2434,11 +1674,6 @@ function ResolutionOrderExplainer() {
               whatever a user typed directly on the restoration line.
             </li>
             <li>
-              <span className="text-foreground">Per-doctor override</span> —
-              prices set for that doctor under the Overrides tab take
-              precedence over tier prices.
-            </li>
-            <li>
               <span className="text-foreground">Practice tier</span> — the
               tier assigned to the case's provider organization
               (Practices → Pricing).
@@ -2457,7 +1692,7 @@ function ResolutionOrderExplainer() {
           <p className="pt-1">
             Restorations whose material doesn't match a known pricing key
             (e.g. a free-text "Custom" type) are flagged "unmapped" in the
-            Billed tab — tier and override prices won't auto-apply to them.
+            Billed tab — tier prices won't auto-apply to them.
           </p>
         </div>
       )}

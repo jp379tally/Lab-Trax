@@ -29,21 +29,9 @@ interface PricingTier {
   name: string;
   prices?: Prices | null;
 }
-interface PricingOverride {
-  id: string;
-  doctorName: string;
-  practiceName?: string | null;
-  tierName?: string | null;
-  notes?: string | null;
-  prices?: Prices | null;
-}
 interface TiersResponse {
   keys: string[];
   tiers: PricingTier[];
-}
-interface OverridesResponse {
-  keys: string[];
-  overrides: PricingOverride[];
 }
 
 function pricedCount(prices: Prices | null | undefined): number {
@@ -79,13 +67,6 @@ export default function PricingScreen() {
     queryFn: () =>
       getJson<TiersResponse>(`/api/pricing/tiers?labOrganizationId=${encodeURIComponent(labOrgId!)}`),
   });
-  const overridesQ = useQuery<OverridesResponse>({
-    queryKey: ["pricing-overrides", labOrgId ?? ""],
-    enabled: !!labOrgId,
-    staleTime: 30_000,
-    queryFn: () =>
-      getJson<OverridesResponse>(`/api/pricing/overrides?labOrganizationId=${encodeURIComponent(labOrgId!)}`),
-  });
   const labelsQ = useQuery<Record<string, string>>({
     queryKey: ["item-labels", labOrgId ?? ""],
     enabled: !!labOrgId,
@@ -98,24 +79,21 @@ export default function PricingScreen() {
     },
   });
 
-  const keys = tiersQ.data?.keys ?? overridesQ.data?.keys ?? [];
+  const keys = tiersQ.data?.keys ?? [];
   const labels = labelsQ.data ?? {};
   const labelFor = (k: string) => labels[k]?.trim() || titleCase(k.replace(/_/g, " "));
 
-  const loading = !!labOrgId && (tiersQ.isLoading || overridesQ.isLoading);
-  const refreshing = tiersQ.isFetching || overridesQ.isFetching || labelsQ.isFetching;
+  const loading = !!labOrgId && tiersQ.isLoading;
+  const refreshing = tiersQ.isFetching || labelsQ.isFetching;
 
   function refetchAll() {
     tiersQ.refetch();
-    overridesQ.refetch();
     labelsQ.refetch();
   }
 
   const [tierEditor, setTierEditor] = useState<PricingTier | "new" | null>(null);
-  const [overrideEditor, setOverrideEditor] = useState<PricingOverride | "new" | null>(null);
 
   const invalidateTiers = () => qc.invalidateQueries({ queryKey: ["pricing-tiers-full", labOrgId ?? ""] });
-  const invalidateOverrides = () => qc.invalidateQueries({ queryKey: ["pricing-overrides", labOrgId ?? ""] });
 
   if (!canEdit) {
     return (
@@ -173,36 +151,6 @@ export default function PricingScreen() {
               </Card>
             ))}
           </Section>
-
-          <Section
-            title="Per-doctor overrides"
-            count={overridesQ.data?.overrides.length ?? 0}
-            error={overridesQ.isError}
-            styles={styles}
-            colors={colors}
-            onAdd={() => setOverrideEditor("new")}
-          >
-            {(overridesQ.data?.overrides ?? []).map((o) => (
-              <Card
-                key={o.id}
-                style={styles.row}
-                onPress={() => setOverrideEditor(o)}
-                testID={`override-${o.id}`}
-              >
-                <View style={styles.main}>
-                  <Text style={styles.name} numberOfLines={1}>
-                    {o.doctorName}
-                  </Text>
-                  <Text style={styles.meta} numberOfLines={1}>
-                    {[o.practiceName, o.tierName ? `Tier: ${o.tierName}` : null, `${pricedCount(o.prices)} priced`]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
-              </Card>
-            ))}
-          </Section>
         </ScrollView>
       )}
 
@@ -216,21 +164,6 @@ export default function PricingScreen() {
           onSaved={() => {
             setTierEditor(null);
             invalidateTiers();
-          }}
-        />
-      ) : null}
-
-      {overrideEditor ? (
-        <OverrideEditor
-          labOrgId={labOrgId!}
-          override={overrideEditor === "new" ? null : overrideEditor}
-          keys={keys}
-          labelFor={labelFor}
-          tierNames={(tiersQ.data?.tiers ?? []).map((t) => t.name)}
-          onClose={() => setOverrideEditor(null)}
-          onSaved={() => {
-            setOverrideEditor(null);
-            invalidateOverrides();
           }}
         />
       ) : null}
@@ -320,117 +253,6 @@ function TierEditor({
     >
       <TextField label="Tier name" required value={name} onChangeText={setName} placeholder="e.g. Standard" autoFocus />
       <PriceGrid keys={keys} labelFor={labelFor} values={prices} onChange={setPrices} />
-    </FormSheet>
-  );
-}
-
-// --- Override editor ------------------------------------------------------
-function OverrideEditor({
-  labOrgId,
-  override,
-  keys,
-  labelFor,
-  tierNames,
-  onClose,
-  onSaved,
-}: {
-  labOrgId: string;
-  override: PricingOverride | null;
-  keys: string[];
-  labelFor: (k: string) => string;
-  tierNames: string[];
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const { colors } = useTheme();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
-  const [doctorName, setDoctorName] = useState(override?.doctorName ?? "");
-  const [practiceName, setPracticeName] = useState(override?.practiceName ?? "");
-  const [tierName, setTierName] = useState<string | null>(override?.tierName ?? null);
-  const [notes, setNotes] = useState(override?.notes ?? "");
-  const [prices, setPrices] = useState<Record<string, string>>(() => pricesToStrings(override?.prices, keys));
-
-  // Re-seed from the latest props whenever a different override is opened, so a
-  // reopened sheet always reflects the current server values rather than a
-  // stale snapshot captured when the editor first mounted.
-  useEffect(() => {
-    setDoctorName(override?.doctorName ?? "");
-    setPracticeName(override?.practiceName ?? "");
-    setTierName(override?.tierName ?? null);
-    setNotes(override?.notes ?? "");
-    setPrices(pricesToStrings(override?.prices, keys));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [override?.id]);
-
-  const save = useMutation({
-    mutationFn: async () => {
-      const body = {
-        doctorName: doctorName.trim(),
-        practiceName: practiceName.trim() || null,
-        tierName: tierName || null,
-        notes: notes.trim() || null,
-        prices: stringsToPrices(prices),
-      };
-      if (override) return sendJson("PATCH", `/api/pricing/overrides/${override.id}`, body);
-      return sendJson("POST", "/api/pricing/overrides", { ...body, labOrganizationId: labOrgId });
-    },
-    onSuccess: onSaved,
-    onError: (e) => Alert.alert("Couldn’t save", friendlyError(e, "Please try again.")),
-  });
-  const remove = useMutation({
-    mutationFn: () => sendJson("DELETE", `/api/pricing/overrides/${override!.id}`),
-    onSuccess: onSaved,
-    onError: (e) => Alert.alert("Couldn’t delete", friendlyError(e, "Please try again.")),
-  });
-
-  function confirmDelete() {
-    Alert.alert("Delete override", `Remove the override for “${override!.doctorName}”?`, [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: () => remove.mutate() },
-    ]);
-  }
-
-  return (
-    <FormSheet
-      visible
-      title={override ? "Edit override" : "New override"}
-      onClose={onClose}
-      onSubmit={() => save.mutate()}
-      submitting={save.isPending || remove.isPending}
-      submitDisabled={doctorName.trim().length === 0}
-      onDelete={override ? confirmDelete : undefined}
-    >
-      <TextField label="Doctor name" required value={doctorName} onChangeText={setDoctorName} placeholder="Dr. Smith" autoFocus />
-      <TextField label="Practice" value={practiceName} onChangeText={setPracticeName} placeholder="Optional" />
-      {tierNames.length > 0 ? (
-        <View style={styles.field}>
-          <Text style={styles.fieldLabel}>Base tier</Text>
-          <View style={styles.chipRow}>
-            <Pressable
-              onPress={() => setTierName(null)}
-              style={[styles.chip, tierName === null && styles.chipSelected]}
-              testID="tier-none"
-            >
-              <Text style={[styles.chipText, tierName === null && styles.chipTextSelected]}>None</Text>
-            </Pressable>
-            {tierNames.map((t) => {
-              const selected = t === tierName;
-              return (
-                <Pressable
-                  key={t}
-                  onPress={() => setTierName(t)}
-                  style={[styles.chip, selected && styles.chipSelected]}
-                  testID={`tier-opt-${t}`}
-                >
-                  <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{t}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-      ) : null}
-      <PriceGrid keys={keys} labelFor={labelFor} values={prices} onChange={setPrices} />
-      <TextField label="Notes" value={notes} onChangeText={setNotes} multiline placeholder="Optional" />
     </FormSheet>
   );
 }
@@ -575,18 +397,6 @@ function makeStyles(c: ThemeColors) {
     meta: { ...Typography.caption, color: c.textSecondary },
     field: { gap: Spacing.xs },
     fieldLabel: { ...Typography.captionSemibold, color: c.textSecondary },
-    chipRow: { flexDirection: "row", flexWrap: "wrap", gap: Spacing.sm },
-    chip: {
-      paddingHorizontal: Spacing.md,
-      paddingVertical: Spacing.xs,
-      borderRadius: Radius.full,
-      backgroundColor: c.surfaceAlt,
-      borderWidth: 1,
-      borderColor: c.border,
-    },
-    chipSelected: { backgroundColor: c.tint, borderColor: c.tint },
-    chipText: { ...Typography.bodyMedium, color: c.textSecondary },
-    chipTextSelected: { color: c.textInverse },
     priceList: { gap: Spacing.sm },
     priceRow: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
     priceLabel: { ...Typography.body, color: c.text, flex: 1 },

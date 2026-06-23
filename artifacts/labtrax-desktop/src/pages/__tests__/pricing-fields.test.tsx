@@ -132,7 +132,7 @@ describe("PriceField — two-decimal display guard", () => {
     expect(screen.getByRole("textbox")).toHaveAttribute("placeholder", "0.00");
   });
 
-  it("uses the tier price placeholder passed from OverrideEditor", () => {
+  it("uses the tier price placeholder when provided", () => {
     render(
       <PriceField label="Crown" value="" onChange={vi.fn()} placeholder="95.00" />,
       { wrapper: makeAuthWrapper() },
