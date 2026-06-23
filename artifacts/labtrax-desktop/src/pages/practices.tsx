@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, ArchiveRestore, Building2, ChevronDown, ChevronRight, DollarSign, GitMerge, Link2, Loader2, Mail, MailX, Plus, Search, Send, Stethoscope, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
+import {
+  getListUnassignedDoctorsQueryKey,
+  useListUnassignedDoctors,
+} from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
@@ -8,6 +12,16 @@ import { formatMoney, formatPhone, relativeTime } from "@/lib/format";
 
 import { DEFAULT_PRICE_KEYS, priceKeyLabel } from "@/lib/pricing-keys";
 import { RemoveDoctorDialog } from "@/components/RemoveDoctorDialog";
+
+// Canonicalize a doctor name for cross-source matching: drop a leading
+// "dr"/"dr." honorific and all non-alphanumerics so "Dr. Byrne" and "byrne"
+// compare equal. Mirrors the normalization in RemoveDoctorDialog.
+function normalizeDoctorName(name: string): string {
+  return (name || "")
+    .toLowerCase()
+    .replace(/^dr\.?\s+/, "")
+    .replace(/[^a-z0-9]/g, "");
+}
 
 interface PracticeMember {
   id: string;
@@ -1006,6 +1020,10 @@ export function AddPracticeDialog({
       setError("Practice name is required.");
       return;
     }
+    if (!fields.city.trim() || !fields.state.trim() || !fields.zip.trim()) {
+      setError("Practice city, state, and ZIP are required.");
+      return;
+    }
     if (adminLabOrgIds.length > 1 && !fields.parentLabOrganizationId) {
       setError("Choose which lab this practice belongs to.");
       return;
@@ -1097,13 +1115,13 @@ export function AddPracticeDialog({
               <input value={fields.addressLine2} onChange={(e) => update("addressLine2", e.target.value)} className={inputCls} />
             </FormField>
             <FormField label="City">
-              <input value={fields.city} onChange={(e) => update("city", e.target.value)} className={inputCls} />
+              <input value={fields.city} onChange={(e) => update("city", e.target.value)} className={inputCls} required />
             </FormField>
             <FormField label="State">
-              <input value={fields.state} onChange={(e) => update("state", e.target.value)} className={inputCls} />
+              <input value={fields.state} onChange={(e) => update("state", e.target.value)} className={inputCls} required />
             </FormField>
             <FormField label="ZIP">
-              <input value={fields.zip} onChange={(e) => update("zip", e.target.value)} className={inputCls} />
+              <input value={fields.zip} onChange={(e) => update("zip", e.target.value)} className={inputCls} required />
             </FormField>
             <FormField label="Country">
               <input value={fields.country} onChange={(e) => update("country", e.target.value)} className={inputCls} />
@@ -1259,7 +1277,7 @@ export function AddPracticeDialog({
               </button>
               <button
                 type="submit"
-                disabled={createMutation.isPending || creatingDoctors || !fields.name.trim()}
+                disabled={createMutation.isPending || creatingDoctors || !fields.name.trim() || !fields.city.trim() || !fields.state.trim() || !fields.zip.trim()}
                 className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
               >
                 {createMutation.isPending
@@ -2989,26 +3007,69 @@ export function PracticeDoctorsSection({
     platformAccountNumber: m.user?.platformAccountNumber ?? null,
   }));
 
+  // Doctors moved to the per-lab "Unassigned" holding area must disappear from
+  // every practice's Doctors list — even though their cases/invoices stay
+  // behind. Without this, removing a doctor who has case history at the
+  // practice looks like it "didn't work": the membership is dropped but the
+  // case-history-derived name keeps the doctor in the list below.
+  const unassignedQuery = useListUnassignedDoctors(labOrganizationId ?? "", {
+    query: {
+      enabled: !!labOrganizationId,
+      queryKey: getListUnassignedDoctorsQueryKey(labOrganizationId ?? ""),
+    },
+  });
+  const { excludedUserIds, excludedNames } = useMemo(() => {
+    const ids = new Set<string>();
+    const names = new Set<string>();
+    for (const d of unassignedQuery.data?.data ?? []) {
+      if (d.userId) ids.add(d.userId);
+      const candidates = [
+        [d.firstName, d.lastName].filter(Boolean).join(" "),
+        d.doctorName ?? "",
+        d.username ?? "",
+      ];
+      for (const c of candidates) {
+        const n = normalizeDoctorName(c);
+        if (n) names.add(n);
+      }
+    }
+    return { excludedUserIds: ids, excludedNames: names };
+  }, [unassignedQuery.data]);
+
   // Merge all sources: registered accounts → case history → existing overrides.
   // Priority: registered name wins over case-string; account number shown when available.
   const doctorsList = useMemo<MergedDoctor[]>(() => {
     const map = new Map<string, MergedDoctor>(); // lower → entry
 
-    // 1. Registered doctor accounts (have platform account numbers)
+    // 1. Registered doctor accounts (have platform account numbers).
+    // Exclude these ONLY by userId — never by name. A doctor with an active
+    // membership here is genuinely assigned, even if they happen to share a
+    // name with some other doctor sitting in the lab's Unassigned area.
+    const activeRegisteredNames = new Set<string>();
     for (const d of registeredDoctors) {
+      if (d.id && excludedUserIds.has(d.id)) continue;
       const name = [d.firstName, d.lastName].filter(Boolean).join(" ").trim() || d.username;
       if (!name) continue;
+      activeRegisteredNames.add(normalizeDoctorName(name));
       const k = name.toLowerCase();
       if (!map.has(k)) {
         map.set(k, { displayName: name, accountNumber: d.platformAccountNumber ?? null });
       }
     }
 
+    // Name-based exclusion only applies to name-only rows (case history /
+    // overrides) that are NOT backed by an active registered member — so a
+    // shared name never hides a doctor who is actually assigned here.
+    const isExcludedNameOnly = (name: string) => {
+      const n = normalizeDoctorName(name);
+      return excludedNames.has(n) && !activeRegisteredNames.has(n);
+    };
+
     // 2. Case history doctor names
     for (const c of casesQuery.data ?? []) {
       if (c.providerOrganizationId !== providerOrg.id) continue;
       const name = (c.doctorName || "").trim();
-      if (!name) continue;
+      if (!name || isExcludedNameOnly(name)) continue;
       const k = name.toLowerCase();
       if (!map.has(k)) map.set(k, { displayName: name, accountNumber: null });
     }
@@ -3017,7 +3078,7 @@ export function PracticeDoctorsSection({
     for (const o of allOverrides) {
       if (o.providerOrganizationId !== providerOrg.id) continue;
       const name = (o.doctorName || "").trim();
-      if (!name) continue;
+      if (!name || isExcludedNameOnly(name)) continue;
       const k = name.toLowerCase();
       if (!map.has(k)) map.set(k, { displayName: name, accountNumber: null });
     }
@@ -3025,7 +3086,14 @@ export function PracticeDoctorsSection({
     return Array.from(map.values()).sort((a, b) =>
       a.displayName.localeCompare(b.displayName),
     );
-  }, [registeredDoctors, casesQuery.data, allOverrides, providerOrg.id]);
+  }, [
+    registeredDoctors,
+    casesQuery.data,
+    allOverrides,
+    providerOrg.id,
+    excludedUserIds,
+    excludedNames,
+  ]);
 
   if (!currentUserId) return null;
 
