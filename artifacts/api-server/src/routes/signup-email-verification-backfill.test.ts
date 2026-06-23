@@ -1,6 +1,6 @@
 /**
  * DB-backed regression test for the pre-registration email verification
- * backfill on POST /api/register.
+ * backfill on POST /api/auth/register.
  *
  * Scenario: a user verifies their email (via the signup wizard OTP step)
  * *before* their account exists. The verify-email-code route cannot write
@@ -8,6 +8,9 @@
  * later creates the account with that same email, the register handler must
  * detect the recent consumed verification code and backfill emailVerifiedAt
  * so requireVerifiedAccount passes immediately — no "verification required" banner.
+ *
+ * The canonical register endpoint is POST /api/auth/register (the auth router is
+ * mounted at /api/auth via labtrax-routes.ts).
  *
  * Skipped when DATABASE_URL is not configured.
  */
@@ -37,7 +40,7 @@ function rid(prefix: string) {
   return `${prefix}_${randomBytes(6).toString("hex")}`;
 }
 
-maybe("POST /api/register — pre-registration email verification backfill", () => {
+maybe("POST /api/auth/register — pre-registration email verification backfill", () => {
   let dbMod: typeof import("@workspace/db");
   let appMod: { default: import("express").Express };
   let verifyLib: typeof import("../lib/verification.js");
@@ -103,7 +106,7 @@ maybe("POST /api/register — pre-registration email verification backfill", () 
 
     // (c) Register the account with the same email.
     const registerRes = await request(appMod.default)
-      .post("/api/register")
+      .post("/api/auth/register")
       .send({
         username,
         password,
@@ -130,7 +133,7 @@ maybe("POST /api/register — pre-registration email verification backfill", () 
     const freshEmail = `no_preverify_${freshSuffix}@test.local`;
 
     const registerRes = await request(appMod.default)
-      .post("/api/register")
+      .post("/api/auth/register")
       .send({
         username: freshUsername,
         password,
