@@ -739,7 +739,7 @@ router.post(
     }
 
     // Cross-lab account-link: if the new provider user matches an existing
-    // platform doctor by email/phone, fire a Twilio SMS invite to YES-link
+    // platform doctor by email/phone, fire an SMS invite to YES-link
     // the two accounts. Best-effort; never blocks registration (Task #320).
     if (
       (input.userType || "lab") === "provider" &&

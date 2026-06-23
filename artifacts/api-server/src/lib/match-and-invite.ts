@@ -127,9 +127,9 @@ export async function matchAndInviteCrossLabDoctors(
         await db
           .update(accountLinkInvites)
           .set({
-            twilioMessageSid: result.messageSid ?? null,
-            twilioErrorCode: result.errorCode ?? null,
-            twilioErrorMessage: result.errorMessage ?? null,
+            providerMessageId: result.messageId ?? null,
+            providerErrorCode: result.errorCode ?? null,
+            providerErrorMessage: result.errorMessage ?? null,
           })
           .where(eq(accountLinkInvites.id, invite.id));
       }

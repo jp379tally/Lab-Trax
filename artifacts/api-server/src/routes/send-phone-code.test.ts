@@ -1,16 +1,16 @@
 /**
  * Unit tests for POST /api/send-phone-code — covering the four key branching
- * paths without requiring a live database or real Twilio credentials.
+ * paths without requiring a live database or real SMS credentials.
  *
  * createVerificationCode is mocked so the DB is never touched, and
- * globalThis.fetch is stubbed per-test to simulate Twilio responses.
+ * globalThis.fetch is stubbed per-test to simulate Vonage responses.
  *
  * Coverage:
  *  - 400 when phone is missing from the request body
- *  - 503 when Twilio vars are absent in production (NODE_ENV=production)
+ *  - 503 when SMS provider vars are absent in production (NODE_ENV=production)
  *  - 400 when the phone string cannot be normalised to E.164 (invalid format)
- *  - 200 when Twilio succeeds — code is persisted ONLY after SMS success
- *  - 500 when Twilio returns an error — code is NOT persisted
+ *  - 200 when provider succeeds — code is persisted ONLY after SMS success
+ *  - 500 when provider returns an error — code is NOT persisted
  */
 import {
   afterAll,
@@ -52,20 +52,37 @@ vi.mock("../lib/verification.js", async (importOriginal) => {
   };
 });
 
-function makeTwilioSuccessResponse() {
+function makeVonageSuccessResponse() {
   return new Response(
-    JSON.stringify({ sid: "SM_test_123", status: "queued" }),
+    JSON.stringify({
+      "message-count": "1",
+      messages: [
+        {
+          status: "0",
+          "message-id": "03000000A0000B0C",
+          to: "+15550001111",
+          "remaining-balance": "123.45",
+          "message-price": "0.05",
+          network: "310000",
+        },
+      ],
+    }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
 }
 
-function makeTwilioErrorResponse() {
+function makeVonageErrorResponse() {
   return new Response(
     JSON.stringify({
-      error_code: 21211,
-      message: "Invalid phone number: To",
+      "message-count": "1",
+      messages: [
+        {
+          status: "3",
+          "error-text": "Invalid request :: Invalid 'to' address",
+        },
+      ],
     }),
-    { status: 400, headers: { "Content-Type": "application/json" } },
+    { status: 200, headers: { "Content-Type": "application/json" } },
   );
 }
 
@@ -88,20 +105,20 @@ describe("POST /api/send-phone-code", () => {
     createVerificationCodeMock.mockClear();
 
     savedNodeEnv = process.env["NODE_ENV"];
-    savedSid = process.env["TWILIO_ACCOUNT_SID"];
-    savedToken = process.env["TWILIO_AUTH_TOKEN"];
-    savedFrom = process.env["TWILIO_PHONE_NUMBER"];
+    savedSid = process.env["VONAGE_API_KEY"];
+    savedToken = process.env["VONAGE_API_SECRET"];
+    savedFrom = process.env["VONAGE_PHONE_NUMBER"];
 
-    // Default: Twilio credentials present + Twilio call succeeds.
+    // Default: Vonage credentials present + Vonage call succeeds.
     // Individual tests override these as needed.
-    process.env["TWILIO_ACCOUNT_SID"] = "ACtest_sid";
-    process.env["TWILIO_AUTH_TOKEN"] = "test_auth_token";
-    process.env["TWILIO_PHONE_NUMBER"] = "+15550001111";
+    process.env["VONAGE_API_KEY"] = "test_key";
+    process.env["VONAGE_API_SECRET"] = "test_secret";
+    process.env["VONAGE_PHONE_NUMBER"] = "+15550001111";
 
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: unknown, _opts: unknown) =>
-        makeTwilioSuccessResponse(),
+        makeVonageSuccessResponse(),
       ),
     );
   });
@@ -110,16 +127,16 @@ describe("POST /api/send-phone-code", () => {
     if (savedNodeEnv !== undefined) process.env["NODE_ENV"] = savedNodeEnv;
     else delete process.env["NODE_ENV"];
 
-    if (savedSid !== undefined) process.env["TWILIO_ACCOUNT_SID"] = savedSid;
-    else delete process.env["TWILIO_ACCOUNT_SID"];
+    if (savedSid !== undefined) process.env["VONAGE_API_KEY"] = savedSid;
+    else delete process.env["VONAGE_API_KEY"];
 
     if (savedToken !== undefined)
-      process.env["TWILIO_AUTH_TOKEN"] = savedToken;
-    else delete process.env["TWILIO_AUTH_TOKEN"];
+      process.env["VONAGE_API_SECRET"] = savedToken;
+    else delete process.env["VONAGE_API_SECRET"];
 
     if (savedFrom !== undefined)
-      process.env["TWILIO_PHONE_NUMBER"] = savedFrom;
-    else delete process.env["TWILIO_PHONE_NUMBER"];
+      process.env["VONAGE_PHONE_NUMBER"] = savedFrom;
+    else delete process.env["VONAGE_PHONE_NUMBER"];
   });
 
   afterAll(() => {
@@ -133,11 +150,11 @@ describe("POST /api/send-phone-code", () => {
     expect(createVerificationCodeMock).not.toHaveBeenCalled();
   });
 
-  it("returns 503 when Twilio is not configured in production", async () => {
+  it("returns 503 when SMS provider is not configured in production", async () => {
     process.env["NODE_ENV"] = "production";
-    delete process.env["TWILIO_ACCOUNT_SID"];
-    delete process.env["TWILIO_AUTH_TOKEN"];
-    delete process.env["TWILIO_PHONE_NUMBER"];
+    delete process.env["VONAGE_API_KEY"];
+    delete process.env["VONAGE_API_SECRET"];
+    delete process.env["VONAGE_PHONE_NUMBER"];
 
     // Unique phone per test to avoid the per-identifier cooldown window in
     // createSendCodeThrottle, which is intentionally NOT disabled under VITEST.

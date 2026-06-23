@@ -2644,42 +2644,13 @@ function _checkDeleteInitiateRateLimit(orgId: string): boolean {
 }
 
 async function _sendCaseDeleteSms(toPhone: string, code: string): Promise<void> {
-  // In test runs, skip the real Twilio call (test phone numbers are invalid for SMS).
-  if (process.env["VITEST"]) {
-    console.warn(`[TEST] Case-delete OTP for ${toPhone}: ${code}`);
-    return;
-  }
-  const sid = process.env["TWILIO_ACCOUNT_SID"];
-  const authToken = process.env["TWILIO_AUTH_TOKEN"];
-  const from = process.env["TWILIO_PHONE_NUMBER"];
-  if (!sid || !authToken || !from) {
-    if (process.env["NODE_ENV"] !== "production") {
-      console.warn(`[DEV] Case-delete OTP for ${toPhone}: ${code}`);
-      return;
-    }
-    throw new HttpError(500, "SMS is not configured. Case deletion cannot be confirmed via SMS.");
-  }
-  const toE164 = normalizePhoneE164(toPhone);
-  if (!toE164) {
-    throw new HttpError(400, `Invalid phone number on file: ${toPhone}. Please update the owner's profile.`);
-  }
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
-  const smsbody = new URLSearchParams({
-    From: from,
-    To: toE164,
-    Body: `LabTrax security code: ${code}. Used to confirm case deletion. Expires in 10 minutes. If you did not request this, contact your lab immediately.`,
+  const { sendSms } = await import("../lib/sms.js");
+  const result = await sendSms({
+    to: toPhone,
+    body: `LabTrax security code: ${code}. Used to confirm case deletion. Expires in 10 minutes. If you did not request this, contact your lab immediately.`,
   });
-  const r = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${sid}:${authToken}`).toString("base64")}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: smsbody,
-  });
-  if (!r.ok) {
-    const data = (await r.json().catch(() => ({}))) as any;
-    throw new HttpError(500, `Failed to send SMS: ${data.message ?? r.statusText}`);
+  if (!result.ok && !result.skipped) {
+    throw new HttpError(500, result.errorMessage ?? "Failed to send SMS.");
   }
 }
 
@@ -6139,37 +6110,15 @@ router.post(
           "The provider organization's phone number is not a valid format.",
         );
       }
-      const sid = process.env["TWILIO_ACCOUNT_SID"];
-      const token = process.env["TWILIO_AUTH_TOKEN"];
-      const from = process.env["TWILIO_PHONE_NUMBER"];
-      if (!sid || !token || !from) {
-        throw new HttpError(503, "SMS is not configured on this server.");
-      }
       const truncated =
         note.noteText.length > 120
           ? note.noteText.slice(0, 117) + "…"
           : note.noteText;
       const body = `LabTrax case ${found.caseNumber}: ${truncated}`;
-      const auth = Buffer.from(`${sid}:${token}`).toString("base64");
-      const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
-      const params = new URLSearchParams();
-      params.append("To", phoneE164);
-      params.append("From", from);
-      params.append("Body", body);
-      const resp = await globalThis.fetch(url, {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${auth}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: params.toString(),
-      });
-      const smsData = (await resp.json()) as any;
-      if (smsData?.error_code || smsData?.code) {
-        throw new HttpError(
-          502,
-          `SMS failed: ${smsData.message ?? "Twilio error"}`,
-        );
+      const { sendSms } = await import("../lib/sms.js");
+      const result = await sendSms({ to: phoneE164, body });
+      if (!result.ok && !result.skipped) {
+        throw new HttpError(502, result.errorMessage ?? "SMS delivery failed.");
       }
     }
 

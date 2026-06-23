@@ -4,7 +4,7 @@
  *                                       sends SMS OTP, returns signed session token
  *   POST /api/cases/bulk-delete      — now requires token + OTP (security gate)
  *
- * The verification module is mocked so no real DB writes or Twilio calls are
+ * The verification module is mocked so no real DB writes or SMS calls are
  * needed for the OTP phase; SMS sending falls through to the dev-mode
  * console.warn path (no Twilio env vars configured in the test environment).
  *

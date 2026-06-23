@@ -255,40 +255,10 @@ router.post(
       throw new HttpError(404, "None of the selected invoices belong to this practice.");
     }
 
-    const sid = process.env.TWILIO_ACCOUNT_SID;
-    const token = process.env.TWILIO_AUTH_TOKEN;
-    const from = process.env.TWILIO_PHONE_NUMBER;
-    if (!sid || !token || !from) {
-      throw new HttpError(503, "SMS is not configured on the server.");
-    }
-
-    const params = new URLSearchParams();
-    params.set("From", from);
-    params.set("To", recipient);
-    params.set("Body", input.message);
-
-    let twilioError: string | null = null;
-    try {
-      const r = await fetch(
-        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: params.toString(),
-        },
-      );
-      if (!r.ok) {
-        twilioError = `Twilio HTTP ${r.status}`;
-      }
-    } catch (err: any) {
-      twilioError = err?.message || "SMS failed.";
-    }
-
-    if (twilioError) {
-      throw new HttpError(502, twilioError);
+    const { sendSms } = await import("../lib/sms.js");
+    const result = await sendSms({ to: recipient, body: input.message });
+    if (!result.ok && !result.skipped) {
+      throw new HttpError(502, result.errorMessage ?? "SMS failed.");
     }
 
     const sentAt = new Date();
@@ -514,40 +484,10 @@ router.post(
       );
     }
 
-    const sid = process.env.TWILIO_ACCOUNT_SID;
-    const token = process.env.TWILIO_AUTH_TOKEN;
-    const from = process.env.TWILIO_PHONE_NUMBER;
-    if (!sid || !token || !from) {
-      throw new HttpError(503, "SMS is not configured on the server. Ask an administrator to set Twilio credentials.");
-    }
-
-    const params = new URLSearchParams();
-    params.set("From", from);
-    params.set("To", recipient);
-    params.set("Body", input.message);
-
-    let twilioError: string | null = null;
-    try {
-      const r = await fetch(
-        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: params.toString(),
-        },
-      );
-      if (!r.ok) {
-        twilioError = `Twilio HTTP ${r.status}`;
-      }
-    } catch (err: any) {
-      twilioError = err?.message || "SMS failed.";
-    }
-
-    if (twilioError) {
-      throw new HttpError(502, `Failed to send SMS. ${twilioError}`);
+    const { sendSms } = await import("../lib/sms.js");
+    const result = await sendSms({ to: recipient, body: input.message });
+    if (!result.ok && !result.skipped) {
+      throw new HttpError(502, result.errorMessage ?? "SMS failed.");
     }
 
     const user = (req as any).user;
@@ -4150,39 +4090,10 @@ router.post(
       throw new HttpError(400, "Invalid phone number. Please use a 10-digit US number or E.164 format (e.g. +18503633336).");
     }
 
-    const sid = process.env.TWILIO_ACCOUNT_SID;
-    const token = process.env.TWILIO_AUTH_TOKEN;
-    const from = process.env.TWILIO_PHONE_NUMBER;
-    if (!sid || !token || !from) {
-      throw new HttpError(503, "SMS is not configured on the server.");
-    }
-    const params = new URLSearchParams();
-    params.set("From", from);
-    params.set("To", toE164);
-    params.set("Body", input.message);
-    let status: "sent" | "failed" = "sent";
-    let errorMessage: string | null = null;
-    try {
-      const r = await fetch(
-        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-        {
-          method: "POST",
-          headers: {
-            Authorization:
-              "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: params.toString(),
-        },
-      );
-      if (!r.ok) {
-        status = "failed";
-        errorMessage = `Twilio HTTP ${r.status}`;
-      }
-    } catch (err: any) {
-      status = "failed";
-      errorMessage = err?.message || "SMS failed.";
-    }
+    const { sendSms } = await import("../lib/sms.js");
+    const smsResult = await sendSms({ to: toE164, body: input.message });
+    let status: "sent" | "failed" = smsResult.ok || smsResult.skipped ? "sent" : "failed";
+    let errorMessage: string | null = smsResult.ok || smsResult.skipped ? null : (smsResult.errorMessage ?? "SMS failed.");
     const [send] = await db
       .insert(practiceStatementSends)
       .values({

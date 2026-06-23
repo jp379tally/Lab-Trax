@@ -201,29 +201,15 @@ const SETTING_ADMIN_PIN_RESET_CODE = "admin_pin_reset_code";
 const SETTING_ADMIN_PIN_RESET_EXPIRES = "admin_pin_reset_expires";
 
 async function sendAdminPinResetSms(phone: string, code: string): Promise<void> {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_PHONE_NUMBER;
-  if (!sid || !token || !from) throw new Error("SMS not configured on this server.");
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
   const toE164 = normalizePhoneE164(phone);
   if (!toE164) throw new Error(`Invalid phone number: ${phone}`);
-  const body = new URLSearchParams({
-    From: from,
-    To: toE164,
-    Body: `Your LabTrax admin PIN reset code is: ${code}. It expires in 10 minutes.`,
+  const { sendSms } = await import("../lib/sms.js");
+  const result = await sendSms({
+    to: toE164,
+    body: `Your LabTrax admin PIN reset code is: ${code}. It expires in 10 minutes.`,
   });
-  const r = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body,
-  });
-  if (!r.ok) {
-    const data = await r.json().catch(() => ({}));
-    throw new Error(`SMS failed: ${(data as any).message ?? r.status}`);
+  if (!result.ok && !result.skipped) {
+    throw new Error(result.errorMessage ?? "SMS delivery failed.");
   }
 }
 
@@ -1238,8 +1224,8 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/practices", practiceRoutes);
   router.use("/invoices", invoiceRoutes);
   router.use("/account-links", accountLinksRoutes);
-  // Twilio inbound webhook — must be reachable without auth/CSRF since
-  // Twilio cannot send our session cookies. Verified by phone match.
+  // Inbound SMS webhook — must be reachable without auth/CSRF since
+  // the provider cannot send our session cookies. Verified by phone match.
   router.use("/sms", smsInboundRouter);
   // Internal cron endpoint: token-protected; iterates active lab orgs and
   // generates due projected entries from each org's recurring rules. Mounted
@@ -3321,17 +3307,15 @@ export async function registerRoutes(): Promise<IRouter> {
       return res.status(400).json({ error: "Phone number required" });
     }
 
-    const twilioSid = process.env.TWILIO_ACCOUNT_SID;
-    const twilioToken = process.env.TWILIO_AUTH_TOKEN;
-    const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
+    const { isConfigured: smsConfigured } = await import("../lib/sms.js");
     const isDev = process.env.NODE_ENV === "development";
 
-    if (!twilioSid || !twilioToken || !twilioFrom) {
+    if (!smsConfigured()) {
       if (!isDev) {
-        req.log.error({ phone: `***${phone.slice(-4)}` }, "SMS verification failed: Twilio not configured");
+        req.log.error({ phone: `***${phone.slice(-4)}` }, "SMS verification failed: SMS provider not configured");
         return res.status(503).json({ error: "SMS delivery is not configured on this server." });
       }
-      req.log.info({ phone: `***${phone.slice(-4)}` }, "SMS verification: Twilio not configured, returning demo code (dev only)");
+      req.log.info({ phone: `***${phone.slice(-4)}` }, "SMS verification: provider not configured, returning demo code (dev only)");
       const code = generateCode();
       await createVerificationCode({
         channel: "sms",
@@ -3348,39 +3332,23 @@ export async function registerRoutes(): Promise<IRouter> {
       return res.status(400).json({ error: "Invalid phone number format." });
     }
 
-    req.log.info({ phone: `***${phone.slice(-4)}` }, "SMS verification: sending code via Twilio");
+    req.log.info({ phone: `***${phone.slice(-4)}` }, "SMS verification: sending code via provider");
 
-    let twilioStatus: string | undefined;
-    try {
-      const authHeader = "Basic " + Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64");
-      const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
-      const params = new URLSearchParams();
-      params.append("To", phoneE164);
-      params.append("From", twilioFrom);
-      params.append("Body", `Your LabTrax verification code is: ${code}. It expires in 10 minutes.`);
-      const twilioResp = await globalThis.fetch(twilioUrl, {
-        method: "POST",
-        headers: { "Authorization": authHeader, "Content-Type": "application/x-www-form-urlencoded" },
-        body: params.toString(),
-      });
-      const twilioData = await twilioResp.json() as any;
-      if (!twilioResp.ok || twilioData.error_code) {
-        req.log.error(
-          {
-            phone: `***${phone.slice(-4)}`,
-            twilioHttpStatus: twilioResp.status,
-            twilioErrorCode: twilioData.error_code,
-            twilioMessage: twilioData.message,
-          },
-          "SMS verification: Twilio returned error"
-        );
-        return res.status(500).json({ error: "Failed to send verification code. Please try again." });
-      }
-      twilioStatus = twilioData.status as string | undefined;
-    } catch (err: any) {
+    const { sendSms } = await import("../lib/sms.js");
+    const smsResult = await sendSms({
+      to: phoneE164,
+      body: `Your LabTrax verification code is: ${code}. It expires in 10 minutes.`,
+      log: req.log,
+    });
+
+    if (!smsResult.ok && !smsResult.skipped) {
       req.log.error(
-        { phone: `***${phone.slice(-4)}`, err: err?.message || String(err) },
-        "SMS verification: Twilio request failed"
+        {
+          phone: `***${phone.slice(-4)}`,
+          providerErrorCode: smsResult.errorCode,
+          providerErrorMessage: smsResult.errorMessage,
+        },
+        "SMS verification: provider returned error"
       );
       return res.status(500).json({ error: "Failed to send verification code. Please try again." });
     }
@@ -3392,7 +3360,7 @@ export async function registerRoutes(): Promise<IRouter> {
       userId: (req as any).auth?.userId ?? null,
     });
 
-    req.log.info({ phone: `***${phone.slice(-4)}`, twilioStatus }, "SMS verification: code dispatched successfully");
+    req.log.info({ phone: `***${phone.slice(-4)}`, providerStatus: smsResult.messageId }, "SMS verification: code dispatched successfully");
     return res.json({ success: true, message: "Verification code sent via SMS." });
   });
 
@@ -3580,28 +3548,16 @@ export async function registerRoutes(): Promise<IRouter> {
     const { providerPhone, caseNumber, patientName, status, message } = req.body;
     if (!providerPhone || !caseNumber) return res.status(400).json({ error: "Provider phone and case number required" });
 
-    const twilioSid = process.env.TWILIO_ACCOUNT_SID;
-    const twilioToken = process.env.TWILIO_AUTH_TOKEN;
-    const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
-    if (!twilioSid || !twilioToken || !twilioFrom) return res.status(500).json({ error: "Twilio not configured" });
-
-    const authHeader = "Basic " + Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64");
-    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
-    const params = new URLSearchParams();
-    params.append("To", providerPhone);
-    params.append("From", twilioFrom);
-    params.append("Body", message);
-
-    try {
-      await globalThis.fetch(twilioUrl, {
-        method: "POST",
-        headers: { "Authorization": authHeader, "Content-Type": "application/x-www-form-urlencoded" },
-        body: params.toString(),
-      });
-      return res.json({ success: true, message: `Text sent to ${providerPhone}` });
-    } catch (err: any) {
-      return res.status(500).json({ error: "Failed to send text" });
+    const { sendSms } = await import("../lib/sms.js");
+    const result = await sendSms({
+      to: providerPhone,
+      body: message,
+      log: req.log,
+    });
+    if (!result.ok && !result.skipped) {
+      return res.status(500).json({ error: result.errorMessage ?? "Failed to send text" });
     }
+    return res.json({ success: true, message: `Text sent to ${providerPhone}` });
   });
 
   async function convertPdfToImageBase64s(rawPdfBase64: string): Promise<string[]> {

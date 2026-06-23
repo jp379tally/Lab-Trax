@@ -1155,7 +1155,7 @@ export async function buildPracticeStatementsForScope(
 }
 
 /**
- * Sends an SMS notification to a practice phone number via Twilio.
+ * Sends an SMS notification to a practice phone number.
  * Never throws — returns a result object instead.
  */
 export async function sendStatementSms(opts: {
@@ -1165,12 +1165,7 @@ export async function sendStatementSms(opts: {
   periodLabel: string;
   openBalance: number;
 }): Promise<{ delivered: boolean; reason?: string }> {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_PHONE_NUMBER;
-  if (!sid || !token || !from) {
-    return { delivered: false, reason: "SMS not configured on server" };
-  }
+  const { sendSms } = await import("./sms.js");
   const body =
     `${opts.labName}: Statement for ${opts.practiceName} — ${opts.periodLabel}. ` +
     `Open balance: ${fmtMoney(opts.openBalance)}. Please contact us with any questions.`;
@@ -1178,30 +1173,11 @@ export async function sendStatementSms(opts: {
   if (!toE164) {
     return { delivered: false, reason: `Invalid phone number: ${opts.to}` };
   }
-  const params = new URLSearchParams();
-  params.set("From", from);
-  params.set("To", toE164);
-  params.set("Body", body);
-  try {
-    const r = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-      {
-        method: "POST",
-        headers: {
-          Authorization:
-            "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: params.toString(),
-      }
-    );
-    if (!r.ok) {
-      return { delivered: false, reason: `Twilio HTTP ${r.status}` };
-    }
-    return { delivered: true };
-  } catch (err: any) {
-    return { delivered: false, reason: err?.message ?? "SMS send failed" };
+  const result = await sendSms({ to: toE164, body });
+  if (!result.ok && !result.skipped) {
+    return { delivered: false, reason: result.errorMessage ?? "SMS send failed" };
   }
+  return { delivered: true };
 }
 
 /**

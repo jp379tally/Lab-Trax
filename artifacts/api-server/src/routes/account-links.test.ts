@@ -9,8 +9,8 @@
  *  - POST /api/account-links/manual — {alreadyLinked: true} on repeated call
  *  - POST /api/account-links/manual — 404 when account number not found
  *  - POST /api/account-links/manual — 400 when linking own account number
- *  - POST /api/sms/twilio-inbound YES — links accounts matching a pending invite
- *  - POST /api/sms/twilio-inbound non-YES — silently ignored (200 XML, no link)
+ *  - POST /api/sms/sms-inbound YES — links accounts matching a pending invite
+ *  - POST /api/sms/sms-inbound non-YES — silently ignored (200 XML, no link)
  *  - Unauthenticated /api/account-links/manual returns 401
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -184,9 +184,9 @@ maybe("Account links (db integration)", () => {
     expect(r.status).toBe(401);
   });
 
-  // ── POST /api/sms/twilio-inbound ──────────────────────────────────────────
+  // ── POST /api/sms/sms-inbound ──────────────────────────────────────────
 
-  it("POST /api/sms/twilio-inbound YES links accounts from a pending invite", async () => {
+  it("POST /api/sms/sms-inbound YES links accounts from a pending invite", async () => {
     // Use a numeric-only phone so normalizePhoneE164 keeps all digits intact.
     const suffix = String(1000000 + Math.floor(Math.random() * 9000000));
     const phone = `+1555${suffix}`;
@@ -205,9 +205,9 @@ maybe("Account links (db integration)", () => {
 
     try {
       const r = await request(appMod.default)
-        .post("/api/sms/twilio-inbound")
+        .post("/api/sms/sms-inbound")
         .type("form")
-        .send({ From: phone, Body: "YES" });
+        .send({ msisdn: phone, text: "YES" });
 
       expect(r.status).toBe(200);
       // Self-closing <Response/> for no-candidates, or <Response><Message>...</Message></Response>
@@ -231,7 +231,7 @@ maybe("Account links (db integration)", () => {
     }
   });
 
-  it("POST /api/sms/twilio-inbound non-YES body is silently ignored (200 XML, no link)", async () => {
+  it("POST /api/sms/sms-inbound non-YES body is silently ignored (200 XML, no link)", async () => {
     const suffix = String(2000000 + Math.floor(Math.random() * 9000000));
     const phone = `+1556${suffix}`;
     // Use reversed user pair to avoid unique constraint with the YES test's invite.
@@ -249,9 +249,9 @@ maybe("Account links (db integration)", () => {
 
     try {
       const r = await request(appMod.default)
-        .post("/api/sms/twilio-inbound")
+        .post("/api/sms/sms-inbound")
         .type("form")
-        .send({ From: phone, Body: "STOP" });
+        .send({ msisdn: phone, text: "STOP" });
 
       expect(r.status).toBe(200);
       expect(r.text).toContain("<Response");
@@ -265,7 +265,7 @@ maybe("Account links (db integration)", () => {
     }
   });
 
-  it("POST /api/sms/twilio-inbound YES is idempotent (second YES does not create a duplicate link)", async () => {
+  it("POST /api/sms/sms-inbound YES is idempotent (second YES does not create a duplicate link)", async () => {
     const suffix = String(3000000 + Math.floor(Math.random() * 9000000));
     const phone = `+1557${suffix}`;
     const { db, accountLinkInvites, doctorAccountLinks } = dbMod as any;
@@ -282,16 +282,16 @@ maybe("Account links (db integration)", () => {
 
     try {
       const first = await request(appMod.default)
-        .post("/api/sms/twilio-inbound")
+        .post("/api/sms/sms-inbound")
         .type("form")
-        .send({ From: phone, Body: "YES" });
+        .send({ msisdn: phone, text: "YES" });
       expect(first.status).toBe(200);
 
       // Send YES a second time — must not throw and must not duplicate the link row.
       const second = await request(appMod.default)
-        .post("/api/sms/twilio-inbound")
+        .post("/api/sms/sms-inbound")
         .type("form")
-        .send({ From: phone, Body: "YES" });
+        .send({ msisdn: phone, text: "YES" });
       expect(second.status).toBe(200);
 
       // Exactly one link row must exist between these two users.
@@ -316,11 +316,11 @@ maybe("Account links (db integration)", () => {
     }
   });
 
-  it("POST /api/sms/twilio-inbound with no pending invite returns 200 XML (not 500)", async () => {
+  it("POST /api/sms/sms-inbound with no pending invite returns 200 XML (not 500)", async () => {
     const r = await request(appMod.default)
-      .post("/api/sms/twilio-inbound")
+      .post("/api/sms/sms-inbound")
       .type("form")
-      .send({ From: "+19999999999", Body: "YES" });
+      .send({ msisdn: "+19999999999", text: "YES" });
 
     expect(r.status).toBe(200);
     expect(r.text).toContain("<Response");

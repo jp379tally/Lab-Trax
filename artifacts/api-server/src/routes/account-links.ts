@@ -5,8 +5,8 @@
  *   - `default` (auth-required): mounted at /api/account-links. Used by the
  *     mobile provider portal's "Link Labs" screen.
  *   - `smsInboundRouter` (no auth): mounted at /api/sms. Receives inbound
- *     Twilio SMS replies (YES → link). Twilio cannot send a CSRF header /
- *     bearer token; the request is verified by the Twilio signature header.
+ *     SMS replies (YES → link). The provider cannot send a CSRF header /
+ *     bearer token; the request is verified by phone match.
  */
 import { Router } from "express";
 import { and, asc, eq, inArray, ne } from "drizzle-orm";
@@ -280,7 +280,7 @@ router.delete(
 export default router;
 
 // ---------------------------------------------------------------------------
-// Twilio inbound SMS webhook (separate router — no requireAuth).
+// Inbound SMS webhook (separate router — no requireAuth).
 // ---------------------------------------------------------------------------
 
 export const smsInboundRouter: Router = Router();
@@ -298,17 +298,16 @@ const YES_TOKENS = new Set([
 ]);
 
 smsInboundRouter.post(
-  "/twilio-inbound",
+  "/sms-inbound",
   asyncHandler(async (req, res) => {
-    // Twilio posts application/x-www-form-urlencoded.
     const body = (req.body ?? {}) as Record<string, string>;
-    const from = normalizePhoneE164(body["From"] ?? body["from"] ?? "");
-    const text = String(body["Body"] ?? body["body"] ?? "")
+    const from = normalizePhoneE164(body["msisdn"] ?? body["from"] ?? body["From"] ?? "");
+    const text = String(body["text"] ?? body["Body"] ?? body["body"] ?? "")
       .trim()
       .toUpperCase()
       .split(/\s+/)[0];
     if (!from || !text) {
-      // Always 200 to Twilio so it does not retry — but record nothing.
+      // Always 200 so the provider does not retry — but record nothing.
       res.set("Content-Type", "text/xml").send("<Response/>");
       return;
     }
@@ -345,7 +344,7 @@ smsInboundRouter.post(
     }
     req.log?.info?.(
       { invites: candidates.length },
-      "Linked account(s) via inbound Twilio YES"
+      "Linked account(s) via inbound SMS YES"
     );
     res
       .set("Content-Type", "text/xml")
