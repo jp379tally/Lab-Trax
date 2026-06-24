@@ -2,13 +2,31 @@ import React from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, fireEvent, waitFor } from "@testing-library/react-native";
 import { router } from "expo-router";
-import { resetMockAppState, setMockAppState, mockUpdateCaseMutateAsync } from "../../../vitest.setup";
+import {
+  resetMockAppState,
+  setMockAppState,
+  setMockFetchHandler,
+  resetMockFetchHandler,
+} from "../../../vitest.setup";
+import { resilientFetch } from "@/lib/query-client";
 
 import CasesListScreen from "@/app/(tabs)/index";
 import { completedCaseWithInvoice, inProgressCase } from "./__fixtures__/cases";
 
+function bulkStatusOkResponse(updatedCount: number, skippedLegacyCount = 0): Response {
+  return new Response(
+    JSON.stringify({ ok: true, data: { updatedCount, skippedLegacyCount } }),
+    { status: 200 },
+  );
+}
+
+function bulkStatusErrorResponse(status = 422, message = "Server error"): Response {
+  return new Response(JSON.stringify({ message }), { status });
+}
+
 afterEach(() => {
   resetMockAppState();
+  resetMockFetchHandler();
   vi.clearAllMocks();
 });
 
@@ -115,8 +133,8 @@ describe("CasesListScreen (read-only canonical list)", () => {
       expect(getByText("Locate 1 Case")).toBeTruthy();
     });
 
-    it("confirming a station calls mutateAsync for every selected case", async () => {
-      mockUpdateCaseMutateAsync.mockResolvedValue({ ok: true, data: null });
+    it("calls the bulk-status endpoint with all selected case IDs", async () => {
+      setMockFetchHandler(() => bulkStatusOkResponse(2));
       const { getByTestId, getByText } = render(<CasesListScreen />);
 
       // Select both cases
@@ -132,19 +150,27 @@ describe("CasesListScreen (read-only canonical list)", () => {
       fireEvent.press(getByTestId("locate-sheet-confirm"));
 
       await waitFor(() => {
-        expect(mockUpdateCaseMutateAsync).toHaveBeenCalledTimes(2);
+        expect(resilientFetch).toHaveBeenCalledWith(
+          expect.stringContaining("bulk-status"),
+          expect.objectContaining({ method: "POST" }),
+        );
       });
 
-      expect(mockUpdateCaseMutateAsync).toHaveBeenCalledWith(
-        expect.objectContaining({ caseId: inProgressCase.id })
+      const callArgs = vi.mocked(resilientFetch).mock.calls.find(([url]) =>
+        String(url).includes("bulk-status"),
       );
-      expect(mockUpdateCaseMutateAsync).toHaveBeenCalledWith(
-        expect.objectContaining({ caseId: completedCaseWithInvoice.id })
-      );
+      expect(callArgs).toBeTruthy();
+      const sentBody = JSON.parse((callArgs![1] as RequestInit).body as string) as {
+        caseIds: string[];
+        status: string;
+      };
+      expect(sentBody.caseIds).toContain(inProgressCase.id);
+      expect(sentBody.caseIds).toContain(completedCaseWithInvoice.id);
+      expect(sentBody.status).toBe("received");
     });
 
-    it("exits selection mode and shows Located badge when all PATCHes succeed", async () => {
-      mockUpdateCaseMutateAsync.mockResolvedValue({ ok: true, data: null });
+    it("exits selection mode when bulk locate succeeds", async () => {
+      setMockFetchHandler(() => bulkStatusOkResponse(1));
       const { getByTestId, getByText, queryByText } = render(<CasesListScreen />);
 
       fireEvent(getByTestId(`case-card-${inProgressCase.id}`), "longPress");
@@ -158,8 +184,8 @@ describe("CasesListScreen (read-only canonical list)", () => {
       });
     });
 
-    it("stays in selection mode when all PATCHes fail (so user can retry)", async () => {
-      mockUpdateCaseMutateAsync.mockRejectedValue(new Error("Network error"));
+    it("stays in selection mode when the bulk-status request fails (so user can retry)", async () => {
+      setMockFetchHandler(() => bulkStatusErrorResponse(422, "Server error"));
       const { getByTestId, getByText } = render(<CasesListScreen />);
 
       fireEvent(getByTestId(`case-card-${inProgressCase.id}`), "longPress");
@@ -170,7 +196,10 @@ describe("CasesListScreen (read-only canonical list)", () => {
       fireEvent.press(getByTestId("locate-sheet-confirm"));
 
       await waitFor(() => {
-        expect(mockUpdateCaseMutateAsync).toHaveBeenCalled();
+        expect(resilientFetch).toHaveBeenCalledWith(
+          expect.stringContaining("bulk-status"),
+          expect.anything(),
+        );
       });
 
       // Selection mode must still be active so the user can retry
@@ -180,7 +209,7 @@ describe("CasesListScreen (read-only canonical list)", () => {
     });
 
     it("reopening bulk locate after a completed locate shows no preselected station (locateTarget reset)", async () => {
-      mockUpdateCaseMutateAsync.mockResolvedValue({ ok: true, data: null });
+      setMockFetchHandler(() => bulkStatusOkResponse(1));
       const { getByTestId, queryByTestId } = render(<CasesListScreen />);
 
       // First bulk locate — pick a station and confirm
@@ -190,7 +219,10 @@ describe("CasesListScreen (read-only canonical list)", () => {
       fireEvent.press(getByTestId("locate-sheet-confirm"));
 
       await waitFor(() => {
-        expect(mockUpdateCaseMutateAsync).toHaveBeenCalled();
+        expect(resilientFetch).toHaveBeenCalledWith(
+          expect.stringContaining("bulk-status"),
+          expect.anything(),
+        );
       });
 
       // Re-enter selection mode for a second bulk locate

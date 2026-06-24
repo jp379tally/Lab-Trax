@@ -13,9 +13,9 @@ import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import * as Haptics from "expo-haptics";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   useUpdateCase,
-  useCases,
   type UpdateCaseInputStatus,
 } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
@@ -148,7 +148,7 @@ export default function BatchLocateScreen() {
   const [failedCases, setFailedCases] = useState<ScannedCase[]>([]);
 
   const updateCase = useUpdateCase();
-  const casesQuery = useCases();
+  const queryClient = useQueryClient();
   const meQuery = useMe();
   const orgId = editableLabMemberships(meQuery.data)[0]?.organizationId ?? null;
 
@@ -298,7 +298,7 @@ export default function BatchLocateScreen() {
     setFailedCases(cases.filter((c) => failedIds.includes(c.caseId)));
     setStep("result");
 
-    await casesQuery.refetch().catch(() => {});
+    void queryClient.invalidateQueries({ queryKey: ["cases"] });
   }
 
   async function handleRetry() {
@@ -328,7 +328,7 @@ export default function BatchLocateScreen() {
     setFailedCases(casesToRetry.filter((c) => retryFailed.includes(c.caseId)));
     setStep("result");
 
-    await casesQuery.refetch().catch(() => {});
+    void queryClient.invalidateQueries({ queryKey: ["cases"] });
   }
 
   function handleDone() {

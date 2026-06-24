@@ -12,8 +12,8 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { useQueryClient } from "@tanstack/react-query";
 import {
-  useCases,
   useUpdateCase,
   type CanonicalCase,
   type UpdateCaseInputStatus,
@@ -23,6 +23,7 @@ import { Radius, Spacing, Typography } from "@/constants/tokens";
 import { CASE_STATIONS } from "@/lib/case-stations";
 import { useMe, editableLabMemberships, canAdminAnyLab } from "@/lib/auth-me";
 import { getJson } from "@/lib/read-api";
+import { resilientFetch } from "@/lib/query-client";
 import { router } from "expo-router";
 
 type SingleProps = {
@@ -73,7 +74,7 @@ export function LocateCaseSheet(props: Props) {
   const [apiLocations, setApiLocations] = useState<LabLocation[] | null>(null);
 
   const updateCase = useUpdateCase();
-  const casesQuery = useCases();
+  const queryClient = useQueryClient();
   const meQuery = useMe();
   const orgId = editableLabMemberships(meQuery.data)[0]?.organizationId ?? null;
   const isAdmin = canAdminAnyLab(meQuery.data);
@@ -116,49 +117,50 @@ export function LocateCaseSheet(props: Props) {
       if (cases.length === 0) return;
       setLocating(true);
       try {
-        const results = await Promise.allSettled(
-          cases.map((c) =>
-            updateCase.mutateAsync({
-              caseId: c.id,
-              data: { status: selectedStatus as UpdateCaseInputStatus },
-            })
-          )
-        );
-        const succeededIds: string[] = [];
-        const failedIds: string[] = [];
-        results.forEach((r, i) => {
-          if (r.status === "fulfilled") {
-            succeededIds.push(cases[i]!.id);
-          } else {
-            console.warn(
-              `[Locate] Case ${cases[i]!.id} (station: ${selectedStatus}) failed:`,
-              r.reason,
-            );
-            failedIds.push(cases[i]!.id);
-          }
+        const caseIds = cases.map((c) => c.id);
+        const response = await resilientFetch("/api/cases/bulk-status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ caseIds, status: selectedStatus }),
         });
 
-        // Only dismiss when at least one case was located — if all failed,
-        // keep the sheet open so the user can retry without re-tapping.
-        if (succeededIds.length > 0) {
-          onDismiss();
-          await casesQuery.refetch();
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          const msg = (body as { message?: string })?.message ?? `Server error (${response.status})`;
+          throw new Error(msg);
         }
+
+        const body = await response.json();
+        const { updatedCount, skippedLegacyCount = 0 } =
+          (body?.data ?? body) as { updatedCount: number; skippedLegacyCount?: number };
+
+        // Canonical cases that moved successfully; legacy cases are tracked separately.
+        const succeededIds = caseIds.slice(0, updatedCount + skippedLegacyCount);
+        // Any IDs not accounted for by the server response are treated as failures.
+        const unexplained = caseIds.length - updatedCount - skippedLegacyCount;
+        const failedIds: string[] = unexplained > 0 ? caseIds.slice(-(unexplained)) : [];
+
+        onDismiss();
+        void queryClient.invalidateQueries({ queryKey: ["cases"] });
 
         props.onBulkLocated(succeededIds, failedIds);
 
-        if (failedIds.length > 0) {
-          const allFailed = succeededIds.length === 0;
+        if (skippedLegacyCount > 0 && failedIds.length === 0) {
           Alert.alert(
-            allFailed ? "Locate failed" : "Partial success",
-            allFailed
+            "Partially located",
+            `${updatedCount} case${updatedCount !== 1 ? "s" : ""} located. ${skippedLegacyCount} legacy case${skippedLegacyCount !== 1 ? "s" : ""} could not be moved (legacy format — open each case to locate it manually).`,
+          );
+        } else if (failedIds.length > 0) {
+          Alert.alert(
+            updatedCount === 0 ? "Locate failed" : "Partial success",
+            updatedCount === 0
               ? `Could not locate ${failedIds.length} case${failedIds.length === 1 ? "" : "s"}. Please check your connection and try again.`
-              : `${succeededIds.length} case${succeededIds.length === 1 ? "" : "s"} located. ${failedIds.length} failed — please try again for those.`
+              : `${updatedCount} case${updatedCount !== 1 ? "s" : ""} located. ${failedIds.length} could not be moved — please try again for those.`,
           );
         }
       } catch (e) {
         console.warn("[Locate] Bulk locate unexpected error:", e);
-        Alert.alert("Couldn't locate cases", "Please try again.");
+        Alert.alert("Couldn't locate cases", e instanceof Error ? e.message : "Please try again.");
       } finally {
         setLocating(false);
       }
@@ -175,7 +177,7 @@ export function LocateCaseSheet(props: Props) {
       });
       const successId = locatingCase.id;
       onDismiss();
-      await casesQuery.refetch();
+      void queryClient.invalidateQueries({ queryKey: ["cases"] });
       props.onLocated(successId);
     } catch (e) {
       Alert.alert(

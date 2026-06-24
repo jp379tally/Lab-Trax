@@ -1896,6 +1896,28 @@ export default function CasesPage() {
     [orgsQuery.data],
   );
 
+  const pageLabOrgId = useMemo(
+    () => (orgsQuery.data ?? []).find((o) => o.type === "lab")?.id ?? null,
+    [orgsQuery.data],
+  );
+
+  const bulkLocationsQuery = useQuery<Array<{ value: string; label: string }>>({
+    queryKey: ["locations", pageLabOrgId, "active"],
+    enabled: !!pageLabOrgId,
+    queryFn: async () => {
+      try {
+        const rows = await apiFetch<Array<{ code: string; name: string; status: string }>>(
+          `/locations?organizationId=${pageLabOrgId}&activeOnly=true`,
+        );
+        if (!Array.isArray(rows) || rows.length === 0) return [];
+        return rows.map((r) => ({ value: r.status, label: r.name }));
+      } catch {
+        return [];
+      }
+    },
+    staleTime: 60_000,
+  });
+
   const bulkReassignMutation = useMutation({
     mutationFn: (body: { caseIds: string[]; providerOrganizationId: string }) =>
       apiFetch<{ updatedCount: number; skippedLegacyCount?: number }>("/cases/bulk-reassign", {
@@ -1926,19 +1948,29 @@ export default function CasesPage() {
         method: "POST",
         body: JSON.stringify(body),
       }),
-    onSuccess: (result) => {
+    onSuccess: (result, variables) => {
       qc.invalidateQueries({ queryKey: ["cases"] });
       setSelectedIds(new Set());
       setShowBulkStatusModal(false);
       setBulkStatusValue("");
-      const label = STATUS_FILTERS.find((s) => s.value === bulkStatusValue)?.label ?? bulkStatusValue;
       const { updatedCount, skippedLegacyCount = 0 } = result;
+      const totalSent = variables.caseIds.length;
+      const unexplainedMissed = totalSent - updatedCount - skippedLegacyCount;
+      const locationOptions =
+        bulkLocationsQuery.data && bulkLocationsQuery.data.length > 0
+          ? bulkLocationsQuery.data
+          : STATUS_FILTERS.filter((s) => s.value !== "all");
+      const label = locationOptions.find((s) => s.value === variables.status)?.label ?? variables.status;
       const base = `${updatedCount} case${updatedCount !== 1 ? "s" : ""} marked as ${label}.`;
-      setBulkToast(
-        skippedLegacyCount > 0
-          ? `${base} (${skippedLegacyCount} legacy case${skippedLegacyCount !== 1 ? "s" : ""} skipped)`
-          : base
-      );
+      const successMsg = skippedLegacyCount > 0
+        ? `${base} (${skippedLegacyCount} legacy case${skippedLegacyCount !== 1 ? "s" : ""} skipped)`
+        : base;
+      setBulkToast(successMsg);
+      if (unexplainedMissed > 0) {
+        setBulkToastError(
+          `Warning: ${unexplainedMissed} case${unexplainedMissed !== 1 ? "s" : ""} may not have moved. Please try again for those.`,
+        );
+      }
     },
     onError: (e: Error) => {
       setBulkToastError(e.message);
@@ -2914,8 +2946,11 @@ export default function CasesPage() {
                   onChange={(e) => setBulkStatusValue(e.target.value)}
                   className="w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
                 >
-                  <option value="" disabled>Select a status…</option>
-                  {STATUS_FILTERS.filter((s) => s.value !== "all").map((s) => (
+                  <option value="" disabled>Select a location…</option>
+                  {(bulkLocationsQuery.data && bulkLocationsQuery.data.length > 0
+                    ? bulkLocationsQuery.data
+                    : STATUS_FILTERS.filter((s) => s.value !== "all")
+                  ).map((s) => (
                     <option key={s.value} value={s.value}>{s.label}</option>
                   ))}
                 </select>
