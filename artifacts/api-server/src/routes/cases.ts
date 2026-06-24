@@ -2643,14 +2643,35 @@ function _checkDeleteInitiateRateLimit(orgId: string): boolean {
   return entry.count <= MAX;
 }
 
-async function _sendCaseDeleteSms(toPhone: string, code: string): Promise<void> {
+async function _sendCaseDeleteSms(
+  toPhoneE164: string,
+  code: string,
+  log?: Pick<import("pino").Logger, "info" | "warn" | "error">,
+): Promise<void> {
   const { sendSms } = await import("../lib/sms.js");
+  const maskedPhone = toPhoneE164.length > 4
+    ? toPhoneE164.slice(0, -4).replace(/\d/g, "*") + toPhoneE164.slice(-4)
+    : toPhoneE164;
   const result = await sendSms({
-    to: toPhone,
+    to: toPhoneE164,
     body: `LabTrax security code: ${code}. Used to confirm case deletion. Expires in 10 minutes. If you did not request this, contact your lab immediately.`,
+    log,
   });
   if (!result.ok && !result.skipped) {
-    throw new HttpError(500, result.errorMessage ?? "Failed to send SMS.");
+    log?.warn?.(
+      { phone: maskedPhone, providerError: result.errorMessage, providerCode: result.errorCode },
+      "case-delete OTP SMS send failed",
+    );
+    throw new HttpError(
+      500,
+      "We could not send the SMS code. Check the lab owner phone number and try again.",
+    );
+  }
+  if (!result.skipped) {
+    log?.info?.(
+      { phone: maskedPhone, messageId: result.messageId },
+      "case-delete OTP SMS dispatched",
+    );
   }
 }
 
@@ -2761,6 +2782,17 @@ router.post(
       });
     }
 
+    // Normalize to E.164 before sending — Vonage requires +1XXXXXXXXXX format.
+    // Every other SMS path in the codebase does this; skipping it causes Vonage
+    // to silently drop or reject the message even though it returns HTTP 200.
+    const ownerPhoneE164 = normalizePhoneE164(ownerUser.phone);
+    if (!ownerPhoneE164) {
+      return res.status(400).json({
+        ok: false,
+        error: "The lab owner's phone number is not a valid US number. Please update it in the owner's profile and try again.",
+      });
+    }
+
     // Prefixed target keeps case-delete OTPs isolated from regular phone
     // verification codes so an in-flight signup/login flow is never interrupted.
     const ownerPhoneTarget = `case-delete:${normalizePhoneTarget(ownerUser.phone)}`;
@@ -2772,7 +2804,16 @@ router.post(
       code,
       userId: ownerUser.id,
     });
-    await _sendCaseDeleteSms(ownerUser.phone, code);
+    req.log?.info?.(
+      {
+        labOrgId: labOrganizationId,
+        actorId: userId,
+        ownerUserId: ownerUser.id,
+        phone: ownerPhoneE164.slice(0, -4).replace(/\d/g, "*") + ownerPhoneE164.slice(-4),
+      },
+      "case-delete OTP: sending SMS",
+    );
+    await _sendCaseDeleteSms(ownerPhoneE164, code, req.log as any);
 
     const deleteSessionToken = signDeleteSessionToken({
       caseIds: uniqueCaseIds,

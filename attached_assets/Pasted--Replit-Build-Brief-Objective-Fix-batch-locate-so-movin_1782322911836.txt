@@ -1,0 +1,186 @@
+### Replit Build Brief
+
+**Objective**
+Fix batch locate so moving multiple cases from one location to another actually updates the cases and refreshes correctly on both mobile and web.
+
+**User-visible problem**
+The location picker now allows selecting one location at a time, but when the user batch locates four cases from **Received** to **Design**, the cases do not show the updated location in either the mobile app or the web version.
+
+**Likely root cause**
+The UI selection bug was only the first half. The submit/update path is now failing in one of these ways:
+
+* the batch locate request is not sending the selected destination `locationId`
+* the request sends case IDs but the backend ignores or rejects the destination location
+* backend updates a different field than the lists read from
+* mutation succeeds but mobile/web caches are not invalidated/refetched
+* optimistic UI updates are missing or immediately overwritten by stale query data
+* the cases are moved in the database but the current location/status filters still show stale results
+
+**Exact areas to inspect**
+
+Search for:
+
+```text
+batch locate
+Locate
+handleLocate
+selectedLocationId
+locationId
+caseIds
+updateLocation
+moveCases
+bulkUpdate
+batchUpdate
+invalidateQueries
+refetch
+cases query
+Received
+Design
+```
+
+Inspect both:
+
+```text
+Locate bottom sheet submit handler
+Batch locate API route / mutation
+Case list query on mobile
+Case list query on web
+Case location/status display field
+```
+
+**Implementation plan**
+
+1. Reproduce with four cases in **Received** and select **Design**.
+2. Inspect the batch locate network request.
+3. Confirm the payload includes:
+
+   ```ts
+   {
+     caseIds: [...],
+     locationId: "design-location-id"
+   }
+   ```
+4. Confirm the backend updates all selected cases, not just one case.
+5. Confirm it updates the canonical field used by both mobile and web, for example:
+
+   ```ts
+   currentLocationId
+   locationId
+   workflowLocationId
+   statusLocationId
+   ```
+6. Confirm the API returns updated case records or at least success plus updated count.
+7. After success, invalidate/refetch all affected case queries:
+
+   * mobile cases list
+   * web cases list
+   * location/status counts
+   * dashboard/customer/provider views if they show location
+8. If using optimistic updates, update every selected case locally, then reconcile with server response.
+9. Show a clear error if fewer than all selected cases update.
+
+**Guardrails**
+
+* Do not only update the visible list in memory; persist to backend/database.
+* Do not hardcode Received or Design.
+* Do not update a display label while leaving the canonical location ID unchanged.
+* Do not let mobile and web read from different location fields.
+* Do not silently succeed if zero cases were updated.
+
+**Acceptance criteria**
+
+* Select four cases in **Received**.
+* Batch locate them to **Design**.
+* The cases disappear from Received if the current filter is Received-only.
+* The cases appear under Design.
+* Refreshing mobile still shows the new Design location.
+* Refreshing web still shows the new Design location.
+* Backend response confirms all four cases were updated.
+* If one case fails, the UI reports partial failure instead of pretending success.
+
+### Copy-Ready Replit Prompt
+
+The previous location picker bug is partially fixed: users can now select one location at a time. But batch locate still does not actually update the displayed case locations.
+
+We selected four cases in **Received**, chose **Design**, and submitted batch locate. Afterward, neither the mobile app nor the web version shows the cases as moved to Design.
+
+Please inspect the full batch locate submit/update/refresh flow. Search for:
+
+```text
+batch locate
+Locate
+handleLocate
+selectedLocationId
+locationId
+caseIds
+updateLocation
+moveCases
+bulkUpdate
+batchUpdate
+invalidateQueries
+refetch
+cases query
+Received
+Design
+```
+
+Fix this end to end:
+
+1. Confirm the Locate sheet submit handler sends the selected destination location ID, not an array and not null.
+2. Confirm the request payload includes all selected case IDs and one destination location ID:
+
+   ```ts
+   {
+     caseIds: selectedCaseIds,
+     locationId: selectedLocationId
+   }
+   ```
+3. Confirm the backend batch update updates every selected case.
+4. Make sure the backend updates the canonical location field used by both mobile and web case lists.
+5. If the backend currently updates a stale/legacy field, fix the query/model so both mobile and web use the same canonical location.
+6. Return the updated cases or an `{ updatedCount }` response.
+7. Treat `updatedCount !== selectedCaseIds.length` as an error or partial failure.
+8. After success, invalidate/refetch all relevant case queries and location/count queries on both mobile and web.
+9. Clear selected cases and close the Locate sheet only after the update succeeds.
+10. Add regression checks:
+
+    * batch locate 4 cases from Received to Design
+    * refresh mobile and verify location persists
+    * refresh web and verify location persists
+    * single-case locate still works
+    * partial failure is visible to the user
+
+Do not just update the UI label. The change must persist to the database and show correctly after refresh on both mobile and web.
+
+### Debug Analysis
+
+**Primary root-cause hypothesis**
+The picker state is fixed, but the batch locate mutation is not correctly updating the persisted case location, or the app is not refetching/invalidation cached case data after the update.
+
+**Supporting evidence**
+The same stale result appears on both mobile and web. That usually means either the backend/database did not actually update, or both clients are reading cached/stale query data from the same source.
+
+**Most likely failure points**
+
+* `selectedLocationId` is correct in the UI but not included in the submit payload.
+* Batch API expects a different field name, such as `newLocationId`, `location`, `statusId`, or `workflowStepId`.
+* Backend updates only the first case or zero cases.
+* Backend updates `locationId`, but lists display `currentLocation`, `status`, or another derived field.
+* React Query/SWR cache is not invalidated after mutation.
+* The current filter still shows old data because local state was not reconciled.
+
+**Why the recommended approach is best**
+This needs to be fixed at the persistence and cache boundary, not with another UI-only patch. If the backend updates the canonical case location and both clients refetch that same field, mobile and web will stay consistent.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce the exact batch locate: four Received cases to Design.
+2. Open dev/network logs and inspect the request payload.
+3. Verify the destination location ID is present and correct.
+4. Inspect the backend handler for batch locate.
+5. Confirm the database update affects all selected case IDs.
+6. Confirm the update writes to the same field used by case list queries.
+7. Confirm the API response includes success and updated count.
+8. Add frontend handling for partial or failed updates.
+9. Invalidate/refetch case and location queries after success.
+10. Retest on mobile and web after a full refresh.

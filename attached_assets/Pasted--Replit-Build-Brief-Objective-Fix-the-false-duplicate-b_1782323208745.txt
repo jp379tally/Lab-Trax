@@ -1,0 +1,187 @@
+### Replit Build Brief
+
+**Objective**
+Fix the false duplicate blocker when creating a new practice. Republish did not help because this is not a deployment issue; the app is still finding some hidden/wrong record or database constraint and incorrectly reporting it as an existing practice.
+
+**User-visible problem**
+The user is trying to create:
+
+```text
+Legal name: Dr. Susan Byrne
+Display name: Dr. Susan Byrne
+Primary doctor name: Dr. Susan Byrne
+Billing email: JP@PHILLIPSDL.COM
+Phone: (850) 363-3336
+Address: 117 Salem Ct, Tallahassee, FL 32301
+```
+
+The app says:
+
+```text
+A practice with this name already exists. Select existing practice instead.
+```
+
+But **Dr. Susan Byrne** is not visible in Customer Center. The background shows SDR1’s Customer Center list and no matching practice.
+
+**Likely root cause**
+The create-practice duplicate check is still querying the wrong scope or wrong entity. It may be matching:
+
+* a doctor/provider row instead of a practice row
+* an archived/deleted/inactive practice
+* another lab’s practice record
+* a hidden record not returned by Customer Center
+* an auto-generated account number collision
+* a stale unique database constraint that returns a generic “practice exists” error
+
+**Exact areas to inspect/change**
+
+Search for:
+
+```text
+A practice with this name already exists
+Select existing practice instead
+createPractice
+insertPractice
+practice already exists
+duplicate practice
+legalName
+displayName
+primaryDoctorName
+accountNumber
+doctorName
+deletedAt
+archivedAt
+status
+labId
+tenantId
+```
+
+**Implementation plan**
+
+1. Reproduce creating **Dr. Susan Byrne** in SDR1.
+2. Find the exact backend check or database error throwing this message.
+3. Log or return the matched duplicate record during development:
+
+   ```ts
+   {
+     id,
+     type: "practice" | "doctor" | "provider",
+     legalName,
+     displayName,
+     accountNumber,
+     labId,
+     status,
+     deletedAt,
+     archivedAt
+   }
+   ```
+4. Fix duplicate validation so it only blocks if an **active practice in the same lab** has the same normalized `legalName` or `displayName`.
+5. Do **not** block practice creation because a doctor/provider has the same name.
+6. Do **not** block because a practice exists in another lab.
+7. If the match is archived/deleted, show a restore option or allow recreation based on intended rules.
+8. If the real conflict is account number generation, generate a unique account number suffix or show a correct account-number-specific error.
+9. If the backend blocks creation because a matching practice exists, the UI must display/select that exact matched practice. No invisible duplicates.
+
+**Acceptance criteria**
+
+* Creating **Dr. Susan Byrne** succeeds if no active SDR1 practice with that exact normalized practice name exists.
+* If an active duplicate exists, Customer Center search for “Susan Byrne” reveals it.
+* If the match is a doctor under another practice, creation is not blocked.
+* If the match is archived/deleted, the app says that clearly and offers restore/recreate behavior.
+* If the conflict is account number, the error says account number conflict, not practice name conflict.
+* Duplicate validation is scoped to the current lab, SDR1.
+
+### Copy-Ready Replit Prompt
+
+Fix the false “practice already exists” error in Customer Center. This is still happening after republish.
+
+The user is creating a new provider practice:
+
+```text
+Legal name: Dr. Susan Byrne
+Display name: Dr. Susan Byrne
+Primary doctor name: Dr. Susan Byrne
+Billing email: JP@PHILLIPSDL.COM
+Phone: (850) 363-3336
+Address: 117 Salem Ct
+City: Tallahassee
+State: FL
+Zip: 32301
+Lab: SDR1
+```
+
+The app shows:
+
+```text
+A practice with this name already exists. Select existing practice instead.
+```
+
+But Dr. Susan Byrne is not visible in the SDR1 Customer Center list.
+
+Please fix this at the backend validation/database layer, not by republishing.
+
+Search for:
+
+```text
+A practice with this name already exists
+Select existing practice instead
+createPractice
+insertPractice
+practice already exists
+duplicate practice
+legalName
+displayName
+primaryDoctorName
+accountNumber
+doctorName
+deletedAt
+archivedAt
+status
+labId
+tenantId
+```
+
+Required fix:
+
+1. Find exactly what record is causing the duplicate error.
+2. During debugging, log the matched record with:
+
+   ```ts
+   id, type, legalName, displayName, accountNumber, labId, status, deletedAt, archivedAt
+   ```
+3. Duplicate practice validation should only block when an **active practice in the same lab** has the same normalized `legalName` or `displayName`.
+4. Do not block creation because a doctor/provider record has the same name.
+5. Do not block creation because another lab has that practice.
+6. Do not block creation because of archived/deleted records unless the UI shows a restore option.
+7. If the actual conflict is generated account number, fix account-number generation or show an account-number-specific error.
+8. If a duplicate truly exists, return the duplicate practice ID/name and make Customer Center able to select/open it.
+9. Add regression checks for:
+
+   * creating Dr. Susan Byrne in SDR1
+   * active duplicate practice in SDR1
+   * matching doctor name but no matching practice
+   * archived/deleted matching practice
+   * matching practice in another lab
+   * account-number collision
+
+Do not remove duplicate protection entirely. Make the duplicate check accurate and visible.
+
+### Debug Analysis
+
+The strongest clue is that the same form still fails after republish. That means the deployed code is still either hitting the same duplicate validator or the same database uniqueness constraint.
+
+The screenshot also shows Customer Center is scoped to **Admin · SDR1**. Therefore, the duplicate check must also be scoped to SDR1 and to active practices only. If the backend is checking all labs, all providers, archived records, or doctors, it can falsely block creation.
+
+Most likely issue: the app is treating `primaryDoctorName = Dr. Susan Byrne` as globally unique, or an archived/hidden row exists and is being treated as an active practice.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce the exact form submission.
+2. Inspect the failed create-practice API response.
+3. Identify whether the error comes from app validation or a database unique constraint.
+4. Print the matched duplicate record in development.
+5. Confirm whether the match is a practice, doctor, provider, archived row, other-lab row, or account-number collision.
+6. Patch validation to only block active same-lab practice name duplicates.
+7. Patch the UI to show the matched duplicate if one truly exists.
+8. Retest Dr. Susan Byrne creation.
+9. Retest a real duplicate to confirm duplicate protection still works.

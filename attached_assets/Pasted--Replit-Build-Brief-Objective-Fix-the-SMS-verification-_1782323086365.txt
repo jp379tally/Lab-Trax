@@ -1,0 +1,164 @@
+### Replit Build Brief
+
+**Objective**
+Fix the SMS verification flow for deleting cases. Vonage is confirmed working because phone verification succeeded, but the delete-cases confirmation code is not being received.
+
+**User-visible problem**
+When deleting cases, LabTrax shows:
+
+```text
+Enter SMS code
+A 6-digit code was sent to the lab owner's phone.
+Enter it to confirm deletion of 102 cases.
+```
+
+But no SMS code arrives. The user can verify a phone number through Vonage, so the issue is specific to the delete-cases OTP flow.
+
+**Likely root cause**
+The delete-cases SMS flow is not using the same verified, working Vonage send path as phone verification. It may be:
+
+* sending to the wrong phone number field
+* sending to an empty/unverified lab owner phone
+* using a different Vonage API/helper/config path
+* generating an OTP in the UI/server but not actually sending it
+* failing silently when Vonage returns an error
+* blocked by rate limiting or environment mismatch
+* displaying the modal before confirming SMS send success
+
+**Exact areas to inspect**
+
+Search for:
+
+```text
+Enter SMS code
+Delete 102 cases
+lab owner's phone
+Resend code
+sendSms
+Vonage
+verify phone
+phone verification
+delete cases
+bulk delete
+otp
+sms code
+verification code
+ownerPhone
+labOwnerPhone
+```
+
+**Implementation plan**
+
+1. Compare the working phone-verification SMS code path with the delete-cases SMS code path.
+2. Refactor delete-cases OTP to call the same shared SMS sender used by phone verification.
+3. Confirm the recipient phone number comes from the correct lab owner/admin phone field.
+4. Normalize the phone to E.164 before sending, for example `+1XXXXXXXXXX`.
+5. Do not show “code was sent” unless Vonage returns success.
+6. If SMS send fails, show a clear error:
+
+   ```text
+   We could not send the SMS code. Check the lab owner phone number and try again.
+   ```
+7. Add server logs for delete OTP sends:
+
+   * lab ID
+   * user ID
+   * masked recipient phone
+   * Vonage message/request ID
+   * success/failure status
+   * error text, without exposing the OTP
+8. Make **Resend code** call the same fixed endpoint.
+9. Add rate limiting, but make rate-limit errors visible.
+10. Verify the code entered must match the latest generated delete OTP for that lab/user/action.
+
+**Guardrails**
+
+* Do not log the actual SMS code.
+* Do not allow delete without a valid OTP.
+* Do not use a hardcoded phone number.
+* Do not send to the logged-in user if the product requirement is lab owner approval.
+* Do not show a fake success state when SMS failed.
+* Do not create a second Vonage integration if the phone verification path already works.
+
+**Acceptance criteria**
+
+* Phone verification still works.
+* Delete-cases OTP sends an SMS to the correct lab owner phone.
+* The modal only says “code was sent” after successful Vonage response.
+* Resend code sends a new code.
+* Incorrect code blocks deletion.
+* Correct code allows deletion.
+* Failed SMS send shows a visible error instead of silently waiting.
+* Server logs include enough masked detail to debug delivery.
+
+### Copy-Ready Replit Prompt
+
+Fix the delete-cases SMS verification flow.
+
+Vonage is working because phone verification succeeds, but when deleting cases, no SMS code arrives. The modal says:
+
+```text
+Enter SMS code
+A 6-digit code was sent to the lab owner's phone.
+Enter it to confirm deletion of 102 cases.
+```
+
+No code is received.
+
+Please inspect and compare the working phone verification SMS flow with the delete-cases OTP flow. Search for:
+
+```text
+Enter SMS code
+lab owner's phone
+Resend code
+sendSms
+Vonage
+verify phone
+phone verification
+delete cases
+bulk delete
+otp
+sms code
+verification code
+ownerPhone
+labOwnerPhone
+```
+
+Implement the safest fix:
+
+1. Make delete-cases OTP use the same shared Vonage SMS send helper/path as phone verification.
+2. Confirm the recipient is the correct lab owner/admin phone number.
+3. Normalize the recipient to E.164 before sending.
+4. Do not show “code was sent” unless Vonage confirms the message request was accepted.
+5. If the send fails, show a clear error in the modal.
+6. Make “Resend code” use the same fixed endpoint and generate/send a fresh code.
+7. Add server-side logging with masked phone number and Vonage response/request ID, but never log the OTP.
+8. Ensure the delete action only succeeds with the latest valid OTP.
+9. Add regression checks:
+
+   * phone verification still sends
+   * delete OTP sends
+   * resend sends
+   * wrong code blocks deletion
+   * right code allows deletion
+   * SMS failure is visible
+
+Do not bypass SMS verification for delete. Fix the send path and error handling.
+
+### Debug Analysis
+
+The key clue is that Vonage works for phone verification. That means credentials and basic SMS delivery are probably fine. The broken part is almost certainly the delete-cases OTP flow: recipient lookup, API call, environment config, or silent error handling.
+
+The screenshot also shows the UI confidently says a code was sent. That may be false. The app should only display that message after the backend confirms Vonage accepted the message.
+
+### Step-by-Step Fix Plan
+
+1. Trigger delete OTP and inspect the network request.
+2. Check the backend response for send success/failure.
+3. Compare that endpoint with the working phone verification endpoint.
+4. Confirm the recipient phone number used for delete OTP.
+5. Patch delete OTP to use the working Vonage sender.
+6. Add visible failure messaging.
+7. Patch resend to use the same sender.
+8. Test with deleting a small number of cases first.
+9. Then test the 102-case flow again.
