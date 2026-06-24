@@ -1,0 +1,179 @@
+This screenshot shows a **broken Windows taskbar shortcut**, not a normal LabTrax app error.
+
+Windows is saying the pinned shortcut points to `LabTrax.exe`, but that file was moved, renamed, deleted, or replaced by an update/reinstall. That is why opening from the taskbar fails.
+
+Immediate fix on that computer:
+
+1. Click **No** on that dialog.
+2. Unpin the broken LabTrax icon from the taskbar.
+3. Open LabTrax from the working source: Start Menu, desktop icon, browser/PWA install, or the newest installer.
+4. Once it opens successfully, right-click the running LabTrax icon and choose **Pin to taskbar**.
+
+But the real regression fix is on the build/install side.
+
+### Replit Build Brief
+
+**Objective**
+Fix the LabTrax desktop/taskbar launch regression so Windows shortcuts keep working after updates, rebuilds, or reinstalls.
+
+**User-visible problem**
+Pinned taskbar shortcut fails with:
+
+```text
+Problem with Shortcut
+The item 'LabTrax.exe' that this shortcut refers to has been changed or moved,
+so this shortcut will no longer work properly.
+```
+
+**Likely root cause**
+The desktop build/update process changed or removed the installed executable path. Common causes:
+
+* `LabTrax.exe` was renamed.
+* install directory changed between builds.
+* Electron/Tauri/native wrapper app ID or product name changed.
+* installer is not cleaning/replacing old shortcuts.
+* taskbar/start menu shortcuts point to a versioned or temporary path instead of a stable install path.
+* previous desktop/PWA shortcut fix was overwritten by a later build.
+
+**Exact areas to inspect**
+
+Search for:
+
+```text
+LabTrax.exe
+productName
+appId
+executableName
+artifactName
+electron-builder
+tauri.conf
+NSIS
+installer
+shortcut
+desktop
+pwa
+manifest
+name
+short_name
+```
+
+Likely files:
+
+```text
+package.json
+electron-builder config
+tauri.conf.json
+src-tauri/tauri.conf.json
+public/manifest.json
+vite config
+desktop installer scripts
+release/build scripts
+```
+
+**Implementation plan**
+
+1. Identify how LabTrax desktop is packaged: Electron, Tauri, PWA shortcut, or Replit desktop wrapper.
+2. Lock the app identity to stable values:
+
+   * product name: `LabTrax`
+   * executable name: `LabTrax.exe`
+   * app ID: stable reverse-domain style value, for example `com.labtrax.app`
+3. Ensure the installer always installs to a stable path, not a changing build/version folder.
+4. Ensure updates replace the existing executable instead of creating a new app identity.
+5. Ensure installer recreates Start Menu/Desktop shortcuts pointing to the current executable.
+6. Add a release checklist/test that verifies:
+
+   * Start Menu shortcut works
+   * desktop shortcut works
+   * pinned taskbar icon works after update
+   * old shortcut is repaired or removed cleanly
+
+**Guardrails**
+
+* Do not rename the app, executable, package ID, or install folder unless absolutely required.
+* Do not produce shortcuts to temporary build output folders.
+* Do not let each build generate a new Windows app identity.
+* Keep desktop launch behavior stable across updates.
+
+**Acceptance criteria**
+
+* Fresh install opens LabTrax from Start Menu.
+* User can pin LabTrax to the taskbar and reopen it.
+* After updating/redeploying, the pinned taskbar shortcut still opens LabTrax.
+* No Windows “Problem with Shortcut” dialog appears.
+* Old/broken shortcut is removed or repaired during install/update.
+
+### Copy-Ready Replit Prompt
+
+Fix the LabTrax desktop/taskbar shortcut regression.
+
+Current user-visible error on Windows:
+
+```text
+Problem with Shortcut
+The item 'LabTrax.exe' that this shortcut refers to has been changed or moved,
+so this shortcut will no longer work properly.
+```
+
+This happens when trying to open LabTrax from the taskbar. This was already fixed previously but has regressed.
+
+Please inspect the desktop packaging/install/update configuration. Search for:
+
+```text
+LabTrax.exe
+productName
+appId
+executableName
+artifactName
+electron-builder
+tauri.conf
+NSIS
+installer
+shortcut
+desktop
+pwa
+manifest
+name
+short_name
+```
+
+Find whether LabTrax is packaged as Electron, Tauri, PWA, or another desktop wrapper.
+
+Implement the safest fix:
+
+1. Make the installed executable name stable: `LabTrax.exe`.
+2. Make the app ID stable and never generated dynamically between builds.
+3. Make the product/app name stable: `LabTrax`.
+4. Ensure the installer/update process installs to a stable location.
+5. Ensure Start Menu/Desktop/taskbar shortcuts point to the stable installed executable, not a temp build folder or versioned artifact path.
+6. If installer scripts exist, make them repair/recreate shortcuts during update.
+7. Add a regression check or documented release checklist for Windows desktop launch:
+
+   * fresh install opens
+   * Start Menu shortcut opens
+   * taskbar pin opens
+   * update does not break pinned shortcut
+   * no “LabTrax.exe moved or changed” shortcut error
+
+Do not just tell the user to recreate the shortcut. Fix the packaging/update behavior that caused the shortcut to point at a missing executable. If there are multiple desktop launch paths, explain which one is canonical and make the shortcuts use that path.
+
+### Debug Analysis
+
+The screenshot proves Windows still has a shortcut to `LabTrax.exe`, but that file is no longer at the shortcut target. That usually means the app was updated or rebuilt in a way that changed the executable path or app identity.
+
+This kind of regression keeps coming back when the release process does not have a locked desktop identity and a shortcut test. The previous fix may have repaired one install or one shortcut, but the build system likely still allows a later release to rename, relocate, or regenerate the desktop executable.
+
+Best fix: stabilize the desktop app identity and installer behavior, then add a release check so this cannot silently regress again.
+
+### Step-by-Step Fix Plan
+
+1. On the affected Windows machine, unpin the broken taskbar icon and repin from a working launch path.
+2. In Replit, inspect desktop packaging config.
+3. Confirm whether the executable is still produced as `LabTrax.exe`.
+4. Confirm install path is stable across builds.
+5. Confirm app ID/product name did not change.
+6. Patch installer/update config to preserve the same executable path.
+7. Make installer recreate shortcuts after update.
+8. Test fresh install and update install.
+9. Pin to taskbar, update app, then reopen from taskbar.
+10. Add this to regression checks before every release.

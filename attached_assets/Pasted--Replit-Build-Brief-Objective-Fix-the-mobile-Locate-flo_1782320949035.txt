@@ -1,0 +1,202 @@
+### Replit Build Brief
+
+**Objective**
+Fix the mobile “Locate” flow so users can assign one case or multiple selected cases to exactly one destination location.
+
+**User-visible problem**
+In the mobile app, when the user opens **Locate 1 Case**, every location is already selected: Received, Processing, Design, Model Room, Scan, Post Mill, Sintering Furnace, Milling, etc. The user cannot unselect locations. The same failure happens when batch locating multiple cases to one location.
+
+**Likely root cause**
+The Locate bottom sheet is treating destination location choice as a multi-select list, or initializing selected location state with all available locations. The UI should be single-select: one selected `locationId`, not an array/set of all selected locations.
+
+**Exact app areas to inspect/change**
+Search the Replit workspace for these terms:
+
+```text
+Locate 1 Case
+Locate Cases
+selectedLocations
+selectedLocationIds
+selectedLocation
+setSelectedLocations
+toggleLocation
+locationIds
+batch locate
+handleLocate
+```
+
+Likely target files/components are the mobile case list, batch action toolbar, locate bottom sheet, location picker, or any component rendering the location rows shown in the screenshot.
+
+**Implementation plan**
+
+1. Change the Locate sheet state from multi-select to single destination state:
+
+   ```ts
+   const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
+   ```
+
+2. When opening the Locate sheet, reset destination selection:
+
+   ```ts
+   setSelectedLocationId(null);
+   ```
+
+3. Render each location row as selected only when:
+
+   ```ts
+   selectedLocationId === location.id
+   ```
+
+4. On tapping a location, replace the selected destination:
+
+   ```ts
+   setSelectedLocationId(location.id);
+   ```
+
+5. Do not toggle all locations, do not initialize from `locations.map(...)`, and do not reuse the case-selection state for location selection.
+
+6. Disable or guard the **Locate** button until exactly one destination is selected.
+
+7. On submit, send one destination location ID for all selected cases:
+
+   ```ts
+   caseIds: selectedCaseIds,
+   locationId: selectedLocationId
+   ```
+
+**Important constraints**
+
+* The list of selected cases can still contain one or many cases.
+* The selected destination location must be exactly one location.
+* Do not allow “all locations” to be submitted.
+* Do not use the case selection array/set as the location selection array/set.
+* Do not preselect all available workflow/status locations.
+* If editing an existing case that already has a current location, that current location may be shown as context, but it should not cause every destination to be selected.
+
+**Acceptance criteria**
+
+* Opening **Locate 1 Case** shows no destination selected, or only the case’s current location if the product intentionally supports that. It must never show all locations selected.
+* Tapping **Design** selects only Design.
+* Tapping **Scan** after Design unselects Design and selects only Scan.
+* The user can change the selected destination before submitting.
+* The Locate button is disabled until one destination is selected.
+* Locating one case updates that case to the chosen location only.
+* Batch locating multiple cases updates all selected cases to the one chosen location only.
+* Reopening the sheet does not preserve stale destination selections from a previous locate action.
+
+**Regression risks to check**
+
+* Single-case locate.
+* Multi-case batch locate.
+* Cancel and reopen locate sheet.
+* Locate from filtered/search results.
+* Locate after scanning a barcode.
+* Desktop locate flow, if it shares the same component.
+* Any workflow/status filtering that uses the same location list.
+
+### Copy-Ready Replit Prompt
+
+Fix the mobile Locate flow immediately.
+
+Bug: In the mobile app, when selecting one case and opening the “Locate 1 Case” bottom sheet, every location is already checked: Received, Processing, Design, Model Room, Scan, Post Mill, Sintering Furnace, Milling, etc. The user cannot unselect any locations. The same issue happens when batch locating multiple cases to one location.
+
+Expected behavior: Locate is a single-destination action. Whether the user selects one case or multiple cases, they should choose exactly one destination location. Only one location row should be selected at a time.
+
+Please inspect the mobile case list / batch actions / locate bottom sheet / location picker code. Search for:
+
+```text
+Locate 1 Case
+Locate Cases
+selectedLocations
+selectedLocationIds
+selectedLocation
+setSelectedLocations
+toggleLocation
+locationIds
+batch locate
+handleLocate
+```
+
+Likely root cause: the destination location picker is using multi-select state or initializing selected location state with all available locations, such as `locations.map(...)`. It may also be reusing case-selection state for location-selection state.
+
+Implement the safest fix:
+
+1. Use a single destination state, for example:
+
+   ```ts
+   const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
+   ```
+
+2. When the locate sheet opens, reset `selectedLocationId` to `null` unless there is a deliberate product requirement to preselect the current location. Never preselect all locations.
+
+3. Render each location row as selected only when:
+
+   ```ts
+   selectedLocationId === location.id
+   ```
+
+4. On tapping a location row, replace the selected destination:
+
+   ```ts
+   setSelectedLocationId(location.id);
+   ```
+
+5. Remove any logic that toggles all locations, initializes selected locations from the full location list, or stores destination selection as an array/set for this flow.
+
+6. Disable the Locate submit button unless exactly one destination location is selected.
+
+7. On submit, send the selected case IDs plus one `locationId`, not multiple destination IDs:
+
+   ```ts
+   {
+     caseIds: selectedCaseIds,
+     locationId: selectedLocationId
+   }
+   ```
+
+8. Make sure single-case locate and batch locate both use the same corrected single-location behavior.
+
+Before finishing, verify:
+
+* Locate 1 Case opens without all locations checked.
+* Tapping one location selects only that location.
+* Tapping another location moves the checkmark to the new location.
+* Cancel/reopen does not preserve stale selections.
+* Batch locating multiple cases to one location works.
+* No desktop locate behavior is broken if code is shared.
+
+If you find conflicting code paths for single locate vs batch locate, explain the tradeoff and patch both flows consistently.
+
+### Debug Analysis
+
+**Probable root cause**
+The Locate destination picker is using multi-select logic where it should use single-select logic. The screenshot shows every location row checked at once, which usually happens when the selected state is initialized from the full locations list or when the row checked condition is tied to the wrong state.
+
+**Supporting evidence**
+The uploaded screenshot shows **Locate 1 Case**, but all destination locations are checked simultaneously. That is incompatible with the intended workflow of moving case(s) to one location.
+
+**Alternate hypotheses worth checking**
+
+* The row `selected` condition may be using a truthy object/array instead of checking a specific `location.id`.
+* The location row press handler may be calling a “select all” helper by mistake.
+* The locate sheet may be receiving the selected case IDs as selected location IDs due to prop naming confusion.
+* The batch locate and single locate flows may share a broken `LocationPicker` component.
+
+**Why this fix is best**
+The correct domain model is simple: many cases can be selected, but only one destination location can be selected. Fixing the state model to `selectedLocationId` prevents the same bug from recurring in both single and batch locate flows.
+
+Confidence: high on the state-management diagnosis based on the screenshot; medium on exact file names because the repo tree was not fully enumerable from this environment.
+
+### Step-by-Step Fix Plan
+
+1. Search for the component rendering the location rows in the Locate bottom sheet.
+2. Find where selected destination locations are initialized.
+3. Replace multi-location state with a single `selectedLocationId`.
+4. Reset that state whenever the Locate sheet opens/closes.
+5. Update row selection rendering so only `location.id === selectedLocationId` shows a checkmark.
+6. Update row tap behavior to set one destination ID.
+7. Update submit validation to require one destination ID.
+8. Update the locate mutation/API call to send one destination location for all selected cases.
+9. Test single-case locate.
+10. Test batch locate.
+11. Test cancel/reopen and changing the selected location before submit.

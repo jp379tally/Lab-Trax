@@ -64,7 +64,11 @@ export function LocateCaseSheet(props: Props) {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
 
-  const [locateTarget, setLocateTarget] = useState<string | null>(null);
+  // selectedId is the unique location row id; selectedStatus is the workflow
+  // stage sent to the API. Kept separate so two locations sharing the same
+  // status never both appear selected.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
   const [apiLocations, setApiLocations] = useState<LabLocation[] | null>(null);
 
@@ -81,13 +85,14 @@ export function LocateCaseSheet(props: Props) {
   const singleCaseId = !isBulk ? props.locatingCase?.id : undefined;
 
   useEffect(() => {
-    setLocateTarget(null);
+    setSelectedId(null);
+    setSelectedStatus(null);
   }, [singleCaseId, isBulk]);
 
   // Also clear the selection whenever the sheet closes so that reopening it
   // never shows a pre-selected station from a previous session.
   useEffect(() => {
-    if (!isVisible) setLocateTarget(null);
+    if (!isVisible) { setSelectedId(null); setSelectedStatus(null); }
   }, [isVisible]);
 
   useEffect(() => {
@@ -104,7 +109,7 @@ export function LocateCaseSheet(props: Props) {
   }, [orgId, isVisible]);
 
   async function confirmLocate() {
-    if (!locateTarget) return;
+    if (!selectedStatus) return;
 
     if (isBulk) {
       const cases = props.locatingCases;
@@ -115,7 +120,7 @@ export function LocateCaseSheet(props: Props) {
           cases.map((c) =>
             updateCase.mutateAsync({
               caseId: c.id,
-              data: { status: locateTarget as UpdateCaseInputStatus },
+              data: { status: selectedStatus as UpdateCaseInputStatus },
             })
           )
         );
@@ -126,7 +131,7 @@ export function LocateCaseSheet(props: Props) {
             succeededIds.push(cases[i]!.id);
           } else {
             console.warn(
-              `[Locate] Case ${cases[i]!.id} (station: ${locateTarget}) failed:`,
+              `[Locate] Case ${cases[i]!.id} (station: ${selectedStatus}) failed:`,
               r.reason,
             );
             failedIds.push(cases[i]!.id);
@@ -166,7 +171,7 @@ export function LocateCaseSheet(props: Props) {
     try {
       await updateCase.mutateAsync({
         caseId: locatingCase.id,
-        data: { status: locateTarget as UpdateCaseInputStatus },
+        data: { status: selectedStatus as UpdateCaseInputStatus },
       });
       const successId = locatingCase.id;
       onDismiss();
@@ -184,7 +189,8 @@ export function LocateCaseSheet(props: Props) {
 
   function dismiss() {
     if (locating) return;
-    setLocateTarget(null);
+    setSelectedId(null);
+    setSelectedStatus(null);
     onDismiss();
   }
 
@@ -192,15 +198,18 @@ export function LocateCaseSheet(props: Props) {
     ? (props.locatingCase?.status ?? "").toLowerCase()
     : null;
 
-  const stations: { value: string; label: string }[] =
+  const stations: { id: string; value: string; label: string }[] =
     apiLocations !== null
       ? apiLocations
-          // Compare/send the mapped workflow stage (a valid case-status), NOT
-          // the free-form code — sending the code broke custom stations.
+          // `value` = mapped workflow stage sent to the API (a valid case-status).
+          // `id`    = unique location row id used for selection + React key, so
+          //           two locations sharing the same status never both appear selected.
           .filter((loc) => isBulk || loc.status !== currentStatus)
           .sort((a, b) => a.sortOrder - b.sortOrder)
-          .map((loc) => ({ value: loc.status, label: loc.name }))
-      : CASE_STATIONS.filter((s) => isBulk || s.value !== currentStatus);
+          .map((loc) => ({ id: loc.id, value: loc.status, label: loc.name }))
+      : CASE_STATIONS
+          .filter((s) => isBulk || s.value !== currentStatus)
+          .map((s) => ({ id: s.value, value: s.value, label: s.label }));
 
   const headerTitle = isBulk
     ? `Locate ${props.locatingCases.length} Case${props.locatingCases.length === 1 ? "" : "s"}`
@@ -275,17 +284,17 @@ export function LocateCaseSheet(props: Props) {
             showsVerticalScrollIndicator={false}
           >
             {stations.map((station, index) => {
-              const active = locateTarget === station.value;
+              const active = selectedId === station.id;
               const isLast = index === stations.length - 1;
               return (
-                <React.Fragment key={station.value}>
+                <React.Fragment key={station.id}>
                   <Pressable
                     style={({ pressed }) => [
                       styles.row,
                       active && { backgroundColor: colors.tint + "14" },
                       pressed && !active && { backgroundColor: colors.surfaceAlt },
                     ]}
-                    onPress={() => setLocateTarget(station.value)}
+                    onPress={() => { setSelectedId(station.id); setSelectedStatus(station.value); }}
                     android_ripple={{ color: colors.tint + "28" }}
                     testID={`locate-option-${station.value}`}
                   >
@@ -337,11 +346,11 @@ export function LocateCaseSheet(props: Props) {
                 styles.locateBtn,
                 {
                   backgroundColor:
-                    locateTarget && !locating ? colors.tint : colors.border,
+                    selectedId && !locating ? colors.tint : colors.border,
                 },
               ]}
               onPress={confirmLocate}
-              disabled={!locateTarget || locating}
+              disabled={!selectedId || locating}
               testID="locate-sheet-confirm"
             >
               {locating ? (
