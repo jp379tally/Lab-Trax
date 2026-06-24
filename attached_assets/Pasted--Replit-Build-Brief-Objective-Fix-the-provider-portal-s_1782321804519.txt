@@ -1,0 +1,271 @@
+### Replit Build Brief
+
+**Objective**
+Fix the provider portal so Dr. Craig can see SDR1 cases assigned to her actual SDR1 account number, and update the account-number model so one provider can work with multiple labs without cross-lab confusion.
+
+**User-visible problem**
+The provider portal shows:
+
+```text
+My Cases
+drcraig · P-2026-1
+You have no assigned cases yet.
+```
+
+But Dr. Craig has cases on file in **Lab Environment SDR1** under account number:
+
+```text
+2603-BC-1
+```
+
+The `P-2026-1` value shown under her name is not her lab account number and should not be used as the provider-facing account identifier.
+
+**Likely root cause**
+The portal is filtering cases by the provider portal user ID, internal provider ID, or generated `P-2026-1` identifier instead of resolving Dr. Craig to her **lab-specific provider/customer account** for SDR1.
+
+The app likely has two concepts mixed together:
+
+```text
+Provider identity: Dr. Craig as a person/login
+Lab-provider account: Dr. Craig's account relationship with SDR1
+```
+
+Cases should be visible through the lab-provider account relationship, not just the portal profile ID.
+
+**Exact areas to inspect/change**
+
+Search for:
+
+```text
+My Cases
+no assigned cases yet
+P-2026-1
+provider portal
+providerPortal
+portalUser
+providerId
+doctorId
+practiceId
+accountNumber
+assigned cases
+my cases
+case visibility
+labId
+labAccount
+```
+
+Likely code areas:
+
+```text
+provider portal login/session
+provider portal My Cases page
+provider cases API route/query
+case assignment model
+doctor/practice/customer account model
+account number generation
+lab environment / tenant scoping
+```
+
+**Implementation plan**
+
+1. Find what `P-2026-1` represents.
+
+   * It is probably an internal provider profile number.
+   * Do not display it as the provider’s lab account number.
+
+2. Fix the provider portal case query.
+
+   * Resolve logged-in provider to the active lab relationship.
+   * For SDR1, Dr. Craig should resolve to account `2603-BC-1`.
+   * Query cases by `labId + doctor/provider account relationship`, not by `P-2026-1`.
+
+3. Add or formalize a lab-provider account relationship table/model if missing:
+
+```text
+providers
+- id
+- name
+- email / login identity
+
+labs
+- id
+- acronym, e.g. SDR1
+
+lab_provider_accounts
+- id
+- providerId
+- labId
+- accountNumber
+- legacyAccountNumber
+- displayAccountNumber
+- status
+```
+
+4. Cases should reference the lab-specific provider account where possible:
+
+```text
+case.labId
+case.providerId or doctorId
+case.labProviderAccountId
+```
+
+5. Account number rule going forward:
+
+   * New account numbers should be lab-scoped.
+   * Format should begin with the lab acronym.
+   * Example:
+
+```text
+SDR1-2603-BC-1
+ABC-1042-CR-1
+```
+
+6. Preserve existing account numbers as aliases.
+
+   * Dr. Craig should still be findable by `2603-BC-1`.
+   * Canonical display can become `SDR1-2603-BC-1`, but do not break existing login or existing cases.
+
+7. Provider portal should show the correct lab-specific account number:
+
+   * If logged into SDR1 context: show `SDR1-2603-BC-1` or `2603-BC-1`, whichever is selected as canonical.
+   * Do not show `P-2026-1` unless labeled as an internal provider ID, and preferably hide it.
+
+**Guardrails**
+
+* Do not expose one lab’s account number to another lab.
+* Do not make provider account numbers globally unique across all labs.
+* Do not merge all Dr. Craig records blindly by name alone.
+* Use lab scope for all provider portal case queries.
+* Keep existing account numbers working during migration.
+* Avoid breaking current case assignments.
+
+**Acceptance criteria**
+
+* Dr. Craig logs into the provider portal and sees SDR1 cases assigned to account `2603-BC-1`.
+* The portal no longer shows `P-2026-1` as if it were her account number.
+* If Dr. Craig works with another lab, she can have a separate account number for that lab.
+* SDR1 cannot see or manage Dr. Craig’s account number from another lab.
+* New provider account numbers start with the creating lab’s acronym.
+* Existing cases linked to `2603-BC-1` remain visible after the fix.
+
+### Copy-Ready Replit Prompt
+
+Fix the provider portal case visibility and provider account-number model.
+
+Current issue: Dr. Craig logs into the provider portal and sees:
+
+```text
+My Cases
+drcraig · P-2026-1
+You have no assigned cases yet.
+```
+
+But in **Lab Environment SDR1**, Dr. Craig has cases on file under account number:
+
+```text
+2603-BC-1
+```
+
+`P-2026-1` is not her account number. It appears to be an internal provider/profile ID and should not be used as the displayed lab account number or as the sole case filter.
+
+Please inspect:
+
+```text
+My Cases
+no assigned cases yet
+P-2026-1
+provider portal
+portalUser
+providerPortal
+providerId
+doctorId
+practiceId
+accountNumber
+assigned cases
+case visibility
+labId
+labAccount
+```
+
+Implement the safest fix:
+
+1. Determine what `P-2026-1` represents.
+2. Stop using `P-2026-1` as the provider-facing account number.
+3. Fix the provider portal My Cases query so it resolves the logged-in provider to her lab-specific account relationship.
+4. For SDR1, Dr. Craig must resolve to account number `2603-BC-1` and see all SDR1 cases assigned to that account/provider.
+5. If the data model does not already support this cleanly, introduce or formalize a lab-provider relationship model:
+
+```text
+provider identity: Dr. Craig as a person/login
+lab provider account: Dr. Craig's relationship with one specific lab
+```
+
+Suggested structure:
+
+```text
+providers
+- id
+- name
+- email/login identity
+
+labs
+- id
+- acronym
+
+lab_provider_accounts
+- id
+- providerId
+- labId
+- accountNumber
+- legacyAccountNumber
+- displayAccountNumber
+- status
+```
+
+6. Cases should be visible by lab-scoped provider account relationship, not just by internal provider ID.
+7. Add a rule for new account numbers: the lab that creates the provider account prefixes the account number with its acronym, for example:
+
+```text
+SDR1-2603-BC-1
+```
+
+8. Preserve existing account numbers as aliases so `2603-BC-1` still works and existing cases remain linked.
+9. Do not expose account numbers from one lab to another lab.
+10. Add regression checks:
+
+* Dr. Craig sees SDR1 cases under `2603-BC-1`.
+* Provider portal does not show `P-2026-1` as the account number.
+* A provider can have separate account numbers for separate labs.
+* Existing cases remain visible after migration.
+* New doctor account numbers begin with the lab acronym.
+
+Do not patch this by hardcoding Dr. Craig. Fix the provider-to-lab-account resolution so all provider portal users work correctly.
+
+### Debug Analysis
+
+The provider portal is probably using the wrong identifier. The screenshot shows `drcraig · P-2026-1`, while the real SDR1 account number is `2603-BC-1`. If the portal query is filtering cases by `P-2026-1`, it will return zero cases even though SDR1 has cases for Dr. Craig.
+
+The deeper design issue is that a doctor can work with multiple labs. Dr. Craig should have one provider identity for login, but separate lab-specific account relationships. SDR1’s account number for her should not have to match another lab’s account number.
+
+Best model:
+
+```text
+One provider identity
+Many lab-specific provider accounts
+Cases linked through the lab-specific account
+```
+
+That keeps each lab’s account numbering private and prevents cross-lab confusion.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce Dr. Craig login in the provider portal.
+2. Inspect the provider session payload and identify why it shows `P-2026-1`.
+3. Find the My Cases API query.
+4. Check whether it filters by provider profile ID, doctor ID, practice ID, account number, or lab ID.
+5. Map Dr. Craig’s portal user to SDR1 account `2603-BC-1`.
+6. Update the query to fetch SDR1 cases through that lab-specific account.
+7. Replace the displayed `P-2026-1` with the correct lab account number.
+8. Add lab-prefixed account-number generation for new provider accounts.
+9. Preserve old account numbers as aliases.
+10. Test Dr. Craig, another existing provider, and a new provider created by SDR1.

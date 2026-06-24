@@ -1,0 +1,205 @@
+### Replit Build Brief
+
+**Objective**
+Fix the “practice already exists” blocker so LabTrax only rejects a new practice when a real matching active practice exists, and so the UI shows the user exactly what record is causing the conflict.
+
+**User-visible problem**
+The Customer Center says:
+
+```text
+A practice with this name already exists. Select existing practice instead.
+```
+
+But the visible practice list in the background does not show **Dr. Susan Byrne** or a matching practice. The user cannot create the practice and has no way to resolve the conflict.
+
+**Likely root cause**
+The duplicate check is broader than the visible Customer Center list. It is probably matching one of these:
+
+* a soft-deleted / archived / inactive practice
+* a hidden practice not returned by the current list filter
+* a doctor/provider record being treated as a practice duplicate
+* normalized name logic matching incorrectly
+* an auto-generated account number conflict derived from `Dr. Susan Byrne`
+* duplicate validation using `displayName`, `legalName`, `primaryDoctorName`, or account number inconsistently
+
+The screenshot shows the form has:
+
+```text
+Legal name: Dr. Susan Byrne
+Display name: Dr. Susan Byrne
+Primary doctor name: Dr. Susan Byrne
+Billing email: JP@PHILLIPSDL.COM
+Phone: (850) 363-3336
+Address: 117 Salem Ct, Tallahassee, FL 32301
+```
+
+**Exact areas to inspect**
+
+Search Replit for:
+
+```text
+A practice with this name already exists
+Create practice
+New practice
+Add a provider practice
+practice already exists
+select existing practice
+primaryDoctorName
+legalName
+displayName
+accountNumber
+normalizePracticeName
+duplicate practice
+createPractice
+insertPractice
+upsertPractice
+```
+
+Likely files:
+
+```text
+Customer Center page/component
+NewPracticeModal / CreatePracticeModal
+practice routes / API handlers
+practice service or repository
+database schema for practices/doctors/customers
+validation schema for creating practices
+```
+
+**Implementation plan**
+
+1. Find the backend duplicate check that returns “A practice with this name already exists.”
+2. Confirm which field is triggering the duplicate:
+
+   * `legalName`
+   * `displayName`
+   * `primaryDoctorName`
+   * generated `accountNumber`
+   * doctor/provider name
+   * email/phone/address
+3. Change duplicate detection so practice name conflicts only compare against **active practices that are visible/selectable in Customer Center**, unless the UI intentionally supports restoring archived practices.
+4. Do not let a doctor/provider record block creation of a practice unless it belongs to an existing active practice.
+5. If a soft-deleted or archived practice matches, return a specific message:
+
+   ```text
+   This practice exists but is archived. Restore it or create with a different name.
+   ```
+6. If an active duplicate exists, return the matched practice ID/name so the UI can show a link or select it.
+7. If the conflict is actually account-number generation, change the error message to say account number already exists and generate a unique suffix instead of blocking on the name.
+8. Make the Customer Center list/search able to reveal the matching record when duplicate validation says one exists.
+9. Add tests for active duplicate, archived duplicate, doctor-name-only match, and account-number collision.
+
+**Guardrails**
+
+* Do not remove duplicate protection entirely.
+* Do not allow two active practices with the same normalized legal/display name unless that is already permitted by business rules.
+* Do not treat doctors as practices.
+* Do not hide the conflicting record from the user.
+* Avoid broad matching like `contains`, fuzzy matching, or comparing only first/last doctor name for practice uniqueness.
+
+**Acceptance criteria**
+
+* Creating **Dr. Susan Byrne** succeeds if no active visible practice with that exact normalized practice name exists.
+* If an active duplicate exists, the error identifies the existing practice and the user can select/open it.
+* If only an archived/deleted practice exists, the UI gives a restore/select option or allows recreation based on business rules.
+* A doctor named Dr. Susan Byrne under another practice does not block creating a new practice named Dr. Susan Byrne unless the app explicitly treats provider names as globally unique.
+* Account-number collisions are handled by generating a unique account number or showing the correct account-number error.
+* Customer Center search for “Susan Byrne” finds the record if duplicate validation says it exists.
+
+### Copy-Ready Replit Prompt
+
+Fix the Customer Center “practice already exists” false duplicate error.
+
+The user is creating a new provider practice with:
+
+```text
+Legal name: Dr. Susan Byrne
+Display name: Dr. Susan Byrne
+Primary doctor name: Dr. Susan Byrne
+Billing email: JP@PHILLIPSDL.COM
+Phone: (850) 363-3336
+Address: 117 Salem Ct
+City: Tallahassee
+State: FL
+Zip: 32301
+```
+
+The UI shows this error:
+
+```text
+A practice with this name already exists. Select existing practice instead.
+```
+
+But the Customer Center list visible behind the modal does not show Dr. Susan Byrne or any matching practice.
+
+Please inspect the Customer Center create-practice flow. Search for:
+
+```text
+A practice with this name already exists
+Create practice
+New practice
+Add a provider practice
+practice already exists
+select existing practice
+primaryDoctorName
+legalName
+displayName
+accountNumber
+normalizePracticeName
+duplicate practice
+createPractice
+insertPractice
+upsertPractice
+```
+
+Find the backend or validation code that throws this duplicate error.
+
+Fix the behavior safely:
+
+1. Duplicate practice-name validation should compare against active practices that are visible/selectable in Customer Center.
+2. Do not block practice creation because of a matching doctor/provider name alone.
+3. Do not block practice creation because of a soft-deleted, archived, or inactive practice unless the UI gives the user a clear restore/select option.
+4. If the duplicate check matches an existing active practice, return the matched practice ID/name and show a useful message/link in the UI.
+5. If the real conflict is generated account number, do not show “practice name already exists.” Either generate a unique account number suffix or show a correct account-number conflict message.
+6. Make Customer Center search able to find the matching record if the duplicate validator says one exists.
+7. Add or update tests for:
+
+   * active duplicate practice name
+   * archived/deleted duplicate
+   * matching doctor name but no matching practice
+   * account-number collision
+   * successful creation of Dr. Susan Byrne when no active duplicate exists
+
+Do not remove duplicate protection entirely. Fix the mismatch between backend duplicate validation and what the user can actually see/select.
+
+### Debug Analysis
+
+**Primary root-cause hypothesis**
+The duplicate check is querying a wider data set than the Customer Center list displays, or it is checking the wrong entity. The app may be finding a hidden/archived record, a provider/doctor row, or an account-number collision, then reporting it as a practice-name duplicate.
+
+**Supporting evidence**
+The screenshot shows the modal error while the visible Customer Center list includes practices like Bastien Dental Care, Blissful Dental Spa, Brittney K Craig DMD, CWD Dental Group, First Care Dental Associates, Russell Bartow Rainey DMD, and SDR1. It does not show Dr. Susan Byrne.
+
+**Alternate hypotheses worth checking**
+
+* The practice exists on another page of results, but search/list is not being refreshed or searched correctly.
+* Name normalization is over-aggressive, causing unrelated names to collide.
+* `primaryDoctorName` is being used as a globally unique practice key.
+* A deleted/archived practice remains in the database with a unique index.
+* Auto account number generation creates a duplicate but maps the error to the wrong message.
+
+**Why the recommended fix is best**
+The app needs one consistent source of truth: if creation is blocked because a practice exists, the user must be able to see and select that practice. If the matching record is hidden, archived, or a doctor row, the error should not block creation as a visible active practice duplicate.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce with the exact “Dr. Susan Byrne” form data.
+2. Inspect the network/API response for the create practice request.
+3. Find the duplicate validator or DB unique constraint causing the error.
+4. Log or inspect the matched record ID/type/status.
+5. Determine whether the match is active practice, archived practice, doctor, or account number.
+6. Patch duplicate validation to only block true active practice duplicates.
+7. Return the matched record details when blocking.
+8. Update the UI error to show the specific existing practice or restore option.
+9. Verify Customer Center search can reveal the matched record.
+10. Re-test creation of Dr. Susan Byrne and a known duplicate active practice.

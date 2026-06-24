@@ -1072,12 +1072,53 @@ maybe("Organizations CRUD (db integration)", () => {
       );
     });
 
-    // ── (6) Field validation: name, city, state, zip all required ──────────
-    // Missing name → 400 (Zod enforces min(1)).
-    // Missing city → 400, missing state → 400, missing zip → 400.
-    // All must return a human-readable error, never a raw Postgres/Drizzle string.
+    // ── (5c) Inactive practice with same name does NOT block creation ───────
+    // If a practice is deactivated (isActive = false), a new active practice
+    // with the same name should be allowed. The duplicate guard only fires for
+    // active provider orgs.
 
-    it("(6) missing name returns 400; missing city, state, or zip each returns 400", async () => {
+    it("(5c) inactive practice with same name does not block creating a new active one", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const practiceName = rid("InactiveDupPractice");
+
+      // Create the first practice.
+      const first = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: practiceName,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(first.status).toBe(201);
+      const firstId = first.body.data.id;
+      aiProviderIds.push(firstId);
+
+      // Deactivate it via PATCH.
+      const patch = await request(appMod.default)
+        .patch(`/api/organizations/${firstId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ isActive: false });
+      expect(patch.status).toBe(200);
+
+      // Creating a new practice with the same name must now succeed.
+      const second = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: practiceName,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(second.status).toBe(201);
+      aiProviderIds.push(second.body.data.id);
+    });
+
+    // ── (6) Field validation: name required ─────────────────────────────────
+    // Missing name → 400 (Zod enforces min(1)).
+    // City, state, and ZIP are optional; omitting them must not return an error.
+
+    it("(6) missing name returns 400; omitting city/state/zip is accepted", async () => {
       const { access } = await makeSession(aiOwnerId);
 
       // Missing name → Zod must reject.
@@ -1093,55 +1134,20 @@ maybe("Organizations CRUD (db integration)", () => {
         });
       expect(noName.status).toBe(400);
 
-      // Missing city → route validation must reject with 400.
-      const noCity = await request(appMod.default)
+      // Name only (no city/state/zip) → must be accepted.
+      const nameOnly = await request(appMod.default)
         .post("/api/organizations")
         .set("Authorization", `Bearer ${access}`)
         .send({
           type: "provider",
-          name: rid("NoCityPractice"),
+          name: rid("NameOnlyPractice"),
           parentLabOrganizationId: aiLabId,
-          state: "FL",
-          zip: "32801",
         });
       expect(
-        noCity.status,
-        "missing city must return 400, not a raw DB error"
-      ).toBe(400);
-      const noCityMsg: string = noCity.body.message ?? noCity.body.error ?? "";
-      expect(noCityMsg).not.toMatch(/insert into|organizations|drizzle/i);
-
-      // Missing state → route validation must reject with 400.
-      const noState = await request(appMod.default)
-        .post("/api/organizations")
-        .set("Authorization", `Bearer ${access}`)
-        .send({
-          type: "provider",
-          name: rid("NoStatePractice"),
-          parentLabOrganizationId: aiLabId,
-          city: "Orlando",
-          zip: "32801",
-        });
-      expect(
-        noState.status,
-        "missing state must return 400, not a raw DB error"
-      ).toBe(400);
-
-      // Missing zip → route validation must reject with 400.
-      const noZip = await request(appMod.default)
-        .post("/api/organizations")
-        .set("Authorization", `Bearer ${access}`)
-        .send({
-          type: "provider",
-          name: rid("NoZipPractice"),
-          parentLabOrganizationId: aiLabId,
-          city: "Orlando",
-          state: "FL",
-        });
-      expect(
-        noZip.status,
-        "missing zip must return 400, not a raw DB error"
-      ).toBe(400);
+        nameOnly.status,
+        "name-only practice (no city/state/zip) must be accepted"
+      ).toBe(201);
+      aiProviderIds.push(nameOnly.body.data.id);
     });
 
     // ── (7) parentLabOrganizationId is persisted on the provider org ───────

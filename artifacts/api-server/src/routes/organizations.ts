@@ -443,27 +443,16 @@ router.post(
       }
 
       if (parentLabOrganizationId) {
-        // Require city, state, and ZIP for provider orgs under a parent lab.
-        // These fields are always present in the AI-intake flow and on the Add
-        // Practice form; returning a readable 400 here prevents the user from
-        // ever seeing a raw not-null-violation SQL error.
-        if (
-          !input.city?.trim() ||
-          !input.state?.trim() ||
-          !input.zip?.trim()
-        ) {
-          throw new HttpError(
-            400,
-            "Practice name, city, state, and ZIP are required."
-          );
-        }
-
         // Guard against duplicate practice names within the same lab.
+        // Only active provider orgs are checked — inactive/archived practices
+        // and non-provider orgs do not block creation of a new active practice.
         // There is no DB unique index on (parentLabOrganizationId, name) so
         // this check is the only gate. Case-insensitive, soft-delete-aware.
         const existingByName = await db.query.organizations.findFirst({
           where: and(
             eq(organizations.parentLabOrganizationId, parentLabOrganizationId),
+            eq(organizations.type, "provider"),
+            eq(organizations.isActive, true),
             eq(
               sql`lower(${organizations.name})`,
               input.name.toLowerCase()
