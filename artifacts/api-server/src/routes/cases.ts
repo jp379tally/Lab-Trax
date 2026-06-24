@@ -4061,6 +4061,34 @@ router.get(
       byCase.set(r.caseId, list);
     }
 
+    // Fetch provider org data (account numbers, parent lab names) so the
+    // portal can display the lab-specific account number per case and in the
+    // header — without requiring an extra round-trip.
+    const providerOrgRows = await db
+      .select({
+        id: organizations.id,
+        accountNumber: organizations.accountNumber,
+        parentLabOrganizationId: organizations.parentLabOrganizationId,
+      })
+      .from(organizations)
+      .where(inArray(organizations.id, providerOrgIds));
+
+    const parentLabIds = Array.from(
+      new Set(
+        providerOrgRows
+          .map((o) => o.parentLabOrganizationId)
+          .filter((id): id is string => !!id)
+      )
+    );
+    const labOrgRows = parentLabIds.length
+      ? await db
+          .select({ id: organizations.id, name: organizations.name, displayName: organizations.displayName })
+          .from(organizations)
+          .where(inArray(organizations.id, parentLabIds))
+      : [];
+    const labById = new Map(labOrgRows.map((l) => [l.id, l]));
+    const providerOrgById = new Map(providerOrgRows.map((o) => [o.id, o]));
+
     const enriched = rows.map((row: any) => {
       const items = byCase.get(row.id) ?? [];
       // "missing" markers are clinical annotations, not billable restorations.
@@ -4076,6 +4104,10 @@ router.get(
       const materials = Array.from(
         new Set(billableItems.map((i: any) => i.material).filter(Boolean))
       ).join(", ");
+      const provOrg = providerOrgById.get(row.providerOrganizationId);
+      const lab = provOrg?.parentLabOrganizationId
+        ? labById.get(provOrg.parentLabOrganizationId)
+        : null;
       return {
         ...row,
         caseNotes: (row as any).rxNotes ?? null,
@@ -4083,6 +4115,11 @@ router.get(
         restorationTypes: types || null,
         restorationMaterials: materials || null,
         teeth: teeth || null,
+        // Lab-specific account number for this case's provider org.
+        // Used by the portal header (single lab) and per-row lab column
+        // (multi-lab providers).
+        providerAccountNumber: provOrg?.accountNumber ?? null,
+        labName: lab ? (lab.displayName || lab.name) : null,
       };
     });
 

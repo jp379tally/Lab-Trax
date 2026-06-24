@@ -81,6 +81,10 @@ export type SessionUser = {
   // confirmed via SMS OTP. Null when the current phone has not been
   // verified (or the number was changed after the last verification).
   phoneVerifiedAt?: string | null;
+  // Lab-scoped account number from the user's primary provider organization
+  // (e.g. "SDR1-2603-BC-1"). Surfaced by /api/auth/me via the active
+  // membership lookup. Null for lab users and providers with no membership.
+  practiceAccountNumber?: string | null;
 };
 
 type SessionListener = (user: SessionUser | null) => void;

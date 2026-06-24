@@ -4,6 +4,32 @@ import { organizations } from "@workspace/db";
 import { HttpError } from "./http";
 import { notDeleted } from "./soft-delete";
 
+/**
+ * Derive a short uppercase acronym from a lab name to prefix new provider
+ * account numbers (e.g. "Summit Dental Research" → "SDR", "Acme Lab 1" →
+ * "AL1"). Takes the first letter of each whitespace-separated token, up to
+ * 4 characters, upper-cased. Falls back to the first 4 letters of the name
+ * when the name is a single token. Returns "" when the name is empty so
+ * callers can skip the prefix safely.
+ */
+export function deriveLabAcronym(labName: string): string {
+  const cleaned = labName.trim();
+  if (!cleaned) return "";
+  const tokens = cleaned
+    .split(/\s+/)
+    .map((t) => t.replace(/[^A-Za-z0-9]/g, ""))
+    .filter(Boolean);
+  if (tokens.length === 0) return "";
+  if (tokens.length === 1) {
+    return tokens[0]!.slice(0, 4).toUpperCase();
+  }
+  return tokens
+    .slice(0, 4)
+    .map((t) => t[0]!)
+    .join("")
+    .toUpperCase();
+}
+
 // Strip non-numeric characters from a free-form street address. Returns the
 // first run of digits found (typically the house/street number); empty string
 // if none.
@@ -102,7 +128,11 @@ async function isAccountNumberAvailableAllRows(
 }
 
 // Generate a unique-within-the-lab account number from the practice info,
-// appending an integer tiebreaker until we find a free slot.
+// prepending the lab's acronym and appending an integer tiebreaker until a
+// free slot is found. Format: <ACRONYM>-<address-numerics>-<initials>-<n>
+// (e.g. "SDR1-2603-BC-1"). When the lab name cannot be resolved or produces
+// an empty acronym, the legacy format (<address-numerics>-<initials>-<n>) is
+// used so callers always get a valid account number.
 // Excludes soft-deleted orgs from the availability check so reclaimed account
 // numbers (from deleted practices) can be reused. If the DB insert later
 // rejects with a unique-constraint violation (the index is non-partial and
@@ -112,9 +142,21 @@ export async function generateProviderAccountNumber(
   parentLabOrganizationId: string,
   input: AccountNumberInput
 ): Promise<string> {
+  // Look up the parent lab to derive its acronym.
+  const labOrg = await db.query.organizations.findFirst({
+    where: and(
+      eq(organizations.id, parentLabOrganizationId),
+      eq(organizations.type, "lab")
+    ),
+    columns: { name: true, displayName: true },
+  });
+  const labName = (labOrg as any)?.displayName || (labOrg as any)?.name || "";
+  const acronym = deriveLabAcronym(labName);
+
   const base = buildAccountNumberBase(input);
   for (let i = 1; i <= 9999; i++) {
-    const candidate = `${base}-${i}`;
+    const rawCandidate = `${base}-${i}`;
+    const candidate = acronym ? `${acronym}-${rawCandidate}` : rawCandidate;
     if (
       await isAccountNumberAvailable(parentLabOrganizationId, candidate, null)
     ) {

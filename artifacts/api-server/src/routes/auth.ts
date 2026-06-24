@@ -457,6 +457,10 @@ router.post(
           displayName: string | null;
         }
       | null = null;
+    // True when the caller supplied a claimProvider payload. In that case the
+    // account number itself is the credential and we create an active
+    // membership immediately rather than a pending join request.
+    let isClaimProviderFlow = false;
     if (input.joinOrganizationId) {
       const [org] = await db
         .select()
@@ -478,15 +482,41 @@ router.post(
         ),
       });
       const trimmedAccountNumber = input.claimProvider.accountNumber.trim();
-      const practice = claimLab
-        ? await db.query.organizations.findFirst({
+      // Match the account number with alias support: the stored value may
+      // carry a lab-acronym prefix (e.g. "SDR-2603-BC-1") while the doctor
+      // may have the legacy bare form ("2603-BC-1"). We accept both by doing
+      // an exact match first, then a suffix match (stored ends with the input)
+      // scoped to the same lab — still server-side and tenant-isolated.
+      let practice: typeof claimLab | undefined;
+      if (claimLab) {
+        practice = await db.query.organizations.findFirst({
+          where: and(
+            eq(organizations.parentLabOrganizationId, claimLab.id),
+            eq(organizations.accountNumber, trimmedAccountNumber),
+            eq(organizations.type, "provider")
+          ),
+        });
+        if (!practice) {
+          // Suffix alias: stored value ends with "-<trimmedAccountNumber>"
+          // (prefix + separator + raw number). Use sql`` for the ilike-free
+          // suffix check so we stay on the server with a parameterised query.
+          const allProviderOrgs = await db.query.organizations.findMany({
             where: and(
               eq(organizations.parentLabOrganizationId, claimLab.id),
-              eq(organizations.accountNumber, trimmedAccountNumber),
-              eq(organizations.type, "provider")
+              eq(organizations.type, "provider"),
+              isNotNull(organizations.accountNumber)
             ),
-          })
-        : null;
+            columns: { id: true, name: true, displayName: true, accountNumber: true },
+          });
+          const suffixCandidate = allProviderOrgs.find((o) => {
+            const stored = o.accountNumber ?? "";
+            // Accept if stored === input OR stored ends with "-<input>" (prefix)
+            return stored === trimmedAccountNumber ||
+              stored.endsWith(`-${trimmedAccountNumber}`);
+          });
+          if (suffixCandidate) practice = suffixCandidate as typeof claimLab;
+        }
+      }
       if (!practice) {
         // Generic 404 so callers cannot probe for valid account numbers.
         throw new HttpError(
@@ -499,6 +529,8 @@ router.post(
         name: practice.name,
         displayName: practice.displayName,
       };
+      // The account number is the credential — approve membership immediately.
+      isClaimProviderFlow = true;
     }
 
     const initials = deriveUserInitials({
@@ -562,16 +594,30 @@ router.post(
 
       if (joinTargetOrg) {
         const targetName = joinTargetOrg.displayName || joinTargetOrg.name;
-        await tx.insert(organizationJoinRequests).values({
-          labId: joinTargetOrg.id,
-          userId: createdUser.id,
-          requestedRole: "user",
-          message: `${createdUser.username} would like to join ${targetName}.`,
-          status: "pending",
-        });
-        organizationInfo = { id: joinTargetOrg.id, name: targetName };
-        pendingJoinRequest = true;
-        responseMessage = `Your request to join ${targetName} has been sent to the lab admin.`;
+        if (isClaimProviderFlow) {
+          // claimProvider: the account number is the credential, so the
+          // membership is approved immediately without admin intervention.
+          await tx.insert(organizationMemberships).values({
+            labId: joinTargetOrg.id,
+            userId: createdUser.id,
+            role: "user",
+            status: "active",
+            joinedAt: new Date(),
+          });
+          organizationInfo = { id: joinTargetOrg.id, name: targetName };
+          responseMessage = `${targetName} linked to your account.`;
+        } else {
+          await tx.insert(organizationJoinRequests).values({
+            labId: joinTargetOrg.id,
+            userId: createdUser.id,
+            requestedRole: "user",
+            message: `${createdUser.username} would like to join ${targetName}.`,
+            status: "pending",
+          });
+          organizationInfo = { id: joinTargetOrg.id, name: targetName };
+          pendingJoinRequest = true;
+          responseMessage = `Your request to join ${targetName} has been sent to the lab admin.`;
+        }
       } else if (shouldCreateOrganization) {
         const orgType = input.userType === "provider" ? "provider" : "lab";
         // Account epic Phase 3 — lab names are unique (case-insensitive)
