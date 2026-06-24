@@ -137,7 +137,7 @@ export default function BatchLocateScreen() {
 
   // Station selection state
   const [apiLocations, setApiLocations] = useState<LabLocation[] | null>(null);
-  const [selectedStation, setSelectedStation] = useState<{ value: string; label: string } | null>(null);
+  const [selectedStation, setSelectedStation] = useState<{ id: string; value: string; label: string } | null>(null);
 
   // Moving state
   const [moveProgress, setMoveProgress] = useState(0);
@@ -166,15 +166,17 @@ export default function BatchLocateScreen() {
     return () => { cancelled = true; };
   }, [step, orgId]);
 
-  const stations: { value: string; label: string }[] = useMemo(() => {
+  const stations: { id: string; value: string; label: string }[] = useMemo(() => {
     if (apiLocations !== null) {
       return apiLocations
         .sort((a, b) => a.sortOrder - b.sortOrder)
         // `value` is the mapped workflow stage (a valid case-status), NOT the
         // free-form code — sending the code broke custom stations.
-        .map((loc) => ({ value: loc.status, label: loc.name }));
+        // `id` is the unique location row id — used for selection/key so that
+        // two locations sharing the same status don't both appear selected.
+        .map((loc) => ({ id: loc.id, value: loc.status, label: loc.name }));
     }
-    return CASE_STATIONS;
+    return CASE_STATIONS.map((s) => ({ id: s.value, value: s.value, label: s.label }));
   }, [apiLocations]);
 
   // Clean up notice timer on unmount
@@ -538,10 +540,10 @@ export default function BatchLocateScreen() {
           showsVerticalScrollIndicator={false}
         >
           {stations.map((station, index) => {
-            const active = selectedStation?.value === station.value;
+            const active = selectedStation?.id === station.id;
             const isLast = index === stations.length - 1;
             return (
-              <React.Fragment key={station.value}>
+              <React.Fragment key={station.id}>
                 <Pressable
                   style={({ pressed }) => [
                     styles.stationRow,
