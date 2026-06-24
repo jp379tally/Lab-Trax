@@ -32,6 +32,10 @@ import { fileURLToPath } from "node:url";
 import { Storage } from "@google-cloud/storage";
 import type { ExternalAccountClientOptions } from "google-auth-library";
 import { parseReleaseNotes } from "./lib/parse-release-notes.js";
+import {
+  shouldUploadLatestYml,
+  validateLatestYmlContent,
+} from "./lib/latest-yml-guard.js";
 
 const REPLIT_SIDECAR_ENDPOINT = "http://127.0.0.1:1106";
 const LATEST_YML_KEY_SUFFIX = "desktop-installer/latest.yml";
@@ -43,7 +47,11 @@ const ELECTRON_DIST = resolve(
 );
 const DEFAULT_EXE_PATH = resolve(ELECTRON_DIST, "LabTrax-Setup.exe");
 const DEFAULT_ZIP_PATH = resolve(ELECTRON_DIST, "LabTrax-Windows-Portable.zip");
+// Allow tests to override the latest.yml path without touching the real electron-dist.
+// In production this is always the electron-dist location.
 const DEFAULT_LATEST_YML_PATH = resolve(ELECTRON_DIST, "latest.yml");
+const LATEST_YML_PATH =
+  process.env.LABTRAX_LATEST_YML_PATH ?? DEFAULT_LATEST_YML_PATH;
 const RELEASE_NOTES_PATH = resolve(
   __dirname,
   "../../artifacts/labtrax-desktop/RELEASE_NOTES.md",
@@ -53,7 +61,7 @@ const DESKTOP_PKG_PATH = resolve(
   "../../artifacts/labtrax-desktop/package.json",
 );
 
-type InstallerKind = "exe" | "zip" | "dmg";
+type InstallerKind = import("./lib/latest-yml-guard.js").InstallerKind;
 
 interface KindConfig {
   objectKeySuffix: string;
@@ -155,6 +163,28 @@ async function main() {
   console.log(
     `[upload-installer] Reading ${localPath} (${sizeMb} MB) — kind: ${kind}`,
   );
+
+  // ── Pre-validate latest.yml before any GCS upload (fail fast) ────────────
+  // Validate the auto-update manifest content BEFORE uploading the installer.
+  // This avoids a partial state where the installer is in App Storage but the
+  // manifest is corrupt: if validation fails here, nothing has been uploaded.
+  //
+  // For the portable-ZIP path, skip upload entirely and log a notice.
+  // For the EXE/DMG path, read and validate the existing latest.yml now;
+  // store the buffer so we can skip the re-read in uploadLatestYml().
+  let prevalidatedYmlBuffer: Buffer | null = null;
+  if (!shouldUploadLatestYml(kind)) {
+    console.log(
+      "[upload-installer] Skipping latest.yml upload — portable ZIP publish " +
+      "must never overwrite the auto-update feed. " +
+      "latest.yml is only updated by the NSIS installer (EXE) or macOS DMG publish path.",
+    );
+  } else {
+    prevalidatedYmlBuffer = await readAndValidateLatestYml();
+    // readAndValidateLatestYml() calls process.exit(1) on invalid content;
+    // null is returned only when latest.yml is absent (upload is skipped).
+  }
+
   const buffer = await readFile(localPath);
 
   const fullPath = `${privateDir}/${cfg.objectKeySuffix}`;
@@ -190,65 +220,54 @@ async function main() {
     `[upload-installer] ✓ Uploaded. Size=${meta.size}B updated=${meta.updated}`,
   );
 
-  // Only upload latest.yml when publishing the NSIS installer (exe) or macOS
-  // DMG — never for the portable ZIP.
-  //
-  // CRITICAL INVARIANT: latest.yml must only reference LabTrax-Setup.exe.
-  // If latest.yml pointed at the portable ZIP, NSIS-installed users' auto-
-  // updater would extract the ZIP to a temp dir, leaving the stable install
-  // path stale and breaking every pinned taskbar / Start Menu shortcut.
-  if (kind === "exe" || kind === "dmg") {
-    await uploadLatestYml(storage, privateDir, kind);
-  } else {
-    console.log(
-      "[upload-installer] Skipping latest.yml upload — portable ZIP publish " +
-      "must never overwrite the auto-update feed. " +
-      "latest.yml is only updated by the NSIS installer (EXE) or macOS DMG publish path.",
-    );
+  if (prevalidatedYmlBuffer) {
+    await uploadLatestYml(storage, privateDir, prevalidatedYmlBuffer);
   }
   await pushInstallerMetadata(cfg.downloadUrl);
 }
 
-async function uploadLatestYml(
-  storage: Storage,
-  privateDir: string,
-  kind: InstallerKind,
-): Promise<void> {
-  // Guard: zip installs must never upload latest.yml (enforced at call site,
-  // but re-checked here as defence-in-depth).
-  if (kind === "zip") {
-    console.log(
-      "[upload-installer] uploadLatestYml: skipped — kind=zip must not update the auto-update feed.",
-    );
-    return;
-  }
-
+/**
+ * Reads and validates the latest.yml file before any GCS upload.
+ * Returns the file buffer if valid, or null if absent (no upload needed).
+ * Calls process.exit(1) with a clear error when the content is invalid
+ * (i.e. it references LabTrax-Windows-Portable.zip).
+ *
+ * The file path is LATEST_YML_PATH, which defaults to the standard
+ * electron-dist location but can be overridden via LABTRAX_LATEST_YML_PATH
+ * for testing purposes.
+ */
+async function readAndValidateLatestYml(): Promise<Buffer | null> {
   let ymlBuffer: Buffer;
   try {
-    await access(DEFAULT_LATEST_YML_PATH);
-    ymlBuffer = await readFile(DEFAULT_LATEST_YML_PATH);
+    await access(LATEST_YML_PATH);
+    ymlBuffer = await readFile(LATEST_YML_PATH);
   } catch {
     console.log(
-      "[upload-installer] No latest.yml found at electron-dist/latest.yml — skipping auto-update manifest upload.",
+      "[upload-installer] No latest.yml found — skipping auto-update manifest upload.",
     );
-    return;
+    return null;
   }
 
-  // Safety check: reject a latest.yml that still references the portable ZIP.
-  // This catches the scenario where a stale latest.yml (from a previous ZIP
-  // build) is present in electron-dist when an EXE publish runs, rather than
-  // silently uploading a broken manifest to the auto-update feed.
   const ymlContent = ymlBuffer.toString("utf8");
-  if (ymlContent.includes("LabTrax-Windows-Portable.zip")) {
-    console.error(
-      "[upload-installer] ERROR: electron-dist/latest.yml references " +
-      "LabTrax-Windows-Portable.zip — this must never be uploaded as the " +
-      "auto-update feed for NSIS-installed users. Delete the file and " +
-      "re-run the build to generate a correct latest.yml from the EXE.",
-    );
+  const guardResult = validateLatestYmlContent(ymlContent);
+  if (!guardResult.ok) {
+    console.error(`[upload-installer] ERROR: ${guardResult.error}`);
     process.exit(1);
   }
 
+  return ymlBuffer;
+}
+
+/**
+ * Uploads a pre-validated latest.yml buffer to GCS.
+ * The buffer must have already passed validateLatestYmlContent — do not pass
+ * an unvalidated buffer here.
+ */
+async function uploadLatestYml(
+  storage: Storage,
+  privateDir: string,
+  ymlBuffer: Buffer,
+): Promise<void> {
   const fullPath = `${privateDir}/${LATEST_YML_KEY_SUFFIX}`;
   const trimmed = fullPath.startsWith("/") ? fullPath.slice(1) : fullPath;
   const slash = trimmed.indexOf("/");

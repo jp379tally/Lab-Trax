@@ -46,6 +46,7 @@ All test paths below are relative to the repo root unless already prefixed. Serv
 | 20 | Organizations / membership / roles | desktop | `routes/organizations.test.ts`, `routes/account-epic-contract.test.ts` | Yes — API tests |
 | 21 | Desktop installer availability | desktop | `installer-settings-status.test.ts`, `installer-publish-e2e.test.ts` (gated on real App Storage env) | Yes — API tests + desktop publish gate |
 | 22 | Signed desktop build verification | desktop | `bash scripts/test-signing-verification.sh` | Yes — **blocks desktop release** |
+| 23 | latest.yml auto-update feed guard | desktop | `scripts/src/__tests__/latest-yml-guard.test.ts` (`pnpm --filter @workspace/scripts run test`) | Yes — **blocks desktop release** |
 
 ### Protected Workflow Matrix — Mobile (21)
 
@@ -112,7 +113,7 @@ pnpm --filter @workspace/labtrax-desktop run test
 # 4. Mobile unit + smoke tests
 pnpm --filter @workspace/labtrax run test
 
-# 5. Scripts tests (includes the legacy-path-fence unit tests)
+# 5. Scripts tests (includes the legacy-path-fence unit tests and the latest.yml auto-update feed guard)
 pnpm --filter @workspace/scripts run test
 
 # 6. Backup / restore integrity (REQUIRES DATABASE_URL) — hard blocking gate
