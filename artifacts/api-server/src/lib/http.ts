@@ -58,6 +58,30 @@ export function extractPgCode(err: unknown): string | undefined {
  *   }
  *   ```
  */
+/**
+ * Extract the PostgreSQL constraint name from a raw Drizzle / pg error.
+ *
+ * Works like `extractPgCode` but returns the `constraint` property that
+ * identifies which unique/FK/check constraint fired.  Returns `undefined`
+ * when the error is not a recognised pg error object.
+ */
+export function extractPgConstraintName(err: unknown): string | undefined {
+  if (err == null || typeof err !== "object") return undefined;
+  const pgLike =
+    "code" in err
+      ? (err as Record<string, unknown>)
+      : "cause" in err &&
+          err.cause != null &&
+          typeof err.cause === "object" &&
+          "code" in err.cause
+        ? (err as { cause: Record<string, unknown> }).cause
+        : null;
+  if (!pgLike) return undefined;
+  return typeof pgLike["constraint"] === "string"
+    ? pgLike["constraint"]
+    : undefined;
+}
+
 export function wrapDbError(
   err: unknown,
   messages?: {

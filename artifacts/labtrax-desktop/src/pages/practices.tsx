@@ -5,7 +5,7 @@ import {
   getListUnassignedDoctorsQueryKey,
   useListUnassignedDoctors,
 } from "@workspace/api-client-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatMoney, formatPhone, relativeTime } from "@/lib/format";
@@ -798,6 +798,11 @@ export default function PracticesPage() {
         <AddPracticeDialog
           adminLabOrgIds={adminLabOrgIds}
           onClose={() => setAdding(false)}
+          onNavigateToPractice={(orgId) => {
+            setAdding(false);
+            const targetOrg = orgs.find((o) => o.id === orgId);
+            if (targetOrg) setEditing(targetOrg);
+          }}
         />
       )}
       {mergeDialog && (
@@ -888,12 +893,15 @@ interface CreatedDoctor {
 export function AddPracticeDialog({
   adminLabOrgIds,
   onClose,
+  onNavigateToPractice,
 }: {
   adminLabOrgIds: string[];
   onClose: () => void;
+  onNavigateToPractice?: (orgId: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  const [conflictOrgId, setConflictOrgId] = useState<string | null>(null);
   const [fields, setFields] = useState<AddPracticeFields>({
     name: "",
     displayName: "",
@@ -976,7 +984,32 @@ export function AddPracticeDialog({
       setCreatedOrgId(org.id);
       await submitDoctors(org.id);
     },
-    onError: (err: Error) => setError(err.message || "Could not create practice."),
+    onError: (err: Error) => {
+      if (
+        err instanceof ApiError &&
+        err.status === 409 &&
+        err.body != null &&
+        typeof err.body === "object" &&
+        "details" in (err.body as object) &&
+        (err.body as Record<string, unknown>).details != null &&
+        typeof (err.body as Record<string, unknown>).details === "object" &&
+        "conflictingOrg" in ((err.body as Record<string, unknown>).details as object)
+      ) {
+        const conflict = (
+          (err.body as Record<string, unknown>).details as Record<string, unknown>
+        ).conflictingOrg as { id?: string; name?: string; displayName?: string; accountNumber?: string };
+        const label = conflict.displayName || conflict.name || "an existing practice";
+        const acct = conflict.accountNumber ? ` (account #${conflict.accountNumber})` : "";
+        setError(
+          `A practice named "${label}"${acct} already exists in this lab. ` +
+            "Open it to continue, or use a different name."
+        );
+        setConflictOrgId(conflict.id ?? null);
+      } else {
+        setError(err.message || "Could not create practice.");
+        setConflictOrgId(null);
+      }
+    },
   });
 
   async function submitDoctors(orgId: string) {
@@ -1060,7 +1093,20 @@ export function AddPracticeDialog({
         <form onSubmit={handleSubmit} className="flex-1 flex flex-col min-h-0">
         <div className="flex-1 overflow-y-auto scrollbar-thin px-6 py-6 space-y-6">
           {error && (
-            <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</div>
+            <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md flex items-start justify-between gap-3">
+              <span>{error}</span>
+              {conflictOrgId && onNavigateToPractice && (
+                <button
+                  type="button"
+                  className="shrink-0 underline font-medium whitespace-nowrap hover:no-underline"
+                  onClick={() => {
+                    onNavigateToPractice(conflictOrgId);
+                  }}
+                >
+                  View practice →
+                </button>
+              )}
+            </div>
           )}
 
           <section className="grid grid-cols-2 gap-4">

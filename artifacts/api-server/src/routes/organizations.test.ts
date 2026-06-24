@@ -13,7 +13,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { inArray, eq } from "drizzle-orm";
+import { inArray, eq, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import request from "supertest";
 import * as path from "node:path";
@@ -1112,6 +1112,274 @@ maybe("Organizations CRUD (db integration)", () => {
         });
       expect(second.status).toBe(201);
       aiProviderIds.push(second.body.data.id);
+    });
+
+    // ── (5d) Soft-deleted practice with same name does NOT block creation ───
+    // A soft-deleted org (deleted_at IS NOT NULL) must be excluded from the
+    // duplicate-name check so a new active practice can be created.
+
+    it("(5d) soft-deleted practice with same name does not block creating a new active one", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const practiceName = rid("SoftDelDupPractice");
+
+      // Create the first practice.
+      const first = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: practiceName,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(first.status).toBe(201);
+      const firstId: string = first.body.data.id;
+      aiProviderIds.push(firstId);
+
+      // Soft-delete it directly via the db.
+      const { db, organizations: orgsTable } = dbMod as any;
+      await db
+        .update(orgsTable)
+        .set({ deletedAt: new Date(), deletedByUserId: aiOwnerId })
+        .where(eq(orgsTable.id, firstId));
+
+      // Creating a new practice with the same name must now succeed.
+      const second = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: practiceName,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(
+        second.status,
+        "creation must succeed when the same-name practice is soft-deleted"
+      ).toBe(201);
+      aiProviderIds.push(second.body.data.id);
+    });
+
+    // ── (5e) Name-duplicate 409 includes the conflicting org's details ───────
+    // The 409 response for a name conflict must include id, name, displayName,
+    // and accountNumber so the desktop UI can navigate to the conflicting org.
+
+    it("(5e) name-duplicate 409 includes conflicting org id, name, displayName, accountNumber", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const practiceName = rid("ConflictDetailPractice");
+      const displayName = "Conflict Detail Practice Display";
+
+      const first = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: practiceName,
+          displayName,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(first.status).toBe(201);
+      const firstId: string = first.body.data.id;
+      const firstAccountNumber: string = first.body.data.accountNumber;
+      aiProviderIds.push(firstId);
+
+      // Same name → must 409 with conflict details.
+      const second = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: practiceName,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(second.status).toBe(409);
+      const details = second.body.details?.conflictingOrg;
+      expect(details, "409 must include details.conflictingOrg").toBeTruthy();
+      expect(details.id).toBe(firstId);
+      expect(details.name).toBe(practiceName);
+      expect(details.displayName).toBe(displayName);
+      expect(details.accountNumber).toBe(firstAccountNumber);
+    });
+
+    // ── (5f) Same name under a different lab does NOT block creation ─────────
+    // The duplicate-name guard is scoped to the parent lab; an identical name
+    // under a different lab must be allowed.
+
+    it("(5f) same practice name under a different lab does not block creation", async () => {
+      // Create a second independent lab for this test.
+      const secondLabOwnerId = rid("u");
+      const secondLabId = rid("lab");
+      const secondLabMshipId = rid("mship");
+      const { db, users, organizations: orgsTable, organizationMemberships } = dbMod as any;
+
+      await db.insert(users).values({
+        id: secondLabOwnerId,
+        username: `lab2owner_${randomBytes(4).toString("hex")}`,
+        password: "x",
+        role: "lab",
+        email: `lab2_${randomBytes(4).toString("hex")}@example.com`,
+      });
+      await db.insert(orgsTable).values({
+        id: secondLabId,
+        type: "lab",
+        name: `SecondLab_${randomBytes(4).toString("hex")}`,
+        createdByUserId: secondLabOwnerId,
+        isActive: true,
+      });
+      await db.insert(organizationMemberships).values({
+        id: secondLabMshipId,
+        labId: secondLabId,
+        userId: secondLabOwnerId,
+        role: "owner",
+        status: "active",
+        approvedByUserId: secondLabOwnerId,
+        joinedAt: new Date(),
+      });
+
+      const { access: ownerAccess } = await makeSession(aiOwnerId);
+      const { access: lab2Access } = await makeSession(secondLabOwnerId);
+
+      const practiceName = rid("CrossLabPractice");
+
+      // Create in the first lab.
+      const first = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${ownerAccess}`)
+        .send({
+          type: "provider",
+          name: practiceName,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(first.status).toBe(201);
+      aiProviderIds.push(first.body.data.id);
+
+      // Same name in the second lab → must succeed.
+      const second = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${lab2Access}`)
+        .send({
+          type: "provider",
+          name: practiceName,
+          parentLabOrganizationId: secondLabId,
+        });
+      expect(
+        second.status,
+        "same name is allowed in a different lab"
+      ).toBe(201);
+
+      // Clean up the second lab's provider and the lab itself.
+      const provId2: string = second.body.data.id;
+      const { auditLogs, userSessions } = dbMod as any;
+      await db.delete(auditLogs).where(eq(auditLogs.organizationId, provId2));
+      await db.delete(orgsTable).where(eq(orgsTable.id, provId2));
+      await db.delete(organizationMemberships).where(eq(organizationMemberships.id, secondLabMshipId));
+      await db.delete(auditLogs).where(eq(auditLogs.organizationId, secondLabId));
+      await db.delete(orgsTable).where(eq(orgsTable.id, secondLabId));
+      await db.delete(userSessions).where(eq(userSessions.userId, secondLabOwnerId));
+      await db.delete(users).where(eq(users.id, secondLabOwnerId));
+    });
+
+    // ── (5g) Custom account number collision → account-number-specific error ─
+    // When a caller supplies a custom account number that is already taken by
+    // another active practice in the same lab, the error must be about the
+    // account number — not a misleading "practice already exists" message.
+
+    it("(5g) custom account number collision produces an account-number-specific error", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const accountNumber = `ACCT-${randomBytes(4).toString("hex")}`;
+
+      const first = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("AcctNumFirst"),
+          accountNumber,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(first.status).toBe(201);
+      aiProviderIds.push(first.body.data.id);
+
+      // Different practice name but same account number.
+      const second = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("AcctNumSecond"),
+          accountNumber,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(second.status).toBe(409);
+      const msg: string = second.body.message ?? second.body.error ?? "";
+      // Must reference the account number, not practice name.
+      expect(msg).not.toBe(
+        "A practice with this name already exists. Select existing practice instead."
+      );
+      expect(msg).toMatch(/account number/i);
+    });
+
+    // ── (5h) Platform account number collision → retried with null, creation succeeds ─
+    // When the platform-account-number allocator picks a sequence slot that
+    // collides with an existing org's platform account number in the DB
+    // (organizations_platform_account_number_unique), the insert catch block must
+    // retry with platformAccountNumber = null so the org is still created (201).
+
+    it("(5h) platform account number collision is retried with null and creation succeeds", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const { db, organizations: orgsTable, auditLogs } = dbMod as any;
+
+      const year = new Date().getUTCFullYear();
+      const yy = String(year).slice(-2);
+
+      // Ensure the sequence row exists and read the next_seq value we will
+      // collide with. We use a very large offset (9000000) to avoid stepping on
+      // any numbers other tests generate naturally.
+      const offsetSeq = 9_000_000 + Math.floor(Math.random() * 1000);
+      await db.execute(sql`
+        INSERT INTO platform_account_sequences (year, entity_type, next_seq, updated_at)
+        VALUES (${year}, 'org', ${offsetSeq}, now())
+        ON CONFLICT (year, entity_type) DO UPDATE SET next_seq = ${offsetSeq}, updated_at = now()
+      `);
+
+      // Derive the platform account number the allocator will generate next.
+      // Using displayName "XX" gives deriveAccountNameParts → {first:"X", last:"X"}.
+      const collisionAcctNum = `${offsetSeq}${yy}XX`;
+
+      // Pre-insert a blocking org with that platform account number so the
+      // first insert attempt by the API will hit the unique constraint.
+      const blockingOrgId = `test-pan-block-${randomBytes(4).toString("hex")}`;
+      await db.insert(orgsTable).values({
+        id: blockingOrgId,
+        type: "provider",
+        name: `PanBlocker_${randomBytes(4).toString("hex")}`,
+        platformAccountNumber: collisionAcctNum,
+        createdByUserId: aiOwnerId,
+      });
+
+      try {
+        // Creating a new org must succeed despite the collision: the catch block
+        // retries with platformAccountNumber = null.
+        const r = await request(appMod.default)
+          .post("/api/organizations")
+          .set("Authorization", `Bearer ${access}`)
+          .send({
+            type: "provider",
+            name: rid("PanCollisionPractice"),
+            displayName: "XX",
+            parentLabOrganizationId: aiLabId,
+          });
+
+        expect(
+          r.status,
+          `Expected 201 after platform account number collision retry, got ${r.status}: ${JSON.stringify(r.body)}`
+        ).toBe(201);
+        // The created org should have null platformAccountNumber (the retry path).
+        expect(r.body.data.platformAccountNumber).toBeNull();
+        aiProviderIds.push(r.body.data.id);
+      } finally {
+        // Clean up the blocking org.
+        await db.delete(auditLogs).where(eq(auditLogs.organizationId, blockingOrgId));
+        await db.delete(orgsTable).where(eq(orgsTable.id, blockingOrgId));
+      }
     });
 
     // ── (6) Field validation: name required ─────────────────────────────────
