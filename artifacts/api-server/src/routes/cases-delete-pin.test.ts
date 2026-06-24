@@ -33,6 +33,14 @@ vi.mock("../lib/verification.js", () => ({
   normalizePhoneTarget: (p: string) => p.replace(/\D/g, ""),
 }));
 
+vi.mock("../lib/sms.js", () => ({
+  sendSms: vi.fn().mockResolvedValue({ ok: true, skipped: true }),
+  isConfigured: vi.fn().mockReturnValue(false),
+  isDevOrTest: vi.fn().mockReturnValue(true),
+  sendVerificationSms: vi.fn().mockResolvedValue(undefined),
+  parseInboundSms: vi.fn().mockReturnValue(null),
+}));
+
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
 const maybe = SHOULD_RUN ? describe : describe.skip;
 
