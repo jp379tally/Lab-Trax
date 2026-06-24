@@ -167,7 +167,7 @@ export default function BatchLocateScreen() {
   }, [step, orgId]);
 
   const stations: { id: string; value: string; label: string }[] = useMemo(() => {
-    if (apiLocations !== null) {
+    if (apiLocations !== null && apiLocations.length > 0) {
       return apiLocations
         .sort((a, b) => a.sortOrder - b.sortOrder)
         // `value` is the mapped workflow stage (a valid case-status), NOT the

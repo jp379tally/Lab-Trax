@@ -140,8 +140,8 @@ export function LocateCaseSheet(props: Props) {
         const unexplained = caseIds.length - updatedCount - skippedLegacyCount;
         const failedIds: string[] = unexplained > 0 ? caseIds.slice(-(unexplained)) : [];
 
-        onDismiss();
         void queryClient.invalidateQueries({ queryKey: ["cases"] });
+        onDismiss();
 
         props.onBulkLocated(succeededIds, failedIds);
 
@@ -176,8 +176,8 @@ export function LocateCaseSheet(props: Props) {
         data: { status: selectedStatus as UpdateCaseInputStatus },
       });
       const successId = locatingCase.id;
-      onDismiss();
       void queryClient.invalidateQueries({ queryKey: ["cases"] });
+      onDismiss();
       props.onLocated(successId);
     } catch (e) {
       Alert.alert(
@@ -201,7 +201,7 @@ export function LocateCaseSheet(props: Props) {
     : null;
 
   const stations: { id: string; value: string; label: string }[] =
-    apiLocations !== null
+    apiLocations !== null && apiLocations.length > 0
       ? apiLocations
           // `value` = mapped workflow stage sent to the API (a valid case-status).
           // `id`    = unique location row id used for selection + React key, so
