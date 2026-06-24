@@ -4,12 +4,12 @@
 
 ### Mode A: Replit-native (active in this environment)
 
-Auto-update is powered by the **generic** electron-updater provider. The
-publish pipeline writes `latest.yml` (SHA-512 manifest) to App Storage and
-serves it at `GET /downloads/latest.yml`. electron-builder bakes the feed
-URL into `resources/app-update.yml` inside the packaged app so every
-installed copy knows where to check for updates — **no `UPDATE_FEED_URL`
-environment variable is required on the end-user's machine.**
+Auto-update is powered by the **generic** electron-updater provider.
+`latest.yml` (the SHA-512 manifest electron-updater reads at runtime) is
+served at `GET /downloads/latest.yml`. electron-builder bakes the feed URL
+into `resources/app-update.yml` inside the packaged app so every installed
+copy knows where to check for updates — **no `UPDATE_FEED_URL` environment
+variable is required on the end-user's machine.**
 
 The GitHub Actions auto-tag pipeline (`auto-tag-desktop-release.yml` +
 `release.yml`) requires a GitHub remote and `BUILD_BOT_TOKEN` — **neither
@@ -21,13 +21,48 @@ is available in this Replit subrepl**. The effective release mechanism is:
 | **Manual** — "Desktop Build + Publish" Replit workflow | Restart from the workflow pane at any time |
 | **CLI** — `bash scripts/desktop-build-publish.sh` | Run directly from the repo root |
 
-All three paths:
+All three Replit-native paths:
 1. Build the Vite renderer + electron-builder packager (produces `win-unpacked/`)
 2. Zip `win-unpacked` → `LabTrax-Windows-Portable.zip` (~146 MB)
-3. Generate `electron-dist/latest.yml` from the ZIP's SHA-512 digest
-4. Upload ZIP + `latest.yml` to App Storage
-5. Serve at `GET /downloads/LabTrax-Windows-Portable.zip` and `GET /downloads/latest.yml`
-6. Bake `UPDATE_FEED_URL` (= `${BASE_URL}/downloads`) into `app-update.yml` inside the packaged app so electron-updater knows where to check for updates
+3. Upload the ZIP to App Storage → served at `GET /downloads/LabTrax-Windows-Portable.zip`
+4. Bake `UPDATE_FEED_URL` (= `${BASE_URL}/downloads`) into `app-update.yml` inside the packaged app so electron-updater knows where to check for updates
+
+> **⚠ `latest.yml` is NOT updated by the Replit-native path.**
+>
+> The Replit / Linux build cannot produce an NSIS installer (Wine is not
+> available). `latest.yml` **must only reference `LabTrax-Setup.exe`** —
+> the real NSIS installer. If `latest.yml` ever references the portable ZIP,
+> NSIS-installed users' auto-updater extracts the ZIP to a temp dir and
+> leaves the original `%LOCALAPPDATA%\Programs\LabTrax\LabTrax.exe` stale,
+> breaking every pinned taskbar and Start Menu shortcut with the error:
+> *"The item 'LabTrax.exe' that this shortcut refers to has been changed or
+> moved."*
+>
+> **`latest.yml` is only updated by the GitHub Actions Windows build
+> (`release.yml`), which runs on `windows-latest` and produces the real
+> `LabTrax-Setup.exe` NSIS installer.**
+
+### Pushing an auto-update to NSIS-installed users (Mode A)
+
+To update the auto-update feed so that NSIS-installed users receive an
+update notification, the GitHub Actions `release.yml` Windows build must run:
+
+1. Push a `v*` tag to trigger `release.yml`, **or** manually re-run the
+   `release.yml` workflow from the GitHub Actions tab.
+2. The Windows job builds `LabTrax-Setup.exe`, generates `latest.yml`
+   referencing the EXE, and publishes both to App Storage via
+   `/api/admin/desktop-installer/publish`.
+3. Verify: `curl -fsS ${PUBLISH_API_BASE_URL}/downloads/latest.yml | head`
+   — the `path:` field must show `LabTrax-Setup.exe`, not
+   `LabTrax-Windows-Portable.zip`.
+
+### Users with broken shortcuts
+
+Users who installed via `LabTrax-Setup.exe` and have a broken shortcut
+after a Replit-native update (shortcut points at a stale path) should
+reinstall from the current `LabTrax-Setup.exe` at `/downloads/LabTrax-Setup.exe`.
+Their user data and settings are preserved — the NSIS installer writes to
+the same `%LOCALAPPDATA%\Programs\LabTrax\` directory.
 
 **Skip a rebuild:** include `[skip desktop-release]` or `[skip ci]` in the merge commit subject.
 

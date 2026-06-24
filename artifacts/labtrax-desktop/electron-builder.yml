@@ -50,6 +50,14 @@ nsis:
   # ("LabTrax Setup 1.2.3.exe"), which breaks the stable /downloads/
   # URL the API serves.
   artifactName: LabTrax-Setup.${ext}
+  # Explicit, stable GUID locks the app identity so Windows always treats
+  # a new build as an update to the same installed application rather than
+  # a new one. Without an explicit GUID, electron-builder derives it from
+  # appId — making it explicit here prevents any accidental regeneration if
+  # appId ever drifts, which would create a second "application" in
+  # Programs & Features and leave all pinned taskbar shortcuts pointing at
+  # the old install path.
+  guid: "{6E4A8B2C-1D3F-4A5B-9C0D-EF1234567890}"
 
 # ─── macOS ──────────────────────────────────────────────────────────────────
 mac:

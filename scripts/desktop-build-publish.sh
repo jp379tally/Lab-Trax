@@ -3,16 +3,24 @@ set -euo pipefail
 # Desktop Build + Publish Script
 #
 # Builds the LabTrax Desktop Electron app and publishes the resulting
-# installer (and latest.yml auto-update manifest) to App Storage so the API
-# server can serve it:
+# installer to App Storage so the API server can serve it.
 #
-#   Preferred (NSIS installer — built by CI on windows-latest or locally on Windows):
+# ─── AUTO-UPDATE FEED POLICY ─────────────────────────────────────────────────
+# latest.yml is the electron-updater manifest consumed by NSIS-installed copies
+# of LabTrax to discover and download new versions. It MUST reference
+# LabTrax-Setup.exe — NEVER the portable ZIP. If latest.yml points at the ZIP,
+# NSIS-installed users' auto-updater extracts the ZIP to a temp dir and leaves
+# the original %LOCALAPPDATA%\Programs\LabTrax\LabTrax.exe stale, breaking
+# every pinned taskbar and Start Menu shortcut.
+#
+#   NSIS installer path (Windows CI / release.yml):
 #     GET /downloads/LabTrax-Setup.exe
-#     GET /downloads/latest.yml          ← references LabTrax-Setup.exe
+#     GET /downloads/latest.yml          ← references LabTrax-Setup.exe ✓
 #
-#   Fallback (portable ZIP — produced by this script on Linux/Replit):
+#   Portable ZIP path (this script on Linux/Replit — no Wine):
 #     GET /downloads/LabTrax-Windows-Portable.zip
-#     GET /downloads/latest.yml          ← references LabTrax-Windows-Portable.zip
+#     (latest.yml is NOT generated or overwritten — CI must do it)
+# ─────────────────────────────────────────────────────────────────────────────
 #
 # Called automatically from post-merge.sh when a merge touches desktop-relevant
 # files. Can also be run manually at any time:
@@ -163,26 +171,33 @@ else
   bash "$SCRIPT_DIR/verify-signing.sh" "$UNPACKED_EXE"
 fi
 
-# Generate latest.yml for electron-updater generic provider -------------------
-# electron-updater fetches GET /downloads/latest.yml to compare the available
-# version against the running version. We generate it from the installer's
-# SHA-512 digest (base64) and byte size so the hash matches exactly.
+# Auto-update manifest (latest.yml) handling ---------------------------------
+# CRITICAL INVARIANT: latest.yml must ONLY reference LabTrax-Setup.exe (the
+# NSIS installer). If it references the portable ZIP, NSIS-installed users who
+# auto-update will have the ZIP extracted to a temp dir while their original
+# install path goes stale — breaking every pinned taskbar and Start Menu
+# shortcut with "The item 'LabTrax.exe' has been changed or moved."
 #
-# If electron-builder already wrote latest.yml (Windows or Linux + Wine), we
-# keep that file — it contains the correct blockmap reference for NSIS delta
-# patches. We only generate a synthetic latest.yml for the portable ZIP path
-# (Linux without Wine), where electron-builder skips it.
+# EXE (NSIS) path: electron-builder already wrote latest.yml referencing the
+#   installer. Use it as-is (it includes the correct blockmap for NSIS delta
+#   patches). If somehow absent, generate it from the EXE.
 #
-# NOTE: latest.yml is generated AFTER signature verification. If verification
-# failed, set -euo pipefail has already stopped the script — a failed build
-# never produces a manifest that could reach the auto-update feed.
-if [[ ! -f "$LATEST_YML" ]]; then
-  echo ""
-  echo "[publish] Generating latest.yml auto-update manifest …"
-  SHA512=$(openssl dgst -sha512 -binary "$INSTALLER_PATH" | base64 --wrap=0)
-  BYTE_SIZE=$(stat -c%s "$INSTALLER_PATH")
-  RELEASE_DATE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
-  cat > "$LATEST_YML" <<EOF
+# ZIP (portable) path: DO NOT generate or overwrite latest.yml. The Replit /
+#   Linux build cannot produce an NSIS installer. Updating the auto-update
+#   feed from this path would break NSIS-installed users. Instead, write
+#   latest-portable.yml as an informational record and log a clear notice.
+#
+# NOTE: runs AFTER signature verification — set -euo pipefail has already
+# stopped the script on any verification failure, so a bad build never
+# reaches this point.
+echo ""
+if [[ "$INSTALLER_KIND" == "exe" ]]; then
+  if [[ ! -f "$LATEST_YML" ]]; then
+    echo "[publish] Generating latest.yml auto-update manifest from NSIS installer …"
+    SHA512=$(openssl dgst -sha512 -binary "$INSTALLER_PATH" | base64 --wrap=0)
+    BYTE_SIZE=$(stat -c%s "$INSTALLER_PATH")
+    RELEASE_DATE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+    cat > "$LATEST_YML" <<EOF
 version: ${VERSION}
 files:
   - url: ${INSTALLER_FILENAME}
@@ -192,10 +207,59 @@ path: ${INSTALLER_FILENAME}
 sha512: ${SHA512}
 releaseDate: '${RELEASE_DATE}'
 EOF
-  echo "[publish] ✓ latest.yml generated (sha512=${SHA512:0:16}…, size=${BYTE_SIZE}B, url=${INSTALLER_FILENAME})"
+    echo "[publish] ✓ latest.yml generated (sha512=${SHA512:0:16}…, size=${BYTE_SIZE}B, url=${INSTALLER_FILENAME})"
+  else
+    echo "[publish] Using existing latest.yml from electron-builder (${LATEST_YML})."
+    # Safety check: ensure latest.yml does not reference the portable ZIP.
+    if grep -q "LabTrax-Windows-Portable.zip" "$LATEST_YML"; then
+      echo "[publish] ERROR: latest.yml references LabTrax-Windows-Portable.zip — this must"
+      echo "[publish]   never be uploaded as the auto-update feed for NSIS-installed users."
+      echo "[publish]   Delete electron-dist/latest.yml and re-run to regenerate from the EXE."
+      exit 1
+    fi
+  fi
 else
+  # ── Portable ZIP path (Linux / Replit — no Wine, no NSIS installer) ──────
+  # We cannot build an NSIS installer here. DO NOT generate or upload
+  # latest.yml. If we wrote latest.yml pointing at the ZIP, auto-update on
+  # NSIS installs would extract the ZIP to a temp dir and leave the stable
+  # install path stale, breaking all pinned shortcuts.
+  #
+  # Write latest-portable.yml as an informational record of this build.
+  # It is NOT consumed by electron-updater in standard NSIS installs.
+  PORTABLE_YML="${DESKTOP_DIR}/electron-dist/latest-portable.yml"
+  SHA512=$(openssl dgst -sha512 -binary "$INSTALLER_PATH" | base64 --wrap=0)
+  BYTE_SIZE=$(stat -c%s "$INSTALLER_PATH")
+  RELEASE_DATE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+  cat > "$PORTABLE_YML" <<EOF
+version: ${VERSION}
+files:
+  - url: ${INSTALLER_FILENAME}
+    sha512: ${SHA512}
+    size: ${BYTE_SIZE}
+path: ${INSTALLER_FILENAME}
+sha512: ${SHA512}
+releaseDate: '${RELEASE_DATE}'
+EOF
+  echo "[publish] ✓ latest-portable.yml written (portable build record — NOT the auto-update feed)."
+
+  # Defense in depth: remove any stale latest.yml from electron-dist so the
+  # upload script cannot accidentally find and upload it.  The uploader also
+  # guards against kind=zip, but an explicit removal here makes the protection
+  # deterministic even if the installer is somehow passed as something other
+  # than "LabTrax-Windows-Portable.zip".
+  if [[ -f "$LATEST_YML" ]]; then
+    echo "[publish] Removing stale electron-dist/latest.yml to prevent accidental feed overwrite …"
+    rm -f "$LATEST_YML"
+  fi
+
   echo ""
-  echo "[publish] Using existing latest.yml from electron-builder (${LATEST_YML})."
+  echo "[publish] ⚠  NOTICE: Portable ZIP published. latest.yml was NOT updated."
+  echo "[publish]    The auto-update feed (/downloads/latest.yml) is only updated by the"
+  echo "[publish]    GitHub Actions Windows CI build (release.yml), which produces the real"
+  echo "[publish]    NSIS installer (LabTrax-Setup.exe). To push an auto-update to"
+  echo "[publish]    NSIS-installed users, trigger the release.yml workflow."
+  echo "[publish]    Until then, NSIS-installed users will not receive update notifications."
 fi
 
 # Upload installer + latest.yml to App Storage --------------------------------
@@ -284,9 +348,13 @@ echo "========================================="
 echo " LabTrax Desktop v${VERSION} published."
 if [[ "$INSTALLER_KIND" == "exe" ]]; then
   echo " Download (NSIS installer): /downloads/LabTrax-Setup.exe"
+  echo " Auto-update feed updated: ${UPDATE_FEED_URL}/latest.yml"
+  echo " → latest.yml references LabTrax-Setup.exe (NSIS-safe ✓)"
 else
   echo " Download (portable ZIP):   /downloads/LabTrax-Windows-Portable.zip"
+  echo " ⚠  Auto-update feed (latest.yml) was NOT updated."
+  echo "    To update the feed for NSIS-installed users, trigger"
+  echo "    the GitHub Actions release.yml Windows build."
 fi
-echo " Auto-update feed: ${UPDATE_FEED_URL}/latest.yml"
 echo "========================================="
 echo ""

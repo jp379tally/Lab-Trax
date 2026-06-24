@@ -190,14 +190,39 @@ async function main() {
     `[upload-installer] ✓ Uploaded. Size=${meta.size}B updated=${meta.updated}`,
   );
 
-  await uploadLatestYml(storage, privateDir);
+  // Only upload latest.yml when publishing the NSIS installer (exe) or macOS
+  // DMG — never for the portable ZIP.
+  //
+  // CRITICAL INVARIANT: latest.yml must only reference LabTrax-Setup.exe.
+  // If latest.yml pointed at the portable ZIP, NSIS-installed users' auto-
+  // updater would extract the ZIP to a temp dir, leaving the stable install
+  // path stale and breaking every pinned taskbar / Start Menu shortcut.
+  if (kind === "exe" || kind === "dmg") {
+    await uploadLatestYml(storage, privateDir, kind);
+  } else {
+    console.log(
+      "[upload-installer] Skipping latest.yml upload — portable ZIP publish " +
+      "must never overwrite the auto-update feed. " +
+      "latest.yml is only updated by the NSIS installer (EXE) or macOS DMG publish path.",
+    );
+  }
   await pushInstallerMetadata(cfg.downloadUrl);
 }
 
 async function uploadLatestYml(
   storage: Storage,
   privateDir: string,
+  kind: InstallerKind,
 ): Promise<void> {
+  // Guard: zip installs must never upload latest.yml (enforced at call site,
+  // but re-checked here as defence-in-depth).
+  if (kind === "zip") {
+    console.log(
+      "[upload-installer] uploadLatestYml: skipped — kind=zip must not update the auto-update feed.",
+    );
+    return;
+  }
+
   let ymlBuffer: Buffer;
   try {
     await access(DEFAULT_LATEST_YML_PATH);
@@ -207,6 +232,21 @@ async function uploadLatestYml(
       "[upload-installer] No latest.yml found at electron-dist/latest.yml — skipping auto-update manifest upload.",
     );
     return;
+  }
+
+  // Safety check: reject a latest.yml that still references the portable ZIP.
+  // This catches the scenario where a stale latest.yml (from a previous ZIP
+  // build) is present in electron-dist when an EXE publish runs, rather than
+  // silently uploading a broken manifest to the auto-update feed.
+  const ymlContent = ymlBuffer.toString("utf8");
+  if (ymlContent.includes("LabTrax-Windows-Portable.zip")) {
+    console.error(
+      "[upload-installer] ERROR: electron-dist/latest.yml references " +
+      "LabTrax-Windows-Portable.zip — this must never be uploaded as the " +
+      "auto-update feed for NSIS-installed users. Delete the file and " +
+      "re-run the build to generate a correct latest.yml from the EXE.",
+    );
+    process.exit(1);
   }
 
   const fullPath = `${privateDir}/${LATEST_YML_KEY_SUFFIX}`;

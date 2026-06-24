@@ -126,9 +126,18 @@ pnpm --filter @workspace/scripts run lint-protected-tables
 
 # 9. Signed desktop build verification — ONLY when shipping a desktop release
 bash scripts/test-signing-verification.sh
+
+# 10. Verify latest.yml references the NSIS installer — ONLY when shipping a desktop release
+#     (Requires PUBLISH_API_BASE_URL or substitute the live download base URL)
+curl -fsS "${PUBLISH_API_BASE_URL}/downloads/latest.yml" | grep "^path:"
+# Expected output:  path: LabTrax-Setup.exe
+# If it shows:      path: LabTrax-Windows-Portable.zip
+#   → The NSIS auto-update path is BROKEN. Do NOT release to NSIS-installed users.
+#     Trigger the GitHub Actions release.yml Windows build to generate and upload
+#     a correct latest.yml from the real NSIS installer.
 ```
 
-> Step 9 is required only when the release includes a desktop installer. Steps 1–8 are required for every release. The mobile real-device TestFlight checklist (above) must also pass for any mobile build.
+> Steps 9–10 are required only when the release includes a desktop installer. Steps 1–8 are required for every release. The mobile real-device TestFlight checklist (above) must also pass for any mobile build.
 
 ### Manual Smoke Checklists
 
@@ -997,7 +1006,16 @@ The GitHub Actions auto-tag pipeline (`auto-tag-desktop-release.yml` + `release.
 
 3. **CLI:** `bash scripts/desktop-build-publish.sh` from the repo root.
 
-All three paths produce `LabTrax-Windows-Portable.zip` in `artifacts/labtrax-desktop/electron-dist/`, upload it to App Storage, and update `system_settings.desktop_installer_version` so the Settings → Desktop App panel shows the correct version.
+All three Replit-native paths produce `LabTrax-Windows-Portable.zip` in `artifacts/labtrax-desktop/electron-dist/`, upload it to App Storage, and update `system_settings.desktop_installer_version` so the Settings → Desktop App panel shows the correct version.
+
+> **⚠ The Replit-native path does NOT update `latest.yml`.** The auto-update
+> manifest (`/downloads/latest.yml`) must only reference `LabTrax-Setup.exe`
+> (the NSIS installer). The Replit / Linux build cannot produce an NSIS
+> installer (Wine is not available), so it skips `latest.yml` entirely rather
+> than overwriting it with a ZIP reference that would break NSIS-installed
+> users' pinned shortcuts. `latest.yml` is only updated by the GitHub Actions
+> Windows CI build (`release.yml`). See the auto-update runbook for details
+> and the broken-shortcut reinstall path.
 
 ### To skip a rebuild on a specific merge
 
@@ -1010,6 +1028,16 @@ The installer version is read from `artifacts/labtrax-desktop/package.json` at b
 ### Guardrail
 
 After any merge that touches `artifacts/labtrax-desktop/**`, `lib/**`, or `artifacts/api-server/src/**`, confirm that `GET /downloads/LabTrax-Windows-Portable.zip` returns an updated binary (check the `Last-Modified` or `ETag` header) and that `GET /api/desktop-installer` returns the new version string before closing the task.
+
+Additionally, when shipping a desktop release to NSIS-installed users, verify the auto-update feed before publishing:
+
+```bash
+curl -fsS "${PUBLISH_API_BASE_URL}/downloads/latest.yml" | grep "^path:"
+# Must output:  path: LabTrax-Setup.exe
+# Never:        path: LabTrax-Windows-Portable.zip
+```
+
+If `latest.yml` references the ZIP, the NSIS auto-update path is broken — do not release. Trigger the GitHub Actions `release.yml` Windows build to fix it.
 
 ---
 
