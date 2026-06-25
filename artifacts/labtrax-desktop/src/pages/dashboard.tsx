@@ -26,7 +26,7 @@ import { TriggeredByBadge } from "@/components/TriggeredByBadge";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { LabCase } from "@/lib/types";
-import { formatDate, formatDateTime, relativeTime } from "@/lib/format";
+import { formatDate, formatDateTime, formatDueDate, isDueToday, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { DashboardDropZone } from "@/components/DashboardDropZone";
 import { UnassignedDocumentsCard } from "@/components/UnassignedDocumentsCard";
@@ -798,7 +798,7 @@ function CaseRow({ c, onSelect }: { c: LabCase; onSelect: (c: LabCase) => void }
             : c.casePanBarcode
           : "—"}
       </td>
-      <td className="py-3 text-muted-foreground pr-5">{formatDate(c.dueDate)}</td>
+      <td className="py-3 text-muted-foreground pr-5">{formatDueDate(c.dueDate)}</td>
     </tr>
   );
 }
@@ -903,7 +903,7 @@ export default function DashboardPage() {
   const dueTodayCases = useMemo(
     () =>
       [...cases]
-        .filter((c) => isToday(c.dueDate) && !COMPLETED_STATUSES.has(c.status))
+        .filter((c) => isDueToday(c.dueDate) && !COMPLETED_STATUSES.has(c.status))
         .sort((a, b) =>
           (a.updatedAt || a.createdAt || "").localeCompare(
             b.updatedAt || b.createdAt || "",

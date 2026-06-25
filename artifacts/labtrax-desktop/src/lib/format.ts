@@ -102,6 +102,67 @@ export function formatShortDate(value: string | null | undefined): string {
   return `${mm}/${dd}/${yyyy}`;
 }
 
+/**
+ * Parse a calendar-day value into a Date anchored at UTC midnight.
+ *
+ * Due dates carry no time-of-day: a picked "YYYY-MM-DD" is sent to the API and
+ * stored as a UTC-midnight timestamp. Formatting those with the locale-aware
+ * helpers above renders them in the viewer's local timezone, which shifts the
+ * day backwards for anyone west of UTC (e.g. a date picked as Jun 25 shows as
+ * Jun 24). Anchoring on UTC and formatting in UTC keeps the displayed day equal
+ * to the day the user picked, regardless of timezone.
+ */
+function parseCalendarDay(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (m) {
+    return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  }
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Day-stable variant of {@link formatDate} for calendar-day values (e.g. due dates). */
+export function formatDueDate(value: string | null | undefined): string {
+  const d = parseCalendarDay(value);
+  if (!d) return "—";
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/** Day-stable variant of {@link formatShortDate} for calendar-day values (e.g. due dates). */
+export function formatShortDueDate(value: string | null | undefined): string {
+  const d = parseCalendarDay(value);
+  if (!d) return "—";
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const yyyy = d.getUTCFullYear();
+  return `${mm}/${dd}/${yyyy}`;
+}
+
+/**
+ * Day-stable "is this due date today?" check for calendar-day values.
+ *
+ * Compares the due date's calendar day (UTC-anchored, matching what
+ * {@link formatDueDate} renders) against the viewer's local current calendar
+ * day. Using local-time parsing here (as a plain `new Date(d)` comparison does)
+ * shifts UTC-midnight due dates back a day west of UTC, mis-classifying "due
+ * today" relative to the date actually shown on screen. Intended for calendar
+ * dates only — do NOT use for real timestamps like createdAt.
+ */
+export function isDueToday(value: string | null | undefined): boolean {
+  const d = parseCalendarDay(value);
+  if (!d) return false;
+  const dueKey = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+  const now = new Date();
+  const todayKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
+  return dueKey === todayKey;
+}
+
 export function relativeTime(value: string | null | undefined): string {
   if (!value) return "—";
   const d = new Date(value);

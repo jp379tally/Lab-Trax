@@ -60,7 +60,7 @@ import type {
   PricingTier,
   RestorationPriceSource,
 } from "@/lib/types";
-import { formatDate, formatDateTime, formatMoney, formatPhone, formatShortDate, relativeTime, statusLabel } from "@/lib/format";
+import { formatDate, formatDateTime, formatDueDate, formatShortDueDate, formatMoney, formatPhone, formatShortDate, relativeTime, statusLabel } from "@/lib/format";
 import {
   printCaseCard,
   printCaseCardAdvanced,
@@ -2318,7 +2318,7 @@ export default function CasesPage() {
           )}
         </div>
       ) },
-      { id: "due", label: <SortHeader k="dueDate">Due</SortHeader>, menuLabel: "Due", align: "left", defaultWidth: 90, render: (c) => <span className="text-muted-foreground">{formatShortDate(c.dueDate)}</span> },
+      { id: "due", label: <SortHeader k="dueDate">Due</SortHeader>, menuLabel: "Due", align: "left", defaultWidth: 90, render: (c) => <span className="text-muted-foreground">{formatShortDueDate(c.dueDate)}</span> },
       { id: "price", label: <SortHeader k="totalPrice">Price</SortHeader>, menuLabel: "Price", align: "right", defaultWidth: 130, render: (c) => <span className="tabular-nums">{Number(c.totalPrice ?? 0) > 0 ? formatMoney(c.totalPrice) : "—"}</span> },
       { id: "notes", label: "Notes", menuLabel: "Notes", align: "left", defaultWidth: 200, render: (c) => <span className="text-muted-foreground truncate max-w-[200px] text-xs block" title={c.caseNotes ?? ""}>{c.caseNotes || "—"}</span> },
     ],
@@ -3098,7 +3098,7 @@ function MobileCaseDrawer({ labCase, onClose }: { labCase: LabCase; onClose: () 
             {labCase.teeth && (
               <Field label="Teeth" value={labCase.teeth} />
             )}
-            <Field label="Due date" value={formatDate(labCase.dueDate)} />
+            <Field label="Due date" value={formatDueDate(labCase.dueDate)} />
             <Field label="Created" value={formatDate(labCase.createdAt)} />
             {Number(labCase.totalPrice ?? 0) > 0 && (
               <Field label="Price" value={formatMoney(labCase.totalPrice)} />
@@ -4489,13 +4489,18 @@ export function CaseDrawer({
     const snapshotUpdates = [...pendingUpdates];
     const snapshotCreates = [...pendingCreates];
 
-    const invalidateAll = () => {
-      qc.invalidateQueries({ queryKey: ["cases"] });
-      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
-      qc.invalidateQueries({ queryKey: ["invoice-for-case", labCase.id] });
-      qc.invalidateQueries({ queryKey: ["invoice-detail"] });
-      qc.invalidateQueries({ queryKey: ["invoices"] });
-    };
+    // Awaitable: resolves once the affected queries have refetched. We block on
+    // this before clearing the staged case edit so the displayed value never
+    // flashes back to the stale cached/prop value between the save and the
+    // refetch landing.
+    const invalidateAll = () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+        qc.invalidateQueries({ queryKey: ["case", labCase.id] }),
+        qc.invalidateQueries({ queryKey: ["invoice-for-case", labCase.id] }),
+        qc.invalidateQueries({ queryKey: ["invoice-detail"] }),
+        qc.invalidateQueries({ queryKey: ["invoices"] }),
+      ]);
 
     try {
       // 1. Case detail patch (single atomic call)
@@ -4516,7 +4521,11 @@ export function CaseDrawer({
           method: "PATCH",
           body: JSON.stringify(patchBody),
         });
-        setPendingCaseEdit(null);
+        // NB: do NOT clear pendingCaseEdit here. It stays authoritative on
+        // screen until the refetched case data lands (see the awaited
+        // invalidateAll() below), otherwise the field briefly reverts to the
+        // stale cached value (data?.dueDate) or the original prop
+        // (labCase.dueDate).
       }
 
       // 2. Rx Summary restoration replacement (Lab Slip bulk edit). Deletes all
@@ -4553,7 +4562,8 @@ export function CaseDrawer({
         setPendingDeletes(new Set());
         setPendingUpdates([]);
         setPendingCreates([]);
-        invalidateAll();
+        await invalidateAll();
+        setPendingCaseEdit(null);
         return;
       }
 
@@ -4599,12 +4609,17 @@ export function CaseDrawer({
         setPendingCreates((prev) => prev.filter((p) => p.localId !== c.localId));
       }
 
-      invalidateAll();
+      // Wait for the refetched case + list data to land before clearing the
+      // staged edit so the displayed value transitions straight from the
+      // pending value to the fresh server value with no revert in between.
+      await invalidateAll();
+      setPendingCaseEdit(null);
     } catch (e: any) {
       setSaveError(e?.message ?? "Failed to save changes. Please try again.");
       // Refetch server state so the list reflects what was already saved
-      // before the failure.  Remaining pending items are safe to retry.
-      invalidateAll();
+      // before the failure.  Remaining pending items (incl. the staged case
+      // edit) are intentionally left in place so they can be retried.
+      await invalidateAll();
     } finally {
       setIsSaving(false);
     }
@@ -5724,7 +5739,7 @@ export function CaseDrawer({
                       label="Priority"
                       value={(pendingCaseEdit?.priority ?? data?.priority ?? labCase.priority) === "rush" ? "Rush" : "Normal"}
                     />
-                    <Field label="Due date" value={formatDate(pendingCaseEdit?.dueDate ?? data?.dueDate ?? labCase.dueDate)} />
+                    <Field label="Due date" value={formatDueDate(pendingCaseEdit?.dueDate ?? data?.dueDate ?? labCase.dueDate)} />
                     <Field label="Created" value={formatDate(data?.createdAt ?? labCase.createdAt)} />
                     <Field label="Tooth #" value={toothLabel} />
                     <Field label="Shade" value={shadeLabel} />
