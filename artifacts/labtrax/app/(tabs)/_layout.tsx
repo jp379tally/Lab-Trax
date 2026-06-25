@@ -4,6 +4,12 @@ import { Platform, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/theme-context";
 
+// Land on Dashboard (not the Cases `index` route) when the authenticated tab
+// group mounts — on first login and on authenticated relaunch.
+export const unstable_settings = {
+  initialRouteName: "dashboard",
+};
+
 export default function TabLayout() {
   const { colors } = useTheme();
   const isWeb = Platform.OS === "web";
