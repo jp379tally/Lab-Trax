@@ -68,10 +68,14 @@ export default function AccountsScreen() {
   const [search, setSearch] = useState("");
 
   const orgsQuery = useQuery<OrgEntry[]>({
-    queryKey: ["organizations-accounts", labOrgId ?? ""],
+    queryKey: ["organizations-accounts", labOrgId ?? "", { includeLabPractices: true }],
     enabled: !!labOrgId,
     staleTime: 60_000,
-    queryFn: () => getJson<OrgEntry[]>(`/api/organizations`),
+    // Opt into the lab's full practice set (regardless of membership) so a
+    // practice that blocks creation is still findable/selectable here. Mirrors
+    // the desktop accounts screen. Settings → Organizations stays
+    // membership-only (default, no flag).
+    queryFn: () => getJson<OrgEntry[]>(`/api/organizations?includeLabPractices=true`),
   });
 
   const casesQuery = useQuery<CaseEntry[]>({
