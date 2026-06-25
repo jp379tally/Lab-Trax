@@ -1202,7 +1202,10 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
         animationType="slide"
         onRequestClose={() => setPickerVisible(false)}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
           <View style={[styles.modalSheet, styles.pickerSheet, { paddingBottom: insets.bottom + Spacing.lg }]}>
             <View style={styles.modalHandle} />
             <View style={styles.pickerHeaderRow}>
@@ -1354,7 +1357,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
               </ScrollView>
             )}
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </KeyboardAvoidingView>
   );

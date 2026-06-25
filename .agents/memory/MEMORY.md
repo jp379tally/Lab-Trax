@@ -85,3 +85,4 @@
 - [Twilio-configured test failures](twilio-configured-test-failures.md) — account-epic-verification & signup-email-verification-backfill fail in workspace (real TWILIO_* set) not CI; env quirk not regression.
 - [Lab location status mapping](lab-location-status-mapping.md) — stations carry code + a mapped status enum; all locate/move flows must send station.status not lowercased code (custom stations broke otherwise).
 - [LabTrax publish promote-phase schema drift](labtrax-publish-promote-schema-drift.md) — clean build but publish fails in promote = dev/prod schema drift (post-merge=dev only); diff information_schema dev vs prod, fix=re-publish (never hand-write prod DDL).
+- [RN Modal keyboard avoidance](rn-modal-keyboard-avoidance.md) — <Modal> renders in a separate native hierarchy; screen-level KeyboardAvoidingView is a no-op for it; bottom-sheet modals with TextInputs need their OWN KAV inside (padding iOS, undefined Android).
