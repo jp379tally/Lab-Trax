@@ -372,6 +372,85 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     }
   });
 
+  it("writes a per-case audit entry when a legacy case is soft-deleted", async () => {
+    // Regression for Task #2410: the legacy lab_cases delete previously used a
+    // bare db.update with no audit entry. It must now write one audit row per
+    // legacy case (action case_soft_deleted, legacy:true) like the canonical path.
+    const { db, auditLogs } = dbMod as any;
+    const l1 = await insertLegacy();
+
+    const r = await deleteViaFlow([l1], tokens.admin);
+    expect(r.status).toBe(200);
+    expect(r.body.data.deletedCount).toBe(1);
+
+    const rows = await db
+      .select({
+        action: auditLogs.action,
+        entityId: auditLogs.entityId,
+        metadataJson: auditLogs.metadataJson,
+      })
+      .from(auditLogs)
+      .where(eq(auditLogs.entityId, l1));
+    const softDeleteEntry = rows.find(
+      (x: any) => x.action === "case_soft_deleted",
+    );
+    expect(softDeleteEntry, "expected a case_soft_deleted audit entry").toBeTruthy();
+    expect(softDeleteEntry.metadataJson?.legacy).toBe(true);
+  });
+
+  it("does not overstate deletedCount when a legacy case was already deleted", async () => {
+    // The legacy soft-delete filters on deletedAt IS NULL and counts only the
+    // rows it actually updated, so an already-deleted row in the batch is not
+    // double-counted (no "successfully deleted N" when fewer than N changed).
+    const { db, labCases } = dbMod as any;
+    const fresh = await insertLegacy();
+    const already = await insertLegacy();
+    // Pre-delete one of them out of band.
+    await db
+      .update(labCases)
+      .set({ deletedAt: new Date(), deletedBy: "pretest" })
+      .where(eq(labCases.id, already));
+
+    const r = await deleteViaFlow([fresh, already], tokens.admin);
+    expect(r.status).toBe(200);
+    // Only the still-active legacy case counts.
+    expect(r.body.data.deletedCount).toBe(1);
+  });
+
+  it("rejects a token that does not cover all selected cases (403)", async () => {
+    // Token id scoping: a delete-session token (OTP) issued for one case must
+    // not be replayable to delete additional cases. We initiate for c1 only,
+    // then attempt to bulk-delete c1 + c2 with that token.
+    const c1 = await insertCanonical(rid("TOKA"));
+    const c2 = await insertCanonical(rid("TOKB"));
+
+    const init = await request(appMod.default)
+      .post("/api/cases/delete-initiate")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({ adminPin: "testpin123", caseIds: [c1] });
+    expect(init.status).toBe(200);
+
+    const r = await request(appMod.default)
+      .post("/api/cases/bulk-delete")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        caseIds: [c1, c2],
+        deleteSessionToken: init.body.data.deleteSessionToken,
+        smsOtpCode: "123456",
+      });
+    expect(r.status).toBe(403);
+
+    // Neither case may be deleted.
+    const { db, cases } = dbMod as any;
+    const rows = await db
+      .select({ id: cases.id, deletedAt: cases.deletedAt })
+      .from(cases)
+      .where(inArray(cases.id, [c1, c2]));
+    for (const row of rows) {
+      expect(row.deletedAt).toBeNull();
+    }
+  });
+
   it("REGRESSION: deletes a mixed batch with a legacy id listed first", async () => {
     // The old handler resolved everything from caseIds[0]; a legacy id first
     // 404'd the whole batch. Ordering legacy-first guards that exact path.

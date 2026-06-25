@@ -49,6 +49,7 @@ import {
   type SimilarityMatchKind,
 } from "../lib/patient-similarity";
 import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
+import { softDeleteLegacyCases } from "../lib/legacy-case-delete.js";
 import { convertPdfBufferToImageDataUrls } from "../lib/pdf-to-images";
 import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
 import {
@@ -3065,6 +3066,22 @@ router.post(
       throw new HttpError(403, "Deletion session does not match this organization.");
     }
 
+    // Token id scoping: the OTP was issued (and SMS-confirmed) for a specific
+    // set of case ids in delete-initiate. Require every requested id to be
+    // covered by that set so a token issued for one selection cannot be
+    // replayed to delete a different or larger batch. The desktop and mobile
+    // flows pass the identical id set to both steps, so a mixed
+    // canonical+legacy selection is authorized as one unit and never trips
+    // this guard — it only fires on a genuine token/id mismatch.
+    const tokenCaseIds = new Set(tokenPayload.caseIds ?? []);
+    const uncoveredIds = uniqueCaseIds.filter((id) => !tokenCaseIds.has(id));
+    if (uncoveredIds.length > 0) {
+      throw new HttpError(
+        403,
+        "Deletion session does not cover all selected cases. Please restart the deletion flow.",
+      );
+    }
+
     const otpResult = await verifyCode({
       channel: "sms",
       target: tokenPayload.ownerPhoneTarget,
@@ -3121,26 +3138,26 @@ router.post(
     });
 
     // Soft-delete legacy mobile cases (lab_cases). They store their payload in
-    // a JSON blob and are recoverable from Settings → admin case trash. This
-    // mirrors the single-case legacy delete (DELETE /legacy/cases/:caseId).
+    // a JSON blob and are recoverable from Settings → admin case trash. Route
+    // through the shared helper so the legacy path gets the same soft-delete +
+    // per-case audit-log guarantees as canonical cases (and an accurate count
+    // of rows actually deleted, skipping any already-deleted between the match
+    // and the write). Mirrors the single-case legacy delete in labtrax-routes.
+    let legacyDeletedCount = 0;
     if (legacyMatches.length > 0) {
       const actor = (req as any).user;
       const deletedBy = actor?.username || actor?.id || userId || "unknown";
-      await db
-        .update(labCases)
-        .set({ deletedAt: new Date(), deletedBy })
-        .where(
-          and(
-            inArray(
-              labCases.id,
-              legacyMatches.map((c) => c.id),
-            ),
-            isNull(labCases.deletedAt),
-          ),
-        );
+      const { deletedIds } = await softDeleteLegacyCases({
+        ids: legacyMatches.map((c) => c.id),
+        deletedBy,
+        actorUserId: userId,
+        organizationId: labOrganizationId,
+        req,
+      });
+      legacyDeletedCount = deletedIds.length;
     }
 
-    const deletedCount = canonicalMatches.length + legacyMatches.length;
+    const deletedCount = canonicalMatches.length + legacyDeletedCount;
 
     await writeAuditLog({
       userId,
@@ -3174,7 +3191,7 @@ router.post(
         ],
         caseNumbers: canonicalMatches.map((c) => c.caseNumber),
         canonicalCount: canonicalMatches.length,
-        legacyCount: legacyMatches.length,
+        legacyCount: legacyDeletedCount,
         count: deletedCount,
       },
     });

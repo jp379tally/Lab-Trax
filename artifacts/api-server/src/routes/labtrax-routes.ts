@@ -43,6 +43,7 @@ import { hashPassword } from "../lib/crypto";
 import { HttpError, wrapDbError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middlewares/auth";
 import { writeAuditLog } from "../lib/audit";
+import { softDeleteLegacyCases } from "../lib/legacy-case-delete.js";
 import {
   createVerificationCode,
   verifyCode,
@@ -2879,16 +2880,17 @@ export async function registerRoutes(): Promise<IRouter> {
           .json({ error: "Not authorized to delete this case." });
       }
 
-      // SAFEGUARD: do NOT physically delete. Mark as deleted so an admin can
-      // recover the case from the trash if the deletion was unintended (e.g.
-      // a buggy client or accidental tap).
-      await db
-        .update(labCases)
-        .set({
-          deletedAt: new Date(),
-          deletedBy: reqUser.username || reqUser.id || "unknown",
-        })
-        .where(eq(labCases.id, caseId));
+      // SAFEGUARD: do NOT physically delete. Soft-delete through the shared
+      // helper so the legacy path sets deleted_at + deleted_by AND writes an
+      // audit entry (matching the canonical case-delete path), and so an admin
+      // can recover the case from the trash if the deletion was unintended.
+      await softDeleteLegacyCases({
+        ids: [caseId],
+        deletedBy: reqUser.username || reqUser.id || "unknown",
+        actorUserId: reqUser.id ?? null,
+        organizationId: existing.organizationId ?? null,
+        req,
+      });
       return res.json({ success: true });
     } catch (error: any) {
       console.error("Legacy delete case error:", error?.message || error);

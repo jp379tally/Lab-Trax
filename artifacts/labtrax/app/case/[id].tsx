@@ -1393,6 +1393,10 @@ export default function CaseDetailScreen() {
         onSuccess={() => {
           setShowDeleteModal(false);
           qc.invalidateQueries({ queryKey: ["cases"] });
+          // The case's invoice is frozen (not deleted) — refresh invoice +
+          // financial views so balances/counts don't linger stale.
+          qc.invalidateQueries({ queryKey: ["invoices"] });
+          qc.invalidateQueries({ queryKey: ["undeposited-funds-summary"] });
           router.back();
         }}
         styles={styles}

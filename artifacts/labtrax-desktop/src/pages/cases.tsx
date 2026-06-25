@@ -2999,7 +2999,13 @@ export default function CasesPage() {
           caseIds={bulkDeleteCaseIds}
           onClose={() => setShowBulkDeleteModal(false)}
           onSuccess={(deletedCount) => {
+            // Refresh every surface a deletion touches: the cases list +
+            // dashboard counts (both keyed on ["cases"]) and any invoice views
+            // (the linked invoices are frozen, not deleted).
             qc.invalidateQueries({ queryKey: ["cases"] });
+            qc.invalidateQueries({ queryKey: ["invoices"] });
+            qc.invalidateQueries({ queryKey: ["invoice-for-case"] });
+            qc.invalidateQueries({ queryKey: ["invoice-detail"] });
             setSelectedIds(new Set());
             setShowBulkDeleteModal(false);
             setBulkDeleteCaseIds([]);
@@ -7477,6 +7483,10 @@ export function CaseDrawer({
           onSuccess={() => {
             qc.invalidateQueries({ queryKey: ["cases"] });
             qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+            // The case's invoice is frozen (not deleted) — refresh invoice views.
+            qc.invalidateQueries({ queryKey: ["invoices"] });
+            qc.invalidateQueries({ queryKey: ["invoice-for-case"] });
+            qc.invalidateQueries({ queryKey: ["invoice-detail"] });
             setConfirmDeleteCase(false);
             onClose();
           }}
