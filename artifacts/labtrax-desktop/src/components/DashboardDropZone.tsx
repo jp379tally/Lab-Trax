@@ -150,6 +150,56 @@ function extractConflictingOrg(err: unknown): {
   };
 }
 
+// Inline-form fields that a 400 validation error can map back to. The keys
+// match both the POST /organizations payload (Zod createOrgSchema) and the
+// NewPracticeDraft shape, so a Zod issue's `path[0]` highlights the offending
+// input directly.
+type NewPracticeFieldKey =
+  | "name"
+  | "phone"
+  | "addressLine1"
+  | "addressLine2"
+  | "city"
+  | "state"
+  | "zip"
+  | "doctorName";
+
+const NEW_PRACTICE_FIELD_KEYS: ReadonlySet<string> = new Set<NewPracticeFieldKey>(
+  ["name", "phone", "addressLine1", "addressLine2", "city", "state", "zip", "doctorName"],
+);
+
+// Pull field-level validation errors out of a 400 thrown by POST /organizations.
+// The server error handler returns Zod issues under `errors`:
+// { ok:false, message:"Invalid request.", errors:[{ path:["phone"], message }] }.
+// We map each issue whose first path segment is a known inline-form field back
+// to that field so the input can be highlighted inline. Issues for unknown
+// fields are ignored here and fall through to the generic 400 message.
+function extractFieldErrors(
+  err: unknown,
+): Partial<Record<NewPracticeFieldKey, string>> | null {
+  if (!(err instanceof ApiError) || err.status !== 400) return null;
+  const body = err.body;
+  if (body == null || typeof body !== "object") return null;
+  const issues = (body as Record<string, unknown>).errors;
+  if (!Array.isArray(issues)) return null;
+  const mapped: Partial<Record<NewPracticeFieldKey, string>> = {};
+  for (const issue of issues) {
+    if (issue == null || typeof issue !== "object") continue;
+    const path = (issue as Record<string, unknown>).path;
+    const key = Array.isArray(path) ? path[0] : undefined;
+    if (typeof key !== "string" || !NEW_PRACTICE_FIELD_KEYS.has(key)) continue;
+    const fieldKey = key as NewPracticeFieldKey;
+    // First issue per field wins; keep the server message when present.
+    if (mapped[fieldKey]) continue;
+    const message = (issue as Record<string, unknown>).message;
+    mapped[fieldKey] =
+      typeof message === "string" && message.trim()
+        ? message
+        : "Please check this field.";
+  }
+  return Object.keys(mapped).length > 0 ? mapped : null;
+}
+
 interface OrgLite {
   id: string;
   name?: string;
@@ -812,6 +862,11 @@ export function DashboardDropZone() {
   const [newPracticeConflictOrgId, setNewPracticeConflictOrgId] = useState<
     string | null
   >(null);
+  // Field-level server validation errors (400) mapped back to the offending
+  // inline-form inputs so each one can be highlighted with its own message.
+  const [newPracticeFieldErrors, setNewPracticeFieldErrors] = useState<
+    Partial<Record<NewPracticeFieldKey, string>>
+  >({});
   // ── Manual remake state (rxConfirm panel) ──────────────────────────────────
   const [manualRemakeEnabled, setManualRemakeEnabled] = useState(false);
   const [manualRemakeSearch, setManualRemakeSearch] = useState("");
@@ -854,6 +909,7 @@ export function DashboardDropZone() {
     setNewPracticeError(null);
     setNewPracticeShowErrors(false);
     setNewPracticeConflictOrgId(null);
+    setNewPracticeFieldErrors({});
     setNewPracticeDraft({
       name: (r.practiceName || rxProviderSearch || "").trim(),
       phone: (r.practicePhone || "").trim(),
@@ -875,6 +931,7 @@ export function DashboardDropZone() {
     // practice is valid and must remain creatable.
     setNewPracticeShowErrors(true);
     setNewPracticeConflictOrgId(null);
+    setNewPracticeFieldErrors({});
     const missing: string[] = [];
     if (!draft.name.trim()) missing.push("practice name");
     if (!rxLabOrgId) missing.push("lab");
@@ -923,6 +980,7 @@ export function DashboardDropZone() {
       // dialog does. A 409 names the conflicting org, so we offer a one-click
       // "Use existing practice" action instead of a dead-end error.
       const conflict = extractConflictingOrg(e);
+      const fieldErrors = extractFieldErrors(e);
       if (conflict) {
         const label = conflict.displayName || conflict.name || "an existing practice";
         const acct = conflict.accountNumber
@@ -937,6 +995,15 @@ export function DashboardDropZone() {
         setNewPracticeError(
           e.message ||
             "You don't have permission to add a practice to this lab.",
+        );
+      } else if (fieldErrors) {
+        // A 400 with field-level Zod issues: highlight each offending input
+        // inline so the user can fix it without hunting through the form.
+        setNewPracticeFieldErrors(fieldErrors);
+        setNewPracticeError(
+          "Please fix the highlighted field" +
+            (Object.keys(fieldErrors).length > 1 ? "s" : "") +
+            " and try again.",
         );
       } else {
         setNewPracticeError(
@@ -2119,6 +2186,7 @@ export function DashboardDropZone() {
                   setNewPracticeError(null);
                   setNewPracticeShowErrors(false);
                   setNewPracticeConflictOrgId(null);
+                  setNewPracticeFieldErrors({});
                 }}
                 className="text-muted-foreground hover:text-foreground"
                 aria-label="Cancel adding practice"
@@ -2135,13 +2203,15 @@ export function DashboardDropZone() {
               className={
                 inputCls +
                 " w-full" +
-                (newPracticeShowErrors && !newPracticeDraft.name.trim()
+                ((newPracticeShowErrors && !newPracticeDraft.name.trim()) ||
+                newPracticeFieldErrors.name
                   ? " border-destructive ring-1 ring-destructive"
                   : "")
               }
               placeholder="Practice name *"
               aria-invalid={
-                newPracticeShowErrors && !newPracticeDraft.name.trim()
+                (newPracticeShowErrors && !newPracticeDraft.name.trim()) ||
+                !!newPracticeFieldErrors.name
               }
               value={newPracticeDraft.name}
               onChange={(e) =>
@@ -2152,40 +2222,81 @@ export function DashboardDropZone() {
               }
               disabled={creatingPractice}
             />
-            {newPracticeShowErrors && !newPracticeDraft.name.trim() && (
+            {newPracticeShowErrors && !newPracticeDraft.name.trim() ? (
               <p className="text-[11px] text-destructive">
                 Practice name is required.
               </p>
+            ) : (
+              newPracticeFieldErrors.name && (
+                <p className="text-[11px] text-destructive">
+                  {newPracticeFieldErrors.name}
+                </p>
+              )
             )}
             <div className="grid grid-cols-2 gap-2">
-              <input
-                className={inputCls}
-                placeholder="000-000-0000"
-                value={newPracticeDraft.phone}
-                onChange={(e) =>
-                  setNewPracticeDraft({
-                    ...newPracticeDraft,
-                    phone: formatPhone(e.target.value),
-                  })
-                }
-                disabled={creatingPractice}
-              />
-              <input
-                className={inputCls}
-                placeholder="Primary doctor"
-                value={newPracticeDraft.doctorName}
-                onChange={(e) =>
-                  setNewPracticeDraft({
-                    ...newPracticeDraft,
-                    doctorName: e.target.value,
-                  })
-                }
-                disabled={creatingPractice}
-              />
+              <div>
+                <input
+                  className={
+                    inputCls +
+                    " w-full" +
+                    (newPracticeFieldErrors.phone
+                      ? " border-destructive ring-1 ring-destructive"
+                      : "")
+                  }
+                  placeholder="000-000-0000"
+                  aria-invalid={!!newPracticeFieldErrors.phone}
+                  value={newPracticeDraft.phone}
+                  onChange={(e) =>
+                    setNewPracticeDraft({
+                      ...newPracticeDraft,
+                      phone: formatPhone(e.target.value),
+                    })
+                  }
+                  disabled={creatingPractice}
+                />
+                {newPracticeFieldErrors.phone && (
+                  <p className="text-[11px] text-destructive mt-1">
+                    {newPracticeFieldErrors.phone}
+                  </p>
+                )}
+              </div>
+              <div>
+                <input
+                  className={
+                    inputCls +
+                    " w-full" +
+                    (newPracticeFieldErrors.doctorName
+                      ? " border-destructive ring-1 ring-destructive"
+                      : "")
+                  }
+                  placeholder="Primary doctor"
+                  aria-invalid={!!newPracticeFieldErrors.doctorName}
+                  value={newPracticeDraft.doctorName}
+                  onChange={(e) =>
+                    setNewPracticeDraft({
+                      ...newPracticeDraft,
+                      doctorName: e.target.value,
+                    })
+                  }
+                  disabled={creatingPractice}
+                />
+                {newPracticeFieldErrors.doctorName && (
+                  <p className="text-[11px] text-destructive mt-1">
+                    {newPracticeFieldErrors.doctorName}
+                  </p>
+                )}
+              </div>
             </div>
             <input
-              className={inputCls + " w-full"}
+              className={
+                inputCls +
+                " w-full" +
+                (newPracticeFieldErrors.addressLine1
+                  ? " border-destructive ring-1 ring-destructive"
+                  : "")
+              }
               placeholder="Address line 1"
+              aria-invalid={!!newPracticeFieldErrors.addressLine1}
               value={newPracticeDraft.addressLine1}
               onChange={(e) =>
                 setNewPracticeDraft({
@@ -2195,9 +2306,21 @@ export function DashboardDropZone() {
               }
               disabled={creatingPractice}
             />
+            {newPracticeFieldErrors.addressLine1 && (
+              <p className="text-[11px] text-destructive">
+                {newPracticeFieldErrors.addressLine1}
+              </p>
+            )}
             <input
-              className={inputCls + " w-full"}
+              className={
+                inputCls +
+                " w-full" +
+                (newPracticeFieldErrors.addressLine2
+                  ? " border-destructive ring-1 ring-destructive"
+                  : "")
+              }
               placeholder="Address line 2 (optional)"
+              aria-invalid={!!newPracticeFieldErrors.addressLine2}
               value={newPracticeDraft.addressLine2}
               onChange={(e) =>
                 setNewPracticeDraft({
@@ -2207,43 +2330,90 @@ export function DashboardDropZone() {
               }
               disabled={creatingPractice}
             />
+            {newPracticeFieldErrors.addressLine2 && (
+              <p className="text-[11px] text-destructive">
+                {newPracticeFieldErrors.addressLine2}
+              </p>
+            )}
             <div className="grid grid-cols-3 gap-2">
-              <input
-                className={inputCls}
-                placeholder="City"
-                value={newPracticeDraft.city}
-                onChange={(e) =>
-                  setNewPracticeDraft({
-                    ...newPracticeDraft,
-                    city: e.target.value,
-                  })
-                }
-                disabled={creatingPractice}
-              />
-              <input
-                className={inputCls}
-                placeholder="State"
-                value={newPracticeDraft.state}
-                onChange={(e) =>
-                  setNewPracticeDraft({
-                    ...newPracticeDraft,
-                    state: e.target.value,
-                  })
-                }
-                disabled={creatingPractice}
-              />
-              <input
-                className={inputCls}
-                placeholder="ZIP"
-                value={newPracticeDraft.zip}
-                onChange={(e) =>
-                  setNewPracticeDraft({
-                    ...newPracticeDraft,
-                    zip: e.target.value,
-                  })
-                }
-                disabled={creatingPractice}
-              />
+              <div>
+                <input
+                  className={
+                    inputCls +
+                    " w-full" +
+                    (newPracticeFieldErrors.city
+                      ? " border-destructive ring-1 ring-destructive"
+                      : "")
+                  }
+                  placeholder="City"
+                  aria-invalid={!!newPracticeFieldErrors.city}
+                  value={newPracticeDraft.city}
+                  onChange={(e) =>
+                    setNewPracticeDraft({
+                      ...newPracticeDraft,
+                      city: e.target.value,
+                    })
+                  }
+                  disabled={creatingPractice}
+                />
+                {newPracticeFieldErrors.city && (
+                  <p className="text-[11px] text-destructive mt-1">
+                    {newPracticeFieldErrors.city}
+                  </p>
+                )}
+              </div>
+              <div>
+                <input
+                  className={
+                    inputCls +
+                    " w-full" +
+                    (newPracticeFieldErrors.state
+                      ? " border-destructive ring-1 ring-destructive"
+                      : "")
+                  }
+                  placeholder="State"
+                  aria-invalid={!!newPracticeFieldErrors.state}
+                  value={newPracticeDraft.state}
+                  onChange={(e) =>
+                    setNewPracticeDraft({
+                      ...newPracticeDraft,
+                      state: e.target.value,
+                    })
+                  }
+                  disabled={creatingPractice}
+                />
+                {newPracticeFieldErrors.state && (
+                  <p className="text-[11px] text-destructive mt-1">
+                    {newPracticeFieldErrors.state}
+                  </p>
+                )}
+              </div>
+              <div>
+                <input
+                  className={
+                    inputCls +
+                    " w-full" +
+                    (newPracticeFieldErrors.zip
+                      ? " border-destructive ring-1 ring-destructive"
+                      : "")
+                  }
+                  placeholder="ZIP"
+                  aria-invalid={!!newPracticeFieldErrors.zip}
+                  value={newPracticeDraft.zip}
+                  onChange={(e) =>
+                    setNewPracticeDraft({
+                      ...newPracticeDraft,
+                      zip: e.target.value,
+                    })
+                  }
+                  disabled={creatingPractice}
+                />
+                {newPracticeFieldErrors.zip && (
+                  <p className="text-[11px] text-destructive mt-1">
+                    {newPracticeFieldErrors.zip}
+                  </p>
+                )}
+              </div>
             </div>
             {newPracticeError && (
               <div className="text-[11px] text-destructive space-y-1.5">
@@ -2259,6 +2429,7 @@ export function DashboardDropZone() {
                       setNewPracticeError(null);
                       setNewPracticeShowErrors(false);
                       setNewPracticeConflictOrgId(null);
+                      setNewPracticeFieldErrors({});
                     }}
                     className="underline font-medium hover:no-underline"
                   >
@@ -2275,6 +2446,7 @@ export function DashboardDropZone() {
                   setNewPracticeError(null);
                   setNewPracticeShowErrors(false);
                   setNewPracticeConflictOrgId(null);
+                  setNewPracticeFieldErrors({});
                 }}
                 disabled={creatingPractice}
                 className="h-7 px-2.5 rounded-md bg-secondary text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"

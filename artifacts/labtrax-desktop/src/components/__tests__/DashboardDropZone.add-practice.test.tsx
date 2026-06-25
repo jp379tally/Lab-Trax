@@ -326,6 +326,94 @@ describe("DashboardDropZone — inline Add practice", () => {
     );
   });
 
+  it("maps a 400 field error back to the offending input (inline highlight + message)", async () => {
+    mockApiFetch.mockImplementation((path: string, opts?: any) => {
+      const stub = baseStubs(path, opts);
+      if (stub) return stub;
+      if (path === "/organizations" && opts?.method === "POST") {
+        return Promise.reject(
+          new (ApiError as any)("Invalid request.", 400, {
+            ok: false,
+            message: "Invalid request.",
+            errors: [
+              {
+                code: "invalid_string",
+                path: ["phone"],
+                message: "Enter a valid phone number.",
+              },
+            ],
+          }),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected: ${path}`));
+    });
+
+    const { container } = renderDropZone();
+    await reachInlineAddPracticeForm(container);
+
+    await act(async () => {
+      fireEvent.click(saveButton());
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // The field-specific server message is shown…
+    await waitFor(() =>
+      expect(container.textContent ?? "").toMatch(/Enter a valid phone number/i),
+    );
+    // …and a summary nudge points at the highlighted field.
+    expect(container.textContent ?? "").toMatch(/fix the highlighted field/i);
+
+    // The offending phone input is marked invalid; unrelated inputs are not.
+    const phoneInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="000-000-0000"]',
+    );
+    expect(phoneInput).not.toBeNull();
+    expect(phoneInput!.getAttribute("aria-invalid")).toBe("true");
+    expect(nameField(container).getAttribute("aria-invalid")).toBe("false");
+
+    // The inline form stays open so the user can fix the field in place.
+    expect(container.textContent ?? "").toMatch(/New practice — confirm details/i);
+  });
+
+  it("falls back to the generic message for a 400 with no mappable field", async () => {
+    mockApiFetch.mockImplementation((path: string, opts?: any) => {
+      const stub = baseStubs(path, opts);
+      if (stub) return stub;
+      if (path === "/organizations" && opts?.method === "POST") {
+        return Promise.reject(
+          new (ApiError as any)("Invalid request.", 400, {
+            ok: false,
+            message: "Invalid request.",
+            errors: [
+              {
+                code: "custom",
+                path: ["somethingUnknown"],
+                message: "Unknown field problem.",
+              },
+            ],
+          }),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected: ${path}`));
+    });
+
+    const { container } = renderDropZone();
+    await reachInlineAddPracticeForm(container);
+
+    await act(async () => {
+      fireEvent.click(saveButton());
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // No mappable field → generic 400 message (the server message), and no
+    // input is flagged invalid by the field-mapping path.
+    await waitFor(() =>
+      expect(container.textContent ?? "").toMatch(/Invalid request/i),
+    );
+    expect(container.textContent ?? "").not.toMatch(/fix the highlighted field/i);
+    expect(nameField(container).getAttribute("aria-invalid")).toBe("false");
+  });
+
   it("surfaces a 403 rejection message instead of a generic failure", async () => {
     mockApiFetch.mockImplementation((path: string, opts?: any) => {
       const stub = baseStubs(path, opts);
