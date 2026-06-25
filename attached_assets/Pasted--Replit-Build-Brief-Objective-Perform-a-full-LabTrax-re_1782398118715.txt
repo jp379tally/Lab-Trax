@@ -1,0 +1,161 @@
+### Replit Build Brief
+
+**Objective**
+Perform a full LabTrax regression repair pass across mobile, web, desktop, API, and shared packages, with immediate priority on the known broken flows:
+
+* Location function
+* Delete case function
+* Web due date changing back after being set
+* Add practice function
+* Mobile lab slip format mismatch vs web/desktop
+* Mobile login landing on Cases instead of Dashboard
+
+**Important access note**
+I could not directly patch the code from this workspace. The accessible GitHub repo metadata shows `jp379tally/Lab-Software` is the likely repo and a pnpm workspace, but the actual source files were not available through the current connector session. So I cannot honestly say “fixed” here. This needs to run inside Replit where the source tree is present.
+
+**Likely root cause pattern**
+The regressions sound like shared-state and contract drift:
+
+* Mobile, web, and desktop likely have duplicated behavior instead of shared logic.
+* Due date reverting strongly suggests stale cached query data, optimistic update rollback, wrong date serialization/timezone handling, or a save response overwriting local state with an older value.
+* Delete case failures usually come from incomplete cascade handling, missing archive/soft-delete consistency, or UI cache not invalidating after deletion.
+* Add practice failures usually come from schema/API mismatch, missing required fields, duplicate validation, or frontend form state not matching backend expectations.
+* Location issues likely involve permission handling, unsupported platform fallbacks, or stale geolocation state.
+* Lab slip mismatch almost certainly means mobile has a separate print template.
+
+**Exact areas to inspect**
+
+* `artifacts/labtrax` or equivalent mobile Expo app
+* Web app package
+* Desktop app package
+* `artifacts/api-server`
+* Shared packages under `lib/*`, especially API client, Zod schemas, DB schema, and print/PDF helpers
+* Case routes/mutations
+* Practice routes/mutations
+* Dashboard routing/auth flow
+* Lab slip print/render code
+* React Query invalidation and optimistic updates
+
+**Implementation plan**
+
+1. Confirm all workspace packages exist and match `pnpm-workspace.yaml` and `pnpm-lock.yaml`.
+2. Run root checks: install, typecheck, lint, tests, build.
+3. Fix source-of-truth drift first: shared schemas, API contracts, and shared renderers.
+4. Fix the six named regressions before broad cleanup.
+5. Add regression tests or smoke checks for each fixed flow.
+6. Only delete unused files after import/route/config checks prove they are unused.
+
+**Acceptance criteria**
+
+* Location works or gives a clear permission/platform error on mobile, web, and desktop.
+* Deleting a case removes/hides it consistently and refreshes all affected lists/dashboard counts.
+* Web due date persists after save, refresh, navigation away/back, and app reload.
+* Add practice succeeds and immediately appears in practice lists/selectors.
+* Mobile lab slip output matches web/desktop for the same case.
+* Mobile opens Dashboard after login and authenticated relaunch.
+* No package has failing typecheck/build/lint/tests unless documented with a known reason.
+
+### Copy-Ready Replit Prompt
+
+```text
+Run a full regression repair pass on the entire LabTrax application: mobile, web, desktop, API server, and shared packages.
+
+Primary regressions to fix now:
+1. Location function problems.
+2. Delete case function problems.
+3. Web due date changes back after being set.
+4. Add practice function problems.
+5. Mobile lab slip print format does not match web/desktop.
+6. Mobile login lands on Cases instead of Dashboard.
+
+Start by mapping the workspace:
+- Identify all packages in pnpm-workspace.yaml.
+- Confirm the actual source packages exist.
+- Inspect mobile, web, desktop, api-server, lib/api-client, lib/api-zod, lib/db, and any shared print/PDF/template utilities.
+- If pnpm-lock.yaml references packages that no longer exist, fix workspace/package alignment safely.
+
+Run baseline checks before editing:
+- pnpm install --frozen-lockfile
+- pnpm run typecheck
+- pnpm -r --if-present run typecheck
+- pnpm -r --if-present run lint
+- pnpm -r --if-present run test
+- pnpm -r --if-present run build
+
+Fix the regressions in this order:
+
+1. Due date reverting on web
+- Find case edit/save form, API mutation, database schema, date parsing/serialization, and React Query cache invalidation.
+- Ensure due date is saved as a stable canonical value.
+- Avoid timezone shifts that change the day.
+- After successful save, invalidate/refetch the case detail, case list, dashboard summaries, and any calendar/due-date views.
+- Do not let stale query data overwrite the newly saved value.
+
+2. Delete case
+- Find delete case UI, API route, DB operation, and all list/detail/dashboard caches.
+- Confirm whether deletion is hard delete, soft delete, archive, or status change.
+- Make behavior consistent across mobile, web, and desktop.
+- After deletion, remove the case from all visible lists and redirect away from deleted case detail screens.
+- Prevent deleted cases from appearing in search, dashboard counts, lab queues, and practice views unless there is an intentional archive view.
+
+3. Add practice
+- Find practice create form, validation schema, API route, DB insert, and practice list/selectors.
+- Ensure frontend payload matches backend schema.
+- Handle required fields, duplicate names, location fields, and default settings consistently.
+- After creation, invalidate/refetch practice lists and make the new practice immediately selectable.
+
+4. Location function
+- Find all location feature usage across mobile/web/desktop.
+- Check permissions, fallback behavior, unavailable GPS/browser APIs, and error states.
+- Ensure mobile uses Expo/location APIs correctly and web/desktop use browser/platform-safe fallbacks.
+- No silent failures: show a useful error if permission is denied or location is unavailable.
+
+5. Mobile lab slip format parity
+- Find web/desktop lab slip renderer/template.
+- Find mobile print/export implementation.
+- Prefer one shared lab slip template or shared data-to-HTML/render function.
+- Keep only platform-specific print/share/export calls separate.
+- Mobile output should match web/desktop layout, field order, labels, tooth/material/shade data, due date, notes, barcode/QR, and case/practice/lab details.
+
+6. Mobile login landing route
+- Find mobile auth/login success navigation and Expo Router tab layout.
+- Set Dashboard as the authenticated landing route.
+- Keep Cases as a tab, but not the default.
+- Do not break deep links to specific cases.
+
+After fixes:
+- Add focused tests where practical for due date persistence, delete case, add practice, and shared lab slip rendering.
+- Run all checks again.
+- Manually QA mobile, web, and desktop.
+
+Final report must include:
+- files changed
+- root cause for each regression
+- exact fix applied
+- checks run and results
+- any remaining risks
+- manual QA checklist
+```
+
+### Debug Analysis
+
+The highest-confidence issue is the **due date reverting** bug. That usually happens when a mutation succeeds but old cached data wins afterward, or when the frontend sends one date format and the backend returns another. Web is specifically affected, so Replit should inspect web case edit state, API response shape, and query invalidation first.
+
+The second major pattern is **cross-platform drift**. Mobile lab slips not matching web/desktop and mobile landing on Cases instead of Dashboard both point to separate platform implementations instead of shared behavior. The best fix is not another mobile-only patch; it is shared templates and shared route defaults wherever possible.
+
+The delete case and add practice regressions likely live at the boundary between frontend mutation, backend route, DB operation, and cache invalidation. Replit should avoid changing only the button handlers. The fix needs to cover API contract, persistence, and post-mutation UI refresh.
+
+### Step-by-Step Fix Plan
+
+1. Open the Replit source tree and confirm package paths.
+2. Run baseline checks before editing.
+3. Fix web due date persistence first because it risks data integrity.
+4. Fix delete case and add practice next because they affect core workflow.
+5. Fix location with platform-safe permission handling.
+6. Unify mobile lab slip rendering with web/desktop.
+7. Set mobile Dashboard as the default authenticated route.
+8. Run all automated checks.
+9. Manually test the named flows on mobile, web, and desktop.
+10. Only after those pass, continue with broader cleanup and unused-file removal.
+
+The key thing: don’t let Replit do a cosmetic sweep first. These are core behavior regressions, so the repair pass should start with state, persistence, and shared contracts.
