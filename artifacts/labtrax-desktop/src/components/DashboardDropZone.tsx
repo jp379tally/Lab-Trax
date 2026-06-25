@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import JSZip from "jszip";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiError } from "@/lib/api";
 import { uploadMediaFile } from "@/lib/upload-media-file";
 import type { MediaUploadResult } from "@/lib/upload-media-file";
 import { useAuth } from "@/lib/auth-context";
@@ -124,6 +124,30 @@ function parseAddress(raw: string | null | undefined): {
     };
   }
   return { ...empty, addressLine1: s };
+}
+
+// Pull the conflicting-org details out of a 409 thrown by POST /organizations.
+// The server shape mirrors what the standalone Add Practice dialog consumes:
+// { details: { conflictingOrg: { id, name, displayName, accountNumber } } }.
+function extractConflictingOrg(err: unknown): {
+  id?: string;
+  name?: string;
+  displayName?: string;
+  accountNumber?: string;
+} | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  const body = err.body;
+  if (body == null || typeof body !== "object") return null;
+  const details = (body as Record<string, unknown>).details;
+  if (details == null || typeof details !== "object") return null;
+  const conflictingOrg = (details as Record<string, unknown>).conflictingOrg;
+  if (conflictingOrg == null || typeof conflictingOrg !== "object") return null;
+  return conflictingOrg as {
+    id?: string;
+    name?: string;
+    displayName?: string;
+    accountNumber?: string;
+  };
 }
 
 interface OrgLite {
@@ -780,6 +804,14 @@ export function DashboardDropZone() {
     useState<NewPracticeDraft | null>(null);
   const [creatingPractice, setCreatingPractice] = useState(false);
   const [newPracticeError, setNewPracticeError] = useState<string | null>(null);
+  // Field-level error highlighting once a save is attempted, mirroring the
+  // standalone Add Practice dialog.
+  const [newPracticeShowErrors, setNewPracticeShowErrors] = useState(false);
+  // When a 409 names an existing practice, store its id so we can offer a
+  // one-click "Use existing practice" action instead of a dead-end error.
+  const [newPracticeConflictOrgId, setNewPracticeConflictOrgId] = useState<
+    string | null
+  >(null);
   // ── Manual remake state (rxConfirm panel) ──────────────────────────────────
   const [manualRemakeEnabled, setManualRemakeEnabled] = useState(false);
   const [manualRemakeSearch, setManualRemakeSearch] = useState("");
@@ -820,6 +852,8 @@ export function DashboardDropZone() {
     const r = rxDraft;
     const parsed = parseAddress(r.practiceAddress);
     setNewPracticeError(null);
+    setNewPracticeShowErrors(false);
+    setNewPracticeConflictOrgId(null);
     setNewPracticeDraft({
       name: (r.practiceName || rxProviderSearch || "").trim(),
       phone: (r.practicePhone || "").trim(),
@@ -835,12 +869,19 @@ export function DashboardDropZone() {
   async function submitNewPractice() {
     if (!newPracticeDraft) return;
     const draft = newPracticeDraft;
-    if (!draft.name.trim()) {
-      setNewPracticeError("Practice name is required.");
-      return;
-    }
-    if (!rxLabOrgId) {
-      setNewPracticeError("Pick a lab first.");
+    // Required-field validation mirrors the standalone Add Practice dialog:
+    // the server contract requires only a legal name (+ a parent lab so the
+    // practice can be routed). City/state/ZIP stay optional, so a name-only
+    // practice is valid and must remain creatable.
+    setNewPracticeShowErrors(true);
+    setNewPracticeConflictOrgId(null);
+    const missing: string[] = [];
+    if (!draft.name.trim()) missing.push("practice name");
+    if (!rxLabOrgId) missing.push("lab");
+    if (missing.length > 0) {
+      setNewPracticeError(
+        `Please fill in the required field${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}.`,
+      );
       return;
     }
     setCreatingPractice(true);
@@ -877,10 +918,32 @@ export function DashboardDropZone() {
       if (created?.id) setRxProviderOrgId(created.id);
       setRxProviderSearch("");
       setNewPracticeDraft(null);
-    } catch (e: any) {
-      setNewPracticeError(
-        e?.message || "Could not create practice. Please try again.",
-      );
+    } catch (e: unknown) {
+      // Surface server rejections (400/409/403) the same way the standalone
+      // dialog does. A 409 names the conflicting org, so we offer a one-click
+      // "Use existing practice" action instead of a dead-end error.
+      const conflict = extractConflictingOrg(e);
+      if (conflict) {
+        const label = conflict.displayName || conflict.name || "an existing practice";
+        const acct = conflict.accountNumber
+          ? ` (account #${conflict.accountNumber})`
+          : "";
+        setNewPracticeError(
+          `A practice named "${label}"${acct} already exists in this lab. ` +
+            "Use it, or pick a different name.",
+        );
+        setNewPracticeConflictOrgId(conflict.id ?? null);
+      } else if (e instanceof ApiError && e.status === 403) {
+        setNewPracticeError(
+          e.message ||
+            "You don't have permission to add a practice to this lab.",
+        );
+      } else {
+        setNewPracticeError(
+          (e instanceof Error && e.message) ||
+            "Could not create practice. Please try again.",
+        );
+      }
     } finally {
       setCreatingPractice(false);
     }
@@ -2054,6 +2117,8 @@ export function DashboardDropZone() {
                 onClick={() => {
                   setNewPracticeDraft(null);
                   setNewPracticeError(null);
+                  setNewPracticeShowErrors(false);
+                  setNewPracticeConflictOrgId(null);
                 }}
                 className="text-muted-foreground hover:text-foreground"
                 aria-label="Cancel adding practice"
@@ -2067,8 +2132,17 @@ export function DashboardDropZone() {
               then save to add this practice and use it for the case.
             </p>
             <input
-              className={inputCls + " w-full"}
+              className={
+                inputCls +
+                " w-full" +
+                (newPracticeShowErrors && !newPracticeDraft.name.trim()
+                  ? " border-destructive ring-1 ring-destructive"
+                  : "")
+              }
               placeholder="Practice name *"
+              aria-invalid={
+                newPracticeShowErrors && !newPracticeDraft.name.trim()
+              }
               value={newPracticeDraft.name}
               onChange={(e) =>
                 setNewPracticeDraft({
@@ -2078,6 +2152,11 @@ export function DashboardDropZone() {
               }
               disabled={creatingPractice}
             />
+            {newPracticeShowErrors && !newPracticeDraft.name.trim() && (
+              <p className="text-[11px] text-destructive">
+                Practice name is required.
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <input
                 className={inputCls}
@@ -2167,9 +2246,26 @@ export function DashboardDropZone() {
               />
             </div>
             {newPracticeError && (
-              <p className="text-[11px] text-destructive">
-                {newPracticeError}
-              </p>
+              <div className="text-[11px] text-destructive space-y-1.5">
+                <p>{newPracticeError}</p>
+                {newPracticeConflictOrgId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRxProviderOrgId(newPracticeConflictOrgId);
+                      setRxPracticeError(false);
+                      setRxProviderSearch("");
+                      setNewPracticeDraft(null);
+                      setNewPracticeError(null);
+                      setNewPracticeShowErrors(false);
+                      setNewPracticeConflictOrgId(null);
+                    }}
+                    className="underline font-medium hover:no-underline"
+                  >
+                    Use existing practice →
+                  </button>
+                )}
+              </div>
             )}
             <div className="flex gap-2">
               <button
@@ -2177,6 +2273,8 @@ export function DashboardDropZone() {
                 onClick={() => {
                   setNewPracticeDraft(null);
                   setNewPracticeError(null);
+                  setNewPracticeShowErrors(false);
+                  setNewPracticeConflictOrgId(null);
                 }}
                 disabled={creatingPractice}
                 className="h-7 px-2.5 rounded-md bg-secondary text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
