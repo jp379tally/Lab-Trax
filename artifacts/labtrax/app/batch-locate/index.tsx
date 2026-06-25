@@ -294,11 +294,23 @@ export default function BatchLocateScreen() {
       () => setMoveProgress((p) => p + 1),
     );
 
+    if (__DEV__) {
+      console.log("[BatchLocate] Move complete", {
+        station: station.value,
+        succeededIds,
+        failedIds,
+      });
+    }
+
+    // Await the refetch so the result screen reflects fresh case status.
+    await queryClient.invalidateQueries({ queryKey: ["cases"] });
+    if (__DEV__) {
+      console.log("[BatchLocate] Invalidated 'cases' queries");
+    }
+
     setResult({ succeededIds, failedIds, targetName: station.label });
     setFailedCases(cases.filter((c) => failedIds.includes(c.caseId)));
     setStep("result");
-
-    void queryClient.invalidateQueries({ queryKey: ["cases"] });
   }
 
   async function handleRetry() {
@@ -320,6 +332,17 @@ export default function BatchLocateScreen() {
       () => setMoveProgress((p) => p + 1),
     );
 
+    if (__DEV__) {
+      console.log("[BatchLocate] Retry complete", {
+        station: selectedStation.value,
+        retrySucceeded,
+        retryFailed,
+      });
+    }
+
+    // Await the refetch so the result screen reflects fresh case status.
+    await queryClient.invalidateQueries({ queryKey: ["cases"] });
+
     setResult((prev) => ({
       succeededIds: [...(prev?.succeededIds ?? []), ...retrySucceeded],
       failedIds: retryFailed,
@@ -327,8 +350,6 @@ export default function BatchLocateScreen() {
     }));
     setFailedCases(casesToRetry.filter((c) => retryFailed.includes(c.caseId)));
     setStep("result");
-
-    void queryClient.invalidateQueries({ queryKey: ["cases"] });
   }
 
   function handleDone() {

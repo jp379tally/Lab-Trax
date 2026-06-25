@@ -5116,9 +5116,22 @@ components:
         ok: { type: boolean }
         data:
           type: object
-          required: [updatedCount]
+          required: [updatedIds, skippedLegacyIds, updatedCount, skippedLegacyCount]
           properties:
-            updatedCount: { type: integer }
+            updatedIds:
+              type: array
+              items: { type: string }
+              description: IDs of canonical cases whose status was actually updated.
+            skippedLegacyIds:
+              type: array
+              items: { type: string }
+              description: IDs of legacy blob cases that could not be updated by bulk-status.
+            updatedCount:
+              type: integer
+              description: Derived alias for updatedIds.length (backwards compatibility).
+            skippedLegacyCount:
+              type: integer
+              description: Derived alias for skippedLegacyIds.length (backwards compatibility).
     BulkReassignCasesInput:
       type: object
       required: [caseIds, providerOrganizationId]

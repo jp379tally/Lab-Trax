@@ -1404,7 +1404,24 @@ export const BulkChangeCaseStatusResponse = zod.object({
   ok: zod.boolean().optional(),
   data: zod
     .object({
-      updatedCount: zod.number(),
+      updatedIds: zod
+        .array(zod.string())
+        .describe("IDs of canonical cases whose status was actually updated."),
+      skippedLegacyIds: zod
+        .array(zod.string())
+        .describe(
+          "IDs of legacy blob cases that could not be updated by bulk-status.",
+        ),
+      updatedCount: zod
+        .number()
+        .describe(
+          "Derived alias for updatedIds.length (backwards compatibility).",
+        ),
+      skippedLegacyCount: zod
+        .number()
+        .describe(
+          "Derived alias for skippedLegacyIds.length (backwards compatibility).",
+        ),
     })
     .optional(),
 });

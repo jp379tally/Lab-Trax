@@ -2334,12 +2334,19 @@ router.post(
       throw new HttpError(403, "Some cases do not belong to your lab.");
     }
 
-    // Legacy cases store status in a JSON blob; skip them with a count rather
-    // than erroring. Only canonical cases are updated via the status column.
-    const skippedLegacyCount = legacyMatches.length;
+    // Legacy cases store status in a JSON blob; skip them by id rather than
+    // erroring. Only canonical cases are updated via the status column. The
+    // explicit id arrays let the mobile client know exactly which cases moved
+    // and which were skipped, instead of guessing from counts.
+    const skippedLegacyIds = legacyMatches.map((c) => c.id);
 
     if (canonicalMatches.length === 0) {
-      return ok(res, { updatedCount: 0, skippedLegacyCount });
+      return ok(res, {
+        updatedIds: [],
+        skippedLegacyIds,
+        updatedCount: 0,
+        skippedLegacyCount: skippedLegacyIds.length,
+      });
     }
 
     const ids = canonicalMatches.map((c) => c.id);
@@ -2360,11 +2367,16 @@ router.post(
         caseNumbers: canonicalMatches.map((c) => c.caseNumber),
         status: input.status,
         count: ids.length,
-        skippedLegacyCount,
+        skippedLegacyCount: skippedLegacyIds.length,
       },
     });
 
-    return ok(res, { updatedCount: ids.length, skippedLegacyCount });
+    return ok(res, {
+      updatedIds: ids,
+      skippedLegacyIds,
+      updatedCount: ids.length,
+      skippedLegacyCount: skippedLegacyIds.length,
+    });
   })
 );
 

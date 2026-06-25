@@ -118,6 +118,13 @@ export function LocateCaseSheet(props: Props) {
       setLocating(true);
       try {
         const caseIds = cases.map((c) => c.id);
+        if (__DEV__) {
+          console.log("[Locate] Bulk locate request", {
+            caseIds,
+            selectedId,
+            selectedStatus,
+          });
+        }
         const response = await resilientFetch("/api/cases/bulk-status", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -131,21 +138,57 @@ export function LocateCaseSheet(props: Props) {
         }
 
         const body = await response.json();
-        const { updatedCount, skippedLegacyCount = 0 } =
-          (body?.data ?? body) as { updatedCount: number; skippedLegacyCount?: number };
+        const data = (body?.data ?? body) as {
+          updatedIds?: string[];
+          skippedLegacyIds?: string[];
+          updatedCount?: number;
+          skippedLegacyCount?: number;
+        };
+        // The id arrays are the source of truth for per-case success/failure
+        // (the API server ships in lockstep with this app and always returns
+        // them). The legacy count aliases are only consulted as a last resort
+        // for the user-facing alert wording below; they cannot reconstruct
+        // which specific ids moved, so succeededIds/failedIds rely on the
+        // arrays alone.
+        const updatedIds = data.updatedIds ?? [];
+        const skippedLegacyIds = data.skippedLegacyIds ?? [];
+        const updatedCount = data.updatedIds?.length ?? data.updatedCount ?? 0;
+        const skippedLegacyCount =
+          data.skippedLegacyIds?.length ?? data.skippedLegacyCount ?? 0;
 
-        // Canonical cases that moved successfully; legacy cases are tracked separately.
-        const succeededIds = caseIds.slice(0, updatedCount + skippedLegacyCount);
-        // Any IDs not accounted for by the server response are treated as failures.
-        const unexplained = caseIds.length - updatedCount - skippedLegacyCount;
-        const failedIds: string[] = unexplained > 0 ? caseIds.slice(-(unexplained)) : [];
+        // Cases that moved successfully are exactly the canonical updated ids.
+        const accountedFor = new Set([...updatedIds, ...skippedLegacyIds]);
+        // Any IDs the server never reported back are treated as failures.
+        const failedIds: string[] = caseIds.filter((id) => !accountedFor.has(id));
+        const succeededIds = updatedIds;
 
-        void queryClient.invalidateQueries({ queryKey: ["cases"] });
+        if (__DEV__) {
+          console.log("[Locate] Bulk locate response", {
+            updatedIds,
+            skippedLegacyIds,
+            updatedCount,
+            skippedLegacyCount,
+            failedIds,
+          });
+        }
+
+        // Await the refetch so the dashboard/HUD shows fresh status before the
+        // sheet closes and the success callback fires (eliminates stale HUD).
+        await queryClient.invalidateQueries({ queryKey: ["cases"] });
+        if (__DEV__) {
+          console.log("[Locate] Bulk locate invalidated 'cases' queries");
+        }
         onDismiss();
 
         props.onBulkLocated(succeededIds, failedIds);
 
-        if (skippedLegacyCount > 0 && failedIds.length === 0) {
+        if (updatedCount === 0 && skippedLegacyCount > 0 && failedIds.length === 0) {
+          // Every selected case is a legacy blob — bulk-status can't move them.
+          Alert.alert(
+            "Can't locate these cases",
+            `${skippedLegacyCount === 1 ? "This case is" : `These ${skippedLegacyCount} cases are`} in an older format and must be opened individually to be located.`,
+          );
+        } else if (skippedLegacyCount > 0 && failedIds.length === 0) {
           Alert.alert(
             "Partially located",
             `${updatedCount} case${updatedCount !== 1 ? "s" : ""} located. ${skippedLegacyCount} legacy case${skippedLegacyCount !== 1 ? "s" : ""} could not be moved (legacy format — open each case to locate it manually).`,
@@ -171,12 +214,27 @@ export function LocateCaseSheet(props: Props) {
     if (!locatingCase) return;
     setLocating(true);
     try {
+      if (__DEV__) {
+        console.log("[Locate] Single locate request", {
+          caseId: locatingCase.id,
+          selectedId,
+          selectedStatus,
+        });
+      }
       await updateCase.mutateAsync({
         caseId: locatingCase.id,
         data: { status: selectedStatus as UpdateCaseInputStatus },
       });
       const successId = locatingCase.id;
-      void queryClient.invalidateQueries({ queryKey: ["cases"] });
+      // Await both the list and the individual case query so the HUD/detail
+      // screen show fresh status before the sheet closes.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["cases"] }),
+        queryClient.invalidateQueries({ queryKey: ["cases", successId] }),
+      ]);
+      if (__DEV__) {
+        console.log("[Locate] Single locate invalidated queries", { successId });
+      }
       onDismiss();
       props.onLocated(successId);
     } catch (e) {

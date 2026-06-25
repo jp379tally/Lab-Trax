@@ -1,5 +1,6 @@
 import React from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { Alert } from "react-native";
 import { render, fireEvent, waitFor } from "@testing-library/react-native";
 import { router } from "expo-router";
 import {
@@ -13,9 +14,48 @@ import { resilientFetch } from "@/lib/query-client";
 import CasesListScreen from "@/app/(tabs)/index";
 import { completedCaseWithInvoice, inProgressCase } from "./__fixtures__/cases";
 
-function bulkStatusOkResponse(updatedCount: number, skippedLegacyCount = 0): Response {
+function readCaseIds(init?: RequestInit): string[] {
+  try {
+    const body = JSON.parse((init?.body as string) ?? "{}");
+    return Array.isArray(body.caseIds) ? (body.caseIds as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+// Full-success response: every requested case id is reported as updated.
+// Echoes the request body so `updatedIds` matches the actual selected cases,
+// which the client relies on to compute succeeded vs failed ids.
+function bulkStatusOkResponse(init?: RequestInit): Response {
+  const updatedIds = readCaseIds(init);
   return new Response(
-    JSON.stringify({ ok: true, data: { updatedCount, skippedLegacyCount } }),
+    JSON.stringify({
+      ok: true,
+      data: {
+        updatedIds,
+        skippedLegacyIds: [],
+        updatedCount: updatedIds.length,
+        skippedLegacyCount: 0,
+      },
+    }),
+    { status: 200 },
+  );
+}
+
+// Legacy-only response: no case could be updated by bulk-status; every id is
+// reported as a skipped legacy blob.
+function bulkStatusLegacyOnlyResponse(init?: RequestInit): Response {
+  const skippedLegacyIds = readCaseIds(init);
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      data: {
+        updatedIds: [],
+        skippedLegacyIds,
+        updatedCount: 0,
+        skippedLegacyCount: skippedLegacyIds.length,
+      },
+    }),
     { status: 200 },
   );
 }
@@ -134,7 +174,7 @@ describe("CasesListScreen (read-only canonical list)", () => {
     });
 
     it("calls the bulk-status endpoint with all selected case IDs", async () => {
-      setMockFetchHandler(() => bulkStatusOkResponse(2));
+      setMockFetchHandler((_url, init) => bulkStatusOkResponse(init));
       const { getByTestId, getByText } = render(<CasesListScreen />);
 
       // Select both cases
@@ -170,7 +210,7 @@ describe("CasesListScreen (read-only canonical list)", () => {
     });
 
     it("exits selection mode when bulk locate succeeds", async () => {
-      setMockFetchHandler(() => bulkStatusOkResponse(1));
+      setMockFetchHandler((_url, init) => bulkStatusOkResponse(init));
       const { getByTestId, getByText, queryByText } = render(<CasesListScreen />);
 
       fireEvent(getByTestId(`case-card-${inProgressCase.id}`), "longPress");
@@ -182,6 +222,37 @@ describe("CasesListScreen (read-only canonical list)", () => {
         expect(queryByText("1 selected")).toBeNull();
         expect(getByText("Cases")).toBeTruthy();
       });
+    });
+
+    it("shows a legacy-only error and stays in selection mode when every selected case is legacy", async () => {
+      setMockFetchHandler((_url, init) => bulkStatusLegacyOnlyResponse(init));
+      const { getByTestId, getByText } = render(<CasesListScreen />);
+
+      fireEvent(getByTestId(`case-card-${inProgressCase.id}`), "longPress");
+      expect(getByText("1 selected")).toBeTruthy();
+
+      fireEvent.press(getByTestId("bulk-locate-btn"));
+      fireEvent.press(getByTestId("locate-option-received"));
+      fireEvent.press(getByTestId("locate-sheet-confirm"));
+
+      await waitFor(() => {
+        expect(resilientFetch).toHaveBeenCalledWith(
+          expect.stringContaining("bulk-status"),
+          expect.anything(),
+        );
+      });
+
+      // A clear legacy-format explanation is shown (not a success toast).
+      await waitFor(() => {
+        expect(Alert.alert).toHaveBeenCalledWith(
+          "Can't locate these cases",
+          expect.stringContaining("older format"),
+        );
+      });
+
+      // No case actually moved, so the success path must NOT fire: selection
+      // mode stays active so the user keeps their selection.
+      expect(getByText("1 selected")).toBeTruthy();
     });
 
     it("stays in selection mode when the bulk-status request fails (so user can retry)", async () => {
@@ -209,7 +280,7 @@ describe("CasesListScreen (read-only canonical list)", () => {
     });
 
     it("reopening bulk locate after a completed locate shows no preselected station (locateTarget reset)", async () => {
-      setMockFetchHandler(() => bulkStatusOkResponse(1));
+      setMockFetchHandler((_url, init) => bulkStatusOkResponse(init));
       const { getByTestId, queryByTestId } = render(<CasesListScreen />);
 
       // First bulk locate — pick a station and confirm

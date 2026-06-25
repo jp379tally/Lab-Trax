@@ -1566,7 +1566,14 @@ export interface BulkStatusCasesInput {
 }
 
 export type BulkStatusCasesResultData = {
+  /** IDs of canonical cases whose status was actually updated. */
+  updatedIds: string[];
+  /** IDs of legacy blob cases that could not be updated by bulk-status. */
+  skippedLegacyIds: string[];
+  /** Derived alias for updatedIds.length (backwards compatibility). */
   updatedCount: number;
+  /** Derived alias for skippedLegacyIds.length (backwards compatibility). */
+  skippedLegacyCount: number;
 };
 
 export interface BulkStatusCasesResult {
