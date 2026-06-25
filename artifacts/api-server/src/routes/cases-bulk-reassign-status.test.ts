@@ -25,8 +25,8 @@
  *
  *  bulk-status
  *  - Happy path (canonical): status updated, updatedCount correct
- *  - REGRESSION (legacy-only): no 404, skippedLegacyCount reported
- *  - REGRESSION (mixed, legacy id first): canonical updated, legacy skipped
+ *  - Legacy-only: no 404, legacy blobs updated, updatedCount = 2
+ *  - Mixed batch: both canonical and legacy updated, updatedCount = 2
  *  - 404 when no id matches either table
  *  - 401 when no auth token is provided
  */
@@ -323,22 +323,34 @@ maybe("POST /api/cases/bulk-reassign and /bulk-status (db integration)", () => {
       }
     });
 
-    it("REGRESSION: legacy-only selection returns 200 with skippedLegacyCount (no 404)", async () => {
+    it("legacy-only selection updates JSON blobs and returns updatedCount = 2", async () => {
       const l1 = await insertLegacy();
       const l2 = await insertLegacy();
 
       const r = await request(appMod.default)
         .post("/api/cases/bulk-status")
         .set("Authorization", `Bearer ${tokens.admin}`)
-        .send({ caseIds: [l1, l2], status: "complete" });
+        .send({ caseIds: [l1, l2], status: "shipped" });
 
       expect(r.status).toBe(200);
       expect(r.body.ok).toBe(true);
-      expect(r.body.data.updatedCount).toBe(0);
-      expect(r.body.data.skippedLegacyCount).toBe(2);
+      expect(r.body.data.updatedCount).toBe(2);
+      expect(r.body.data.skippedLegacyCount).toBe(0);
+      expect(r.body.data.updatedIds).toContain(l1);
+      expect(r.body.data.updatedIds).toContain(l2);
+
+      const { db, labCases } = dbMod as any;
+      const rows = await db
+        .select({ caseData: labCases.caseData })
+        .from(labCases)
+        .where(inArray(labCases.id, [l1, l2]));
+      for (const row of rows) {
+        const parsed = JSON.parse(row.caseData);
+        expect(parsed.status).toBe("SHIP");
+      }
     });
 
-    it("REGRESSION: mixed batch with legacy id first — canonical updated, legacy skipped", async () => {
+    it("mixed batch: both canonical and legacy updated, updatedCount = 2", async () => {
       const legacy = await insertLegacy();
       const canonical = await insertCanonical(rid("ST_MIX"));
 
@@ -349,15 +361,24 @@ maybe("POST /api/cases/bulk-reassign and /bulk-status (db integration)", () => {
 
       expect(r.status).toBe(200);
       expect(r.body.ok).toBe(true);
-      expect(r.body.data.updatedCount).toBe(1);
-      expect(r.body.data.skippedLegacyCount).toBe(1);
+      expect(r.body.data.updatedCount).toBe(2);
+      expect(r.body.data.skippedLegacyCount).toBe(0);
+      expect(r.body.data.updatedIds).toContain(canonical);
+      expect(r.body.data.updatedIds).toContain(legacy);
 
-      const { db, cases } = dbMod as any;
+      const { db, cases, labCases } = dbMod as any;
       const [canonRow] = await db
         .select({ status: cases.status })
         .from(cases)
         .where(eq(cases.id, canonical));
       expect(canonRow.status).toBe("qc");
+
+      const [legacyRow] = await db
+        .select({ caseData: labCases.caseData })
+        .from(labCases)
+        .where(eq(labCases.id, legacy));
+      const parsed = JSON.parse(legacyRow.caseData);
+      expect(parsed.status).toBe("QC");
     });
 
     it("returns 404 when no id matches either table", async () => {

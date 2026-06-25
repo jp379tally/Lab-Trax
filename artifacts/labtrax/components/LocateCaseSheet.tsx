@@ -156,7 +156,8 @@ export function LocateCaseSheet(props: Props) {
         const skippedLegacyCount =
           data.skippedLegacyIds?.length ?? data.skippedLegacyCount ?? 0;
 
-        // Cases that moved successfully are exactly the canonical updated ids.
+        // Cases that moved successfully are exactly the updated ids (now
+        // includes legacy cases — the server writes their JSON blob too).
         const accountedFor = new Set([...updatedIds, ...skippedLegacyIds]);
         // Any IDs the server never reported back are treated as failures.
         const failedIds: string[] = caseIds.filter((id) => !accountedFor.has(id));
@@ -182,18 +183,7 @@ export function LocateCaseSheet(props: Props) {
 
         props.onBulkLocated(succeededIds, failedIds);
 
-        if (updatedCount === 0 && skippedLegacyCount > 0 && failedIds.length === 0) {
-          // Every selected case is a legacy blob — bulk-status can't move them.
-          Alert.alert(
-            "Can't locate these cases",
-            `${skippedLegacyCount === 1 ? "This case is" : `These ${skippedLegacyCount} cases are`} in an older format and must be opened individually to be located.`,
-          );
-        } else if (skippedLegacyCount > 0 && failedIds.length === 0) {
-          Alert.alert(
-            "Partially located",
-            `${updatedCount} case${updatedCount !== 1 ? "s" : ""} located. ${skippedLegacyCount} legacy case${skippedLegacyCount !== 1 ? "s" : ""} could not be moved (legacy format — open each case to locate it manually).`,
-          );
-        } else if (failedIds.length > 0) {
+        if (failedIds.length > 0) {
           Alert.alert(
             updatedCount === 0 ? "Locate failed" : "Partial success",
             updatedCount === 0

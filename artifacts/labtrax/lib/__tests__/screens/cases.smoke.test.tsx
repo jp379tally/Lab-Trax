@@ -42,18 +42,18 @@ function bulkStatusOkResponse(init?: RequestInit): Response {
   );
 }
 
-// Legacy-only response: no case could be updated by bulk-status; every id is
-// reported as a skipped legacy blob.
+// Legacy-updated response: every id is reported as updated (server now writes
+// the JSON blob for legacy lab_cases rows instead of skipping them).
 function bulkStatusLegacyOnlyResponse(init?: RequestInit): Response {
-  const skippedLegacyIds = readCaseIds(init);
+  const updatedIds = readCaseIds(init);
   return new Response(
     JSON.stringify({
       ok: true,
       data: {
-        updatedIds: [],
-        skippedLegacyIds,
-        updatedCount: 0,
-        skippedLegacyCount: skippedLegacyIds.length,
+        updatedIds,
+        skippedLegacyIds: [],
+        updatedCount: updatedIds.length,
+        skippedLegacyCount: 0,
       },
     }),
     { status: 200 },
@@ -224,9 +224,9 @@ describe("CasesListScreen (read-only canonical list)", () => {
       });
     });
 
-    it("shows a legacy-only error and stays in selection mode when every selected case is legacy", async () => {
+    it("exits selection mode when a legacy-only batch is located (server now updates blobs)", async () => {
       setMockFetchHandler((_url, init) => bulkStatusLegacyOnlyResponse(init));
-      const { getByTestId, getByText } = render(<CasesListScreen />);
+      const { getByTestId, getByText, queryByText } = render(<CasesListScreen />);
 
       fireEvent(getByTestId(`case-card-${inProgressCase.id}`), "longPress");
       expect(getByText("1 selected")).toBeTruthy();
@@ -242,17 +242,17 @@ describe("CasesListScreen (read-only canonical list)", () => {
         );
       });
 
-      // A clear legacy-format explanation is shown (not a success toast).
-      await waitFor(() => {
-        expect(Alert.alert).toHaveBeenCalledWith(
-          "Can't locate these cases",
-          expect.stringContaining("older format"),
-        );
-      });
+      // The server now updates legacy blobs, so no error alert is shown.
+      expect(Alert.alert).not.toHaveBeenCalledWith(
+        "Can't locate these cases",
+        expect.anything(),
+      );
 
-      // No case actually moved, so the success path must NOT fire: selection
-      // mode stays active so the user keeps their selection.
-      expect(getByText("1 selected")).toBeTruthy();
+      // All cases moved, so selection mode exits and the header returns to normal.
+      await waitFor(() => {
+        expect(queryByText("1 selected")).toBeNull();
+        expect(getByText("Cases")).toBeTruthy();
+      });
     });
 
     it("stays in selection mode when the bulk-status request fails (so user can retry)", async () => {

@@ -2301,7 +2301,7 @@ router.post(
         .from(cases)
         .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases))),
       db
-        .select({ id: labCases.id, organizationId: labCases.organizationId })
+        .select({ id: labCases.id, organizationId: labCases.organizationId, caseData: labCases.caseData })
         .from(labCases)
         .where(and(inArray(labCases.id, uniqueCaseIds), isNull(labCases.deletedAt))),
     ]);
@@ -2334,27 +2334,57 @@ router.post(
       throw new HttpError(403, "Some cases do not belong to your lab.");
     }
 
-    // Legacy cases store status in a JSON blob; skip them by id rather than
-    // erroring. Only canonical cases are updated via the status column. The
-    // explicit id arrays let the mobile client know exactly which cases moved
-    // and which were skipped, instead of guessing from counts.
-    const skippedLegacyIds = legacyMatches.map((c) => c.id);
+    // Map canonical status values to the uppercase legacy blob format used by
+    // mobile-originated lab_cases rows. Mirrors the same map in the PATCH handler.
+    const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
+      received: "INTAKE",
+      in_design: "DESIGN",
+      scan: "SCAN",
+      in_milling: "MILLING",
+      post_mill: "POST_MILL",
+      sintering_furnace: "SINTERING_FURNACE",
+      model_room: "MODEL_ROOM",
+      in_porcelain: "PORCELAIN",
+      qc: "QC",
+      complete: "COMPLETE",
+      shipped: "SHIP",
+      delivered: "COMPLETE",
+      on_hold: "HOLD",
+      remake: "REMAKE",
+      cancelled: "CANCELLED",
+    };
 
-    if (canonicalMatches.length === 0) {
-      return ok(res, {
-        updatedIds: [],
-        skippedLegacyIds,
-        updatedCount: 0,
-        skippedLegacyCount: skippedLegacyIds.length,
-      });
+    const legacyMobileStatus =
+      DESKTOP_TO_MOBILE_STATUS[input.status] ?? input.status.toUpperCase();
+
+    // Update legacy (lab_cases) rows by writing into their JSON blob.
+    const updatedLegacyIds: string[] = [];
+    if (legacyMatches.length > 0) {
+      await Promise.all(
+        legacyMatches.map(async (row) => {
+          let parsed: Record<string, unknown> = {};
+          try { parsed = JSON.parse(row.caseData); } catch { /* ignore */ }
+          parsed.status = legacyMobileStatus;
+          if (input.status === "complete") parsed.assignedBarcode = null;
+          await db
+            .update(labCases)
+            .set({ caseData: JSON.stringify(parsed), updatedAt: new Date() })
+            .where(eq(labCases.id, row.id));
+          updatedLegacyIds.push(row.id);
+        })
+      );
     }
 
-    const ids = canonicalMatches.map((c) => c.id);
+    const canonicalIds = canonicalMatches.map((c) => c.id);
 
-    await db
-      .update(cases)
-      .set({ status: input.status, updatedAt: new Date() })
-      .where(inArray(cases.id, ids));
+    if (canonicalIds.length > 0) {
+      await db
+        .update(cases)
+        .set({ status: input.status, updatedAt: new Date() })
+        .where(inArray(cases.id, canonicalIds));
+    }
+
+    const allUpdatedIds = [...canonicalIds, ...updatedLegacyIds];
 
     await writeAuditLog({
       userId,
@@ -2363,19 +2393,19 @@ router.post(
       entityType: "case",
       entityId: labOrganizationId,
       metadataJson: {
-        caseIds: ids,
+        caseIds: allUpdatedIds,
         caseNumbers: canonicalMatches.map((c) => c.caseNumber),
         status: input.status,
-        count: ids.length,
-        skippedLegacyCount: skippedLegacyIds.length,
+        count: allUpdatedIds.length,
+        legacyCount: updatedLegacyIds.length,
       },
     });
 
     return ok(res, {
-      updatedIds: ids,
-      skippedLegacyIds,
-      updatedCount: ids.length,
-      skippedLegacyCount: skippedLegacyIds.length,
+      updatedIds: allUpdatedIds,
+      skippedLegacyIds: [],
+      updatedCount: allUpdatedIds.length,
+      skippedLegacyCount: 0,
     });
   })
 );
