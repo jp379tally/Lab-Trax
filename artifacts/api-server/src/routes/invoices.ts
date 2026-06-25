@@ -1262,17 +1262,71 @@ router.post(
       if (!targetInvoice)
         throw new HttpError(500, "Invoice could not be generated.");
       if (!invoice && targetInvoice.caseId !== found.id) {
-        // When the existing invoice has caseId=null it was created via the
-        // legacy mobile path before this case was promoted to canonical.
-        // Link it to the canonical case now instead of refusing with a
-        // collision error — idempotent: if called again after linking it
-        // will already have caseId=found.id and this branch won't fire.
-        if (targetInvoice.caseId === null) {
+        // The insert hit a number conflict and we re-selected the existing
+        // invoice by [labOrganizationId, invoiceNumber]. Invoice numbers are
+        // derived from case numbers ("INV-<caseNumber>"), and case numbers are
+        // reused across the legacy-mobile (lab_cases) and canonical (cases)
+        // spaces — so a number match does NOT prove the existing invoice
+        // belongs to THIS case.
+        //
+        // When the existing invoice has caseId=null it was (usually) created
+        // via the legacy mobile path before this case was promoted to
+        // canonical. Adopt it ONLY when its stored patient identity is blank or
+        // matches the case we're invoicing — a legitimate same-case promotion —
+        // and realign the case-derived fields (provider + display metadata) so
+        // the linked invoice can never carry a *different* patient's billing
+        // identity. Idempotent: a second call finds caseId=found.id and skips
+        // this branch.
+        //
+        // If the existing invoice's patient is non-blank and disagrees with the
+        // case, it belongs to a different patient (a reused-number collision).
+        // Refuse rather than silently repurpose another patient's invoice —
+        // doing so previously leaked one patient's name/bill-to/provider onto an
+        // unrelated case's invoice.
+        const staleMeta =
+          (targetInvoice.displayMetadataJson as Record<string, unknown> | null) ??
+          {};
+        const stalePatient = String(staleMeta.patientName ?? "")
+          .replace(/\s+/g, " ")
+          .trim();
+        const currentPatient =
+          `${found.patientFirstName ?? ""} ${found.patientLastName ?? ""}`
+            .replace(/\s+/g, " ")
+            .trim();
+        const sameOrBlankPatient =
+          stalePatient.length === 0 ||
+          stalePatient.toLowerCase() === currentPatient.toLowerCase();
+
+        if (targetInvoice.caseId === null && sameOrBlankPatient) {
           await db
             .update(invoices)
-            .set({ caseId: found.id, updatedByUserId: userId })
+            .set({
+              caseId: found.id,
+              providerOrganizationId: found.providerOrganizationId,
+              displayMetadataJson,
+              updatedByUserId: userId,
+            })
             .where(eq(invoices.id, targetInvoice.id));
           (targetInvoice as any).caseId = found.id;
+          (targetInvoice as any).providerOrganizationId =
+            found.providerOrganizationId;
+          (targetInvoice as any).displayMetadataJson = displayMetadataJson;
+        } else if (targetInvoice.caseId === null) {
+          req.log?.warn(
+            {
+              invoiceId: targetInvoice.id,
+              invoiceNumber: targetInvoice.invoiceNumber,
+              caseId: found.id,
+              caseNumber: found.caseNumber,
+              stalePatient,
+              currentPatient,
+            },
+            "generate-invoice: refused to adopt orphaned invoice belonging to a different patient (reused invoice-number collision)",
+          );
+          throw new HttpError(
+            409,
+            `Invoice number "${targetInvoice.invoiceNumber}" is already used by a different patient's invoice (patient: ${stalePatient}, conflicting invoice ID: ${targetInvoice.id}). Void or renumber that invoice before generating one for this case.`,
+          );
         } else {
           throw new HttpError(
             409,

@@ -1,0 +1,143 @@
+### Replit Build Brief
+
+**Objective**
+Fix the recurring LabTrax practice-creation issue where adding `Dr. Nancy E. Phillips, DDS` is blocked as a duplicate, but the practice is not visible/searchable in Customer Center.
+
+**User-visible problem**
+From the case Lab Slip, adding a new practice with:
+
+* Name: `Dr. Nancy E. Phillips, DDS`
+* City/state/zip: `Tallahassee, FL 32301`
+* Phone: `8503633336`
+
+shows: `A practice with this name already exists. Select existing practice instead.`
+
+But in Customer Center, searching `dr. nancy` returns `No practices match the current filters.` The Customer Center screenshot also shows `Show archived (2)` is unchecked, which strongly suggests the duplicate exists in a hidden archived/inactive state.
+
+**Likely root cause**
+The duplicate-name validation checks a broader set of practice records than the Customer Center search displays. Most likely, the duplicate check includes archived or inactive practices, while Customer Center hides archived practices unless `Show archived` is enabled. The app then tells the user to “select existing practice,” but gives no visible/selectable record to select.
+
+**Exact app/code areas to inspect or change**
+
+Search the LabTrax/Replit codebase for:
+
+* `A practice with this name already exists`
+* `Show archived`
+* `Customer Center`
+* `createPractice`
+* `addPractice`
+* `practice already exists`
+* `archived`
+* `isArchived`
+* `deletedAt`
+* `status`
+* `normalizedName`
+
+Likely surfaces:
+
+* Customer Center practice list/search component
+* Add Practice modal used from Lab Slip / case detail
+* Practice create API route or mutation
+* Practice lookup/search API route
+* Database schema/model for practices/doctors/customers
+* Any unique constraint or manual duplicate check on practice name
+
+**Implementation plan**
+
+1. Reproduce with `Dr. Nancy E. Phillips, DDS`.
+2. Query the database for that exact name and normalized variants, including archived/inactive/deleted records.
+3. Align duplicate detection and search visibility:
+
+   * If the matching practice is archived, the UI must say so and offer a restore/reactivate/select path.
+   * Customer Center search should be able to reveal the record when `Show archived` is checked.
+   * The add-practice modal should not tell users to select a record that the UI hides.
+4. Make duplicate checks lab-scoped and status-aware:
+
+   * Duplicate uniqueness should likely be by `labId/accountId + normalizedPracticeName`.
+   * Soft-deleted records should not block creation unless the app intends them to be restorable.
+   * Archived records should either block creation with a restore flow or be allowed to be reactivated.
+5. Normalize practice names consistently across create, search, and duplicate lookup:
+
+   * Trim whitespace.
+   * Collapse repeated spaces.
+   * Compare case-insensitively.
+   * Handle punctuation consistently enough that `Dr. Nancy E Phillips DDS` and `Dr. Nancy E. Phillips, DDS` do not split behavior.
+
+**Constraints and guardrails**
+
+* Do not simply remove the duplicate check. That risks creating duplicate customer/practice records and breaking invoices/cases.
+* Do not make archived records silently active without user confirmation.
+* Do not create broad global uniqueness unless practices are meant to be unique across all labs/accounts.
+* Preserve existing case, invoice, balance, and practice history links.
+
+**Acceptance criteria**
+
+* Searching `dr. nancy` in Customer Center shows the matching practice when the right filters are enabled.
+* If the practice is archived, Customer Center clearly labels it archived.
+* Trying to add `Dr. Nancy E. Phillips, DDS` no longer dead-ends.
+* The add-practice flow either:
+
+  * lets the user select/reactivate the existing archived practice, or
+  * allows creation only if the previous record is truly deleted/non-blocking.
+* The error message includes enough context, for example: `This practice already exists but is archived. Restore or select the archived practice instead.`
+* Regression checks confirm normal duplicate prevention still works for visible active practices.
+
+### Copy-Ready Replit Prompt
+
+Please debug and fix a recurring LabTrax issue in the practice/customer flow.
+
+Issue: When adding a practice from a case Lab Slip, entering `Dr. Nancy E. Phillips, DDS` with `Tallahassee, FL 32301` and phone `8503633336` shows the error: `A practice with this name already exists. Select existing practice instead.` However, in Customer Center, searching `dr. nancy` returns no results. Customer Center shows there are hidden archived records via `Show archived (2)`, so the likely bug is that duplicate validation sees archived/inactive practices while the normal search/list hides them.
+
+Please inspect the Customer Center practice list/search, the Add Practice modal used from the case Lab Slip, the practice create mutation/API route, the practice search/lookup API route, and the practice schema/storage layer. Search for strings and symbols like `A practice with this name already exists`, `Show archived`, `createPractice`, `addPractice`, `archived`, `isArchived`, `deletedAt`, `status`, and duplicate-name validation.
+
+Implement the safest fix:
+
+1. Confirm whether `Dr. Nancy E. Phillips, DDS` exists as archived, inactive, deleted, or scoped to another lab/account.
+2. Align the duplicate check with the user-visible search behavior.
+3. If the duplicate is archived, do not dead-end the user. Show a clear message and provide a way to select/reactivate/restore the archived practice.
+4. Ensure Customer Center search can find archived practices when `Show archived` is checked.
+5. Make duplicate checks lab/account scoped and based on a normalized practice name.
+6. Do not remove duplicate protection entirely.
+7. Do not silently reactivate archived records without confirmation.
+8. Add or update regression coverage for:
+
+   * active duplicate blocks creation and points to existing record
+   * archived duplicate is discoverable/restorable/selectable
+   * hidden archived records do not produce an impossible “select existing” message
+   * creating a genuinely new practice still works
+
+Before finishing, explain the root cause found, the files changed, any assumptions made, and the regression checks performed.
+
+### Debug Analysis
+
+The strongest hypothesis is that `Dr. Nancy E. Phillips, DDS` already exists as an archived or inactive practice. The create flow checks all practice names, including hidden records, while Customer Center defaults to active/open records only.
+
+Supporting evidence:
+
+* The add-practice modal blocks creation with a duplicate-name error.
+* Customer Center search for `dr. nancy` returns zero results.
+* Customer Center visibly has `Show archived (2)` unchecked.
+* The duplicate message says “Select existing practice instead,” but the searched list gives the user no way to do that.
+
+Alternate hypotheses worth checking:
+
+* The duplicate is under a different lab/account because the uniqueness check is global instead of account-scoped.
+* The duplicate check normalizes names differently than Customer Center search.
+* The record is soft-deleted, not archived, and still being counted by duplicate validation.
+* The practice exists as a doctor nested under another practice, but search only surfaces parent practice names.
+
+The recommended fix is to align the duplicate lookup, Customer Center search, and create flow around the same visibility/status rules. That addresses the underlying contract failure instead of just changing the error text.
+
+Confidence: high that this is a hidden-record/status mismatch; medium on whether the hidden state is specifically `archived` until the database row is checked.
+
+### Step-by-Step Fix Plan
+
+1. In Replit/database, search practices for exact and normalized variants of `Dr. Nancy E. Phillips, DDS`.
+2. Check fields like `archived`, `isArchived`, `deletedAt`, `status`, `labId`, `accountId`, and related doctor/practice parent fields.
+3. Find the duplicate validation used by the Add Practice modal.
+4. Find the Customer Center search/list query and compare its filters to the duplicate lookup.
+5. Update the duplicate response to return match metadata: id, name, archived/inactive/deleted status, lab/account scope.
+6. Update the Add Practice modal to handle archived duplicate records with a clear restore/select path.
+7. Update Customer Center search so archived records appear when `Show archived` is enabled.
+8. Add regression checks for active, archived, deleted, and cross-account practice-name cases.
+9. Verify the exact reported practice can be found, selected, restored, or created according to the corrected rules.

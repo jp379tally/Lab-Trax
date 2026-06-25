@@ -637,4 +637,130 @@ maybe("Invoices (db integration)", () => {
       await db.delete(bankAccountsTable).where(eq(bankAccountsTable.id, acctId));
     }
   });
+
+  // ── generate-invoice relink guard (cross-patient drift prevention) ─────────
+  //
+  // Invoice numbers are derived from case numbers ("INV-<caseNumber>") and case
+  // numbers are reused across the legacy-mobile and canonical case spaces. When
+  // a canonical case's generate-invoice call collides with a pre-existing
+  // orphaned (caseId=null) invoice, the endpoint must only adopt it when the
+  // patient matches (or is blank) — otherwise it would link a DIFFERENT
+  // patient's invoice to this case, showing the wrong "Patient & billing
+  // details" against a correct Rx Summary.
+
+  it("generate-invoice ADOPTS + realigns an orphaned (caseId=null) invoice when the patient matches", async () => {
+    const { db, cases, invoices } = dbMod as any;
+    const { access } = await makeSession(labOwnerId);
+
+    const caseNumber = `26-ADOPT-${randomBytes(4).toString("hex")}`;
+    const caseId = rid("case");
+    await db.insert(cases).values({
+      id: caseId,
+      caseNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      patientFirstName: "Michele",
+      patientLastName: "Barber",
+      doctorName: "Dr. Daniel Sharpstein",
+      createdByUserId: labOwnerId,
+    });
+
+    // Pre-existing orphaned invoice for the SAME patient but with a stale
+    // provider + metadata — the legitimate legacy-mobile promotion scenario.
+    const orphanId = rid("inv");
+    await db.insert(invoices).values({
+      id: orphanId,
+      invoiceNumber: `INV-${caseNumber}`,
+      caseId: null,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: null,
+      status: "open",
+      displayMetadataJson: {
+        patientName: "Michele Barber",
+        billTo: "stale doctor",
+        teeth: "#99",
+      },
+      createdByUserId: labOwnerId,
+    });
+
+    try {
+      const r = await request(appMod.default)
+        .post(`/api/invoices/cases/${caseId}/generate-invoice`)
+        .set("Authorization", `Bearer ${access}`);
+
+      // Adopted (not newly created) → 200, same underlying row.
+      expect(r.status).toBe(200);
+      const inv = r.body.data ?? r.body;
+      expect(inv.id).toBe(orphanId);
+
+      const row = await db.query.invoices.findFirst({
+        where: eq(invoices.id, orphanId),
+      });
+      expect(row.caseId).toBe(caseId);
+      expect(row.providerOrganizationId).toBe(providerOrgId);
+      const meta = row.displayMetadataJson as Record<string, unknown>;
+      expect(meta.patientName).toBe("Michele Barber");
+      expect(meta.billTo).toBe("Dr. Daniel Sharpstein");
+    } finally {
+      await db.delete(invoices).where(eq(invoices.id, orphanId));
+      await db.delete(cases).where(eq(cases.id, caseId));
+    }
+  });
+
+  it("generate-invoice REFUSES (409) to adopt an orphaned invoice belonging to a different patient", async () => {
+    const { db, cases, invoices } = dbMod as any;
+    const { access } = await makeSession(labOwnerId);
+
+    const caseNumber = `26-COLL-${randomBytes(4).toString("hex")}`;
+    const caseId = rid("case");
+    await db.insert(cases).values({
+      id: caseId,
+      caseNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      patientFirstName: "Michele",
+      patientLastName: "Barber",
+      doctorName: "Dr. Daniel Sharpstein",
+      createdByUserId: labOwnerId,
+    });
+
+    // Pre-existing orphaned invoice that belongs to a DIFFERENT patient and
+    // happens to reuse the same case number — the production drift bug.
+    const orphanId = rid("inv");
+    await db.insert(invoices).values({
+      id: orphanId,
+      invoiceNumber: `INV-${caseNumber}`,
+      caseId: null,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: null,
+      status: "open",
+      displayMetadataJson: {
+        patientName: "Debra Hudson",
+        billTo: "Dr. Brittney K. Craig",
+        teeth: "Upper",
+      },
+      createdByUserId: labOwnerId,
+    });
+
+    try {
+      const r = await request(appMod.default)
+        .post(`/api/invoices/cases/${caseId}/generate-invoice`)
+        .set("Authorization", `Bearer ${access}`);
+
+      expect(r.status).toBe(409);
+
+      // The foreign invoice must be left completely untouched.
+      const row = await db.query.invoices.findFirst({
+        where: eq(invoices.id, orphanId),
+      });
+      expect(row.caseId).toBeNull();
+      expect(row.providerOrganizationId).toBeNull();
+      const meta = row.displayMetadataJson as Record<string, unknown>;
+      expect(meta.patientName).toBe("Debra Hudson");
+      expect(meta.billTo).toBe("Dr. Brittney K. Craig");
+    } finally {
+      await db.delete(invoices).where(eq(invoices.id, orphanId));
+      await db.delete(cases).where(eq(cases.id, caseId));
+    }
+  });
 });
