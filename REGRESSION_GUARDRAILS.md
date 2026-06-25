@@ -37,7 +37,7 @@ All test paths below are relative to the repo root unless already prefixed. Serv
 | 11 | Case overview display | desktop | `routes/cases-core.test.ts` (server read) ; overview UI _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
 | 12 | Tooth chart approved layout | desktop | _(pending)_ — Desktop manual smoke | Manual |
 | 13 | Case pan barcode leading-zero preservation | desktop | `routes/cases-core.test.ts`, `routes/cases-search.test.ts`, `routes/cases-ai-intake-carry-through.test.ts` | Yes — API tests |
-| 14 | Locate case | desktop | `routes/cases-location-sync.test.ts` (server bridge) ; locate UI _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
+| 14 | Locate case | desktop | `routes/cases-location-sync.test.ts` (server bridge), `routes/locations.test.ts` (custom-station create/validate + move via bulk-status) ; locate UI _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
 | 15 | Case history | desktop | `routes/cases-canonical-mobile.test.ts` (event history), `src/__tests__/notification-case-navigation.test.tsx` (View → case drawer) ; history-panel UI _(pending)_ | Yes — API + desktop tests |
 | 16 | Attachments / files / photos | desktop | `routes/cases-attachments.test.ts`, `routes/cases-prescription-photo.test.ts` | Yes — API tests |
 | 17 | Invoice editor | desktop | `routes/invoices.test.ts` (server) ; editor UI _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
@@ -726,10 +726,22 @@ pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-attachm
 | Layer | File | What it guards |
 |-------|------|----------------|
 | API integration | `artifacts/api-server/src/routes/cases-location-sync.test.ts` | POST syncs status to lab_cases; GET /api/cases list maps all 13 mobile statuses correctly; batch case bridge; GET /api/cases/:id detail bridge; list+detail agree on COMPLETE→"complete"; auth guard |
+| API integration | `artifacts/api-server/src/routes/locations.test.ts` | Custom station create returns a valid mapped case-status; non-enum status rejected (400); GET activeOnly lists the custom station; moving a case to the custom station's stage via `POST /api/cases/bulk-status` returns accurate `updatedCount`; auth guard |
 
 Run command:
 ```
-pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-location-sync
+pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-location-sync locations
+```
+
+### Signup Geolocation Address Autofill (error handling)
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Mobile unit | `artifacts/labtrax/lib/__tests__/geolocation-error.test.ts` | Browser geolocation codes map to distinct messages (permission-denied / position-unavailable / timeout, never collapsed); native timeout sentinel classified as timeout; `withGeoTimeout` rejects on a stuck fix (no silent spinner hang) and passes through real values/errors |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax exec vitest run lib/__tests__/geolocation-error.test.ts
 ```
 
 ### Case Status Normalization Helper

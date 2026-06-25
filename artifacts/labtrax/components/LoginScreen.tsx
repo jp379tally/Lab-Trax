@@ -24,6 +24,11 @@ import * as LocalAuthentication from "expo-local-authentication";
 import * as Location from "expo-location";
 import * as Haptics from "expo-haptics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  GEO_MESSAGES,
+  geolocationErrorMessage,
+  withGeoTimeout,
+} from "@/lib/geolocation-error";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest, getApiUrl } from "@/lib/query-client";
 import { generateId, GroupJoinRequest } from "@/lib/data";
@@ -1433,7 +1438,7 @@ export default function LoginScreen() {
       setSignUpError(null);
       if (Platform.OS === "web") {
         if (!navigator?.geolocation) {
-          setSignUpError("Location not supported on this browser. Please type your address.");
+          setSignUpError(GEO_MESSAGES.webUnsupported);
           return;
         }
         const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
@@ -1456,15 +1461,21 @@ export default function LoginScreen() {
           setStreetAddress(data.display_name);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } else {
-          setSignUpError("Could not determine address. Please type it manually.");
+          setSignUpError(GEO_MESSAGES.noAddress);
         }
       } else {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== "granted") {
-          setSignUpError("Location permission denied. Please type your address manually.");
+          setSignUpError(GEO_MESSAGES.permissionDenied);
           return;
         }
-        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        // expo-location's getCurrentPositionAsync has no built-in timeout, so a
+        // stuck GPS fix would spin the button forever. Bound it so the user
+        // always gets an actionable message instead of a silent hang.
+        const loc = await withGeoTimeout(
+          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+          15000,
+        );
         const geocode = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
         if (geocode && geocode.length > 0) {
           const g = geocode[0];
@@ -1475,14 +1486,14 @@ export default function LoginScreen() {
           if (streetParts.length || g.city || g.postalCode) {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           } else {
-            setSignUpError("Could not determine address. Please type it manually.");
+            setSignUpError(GEO_MESSAGES.noAddress);
           }
         } else {
-          setSignUpError("Could not determine address. Please type it manually.");
+          setSignUpError(GEO_MESSAGES.noAddress);
         }
       }
-    } catch (e: any) {
-      setSignUpError("Location unavailable. Please type your address manually.");
+    } catch (e: unknown) {
+      setSignUpError(geolocationErrorMessage(e));
     } finally {
       setFetchingLocation(false);
     }

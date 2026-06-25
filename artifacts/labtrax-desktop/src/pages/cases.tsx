@@ -1901,16 +1901,20 @@ export default function CasesPage() {
     [orgsQuery.data],
   );
 
-  const bulkLocationsQuery = useQuery<Array<{ value: string; label: string }>>({
+  const bulkLocationsQuery = useQuery<Array<{ id: string; value: string; label: string }>>({
     queryKey: ["locations", pageLabOrgId, "active"],
     enabled: !!pageLabOrgId,
     queryFn: async () => {
       try {
-        const rows = await apiFetch<Array<{ code: string; name: string; status: string }>>(
+        const rows = await apiFetch<Array<{ id: string; code: string; name: string; status: string }>>(
           `/locations?organizationId=${pageLabOrgId}&activeOnly=true`,
         );
         if (!Array.isArray(rows) || rows.length === 0) return [];
-        return rows.map((r) => ({ value: r.status, label: r.name }));
+        // Carry the unique station `id` for the <select> option value + React
+        // key so two custom stations mapped to the same workflow stage stay
+        // distinct (mobile already does this). `value` is the mapped stage that
+        // gets sent to the API. Sending the free-form code broke custom stations.
+        return rows.map((r) => ({ id: r.id, value: r.status, label: r.name }));
       } catch {
         return [];
       }
@@ -2949,9 +2953,9 @@ export default function CasesPage() {
                   <option value="" disabled>Select a location…</option>
                   {(bulkLocationsQuery.data && bulkLocationsQuery.data.length > 0
                     ? bulkLocationsQuery.data
-                    : STATUS_FILTERS.filter((s) => s.value !== "all")
+                    : STATUS_FILTERS.filter((s) => s.value !== "all").map((s) => ({ id: s.value, value: s.value, label: s.label }))
                   ).map((s) => (
-                    <option key={s.value} value={s.value}>{s.label}</option>
+                    <option key={s.id} value={s.id}>{s.label}</option>
                   ))}
                 </select>
               </div>
@@ -2979,9 +2983,18 @@ export default function CasesPage() {
                 disabled={!bulkStatusValue || bulkStatusMutation.isPending}
                 onClick={() => {
                   if (!bulkStatusValue) return;
+                  // bulkStatusValue holds the station `id`; resolve to its mapped
+                  // workflow stage before sending so custom stations sharing a
+                  // stage stay distinct in the picker but send a valid status.
+                  const bulkOptions =
+                    bulkLocationsQuery.data && bulkLocationsQuery.data.length > 0
+                      ? bulkLocationsQuery.data
+                      : STATUS_FILTERS.filter((s) => s.value !== "all").map((s) => ({ id: s.value, value: s.value, label: s.label }));
+                  const status = bulkOptions.find((s) => s.id === bulkStatusValue)?.value;
+                  if (!status) return;
                   bulkStatusMutation.mutate({
                     caseIds: Array.from(selectedIds),
-                    status: bulkStatusValue,
+                    status,
                   });
                 }}
                 className="flex-1 h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
@@ -3351,19 +3364,21 @@ export function CaseDrawer({
   });
   const hasAdvancedTemplate = !!advancedTemplateQuery.data?.isCustom;
 
-  interface LabLocation { value: string; label: string }
+  interface LabLocation { id: string; value: string; label: string }
   const locationsQuery = useQuery<LabLocation[]>({
     enabled: !!labCase.labOrganizationId,
     queryKey: ["locations", labCase.labOrganizationId, "active"],
     queryFn: async () => {
       try {
-        const rows = await apiFetch<Array<{ code: string; name: string; status: string }>>(
+        const rows = await apiFetch<Array<{ id: string; code: string; name: string; status: string }>>(
           `/locations?organizationId=${labCase.labOrganizationId}&activeOnly=true`
         );
         if (!Array.isArray(rows) || rows.length === 0) return [];
-        // `value` is the mapped workflow stage (a valid case-status), NOT the
-        // free-form code — sending the code broke custom stations.
-        return rows.map((r) => ({ value: r.status, label: r.name }));
+        // `id` is the unique station key (used for the option value + React key
+        // so two custom stations mapped to the same stage stay distinct, like
+        // mobile). `value` is the mapped workflow stage (a valid case-status)
+        // sent to the API — sending the free-form code broke custom stations.
+        return rows.map((r) => ({ id: r.id, value: r.status, label: r.name }));
       } catch {
         return [];
       }
@@ -4868,7 +4883,7 @@ export function CaseDrawer({
   const ROUTE_STATUSES =
     apiLocations && apiLocations.length > 0
       ? apiLocations
-      : STATUS_FILTERS.filter((s) => s.value !== "all");
+      : STATUS_FILTERS.filter((s) => s.value !== "all").map((s) => ({ id: s.value, value: s.value, label: s.label }));
 
   const tabs: Array<{ id: CaseTab; label: string; count?: number }> = [
     { id: "lab-slip", label: "Lab Slip" },
@@ -6245,7 +6260,7 @@ export function CaseDrawer({
                   >
                     <option value="">Select station…</option>
                     {ROUTE_STATUSES.map((s) => (
-                      <option key={s.value} value={s.value} disabled={s.value === currentStatus}>
+                      <option key={s.id} value={s.id} disabled={s.value === currentStatus}>
                         {s.label}{s.value === currentStatus ? " (current)" : ""}
                       </option>
                     ))}
@@ -6253,7 +6268,16 @@ export function CaseDrawer({
                   <button
                     type="button"
                     disabled={!routeStatus || routeMutation.isPending}
-                    onClick={() => routeMutation.mutate(routeStatus as CaseStatus)}
+                    onClick={() => {
+                      // routeStatus holds the station `id`; resolve to its mapped
+                      // workflow stage before sending.
+                      const status = ROUTE_STATUSES.find((s) => s.id === routeStatus)?.value;
+                      if (status) {
+                        routeMutation.mutate(status as CaseStatus);
+                      } else {
+                        setRouteError("Please select a valid station.");
+                      }
+                    }}
                     className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
                   >
                     {routeMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : "Locate"}

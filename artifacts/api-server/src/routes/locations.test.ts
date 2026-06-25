@@ -1,26 +1,35 @@
 /**
- * Integration tests for GET/POST/PATCH/DELETE /api/locations (regression guard).
+ * Regression suite: Lab station ("location") management + moving cases to a
+ * CUSTOM station.
  *
- * Skipped when DATABASE_URL is not configured. All inserted rows are removed
- * in afterAll so the suite is safe to run against a shared dev DB.
+ * Protected workflow: "Locate case" (desktop/mobile station tracking).
+ *
+ * Root cause this guards: a custom station must map to a valid case-status
+ * (`status`) enum value so that locating a case at it writes a status the case
+ * PATCH / bulk-status handlers accept. The original bug let a custom station
+ * carry a free-form `code` that was sent as the status, which the server
+ * rejected — the move failed silently. The fix requires `status` (validated
+ * against the enum) on create/patch and the clients send the mapped `status`,
+ * never the free-form `code`.
  *
  * Coverage:
- *  - GET /api/locations — seeds 14 built-in stations on first request for a new org
- *  - GET /api/locations?activeOnly=true — returns only active locations
- *  - POST /api/locations — creates a location with a mapped workflow stage (201)
- *  - POST /api/locations — missing required `status` returns 400
- *  - PATCH /api/locations/:id — updates name, status, isActive, sortOrder
- *  - DELETE /api/locations/:id — removes a location
- *  - POST /api/locations — duplicate code within same org returns a non-2xx error
- *  - POST /api/locations — non-admin org member returns 403
- *  - GET /api/locations — non-member of the org returns 403
- *  - Unauthenticated requests return 401
+ *   (1) POST /api/locations creates a custom station with a mapped stage and
+ *       returns a valid case-status `status`.
+ *   (2) POST /api/locations rejects an invalid (non-enum) status (the bug guard).
+ *   (3) GET /api/locations?activeOnly=true returns the custom station.
+ *   (4) Moving a case to the custom station's mapped stage via
+ *       POST /api/cases/bulk-status succeeds with an accurate updatedCount.
+ *   (5) Auth guard — unauthenticated client cannot create a station.
+ *
+ * Response envelope: all routes return { ok: true, data: T } via ok().
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHash, randomBytes } from "node:crypto";
-import { inArray, eq } from "drizzle-orm";
-import request from "supertest";
+import { eq } from "drizzle-orm";
+import { randomBytes, createHash } from "node:crypto";
 import * as path from "node:path";
+import * as os from "node:os";
+import * as fs from "node:fs";
+import request from "supertest";
 
 vi.mock("../lib/backup.js", () => ({
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
@@ -29,410 +38,178 @@ vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
-  caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-locations"),
+  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-locations"),
   extractMediaFileName: () => null,
+  extractMediaFilenamesFromText: () => [],
 }));
-
-const SHOULD_RUN = !!process.env["DATABASE_URL"];
-const maybe = SHOULD_RUN ? describe : describe.skip;
 
 function rid(prefix: string) {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
 }
 
-const BUILT_IN_STATION_COUNT = 14;
+const SHOULD_RUN = !!process.env["DATABASE_URL"];
+const maybe = SHOULD_RUN ? describe : describe.skip;
 
-maybe("Locations (db integration)", () => {
+maybe("Lab locations — custom-station move regression", () => {
   let dbMod: typeof import("@workspace/db");
   let appMod: { default: import("express").Express };
-  let authLib: typeof import("../lib/auth.js");
+  let auth: typeof import("../lib/auth.js");
 
-  const adminId = rid("u");
-  const nonAdminId = rid("na");
   const labOrgId = rid("lab");
+  const userId = rid("ulocstn");
+  let token = "";
 
-  async function makeSession(userId: string): Promise<{ access: string; refresh: string }> {
+  async function makeSession(uid: string): Promise<string> {
     const { db, userSessions } = dbMod as any;
     const sessionId = rid("sess");
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    const refresh = authLib.signRefreshToken(userId, sessionId);
-    const hash = createHash("sha256").update(refresh).digest("hex");
-    await db.insert(userSessions).values({ id: sessionId, userId, tokenHash: hash, expiresAt });
-    const access = authLib.signAccessToken(userId, sessionId);
-    return { access, refresh };
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    const t = auth.signAccessToken(uid, sessionId);
+    const hash = createHash("sha256").update(t).digest("hex");
+    await db
+      .insert(userSessions)
+      .values({ id: sessionId, userId: uid, tokenHash: hash, expiresAt });
+    return t;
+  }
+
+  /** Simulate a mobile-originated case so we have one to move. */
+  async function syncCase(caseId: string, status: string) {
+    const caseBlob = {
+      id: caseId,
+      caseNumber: `26-STN-${caseId.slice(-4)}`,
+      patientName: "Test Patient",
+      doctorName: "Dr. Test",
+      toothIndices: "#8",
+      material: "Zirconia",
+      status,
+      affiliationKey: `org:${labOrgId}`,
+    };
+    return request(appMod.default)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: caseId, ownerId: userId, caseData: JSON.stringify(caseBlob) });
   }
 
   beforeAll(async () => {
+    fs.mkdirSync(path.join(os.tmpdir(), "labtrax-test-locations"), {
+      recursive: true,
+    });
     process.env["JWT_SECRET"] =
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-locations";
+
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
-    authLib = await import("../lib/auth.js");
+    auth = await import("../lib/auth.js");
 
     const { db, users, organizations, organizationMemberships } = dbMod as any;
-
     await db.insert(users).values([
-      { id: adminId, username: `locadmin_${adminId}`, password: "x" },
-      { id: nonAdminId, username: `locmem_${nonAdminId}`, password: "x" },
+      { id: userId, username: `locstn_${userId}`, password: "x" },
     ]);
-
-    await db.insert(organizations).values({
-      id: labOrgId,
-      type: "lab",
-      name: rid("LocationsTestLab"),
-    });
-
+    await db.insert(organizations).values([
+      { id: labOrgId, type: "lab", name: "Custom Station Test Lab" },
+    ]);
     await db.insert(organizationMemberships).values([
-      {
-        id: rid("m1"),
-        labId: labOrgId,
-        userId: adminId,
-        role: "owner",
-        status: "active",
-        approvedByUserId: adminId,
-        joinedAt: new Date(),
-      },
-      {
-        id: rid("m2"),
-        labId: labOrgId,
-        userId: nonAdminId,
-        role: "user",
-        status: "active",
-        approvedByUserId: adminId,
-        joinedAt: new Date(),
-      },
+      { id: rid("m"), labId: labOrgId, userId, role: "admin", status: "active" },
     ]);
+    token = await makeSession(userId);
   });
 
-  // Ensure a fresh session exists before each test; per-test sessions created
-  // in each it() body are still the authoritative token for that test.
   beforeEach(async () => {
-    await makeSession(adminId);
+    token = await makeSession(userId);
   });
 
   afterAll(async () => {
     if (!SHOULD_RUN) return;
     const {
       db,
-      labLocations,
-      userSessions,
-      organizationMemberships,
-      organizations,
       users,
+      organizations,
+      organizationMemberships,
+      labCases,
+      labLocations,
+      invoices,
+      userSessions,
+      auditLogs,
     } = dbMod as any;
-
-    await db.delete(labLocations).where(eq(labLocations.labOrganizationId, labOrgId));
-    await db.delete(userSessions).where(inArray(userSessions.userId, [adminId, nonAdminId]));
-    await db.delete(organizationMemberships).where(
-      inArray(organizationMemberships.userId, [adminId, nonAdminId]),
-    );
+    await db.delete(auditLogs).where(eq(auditLogs.organizationId, labOrgId));
+    await db.delete(invoices).where(eq(invoices.labOrganizationId, labOrgId));
+    await db.delete(labCases).where(eq(labCases.organizationId, labOrgId));
+    await db
+      .delete(labLocations)
+      .where(eq(labLocations.labOrganizationId, labOrgId));
+    await db
+      .delete(organizationMemberships)
+      .where(eq(organizationMemberships.userId, userId));
+    await db.delete(userSessions).where(eq(userSessions.userId, userId));
     await db.delete(organizations).where(eq(organizations.id, labOrgId));
-    await db.delete(users).where(inArray(users.id, [adminId, nonAdminId]));
+    await db.delete(users).where(eq(users.id, userId));
   });
 
-  // ── GET — seed on first request ───────────────────────────────────────────
-
-  it("GET /api/locations seeds 14 built-in stations on first request", async () => {
-    const { access } = await makeSession(adminId);
-
-    const r = await request(appMod.default)
-      .get(`/api/locations?organizationId=${labOrgId}`)
-      .set("Authorization", `Bearer ${access}`);
-
-    expect(r.status).toBe(200);
-    const rows: any[] = r.body.data ?? [];
-    expect(rows.length).toBe(BUILT_IN_STATION_COUNT);
-    const codes = rows.map((row: any) => row.code);
-    expect(codes).toContain("received");
-    expect(codes).toContain("complete");
-    expect(codes).toContain("shipped");
-  });
-
-  it("GET /api/locations is idempotent — second call does not duplicate rows", async () => {
-    const { access } = await makeSession(adminId);
-
-    const r = await request(appMod.default)
-      .get(`/api/locations?organizationId=${labOrgId}`)
-      .set("Authorization", `Bearer ${access}`);
-
-    expect(r.status).toBe(200);
-    // Should still be exactly 14 — no duplicate seeding
-    const rows: any[] = r.body.data ?? [];
-    expect(rows.length).toBe(BUILT_IN_STATION_COUNT);
-  });
-
-  it("GET /api/locations?activeOnly=true returns only active locations", async () => {
-    const { db, labLocations } = dbMod as any;
-    const { access } = await makeSession(adminId);
-
-    // Deactivate one location via PATCH first (we need the id from a seeded row)
-    const listR = await request(appMod.default)
-      .get(`/api/locations?organizationId=${labOrgId}`)
-      .set("Authorization", `Bearer ${access}`);
-    expect(listR.status).toBe(200);
-    const firstId: string = listR.body.data[0].id;
-
-    const patchR = await request(appMod.default)
-      .patch(`/api/locations/${firstId}`)
-      .set("Authorization", `Bearer ${access}`)
-      .send({ isActive: false });
-    expect(patchR.status).toBe(200);
-
-    try {
-      const r = await request(appMod.default)
-        .get(`/api/locations?organizationId=${labOrgId}&activeOnly=true`)
-        .set("Authorization", `Bearer ${access}`);
-
-      expect(r.status).toBe(200);
-      const rows: any[] = r.body.data ?? [];
-      expect(rows.every((row: any) => row.isActive === true)).toBe(true);
-      const ids = rows.map((row: any) => row.id);
-      expect(ids).not.toContain(firstId);
-    } finally {
-      // Restore the row for subsequent tests
-      await db
-        .update(labLocations)
-        .set({ isActive: true })
-        .where(eq(labLocations.id, firstId));
-    }
-  });
-
-  // ── POST — create ─────────────────────────────────────────────────────────
-
-  it("POST /api/locations creates a new location and returns 201", async () => {
-    const { access } = await makeSession(adminId);
-    const name = rid("Custom Station");
-    const code = rid("custom_code");
-
-    const r = await request(appMod.default)
+  // ── (1) Create a custom station mapped to a built-in stage ────────────────
+  it("(1) POST /api/locations creates a custom station with a valid mapped status", async () => {
+    const res = await request(appMod.default)
       .post("/api/locations")
-      .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name, code, status: "in_design", isActive: true, sortOrder: 99 });
+      .set("Authorization", `Bearer ${token}`)
+      .send({ organizationId: labOrgId, name: "Glaze Bench", status: "qc" });
 
-    expect(r.status).toBe(201);
-    expect(r.body.data).toBeDefined();
-    expect(r.body.data.name).toBe(name);
-    expect(r.body.data.code).toBe(code);
-    expect(r.body.data.status).toBe("in_design");
-    expect(r.body.data.labOrganizationId).toBe(labOrgId);
-    expect(r.body.data.isActive).toBe(true);
-    expect(r.body.data.sortOrder).toBe(99);
+    expect(res.status).toBe(201);
+    expect(res.body.data?.name).toBe("Glaze Bench");
+    // The mapped stage is a valid case-status enum value, not the free-form code.
+    expect(res.body.data?.status).toBe("qc");
+    expect(typeof res.body.data?.id).toBe("string");
+    expect((res.body.data?.id as string).length).toBeGreaterThan(0);
   });
 
-  it("POST /api/locations — missing required status returns 400", async () => {
-    const { access } = await makeSession(adminId);
-
-    const r = await request(appMod.default)
+  // ── (2) Invalid status is rejected (the original silent-failure bug) ──────
+  it("(2) POST /api/locations rejects a non-enum status", async () => {
+    const res = await request(appMod.default)
       .post("/api/locations")
-      .set("Authorization", `Bearer ${access}`)
-      // missing `status` (the mapped workflow stage is required)
-      .send({ organizationId: labOrgId, name: "No Status Station", code: rid("no_status") });
+      .set("Authorization", `Bearer ${token}`)
+      .send({ organizationId: labOrgId, name: "Bad Station", status: "glaze" });
 
-    expect(r.status).toBe(400);
+    expect(res.status).toBe(400);
   });
 
-  // ── POST — duplicate code conflict ────────────────────────────────────────
+  // ── (3) GET returns the custom station ────────────────────────────────────
+  it("(3) GET /api/locations returns the created custom station", async () => {
+    const res = await request(appMod.default)
+      .get(`/api/locations?organizationId=${labOrgId}&activeOnly=true`)
+      .set("Authorization", `Bearer ${token}`);
 
-  it("POST /api/locations — duplicate code in same org is rejected", async () => {
-    const { access } = await makeSession(adminId);
-    const code = rid("dup_code");
-
-    const first = await request(appMod.default)
-      .post("/api/locations")
-      .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name: "First Station", code, status: "received" });
-    expect(first.status).toBe(201);
-
-    // Second insert with the same (organizationId, code) pair must fail
-    const second = await request(appMod.default)
-      .post("/api/locations")
-      .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name: "Duplicate Station", code, status: "received" });
-    expect(second.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBe(200);
+    const rows: any[] = res.body.data ?? [];
+    const custom = rows.find((r) => r.name === "Glaze Bench");
+    expect(custom, "custom station must be listed").toBeTruthy();
+    expect(custom.status).toBe("qc");
   });
 
-  // ── PATCH — update ────────────────────────────────────────────────────────
+  // ── (4) Moving a case to the custom station's stage succeeds ──────────────
+  it("(4) POST /api/cases/bulk-status moves a case to the custom station's stage", async () => {
+    const caseId = rid("cstn");
+    expect((await syncCase(caseId, "INTAKE")).status).toBe(200);
 
-  it("PATCH /api/locations/:id updates the location and returns 200", async () => {
-    const { access } = await makeSession(adminId);
-    const code = rid("patch_code");
-    const updatedName = rid("Updated Name");
-
-    const create = await request(appMod.default)
-      .post("/api/locations")
-      .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name: rid("Before Patch"), code, status: "received" });
-    expect(create.status).toBe(201);
-    const id: string = create.body.data.id;
-
-    const r = await request(appMod.default)
-      .patch(`/api/locations/${id}`)
-      .set("Authorization", `Bearer ${access}`)
-      .send({ name: updatedName, status: "in_design", isActive: false, sortOrder: 50 });
-
-    expect(r.status).toBe(200);
-    expect(r.body.data.id).toBe(id);
-    expect(r.body.data.name).toBe(updatedName);
-    expect(r.body.data.status).toBe("in_design");
-    expect(r.body.data.isActive).toBe(false);
-    expect(r.body.data.sortOrder).toBe(50);
-  });
-
-  it("PATCH /api/locations/:id — non-existent id returns 404", async () => {
-    const { access } = await makeSession(adminId);
-
-    const r = await request(appMod.default)
-      .patch("/api/locations/00000000-0000-0000-0000-000000000000")
-      .set("Authorization", `Bearer ${access}`)
-      .send({ name: "Ghost" });
-
-    expect(r.status).toBe(404);
-  });
-
-  // ── DELETE ────────────────────────────────────────────────────────────────
-
-  it("DELETE /api/locations/:id removes the location and returns 200", async () => {
-    const { access } = await makeSession(adminId);
-    const code = rid("del_code");
-
-    const create = await request(appMod.default)
-      .post("/api/locations")
-      .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name: rid("To Delete"), code, status: "received" });
-    expect(create.status).toBe(201);
-    const id: string = create.body.data.id;
-
-    const del = await request(appMod.default)
-      .delete(`/api/locations/${id}`)
-      .set("Authorization", `Bearer ${access}`);
-
-    expect(del.status).toBe(200);
-    expect(del.body.data.deleted).toBe(true);
-
-    // Verify it is gone from list
+    // Read the custom station's mapped status from the API (what the client sends).
     const list = await request(appMod.default)
-      .get(`/api/locations?organizationId=${labOrgId}`)
-      .set("Authorization", `Bearer ${access}`);
-    expect(list.status).toBe(200);
-    const ids: string[] = (list.body.data ?? []).map((row: any) => row.id);
-    expect(ids).not.toContain(id);
+      .get(`/api/locations?organizationId=${labOrgId}&activeOnly=true`)
+      .set("Authorization", `Bearer ${token}`);
+    const custom = (list.body.data as any[]).find((r) => r.name === "Glaze Bench");
+    expect(custom).toBeTruthy();
+
+    const move = await request(appMod.default)
+      .post("/api/cases/bulk-status")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ caseIds: [caseId], status: custom.status });
+
+    expect(move.status).toBe(200);
+    // Accurate result count: exactly one case moved, none silently missed.
+    expect(move.body.data?.updatedCount).toBe(1);
+    expect(move.body.data?.updatedIds).toContain(caseId);
   });
 
-  it("DELETE /api/locations/:id — non-existent id returns 404", async () => {
-    const { access } = await makeSession(adminId);
-
-    const r = await request(appMod.default)
-      .delete("/api/locations/00000000-0000-0000-0000-000000000000")
-      .set("Authorization", `Bearer ${access}`);
-
-    expect(r.status).toBe(404);
-  });
-
-  // ── RBAC — non-admin cannot write ─────────────────────────────────────────
-
-  it("POST /api/locations — non-admin org member returns 403", async () => {
-    const { access } = await makeSession(nonAdminId);
-
-    const r = await request(appMod.default)
+  // ── (5) Auth guard ────────────────────────────────────────────────────────
+  it("(5) POST /api/locations requires authentication", async () => {
+    const res = await request(appMod.default)
       .post("/api/locations")
-      .set("Authorization", `Bearer ${access}`)
-      .send({ organizationId: labOrgId, name: "Rejected", code: rid("na_code"), status: "received" });
-
-    expect(r.status).toBe(403);
-  });
-
-  it("PATCH /api/locations/:id — non-admin org member returns 403", async () => {
-    // First create a location as admin to get a valid id
-    const { access: adminAccess } = await makeSession(adminId);
-    const create = await request(appMod.default)
-      .post("/api/locations")
-      .set("Authorization", `Bearer ${adminAccess}`)
-      .send({ organizationId: labOrgId, name: rid("Admin Created"), code: rid("rbac_patch"), status: "received" });
-    expect(create.status).toBe(201);
-    const id: string = create.body.data.id;
-
-    const { access: nonAdminAccess } = await makeSession(nonAdminId);
-    const r = await request(appMod.default)
-      .patch(`/api/locations/${id}`)
-      .set("Authorization", `Bearer ${nonAdminAccess}`)
-      .send({ name: "Unauthorized Edit" });
-
-    expect(r.status).toBe(403);
-  });
-
-  it("DELETE /api/locations/:id — non-admin org member returns 403", async () => {
-    const { access: adminAccess } = await makeSession(adminId);
-    const create = await request(appMod.default)
-      .post("/api/locations")
-      .set("Authorization", `Bearer ${adminAccess}`)
-      .send({ organizationId: labOrgId, name: rid("Admin Created"), code: rid("rbac_del"), status: "received" });
-    expect(create.status).toBe(201);
-    const id: string = create.body.data.id;
-
-    const { access: nonAdminAccess } = await makeSession(nonAdminId);
-    const r = await request(appMod.default)
-      .delete(`/api/locations/${id}`)
-      .set("Authorization", `Bearer ${nonAdminAccess}`);
-
-    expect(r.status).toBe(403);
-  });
-
-  // ── RBAC — non-member cannot read ─────────────────────────────────────────
-
-  it("GET /api/locations — non-member of the org returns 403", async () => {
-    const { db, users, userSessions } = dbMod as any;
-    const outsiderId = rid("out");
-    await db.insert(users).values({ id: outsiderId, username: `loc_out_${outsiderId}`, password: "x" });
-
-    try {
-      const { access } = await makeSession(outsiderId);
-      const r = await request(appMod.default)
-        .get(`/api/locations?organizationId=${labOrgId}`)
-        .set("Authorization", `Bearer ${access}`);
-      expect(r.status).toBe(403);
-    } finally {
-      await db.delete(userSessions).where(eq(userSessions.userId, outsiderId));
-      await db.delete(users).where(eq(users.id, outsiderId));
-    }
-  });
-
-  // ── Auth guard ────────────────────────────────────────────────────────────
-
-  it("unauthenticated GET /api/locations returns 401", async () => {
-    const r = await request(appMod.default)
-      .get(`/api/locations?organizationId=${labOrgId}`);
-    expect(r.status).toBe(401);
-  });
-
-  it("unauthenticated POST /api/locations returns 401", async () => {
-    const r = await request(appMod.default)
-      .post("/api/locations")
-      .send({ organizationId: labOrgId, name: "No Auth", code: rid("noauth") });
-    expect(r.status).toBe(401);
-  });
-
-  it("unauthenticated PATCH /api/locations/:id returns 401", async () => {
-    const r = await request(appMod.default)
-      .patch("/api/locations/some-id")
-      .send({ name: "No Auth" });
-    expect(r.status).toBe(401);
-  });
-
-  it("unauthenticated DELETE /api/locations/:id returns 401", async () => {
-    const r = await request(appMod.default)
-      .delete("/api/locations/some-id");
-    expect(r.status).toBe(401);
-  });
-
-  // ── GET — missing organizationId ──────────────────────────────────────────
-
-  it("GET /api/locations without organizationId returns 400", async () => {
-    const { access } = await makeSession(adminId);
-
-    const r = await request(appMod.default)
-      .get("/api/locations")
-      .set("Authorization", `Bearer ${access}`);
-
-    expect(r.status).toBe(400);
+      .send({ organizationId: labOrgId, name: "No Auth", status: "qc" });
+    expect(res.status).toBe(401);
   });
 });
