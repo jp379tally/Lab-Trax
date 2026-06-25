@@ -692,8 +692,9 @@ function PossibleDuplicateModal({
 export function NewCaseModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const orgsQuery = useQuery({
-    queryKey: ["organizations"],
-    queryFn: () => apiFetch<Organization[]>("/organizations"),
+    queryKey: ["organizations", { includeLabPractices: true }],
+    queryFn: () =>
+      apiFetch<Organization[]>("/organizations?includeLabPractices=true"),
   });
 
   const orgs = orgsQuery.data ?? [];
@@ -1888,8 +1889,9 @@ export default function CasesPage() {
   };
 
   const orgsQuery = useQuery({
-    queryKey: ["organizations"],
-    queryFn: () => apiFetch<Organization[]>("/organizations"),
+    queryKey: ["organizations", { includeLabPractices: true }],
+    queryFn: () =>
+      apiFetch<Organization[]>("/organizations?includeLabPractices=true"),
   });
   const providerOrgs = useMemo(
     () => (orgsQuery.data ?? []).filter((o) => o.type !== "lab"),
@@ -3742,8 +3744,9 @@ export function CaseDrawer({
   }, [labCase.id]);
 
   const drawerOrgsQuery = useQuery({
-    queryKey: ["organizations"],
-    queryFn: () => apiFetch<Organization[]>("/organizations"),
+    queryKey: ["organizations", { includeLabPractices: true }],
+    queryFn: () =>
+      apiFetch<Organization[]>("/organizations?includeLabPractices=true"),
   });
   const drawerProviderOrgs = useMemo(
     () => (drawerOrgsQuery.data ?? []).filter((o) => o.type !== "lab"),

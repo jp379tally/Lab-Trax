@@ -81,8 +81,11 @@ interface PracticeStats {
 
 export default function AccountsPage() {
   const orgsQuery = useQuery({
-    queryKey: ["organizations", { includeArchived: true }],
-    queryFn: () => apiFetch<Organization[]>("/organizations?includeArchived=true"),
+    queryKey: ["organizations", { includeArchived: true, includeLabPractices: true }],
+    queryFn: () =>
+      apiFetch<Organization[]>(
+        "/organizations?includeArchived=true&includeLabPractices=true"
+      ),
   });
   const casesQuery = useQuery({
     queryKey: ["cases"],

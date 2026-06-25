@@ -1724,4 +1724,169 @@ maybe("Organizations CRUD (db integration)", () => {
       ).toBe(provId);
     });
   });
+
+  // ── GET /api/organizations — includeLabPractices visibility ───────────────
+  // Regression guard for Task #2427: a practice created after the June 18
+  // "no membership in created practices" change has no membership, so it is
+  // invisible in the membership-scoped list yet still blocks creation via the
+  // parent-lab duplicate check. The opt-in includeLabPractices mode realigns
+  // list visibility with the duplicate-check scope so blocking practices are
+  // findable — WITHOUT re-introducing the practice memberships.
+  describe("includeLabPractices visibility", () => {
+    it("default mode stays membership-only (Settings → Organizations): lab visible, its child practices hidden", async () => {
+      const { access, labId } = await makeOwnerLab();
+      const name = rid("HiddenPractice");
+      const create = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send(practiceBody(name, labId));
+      expect(create.status).toBe(201);
+      const practiceId = create.body.data.id;
+      createdOrgIds.push(practiceId);
+
+      const list = await request(appMod.default)
+        .get("/api/organizations")
+        .set("Authorization", `Bearer ${access}`);
+      expect(list.status).toBe(200);
+      const orgs: any[] = list.body.data ?? [];
+      expect(orgs.some((o: any) => o.id === labId)).toBe(true);
+      expect(orgs.some((o: any) => o.id === practiceId)).toBe(false);
+    });
+
+    it("includeLabPractices=true returns child practices even though the caller has NO membership in them (June 18 behavior preserved)", async () => {
+      const { access, labId } = await makeOwnerLab();
+      const name = rid("VisiblePractice");
+      const create = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send(practiceBody(name, labId));
+      expect(create.status).toBe(201);
+      const practiceId = create.body.data.id;
+      createdOrgIds.push(practiceId);
+
+      // Guard: lab admins must NOT regain a membership in the practice.
+      const { db, organizationMemberships } = dbMod as any;
+      const practiceMembers = await db
+        .select()
+        .from(organizationMemberships)
+        .where(eq(organizationMemberships.labId, practiceId));
+      expect(
+        practiceMembers.find((m: any) => m.userId === ownerId),
+        "creating a practice must NOT grant the lab admin a membership in it"
+      ).toBeUndefined();
+
+      const list = await request(appMod.default)
+        .get("/api/organizations?includeLabPractices=true")
+        .set("Authorization", `Bearer ${access}`);
+      expect(list.status).toBe(200);
+      const orgs: any[] = list.body.data ?? [];
+      expect(orgs.some((o: any) => o.id === labId)).toBe(true);
+      expect(orgs.some((o: any) => o.id === practiceId)).toBe(true);
+    });
+
+    it("a duplicate active practice returns 409 AND that blocking practice is now findable/searchable in includeLabPractices mode", async () => {
+      const { access, labId } = await makeOwnerLab();
+      const name = rid("DupVisible");
+
+      const first = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send(practiceBody(name, labId));
+      expect(first.status).toBe(201);
+      const firstId = first.body.data.id;
+      createdOrgIds.push(firstId);
+
+      const dup = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send(practiceBody(name, labId));
+      expect(dup.status).toBe(409);
+      expect(dup.body.details?.conflictingOrg?.id).toBe(firstId);
+
+      const list = await request(appMod.default)
+        .get("/api/organizations?includeLabPractices=true")
+        .set("Authorization", `Bearer ${access}`);
+      expect(list.status).toBe(200);
+      const orgs: any[] = list.body.data ?? [];
+      const found = orgs.find((o: any) => o.id === firstId);
+      expect(found, "the blocking practice must be visible in the list").toBeDefined();
+      expect(found.name.toLowerCase()).toContain(name.toLowerCase());
+    });
+
+    it("includeArchived semantics preserved: a soft-deleted child practice is hidden by default but shown with includeArchived", async () => {
+      const { access, labId } = await makeOwnerLab();
+      const name = rid("ArchPractice");
+      const create = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send(practiceBody(name, labId));
+      expect(create.status).toBe(201);
+      const practiceId = create.body.data.id;
+      createdOrgIds.push(practiceId);
+
+      const { db, organizations } = dbMod as any;
+      await db
+        .update(organizations)
+        .set({ deletedAt: new Date(), isActive: false })
+        .where(eq(organizations.id, practiceId));
+
+      const active = await request(appMod.default)
+        .get("/api/organizations?includeLabPractices=true")
+        .set("Authorization", `Bearer ${access}`);
+      expect(active.status).toBe(200);
+      expect(
+        (active.body.data ?? []).some((o: any) => o.id === practiceId)
+      ).toBe(false);
+
+      const archived = await request(appMod.default)
+        .get("/api/organizations?includeArchived=true&includeLabPractices=true")
+        .set("Authorization", `Bearer ${access}`);
+      expect(archived.status).toBe(200);
+      expect(
+        (archived.body.data ?? []).some((o: any) => o.id === practiceId)
+      ).toBe(true);
+    });
+
+    it("includeLabPractices ignores labs where the caller is only a non-admin member (no cross-tenant leak)", async () => {
+      const { access: ownerAccess, labId } = await makeOwnerLab();
+      const name = rid("NonAdminHidden");
+      const create = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${ownerAccess}`)
+        .send(practiceBody(name, labId));
+      expect(create.status).toBe(201);
+      const practiceId = create.body.data.id;
+      createdOrgIds.push(practiceId);
+
+      // A second user who is a plain "user" member (NOT admin/owner) of the lab.
+      const memberId = rid("plainmember");
+      const { db, users, organizationMemberships, userSessions } = dbMod as any;
+      await db.insert(users).values({
+        id: memberId,
+        username: `pm_${memberId}`,
+        password: "doesnotmatter",
+      });
+      await db.insert(organizationMemberships).values({
+        labId,
+        userId: memberId,
+        role: "user",
+        status: "active",
+      });
+      const { access: memberAccess } = await makeSession(memberId);
+
+      const list = await request(appMod.default)
+        .get("/api/organizations?includeLabPractices=true")
+        .set("Authorization", `Bearer ${memberAccess}`);
+      expect(list.status).toBe(200);
+      const orgs: any[] = list.body.data ?? [];
+      expect(orgs.some((o: any) => o.id === labId)).toBe(true);
+      expect(orgs.some((o: any) => o.id === practiceId)).toBe(false);
+
+      await db
+        .delete(organizationMemberships)
+        .where(eq(organizationMemberships.userId, memberId));
+      await db.delete(userSessions).where(eq(userSessions.userId, memberId));
+      await db.delete(users).where(eq(users.id, memberId));
+    });
+  });
 });

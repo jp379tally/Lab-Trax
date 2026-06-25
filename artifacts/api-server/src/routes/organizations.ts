@@ -1761,6 +1761,14 @@ router.get(
   "/",
   asyncHandler(async (req, res) => {
     const includeArchived = req.query.includeArchived === "true";
+    // Opt-in mode: in addition to orgs the caller is a member of, also return
+    // provider practices whose parentLabOrganizationId is one of the labs the
+    // caller administers. This realigns list visibility with the duplicate-name
+    // check on create (which is scoped to the parent lab, NOT to membership), so
+    // a practice that can block creation is also findable/selectable. The
+    // default (no flag) stays membership-only so Settings → Organizations is
+    // unchanged.
+    const includeLabPractices = req.query.includeLabPractices === "true";
     const memberships =
       await db.query.organizationMemberships.findMany({
         where: eq(
@@ -1768,9 +1776,50 @@ router.get(
           (req as any).auth.userId
         ),
       });
-    const orgIds = memberships
-      .filter((m: any) => m.status === "active")
-      .map((m: any) => m.labId);
+    const activeMemberships = memberships.filter(
+      (m: any) => m.status === "active"
+    );
+    const orgIdSet = new Set<string>(
+      activeMemberships.map((m: any) => m.labId)
+    );
+
+    if (includeLabPractices) {
+      // Labs the caller administers (active admin/owner membership in a
+      // type = "lab" org). Mirrors the parent-lab pattern used by
+      // GET /:labId/providers.
+      const adminMembershipOrgIds = activeMemberships
+        .filter((m: any) => ADMIN_ROLES.includes(m.role as MembershipRole))
+        .map((m: any) => m.labId);
+      if (adminMembershipOrgIds.length) {
+        const adminOrgs = await db
+          .select({ id: organizations.id, type: organizations.type })
+          .from(organizations)
+          .where(inArray(organizations.id, adminMembershipOrgIds));
+        const adminLabIds = adminOrgs
+          .filter((o: any) => o.type === "lab")
+          .map((o: any) => o.id);
+        if (adminLabIds.length) {
+          // Collect every provider practice under the administered labs.
+          // Soft-delete filtering is deferred to the final select so the
+          // includeArchived semantics apply uniformly to all ids.
+          const labPractices = await db
+            .select({ id: organizations.id })
+            .from(organizations)
+            .where(
+              and(
+                inArray(
+                  organizations.parentLabOrganizationId,
+                  adminLabIds
+                ),
+                eq(organizations.type, "provider")
+              )
+            );
+          for (const p of labPractices) orgIdSet.add(p.id);
+        }
+      }
+    }
+
+    const orgIds = Array.from(orgIdSet);
     const orgs = orgIds.length
       ? await db
           .select()

@@ -108,8 +108,9 @@ export default function CustomerCenterPage() {
     user?.role === "admin";
 
   const orgsQuery = useQuery({
-    queryKey: ["organizations"],
-    queryFn: () => apiFetch<Organization[]>("/organizations"),
+    queryKey: ["organizations", { includeLabPractices: true }],
+    queryFn: () =>
+      apiFetch<Organization[]>("/organizations?includeLabPractices=true"),
   });
 
   const openInvoicesQuery = useQuery({
