@@ -257,6 +257,92 @@ maybe("Organizations CRUD (db integration)", () => {
     expect(owner?.status).toBe("active");
   });
 
+  // ── POST /api/organizations (provider practice) ───────────────────────────
+  // Regression guard for Task #2411: adding a provider practice must succeed
+  // with a valid payload, reject a duplicate name with 409 (surfacing the
+  // conflicting org so the client can offer it instead), and reject a missing
+  // name with 400 so the client never silently no-ops.
+
+  async function makeOwnerLab(): Promise<{ access: string; labId: string }> {
+    const { access } = await makeSession(ownerId);
+    const create = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(rid("ParentLab")));
+    expect(create.status).toBe(201);
+    const labId = create.body.data.id;
+    createdOrgIds.push(labId);
+    return { access, labId };
+  }
+
+  function practiceBody(name: string, parentLabOrganizationId: string) {
+    return {
+      type: "provider" as const,
+      name,
+      parentLabOrganizationId,
+      city: "Austin",
+      state: "TX",
+      zip: "78701",
+      addressLine1: "456 Practice Ave",
+    };
+  }
+
+  it("creates a provider practice under the caller's lab and returns 201", async () => {
+    const { access, labId } = await makeOwnerLab();
+    const name = rid("TestPractice");
+
+    const r = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(practiceBody(name, labId));
+
+    expect(r.status).toBe(201);
+    expect(r.body.data).toBeDefined();
+    expect(r.body.data.type).toBe("provider");
+    expect(r.body.data.name).toBe(name);
+    expect(r.body.data.parentLabOrganizationId).toBe(labId);
+    createdOrgIds.push(r.body.data.id);
+  });
+
+  it("rejects a duplicate practice name in the same lab with 409 and surfaces the conflicting org", async () => {
+    const { access, labId } = await makeOwnerLab();
+    const name = rid("DupPractice");
+
+    const first = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(practiceBody(name, labId));
+    expect(first.status).toBe(201);
+    createdOrgIds.push(first.body.data.id);
+
+    const second = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(practiceBody(name, labId));
+
+    expect(second.status).toBe(409);
+    expect(second.body.message).toMatch(/already exists/i);
+    expect(second.body.details?.conflictingOrg?.id).toBe(first.body.data.id);
+    expect(second.body.details?.conflictingOrg?.name).toBe(name);
+  });
+
+  it("rejects a provider practice with a missing name with 400", async () => {
+    const { access, labId } = await makeOwnerLab();
+
+    const r = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        type: "provider",
+        parentLabOrganizationId: labId,
+        city: "Austin",
+        state: "TX",
+        zip: "78701",
+      });
+
+    expect(r.status).toBe(400);
+  });
+
   // ── GET /api/organizations/:id ────────────────────────────────────────────
 
   it("GET /api/organizations/:id returns the org", async () => {

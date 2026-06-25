@@ -901,6 +901,7 @@ export function AddPracticeDialog({
 }) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  const [showErrors, setShowErrors] = useState(false);
   const [conflictOrgId, setConflictOrgId] = useState<string | null>(null);
   const [fields, setFields] = useState<AddPracticeFields>({
     name: "",
@@ -953,6 +954,17 @@ export function AddPracticeDialog({
   function update<K extends keyof AddPracticeFields>(key: K, value: AddPracticeFields[K]) {
     setFields((p) => ({ ...p, [key]: value }));
   }
+
+  // The server contract (createOrgSchema) requires only a legal name + type;
+  // city/state/ZIP are optional, so a name-only practice (e.g. "Dr. Susan
+  // Byrne") is valid and must stay creatable. We therefore gate the form on
+  // exactly what the API enforces: a name, plus a parent-lab choice when the
+  // admin manages more than one lab (otherwise the practice can't be routed).
+  // Address fields are surfaced but never block submission.
+  const trimmedName = fields.name.trim();
+  const needsLabChoice =
+    adminLabOrgIds.length > 1 && !fields.parentLabOrganizationId;
+  const isFormValid = !!trimmedName && !needsLabChoice;
 
   const createMutation = useMutation({
     mutationFn: () => {
@@ -1049,18 +1061,20 @@ export function AddPracticeDialog({
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!fields.name.trim()) {
-      setError("Practice name is required.");
-      return;
-    }
-    if (adminLabOrgIds.length > 1 && !fields.parentLabOrganizationId) {
-      setError("Choose which lab this practice belongs to.");
-      return;
-    }
     // Practice is already created — only retry the doctor batch instead of
     // creating a duplicate practice on resubmit.
     if (createdOrgId) {
       void submitDoctors(createdOrgId);
+      return;
+    }
+    setShowErrors(true);
+    const missing: string[] = [];
+    if (!trimmedName) missing.push("legal name");
+    if (needsLabChoice) missing.push("parent lab");
+    if (missing.length > 0) {
+      setError(
+        `Please fill in the required field${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}.`,
+      );
       return;
     }
     createMutation.mutate();
@@ -1111,7 +1125,16 @@ export function AddPracticeDialog({
 
           <section className="grid grid-cols-2 gap-4">
             {labOptions.length > 1 && (
-              <FormField label="Parent lab" full>
+              <FormField
+                label="Parent lab"
+                full
+                required
+                error={
+                  showErrors && needsLabChoice
+                    ? "Choose which lab this practice belongs to."
+                    : null
+                }
+              >
                 <select
                   value={fields.parentLabOrganizationId}
                   onChange={(e) => update("parentLabOrganizationId", e.target.value)}
@@ -1126,7 +1149,11 @@ export function AddPracticeDialog({
                 </select>
               </FormField>
             )}
-            <FormField label="Legal name">
+            <FormField
+              label="Legal name"
+              required
+              error={showErrors && !trimmedName ? "Legal name is required." : null}
+            >
               <input
                 value={fields.name}
                 onChange={(e) => update("name", e.target.value)}
@@ -1319,7 +1346,11 @@ export function AddPracticeDialog({
               </button>
               <button
                 type="submit"
-                disabled={createMutation.isPending || creatingDoctors || !fields.name.trim()}
+                disabled={
+                  createMutation.isPending ||
+                  creatingDoctors ||
+                  (!createdOrgId && !isFormValid)
+                }
                 className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
               >
                 {createMutation.isPending
@@ -2231,13 +2262,29 @@ function AddDoctorToPracticeDialog({
 
 const inputCls = "w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm";
 
-function FormField({ label, children, full }: { label: string; children: React.ReactNode; full?: boolean }) {
+function FormField({
+  label,
+  children,
+  full,
+  required,
+  error,
+}: {
+  label: string;
+  children: React.ReactNode;
+  full?: boolean;
+  required?: boolean;
+  error?: string | null;
+}) {
   return (
     <div className={full ? "col-span-2" : ""}>
       <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
         {label}
+        {required ? <span className="text-destructive"> *</span> : null}
       </label>
       {children}
+      {error ? (
+        <div className="text-[11px] text-destructive mt-1">{error}</div>
+      ) : null}
     </div>
   );
 }

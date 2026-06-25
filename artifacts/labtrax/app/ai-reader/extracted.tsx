@@ -381,8 +381,27 @@ export default function AiReaderExtractedScreen() {
         }),
       });
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        Alert.alert("Could not create practice", `Server responded ${res.status}${text ? `: ${text}` : ""}.`);
+        // Surface the server's human-readable rejection instead of a raw status
+        // dump. The API error envelope is { ok:false, message, details }; the
+        // 409 duplicate also carries details.conflictingOrg so we can name the
+        // existing practice the user should pick instead.
+        let msg = `Could not create practice (server responded ${res.status}).`;
+        try {
+          const body = (await res.json()) as {
+            message?: string;
+            details?: { conflictingOrg?: { name?: string; displayName?: string } };
+          };
+          const conflict = body?.details?.conflictingOrg;
+          if (res.status === 409 && conflict) {
+            const label = conflict.displayName || conflict.name || "an existing practice";
+            msg = `A practice named "${label}" already exists in this lab. Pick it from the list instead of creating a new one.`;
+          } else if (body?.message) {
+            msg = body.message;
+          }
+        } catch {
+          // Non-JSON body — keep the default status message.
+        }
+        Alert.alert("Could not create practice", msg);
         return;
       }
       const body = (await res.json()) as { data?: { id?: string; name?: string } };
