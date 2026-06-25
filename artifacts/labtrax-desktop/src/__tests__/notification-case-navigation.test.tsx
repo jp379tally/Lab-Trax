@@ -333,7 +333,7 @@ describe("CasesPage deep-link — initial mount with ?caseId=abc opens drawer", 
     mockApiFetch.mockImplementation(async (endpoint: string) => {
       if (endpoint === "/cases") return [];
       if (endpoint === "/cases/abc") return MINIMAL_CASE;
-      if (endpoint === "/organizations") return [];
+      if (endpoint.startsWith("/organizations")) return [];
       return {};
     });
   });
