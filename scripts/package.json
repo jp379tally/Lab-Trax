@@ -22,7 +22,7 @@
     "backfill-expected-delivery-dates": "tsx ./src/backfill-expected-delivery-dates.ts",
     "backfill-location-status": "tsx ./src/backfill-location-status.ts",
     "backfill-invoice-display-shade-material": "tsx ./src/backfill-invoice-display-shade-material.ts",
-    "repair-invoice-display-metadata-drift": "tsx ./src/repair-invoice-display-metadata-drift.ts",
+    "repair-wrongly-adopted-invoices": "tsx ./src/repair-wrongly-adopted-invoices.ts",
     "seed-stripe-products": "tsx ./src/seedStripeProducts.ts",
     "seed-revenuecat": "tsx ./src/seedRevenueCat.ts",
     "bump-build-number": "tsx ./src/bump-build-number.ts",

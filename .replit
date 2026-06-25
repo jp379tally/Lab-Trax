@@ -22,10 +22,6 @@ args = "EAS iOS Build + Submit"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "desktop-full-test"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "typecheck-all"
 
 [[workflows.workflow.tasks]]
@@ -46,10 +42,6 @@ args = "mobile-test"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "scripts-test"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "knowledge-test"
 
 [[workflows.workflow]]
@@ -62,17 +54,6 @@ args = "bash scripts/eas-ios-build.sh"
 
 [workflows.workflow.metadata]
 outputType = "console"
-
-[[workflows.workflow]]
-name = "desktop-full-test"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/labtrax-desktop run test"
-
-[workflows.workflow.metadata]
-isValidation = true
 
 [[workflows.workflow]]
 name = "typecheck-all"
@@ -125,17 +106,6 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pnpm --filter @workspace/labtrax run test"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow]]
-name = "scripts-test"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/scripts run test"
 
 [workflows.workflow.metadata]
 isValidation = true

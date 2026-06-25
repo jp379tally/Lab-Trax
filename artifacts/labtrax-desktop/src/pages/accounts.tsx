@@ -36,6 +36,7 @@ import { formatDate, formatMoney, relativeTime } from "@/lib/format";
 import type { DoctorRow, MergeSourceInput, UndoToast, MergeDialogResult } from "@/pages/doctors";
 import { DoctorDrawer, MergeDialog } from "@/pages/doctors";
 import { PracticeEditor, AddPracticeDialog } from "@/pages/practices";
+import { InvoiceEditor } from "@/pages/invoices";
 
 const EXPANDED_STORAGE_KEY = "accounts_expanded_v1";
 const SCROLL_STORAGE_KEY = "accounts_scroll_v1";
@@ -128,6 +129,7 @@ export default function AccountsPage() {
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [selectedPracticeIds, setSelectedPracticeIds] = useState<Set<string>>(new Set());
   const [invoicePanelOpen, setInvoicePanelOpen] = useState(false);
+  const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
   const [invoiceTab, setInvoiceTab] = useState<"all" | "open" | "closed" | "overdue">("all");
   const [mergeDialog, setMergeDialog] = useState<{
     sources: MergeSourceInput[];
@@ -1210,7 +1212,23 @@ export default function AccountsPage() {
                       !!due &&
                       new Date(due) < now;
                     return (
-                      <tr key={inv.id} className="border-t border-border hover:bg-secondary/30">
+                      <tr
+                        key={inv.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          setInvoicePanelOpen(false);
+                          setViewingInvoice(inv);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setInvoicePanelOpen(false);
+                            setViewingInvoice(inv);
+                          }
+                        }}
+                        className="border-t border-border cursor-pointer hover:bg-secondary/40 focus:outline-none focus-visible:bg-secondary/40"
+                      >
                         <td className="px-4 py-2.5 font-mono text-xs font-medium">{inv.invoiceNumber}</td>
                         <td className="py-2.5 text-xs text-muted-foreground max-w-[160px] truncate">
                           {inv.providerOrganization?.name ?? "—"}
@@ -1248,6 +1266,26 @@ export default function AccountsPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {viewingInvoice && (
+        <InvoiceEditor
+          key={viewingInvoice.id}
+          invoice={viewingInvoice}
+          onClose={() => {
+            setViewingInvoice(null);
+            setInvoicePanelOpen(true);
+          }}
+          onGoToCase={() => {
+            const caseId = viewingInvoice.caseId;
+            setViewingInvoice(null);
+            if (caseId) {
+              navigate(`/cases?caseId=${encodeURIComponent(caseId)}`);
+            } else {
+              setInvoicePanelOpen(true);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
