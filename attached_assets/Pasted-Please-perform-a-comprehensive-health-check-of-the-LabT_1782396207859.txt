@@ -1,0 +1,54 @@
+Please perform a comprehensive health check of the LabTrax mobile app codebase.
+
+Start by verifying the workspace structure. The root appears to be a pnpm workspace with packages under artifacts/* and shared libraries under lib/*. The mobile app is likely artifacts/labtrax, with shared code in lib/api-client-react, lib/api-zod, and lib/db. Confirm the actual paths before making changes.
+
+Goals:
+1. Find compile errors, TypeScript errors, lint errors, stale imports, broken routes, broken assets, and Expo/native dependency problems.
+2. Identify likely regressions in recent mobile features.
+3. Clean up unused or duplicate files only when safe.
+4. Leave the app behavior intact unless a bug is confirmed.
+5. Produce a final report of what was checked, what was fixed, what was not changed, and what still needs manual QA.
+
+Run these checks from the repo root where applicable:
+- pnpm install --frozen-lockfile
+- pnpm run typecheck
+- pnpm -r --if-present run typecheck
+- pnpm -r --if-present run lint
+- pnpm -r --if-present run test
+- pnpm -r --if-present run build
+
+For the Expo mobile app package, also run:
+- Expo Doctor / dependency compatibility checks
+- Expo install check for SDK 54 compatibility
+- route validation for Expo Router
+- iOS and Android launch smoke test if available
+
+Pay special attention to these regression-prone areas from recent releases:
+- anatomical tooth chart, bridge visualization, missing-tooth markers, crown/pontic counts
+- Preview Rx from case detail
+- in-app lab setup and lab profile editing
+- lab invitations accept/decline
+- trusted-device / 2FA management and clearing devices after password reset
+- file/photo/video uploads, large attachments, offline queue, retry behavior
+- practice detail editing and case form validation
+- messages/chat attachments
+- invoices/statements, nested sub-items, SMS/email sending
+- barcode/QR assignment and duplicate activity log entries
+- account deletion and email/username reuse
+- client deletion/inactivation and archived deleted-client invoices
+
+Before deleting or moving any file:
+- prove it is not imported, routed, loaded as an asset, referenced in config, or used by build scripts
+- check Expo Router file-based routes carefully
+- check package.json scripts and app config references
+- explain the deletion in the final report
+
+If you find stale workspace config, for example pnpm-lock.yaml referencing packages that do not exist, fix the workspace/package alignment safely. Do not mask the problem by deleting lockfile entries unless the package is truly gone and the workspace config is updated accordingly.
+
+When finished, provide:
+- commands run and results
+- files changed
+- bugs fixed
+- cleanup performed
+- unresolved risks
+- manual QA checklist for iOS and Android

@@ -1,0 +1,124 @@
+### Replit Build Brief
+
+**Objective**
+Make the mobile app match the web/desktop behavior for two priority items:
+
+1. Mobile lab slip printing should use the same format as web/desktop lab slips.
+2. After login, the mobile app should open on the Dashboard, not the Cases tab.
+
+**User-visible problem**
+The mobile app feels inconsistent with the desktop/web versions. Printed lab slips from mobile do not match the expected web/desktop format, and first login lands users in Cases instead of Dashboard.
+
+**Likely root cause**
+The mobile app probably has its own lab slip print/PDF/template logic instead of reusing the same shared renderer used by web/desktop. For login routing, the mobile app likely has either a default Expo Router tab route pointing to Cases, or post-login navigation explicitly redirects to the cases route.
+
+**Exact areas to inspect or change**
+
+* Mobile app package, likely `artifacts/labtrax`
+* Mobile login/auth flow
+* Expo Router tab layout and initial route
+* Dashboard and Cases routes
+* Mobile lab slip print/export logic
+* Web/desktop lab slip renderer/template
+* Shared utilities under `lib/*` if present
+
+**Implementation plan**
+
+1. Find the web/desktop lab slip print renderer/template and identify the canonical format.
+2. Find the mobile lab slip print code.
+3. Replace or refactor the mobile lab slip generation so it uses the same shared template, layout, field order, labels, spacing, and totals as web/desktop.
+4. If sharing code directly is practical, move the lab slip renderer into a shared package used by mobile, web, and desktop.
+5. If direct sharing is not practical because of platform APIs, create a shared data-to-lab-slip HTML/template function and let each platform handle only the print/export call.
+6. Update mobile login routing so successful login and first app load redirect to Dashboard.
+7. Update the tab/router default so Dashboard is the first selected tab.
+8. Regression test login, app relaunch, logout/login, and lab slip printing from mobile.
+
+**Important guardrails**
+
+* Do not create a second “almost matching” mobile lab slip template if the web/desktop template can be shared.
+* Do not break existing case detail, Rx preview, invoice, or file upload flows.
+* Keep Cases available as a tab, but make Dashboard the default landing screen.
+* Make the route change apply both after first login and after reopening the app while already authenticated.
+
+**Acceptance criteria**
+
+* Mobile login opens Dashboard immediately.
+* Relaunching the authenticated mobile app opens Dashboard unless the app intentionally restores a deep link.
+* Dashboard tab is selected by default.
+* Mobile lab slip print output matches web/desktop for the same case data.
+* Same patient, doctor, case, tooth, material, shade, due date, notes, barcode/QR, and item details appear in the same order and format.
+* iOS and Android print/share previews both look correct.
+* Web/desktop lab slip output is unchanged.
+
+**Regression risks to check**
+
+* Existing case detail print button still works.
+* Printing from mobile does not lose photos/Rx attachments if they are part of the slip.
+* Offline or partially loaded case data does not produce blank/malformed slips.
+* Deep links to a specific case still open the case instead of always forcing Dashboard.
+* Auth state restore does not flicker through Cases before Dashboard.
+
+### Copy-Ready Replit Prompt
+
+```text
+Please make these two LabTrax mobile app changes first:
+
+1. Make mobile lab slip printing match the web/desktop lab slip format.
+2. Make the mobile app open to Dashboard after login instead of Cases.
+
+Start by locating the mobile app package, likely artifacts/labtrax, and confirm the actual routing and print files before editing.
+
+For the lab slip:
+- Find the web/desktop lab slip print/PDF/template implementation.
+- Find the mobile lab slip print/export implementation.
+- The goal is for mobile lab slips to match the web/desktop format as closely as possible: layout, field order, labels, spacing, case/patient/doctor/lab details, tooth/material/shade data, notes, dates, barcode/QR, and any totals or item sections.
+- Prefer sharing the same lab slip template/rendering function across mobile, web, and desktop.
+- If platform differences prevent direct sharing, create a shared data-to-template function and keep only the platform-specific print/export call separate.
+- Do not make a separate mobile-only template unless there is no practical shared-code path.
+
+For login routing:
+- Find the mobile auth/login success flow and Expo Router tab layout.
+- Change successful login so the user lands on Dashboard, not Cases.
+- Change the default authenticated tab/route so reopening the app also starts on Dashboard.
+- Keep deep links working: if the user opens a specific case link, do not override that with Dashboard.
+- Cases should remain available as a tab, just not the default landing tab.
+
+Please run the relevant checks after editing:
+- pnpm run typecheck or the package-level equivalent
+- Expo/mobile build or start validation if available
+- Any lint/test scripts available for the mobile package
+
+Manual QA required:
+- Fresh login lands on Dashboard.
+- Logout and login again lands on Dashboard.
+- Force close and reopen while authenticated lands on Dashboard.
+- Cases tab still opens normally.
+- Print/share a lab slip from mobile and compare it against web/desktop for the same case.
+- Confirm web/desktop lab slip output did not change unexpectedly.
+
+In your final response, list:
+- files changed
+- how the lab slip template was unified or matched
+- what route now opens after login
+- checks run and results
+- any remaining differences between mobile and web/desktop print output
+```
+
+### Debug Analysis
+
+The lab slip mismatch is most likely caused by duplicated print/template code between mobile and web/desktop. That almost always drifts over time as features are added in one place but not the other. The best fix is to make web, desktop, and mobile share the same lab slip rendering source, with only the final print/share mechanism staying platform-specific.
+
+The login issue is likely much smaller: either the mobile tab order/default route starts at Cases, or the post-login redirect points to the Cases route. The correct fix is to set Dashboard as the authenticated home route in both places, not only after pressing Login.
+
+### Step-by-Step Fix Plan
+
+1. Locate the mobile router/tab layout and login success navigation.
+2. Change the authenticated landing route to Dashboard.
+3. Verify authenticated app restore also lands on Dashboard.
+4. Locate web/desktop lab slip renderer.
+5. Locate mobile lab slip renderer.
+6. Extract or reuse a shared lab slip template.
+7. Wire mobile printing to the shared template.
+8. Compare mobile vs web/desktop output using the same case.
+9. Run typecheck/build checks.
+10. Save these two fixes before moving on to the broader app cleanup.

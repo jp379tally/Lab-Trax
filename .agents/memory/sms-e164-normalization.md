@@ -7,7 +7,7 @@ description: Every sendSms() call must pass an E.164 phone; Vonage silently drop
 Always call `normalizePhoneE164(phone)` and validate it is non-null before passing to `sendSms({ to: ... })`.
 
 ## Why
-Vonage's REST API returns HTTP 200 with `status: "0"` (success) even for phone numbers that are not in E.164 format (e.g. `"8503633336"` instead of `"+18503633336"`). The message is silently dropped — no delivery, no error. The caller's `result.ok` check passes, the modal says "code was sent", and no SMS arrives.
+Vonage's REST API returns HTTP 200 with `status: "0"` (success) even for phone numbers that are not in E.164 format (e.g. a bare 10-digit `"NXXNXXXXXX"` instead of `"+1NXXNXXXXXX"`). The message is silently dropped — no delivery, no error. The caller's `result.ok` check passes, the modal says "code was sent", and no SMS arrives.
 
 The delete-cases OTP flow was the one path in the codebase that skipped normalization. All other SMS paths (phone verification, invoices, statements, account-link-sms) call `normalizePhoneE164` first.
 
