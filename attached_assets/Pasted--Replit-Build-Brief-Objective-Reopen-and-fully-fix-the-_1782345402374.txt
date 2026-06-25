@@ -1,0 +1,208 @@
+### Replit Build Brief
+
+**Objective**
+Reopen and fully fix the mobile **Locate Case** workflow. This is the 7th report and must not be marked fixed until verified end-to-end in the actual mobile/TestFlight build.
+
+**User-visible problem**
+
+1. The mobile Locate Case sheet still does not reliably allow location selection.
+2. After locating a case, the app reports success, but the dashboard/HUD still shows the old location/status.
+3. The last build did not resolve the issue.
+
+**Likely root cause**
+This is no longer just a picker UI bug. The Locate flow likely has multiple broken layers:
+
+* mobile sheet selection state is still unstable or stale
+* submit payload may not consistently include the selected destination location
+* backend may return success without updating the canonical case location/status field
+* mobile dashboard/HUD may read a different field than the update writes
+* mobile cache/query state is not invalidated after locate
+* TestFlight build may differ from local/web behavior
+
+**Exact areas to inspect/change**
+
+Search for:
+
+```text
+Locate Case
+Locate 1 Case
+batch locate
+selectedLocationId
+selectedLocations
+locationId
+status
+currentLocation
+workflowStatus
+caseStatus
+dashboard
+HUD
+invalidateQueries
+refetch
+optimistic
+TestFlight
+```
+
+Inspect:
+
+```text
+mobile Locate Case sheet
+mobile case selection state
+mobile locate submit handler
+locate API/mutation
+case location/status backend update
+mobile dashboard/HUD case query
+web dashboard/case query if shared
+React Query/SWR cache invalidation
+```
+
+**Implementation plan**
+
+1. Reproduce on the actual mobile/TestFlight build.
+2. Add temporary debug logging around Locate:
+
+   * selected case ID(s)
+   * selected destination location ID/name
+   * request payload
+   * backend response
+   * updated case record returned
+   * dashboard/HUD refetch result
+3. Fix mobile location selection so exactly one location can be selected and changed before submit.
+4. Ensure submit sends the selected destination every time:
+
+   ```ts
+   {
+     caseIds: [...],
+     locationId: selectedLocationId
+   }
+   ```
+5. Backend must update the canonical case location/status field used by the dashboard/HUD.
+6. Backend must not return success if zero cases were updated.
+7. API should return updated case records or at least `updatedCount`.
+8. Mobile must invalidate/refetch all affected queries after success:
+
+   * case list
+   * dashboard/HUD counts
+   * location/status filters
+   * selected case detail
+9. Clear selected cases only after the backend update and refetch complete.
+10. Verify on TestFlight before closing.
+
+**Guardrails**
+
+* Do not mark fixed based only on desktop/web testing.
+* Do not mark fixed based only on simulator testing.
+* Do not rely on a success toast as proof.
+* Do not update only local UI state without persistence.
+* Do not let backend return success when no case location changed.
+* Do not use separate inconsistent fields for mobile HUD vs case update.
+
+**Acceptance criteria**
+
+On the actual mobile/TestFlight app:
+
+1. Select one case in Received.
+2. Open Locate Case.
+3. Select Design.
+4. Submit.
+5. Confirm success.
+6. Confirm the case immediately shows Design on the mobile dashboard/HUD.
+7. Force refresh/reopen app and confirm it still shows Design.
+8. Repeat with multiple cases.
+9. Confirm web also shows the updated location.
+10. Confirm server/database record has the new location/status.
+
+### Copy-Ready Replit Prompt
+
+Reopen the mobile Locate Case bug. This is the 7th report. The last build did not fix it, so do not close this until it is verified end-to-end on the actual mobile/TestFlight build.
+
+Current failures:
+
+1. The mobile Locate Case sheet still does not reliably allow selecting one location.
+2. After locating a case, the app reports success, but the dashboard/HUD does not show the updated case location/status.
+
+This must be fixed across UI state, API persistence, and mobile cache refresh.
+
+Search for:
+
+```text
+Locate Case
+Locate 1 Case
+batch locate
+selectedLocationId
+selectedLocations
+locationId
+status
+currentLocation
+workflowStatus
+caseStatus
+dashboard
+HUD
+invalidateQueries
+refetch
+optimistic
+```
+
+Required work:
+
+1. Reproduce the issue on the actual mobile/TestFlight build.
+2. Add debug logging temporarily around the mobile locate flow:
+
+   * selected case IDs
+   * selected destination location ID/name
+   * request payload
+   * backend response
+   * updated case record
+   * dashboard/HUD refetch result
+3. Fix the Locate sheet so only one location can be selected at a time and the user can change that selection.
+4. Ensure submit always sends the selected destination location ID.
+5. Confirm the backend updates every selected case.
+6. Confirm the backend updates the exact canonical field the mobile dashboard/HUD reads.
+7. Do not return success if `updatedCount` is zero or less than selected case count.
+8. After success, invalidate/refetch all mobile queries that display case location/status:
+
+   * case list
+   * dashboard/HUD
+   * location counts
+   * selected case detail
+9. Clear selected cases and close the sheet only after the update and refetch complete.
+10. Verify single-case locate and batch locate on TestFlight.
+11. Verify the same updated location appears on web after refresh.
+
+Acceptance test before marking fixed:
+
+```text
+Mobile/TestFlight:
+- Select a case in Received
+- Locate it to Design
+- Success message appears
+- Dashboard/HUD immediately shows Design
+- Kill/reopen app
+- Case still shows Design
+- Web version also shows Design
+```
+
+Do not mark this resolved based on code review, desktop testing, or simulator-only testing. It is fixed only when the mobile/TestFlight build proves the full flow works.
+
+### Debug Analysis
+
+The repeated failure means prior fixes probably addressed only one symptom, likely the visible selection behavior, while leaving persistence or mobile refresh broken.
+
+The dangerous clue is: **the app reports success but the dashboard/HUD does not update**. That means one of two things is happening:
+
+1. The backend is not actually updating the case location/status, but the frontend still shows success.
+2. The backend is updating correctly, but the mobile dashboard/HUD is reading stale cached data or a different field.
+
+Either way, the success state is currently untrustworthy. The fix needs to prove the selected destination reaches the backend, the backend updates the correct case field, and the mobile HUD refetches the updated record.
+
+### Step-by-Step Fix Plan
+
+1. Reopen the bug.
+2. Reproduce on TestFlight, not just web.
+3. Trace selected location state in the mobile sheet.
+4. Trace the locate request payload.
+5. Trace the backend update result.
+6. Confirm database/canonical case record changes.
+7. Trace dashboard/HUD query after locate.
+8. Patch selection, persistence, and cache invalidation as needed.
+9. Add failure handling when no records update.
+10. Verify single and batch locate on TestFlight before closing.
