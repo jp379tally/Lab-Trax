@@ -180,7 +180,7 @@ export function _practiceBigramSimilarity(a: string, b: string): number {
  * qualifies. Doctor-name matching always takes priority over this; callers
  * should only invoke this when suggestedProviderOrgId is still null.
  */
-async function _findProviderOrgByPracticeName(
+export async function _findProviderOrgByPracticeName(
   labOrganizationId: string,
   practiceName: string
 ): Promise<string | null> {
