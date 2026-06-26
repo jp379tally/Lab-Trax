@@ -1,0 +1,154 @@
+### Replit Build Brief
+
+**Objective**
+Fix Maynard voice features in LabTrax so both voice dictation and voice conversation work reliably, then clean up the input controls so the two voice buttons sit together, are the same size, and use distinct icon-only symbols.
+
+**User-visible problem**
+On the AI Assistant screen, recording appears to start. When the user stops recording, transcription fails and an error banner appears. In “live conversation” mode, Maynard also does not speak back.
+
+**Likely root cause**
+The problem is likely a combination of three issues in `artifacts/labtrax/app/ai-assistant.tsx` and the AI speech routes:
+
+1. `uploadAudioForTranscript()` uses raw `XMLHttpRequest` for `/api/ai-stt`, but on web it sets `withCredentials = true` without sending the CSRF header. The API mounts all `/api` routes behind `requireCsrf`, so browser cookie-authenticated multipart uploads can be rejected before transcription runs.
+
+2. The recording stop path always does `setInput(transcript.trim())`. It does not send the transcript to Maynard when voice conversation mode is enabled, even though `sendMessageRef` exists for that purpose. So voice conversation can transcribe but still not actually converse.
+
+3. `artifacts/api-server/src/routes/ai-tts.ts` creates `new OpenAI({ apiKey })` directly. Other AI code uses `AI_INTEGRATIONS_OPENAI_BASE_URL` via `createOpenAIClient()` / `getAiClient()`. In Replit AI Integrations, the proxy base URL is required, so TTS can fail even when chat and STT are configured.
+
+**Exact parts to inspect/change**
+
+* `artifacts/labtrax/app/ai-assistant.tsx`
+
+  * `uploadAudioForTranscript`
+  * `startRecording`
+  * `stopRecording`
+  * voice mode button / mic button area in the input bar
+  * `micBtn`, `sendBtn`, and any new voice button styles
+
+* `artifacts/labtrax/lib/query-client.ts`
+
+  * CSRF helper/header logic, especially `getCsrfToken`, `injectAuthHeaders`, `refreshAndGetAccessToken`
+
+* `artifacts/api-server/src/routes/ai-stt.ts`
+
+  * verify route behavior and add regression coverage for multipart auth/CSRF if needed
+
+* `artifacts/api-server/src/routes/ai-tts.ts`
+
+  * replace direct OpenAI construction with shared `createOpenAIClient()`
+
+**Implementation plan**
+
+1. Fix STT upload auth on web:
+
+   * Add the same CSRF header used by `resilientFetch` to the XHR upload path when `Platform.OS === "web"`.
+   * Keep `xhr.withCredentials = true` for web.
+   * On native, make sure the request includes a bearer token and `x-labtrax-client: mobile/2`.
+   * Avoid setting `Content-Type` manually for multipart; let XHR/FormData set the boundary.
+
+2. Fix voice conversation behavior:
+
+   * Separate the recording intent into `dictation` versus `conversation`.
+   * Dictation button: record, transcribe, place text into the input box.
+   * Voice conversation button: record, transcribe, immediately call `sendMessageRef.current(transcript.trim())`.
+   * After Maynard’s response streams, `voiceMode` should still trigger `speakText(fullContent)`.
+
+3. Fix TTS OpenAI client:
+
+   * In `ai-tts.ts`, import `createOpenAIClient` from `../lib/ai-openai-client`.
+   * Use `const openai = createOpenAIClient(); if (!openai) return 503`.
+   * This ensures `AI_INTEGRATIONS_OPENAI_BASE_URL` is respected.
+
+4. UI cleanup:
+
+   * Keep both voice controls beside the text box.
+   * Make both controls exactly the same dimensions as the send button, currently `40x40`.
+   * Use icon-only buttons:
+
+     * Dictation: `mic-outline` / waveform / `mic-off-outline`.
+     * Voice conversation: use a distinct symbol such as `chatbubble-ellipses-outline`, `headset-outline`, or `radio-outline`; active/listening state should be visually distinct.
+   * Add clear accessibility labels: “Dictate message” and “Talk with Maynard”.
+
+**Acceptance criteria**
+
+* Press dictation mic, speak, press again: transcript appears in the text field.
+* Press voice conversation button, speak, press again: transcript is sent as a chat message automatically.
+* Maynard streams a text reply and speaks it aloud when voice conversation mode is active.
+* No “Invalid or missing CSRF token” or generic transcription error appears for normal web use.
+* TTS works in Replit AI Integrations deployments.
+* Buttons are side-by-side near the input, same size, icon-only, and visually distinct.
+
+**Regression risks to check**
+
+* Normal typed chat still works.
+* Dictation does not auto-send unless the user used voice conversation mode.
+* Voice conversation does not overwrite typed text unexpectedly.
+* Native mobile upload still works with `audio/m4a`.
+* Web upload still works with `audio/webm`.
+* Existing case context, session history, and auto-execute behavior remain unchanged.
+
+### Copy-Ready Replit Prompt
+
+Please debug and fix the LabTrax Maynard AI Assistant voice features.
+
+Symptoms:
+
+* On the AI Assistant screen, pressing the talk-to-text mic appears to listen, but when stopping the recording, an error appears and nothing is transcribed.
+* Voice conversation with Maynard also does not work: after recording, Maynard does not respond or speak back.
+* I also want the talk-to-text and voice-conversation controls next to the text/chat box, the same size, icon-only, and visually distinct.
+
+Please inspect and update these files first:
+
+* `artifacts/labtrax/app/ai-assistant.tsx`
+* `artifacts/labtrax/lib/query-client.ts`
+* `artifacts/api-server/src/routes/ai-stt.ts`
+* `artifacts/api-server/src/routes/ai-tts.ts`
+* relevant tests under `artifacts/api-server/src/routes/`
+
+Likely issues to verify:
+
+1. `uploadAudioForTranscript()` uses raw `XMLHttpRequest` for `/api/ai-stt`. On web it uses cookies but likely does not send the CSRF header, while all `/api` routes are behind `requireCsrf`. Fix the upload so web multipart requests include the same CSRF header as `resilientFetch`, keep credentials included, and do not manually set multipart `Content-Type`.
+2. The recording stop path currently transcribes and only puts text into the input. In voice conversation mode, it should send the transcript immediately through `sendMessageRef.current(transcript)`.
+3. `ai-tts.ts` constructs OpenAI directly with only `apiKey`. Replace that with the shared `createOpenAIClient()` so Replit’s `AI_INTEGRATIONS_OPENAI_BASE_URL` is honored.
+
+Implement the safest fix:
+
+* Separate dictation recording from voice-conversation recording.
+* Dictation mode should transcribe into the input field only.
+* Voice conversation mode should transcribe and auto-send to Maynard.
+* After Maynard replies, TTS should speak the response.
+* Keep both buttons beside the input field, same size as each other, icon-only, with distinct icons and accessibility labels.
+
+Before finishing, run the relevant typecheck/tests if available:
+
+* `pnpm --filter @workspace/labtrax run typecheck`
+* `pnpm --filter @workspace/api-server run test -- src/routes/ai-stt.test.ts src/routes/ai-tts.test.ts`
+* Add or update tests for TTS baseURL/client construction and STT multipart auth/CSRF behavior if practical.
+
+Explain any assumptions or tradeoffs, especially if the actual runtime error differs from the CSRF/TTS hypotheses.
+
+### Debug Analysis
+
+The strongest evidence is in `ai-assistant.tsx`: recording upload goes through custom XHR, not `resilientFetch`, so it bypasses the helper that normally attaches CSRF headers on web. The server applies `requireCsrf` to `/api`, and the CSRF middleware rejects browser cookie-authenticated unsafe requests that lack the CSRF header.
+
+The second clear issue is behavioral: the code has `sendMessageRef`, but `stopRecording()` only sets the transcript into the input. That means “conversation” mode is not really push-to-talk conversation.
+
+The third issue is backend-side: STT and agent chat respect Replit’s OpenAI proxy base URL, but TTS does not. That explains Maynard failing to talk back even if the assistant can generate text.
+
+Confidence: medium-high. The only missing proof is the exact runtime error body from the app, but the code paths line up closely with the symptoms.
+
+### Step-by-Step Fix Plan
+
+1. Add a shared way for the XHR upload to include auth and CSRF headers.
+2. Update `uploadAudioForTranscript()` to send `x-csrf-token` on web and `x-labtrax-client` on native.
+3. Add a recording intent state/ref: `dictation` or `conversation`.
+4. Update dictation button to start/stop recording with intent `dictation`.
+5. Update voice conversation button to start/stop recording with intent `conversation`.
+6. In the transcription success path, route the transcript:
+
+   * dictation: `setInput(transcript)`
+   * conversation: `await sendMessageRef.current?.(transcript)`
+7. Update `ai-tts.ts` to use `createOpenAIClient()`.
+8. Make the two voice buttons equal-size icon buttons beside the input.
+9. Run typecheck and focused API tests.
+10. Manually smoke test typed chat, dictation, and live voice conversation.
