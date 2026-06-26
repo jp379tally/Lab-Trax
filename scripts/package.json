@@ -28,6 +28,7 @@
     "bump-build-number": "tsx ./src/bump-build-number.ts",
     "check-expo-deps": "tsx ./src/check-expo-deps.ts",
     "cleanup-bogus-provider-memberships": "tsx ./src/cleanup-bogus-provider-memberships.ts",
+    "push-to-github": "tsx ./src/push-to-github.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -35,6 +36,7 @@
     "@replit/revenuecat-sdk": "^4.2.0",
     "@workspace/db": "workspace:*",
     "drizzle-orm": "catalog:",
+    "isomorphic-git": "^1.38.5",
     "semver": "^7.8.1"
   },
   "devDependencies": {
