@@ -1,0 +1,45 @@
+Yes. Tell Replit this:
+
+```text
+Please do a safety cleanup pass on the LabTrax GitHub/Replit project.
+
+Issues to fix:
+
+1. Remove secrets from .replit
+The public GitHub repo has credential-looking values in .replit under [userenv.development], including Expo/App Store related values. Remove all real secrets from .replit and move them into Replit Secrets or GitHub Secrets. If these values were real, tell me which credentials need to be rotated/revoked.
+
+2. Make the default Run workflow safe
+The .replit Project workflow currently runs EAS iOS Build + Submit and Desktop Build + Publish. The default Run button should not trigger paid builds, app store submission, or desktop publishing. Change the Project workflow so it only runs safe local/dev validation tasks. Keep EAS iOS Build + Submit and Desktop Build + Publish as separate manual workflows.
+
+3. Fix API route startup behavior
+In artifacts/api-server/src/routes/index.ts, the main API routes are attached asynchronously after the router is already exported. This can cause temporary 404s during startup, and if route registration fails the server may keep running with only health routes. Refactor so startup either awaits registerRoutes before serving main traffic, or returns a clear 503 “API starting” response until LabTrax routes are ready. If route registration fails, log it clearly and fail startup or keep returning 503 instead of silent partial service.
+
+4. Expand .replitignore
+.replitignore currently only excludes .local. Add exclusions for non-source and heavy runtime/build artifacts such as:
+- node_modules
+- dist
+- build
+- static-build
+- .expo
+- .cache
+- electron-dist
+- uploads
+- attached_assets
+- logs
+- *.zip
+- *.exe
+- *.dmg
+- *.msi
+- *.pkg
+- *.ipa
+- *.tar.gz
+
+Do not delete source files. Do not change app behavior except the startup safety fix and workflow cleanup.
+
+After changes, run:
+- pnpm run typecheck
+- pnpm --filter @workspace/api-server run test
+- pnpm --filter @workspace/scripts run test
+
+If any tests fail, explain whether they are caused by this cleanup or are pre-existing.
+```
