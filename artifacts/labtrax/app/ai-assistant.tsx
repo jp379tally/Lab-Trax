@@ -873,10 +873,11 @@ export default function AiAssistantScreen() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const recordingRef = useRef<Audio.Recording | null>(null);
   const recordingIntentRef = useRef<"dictation" | "conversation">("dictation");
+  const lastSendModeRef = useRef<"conversation" | "text">("text");
   const soundRef = useRef<Audio.Sound | null>(null);
   const webAudioRef = useRef<HTMLAudioElement | null>(null);
   // Ref so stopRecording (defined before sendMessage) can call it.
-  const sendMessageRef = useRef<((text: string) => Promise<void>) | null>(null);
+  const sendMessageRef = useRef<((text: string, mode?: "text" | "conversation") => Promise<void>) | null>(null);
   // Tracks whether the AsyncStorage load has completed so we don't write false on mount.
   const voiceModeLoadedRef = useRef(false);
   // Tracks whether the saved chat session has finished loading so the persist
@@ -1206,7 +1207,7 @@ export default function AiAssistantScreen() {
             URL.revokeObjectURL(uri);
             if (transcript.trim()) {
               if (intent === "conversation") {
-                sendMessageRef.current?.(transcript.trim());
+                sendMessageRef.current?.(transcript.trim(), "conversation");
               } else {
                 setInput(transcript.trim());
               }
@@ -1257,7 +1258,7 @@ export default function AiAssistantScreen() {
           const transcript = await uploadAudioForTranscript(uri, "audio/m4a");
           if (transcript.trim()) {
             if (intent === "conversation") {
-              sendMessageRef.current?.(transcript.trim());
+              sendMessageRef.current?.(transcript.trim(), "conversation");
             } else {
               setInput(transcript.trim());
             }
@@ -1443,7 +1444,7 @@ export default function AiAssistantScreen() {
         setMessages((prev) => prev.map((m) => m.id === streamingId ? finalMsg : m));
         scrollToBottom();
 
-        if (voiceMode && fullContent) {
+        if (voiceMode && fullContent && lastSendModeRef.current === "conversation") {
           void speakText(fullContent);
         }
       } catch {
@@ -1548,10 +1549,11 @@ export default function AiAssistantScreen() {
   }, []);
 
   const sendMessage = useCallback(
-    async (text: string) => {
+    async (text: string, mode: "text" | "conversation" = "text") => {
       const trimmed = text.trim();
       if (!trimmed || sending) return;
 
+      lastSendModeRef.current = mode;
       const userMsg: ChatMessage = { id: genId(), role: "user", content: trimmed };
       const nextMessages = [...messages, userMsg];
       setMessages(nextMessages);
