@@ -19,6 +19,7 @@ import {
   Square,
   Stethoscope,
   Undo2,
+  Users,
   X,
 } from "lucide-react";
 import {
@@ -42,6 +43,20 @@ const EXPANDED_STORAGE_KEY = "accounts_expanded_v1";
 const SCROLL_STORAGE_KEY = "accounts_scroll_v1";
 const SEARCH_STORAGE_KEY = "accounts_search_v1";
 const SHOW_ARCHIVED_STORAGE_KEY = "accounts_show_archived_v1";
+
+interface AdminUser {
+  id: string;
+  username: string;
+  email?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  role?: string | null;
+  isActive?: boolean;
+  practiceName?: string | null;
+  lastLoginAt?: string | null;
+}
+
+type PageView = "practices" | "directory";
 
 const OPEN_STATUSES = new Set([
   "received",
@@ -139,6 +154,8 @@ export default function AccountsPage() {
     labOrganizationId: string;
   } | null>(null);
   const [undoToast, setUndoToast] = useState<UndoToast | null>(null);
+  const [pageView, setPageView] = useState<PageView>("practices");
+  const [dirSearch, setDirSearch] = useState("");
   const queryClient = useQueryClient();
   const pageRef = useRef<HTMLDivElement>(null);
 
@@ -151,6 +168,31 @@ export default function AccountsPage() {
     }
     return set;
   }, [meQuery.data]);
+
+  const isAdmin = adminLabIds.size > 0;
+
+  const usersQuery = useQuery({
+    queryKey: ["admin", "users"],
+    queryFn: () => apiFetch<{ users: AdminUser[] } | AdminUser[]>("/auth/users"),
+    enabled: isAdmin && pageView === "directory",
+  });
+
+  const directoryUsers = useMemo(() => {
+    const d = usersQuery.data;
+    const list: AdminUser[] = !d ? [] : Array.isArray(d) ? d : (d.users ?? []);
+    const q = dirSearch.trim().toLowerCase();
+    return list
+      .filter((u) => {
+        if (!q) return true;
+        return (
+          u.username.toLowerCase().includes(q) ||
+          (u.email || "").toLowerCase().includes(q) ||
+          [u.firstName, u.lastName].filter(Boolean).join(" ").toLowerCase().includes(q) ||
+          (u.practiceName || "").toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => a.username.localeCompare(b.username));
+  }, [usersQuery.data, dirSearch]);
 
   const adminLabOrgIds = useMemo(() => Array.from(adminLabIds), [adminLabIds]);
   const canAddPractice = adminLabOrgIds.length > 0;
@@ -607,26 +649,155 @@ export default function AccountsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Customer Center</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Practices and doctors your lab works with. Select rows to view their invoices.
+            {pageView === "directory"
+              ? "All LabTrax accounts associated with your lab."
+              : "Practices and doctors your lab works with. Select rows to view their invoices."}
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <div className="text-sm text-muted-foreground">
-            {filteredPractices.length} of {orgs.filter((o) => o.type === "provider" || o.type === "lab").length}
-          </div>
-          {canAddPractice && (
-            <button
-              type="button"
-              onClick={() => setAdding(true)}
-              className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
-            >
-              <Plus size={14} /> Add practice
-            </button>
+          {isAdmin && (
+            <div className="inline-flex rounded-lg border border-border overflow-hidden text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => setPageView("practices")}
+                className={`px-3 py-2 transition-colors inline-flex items-center gap-1.5 ${
+                  pageView === "practices"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-secondary text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Building2 size={13} />
+                Practices & Doctors
+              </button>
+              <button
+                type="button"
+                onClick={() => setPageView("directory")}
+                className={`px-3 py-2 border-l border-border transition-colors inline-flex items-center gap-1.5 ${
+                  pageView === "directory"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-secondary text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Users size={13} />
+                Account Directory
+              </button>
+            </div>
+          )}
+          {pageView === "practices" && (
+            <>
+              <div className="text-sm text-muted-foreground">
+                {filteredPractices.length} of {orgs.filter((o) => o.type === "provider" || o.type === "lab").length}
+              </div>
+              {canAddPractice && (
+                <button
+                  type="button"
+                  onClick={() => setAdding(true)}
+                  className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
+                >
+                  <Plus size={14} /> Add practice
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>
 
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
+      {pageView === "directory" && isAdmin && (
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-border flex items-center gap-3">
+            <div className="relative flex-1 min-w-[220px] max-w-md">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="search"
+                value={dirSearch}
+                onChange={(e) => setDirSearch(e.target.value)}
+                placeholder="Search by name, email, or practice…"
+                className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+                autoFocus
+              />
+            </div>
+            <div className="text-xs text-muted-foreground ml-auto">
+              {usersQuery.isLoading
+                ? "Loading…"
+                : `${directoryUsers.length} of ${
+                    (() => {
+                      const d = usersQuery.data;
+                      return !d ? 0 : Array.isArray(d) ? d.length : (d.users?.length ?? 0);
+                    })()
+                  }`}
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <th className="text-left font-medium px-4 py-2.5">User</th>
+                  <th className="text-left font-medium py-2.5">Email</th>
+                  <th className="text-left font-medium py-2.5">Practice</th>
+                  <th className="text-left font-medium py-2.5">Role</th>
+                  <th className="text-left font-medium px-4 py-2.5">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usersQuery.isLoading && (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-12 text-center text-muted-foreground">
+                      <Loader2 size={16} className="inline animate-spin mr-2" />
+                      Loading accounts…
+                    </td>
+                  </tr>
+                )}
+                {usersQuery.error && (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-12 text-center text-destructive text-sm">
+                      {(usersQuery.error as Error).message}
+                    </td>
+                  </tr>
+                )}
+                {!usersQuery.isLoading && !usersQuery.error && directoryUsers.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-12 text-center text-muted-foreground">
+                      {dirSearch.trim() ? "No accounts match your search." : "No accounts found."}
+                    </td>
+                  </tr>
+                )}
+                {directoryUsers.map((u) => (
+                  <tr key={u.id} className="border-t border-border hover:bg-secondary/40">
+                    <td className="px-4 py-2.5">
+                      <div className="font-medium">
+                        {[u.firstName, u.lastName].filter(Boolean).join(" ") || u.username}
+                      </div>
+                      <div className="text-xs text-muted-foreground">@{u.username}</div>
+                    </td>
+                    <td className="py-2.5 text-muted-foreground text-xs">
+                      {u.email || "—"}
+                    </td>
+                    <td className="py-2.5 text-muted-foreground text-xs">
+                      {u.practiceName || "—"}
+                    </td>
+                    <td className="py-2.5">
+                      <span className="text-[11px] uppercase tracking-wide bg-secondary text-secondary-foreground rounded-full px-2 py-0.5">
+                        {u.role || "user"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full ${
+                        u.isActive === false
+                          ? "bg-warning/20 text-warning"
+                          : "bg-success/15 text-success"
+                      }`}>
+                        {u.isActive === false ? "Inactive" : "Active"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {pageView === "practices" && <div className="bg-card border border-border rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
           <div className="relative flex-1 min-w-[220px] max-w-md">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -1033,7 +1204,7 @@ export default function AccountsPage() {
             </tbody>
           </table>
         </div>
-      </div>
+      </div>}
 
       {editing && <PracticeEditor org={editing} onClose={() => setEditing(null)} />}
 
