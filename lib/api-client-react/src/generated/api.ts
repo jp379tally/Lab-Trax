@@ -139,6 +139,8 @@ import type {
   OpenInvoiceListResult,
   OrganizationResult,
   PatientSimilarityResult,
+  PreviewDraftInvoiceInput,
+  PreviewDraftInvoiceResult,
   ProviderMatchListResult,
   ReassignUnassignedDoctorInput,
   ReassignUnassignedDoctorResult,
@@ -7400,6 +7402,100 @@ export const useGenerateInvoiceForCase = <
   TContext
 > => {
   return useMutation(getGenerateInvoiceForCaseMutationOptions(options));
+};
+
+/**
+ * Returns the line items and totals that WOULD be generated for a case
+with the supplied restorations, WITHOUT creating a case, invoice, or any
+database row. Pricing and line grouping reuse the exact same code paths
+as the real case-creation flow, so the preview matches the generated
+draft invoice line-for-line. Requires the caller to be an active member
+of `labOrganizationId`.
+
+ * @summary Preview the draft invoice for a set of restorations (read-only)
+ */
+export const getPreviewDraftInvoiceUrl = () => {
+  return `/api/invoices/preview-draft`;
+};
+
+export const previewDraftInvoice = async (
+  previewDraftInvoiceInput: PreviewDraftInvoiceInput,
+  options?: RequestInit,
+): Promise<PreviewDraftInvoiceResult> => {
+  return customFetch<PreviewDraftInvoiceResult>(getPreviewDraftInvoiceUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(previewDraftInvoiceInput),
+  });
+};
+
+export const getPreviewDraftInvoiceMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof previewDraftInvoice>>,
+    TError,
+    { data: BodyType<PreviewDraftInvoiceInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof previewDraftInvoice>>,
+  TError,
+  { data: BodyType<PreviewDraftInvoiceInput> },
+  TContext
+> => {
+  const mutationKey = ["previewDraftInvoice"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof previewDraftInvoice>>,
+    { data: BodyType<PreviewDraftInvoiceInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return previewDraftInvoice(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type PreviewDraftInvoiceMutationResult = NonNullable<
+  Awaited<ReturnType<typeof previewDraftInvoice>>
+>;
+export type PreviewDraftInvoiceMutationBody =
+  BodyType<PreviewDraftInvoiceInput>;
+export type PreviewDraftInvoiceMutationError = ErrorType<void>;
+
+/**
+ * @summary Preview the draft invoice for a set of restorations (read-only)
+ */
+export const usePreviewDraftInvoice = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof previewDraftInvoice>>,
+    TError,
+    { data: BodyType<PreviewDraftInvoiceInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof previewDraftInvoice>>,
+  TError,
+  { data: BodyType<PreviewDraftInvoiceInput> },
+  TContext
+> => {
+  return useMutation(getPreviewDraftInvoiceMutationOptions(options));
 };
 
 /**

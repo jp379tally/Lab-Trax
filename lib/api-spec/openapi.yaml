@@ -2215,6 +2215,35 @@ paths:
           description: Caller lacks a billing role on the case's lab
         "404":
           description: Case not found
+  /invoices/preview-draft:
+    post:
+      operationId: previewDraftInvoice
+      tags: [invoices]
+      summary: Preview the draft invoice for a set of restorations (read-only)
+      description: |
+        Returns the line items and totals that WOULD be generated for a case
+        with the supplied restorations, WITHOUT creating a case, invoice, or any
+        database row. Pricing and line grouping reuse the exact same code paths
+        as the real case-creation flow, so the preview matches the generated
+        draft invoice line-for-line. Requires the caller to be an active member
+        of `labOrganizationId`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreviewDraftInvoiceInput"
+      responses:
+        "200":
+          description: Draft invoice preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreviewDraftInvoiceResult"
+        "400":
+          description: Validation error
+        "403":
+          description: Caller is not a member of the lab
   /invoices/open:
     get:
       operationId: listOpenInvoices
@@ -4178,6 +4207,93 @@ components:
               description: >
                 Case number of the linked canonical case (e.g. "A-1042"). Included on frozen invoices
                 so the banner can display and link directly to the case without a separate fetch.
+    PreviewDraftInvoiceInput:
+      type: object
+      required: [labOrganizationId, restorations]
+      properties:
+        labOrganizationId:
+          type: string
+          description: Lab org the caller must be an active member of.
+        providerOrganizationId:
+          type: string
+          nullable: true
+          description: Provider/practice org used to resolve practice-tier pricing.
+        doctorName:
+          type: string
+          nullable: true
+          description: Doctor name used to resolve per-doctor price overrides.
+        bridgeConnectors:
+          type: string
+          nullable: true
+          description: >
+            Comma-separated connector pairs ("13-14,14-15"). When present, adjacent
+            pontic+crown spans collapse into a single bridge line item.
+        restorations:
+          type: array
+          maxItems: 64
+          items:
+            type: object
+            required: [restorationType]
+            properties:
+              toothNumber:
+                type: string
+                description: Tooth number ("8") or empty string for non-tooth items.
+              restorationType:
+                type: string
+                description: Restoration type (e.g. "Crown", "Pontic").
+              material:
+                type: string
+                nullable: true
+              shade:
+                type: string
+                nullable: true
+              quantity:
+                type: integer
+                minimum: 1
+                maximum: 99
+                default: 1
+    PreviewDraftInvoiceResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            lineItems:
+              type: array
+              items:
+                type: object
+                properties:
+                  description: { type: string }
+                  toothNumber:
+                    type: integer
+                    nullable: true
+                  toothLabel:
+                    type: string
+                    nullable: true
+                  quantity: { type: integer }
+                  unitPrice:
+                    type: string
+                    description: Per-unit price as a fixed-2 decimal string.
+                  lineTotal:
+                    type: string
+                    description: Line total as a fixed-2 decimal string.
+                  priceSource:
+                    type: string
+                    nullable: true
+                    description: "Where the price came from: default, tier, override, discount, or null when unpriced."
+                  priceKey:
+                    type: string
+                    nullable: true
+                  priced:
+                    type: boolean
+                    description: False when no price could be resolved (renders as "not priced").
+            subtotal:
+              type: string
+              description: Sum of all line totals as a fixed-2 decimal string.
+            total:
+              type: string
+              description: Invoice total (equals subtotal; preview applies no tax/discount).
     UpdateInvoiceInput:
       type: object
       properties:

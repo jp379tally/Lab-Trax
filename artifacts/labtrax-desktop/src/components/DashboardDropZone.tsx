@@ -18,6 +18,10 @@ import {
 } from "lucide-react";
 import JSZip from "jszip";
 import { apiFetch, ApiError } from "@/lib/api";
+import type {
+  PreviewDraftInvoiceInput,
+  PreviewDraftInvoiceResultData,
+} from "@workspace/api-client-react";
 import { uploadMediaFile } from "@/lib/upload-media-file";
 import type { MediaUploadResult } from "@/lib/upload-media-file";
 import { useAuth } from "@/lib/auth-context";
@@ -878,6 +882,16 @@ export function DashboardDropZone() {
     if (phase.kind !== "rxConfirm") setRxPracticeError(false);
   }, [phase.kind]);
 
+  // ── Read-only draft-invoice preview ──────────────────────────────────────
+  // Shows the line items + total that WOULD be generated when the case is
+  // created, before the user clicks "Create case". Backed by the non-persisting
+  // POST /invoices/preview-draft endpoint, which reuses the exact same pricing
+  // + grouping code as the real create flow so the preview matches the draft.
+  const [invoicePreview, setInvoicePreview] =
+    useState<PreviewDraftInvoiceResultData | null>(null);
+  const [invoicePreviewLoading, setInvoicePreviewLoading] = useState(false);
+  const [invoicePreviewError, setInvoicePreviewError] = useState(false);
+
   // Auto-pick the lab as soon as the membership list loads. This
   // matters for single-lab users (the lab <select> is hidden in that
   // case) — without this effect, dragging a file before the orgs query
@@ -888,6 +902,96 @@ export function DashboardDropZone() {
       setRxLabOrgId(labOrg.id);
     }
   }, [labOrg?.id, rxLabOrgId]);
+
+  // Debounced draft-invoice preview. Rebuilds restorations from the editable Rx
+  // fields exactly as `createCaseFromRx` does (teeth split, caseType →
+  // restorationType, material/shade), then POSTs them to the non-persisting
+  // preview endpoint. Cancels in-flight requests when inputs change.
+  const rxToothIndices = rxDraft.toothIndices ?? "";
+  const rxCaseType = rxDraft.caseType ?? "";
+  const rxMaterial = rxDraft.material ?? "";
+  const rxShade = rxDraft.shade ?? "";
+  const rxDoctorName = rxDraft.doctorName ?? "";
+  useEffect(() => {
+    if (phase.kind !== "rxConfirm" || !rxLabOrgId) {
+      setInvoicePreview(null);
+      setInvoicePreviewError(false);
+      setInvoicePreviewLoading(false);
+      return;
+    }
+    const teethList = rxToothIndices
+      .split(/[,\s]+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const restorationType = (rxCaseType || "Other").trim() || "Other";
+    const restorations: PreviewDraftInvoiceInput["restorations"] =
+      teethList.length > 0
+        ? teethList.map((toothNumber) => ({
+            toothNumber,
+            restorationType,
+            ...(rxMaterial ? { material: rxMaterial } : {}),
+            ...(rxShade ? { shade: rxShade } : {}),
+            quantity: 1,
+          }))
+        : rxMaterial || rxShade || rxCaseType
+          ? [
+              {
+                toothNumber: "",
+                restorationType,
+                ...(rxMaterial ? { material: rxMaterial } : {}),
+                ...(rxShade ? { shade: rxShade } : {}),
+                quantity: 1,
+              },
+            ]
+          : [];
+    if (restorations.length === 0) {
+      setInvoicePreview(null);
+      setInvoicePreviewError(false);
+      setInvoicePreviewLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setInvoicePreviewLoading(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const body: PreviewDraftInvoiceInput = {
+          labOrganizationId: rxLabOrgId,
+          ...(rxProviderOrgId ? { providerOrganizationId: rxProviderOrgId } : {}),
+          ...(rxDoctorName.trim() ? { doctorName: rxDoctorName.trim() } : {}),
+          restorations,
+        };
+        const data = await apiFetch<PreviewDraftInvoiceResultData>(
+          "/invoices/preview-draft",
+          { method: "POST", body: JSON.stringify(body) },
+        );
+        if (!cancelled) {
+          setInvoicePreview(data);
+          setInvoicePreviewError(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setInvoicePreview(null);
+          setInvoicePreviewError(true);
+        }
+      } finally {
+        if (!cancelled) setInvoicePreviewLoading(false);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    phase.kind,
+    rxLabOrgId,
+    rxProviderOrgId,
+    rxToothIndices,
+    rxCaseType,
+    rxMaterial,
+    rxShade,
+    rxDoctorName,
+  ]);
+
   const [rxProviderSearch, setRxProviderSearch] = useState("");
   // When set, the inline "Add practice" form is shown inside the rxConfirm
   // panel instead of the practice <select>. Pre-filled from the AI-extracted
@@ -2796,6 +2900,73 @@ export function DashboardDropZone() {
                   </div>
                 </div>
               </>
+            )}
+          </div>
+        )}
+        {(invoicePreviewLoading ||
+          invoicePreviewError ||
+          (invoicePreview?.lineItems?.length ?? 0) > 0) && (
+          <div className="rounded-md border border-border bg-secondary/30 p-3">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground mb-2">
+              <FileText size={13} />
+              Invoice preview
+              <span className="font-normal text-muted-foreground">
+                (estimated — created with the case)
+              </span>
+            </div>
+            {invoicePreviewError ? (
+              <p className="text-xs text-muted-foreground">
+                Couldn’t load the invoice preview. The draft invoice will still
+                be generated when you create the case.
+              </p>
+            ) : invoicePreviewLoading && !invoicePreview ? (
+              <p className="text-xs text-muted-foreground">Calculating…</p>
+            ) : (invoicePreview?.lineItems?.length ?? 0) === 0 ? (
+              <p className="text-xs text-muted-foreground">No line items yet.</p>
+            ) : (
+              <div
+                className={`space-y-1 ${invoicePreviewLoading ? "opacity-60" : ""}`}
+              >
+                {invoicePreview!.lineItems!.map((li, idx) => {
+                  const qty = li.quantity ?? 1;
+                  const unitPrice = li.unitPrice ?? "0.00";
+                  return (
+                    <div
+                      key={idx}
+                      className="flex items-baseline justify-between gap-3 text-xs"
+                    >
+                      <span className="min-w-0 flex-1 text-foreground">
+                        {li.toothLabel ? (
+                          <span className="text-muted-foreground">
+                            {li.toothLabel}{" "}
+                          </span>
+                        ) : null}
+                        {li.description}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-muted-foreground">
+                        {qty} × ${unitPrice}
+                      </span>
+                      <span
+                        className={`w-16 shrink-0 text-right tabular-nums ${
+                          li.priced === false
+                            ? "text-amber-600"
+                            : "text-foreground"
+                        }`}
+                      >
+                        {li.priced === false
+                          ? "not priced"
+                          : `$${li.lineTotal ?? "0.00"}`}
+                      </span>
+                    </div>
+                  );
+                })}
+                <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-border pt-2 text-xs font-semibold">
+                  <span className="text-foreground">Total</span>
+                  <span className="shrink-0 tabular-nums text-foreground">
+                    ${invoicePreview!.total ?? "0.00"}
+                  </span>
+                </div>
+              </div>
             )}
           </div>
         )}

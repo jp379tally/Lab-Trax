@@ -2918,6 +2918,112 @@ export const GenerateInvoiceForCaseBody = zod.object({
 });
 
 /**
+ * Returns the line items and totals that WOULD be generated for a case
+with the supplied restorations, WITHOUT creating a case, invoice, or any
+database row. Pricing and line grouping reuse the exact same code paths
+as the real case-creation flow, so the preview matches the generated
+draft invoice line-for-line. Requires the caller to be an active member
+of `labOrganizationId`.
+
+ * @summary Preview the draft invoice for a set of restorations (read-only)
+ */
+export const previewDraftInvoiceBodyRestorationsItemQuantityDefault = 1;
+export const previewDraftInvoiceBodyRestorationsItemQuantityMax = 99;
+
+export const previewDraftInvoiceBodyRestorationsMax = 64;
+
+export const PreviewDraftInvoiceBody = zod.object({
+  labOrganizationId: zod
+    .string()
+    .describe("Lab org the caller must be an active member of."),
+  providerOrganizationId: zod
+    .string()
+    .nullish()
+    .describe("Provider\/practice org used to resolve practice-tier pricing."),
+  doctorName: zod
+    .string()
+    .nullish()
+    .describe("Doctor name used to resolve per-doctor price overrides."),
+  bridgeConnectors: zod
+    .string()
+    .nullish()
+    .describe(
+      'Comma-separated connector pairs (\"13-14,14-15\"). When present, adjacent pontic+crown spans collapse into a single bridge line item.\n',
+    ),
+  restorations: zod
+    .array(
+      zod.object({
+        toothNumber: zod
+          .string()
+          .optional()
+          .describe(
+            'Tooth number (\"8\") or empty string for non-tooth items.',
+          ),
+        restorationType: zod
+          .string()
+          .describe('Restoration type (e.g. \"Crown\", \"Pontic\").'),
+        material: zod.string().nullish(),
+        shade: zod.string().nullish(),
+        quantity: zod
+          .number()
+          .min(1)
+          .max(previewDraftInvoiceBodyRestorationsItemQuantityMax)
+          .default(previewDraftInvoiceBodyRestorationsItemQuantityDefault),
+      }),
+    )
+    .max(previewDraftInvoiceBodyRestorationsMax),
+});
+
+export const PreviewDraftInvoiceResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      lineItems: zod
+        .array(
+          zod.object({
+            description: zod.string().optional(),
+            toothNumber: zod.number().nullish(),
+            toothLabel: zod.string().nullish(),
+            quantity: zod.number().optional(),
+            unitPrice: zod
+              .string()
+              .optional()
+              .describe("Per-unit price as a fixed-2 decimal string."),
+            lineTotal: zod
+              .string()
+              .optional()
+              .describe("Line total as a fixed-2 decimal string."),
+            priceSource: zod
+              .string()
+              .nullish()
+              .describe(
+                "Where the price came from: default, tier, override, discount, or null when unpriced.",
+              ),
+            priceKey: zod.string().nullish(),
+            priced: zod
+              .boolean()
+              .optional()
+              .describe(
+                'False when no price could be resolved (renders as \"not priced\").',
+              ),
+          }),
+        )
+        .optional(),
+      subtotal: zod
+        .string()
+        .optional()
+        .describe("Sum of all line totals as a fixed-2 decimal string."),
+      total: zod
+        .string()
+        .optional()
+        .describe(
+          "Invoice total (equals subtotal; preview applies no tax\/discount).",
+        ),
+    })
+    .optional(),
+});
+
+/**
  * Returns the open (issued or partially-paid) invoices the lab can
 currently receive payments against. Requires the caller to have a
 billing role (owner, admin, or billing) in `labOrganizationId`.

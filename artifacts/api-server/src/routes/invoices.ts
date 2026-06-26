@@ -45,8 +45,12 @@ import { requireAuth, requireVerifiedAccount } from "../middlewares/auth";
 import {
   buildLineItemDescription,
   materialToPriceKey,
+  resolveAllPricesForContext,
   resolveItemLabel,
+  resolveServerPriceWithSource,
+  type ResolvedItemRow,
 } from "../lib/pricing";
+import { buildBridgeAwareLineItems } from "../lib/invoice-line-grouping";
 import { invoiceDueDate } from "../lib/invoice-due-date";
 
 const router = Router();
@@ -4493,6 +4497,145 @@ router.get(
         count: tCount,
         avg: tCount ? (tNet / tCount).toFixed(2) : "0.00",
       },
+    });
+  }),
+);
+
+// ── Draft-invoice preview (read-only, non-persisting) ─────────────────────
+//
+// Returns the line items + totals that WOULD be generated for a case with the
+// given restorations, WITHOUT creating a case, invoice, or any DB row. Used by
+// the Desktop drop-zone Rx proposal panel so users see the draft invoice
+// before clicking "Create case". Pricing and grouping reuse the exact same
+// code paths as the real create flow (resolveAllPricesForContext +
+// resolveServerPriceWithSource fallback, then buildBridgeAwareLineItems) so
+// the preview matches the generated draft invoice line-for-line.
+const previewRestorationSchema = z.object({
+  toothNumber: z.string().trim().default(""),
+  restorationType: z.string().trim().min(1),
+  material: z.string().nullish(),
+  shade: z.string().nullish(),
+  quantity: z.number().int().positive().max(99).default(1),
+});
+
+const previewDraftInvoiceSchema = z.object({
+  labOrganizationId: z.string().min(1),
+  providerOrganizationId: z.string().nullish(),
+  doctorName: z.string().nullish(),
+  bridgeConnectors: z.string().nullish(),
+  restorations: z.array(previewRestorationSchema).max(64),
+});
+
+router.post(
+  "/preview-draft",
+  asyncHandler(async (req, res) => {
+    const input = previewDraftInvoiceSchema.parse(req.body);
+    const auth = (req as any).auth;
+    await requireMembership(auth.userId, input.labOrganizationId);
+
+    const doctorName = (input.doctorName ?? "").trim();
+    const providerOrganizationId = input.providerOrganizationId ?? undefined;
+
+    // Batch-resolve every standard price key once (mirrors POST /cases). The
+    // preview never carries user-supplied prices, so auto-pricing always runs.
+    const batchPriceMap = new Map<string, ResolvedItemRow>();
+    if (input.restorations.length > 0) {
+      const allPrices = await resolveAllPricesForContext({
+        labOrganizationId: input.labOrganizationId,
+        doctorName,
+        providerOrganizationId,
+      });
+      for (const p of allPrices) batchPriceMap.set(p.key, p);
+    }
+
+    // Resolve each restoration's price + source exactly like the create path,
+    // assigning a synthetic stable id (its index) so the grouping helper can
+    // attribute each produced line back to its source restoration.
+    const priced = await Promise.all(
+      input.restorations.map(async (r, idx) => {
+        let unit = 0;
+        let priceSource: string | null = null;
+        let priceKey: string | null = null;
+        const key = materialToPriceKey(r.material ?? null, r.restorationType);
+        if (key !== null && batchPriceMap.has(key)) {
+          const batchHit = batchPriceMap.get(key)!;
+          if (batchHit.source !== null && batchHit.unitPrice > 0) {
+            unit = batchHit.unitPrice;
+            priceSource = batchHit.source;
+            priceKey = batchHit.key;
+          }
+        } else {
+          const fallback = await resolveServerPriceWithSource(
+            {
+              labOrganizationId: input.labOrganizationId,
+              doctorName,
+              providerOrganizationId,
+            },
+            r.material ?? null,
+            r.restorationType,
+          );
+          if (fallback) {
+            unit = fallback.amount;
+            priceSource = fallback.source;
+            priceKey = fallback.key;
+          }
+        }
+        return {
+          id: String(idx),
+          toothNumber: r.toothNumber ?? "",
+          restorationType: r.restorationType,
+          material: r.material ?? null,
+          quantity: r.quantity,
+          unitPrice: unit.toFixed(2),
+          priceSource,
+          priceKey,
+        };
+      }),
+    );
+
+    // Map synthetic id → resolved source so produced lines can report pricing.
+    const sourceById = new Map(
+      priced.map((p) => [p.id, { priceSource: p.priceSource, priceKey: p.priceKey }]),
+    );
+
+    const grouped = buildBridgeAwareLineItems(
+      priced.map((p) => ({
+        id: p.id,
+        toothNumber: p.toothNumber,
+        restorationType: p.restorationType,
+        material: p.material,
+        quantity: p.quantity,
+        unitPrice: p.unitPrice,
+      })),
+      input.bridgeConnectors ?? null,
+      false,
+    );
+
+    const lineItems = grouped.map((line) => {
+      const src = line.caseRestorationId
+        ? sourceById.get(line.caseRestorationId)
+        : undefined;
+      const priceSource = src?.priceSource ?? null;
+      const priceKey = src?.priceKey ?? null;
+      const isPriced = priceSource !== null && Number(line.unitPrice) > 0;
+      return {
+        description: line.description,
+        toothNumber: line.toothNumber,
+        toothLabel: line.toothLabel,
+        quantity: line.quantity,
+        unitPrice: line.unitPrice,
+        lineTotal: line.lineTotal,
+        priceSource,
+        priceKey,
+        priced: isPriced,
+      };
+    });
+
+    const subtotal = sumMoney(lineItems.map((l) => l.lineTotal));
+    return ok(res, {
+      lineItems,
+      subtotal,
+      total: subtotal,
     });
   }),
 );

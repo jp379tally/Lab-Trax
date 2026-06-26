@@ -716,6 +716,63 @@ export interface InvoiceDetailResult {
   data?: InvoiceDetailResultData;
 }
 
+export type PreviewDraftInvoiceInputRestorationsItem = {
+  /** Tooth number ("8") or empty string for non-tooth items. */
+  toothNumber?: string;
+  /** Restoration type (e.g. "Crown", "Pontic"). */
+  restorationType: string;
+  material?: string | null;
+  shade?: string | null;
+  /**
+   * @minimum 1
+   * @maximum 99
+   */
+  quantity?: number;
+};
+
+export interface PreviewDraftInvoiceInput {
+  /** Lab org the caller must be an active member of. */
+  labOrganizationId: string;
+  /** Provider/practice org used to resolve practice-tier pricing. */
+  providerOrganizationId?: string | null;
+  /** Doctor name used to resolve per-doctor price overrides. */
+  doctorName?: string | null;
+  /** Comma-separated connector pairs ("13-14,14-15"). When present, adjacent pontic+crown spans collapse into a single bridge line item.
+   */
+  bridgeConnectors?: string | null;
+  /** @maxItems 64 */
+  restorations: PreviewDraftInvoiceInputRestorationsItem[];
+}
+
+export type PreviewDraftInvoiceResultDataLineItemsItem = {
+  description?: string;
+  toothNumber?: number | null;
+  toothLabel?: string | null;
+  quantity?: number;
+  /** Per-unit price as a fixed-2 decimal string. */
+  unitPrice?: string;
+  /** Line total as a fixed-2 decimal string. */
+  lineTotal?: string;
+  /** Where the price came from: default, tier, override, discount, or null when unpriced. */
+  priceSource?: string | null;
+  priceKey?: string | null;
+  /** False when no price could be resolved (renders as "not priced"). */
+  priced?: boolean;
+};
+
+export type PreviewDraftInvoiceResultData = {
+  lineItems?: PreviewDraftInvoiceResultDataLineItemsItem[];
+  /** Sum of all line totals as a fixed-2 decimal string. */
+  subtotal?: string;
+  /** Invoice total (equals subtotal; preview applies no tax/discount). */
+  total?: string;
+};
+
+export interface PreviewDraftInvoiceResult {
+  ok?: boolean;
+  data?: PreviewDraftInvoiceResultData;
+}
+
 export type UpdateInvoiceInputStatus =
   | (typeof UpdateInvoiceInputStatus)[keyof typeof UpdateInvoiceInputStatus]
   | null;
