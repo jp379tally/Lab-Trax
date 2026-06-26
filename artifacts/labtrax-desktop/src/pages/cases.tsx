@@ -7034,6 +7034,37 @@ export function CaseDrawer({
                       Open in editor
                     </button>
                   </div>
+                  {invoiceDetailQuery.isLoading ? (
+                    <div className="text-sm text-muted-foreground flex items-center gap-1.5">
+                      <Loader2 size={13} className="animate-spin" />
+                      Loading line items…
+                    </div>
+                  ) : (invoiceDetailQuery.data?.items?.length ?? 0) > 0 ? (
+                    <div className="border border-border rounded-md overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+                            <th className="text-left font-medium px-3 py-1.5">Description</th>
+                            <th className="text-right font-medium px-3 py-1.5 w-12">Qty</th>
+                            <th className="text-right font-medium px-3 py-1.5 w-24">Unit price</th>
+                            <th className="text-right font-medium px-3 py-1.5 w-24">Line total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {invoiceDetailQuery.data!.items.map((it, idx) => (
+                            <tr key={idx} className="border-t border-border">
+                              <td className="px-3 py-1.5">{it.description || "—"}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{Number(it.quantity)}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{formatMoney(it.unitPrice)}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{formatMoney(it.lineTotal)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No line items on this invoice.</p>
+                  )}
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <Field label="Total" value={formatMoney(caseInvoice.total)} />
                     <Field label="Balance due" value={formatMoney(caseInvoice.balanceDue)} />
