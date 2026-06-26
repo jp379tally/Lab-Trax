@@ -88,6 +88,7 @@ describe("buildGroupedSyncItems", () => {
       quantity: 1,
       unitPrice: "100.00",
       lineTotal: "100.00",
+      groupedRestorationIds: ["a"],
     });
   });
 
@@ -108,6 +109,9 @@ describe("buildGroupedSyncItems", () => {
       unitPrice: "120.00",
       lineTotal: "360.00",
     });
+    // Grouped lines expose every collapsed restoration id (input order) so the
+    // preview can map an inline price edit back to all source restorations.
+    expect(items[0]!.groupedRestorationIds).toEqual(["a", "b", "c"]);
   });
 
   it("zeroes out a no-charge remake", () => {
@@ -172,6 +176,7 @@ describe("buildBridgeAwareLineItems", () => {
     expect(items[0].quantity).toBe(3);
     expect(items[0].lineTotal).toBe("600.00");
     expect(items[0].caseRestorationId).toBe("a");
+    expect(items[0].groupedRestorationIds).toEqual(["a", "b", "c"]);
   });
 
   it("does not collapse a connected span without a pontic", () => {

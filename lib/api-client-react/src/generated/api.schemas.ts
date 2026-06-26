@@ -534,6 +534,9 @@ export type CreateCaseInputRestorationsItem = {
   notes?: string | null;
   quantity?: number | null;
   unitPrice?: number | null;
+  /** When true, `unitPrice` is treated as a user-supplied manual price even when 0 (a deliberate no-charge line), so server auto-pricing does not overwrite it. Omit for default auto-pricing behaviour.
+   */
+  priceOverridden?: boolean;
 };
 
 export interface CreateCaseInput {
@@ -758,6 +761,9 @@ export type PreviewDraftInvoiceResultDataLineItemsItem = {
   priceKey?: string | null;
   /** False when no price could be resolved (renders as "not priced"). */
   priced?: boolean;
+  /** Indices (into the request `restorations` array) of every source restoration collapsed into this line. The desktop preview uses these to map a user's inline price edit back to the exact restorations and thread the override into case creation.
+   */
+  restorationIndices?: number[];
 };
 
 export type PreviewDraftInvoiceResultData = {

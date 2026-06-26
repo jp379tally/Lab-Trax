@@ -14,4 +14,7 @@ export type CreateCaseInputRestorationsItem = {
   notes?: string | null;
   quantity?: number | null;
   unitPrice?: number | null;
+  /** When true, `unitPrice` is treated as a user-supplied manual price even when 0 (a deliberate no-charge line), so server auto-pricing does not overwrite it. Omit for default auto-pricing behaviour.
+   */
+  priceOverridden?: boolean;
 };

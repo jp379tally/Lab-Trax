@@ -4046,6 +4046,13 @@ components:
               unitPrice:
                 type: number
                 nullable: true
+              priceOverridden:
+                type: boolean
+                description: >
+                  When true, `unitPrice` is treated as a user-supplied manual
+                  price even when 0 (a deliberate no-charge line), so server
+                  auto-pricing does not overwrite it. Omit for default
+                  auto-pricing behaviour.
         needsAiReview:
           type: boolean
           nullable: true
@@ -4288,6 +4295,16 @@ components:
                   priced:
                     type: boolean
                     description: False when no price could be resolved (renders as "not priced").
+                  restorationIndices:
+                    type: array
+                    items:
+                      type: integer
+                    description: >
+                      Indices (into the request `restorations` array) of every
+                      source restoration collapsed into this line. The desktop
+                      preview uses these to map a user's inline price edit back
+                      to the exact restorations and thread the override into
+                      case creation.
             subtotal:
               type: string
               description: Sum of all line totals as a fixed-2 decimal string.

@@ -1587,6 +1587,12 @@ const createCaseSchema = z.object({
         notes: z.string().optional(),
         quantity: z.coerce.number().int().positive().default(1),
         unitPrice: z.coerce.number().min(0).default(0),
+        // When true, treat unitPrice as a user-supplied manual price even when
+        // it is 0 (an intentional no-charge line), so server auto-pricing does
+        // NOT overwrite it. Without this flag a 0 unitPrice always auto-prices,
+        // which made inline "no charge" edits in the draft-invoice preview
+        // impossible to honour. Defaults to undefined → unchanged behaviour.
+        priceOverridden: z.boolean().optional(),
       })
     )
     .optional(),
@@ -3432,7 +3438,9 @@ router.post(
       // For any price key not covered by the batch (non-standard keys), fall
       // back to the individual resolver so pricing accuracy is preserved.
       const needsAutoPrice = input.restorations.some(
-        (r) => !(Number.isFinite(r.unitPrice) && r.unitPrice > 0)
+        (r) =>
+          r.priceOverridden !== true &&
+          !(Number.isFinite(r.unitPrice) && r.unitPrice > 0)
       );
       // Batch-resolve all standard-key prices once (3 DB round-trips total).
       // Store every key the batch returns — including zero-price / no-source
@@ -3454,7 +3462,11 @@ router.post(
       const resolved = await Promise.all(
         input.restorations.map(async (r) => {
           let unit = r.unitPrice;
-          const userSupplied = Number.isFinite(unit) && unit > 0;
+          // An explicit override (priceOverridden) counts as user-supplied even
+          // when 0, so a deliberate no-charge line is preserved rather than
+          // auto-priced. Otherwise any positive price is treated as manual.
+          const userSupplied =
+            r.priceOverridden === true || (Number.isFinite(unit) && unit > 0);
           let priceSource: string | null = userSupplied ? "manual" : null;
           let priceSourceId: string | null = null;
           let priceSourceName: string | null = null;

@@ -20,4 +20,7 @@ export type PreviewDraftInvoiceResultDataLineItemsItem = {
   priceKey?: string | null;
   /** False when no price could be resolved (renders as "not priced"). */
   priced?: boolean;
+  /** Indices (into the request `restorations` array) of every source restoration collapsed into this line. The desktop preview uses these to map a user's inline price edit back to the exact restorations and thread the override into case creation.
+   */
+  restorationIndices?: number[];
 };

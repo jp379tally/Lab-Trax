@@ -15,6 +15,13 @@ export interface SyncLineItem {
   quantity: number;
   unitPrice: string;
   lineTotal: string;
+  /**
+   * Every source restoration id collapsed into this line (a single-tooth line
+   * has one; a grouped/bridge line has many). The draft-invoice preview uses
+   * this to map a user's inline price edit on a line back to the exact source
+   * restorations, so the override flows into case creation 1:1.
+   */
+  groupedRestorationIds: string[];
 }
 
 export function parseToothInt(toothNumber: string): number | null {
@@ -83,6 +90,7 @@ export function buildGroupedSyncItems(
         lineTotal: noChargeRemake
           ? "0.00"
           : calculateLineTotal(first.quantity, first.unitPrice),
+        groupedRestorationIds: [first.id],
       });
     } else {
       const qty = rows.reduce((s, r) => s + r.quantity, 0);
@@ -103,6 +111,7 @@ export function buildGroupedSyncItems(
         quantity: qty,
         unitPrice,
         lineTotal: noChargeRemake ? "0.00" : calculateLineTotal(qty, first.unitPrice),
+        groupedRestorationIds: rows.map((row) => row.id),
       });
     }
   }
@@ -261,6 +270,7 @@ export function buildBridgeAwareLineItems(
       quantity: units,
       unitPrice: perUnitStr,
       lineTotal,
+      groupedRestorationIds: groupRestorations.map((gr) => gr.id),
     });
 
     for (const r of groupRestorations) usedRestorationIds.add(r.id);

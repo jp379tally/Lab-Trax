@@ -1230,6 +1230,12 @@ export const CreateCaseBody = zod.object({
         notes: zod.string().nullish(),
         quantity: zod.number().nullish(),
         unitPrice: zod.number().nullish(),
+        priceOverridden: zod
+          .boolean()
+          .optional()
+          .describe(
+            "When true, `unitPrice` is treated as a user-supplied manual price even when 0 (a deliberate no-charge line), so server auto-pricing does not overwrite it. Omit for default auto-pricing behaviour.\n",
+          ),
       }),
     )
     .nullish()
@@ -3005,6 +3011,12 @@ export const PreviewDraftInvoiceResponse = zod.object({
               .optional()
               .describe(
                 'False when no price could be resolved (renders as \"not priced\").',
+              ),
+            restorationIndices: zod
+              .array(zod.number())
+              .optional()
+              .describe(
+                "Indices (into the request `restorations` array) of every source restoration collapsed into this line. The desktop preview uses these to map a user's inline price edit back to the exact restorations and thread the override into case creation.\n",
               ),
           }),
         )

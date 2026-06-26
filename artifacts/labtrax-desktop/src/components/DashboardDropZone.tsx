@@ -896,6 +896,63 @@ export function DashboardDropZone() {
   const [invoicePreviewLoading, setInvoicePreviewLoading] = useState(false);
   const [invoicePreviewError, setInvoicePreviewError] = useState(false);
 
+  // ── Inline price edits on the draft-invoice preview ──────────────────────
+  // The user can override a line's unit price (or mark it no-charge) before
+  // creating the case. Keyed by the line's restoration indices (joined) so the
+  // edit survives unrelated re-renders and maps 1:1 back to the source
+  // restorations the server collapsed into that line. These overrides are
+  // applied to the restorations array sent to POST /cases (unitPrice +
+  // priceOverridden), so the generated draft invoice matches what's shown.
+  type LinePriceOverride = { unitPrice: string; noCharge: boolean };
+  const [priceOverrides, setPriceOverrides] = useState<
+    Record<string, LinePriceOverride>
+  >({});
+  // The grouping (and therefore the line→index mapping) only changes when the
+  // teeth, case type, material, or shade change. Reset overrides then so a
+  // stale edit can't reattach to a different line. Provider/doctor changes
+  // only shift default prices, so an explicit user edit is intentionally kept.
+  useEffect(() => {
+    setPriceOverrides({});
+  }, [rxDraft.toothIndices, rxDraft.caseType, rxDraft.material, rxDraft.shade]);
+  function setLineOverride(key: string, patch: Partial<LinePriceOverride>) {
+    setPriceOverrides((prev) => ({
+      ...prev,
+      [key]: {
+        unitPrice: prev[key]?.unitPrice ?? "",
+        noCharge: prev[key]?.noCharge ?? false,
+        ...patch,
+      },
+    }));
+  }
+  // Apply the inline overrides to a freshly-built restorations array (indices
+  // align: both the preview and create flows build restorations from the same
+  // teeth list in the same order). A no-charge edit sends unitPrice 0 with
+  // priceOverridden so the server treats it as a deliberate $0 line instead of
+  // auto-pricing it back.
+  function applyPriceOverrides<T extends { unitPrice: number }>(
+    restos: T[],
+  ): Array<T & { priceOverridden?: boolean }> {
+    if (Object.keys(priceOverrides).length === 0) return restos;
+    const byIndex: Record<number, LinePriceOverride> = {};
+    for (const li of invoicePreview?.lineItems ?? []) {
+      const indices = li.restorationIndices ?? [];
+      if (indices.length === 0) continue;
+      const ov = priceOverrides[indices.join("-")];
+      if (!ov) continue;
+      for (const idx of indices) byIndex[idx] = ov;
+    }
+    return restos.map((resto, i) => {
+      const ov = byIndex[i];
+      if (!ov) return resto;
+      if (ov.noCharge) return { ...resto, unitPrice: 0, priceOverridden: true };
+      const num = Number(ov.unitPrice);
+      if (ov.unitPrice.trim() === "" || !Number.isFinite(num) || num < 0) {
+        return resto;
+      }
+      return { ...resto, unitPrice: num, priceOverridden: true };
+    });
+  }
+
   // Auto-pick the lab as soon as the membership list loads. This
   // matters for single-lab users (the lab <select> is hidden in that
   // case) — without this effect, dragging a file before the orgs query
@@ -1892,7 +1949,9 @@ export function DashboardDropZone() {
             doctorName: (r.doctorName || "").trim() || "Unknown Provider",
             priority: r.isRush ? "rush" : "normal",
             ...(r.dueDate ? { dueDate: r.dueDate } : {}),
-            ...(restorations ? { restorations } : {}),
+            ...(restorations
+              ? { restorations: applyPriceOverrides(restorations) }
+              : {}),
             ...(r.notes && r.notes.trim() ? { notes: r.notes.trim() } : {}),
             ...(rxBarcode.trim() ? { casePanBarcode: rxBarcode.trim() } : {}),
             // Always carry the top-level shade to the case row so it is
@@ -2052,7 +2111,9 @@ export function DashboardDropZone() {
               (r.doctorName || "").trim() || "Unknown Provider",
             priority: r.isRush ? "rush" : "normal",
             ...(r.dueDate ? { dueDate: r.dueDate } : {}),
-            ...(restorations ? { restorations } : {}),
+            ...(restorations
+              ? { restorations: applyPriceOverrides(restorations) }
+              : {}),
             ...(r.notes && r.notes.trim() ? { notes: r.notes.trim() } : {}),
             ...(rxBarcode.trim() ? { casePanBarcode: rxBarcode.trim() } : {}),
             // Always carry the top-level shade to the case row so it is
@@ -2929,47 +2990,114 @@ export function DashboardDropZone() {
               <p className="text-xs text-muted-foreground">No line items yet.</p>
             ) : (
               <div
-                className={`space-y-1 ${invoicePreviewLoading ? "opacity-60" : ""}`}
+                className={`space-y-1.5 ${invoicePreviewLoading ? "opacity-60" : ""}`}
               >
-                {invoicePreview!.lineItems!.map((li, idx) => {
-                  const qty = li.quantity ?? 1;
-                  const unitPrice = li.unitPrice ?? "0.00";
-                  return (
-                    <div
-                      key={idx}
-                      className="flex items-baseline justify-between gap-3 text-xs"
-                    >
-                      <span className="min-w-0 flex-1 text-foreground">
-                        {li.toothLabel ? (
-                          <span className="text-muted-foreground">
-                            {li.toothLabel}{" "}
-                          </span>
-                        ) : null}
-                        {li.description}
-                      </span>
-                      <span className="shrink-0 tabular-nums text-muted-foreground">
-                        {qty} × ${unitPrice}
-                      </span>
-                      <span
-                        className={`w-16 shrink-0 text-right tabular-nums ${
-                          li.priced === false
-                            ? "text-amber-600"
-                            : "text-foreground"
-                        }`}
+                {(() => {
+                  let runningTotal = 0;
+                  const rows = invoicePreview!.lineItems!.map((li, idx) => {
+                    const qty = li.quantity ?? 1;
+                    const indices = li.restorationIndices ?? [];
+                    const key =
+                      indices.length > 0 ? indices.join("-") : `li-${idx}`;
+                    const override = priceOverrides[key];
+                    const isNoCharge = override?.noCharge === true;
+                    const hasUserPrice =
+                      !!override &&
+                      !override.noCharge &&
+                      override.unitPrice.trim() !== "" &&
+                      Number.isFinite(Number(override.unitPrice));
+                    const serverUnit = li.unitPrice ?? "0.00";
+                    const inputValue = isNoCharge
+                      ? ""
+                      : override
+                        ? override.unitPrice
+                        : li.priced === false
+                          ? ""
+                          : serverUnit;
+                    const effUnit = isNoCharge
+                      ? 0
+                      : hasUserPrice
+                        ? Number(override!.unitPrice)
+                        : Number(serverUnit) || 0;
+                    const showNotPriced =
+                      !isNoCharge && !hasUserPrice && li.priced === false;
+                    const lineTotal = effUnit * qty;
+                    if (!showNotPriced) runningTotal += lineTotal;
+                    return (
+                      <div
+                        key={key}
+                        className="flex items-center justify-between gap-2 text-xs"
                       >
-                        {li.priced === false
-                          ? "not priced"
-                          : `$${li.lineTotal ?? "0.00"}`}
-                      </span>
-                    </div>
+                        <span className="min-w-0 flex-1 text-foreground">
+                          {li.toothLabel ? (
+                            <span className="text-muted-foreground">
+                              {li.toothLabel}{" "}
+                            </span>
+                          ) : null}
+                          {li.description}
+                        </span>
+                        <span className="shrink-0 tabular-nums text-muted-foreground">
+                          {qty} ×
+                        </span>
+                        <div className="relative shrink-0">
+                          <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground">
+                            $
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            inputMode="decimal"
+                            disabled={isNoCharge}
+                            value={inputValue}
+                            placeholder="0.00"
+                            onChange={(e) =>
+                              setLineOverride(key, {
+                                unitPrice: e.target.value,
+                                noCharge: false,
+                              })
+                            }
+                            className="h-6 w-20 rounded border border-border bg-background pl-4 pr-1 text-right tabular-nums text-xs text-foreground disabled:opacity-50"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setLineOverride(key, { noCharge: !isNoCharge })
+                          }
+                          title="Mark this line as no charge"
+                          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                            isNoCharge
+                              ? "bg-amber-500/15 text-amber-700 border border-amber-500/40"
+                              : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
+                          }`}
+                        >
+                          No charge
+                        </button>
+                        <span
+                          className={`w-16 shrink-0 text-right tabular-nums ${
+                            showNotPriced ? "text-amber-600" : "text-foreground"
+                          }`}
+                        >
+                          {showNotPriced
+                            ? "not priced"
+                            : `$${lineTotal.toFixed(2)}`}
+                        </span>
+                      </div>
+                    );
+                  });
+                  return (
+                    <>
+                      {rows}
+                      <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-border pt-2 text-xs font-semibold">
+                        <span className="text-foreground">Total</span>
+                        <span className="shrink-0 tabular-nums text-foreground">
+                          ${runningTotal.toFixed(2)}
+                        </span>
+                      </div>
+                    </>
                   );
-                })}
-                <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-border pt-2 text-xs font-semibold">
-                  <span className="text-foreground">Total</span>
-                  <span className="shrink-0 tabular-nums text-foreground">
-                    ${invoicePreview!.total ?? "0.00"}
-                  </span>
-                </div>
+                })()}
               </div>
             )}
           </div>

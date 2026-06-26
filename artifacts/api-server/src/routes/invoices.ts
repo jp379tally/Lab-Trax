@@ -4618,6 +4618,13 @@ router.post(
       const priceSource = src?.priceSource ?? null;
       const priceKey = src?.priceKey ?? null;
       const isPriced = priceSource !== null && Number(line.unitPrice) > 0;
+      // Synthetic restoration ids are the input array indices (see `priced`
+      // above). Surface them so the desktop preview can map a user's inline
+      // price edit on a grouped line back to the exact source restorations and
+      // thread the override into POST /cases.
+      const restorationIndices = line.groupedRestorationIds
+        .map((id) => Number(id))
+        .filter((n) => Number.isInteger(n));
       return {
         description: line.description,
         toothNumber: line.toothNumber,
@@ -4628,6 +4635,7 @@ router.post(
         priceSource,
         priceKey,
         priced: isPriced,
+        restorationIndices,
       };
     });
 
