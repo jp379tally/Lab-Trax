@@ -61,8 +61,8 @@ describe("Drop-zone invoice preview — static source guards", () => {
   it("renders per-line unit price", () => {
     expect(
       src,
-      "Each preview line must display its unit price (e.g. `qty × $unitPrice`)",
-    ).toMatch(/\$\{unitPrice\}/);
+      "Each preview line must display its unit price (editable input seeded from li.unitPrice)",
+    ).toMatch(/li\.unitPrice/);
   });
 
   it("renders per-line quantity", () => {
@@ -70,11 +70,17 @@ describe("Drop-zone invoice preview — static source guards", () => {
   });
 
   it("renders per-line line total", () => {
-    expect(src).toMatch(/li\.lineTotal/);
+    expect(
+      src,
+      "Each preview line must render its computed line total",
+    ).toMatch(/lineTotal\.toFixed\(2\)/);
   });
 
   it("renders the invoice total", () => {
-    expect(src).toMatch(/invoicePreview!\.total/);
+    expect(
+      src,
+      "The preview must render an overall running total",
+    ).toMatch(/runningTotal\.toFixed\(2\)/);
   });
 
   it("shows a clear 'not priced' state for unpriced lines", () => {
