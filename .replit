@@ -18,23 +18,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "EAS iOS Build + Submit"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "typecheck-all"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Desktop Build + Publish"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "typecheck"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "api-test"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
@@ -44,16 +28,13 @@ args = "mobile-test"
 task = "workflow.run"
 args = "knowledge-test"
 
-[[workflows.workflow]]
-name = "EAS iOS Build + Submit"
-author = "agent"
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "typecheck"
 
 [[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "bash scripts/eas-ios-build.sh"
-
-[workflows.workflow.metadata]
-outputType = "console"
+task = "workflow.run"
+args = "api-test"
 
 [[workflows.workflow]]
 name = "typecheck-all"
@@ -65,39 +46,6 @@ isValidation = true
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pnpm run typecheck"
-
-[[workflows.workflow]]
-name = "Desktop Build + Publish"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "bash scripts/desktop-build-publish.sh"
-
-[workflows.workflow.metadata]
-outputType = "console"
-
-[[workflows.workflow]]
-name = "typecheck"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm run typecheck"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow]]
-name = "api-test"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/api-server run test"
-
-[workflows.workflow.metadata]
-isValidation = true
 
 [[workflows.workflow]]
 name = "mobile-test"
@@ -117,6 +65,28 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pnpm --filter @workspace/ai-knowledge run test"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "typecheck"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm run typecheck"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "api-test"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/api-server run test"
 
 [workflows.workflow.metadata]
 isValidation = true
@@ -163,9 +133,6 @@ channel = "stable-25_05"
 [userenv]
 
 [userenv.development]
-EXPO_TOKEN = "icq8v4vFQYQhYoq_txeX6trL5qVJZvYdFlbj5KEo"
-EXPO_ASC_API_KEY_KEY_ID = "LV4253P6YW"
-EXPO_ASC_API_KEY_ISSUER_ID = "1d2faabc-3d66-4e64-b514-c234043e143a"
 EXPO_ASC_API_KEY_PATH = "/tmp/AuthKey_LV4253P6YW.p8"
 LABTRAX_ENABLE_DEMO_SEEDS = "true"
 

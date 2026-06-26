@@ -4,6 +4,10 @@
 
 pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
 
+## User Preferences
+
+- **Paid/publishing builds stay script-only — never Replit workflows.** EAS iOS Build + Submit and Desktop Build + Publish must be run manually from Shell (`bash scripts/eas-ios-build.sh`, `bash scripts/desktop-build-publish.sh`), never registered as Replit workflows. The reason: the workflow tooling auto-attaches any new workflow to the `Project` run aggregate (the Run button), which would fire these paid/publishing builds accidentally. Only reconsider if Replit adds a way to exclude a workflow from the `Project` aggregate; even then they must remain manual-only and off the Run button.
+
 ## Regression Policy
 
 All protected workflows are documented in [`REGRESSION_GUARDRAILS.md`](./REGRESSION_GUARDRAILS.md). Once a workflow is listed there, no code change may be merged or published unless every protected workflow still passes. See that file for the full list of protected workflows, the zero-regression process, and the test coverage map.
