@@ -1888,5 +1888,24 @@ maybe("Organizations CRUD (db integration)", () => {
       await db.delete(userSessions).where(eq(userSessions.userId, memberId));
       await db.delete(users).where(eq(users.id, memberId));
     });
+
+    it("newly created practice appears immediately under includeArchived=true&includeLabPractices=true (the Customer Center query)", async () => {
+      const { access, labId } = await makeOwnerLab();
+      const name = rid("ImmediateVisible");
+      const create = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send(practiceBody(name, labId));
+      expect(create.status).toBe(201);
+      const practiceId = create.body.data.id;
+      createdOrgIds.push(practiceId);
+
+      const list = await request(appMod.default)
+        .get("/api/organizations?includeArchived=true&includeLabPractices=true")
+        .set("Authorization", `Bearer ${access}`);
+      expect(list.status).toBe(200);
+      const orgs: any[] = list.body.data ?? [];
+      expect(orgs.some((o: any) => o.id === practiceId)).toBe(true);
+    });
   });
 });

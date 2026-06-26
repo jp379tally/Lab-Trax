@@ -1041,6 +1041,14 @@ export default function AccountsPage() {
         <AddPracticeDialog
           adminLabOrgIds={adminLabOrgIds}
           onClose={() => setAdding(false)}
+          onNavigateToPractice={(orgId) => {
+            setAdding(false);
+            setExpanded((prev) => {
+              const next = new Set(prev);
+              next.add(orgId);
+              return next;
+            });
+          }}
         />
       )}
 

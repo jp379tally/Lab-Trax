@@ -994,6 +994,14 @@ export function AddPracticeDialog({
       });
     },
     onSuccess: async (org) => {
+      queryClient.setQueriesData<Organization[]>(
+        { queryKey: ["organizations"] },
+        (old) => {
+          if (!Array.isArray(old)) return old;
+          if (old.some((o) => o.id === org.id)) return old;
+          return [...old, org];
+        }
+      );
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
       setCreatedOrgId(org.id);
       await submitDoctors(org.id);
@@ -1036,7 +1044,11 @@ export function AddPracticeDialog({
       }))
       .filter((d) => d.firstName.length > 0);
     if (validDoctors.length === 0) {
-      onClose();
+      if (onNavigateToPractice) {
+        onNavigateToPractice(orgId);
+      } else {
+        onClose();
+      }
       return;
     }
     setCreatingDoctors(true);
@@ -1332,7 +1344,13 @@ export function AddPracticeDialog({
           {doctorResults ? (
             <button
               type="button"
-              onClick={onClose}
+              onClick={() => {
+                if (onNavigateToPractice && createdOrgId) {
+                  onNavigateToPractice(createdOrgId);
+                } else {
+                  onClose();
+                }
+              }}
               className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90"
             >
               Done
