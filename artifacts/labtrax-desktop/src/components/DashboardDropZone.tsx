@@ -733,13 +733,17 @@ export function DashboardDropZone() {
   });
 
   const legacy = legacyQuery.data?.cases ?? [];
-  const labOrgs = useMemo(
-    () => (orgsQuery.data ?? []).filter((o) => o?.type === "lab"),
+  const orgsList = useMemo(
+    () => (Array.isArray(orgsQuery.data) ? orgsQuery.data : []),
     [orgsQuery.data],
   );
+  const labOrgs = useMemo(
+    () => orgsList.filter((o) => o?.type === "lab"),
+    [orgsList],
+  );
   const providerOrgs = useMemo(
-    () => (orgsQuery.data ?? []).filter((o) => o?.type !== "lab"),
-    [orgsQuery.data],
+    () => orgsList.filter((o) => o?.type !== "lab"),
+    [orgsList],
   );
   // Normalized doctor name -> the practice (provider org) the doctor has the
   // most cases under, restricted to practices that are actually selectable in
