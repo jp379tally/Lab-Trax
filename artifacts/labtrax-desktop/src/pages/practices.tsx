@@ -228,6 +228,23 @@ export function buildPracticeDuplicateClusters(
   return clusters;
 }
 
+// Rank a cluster's practices and return the best default "survivor" (the one
+// kept after a merge): the practice with the most populated profile
+// (displayName / billing email / phone / address), falling back to the first.
+// Shared by the single-cluster PracticeMergeDialog and the bulk
+// MergeAllPracticesDialog so both auto-pick the same target.
+export function pickPracticeMergeTarget(
+  practices: Organization[],
+): Organization | null {
+  if (practices.length === 0) return null;
+  const score = (o: Organization) =>
+    (o.displayName ? 1 : 0) +
+    (o.billingEmail ? 1 : 0) +
+    (o.phone ? 1 : 0) +
+    (o.addressLine1 ? 1 : 0);
+  return [...practices].sort((a, b) => score(b) - score(a))[0];
+}
+
 function roleLabel(role: string): string {
   switch (role) {
     case "owner":
@@ -272,6 +289,7 @@ export default function PracticesPage() {
     labOrganizationId: string;
     practices: Organization[];
   } | null>(null);
+  const [mergeAllOpen, setMergeAllOpen] = useState(false);
   const [undoToast, setUndoToast] = useState<{
     auditLogId: string;
     expiresAt: number;
@@ -496,10 +514,21 @@ export default function PracticesPage() {
               Suggested duplicates
               <span className="font-normal text-sky-700 dark:text-sky-400 ml-1.5">
                 {visibleDupClusters.length > 0
-                  ? `(${visibleDupClusters.length} likely-duplicate ${visibleDupClusters.length === 1 ? "cluster" : "clusters"} — open each to review and archive)`
+                  ? `(${visibleDupClusters.length} likely-duplicate ${visibleDupClusters.length === 1 ? "cluster" : "clusters"} — review and merge below)`
                   : "(none — all current suggestions are dismissed)"}
               </span>
             </p>
+            {visibleDupClusters.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setMergeAllOpen(true)}
+                className="ml-auto shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90"
+                title="Review and merge every suggested duplicate cluster in one guided flow"
+              >
+                <GitMerge size={13} />
+                Merge all ({visibleDupClusters.length})
+              </button>
+            )}
           </div>
           {visibleDupClusters.length > 0 && (
           <>
@@ -855,6 +884,17 @@ export default function PracticesPage() {
                 labOrganizationId: mergeDialog.labOrganizationId,
               });
             }
+          }}
+        />
+      )}
+      {mergeAllOpen && (
+        <MergeAllPracticesDialog
+          clusters={visibleDupClusters}
+          onClose={() => setMergeAllOpen(false)}
+          onCompleted={() => {
+            queryClientPage.invalidateQueries({ queryKey: ["organizations"] });
+            queryClientPage.invalidateQueries({ queryKey: ["cases"] });
+            queryClientPage.invalidateQueries({ queryKey: ["invoices"] });
           }}
         />
       )}
@@ -3725,6 +3765,312 @@ function discountMapToStrings(
 }
 
 // ---------------------------------------------------------------------------
+// MergeAllPracticesDialog — guided bulk flow for the "Suggested duplicates"
+// banner. Lists every surfaced duplicate cluster with an auto-picked survivor
+// (changeable), lets the admin exclude any cluster, then merges them one
+// cluster at a time (one /practices/merge call per cluster) on confirm. No
+// merge happens until the admin explicitly clicks "Merge selected".
+// ---------------------------------------------------------------------------
+
+interface MergeAllItemResult {
+  status: "pending" | "running" | "success" | "error";
+  message?: string;
+}
+
+interface MergeAllMergeResponse {
+  casesMoved: number;
+  invoicesMoved: number;
+}
+
+export function MergeAllPracticesDialog({
+  clusters,
+  onClose,
+  onCompleted,
+}: {
+  clusters: PracticeCluster[];
+  onClose: () => void;
+  onCompleted: () => void;
+}) {
+  // Per-cluster plan: which practice survives and whether the cluster is
+  // included in the bulk run. Initialized once from the clusters prop so the
+  // admin's target/include edits survive re-renders while the dialog is open.
+  const [targetByKey, setTargetByKey] = useState<Record<string, string>>(() => {
+    const m: Record<string, string> = {};
+    for (const c of clusters) {
+      m[c.key] = pickPracticeMergeTarget(c.practices)?.id ?? c.practices[0]?.id;
+    }
+    return m;
+  });
+  const [excluded, setExcluded] = useState<Set<string>>(() => new Set());
+  const [phase, setPhase] = useState<"review" | "running" | "done">("review");
+  const [results, setResults] = useState<Record<string, MergeAllItemResult>>(
+    {},
+  );
+  const [totals, setTotals] = useState({
+    clustersMerged: 0,
+    practicesArchived: 0,
+    casesMoved: 0,
+    invoicesMoved: 0,
+    failed: 0,
+  });
+
+  const includedClusters = useMemo(
+    () => clusters.filter((c) => !excluded.has(c.key)),
+    [clusters, excluded],
+  );
+
+  function toggleExcluded(key: string) {
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  async function runMergeAll() {
+    setPhase("running");
+    const running = { ...totals };
+    for (const cluster of includedClusters) {
+      const targetId = targetByKey[cluster.key];
+      const sourceIds = cluster.practices
+        .map((p) => p.id)
+        .filter((id) => id !== targetId);
+      if (!targetId || sourceIds.length === 0) {
+        setResults((r) => ({
+          ...r,
+          [cluster.key]: { status: "error", message: "No source practices." },
+        }));
+        running.failed += 1;
+        setTotals({ ...running });
+        continue;
+      }
+      setResults((r) => ({
+        ...r,
+        [cluster.key]: { status: "running" },
+      }));
+      try {
+        const data = await apiFetch<MergeAllMergeResponse>("/practices/merge", {
+          method: "POST",
+          body: JSON.stringify({
+            labOrganizationId: cluster.labId,
+            targetOrganizationId: targetId,
+            sourceOrganizationIds: sourceIds,
+          }),
+        });
+        running.clustersMerged += 1;
+        running.practicesArchived += sourceIds.length;
+        running.casesMoved += data.casesMoved ?? 0;
+        running.invoicesMoved += data.invoicesMoved ?? 0;
+        setTotals({ ...running });
+        setResults((r) => ({
+          ...r,
+          [cluster.key]: {
+            status: "success",
+            message: `${data.casesMoved} cases, ${data.invoicesMoved} invoices moved`,
+          },
+        }));
+        // Refresh underlying lists as each merge lands so the page reflects
+        // progress even if the admin closes mid-run.
+        onCompleted();
+      } catch (e) {
+        running.failed += 1;
+        setTotals({ ...running });
+        setResults((r) => ({
+          ...r,
+          [cluster.key]: {
+            status: "error",
+            message: e instanceof Error ? e.message : "Merge failed",
+          },
+        }));
+      }
+    }
+    setPhase("done");
+    onCompleted();
+  }
+
+  const includedCount = includedClusters.length;
+  const archiveCount = includedClusters.reduce(
+    (n, c) => n + Math.max(0, c.practices.length - 1),
+    0,
+  );
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+      onClick={phase === "running" ? undefined : onClose}
+    >
+      <div
+        className="bg-card rounded-lg shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <GitMerge size={18} />
+            <h2 className="text-lg font-semibold">
+              {phase === "done" ? "Merge complete" : "Merge all duplicates"}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={phase === "running"}
+            className="text-muted-foreground hover:text-foreground disabled:opacity-40"
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {phase === "review" && (
+            <p className="text-sm text-muted-foreground">
+              Each row below is a likely-duplicate cluster. The{" "}
+              <span className="font-medium text-foreground">kept</span> practice
+              survives; the others are merged into it (their cases, invoices,
+              doctors, members, and pricing overrides move over) and then
+              archived. Review each survivor, uncheck any cluster you want to
+              skip, then merge.
+            </p>
+          )}
+          {phase === "done" && (
+            <div className="rounded-md border border-border bg-secondary/30 p-3 text-sm">
+              <div className="font-semibold mb-1">
+                Merged {totals.clustersMerged} cluster
+                {totals.clustersMerged === 1 ? "" : "s"}
+                {totals.failed > 0 && ` · ${totals.failed} failed`}
+              </div>
+              <div className="text-muted-foreground">
+                {totals.practicesArchived} practice
+                {totals.practicesArchived === 1 ? "" : "s"} archived ·{" "}
+                {totals.casesMoved} case{totals.casesMoved === 1 ? "" : "s"} ·{" "}
+                {totals.invoicesMoved} invoice
+                {totals.invoicesMoved === 1 ? "" : "s"} moved.
+              </div>
+            </div>
+          )}
+
+          <ul className="space-y-2">
+            {clusters.map((cluster) => {
+              const targetId = targetByKey[cluster.key];
+              const isExcluded = excluded.has(cluster.key);
+              const result = results[cluster.key];
+              const sources = cluster.practices.filter(
+                (p) => p.id !== targetId,
+              );
+              return (
+                <li
+                  key={cluster.key}
+                  className={`rounded-md border px-3 py-2.5 ${
+                    isExcluded
+                      ? "border-border bg-secondary/20 opacity-60"
+                      : "border-border bg-card"
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    {phase === "review" && (
+                      <input
+                        type="checkbox"
+                        checked={!isExcluded}
+                        onChange={() => toggleExcluded(cluster.key)}
+                        className="mt-1 h-4 w-4 shrink-0"
+                        aria-label="Include this cluster"
+                      />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Keep
+                        </label>
+                        <span className="text-[11px] text-muted-foreground">
+                          {Math.round(cluster.topScore * 100)}% match
+                        </span>
+                      </div>
+                      <select
+                        value={targetId ?? ""}
+                        disabled={phase !== "review" || isExcluded}
+                        onChange={(e) =>
+                          setTargetByKey((prev) => ({
+                            ...prev,
+                            [cluster.key]: e.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm disabled:opacity-60"
+                      >
+                        {cluster.practices.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.displayName || p.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="mt-1.5 text-xs text-muted-foreground">
+                        Merge in:{" "}
+                        {sources.length > 0
+                          ? sources
+                              .map((p) => p.displayName || p.name)
+                              .join(", ")
+                          : "—"}
+                      </div>
+                      {result && (
+                        <div
+                          className={`mt-1.5 text-xs flex items-center gap-1.5 ${
+                            result.status === "error"
+                              ? "text-destructive"
+                              : result.status === "success"
+                                ? "text-emerald-600 dark:text-emerald-400"
+                                : "text-muted-foreground"
+                          }`}
+                        >
+                          {result.status === "running" && (
+                            <Loader2 size={12} className="animate-spin" />
+                          )}
+                          {result.status === "success" && "✓ "}
+                          {result.status === "error" && "✕ "}
+                          {result.message ??
+                            (result.status === "running" ? "Merging…" : "")}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={phase === "running"}
+            className="h-9 px-3 rounded-md text-sm font-medium border border-border hover:bg-secondary disabled:opacity-60"
+          >
+            {phase === "done" ? "Close" : "Cancel"}
+          </button>
+          {phase !== "done" && (
+            <button
+              type="button"
+              disabled={phase === "running" || includedCount === 0}
+              onClick={runMergeAll}
+              className="h-9 px-4 rounded-md text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center gap-1.5 disabled:opacity-60"
+            >
+              {phase === "running" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <GitMerge size={14} />
+              )}
+              {phase === "running"
+                ? "Merging…"
+                : `Merge ${includedCount} cluster${includedCount === 1 ? "" : "s"} (${archiveCount} archived)`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // PracticeMergeDialog — mirrors the doctor MergeDialog flow for practices.
 // Calls /practices/merge/preview, /practices/merge, and (from page-level
 // undoToast) /practices/merge/:auditLogId/undo. Same-lab only.
@@ -3769,18 +4115,10 @@ export function PracticeMergeDialog({
   // Pick the initial target as the practice with the most populated profile
   // (members, address, etc.) — falling back to the first one. The user can
   // change it.
-  const initialTarget = useMemo(() => {
-    if (initialPractices.length === 0) return null;
-    const ranked = [...initialPractices].sort((a, b) => {
-      const score = (o: Organization) =>
-        (o.displayName ? 1 : 0) +
-        (o.billingEmail ? 1 : 0) +
-        (o.phone ? 1 : 0) +
-        (o.addressLine1 ? 1 : 0);
-      return score(b) - score(a);
-    });
-    return ranked[0];
-  }, [initialPractices]);
+  const initialTarget = useMemo(
+    () => pickPracticeMergeTarget(initialPractices),
+    [initialPractices],
+  );
 
   const [targetId, setTargetId] = useState<string>(initialTarget?.id ?? "");
   const [sourceIds, setSourceIds] = useState<string[]>(
