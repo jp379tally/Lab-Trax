@@ -1021,6 +1021,7 @@ export default function AiAssistantScreen() {
   // Auto-listen after Maynard finishes speaking (voice mode only, idle mic only).
   useEffect(() => {
     if (prevIsSpeakingRef.current && !isSpeaking && voiceMode && !sending && micState === "idle") {
+      recordingIntentRef.current = "conversation";
       startRecording();
     }
     prevIsSpeakingRef.current = isSpeaking;
