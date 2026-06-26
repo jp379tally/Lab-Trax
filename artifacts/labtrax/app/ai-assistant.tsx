@@ -22,7 +22,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getToolCallLabel } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
-import { resilientFetch, getApiUrl, refreshAndGetAccessToken } from "@/lib/query-client";
+import { resilientFetch, getApiUrl, refreshAndGetAccessToken, getCsrfToken } from "@/lib/query-client";
 import {
   loadChatSessions,
   saveChatSession,
@@ -213,6 +213,10 @@ async function uploadAudioForTranscript(fileUri: string, mimeType: string): Prom
 
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (Platform.OS === "web") {
+    const csrf = getCsrfToken();
+    if (csrf) headers["x-csrf-token"] = csrf;
+  }
 
   const formData = new FormData();
   if (Platform.OS === "web") {
@@ -830,6 +834,7 @@ export default function AiAssistantScreen() {
   const [micErrorKind, setMicErrorKind] = useState<"permission" | "other">("other");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const recordingRef = useRef<Audio.Recording | null>(null);
+  const recordingIntentRef = useRef<"dictation" | "conversation">("dictation");
   const soundRef = useRef<Audio.Sound | null>(null);
   const webAudioRef = useRef<HTMLAudioElement | null>(null);
   // Ref so stopRecording (defined before sendMessage) can call it.
@@ -1155,11 +1160,17 @@ export default function AiAssistantScreen() {
           const blob = new Blob(chunks, { type: "audio/webm" });
           const uri = URL.createObjectURL(blob);
           setMicState("processing");
+          const intent = recordingIntentRef.current;
+          recordingIntentRef.current = "dictation";
           try {
             const transcript = await uploadAudioForTranscript(uri, "audio/webm");
             URL.revokeObjectURL(uri);
             if (transcript.trim()) {
-              setInput(transcript.trim());
+              if (intent === "conversation") {
+                sendMessageRef.current?.(transcript.trim());
+              } else {
+                setInput(transcript.trim());
+              }
               setMicState("idle");
             } else {
               setMicState("idle");
@@ -1201,10 +1212,16 @@ export default function AiAssistantScreen() {
         const uri = (rec as Audio.Recording).getURI();
         if (!uri) { setMicState("idle"); return; }
         setMicState("processing");
+        const intent = recordingIntentRef.current;
+        recordingIntentRef.current = "dictation";
         try {
           const transcript = await uploadAudioForTranscript(uri, "audio/m4a");
           if (transcript.trim()) {
-            setInput(transcript.trim());
+            if (intent === "conversation") {
+              sendMessageRef.current?.(transcript.trim());
+            } else {
+              setInput(transcript.trim());
+            }
           }
         } catch (err: any) {
           setMicState("error");
@@ -1799,6 +1816,7 @@ export default function AiAssistantScreen() {
                 } else if (micState === "processing") {
                   // no-op
                 } else {
+                  recordingIntentRef.current = "dictation";
                   if (isSpeaking) stopSpeaking();
                   void startRecording();
                 }
@@ -1806,10 +1824,9 @@ export default function AiAssistantScreen() {
               disabled={sending || micState === "processing"}
               style={[
                 s.micBtn,
-                micState === "listening" && { backgroundColor: "#fed7d7", borderColor: "#fc8181" },
+                micState === "listening" && recordingIntentRef.current === "dictation" && { backgroundColor: "#fed7d7", borderColor: "#fc8181" },
                 micState === "processing" && { backgroundColor: colors.surfaceSecondary, borderColor: colors.border },
                 micState === "error" && { backgroundColor: "#fff5f5", borderColor: "#fed7d7" },
-                // Dictation mic no longer reflects TTS state; voice mode auto-listen handles that separately
               ]}
               accessibilityLabel={
                 micState === "listening"
@@ -1821,7 +1838,7 @@ export default function AiAssistantScreen() {
                   : "Dictate message"
               }
             >
-              {micState === "listening" ? (
+              {micState === "listening" && recordingIntentRef.current === "dictation" ? (
                 <VoiceWaveformNative color="#c53030" />
               ) : micState === "processing" ? (
                 <ActivityIndicator size="small" color={colors.textSecondary} />
@@ -1831,24 +1848,37 @@ export default function AiAssistantScreen() {
                 <Ionicons name="mic-outline" size={18} color={colors.textSecondary} />
               )}
             </Pressable>
-            {/* Voice conversation toggle */}
-            <Pressable
-              onPress={() => {
-                if (voiceMode) { stopSpeaking(); setVoiceMode(false); }
-                else { setVoiceMode(true); }
-              }}
-              style={[
-                s.micBtn,
-                voiceMode && { backgroundColor: colors.tint + "1A", borderColor: colors.tint + "33" },
-              ]}
-              accessibilityLabel={voiceMode ? "Exit voice mode" : "Start voice conversation"}
-            >
-              <Ionicons
-                name={voiceMode ? "volume-high" : "headset-outline"}
-                size={18}
-                color={voiceMode ? colors.tint : colors.textSecondary}
-              />
-            </Pressable>
+            {/* Voice conversation push-to-talk */}
+            {(() => {
+              const convListening = micState === "listening" && recordingIntentRef.current === "conversation";
+              return (
+                <Pressable
+                  onPress={() => {
+                    if (micState === "listening") {
+                      void stopRecording();
+                    } else if (micState !== "processing") {
+                      recordingIntentRef.current = "conversation";
+                      if (!voiceMode) setVoiceMode(true);
+                      if (isSpeaking) stopSpeaking();
+                      void startRecording();
+                    }
+                  }}
+                  disabled={sending || micState === "processing"}
+                  style={[
+                    s.micBtn,
+                    convListening && { backgroundColor: colors.tint + "1A", borderColor: colors.tint + "66" },
+                    !convListening && voiceMode && { backgroundColor: colors.tint + "0D", borderColor: colors.tint + "33" },
+                  ]}
+                  accessibilityLabel="Talk with Maynard"
+                >
+                  <Ionicons
+                    name={convListening ? "radio-outline" : "headset-outline"}
+                    size={18}
+                    color={convListening || voiceMode ? colors.tint : colors.textSecondary}
+                  />
+                </Pressable>
+              );
+            })()}
             <Pressable
               style={[s.sendBtn, { backgroundColor: colors.tint, opacity: (!input.trim() || sending) ? 0.45 : 1 }]}
               onPress={handleSend}

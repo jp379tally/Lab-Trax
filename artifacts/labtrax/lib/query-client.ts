@@ -343,7 +343,7 @@ async function refreshAccessToken(): Promise<string | null> {
   return _refreshPromise;
 }
 
-function getCsrfToken(): string | null {
+export function getCsrfToken(): string | null {
   if (Platform.OS !== "web" || typeof document === "undefined") return null;
   const match = document.cookie.match(/(?:^|; )lt_csrf=([^;]*)/);
   return match ? decodeURIComponent(match[1]) : null;

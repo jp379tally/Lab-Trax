@@ -9,7 +9,7 @@
  */
 
 import { type IRouter } from "express";
-import OpenAI from "openai";
+import { createOpenAIClient } from "../lib/ai-openai-client";
 import { requireAuth } from "../middlewares/auth";
 import { z } from "zod/v4";
 
@@ -20,19 +20,18 @@ const TtsBodySchema = z.object({
 
 export function registerAiTtsRoutes(router: IRouter): void {
   router.post("/ai-tts", requireAuth, async (req, res) => {
-    const apiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
-    if (!apiKey) {
-      res.status(503).json({ ok: false, error: "AI not configured" });
-      return;
-    }
-
     const parsed = TtsBodySchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ ok: false, error: "Invalid request" });
       return;
     }
 
-    const openai = new OpenAI({ apiKey });
+    const openai = createOpenAIClient();
+    if (!openai) {
+      res.status(503).json({ ok: false, error: "AI not configured" });
+      return;
+    }
+
     try {
       const speech = await openai.audio.speech.create({
         model: "tts-1",
