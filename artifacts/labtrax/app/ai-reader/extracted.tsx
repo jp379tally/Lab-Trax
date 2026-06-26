@@ -25,6 +25,8 @@ import {
   type CreateCaseInput,
   type CreateCaseInputRestorationsItem,
   type LabProvider,
+  type PreviewDraftInvoiceInput,
+  type PreviewDraftInvoiceResultData,
 } from "@workspace/api-client-react";
 import { resilientFetch } from "@/lib/query-client";
 import { uploadCaseAttachment } from "@/lib/uploadCaseAttachment";
@@ -205,6 +207,143 @@ export default function AiReaderExtractedScreen() {
   const [caseNumberEdited, setCaseNumberEdited] = useState(false);
 
   const createCase = useCreateCase();
+
+  // ── Draft-invoice preview + inline price edits ────────────────────────────
+  // Mirrors the desktop drop-zone: shows the line items + total that WOULD be
+  // generated when the case is created (POST /invoices/preview-draft), and lets
+  // the user override each line's unit price or mark it no-charge before
+  // creating. Overrides are keyed by the line's restoration indices (joined) so
+  // they survive re-renders and map 1:1 back to the source restorations the
+  // server collapsed into that line.
+  type LinePriceOverride = { unitPrice: string; noCharge: boolean };
+  const [invoicePreview, setInvoicePreview] =
+    useState<PreviewDraftInvoiceResultData | null>(null);
+  const [invoicePreviewLoading, setInvoicePreviewLoading] = useState(false);
+  const [invoicePreviewError, setInvoicePreviewError] = useState(false);
+  const [priceOverrides, setPriceOverrides] = useState<
+    Record<string, LinePriceOverride>
+  >({});
+
+  // The restorations array sent to BOTH the preview endpoint and POST /cases.
+  // Building it once here keeps the positional index mapping that the override
+  // logic relies on identical between preview and create.
+  const previewRestorations = useMemo<CreateCaseInputRestorationsItem[]>(
+    () =>
+      toothIndicesToRestorations(toothIndices, caseType, material, shade)
+        .filter((r) => r.toothNumber && r.restorationType)
+        .map((r) => ({
+          toothNumber: r.toothNumber,
+          restorationType: r.restorationType,
+          ...(r.material ? { material: r.material } : {}),
+          ...(r.shade ? { shade: r.shade } : {}),
+        })),
+    [toothIndices, caseType, material, shade],
+  );
+
+  // The grouping (and therefore the line→index mapping) only changes when the
+  // teeth, case type, material, or shade change. Reset overrides then so a
+  // stale edit can't reattach to a different line.
+  useEffect(() => {
+    setPriceOverrides({});
+  }, [toothIndices, caseType, material, shade]);
+
+  function setLineOverride(key: string, patch: Partial<LinePriceOverride>) {
+    setPriceOverrides((prev) => ({
+      ...prev,
+      [key]: {
+        unitPrice: prev[key]?.unitPrice ?? "",
+        noCharge: prev[key]?.noCharge ?? false,
+        ...patch,
+      },
+    }));
+  }
+
+  // Apply the inline overrides to a freshly-built restorations array (indices
+  // align: both preview and create build restorations from the same teeth list
+  // in the same order). A no-charge edit sends unitPrice 0 with priceOverridden
+  // so the server treats it as a deliberate $0 line instead of auto-pricing it.
+  function applyPriceOverrides(
+    restos: CreateCaseInputRestorationsItem[],
+  ): CreateCaseInputRestorationsItem[] {
+    if (Object.keys(priceOverrides).length === 0) return restos;
+    const byIndex: Record<number, LinePriceOverride> = {};
+    for (const li of invoicePreview?.lineItems ?? []) {
+      const indices = li.restorationIndices ?? [];
+      if (indices.length === 0) continue;
+      const ov = priceOverrides[indices.join("-")];
+      if (!ov) continue;
+      for (const idx of indices) byIndex[idx] = ov;
+    }
+    return restos.map((resto, i) => {
+      const ov = byIndex[i];
+      if (!ov) return resto;
+      if (ov.noCharge) return { ...resto, unitPrice: 0, priceOverridden: true };
+      const num = Number(ov.unitPrice);
+      if (ov.unitPrice.trim() === "" || !Number.isFinite(num) || num < 0) {
+        return resto;
+      }
+      return { ...resto, unitPrice: num, priceOverridden: true };
+    });
+  }
+
+  // Debounced draft-invoice preview. Rebuilds from the editable fields exactly
+  // as the create flow does, then POSTs to the non-persisting preview endpoint.
+  // Cancels in-flight requests when inputs change.
+  const previewRestKey = useMemo(
+    () => JSON.stringify(previewRestorations),
+    [previewRestorations],
+  );
+  const trimmedDoctorName = doctorName.trim();
+  useEffect(() => {
+    if (!selectedLabId || previewRestorations.length === 0) {
+      setInvoicePreview(null);
+      setInvoicePreviewError(false);
+      setInvoicePreviewLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setInvoicePreviewLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const body: PreviewDraftInvoiceInput = {
+          labOrganizationId: selectedLabId,
+          ...(providerOrgId ? { providerOrganizationId: providerOrgId } : {}),
+          ...(trimmedDoctorName ? { doctorName: trimmedDoctorName } : {}),
+          restorations: previewRestorations.map((r) => ({
+            ...(r.toothNumber ? { toothNumber: r.toothNumber } : {}),
+            restorationType: r.restorationType,
+            ...(r.material ? { material: r.material } : {}),
+            ...(r.shade ? { shade: r.shade } : {}),
+            quantity: 1,
+          })),
+        };
+        const res = await resilientFetch("/api/invoices/preview-draft", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(`Preview failed (${res.status}).`);
+        const json = (await res.json()) as {
+          data?: PreviewDraftInvoiceResultData;
+        };
+        if (!cancelled) {
+          setInvoicePreview(json?.data ?? null);
+          setInvoicePreviewError(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setInvoicePreview(null);
+          setInvoicePreviewError(true);
+        }
+      } finally {
+        if (!cancelled) setInvoicePreviewLoading(false);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [selectedLabId, providerOrgId, trimmedDoctorName, previewRestKey, previewRestorations]);
 
   // Auto-fetch case number
   const nextNumberQuery = useQuery({
@@ -578,14 +717,10 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
     setUploadProgress(0.05);
 
     const restorations = toothIndicesToRestorations(toothIndices, caseType, material, shade);
-    const cleanRests: CreateCaseInputRestorationsItem[] = restorations
-      .filter((r) => r.toothNumber && r.restorationType)
-      .map((r) => ({
-        toothNumber: r.toothNumber,
-        restorationType: r.restorationType,
-        ...(r.material ? { material: r.material } : {}),
-        ...(r.shade ? { shade: r.shade } : {}),
-      }));
+    // Reuse the same restorations array driving the invoice preview and apply
+    // any inline price edits / no-charge toggles before submitting.
+    const cleanRests: CreateCaseInputRestorationsItem[] =
+      applyPriceOverrides(previewRestorations);
 
     const labName = labs.find((m) => m.organizationId === selectedLabId)?.organization?.name ?? null;
 
@@ -1033,6 +1168,131 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
             textAlignVertical="top"
           />
         </Section>
+
+        {/* Invoice preview with editable line prices */}
+        {(invoicePreviewLoading ||
+          invoicePreviewError ||
+          (invoicePreview?.lineItems?.length ?? 0) > 0) && (
+          <View style={styles.invoiceCard}>
+            <View style={styles.invoiceHeaderRow}>
+              <Ionicons name="document-text-outline" size={14} color={colors.textSecondary} />
+              <Text style={styles.invoiceHeaderText}>Invoice preview</Text>
+              <Text style={styles.invoiceHeaderHint}>(estimated — created with the case)</Text>
+            </View>
+            {invoicePreviewError ? (
+              <Text style={styles.invoiceMuted}>
+                Couldn't load the invoice preview. The draft invoice will still be
+                generated when you create the case.
+              </Text>
+            ) : invoicePreviewLoading && !invoicePreview ? (
+              <Text style={styles.invoiceMuted}>Calculating…</Text>
+            ) : (invoicePreview?.lineItems?.length ?? 0) === 0 ? (
+              <Text style={styles.invoiceMuted}>No line items yet.</Text>
+            ) : (
+              <View style={[invoicePreviewLoading && { opacity: 0.6 }]}>
+                {(() => {
+                  let runningTotal = 0;
+                  const rows = (invoicePreview?.lineItems ?? []).map((li, idx) => {
+                    const qty = li.quantity ?? 1;
+                    const indices = li.restorationIndices ?? [];
+                    const key = indices.length > 0 ? indices.join("-") : `li-${idx}`;
+                    const override = priceOverrides[key];
+                    const isNoCharge = override?.noCharge === true;
+                    const hasUserPrice =
+                      !!override &&
+                      !override.noCharge &&
+                      override.unitPrice.trim() !== "" &&
+                      Number.isFinite(Number(override.unitPrice));
+                    const serverUnit = li.unitPrice ?? "0.00";
+                    const inputValue = isNoCharge
+                      ? ""
+                      : override
+                        ? override.unitPrice
+                        : li.priced === false
+                          ? ""
+                          : serverUnit;
+                    const effUnit = isNoCharge
+                      ? 0
+                      : hasUserPrice
+                        ? Number(override!.unitPrice)
+                        : Number(serverUnit) || 0;
+                    const showNotPriced =
+                      !isNoCharge && !hasUserPrice && li.priced === false;
+                    const lineTotal = effUnit * qty;
+                    if (!showNotPriced) runningTotal += lineTotal;
+                    return (
+                      <View key={key} style={styles.invoiceLineRow}>
+                        <View style={styles.invoiceLineDescWrap}>
+                          <Text style={styles.invoiceLineDesc} numberOfLines={2}>
+                            {li.toothLabel ? (
+                              <Text style={styles.invoiceMuted}>{li.toothLabel} </Text>
+                            ) : null}
+                            {li.description}
+                          </Text>
+                          <Text style={styles.invoiceQty}>{qty} ×</Text>
+                        </View>
+                        <View style={styles.invoiceLineControls}>
+                          <View style={styles.invoicePriceInputWrap}>
+                            <Text style={styles.invoicePriceDollar}>$</Text>
+                            <TextInput
+                              style={[
+                                styles.invoicePriceInput,
+                                isNoCharge && styles.invoicePriceInputDisabled,
+                              ]}
+                              editable={!isNoCharge}
+                              value={inputValue}
+                              placeholder="0.00"
+                              placeholderTextColor={colors.textTertiary}
+                              keyboardType="decimal-pad"
+                              onChangeText={(t) =>
+                                setLineOverride(key, { unitPrice: t, noCharge: false })
+                              }
+                            />
+                          </View>
+                          <Pressable
+                            onPress={() => setLineOverride(key, { noCharge: !isNoCharge })}
+                            style={[
+                              styles.noChargeBtn,
+                              isNoCharge && styles.noChargeBtnActive,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.noChargeBtnText,
+                                isNoCharge && styles.noChargeBtnTextActive,
+                              ]}
+                            >
+                              No charge
+                            </Text>
+                          </Pressable>
+                          <Text
+                            style={[
+                              styles.invoiceLineTotal,
+                              showNotPriced && styles.invoiceLineTotalUnpriced,
+                            ]}
+                          >
+                            {showNotPriced ? "not priced" : `$${lineTotal.toFixed(2)}`}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  });
+                  return (
+                    <>
+                      {rows}
+                      <View style={styles.invoiceTotalRow}>
+                        <Text style={styles.invoiceTotalLabel}>Total</Text>
+                        <Text style={styles.invoiceTotalValue}>
+                          ${runningTotal.toFixed(2)}
+                        </Text>
+                      </View>
+                    </>
+                  );
+                })()}
+              </View>
+            )}
+          </View>
+        )}
       </ScrollView>
 
       {/* Bottom bar */}
@@ -1611,6 +1871,71 @@ function makeStyles(c: ThemeColors) {
     },
     createBtnDisabled: { opacity: 0.55 },
     createBtnText: { ...Typography.bodySemibold, color: "#fff" },
+
+    invoiceCard: {
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: Radius.md,
+      backgroundColor: c.surface,
+      padding: Spacing.md,
+      gap: Spacing.sm,
+    },
+    invoiceHeaderRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: Spacing.xs },
+    invoiceHeaderText: { ...Typography.captionSemibold, color: c.text },
+    invoiceHeaderHint: { ...Typography.caption, color: c.textSecondary },
+    invoiceMuted: { ...Typography.caption, color: c.textSecondary },
+    invoiceLineRow: {
+      paddingVertical: Spacing.xs,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+      gap: Spacing.xs,
+    },
+    invoiceLineDescWrap: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: Spacing.sm },
+    invoiceLineDesc: { ...Typography.caption, color: c.text, flex: 1 },
+    invoiceQty: { ...Typography.caption, color: c.textSecondary },
+    invoiceLineControls: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+    invoicePriceInputWrap: { flexDirection: "row", alignItems: "center", flex: 1 },
+    invoicePriceDollar: { ...Typography.caption, color: c.textSecondary, marginRight: 2 },
+    invoicePriceInput: {
+      ...Typography.body,
+      color: c.text,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: Platform.OS === "ios" ? 6 : 2,
+      backgroundColor: c.backgroundSolid,
+      flex: 1,
+      textAlign: "right",
+    },
+    invoicePriceInputDisabled: { opacity: 0.4 },
+    noChargeBtn: {
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: Spacing.xs,
+      borderRadius: Radius.sm,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface,
+    },
+    noChargeBtnActive: {
+      backgroundColor: c.warningStrong + "22",
+      borderColor: c.warningStrong,
+    },
+    noChargeBtnText: { ...Typography.caption, color: c.textSecondary },
+    noChargeBtnTextActive: { color: c.warningStrong },
+    invoiceLineTotal: { ...Typography.caption, color: c.text, minWidth: 64, textAlign: "right" },
+    invoiceLineTotalUnpriced: { color: c.warningStrong },
+    invoiceTotalRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      borderTopWidth: 1,
+      borderTopColor: c.border,
+      paddingTop: Spacing.sm,
+      marginTop: Spacing.xs,
+    },
+    invoiceTotalLabel: { ...Typography.captionSemibold, color: c.text },
+    invoiceTotalValue: { ...Typography.bodySemibold, color: c.text },
 
     modalOverlay: {
       flex: 1,
