@@ -867,6 +867,8 @@ export default function AiAssistantScreen() {
   // ─── Voice state ───────────────────────────────────────────────────────────
   type MicState = "idle" | "listening" | "processing" | "error";
   const [voiceMode, setVoiceMode] = useState(false);
+  const voiceModeRef = useRef(false);
+  voiceModeRef.current = voiceMode;
   const [micState, setMicState] = useState<MicState>("idle");
   const [micErrorMsg, setMicErrorMsg] = useState<string | null>(null);
   const [micErrorKind, setMicErrorKind] = useState<"permission" | "other">("other");
@@ -1444,7 +1446,7 @@ export default function AiAssistantScreen() {
         setMessages((prev) => prev.map((m) => m.id === streamingId ? finalMsg : m));
         scrollToBottom();
 
-        if (voiceMode && fullContent && lastSendModeRef.current === "conversation") {
+        if (voiceModeRef.current && fullContent && lastSendModeRef.current === "conversation") {
           void speakText(fullContent);
         }
       } catch {
@@ -1462,7 +1464,7 @@ export default function AiAssistantScreen() {
         setStreamingMsgId(null);
       }
     },
-    [buildHistory, scrollToBottom, voiceMode, speakText],
+    [buildHistory, scrollToBottom, speakText],
   );
 
   const confirmAction = useCallback(async (actionId: string) => {
