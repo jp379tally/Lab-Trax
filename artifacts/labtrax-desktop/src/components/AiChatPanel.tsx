@@ -922,6 +922,10 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     }
   }, [showCasePicker]);
 
+  // Keep voiceModeRef in sync with the voiceMode state so async callbacks
+  // (the streaming TTS gate and the auto-listen effect below) always read the
+  // current value without capturing a stale closure. Mirror of the same
+  // pattern applied to the mobile AiChatPanel voice-sync fix.
   useEffect(() => {
     voiceModeRef.current = voiceMode;
   }, [voiceMode]);
@@ -934,7 +938,10 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     writeVoicePrefs(voiceMode, ttsVoice);
   }, [voiceMode, ttsVoice]);
 
-  // Auto-listen after Maynard finishes speaking (voice mode only, idle only)
+  // Auto-listen after Maynard finishes speaking (voice mode only, idle only).
+  // Reads voiceModeRef.current (not the voiceMode state) so it never captures
+  // a stale closure across the async speaking boundary — same pattern as the
+  // mobile AiChatPanel voice-sync fix.
   useEffect(() => {
     if (prevIsSpeakingRef.current && !isSpeaking && voiceModeRef.current && !sending && micState === "idle") {
       startListening();
@@ -1385,6 +1392,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       const finalMessages = [...currentMessages, finalMsg];
       setMessages((prev) => prev.map((m) => m.id === streamingId ? finalMsg : m));
       persistSession(finalMessages, sessionId, snapshotPinnedCases);
+      // Read voiceModeRef.current (not the voiceMode state) at the TTS gate so
+      // the async streaming callback never fires with a stale closure value —
+      // same pattern as the mobile AiChatPanel voice-sync fix.
       if (voiceModeRef.current && fullContent) {
         void speakText(fullContent);
       }
