@@ -114,6 +114,65 @@ function _bigramSimilarity(a: string, b: string): number {
   return union === 0 ? 0 : inter / union;
 }
 
+// ---------------------------------------------------------------------------
+// Practice-name normalization for similarity matching.
+//
+// iTero (and other brand-aggregator) imports produce practice names with a
+// leading brand/lab prefix and a trailing bracketed code, e.g.
+//   "Heartland Dental - Family Dentistry at SouthWood [565]"
+// while the same practice created manually is just
+//   "Family Dentistry at SouthWood".
+// Stripping the brand prefix (everything up to and including the first " - ")
+// and any trailing bracketed code(s) before bigram scoring lets the importer
+// link to the existing practice instead of spawning a duplicate. Kept in sync
+// with `normalizePracticeNameForCompare` in the desktop Practices page.
+// ---------------------------------------------------------------------------
+export function _normalizePracticeForSim(name: string): string {
+  let s = (name ?? "").toLowerCase();
+  // Strip trailing bracketed import code(s) like "[565]" or "[a12]" (repeat for
+  // multiples). Conservative: only strip codes that are a single
+  // alphanumeric/dash token containing at least one digit, so descriptive
+  // qualifiers like "[East]" / "[West]" (which distinguish real practices) are
+  // preserved and do not collapse distinct names.
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(/\s*\[[a-z0-9-]*\d[a-z0-9-]*\]\s*$/, "");
+  } while (s !== prev);
+  // Strip a leading brand/lab prefix terminated by " - ".
+  const sepIdx = s.indexOf(" - ");
+  if (sepIdx !== -1) {
+    const after = s.slice(sepIdx + 3).trim();
+    if (after) s = after;
+  }
+  return s
+    .replace(
+      /\b(dental|dentistry|the|of|llc|llp|pllc|pc|pa|inc|ltd|co|practice|office|associates)\b/g,
+      "",
+    )
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+export function _practiceBigramSimilarity(a: string, b: string): number {
+  const an = _normalizePracticeForSim(a);
+  const bn = _normalizePracticeForSim(b);
+  if (!an || !bn) return 0;
+  if (an === bn) return 1;
+  const bigrams = (s: string): Set<string> => {
+    const set = new Set<string>();
+    const p = ` ${s} `;
+    for (let i = 0; i < p.length - 1; i++) set.add(p.slice(i, i + 2));
+    return set;
+  };
+  const A = bigrams(an);
+  const B = bigrams(bn);
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  const union = A.size + B.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
 /**
  * Given a lab org ID and a practice name string extracted by AI from an Rx,
  * returns the ID of the best-matching provider organization in the lab whose
@@ -142,7 +201,7 @@ async function _findProviderOrgByPracticeName(
   let bestSim = 0;
   let bestId: string | null = null;
   for (const org of providerOrgs) {
-    const sim = _bigramSimilarity(trimmed, org.name);
+    const sim = _practiceBigramSimilarity(trimmed, org.name);
     if (sim >= 0.5 && sim > bestSim) {
       bestSim = sim;
       bestId = org.id;

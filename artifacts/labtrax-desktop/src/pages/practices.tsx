@@ -69,9 +69,33 @@ export function resolvePracticeLabDupThreshold(
   return Math.min(0.95, Math.max(0.5, n));
 }
 
-function normalizePracticeNameForCompare(name: string): string {
-  return name
-    .toLowerCase()
+// Normalize a practice name before similarity scoring. In addition to the
+// common-word stripping, this removes import-specific noise so brand-prefixed /
+// code-suffixed duplicates (e.g. an iTero import named
+// "Heartland Dental - Family Dentistry at SouthWood [565]") cluster with their
+// manually-created twin ("Family Dentistry at SouthWood"):
+//   - a leading brand/lab prefix terminated by " - "
+//   - trailing bracketed code(s) like "[565]"
+// Kept in sync with `_normalizePracticeForSim` in the API server cases route.
+export function normalizePracticeNameForCompare(name: string): string {
+  let s = (name ?? "").toLowerCase();
+  // Strip trailing bracketed import code(s) like "[565]" or "[a12]" (repeat for
+  // multiples). Conservative: only strip codes that are a single
+  // alphanumeric/dash token containing at least one digit, so descriptive
+  // qualifiers like "[East]" / "[West]" (which distinguish real practices) are
+  // preserved and do not collapse distinct names.
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(/\s*\[[a-z0-9-]*\d[a-z0-9-]*\]\s*$/, "");
+  } while (s !== prev);
+  // Strip a leading brand/lab prefix terminated by " - ".
+  const sepIdx = s.indexOf(" - ");
+  if (sepIdx !== -1) {
+    const after = s.slice(sepIdx + 3).trim();
+    if (after) s = after;
+  }
+  return s
     .replace(/\b(dental|dentistry|the|of|llc|llp|pllc|pc|pa|inc|ltd|co|practice|office|associates)\b/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
