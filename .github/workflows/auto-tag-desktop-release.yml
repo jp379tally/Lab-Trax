@@ -21,22 +21,15 @@ name: Auto-tag Desktop release on merge to main
 #    here for that side-effect.
 
 on:
-  push:
-    branches: [main]
-    # Skip merges that only touch docs, the mobile app, the mockup sandbox,
-    # or other artifacts unrelated to the desktop build. Anything that
-    # affects desktop bundles (lib/db schemas, api-server contracts the
-    # desktop talks to, the desktop source itself, electron config, this
-    # workflow, the release workflow) falls through and triggers a release.
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "artifacts/labtrax/**"
-      - "artifacts/mockup-sandbox/**"
-      - "attached_assets/**"
-      - ".github/workflows/eas-build.yml"
-      - ".local/**"
-      - ".agents/**"
+  # Manual trigger only. Auto-tagging on every push was disabled because:
+  #  1. The bot commits it pushed back to GitHub main diverged from Replit's
+  #     history (Replit is the source of truth), requiring a force-push to
+  #     resync after every activation.
+  #  2. release.yml fired automatically and failed loudly (no signing secrets
+  #     configured), flooding the inbox with GitHub Actions failure emails.
+  # To cut a new desktop release: run this workflow manually from the
+  # GitHub Actions tab, OR push a `v*` tag directly.
+  workflow_dispatch:
 
 permissions:
   contents: write

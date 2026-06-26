@@ -181,6 +181,13 @@ export interface RunOptions {
   onAuth: () => { username: string; password: string };
   /** Injectable clock for tests; defaults to {@link Date.now}. */
   now?: () => number;
+  /**
+   * When true, skip the diverged-history guard and force-push all local
+   * commits. Use only when Replit is the authoritative source of truth and
+   * the remote has commits (e.g. from CI workflows) that are NOT in local
+   * history. Equivalent to `git push --force`.
+   */
+  force?: boolean;
 }
 
 const TEMP_REF = "refs/heads/__github_backup_tmp";
@@ -248,13 +255,18 @@ export async function run(opts: RunOptions): Promise<{ pushedChunks: number }> {
   );
 
   if (remoteTip && !reachedRemote) {
-    // Remote tip is not an ancestor of local HEAD. This means histories have
-    // diverged; refuse rather than force-push and risk clobbering the mirror.
-    console.error(
-      "[github-backup] Remote tip is not an ancestor of local HEAD " +
-        "(histories diverged). Refusing to force-push. Resolve manually.",
+    if (!opts.force) {
+      // Remote tip is not an ancestor of local HEAD. This means histories have
+      // diverged; refuse rather than force-push and risk clobbering the mirror.
+      console.error(
+        "[github-backup] Remote tip is not an ancestor of local HEAD " +
+          "(histories diverged). Refusing to force-push. Resolve manually.",
+      );
+      throw new BackupExitError(2, "histories diverged");
+    }
+    log(
+      "Histories diverged but force=true — overwriting remote with local commits.",
     );
-    throw new BackupExitError(2, "histories diverged");
   }
 
   if (ordered.length === 0) {
@@ -293,7 +305,7 @@ export async function run(opts: RunOptions): Promise<{ pushedChunks: number }> {
       url: remoteUrl,
       ref: TEMP_REF,
       remoteRef,
-      force: false,
+      force: opts.force ?? false,
       onAuth,
     });
 
@@ -345,8 +357,15 @@ async function main() {
     Number(process.env.GITHUB_BACKUP_CHUNK_SIZE) || 25,
   );
   const timeBudgetMs = Number(process.env.GITHUB_BACKUP_TIME_BUDGET_MS) || 0;
+  const force = process.env.GITHUB_BACKUP_FORCE === "true";
   const dir = findRepoRoot(process.cwd());
   const onAuth = () => ({ username: "x-access-token", password: TOKEN });
+
+  if (force) {
+    console.log(
+      "[github-backup] GITHUB_BACKUP_FORCE=true — will overwrite remote if histories have diverged.",
+    );
+  }
 
   await run({
     git: git as unknown as GitLike,
@@ -357,6 +376,7 @@ async function main() {
     branch,
     chunkSize,
     timeBudgetMs,
+    force,
     onAuth,
   });
 }
