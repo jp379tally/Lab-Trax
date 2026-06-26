@@ -254,6 +254,44 @@ async function uploadAudioForTranscript(fileUri: string, mimeType: string): Prom
  * Animated 4-bar waveform for React Native. Each bar pulses its scaleY
  * with a staggered delay so the bars appear to ripple.
  */
+function ConvListeningRing({ color }: { color: string }) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const opacity = useRef(new Animated.Value(0.75)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.parallel([
+        Animated.sequence([
+          Animated.timing(scale, { toValue: 1.65, duration: 900, useNativeDriver: true }),
+          Animated.timing(scale, { toValue: 1, duration: 0, useNativeDriver: true }),
+        ]),
+        Animated.sequence([
+          Animated.timing(opacity, { toValue: 0, duration: 900, useNativeDriver: true }),
+          Animated.timing(opacity, { toValue: 0.75, duration: 0, useNativeDriver: true }),
+        ]),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [scale, opacity]);
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={{
+        position: "absolute",
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        borderWidth: 2.5,
+        borderColor: color,
+        opacity,
+        transform: [{ scale }],
+      }}
+    />
+  );
+}
+
 function VoiceWaveformNative({ color }: { color: string }) {
   const anims = useRef([
     new Animated.Value(0.25),
@@ -1853,31 +1891,34 @@ export default function AiAssistantScreen() {
             {(() => {
               const convListening = micState === "listening" && recordingIntentRef.current === "conversation";
               return (
-                <Pressable
-                  onPress={() => {
-                    if (micState === "listening") {
-                      void stopRecording();
-                    } else if (micState !== "processing") {
-                      recordingIntentRef.current = "conversation";
-                      if (!voiceMode) setVoiceMode(true);
-                      if (isSpeaking) stopSpeaking();
-                      void startRecording();
-                    }
-                  }}
-                  disabled={sending || micState === "processing"}
-                  style={[
-                    s.micBtn,
-                    convListening && { backgroundColor: colors.tint + "1A", borderColor: colors.tint + "66" },
-                    !convListening && voiceMode && { backgroundColor: colors.tint + "0D", borderColor: colors.tint + "33" },
-                  ]}
-                  accessibilityLabel="Talk with Maynard"
-                >
-                  <Ionicons
-                    name={convListening ? "radio-outline" : "headset-outline"}
-                    size={18}
-                    color={convListening || voiceMode ? colors.tint : colors.textSecondary}
-                  />
-                </Pressable>
+                <View style={{ position: "relative", alignItems: "center", justifyContent: "center" }}>
+                  {convListening && <ConvListeningRing color={colors.tint} />}
+                  <Pressable
+                    onPress={() => {
+                      if (micState === "listening") {
+                        void stopRecording();
+                      } else if (micState !== "processing") {
+                        recordingIntentRef.current = "conversation";
+                        if (!voiceMode) setVoiceMode(true);
+                        if (isSpeaking) stopSpeaking();
+                        void startRecording();
+                      }
+                    }}
+                    disabled={sending || micState === "processing"}
+                    style={[
+                      s.micBtn,
+                      convListening && { backgroundColor: colors.tint + "1A", borderColor: colors.tint + "66" },
+                      !convListening && voiceMode && { backgroundColor: colors.tint + "0D", borderColor: colors.tint + "33" },
+                    ]}
+                    accessibilityLabel="Talk with Maynard"
+                  >
+                    <Ionicons
+                      name={convListening ? "radio-outline" : "headset-outline"}
+                      size={18}
+                      color={convListening || voiceMode ? colors.tint : colors.textSecondary}
+                    />
+                  </Pressable>
+                </View>
               );
             })()}
             <Pressable
