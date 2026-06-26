@@ -156,14 +156,13 @@ async function reachInlineAddPracticeForm(container: HTMLElement) {
     { timeout: 4000 },
   );
 
-  const select = Array.from(
-    container.querySelectorAll<HTMLSelectElement>("select"),
-  ).find((s) =>
-    Array.from(s.options).some((o) => o.value === "__add_new__"),
-  );
-  if (!select) throw new Error("practice select not found");
+  // Open the searchable practice picker, then choose its "Add new practice"
+  // action row to reveal the inline create form.
   await act(async () => {
-    fireEvent.change(select, { target: { value: "__add_new__" } });
+    fireEvent.click(screen.getByTestId("practice-picker-trigger"));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByTestId("practice-picker-add-new"));
   });
   await waitFor(() =>
     expect(container.textContent ?? "").toMatch(/New practice — confirm details/i),
@@ -200,7 +199,7 @@ describe("DashboardDropZone — inline Add practice", () => {
   // "success" returning the lab list and the form closes without an error).
   function baseStubs(path: string, opts?: any): Promise<unknown> | null {
     if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
-    if (path === "/organizations" && opts?.method !== "POST")
+    if (path.startsWith("/organizations") && opts?.method !== "POST")
       return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
     if (path === "/cases/doctor-names") return Promise.resolve([]);
     if (path === "/cases/doctor-directory") return Promise.resolve([]);

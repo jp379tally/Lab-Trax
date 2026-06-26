@@ -43,10 +43,13 @@ vi.mock("lucide-react", () => {
   const N = () => null;
   return {
     AlertTriangle: N,
+    Check: N,
     CheckCircle2: N,
+    ChevronDown: N,
     FileText: N,
     Loader2: N,
     PackageOpen: N,
+    Plus: N,
     Sparkles: N,
     Upload: N,
     X: N,
@@ -122,7 +125,7 @@ describe("DashboardDropZone — /analyze-prescription call behavior (runtime)", 
     // and a valid AI result for the analyze call.
     mockApiFetch.mockImplementation(async (endpointPath: string) => {
       if (endpointPath === "/legacy/cases") return { cases: [] };
-      if (endpointPath === "/organizations") return [];
+      if (endpointPath.startsWith("/organizations")) return [];
       if (endpointPath === "/cases/doctor-names") return [];
       if (endpointPath === "/cases/doctor-directory") return [];
       if (endpointPath === "/analyze-prescription") {

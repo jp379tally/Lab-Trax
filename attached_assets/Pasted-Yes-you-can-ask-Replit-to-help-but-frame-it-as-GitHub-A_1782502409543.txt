@@ -1,0 +1,42 @@
+Yes, you can ask Replit to help, but frame it as **GitHub Actions workflow cleanup**, not as a Replit publish/deployment issue.
+
+Since you were able to publish on Replit, the remaining problem is probably inside GitHub Actions: workflow secrets, release automation, CI test setup, or workflows triggering when they should skip.
+
+Tell Replit this:
+
+```text
+Replit publishing is now working. Please focus only on the GitHub Actions workflow failures shown in the Actions tab.
+
+The failing workflows include CI, Release, Build Windows Installer, and Rotate CI GCS Key. Do not treat this as a Replit deployment healthcheck issue anymore.
+
+Please inspect these workflow files:
+- .github/workflows/ci.yml
+- .github/workflows/release.yml
+- .github/workflows/build-windows.yml
+- .github/workflows/rotate-ci-key.yml
+- .github/workflows/auto-tag-desktop-release.yml
+
+I need you to determine why these workflows are failing and whether they are:
+1. missing GitHub repository secrets,
+2. failing because the live Replit publish endpoint or admin secret is wrong,
+3. failing because desktop release workflows are being triggered when only the mobile/web app changed,
+4. failing because branch protection blocks build-number commits,
+5. failing because CI GCS key rotation secrets or PAT permissions are missing.
+
+Important context:
+- Replit publish now succeeds.
+- GitHub release/build workflows publish installers back to the live app using PUBLISH_API_BASE_URL and PLATFORM_ADMIN_SECRET.
+- If those GitHub secrets are missing or wrong, the workflow should fail even though Replit itself is healthy.
+- The recent commit appears to be a LabTrax mobile/app change, not necessarily a desktop-release change, so check whether auto-tag/release workflows are triggering too broadly.
+
+Please open the latest failed run for each workflow, identify the first failing step and exact error, then recommend the smallest safe fix. If the fix requires GitHub secrets, list the exact secrets I must add or update in GitHub Settings → Secrets and variables → Actions. Do not remove security checks just to make the workflow green.
+```
+
+The key thing: **Replit can help edit the workflow files**, but **you may need to personally update GitHub secrets**. Replit usually cannot magically fix missing GitHub secrets like signing certificates, Apple credentials, GCP rotation credentials, or fine-grained PAT permissions unless you provide or configure them.
+
+Most likely buckets:
+
+* `release.yml` / `build-windows.yml`: missing signing or publish secrets.
+* `rotate-ci-key.yml`: missing/invalid `CI_ROTATION_CREDENTIALS_JSON` or `ROTATION_GITHUB_PAT`.
+* `ci.yml`: partial CI storage secret setup.
+* auto-tag/release chain: may be firing desktop release jobs for changes that should not produce a desktop release.

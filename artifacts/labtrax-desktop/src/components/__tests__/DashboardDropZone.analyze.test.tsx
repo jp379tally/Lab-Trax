@@ -205,7 +205,7 @@ describe("DashboardDropZone — AI analyze path", () => {
     // Default stubs for the background queries.
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
-      if (path === "/organizations")
+      if (path.startsWith("/organizations"))
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
@@ -232,7 +232,7 @@ describe("DashboardDropZone — AI analyze path", () => {
   it("reaches rxConfirm state ('AI read this prescription') after successful JPEG analyze", async () => {
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
-      if (path === "/organizations")
+      if (path.startsWith("/organizations"))
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
@@ -265,7 +265,7 @@ describe("DashboardDropZone — AI analyze path", () => {
 
     mockApiFetch.mockImplementation((path: string, opts: any) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
-      if (path === "/organizations")
+      if (path.startsWith("/organizations"))
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
@@ -299,7 +299,7 @@ describe("DashboardDropZone — AI analyze path", () => {
 
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
-      if (path === "/organizations")
+      if (path.startsWith("/organizations"))
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
@@ -326,7 +326,7 @@ describe("DashboardDropZone — AI analyze path", () => {
   it("renders the doctorName from the fixture in rxConfirm state", async () => {
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
-      if (path === "/organizations")
+      if (path.startsWith("/organizations"))
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
@@ -358,7 +358,7 @@ describe("DashboardDropZone — AI analyze path", () => {
   it("shows an error state when the server returns success:false (AI not configured)", async () => {
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
-      if (path === "/organizations") return Promise.resolve([]);
+      if (path.startsWith("/organizations")) return Promise.resolve([]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription")
@@ -390,7 +390,7 @@ describe("DashboardDropZone — AI analyze path", () => {
   it("shows a generic error state when the API throws a 500", async () => {
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
-      if (path === "/organizations") return Promise.resolve([]);
+      if (path.startsWith("/organizations")) return Promise.resolve([]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription")
@@ -417,7 +417,7 @@ describe("DashboardDropZone — AI analyze path", () => {
   it("does NOT reach rxConfirm when API returns success:false without an error field", async () => {
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
-      if (path === "/organizations") return Promise.resolve([]);
+      if (path.startsWith("/organizations")) return Promise.resolve([]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription")

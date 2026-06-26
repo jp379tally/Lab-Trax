@@ -24,6 +24,7 @@ import { useAuth } from "@/lib/auth-context";
 import { formatPhone } from "@/lib/format";
 import { DoctorNamePicker } from "./DoctorNamePicker";
 import { FieldCombobox } from "./FieldCombobox";
+import { PracticePicker } from "./PracticePicker";
 
 
 interface LegacyCaseLite {
@@ -703,8 +704,9 @@ export function DashboardDropZone() {
       apiFetch<{ cases: LegacyCaseLite[] }>("/legacy/cases"),
   });
   const orgsQuery = useQuery({
-    queryKey: ["organizations"],
-    queryFn: () => apiFetch<OrgLite[]>("/organizations"),
+    queryKey: ["organizations", { includeLabPractices: true }],
+    queryFn: () =>
+      apiFetch<OrgLite[]>("/organizations?includeLabPractices=true"),
   });
   const doctorNamesQuery = useQuery({
     queryKey: ["case-doctor-names"],
@@ -2090,61 +2092,56 @@ export function DashboardDropZone() {
               ) : null}
             </span>
             <div className="flex items-stretch gap-2">
-              <select
-                className={inputCls + " flex-1 min-w-0" + (rxPracticeError ? " border-destructive ring-1 ring-destructive" : "")}
-                value={rxProviderOrgId}
-                onChange={(e) => {
-                  if (e.target.value === "__add_new__") {
-                    openAddPracticeForm();
-                    return;
+              <div className="flex-1 min-w-0">
+                <PracticePicker
+                  size="sm"
+                  value={rxProviderOrgId}
+                  error={rxPracticeError}
+                  placeholder="Select a practice…"
+                  addNewLabel={
+                    r.practiceName
+                      ? `Add new practice ("${r.practiceName}")`
+                      : "Add new practice…"
                   }
-                  const newOrgId = e.target.value;
-                  setRxProviderOrgId(newOrgId);
-                  setRxPracticeError(false);
-                  // Dismiss any existing alias prompt whenever the selection changes.
-                  setShowAliasSavePrompt(false);
-                  // Show the alias save prompt when:
-                  //  1. A non-empty practice was selected
-                  //  2. The AI extracted a practiceName
-                  //  3. No alias existed for that name yet
-                  //  4. The selected practice name doesn't already fuzzy-match the Rx name
-                  if (
-                    newOrgId &&
-                    r.practiceName &&
-                    aliasExistedForRxName === false
-                  ) {
-                    const needle = r.practiceName.trim().toLowerCase();
-                    const selected = providerOrgs.find((p) => p.id === newOrgId);
-                    const selectedName = (
-                      selected?.displayName ||
-                      selected?.name ||
-                      ""
-                    ).toLowerCase();
-                    const alreadyMatches = selectedName.includes(needle) || needle.includes(selectedName);
-                    if (!alreadyMatches) {
-                      setShowAliasSavePrompt(true);
+                  onAddNew={openAddPracticeForm}
+                  options={providerOrgs.map((o) => ({
+                    id: o.id,
+                    label: o.displayName || o.name || "",
+                  }))}
+                  onChange={(newOrgId) => {
+                    setRxProviderOrgId(newOrgId);
+                    setRxPracticeError(false);
+                    // Dismiss any existing alias prompt whenever the selection changes.
+                    setShowAliasSavePrompt(false);
+                    // Show the alias save prompt when:
+                    //  1. A non-empty practice was selected
+                    //  2. The AI extracted a practiceName
+                    //  3. No alias existed for that name yet
+                    //  4. The selected practice name doesn't already fuzzy-match the Rx name
+                    if (
+                      newOrgId &&
+                      r.practiceName &&
+                      aliasExistedForRxName === false
+                    ) {
+                      const needle = r.practiceName.trim().toLowerCase();
+                      const selected = providerOrgs.find(
+                        (p) => p.id === newOrgId,
+                      );
+                      const selectedName = (
+                        selected?.displayName ||
+                        selected?.name ||
+                        ""
+                      ).toLowerCase();
+                      const alreadyMatches =
+                        selectedName.includes(needle) ||
+                        needle.includes(selectedName);
+                      if (!alreadyMatches) {
+                        setShowAliasSavePrompt(true);
+                      }
                     }
-                  }
-                }}
-              >
-                <option value="">Select a practice…</option>
-                <option value="__add_new__">
-                  + Add new practice
-                  {r.practiceName ? ` ("${r.practiceName}")` : "…"}
-                </option>
-                {providerOrgs
-                  .slice()
-                  .sort((a, b) =>
-                    (a.displayName || a.name || "").localeCompare(
-                      b.displayName || b.name || "",
-                    ),
-                  )
-                  .map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.displayName || o.name}
-                    </option>
-                  ))}
-              </select>
+                  }}
+                />
+              </div>
             </div>
             {rxPracticeError && (
               <p className="text-xs text-destructive">Practice is required.</p>

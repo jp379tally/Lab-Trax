@@ -1,18 +1,18 @@
 /** @vitest-environment jsdom */
 /**
- * Integration test for doctor -> practice auto-fill in the DashboardDropZone
+ * Integration tests for the searchable Practice picker in the DashboardDropZone
  * prescription import flow.
  *
- * Invariant protected:
- *  - When the AI extraction leaves the Practice (provider) dropdown empty
- *    (the AI's practice name did not match any provider org), picking an
- *    on-record doctor from the doctor dropdown auto-populates the Practice
- *    dropdown with that doctor's primary practice (the provider org the doctor
- *    has the most cases under, per GET /cases/doctor-directory).
- *  - Picking an unknown / custom doctor name leaves the Practice unchanged.
+ * Invariants protected:
+ *  - The practice list is fetched with `includeLabPractices=true` so EVERY
+ *    Customer-Center practice (including lab-managed practices the user is not a
+ *    direct member of) is selectable — not just the user's own memberships.
+ *  - The picker is type-to-filter: typing narrows the visible options.
+ *  - Choosing an option resolves it back to the provider-org id and reflects the
+ *    selected practice name in the trigger.
  */
 
-import { render, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { vi, describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { DashboardDropZone } from "../DashboardDropZone";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
@@ -33,8 +33,8 @@ vi.mock("@/lib/format", () => ({
   formatPhone: (p: string) => p,
 }));
 
-// DoctorNamePicker is rendered as a plain text input so the test can drive its
-// onChange directly (it carries the auto-fill side effect under test).
+// DoctorNamePicker is rendered as a plain input so it doesn't interfere with the
+// practice-picker assertions (this suite is not about doctor auto-fill).
 vi.mock("@/components/DoctorNamePicker", () => ({
   DoctorNamePicker: ({
     value,
@@ -51,15 +51,6 @@ vi.mock("@/components/DoctorNamePicker", () => ({
       placeholder={placeholder ?? "Select doctor…"}
       data-testid="doctor-name-picker"
     />
-  ),
-}));
-
-// PracticePicker is mocked to a div that exposes the selected org id via a data
-// attribute, so the auto-fill assertion can read the value directly without
-// driving the real searchable dropdown (covered by the other suites).
-vi.mock("@/components/PracticePicker", () => ({
-  PracticePicker: ({ value }: { value: string }) => (
-    <div data-testid="practice-picker" data-value={value} />
   ),
 }));
 
@@ -99,12 +90,9 @@ afterAll(() => {
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-// AI extracted a doctor and a practice name that does NOT match any provider
-// org, so the practice dropdown is left empty for the user to resolve.
+// AI extracted a practice name that does NOT match any provider org, so the
+// picker is left empty for the user to resolve manually.
 const RX_RESPONSE = {
-  // AI left the doctor blank, so selecting an on-record doctor is a genuine
-  // value change (a same-value fireEvent.change is suppressed by React's
-  // controlled-input value tracker and would never fire onChange).
   doctorName: "",
   patientName: "Bob Anderson",
   caseType: "crown",
@@ -114,21 +102,18 @@ const RX_RESPONSE = {
   dueDate: "2026-08-01",
   isRush: false,
   notes: "",
-  practiceName: "Unrecognized Practice LLC",
+  practiceName: "Totally Unrecognized Practice",
   practiceAddress: "",
   practicePhone: "",
 };
 
-const DOCTOR_DIRECTORY = [
-  // Dr. Cory Couch is mostly at Maple Dental (provB) → that's his primary.
-  { doctorName: "Dr. Cory Couch", providerOrganizationId: "provB", caseCount: 5 },
-  { doctorName: "Dr. Cory Couch", providerOrganizationId: "provA", caseCount: 1 },
-];
-
+// "Blissful Dental Spa" is a lab-managed practice that only appears when the
+// query asks for includeLabPractices=true.
 const ORGS = [
   { id: "lab1", type: "lab", name: "Test Lab" },
-  { id: "provA", type: "provider", name: "Oak Dental" },
-  { id: "provB", type: "provider", name: "Maple Dental" },
+  { id: "provA", type: "provider", name: "Maple Dental" },
+  { id: "provB", type: "provider", name: "Oak Dental" },
+  { id: "provC", type: "provider", name: "Blissful Dental Spa" },
 ];
 
 const DROP_ZONE_USER = {
@@ -157,35 +142,20 @@ function triggerFileInput(container: HTMLElement, files: File[]) {
   fireEvent.change(input, { target: { files } });
 }
 
-// PracticePicker is mocked to a div exposing the selected org id, so the test
-// can read the auto-filled value directly (the visual picker is exercised by
-// the add-practice and searchable-picker suites).
-function practiceValue(container: HTMLElement): string {
-  const el = container.querySelector('[data-testid="practice-picker"]');
-  if (!el) throw new Error("practice picker not found");
-  return el.getAttribute("data-value") ?? "";
-}
-
-function doctorInput(container: HTMLElement): HTMLInputElement {
-  const el = container.querySelector<HTMLInputElement>(
-    '[data-testid="doctor-name-picker"]',
-  );
-  if (!el) throw new Error("doctor picker not found");
-  return el;
+function practiceTrigger(): HTMLButtonElement {
+  return screen.getByTestId("practice-picker-trigger");
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-describe("DashboardDropZone — doctor → practice auto-fill", () => {
+describe("DashboardDropZone — searchable Practice picker", () => {
   beforeEach(() => {
     mockApiFetch.mockReset();
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path.startsWith("/organizations")) return Promise.resolve(ORGS);
-      if (path === "/cases/doctor-names")
-        return Promise.resolve(["Dr. Cory Couch"]);
-      if (path === "/cases/doctor-directory")
-        return Promise.resolve(DOCTOR_DIRECTORY);
+      if (path === "/cases/doctor-names") return Promise.resolve([]);
+      if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription") return Promise.resolve(RX_RESPONSE);
       if (path.startsWith("/rx-practice-aliases"))
         return Promise.resolve({ data: { found: false } });
@@ -202,51 +172,61 @@ describe("DashboardDropZone — doctor → practice auto-fill", () => {
       triggerFileInput(container, [makeJpegFile()]);
       await new Promise((r) => setTimeout(r, 300));
     });
-    // Wait until the rxConfirm panel (with the practice picker) is mounted.
     await waitFor(
-      () =>
-        expect(
-          container.querySelector('[data-testid="practice-picker"]'),
-        ).not.toBeNull(),
+      () => expect(screen.queryByTestId("practice-picker-trigger")).not.toBeNull(),
       { timeout: 4000 },
     );
     return container;
   }
 
-  it("auto-fills the practice with the doctor's primary practice when an on-record doctor is picked", async () => {
-    const container = await reachRxConfirm();
+  it("fetches practices with includeLabPractices=true so lab practices are selectable", async () => {
+    await reachRxConfirm();
 
-    // Practice starts empty (AI practice name did not match a provider org).
-    expect(practiceValue(container)).toBe("");
+    // The drop-zone must request the lab-inclusive practice list.
+    expect(
+      mockApiFetch.mock.calls.some(
+        ([p]) => p === "/organizations?includeLabPractices=true",
+      ),
+    ).toBe(true);
 
-    // User picks the on-record doctor.
+    // Opening the picker reveals the lab-managed practice.
     await act(async () => {
-      fireEvent.change(doctorInput(container), {
-        target: { value: "Dr. Cory Couch" },
-      });
+      fireEvent.click(practiceTrigger());
     });
-
-    // Practice auto-fills to the doctor's primary practice (most cases → provB).
-    await waitFor(() => expect(practiceValue(container)).toBe("provB"), {
-      timeout: 4000,
-    });
+    expect(screen.getByText("Blissful Dental Spa")).toBeTruthy();
+    expect(screen.getByText("Maple Dental")).toBeTruthy();
+    expect(screen.getByText("Oak Dental")).toBeTruthy();
   });
 
-  it("leaves the practice unchanged for an unknown / custom doctor name", async () => {
-    const container = await reachRxConfirm();
-
-    expect(practiceValue(container)).toBe("");
+  it("filters the options as the user types", async () => {
+    await reachRxConfirm();
 
     await act(async () => {
-      fireEvent.change(doctorInput(container), {
-        target: { value: "Dr. Nobody On Record" },
-      });
+      fireEvent.click(practiceTrigger());
     });
 
-    // No mapping for this name → practice stays empty.
+    const search = screen.getByPlaceholderText("Search practices…");
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 100));
+      fireEvent.change(search, { target: { value: "bliss" } });
     });
-    expect(practiceValue(container)).toBe("");
+
+    expect(screen.getByText("Blissful Dental Spa")).toBeTruthy();
+    expect(screen.queryByText("Maple Dental")).toBeNull();
+    expect(screen.queryByText("Oak Dental")).toBeNull();
+  });
+
+  it("selecting a practice reflects it in the trigger", async () => {
+    await reachRxConfirm();
+
+    await act(async () => {
+      fireEvent.click(practiceTrigger());
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Blissful Dental Spa"));
+    });
+
+    // The trigger now shows the chosen practice (placeholder is gone).
+    expect(practiceTrigger().textContent).toMatch(/blissful dental spa/i);
+    expect(practiceTrigger().textContent).not.toMatch(/select a practice/i);
   });
 });
