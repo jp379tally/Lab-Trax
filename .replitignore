@@ -1,26 +1,30 @@
 # The format of this file is identical to `.dockerignore`.
 # It is used to reduce the size of deployed images to make the process of publishing faster.
+#
+# IMPORTANT: Do NOT add node_modules, dist, build, or static-build here.
+# Those directories are created during the build phase and are required at runtime:
+# - node_modules/ — externalized packages (pdfkit, sharp, etc.) live here
+# - artifacts/api-server/dist/ — the production server bundle
+# - artifacts/labtrax/static-build/ — the mobile static build served by serve.js
+# Excluding them strips the runtime assets from the container image and causes
+# the promote step to fail (server crashes: file/package not found).
 
-# Agent/local working files.
+# Agent/local working files — not needed at runtime.
 .local
 
-# Dependencies.
-node_modules
-
-# Build output.
-dist
-build
-static-build
-electron-dist
+# Expo dev cache — not needed at runtime.
 .expo
 .cache
 
-# Heavy runtime artifacts.
-uploads
+# Electron desktop installer build — distributed separately via App Storage/GitHub,
+# not part of the cloud server image.
+electron-dist
+
+# Heavy static assets uploaded to the project — not needed at runtime.
 attached_assets
 logs
 
-# Packaged binaries / archives.
+# Packaged binaries / archives — not needed at runtime.
 *.zip
 *.exe
 *.dmg
