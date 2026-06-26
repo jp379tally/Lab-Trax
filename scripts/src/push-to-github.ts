@@ -30,25 +30,17 @@
 
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/node";
 
-const TOKEN = process.env.GITHUB_PUSH_TOKEN;
-const REMOTE_URL =
-  process.env.GITHUB_BACKUP_REPO_URL ||
-  "https://github.com/jp379tally/Lab-Trax.git";
-const BRANCH = process.env.GITHUB_BACKUP_BRANCH || "main";
-const CHUNK_SIZE = Math.max(
-  1,
-  Number(process.env.GITHUB_BACKUP_CHUNK_SIZE) || 25,
-);
-const TIME_BUDGET_MS = Number(process.env.GITHUB_BACKUP_TIME_BUDGET_MS) || 0;
+export const DEFAULT_REMOTE_URL = "https://github.com/jp379tally/Lab-Trax.git";
 
 const log = (msg: string) => console.log(`[github-backup] ${msg}`);
 
 /** Strip any embedded credentials/query from a URL before logging it. */
-function safeUrlForLog(raw: string): string {
+export function safeUrlForLog(raw: string): string {
   try {
     const u = new URL(raw);
     u.username = "";
@@ -61,17 +53,8 @@ function safeUrlForLog(raw: string): string {
   }
 }
 
-if (!TOKEN) {
-  console.error(
-    "[github-backup] GITHUB_PUSH_TOKEN is required. Aborting without pushing.",
-  );
-  process.exit(1);
-}
-
-const onAuth = () => ({ username: "x-access-token", password: TOKEN });
-
 /** Walk up from a starting dir to find the repository root (contains `.git`). */
-function findRepoRoot(start: string): string {
+export function findRepoRoot(start: string): string {
   let dir = start;
   // Walk up until we find a directory that contains a `.git` entry.
   // (Stop at filesystem root.)
@@ -86,44 +69,183 @@ function findRepoRoot(start: string): string {
   );
 }
 
-const remoteRef = `refs/heads/${BRANCH}`;
+/**
+ * Signals a clean, intentional non-zero exit from {@link run} without calling
+ * `process.exit` inside the testable core (so the runner can be exercised in
+ * unit tests). The thin script wrapper translates this into `process.exit`.
+ */
+export class BackupExitError extends Error {
+  constructor(
+    public readonly code: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "BackupExitError";
+  }
+}
 
-async function main() {
-  const startedAt = Date.now();
-  const dir = findRepoRoot(process.cwd());
+/**
+ * Given commit oids ordered newest -> oldest (as `git.log` returns them) and
+ * the current remote tip, compute the commits the remote is missing.
+ *
+ * Returns:
+ *   - `ordered`: the missing commits oldest -> newest (push order).
+ *   - `reachedRemote`: whether the remote tip was found as an ancestor while
+ *     walking back from the local tip. When `remoteTip` exists but this is
+ *     `false`, histories have diverged (the remote tip is not an ancestor of
+ *     local HEAD) and the caller must refuse to push.
+ */
+export function computeMissingCommits(
+  commitOids: string[],
+  remoteTip: string | undefined,
+): { ordered: string[]; reachedRemote: boolean } {
+  const ordered: string[] = [];
+  let reachedRemote = false;
+  for (const oid of commitOids) {
+    if (remoteTip && oid === remoteTip) {
+      reachedRemote = true;
+      break;
+    }
+    ordered.push(oid);
+  }
+  // ordered is newest -> oldest of the missing commits; reverse to oldest first.
+  ordered.reverse();
+  return { ordered, reachedRemote };
+}
+
+/**
+ * Build chunk boundaries: the last commit of each chunk (inclusive). Pushing a
+ * boundary fast-forwards the remote to it, carrying all prior commits. The
+ * final commit is always included as the last boundary so nothing is dropped.
+ */
+export function computeChunkBoundaries(
+  ordered: string[],
+  chunkSize: number,
+): string[] {
+  const size = Math.max(1, chunkSize);
+  const boundaries: string[] = [];
+  for (let i = size - 1; i < ordered.length; i += size) {
+    boundaries.push(ordered[i]);
+  }
+  if (
+    ordered.length > 0 &&
+    boundaries[boundaries.length - 1] !== ordered[ordered.length - 1]
+  ) {
+    boundaries.push(ordered[ordered.length - 1]);
+  }
+  return boundaries;
+}
+
+/** Minimal slice of the isomorphic-git surface that {@link run} depends on. */
+export interface GitLike {
+  resolveRef(args: { fs: unknown; dir: string; ref: string }): Promise<string>;
+  getRemoteInfo(args: {
+    http: unknown;
+    url: string;
+    onAuth: unknown;
+  }): Promise<{ refs?: { heads?: Record<string, string> } }>;
+  log(args: {
+    fs: unknown;
+    dir: string;
+    ref: string;
+  }): Promise<{ oid: string }[]>;
+  writeRef(args: {
+    fs: unknown;
+    dir: string;
+    ref: string;
+    value: string;
+    force: boolean;
+  }): Promise<void>;
+  push(args: {
+    fs: unknown;
+    http: unknown;
+    dir: string;
+    url: string;
+    ref: string;
+    remoteRef: string;
+    force: boolean;
+    onAuth: unknown;
+  }): Promise<{ ok?: boolean; error?: unknown }>;
+  deleteRef(args: { fs: unknown; dir: string; ref: string }): Promise<void>;
+}
+
+export interface RunOptions {
+  git: GitLike;
+  http: unknown;
+  fs: unknown;
+  dir: string;
+  remoteUrl: string;
+  branch: string;
+  chunkSize: number;
+  timeBudgetMs: number;
+  onAuth: () => { username: string; password: string };
+  /** Injectable clock for tests; defaults to {@link Date.now}. */
+  now?: () => number;
+}
+
+const TEMP_REF = "refs/heads/__github_backup_tmp";
+
+async function safeDeleteTempRef(
+  gitClient: GitLike,
+  fsImpl: unknown,
+  dir: string,
+  ref: string,
+) {
+  try {
+    await gitClient.deleteRef({ fs: fsImpl, dir, ref });
+  } catch {
+    // Best-effort cleanup; the temp ref is local-only and harmless if left.
+  }
+}
+
+/**
+ * Core, dependency-injected backup routine. Throws {@link BackupExitError} for
+ * intentional non-zero exits (diverged history, push failure) so it can be
+ * unit-tested without terminating the process. Returns the number of chunks
+ * actually pushed.
+ */
+export async function run(opts: RunOptions): Promise<{ pushedChunks: number }> {
+  const {
+    git: gitClient,
+    http: httpImpl,
+    fs: fsImpl,
+    dir,
+    remoteUrl,
+    branch,
+    chunkSize,
+    timeBudgetMs,
+    onAuth,
+  } = opts;
+  const now = opts.now ?? Date.now;
+  const startedAt = now();
+  const remoteRef = `refs/heads/${branch}`;
+
   log(`repo: ${dir}`);
-  log(`remote: ${safeUrlForLog(REMOTE_URL)} (branch ${BRANCH})`);
+  log(`remote: ${safeUrlForLog(remoteUrl)} (branch ${branch})`);
 
-  const localTip = await git.resolveRef({ fs, dir, ref: "HEAD" });
+  const localTip = await gitClient.resolveRef({ fs: fsImpl, dir, ref: "HEAD" });
   log(`local tip: ${localTip}`);
 
-  const remoteInfo = await git.getRemoteInfo({
-    http,
-    url: REMOTE_URL,
+  const remoteInfo = await gitClient.getRemoteInfo({
+    http: httpImpl,
+    url: remoteUrl,
     onAuth,
   });
-  const remoteTip: string | undefined = remoteInfo.refs?.heads?.[BRANCH];
+  const remoteTip: string | undefined = remoteInfo.refs?.heads?.[branch];
   log(`remote tip: ${remoteTip ?? "(branch does not exist yet)"}`);
 
   if (remoteTip === localTip) {
     log("Remote already up to date. Nothing to push.");
-    return;
+    return { pushedChunks: 0 };
   }
 
   // Collect commits newest -> oldest from the local tip, stopping once we
   // reach the remote tip (which is an ancestor for a normal fast-forward).
-  const ordered: string[] = [];
-  let reachedRemote = false;
-  const commits = await git.log({ fs, dir, ref: localTip });
-  for (const c of commits) {
-    if (remoteTip && c.oid === remoteTip) {
-      reachedRemote = true;
-      break;
-    }
-    ordered.push(c.oid);
-  }
-  // ordered is newest -> oldest of the missing commits; reverse to oldest first.
-  ordered.reverse();
+  const commits = await gitClient.log({ fs: fsImpl, dir, ref: localTip });
+  const { ordered, reachedRemote } = computeMissingCommits(
+    commits.map((c) => c.oid),
+    remoteTip,
+  );
 
   if (remoteTip && !reachedRemote) {
     // Remote tip is not an ancestor of local HEAD. This means histories have
@@ -132,36 +254,22 @@ async function main() {
       "[github-backup] Remote tip is not an ancestor of local HEAD " +
         "(histories diverged). Refusing to force-push. Resolve manually.",
     );
-    process.exit(2);
+    throw new BackupExitError(2, "histories diverged");
   }
 
   if (ordered.length === 0) {
     log("No new commits to push.");
-    return;
+    return { pushedChunks: 0 };
   }
 
-  log(`commits to push: ${ordered.length} (chunk size ${CHUNK_SIZE})`);
+  log(`commits to push: ${ordered.length} (chunk size ${chunkSize})`);
 
-  // Build chunk boundaries: the last commit of each chunk (inclusive). Pushing
-  // a boundary fast-forwards the remote to it, carrying all prior commits.
-  const boundaries: string[] = [];
-  for (let i = CHUNK_SIZE - 1; i < ordered.length; i += CHUNK_SIZE) {
-    boundaries.push(ordered[i]);
-  }
-  // Always include the final commit as the last boundary.
-  if (boundaries[boundaries.length - 1] !== ordered[ordered.length - 1]) {
-    boundaries.push(ordered[ordered.length - 1]);
-  }
+  const boundaries = computeChunkBoundaries(ordered, chunkSize);
 
-  const tempRef = "refs/heads/__github_backup_tmp";
   let pushed = 0;
 
   for (let i = 0; i < boundaries.length; i++) {
-    if (
-      TIME_BUDGET_MS > 0 &&
-      Date.now() - startedAt > TIME_BUDGET_MS &&
-      i > 0
-    ) {
+    if (timeBudgetMs > 0 && now() - startedAt > timeBudgetMs && i > 0) {
       log(
         `Time budget reached after ${pushed} chunk(s); exiting cleanly to ` +
           `resume next run.`,
@@ -170,20 +278,20 @@ async function main() {
     }
 
     const boundary = boundaries[i];
-    await git.writeRef({
-      fs,
+    await gitClient.writeRef({
+      fs: fsImpl,
       dir,
-      ref: tempRef,
+      ref: TEMP_REF,
       value: boundary,
       force: true,
     });
 
-    const result = await git.push({
-      fs,
-      http,
+    const result = await gitClient.push({
+      fs: fsImpl,
+      http: httpImpl,
       dir,
-      url: REMOTE_URL,
-      ref: tempRef,
+      url: remoteUrl,
+      ref: TEMP_REF,
       remoteRef,
       force: false,
       onAuth,
@@ -194,8 +302,8 @@ async function main() {
         `[github-backup] Push failed at chunk ${i + 1}/${boundaries.length}: ` +
           `${result.error ?? "unknown error"}`,
       );
-      await safeDeleteTempRef(dir, tempRef);
-      process.exit(3);
+      await safeDeleteTempRef(gitClient, fsImpl, dir, TEMP_REF);
+      throw new BackupExitError(3, "push failed");
     }
 
     pushed++;
@@ -204,28 +312,69 @@ async function main() {
     );
   }
 
-  await safeDeleteTempRef(dir, tempRef);
+  await safeDeleteTempRef(gitClient, fsImpl, dir, TEMP_REF);
 
-  const finalRemote = await git.getRemoteInfo({ http, url: REMOTE_URL, onAuth });
+  const finalRemote = await gitClient.getRemoteInfo({
+    http: httpImpl,
+    url: remoteUrl,
+    onAuth,
+  });
   log(
     `done in ${Math.round(
-      (Date.now() - startedAt) / 1000,
-    )}s. remote tip: ${finalRemote.refs?.heads?.[BRANCH] ?? "?"}`,
+      (now() - startedAt) / 1000,
+    )}s. remote tip: ${finalRemote.refs?.heads?.[branch] ?? "?"}`,
   );
+
+  return { pushedChunks: pushed };
 }
 
-async function safeDeleteTempRef(dir: string, ref: string) {
-  try {
-    await git.deleteRef({ fs, dir, ref });
-  } catch {
-    // Best-effort cleanup; the temp ref is local-only and harmless if left.
+async function main() {
+  const TOKEN = process.env.GITHUB_PUSH_TOKEN;
+  if (!TOKEN) {
+    console.error(
+      "[github-backup] GITHUB_PUSH_TOKEN is required. Aborting without pushing.",
+    );
+    process.exit(1);
   }
+
+  const remoteUrl =
+    process.env.GITHUB_BACKUP_REPO_URL || DEFAULT_REMOTE_URL;
+  const branch = process.env.GITHUB_BACKUP_BRANCH || "main";
+  const chunkSize = Math.max(
+    1,
+    Number(process.env.GITHUB_BACKUP_CHUNK_SIZE) || 25,
+  );
+  const timeBudgetMs = Number(process.env.GITHUB_BACKUP_TIME_BUDGET_MS) || 0;
+  const dir = findRepoRoot(process.cwd());
+  const onAuth = () => ({ username: "x-access-token", password: TOKEN });
+
+  await run({
+    git: git as unknown as GitLike,
+    http,
+    fs,
+    dir,
+    remoteUrl,
+    branch,
+    chunkSize,
+    timeBudgetMs,
+    onAuth,
+  });
 }
 
-main().catch((err) => {
-  // Avoid printing the error object verbatim in case a transport layer ever
-  // echoes the auth header; print only the message.
-  const message = err instanceof Error ? err.message : String(err);
-  console.error(`[github-backup] Fatal: ${message}`);
-  process.exit(1);
-});
+/** True when this module is executed directly (e.g. via `tsx`), not imported. */
+const isDirectRun =
+  process.argv[1] != null &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectRun) {
+  main().catch((err) => {
+    if (err instanceof BackupExitError) {
+      process.exit(err.code);
+    }
+    // Avoid printing the error object verbatim in case a transport layer ever
+    // echoes the auth header; print only the message.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[github-backup] Fatal: ${message}`);
+    process.exit(1);
+  });
+}
