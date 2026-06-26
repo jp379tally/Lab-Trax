@@ -1531,10 +1531,28 @@ function UserDetailDrawer({
   const [toggleLoading, setToggleLoading] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+  const [roleLoading, setRoleLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const fullName = [user.firstName, user.lastName].filter(Boolean).join(" ") || null;
   const isActive = user.isActive !== false;
+
+  async function handleChangeRole(newRole: string) {
+    if (newRole === (user.role || "user")) return;
+    setRoleLoading(true);
+    setErrorMsg(null);
+    try {
+      const updated = await apiFetch<AdminUser>(
+        `/admin/users/${user.id}`,
+        { method: "PATCH", body: JSON.stringify({ role: newRole }) },
+      );
+      onUserUpdated({ ...user, ...updated });
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Failed to update role.");
+    } finally {
+      setRoleLoading(false);
+    }
+  }
 
   async function handleToggleActive() {
     setToggleLoading(true);
@@ -1614,10 +1632,19 @@ function UserDetailDrawer({
               <div className="text-xs">{user.practiceName || <span className="text-muted-foreground/50">—</span>}</div>
 
               <div className="text-muted-foreground">Role</div>
-              <div>
-                <span className="text-[11px] uppercase tracking-wide bg-secondary text-secondary-foreground rounded-full px-2 py-0.5">
-                  {user.role || "user"}
-                </span>
+              <div className="flex items-center gap-2">
+                <select
+                  value={user.role || "user"}
+                  onChange={(e) => handleChangeRole(e.target.value)}
+                  disabled={roleLoading}
+                  className="text-xs rounded-md border border-border bg-background px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <option value="user">user</option>
+                  <option value="billing">billing</option>
+                  <option value="admin">admin</option>
+                  <option value="owner">owner</option>
+                </select>
+                {roleLoading && <Loader2 size={12} className="animate-spin text-muted-foreground shrink-0" />}
               </div>
 
               <div className="text-muted-foreground">Status</div>
