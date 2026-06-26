@@ -56,7 +56,10 @@ interface AdminUser {
 
 type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "statement-email" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit" | "vocabulary" | "ai-assistant";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "statement-email", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit", "vocabulary", "ai-assistant"];
+// NOTE: "users" is intentionally omitted here so the old `?tab=users` deep link
+// falls back to the default Profile section instead of opening the now-hidden
+// Users panel. The "users" TabKey + UsersPanel are kept intact for easy restore.
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "statement-email", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit", "vocabulary", "ai-assistant"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -80,7 +83,9 @@ export default function SettingsPage() {
     { key: "password", label: "Password", icon: KeyRound, show: true },
     { key: "sessions", label: "Active sessions", icon: Monitor, show: true },
     { key: "organizations", label: "Organizations", icon: Building2, show: true },
-    { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
+    // Hidden from navigation: customers live in Customer Center and the internal
+    // lab team lives under Profile → Lab team status. Set back to `isAdmin` to restore.
+    { key: "users", label: "Users", icon: ShieldCheck, show: false },
     { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
     { key: "deleted-cases", label: "Deleted Cases", icon: Trash2, show: isAdmin },
     { key: "deletion-audit", label: "Deletion Audit Log", icon: History, show: isAdmin },
@@ -999,8 +1004,19 @@ function ProfilePanel() {
         </button>
       </div>
 
+      {/* Current lab / environment name — sourced from the signed-in member's
+          lab from the lab-team data, falling back to the profile practice name,
+          then a neutral label. */}
+      <div className="mt-6 mb-1">
+        <h2 className="text-base font-semibold tracking-tight">
+          {(teamQuery.data?.team.find((m) => m.isSelf)?.labNames?.[0]?.trim()
+            || user?.practiceName?.trim()
+            || "Lab")}{" "}Environment
+        </h2>
+      </div>
+
       {/* Team status list */}
-      <div className="rounded-lg border border-border mt-4">
+      <div className="rounded-lg border border-border mt-2">
         <div className="px-4 py-2.5 border-b border-border flex items-center justify-between">
           <div className="text-sm font-semibold">Lab team status</div>
           <div className="flex items-center gap-3">
