@@ -5934,6 +5934,7 @@ Important rules:
           practiceName: users.practiceName,
           lastLoginAt: users.lastLoginAt,
           createdAt: users.createdAt,
+          platformAccountNumber: users.platformAccountNumber,
         })
         .from(users)
         .where(isNull(users.deletedAt))
@@ -5941,6 +5942,45 @@ Important rules:
       return res.json({ ok: true, users: rows });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to list users." });
+    }
+  });
+
+  // Send a password-reset email on behalf of an admin (admin-secret gated).
+  router.post("/admin/users/:id/send-password-reset", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const userId = String(req.params.id);
+      const [user] = await db
+        .select({ id: users.id, username: users.username, email: users.email })
+        .from(users)
+        .where(and(eq(users.id, userId), isNull(users.deletedAt)));
+      if (!user) return res.status(404).json({ error: "User not found." });
+      if (!user.email) return res.status(400).json({ error: "User has no email address on file." });
+
+      const token = generateResetToken();
+      passwordResetTokens.set(token, { userId: user.id, expiresAt: Date.now() + 30 * 60 * 1000 });
+
+      const domain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_INTERNAL_APP_DOMAIN || "localhost:5000";
+      const protocol = domain.includes("localhost") ? "http" : "https";
+      const resetLink = `${protocol}://${domain}/reset-password?token=${token}`;
+
+      await sendMail({
+        to: user.email,
+        subject: "LabTrax - Password Reset",
+        html: `<div style="font-family: Arial; max-width: 600px; margin: 0 auto;">
+            <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;"><h2 style="margin:0;">LabTrax</h2><p style="margin:4px 0 0; opacity:0.85;">Password Reset</p></div>
+            <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+              <p>Hi ${user.username},</p><p>Your lab administrator has sent you a password reset link. Click below to reset your password:</p>
+              <p style="text-align: center; margin: 24px 0;"><a href="${resetLink}" style="display: inline-block; background: #4A6CF7; color: white; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: bold;">Reset Password</a></p>
+              <p style="color: #666; font-size: 13px;">Expires in 30 minutes. Username: <strong>${user.username}</strong></p>
+            </div></div>`,
+      });
+
+      return res.json({ ok: true, message: "Password reset email sent." });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to send password reset." });
     }
   });
 

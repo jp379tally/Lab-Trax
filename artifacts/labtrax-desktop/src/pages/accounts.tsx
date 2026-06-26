@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Eye,
   GitMerge,
+  KeyRound,
   Loader2,
   Plus,
   Receipt,
@@ -19,6 +20,8 @@ import {
   Square,
   Stethoscope,
   Undo2,
+  UserCheck,
+  UserX,
   Users,
   X,
 } from "lucide-react";
@@ -54,6 +57,8 @@ interface AdminUser {
   isActive?: boolean;
   practiceName?: string | null;
   lastLoginAt?: string | null;
+  createdAt?: string | null;
+  platformAccountNumber?: string | null;
 }
 
 type PageView = "practices" | "directory";
@@ -156,6 +161,7 @@ export default function AccountsPage() {
   const [undoToast, setUndoToast] = useState<UndoToast | null>(null);
   const [pageView, setPageView] = useState<PageView>("practices");
   const [dirSearch, setDirSearch] = useState("");
+  const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
   const queryClient = useQueryClient();
   const pageRef = useRef<HTMLDivElement>(null);
 
@@ -763,7 +769,19 @@ export default function AccountsPage() {
                   </tr>
                 )}
                 {directoryUsers.map((u) => (
-                  <tr key={u.id} className="border-t border-border hover:bg-secondary/40">
+                  <tr
+                    key={u.id}
+                    className="border-t border-border hover:bg-secondary/40 cursor-pointer"
+                    onClick={() => setSelectedUser(u)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelectedUser(u);
+                      }
+                    }}
+                  >
                     <td className="px-4 py-2.5">
                       <div className="font-medium">
                         {[u.firstName, u.lastName].filter(Boolean).join(" ") || u.username}
@@ -1478,6 +1496,207 @@ export default function AccountsPage() {
           }}
         />
       )}
+
+      {selectedUser && (
+        <UserDetailDrawer
+          user={selectedUser}
+          onClose={() => setSelectedUser(null)}
+          onUserUpdated={(updated) => {
+            setSelectedUser(updated);
+            queryClient.setQueryData(
+              ["admin", "users"],
+              (old: { users: AdminUser[] } | AdminUser[] | undefined) => {
+                if (!old) return old;
+                const list: AdminUser[] = Array.isArray(old) ? old : (old.users ?? []);
+                const next = list.map((u) => (u.id === updated.id ? { ...u, ...updated } : u));
+                return Array.isArray(old) ? next : { ...old, users: next };
+              },
+            );
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function UserDetailDrawer({
+  user,
+  onClose,
+  onUserUpdated,
+}: {
+  user: AdminUser;
+  onClose: () => void;
+  onUserUpdated: (updated: AdminUser) => void;
+}) {
+  const [toggleLoading, setToggleLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const fullName = [user.firstName, user.lastName].filter(Boolean).join(" ") || null;
+  const isActive = user.isActive !== false;
+
+  async function handleToggleActive() {
+    setToggleLoading(true);
+    setErrorMsg(null);
+    try {
+      const updated = await apiFetch<AdminUser>(
+        `/admin/users/${user.id}`,
+        { method: "PATCH", body: JSON.stringify({ isActive: !isActive }) },
+      );
+      onUserUpdated({ ...user, ...updated });
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Failed to update user.");
+    } finally {
+      setToggleLoading(false);
+    }
+  }
+
+  async function handleSendReset() {
+    if (!user.email) {
+      setErrorMsg("This user has no email address on file.");
+      return;
+    }
+    setResetLoading(true);
+    setErrorMsg(null);
+    try {
+      await apiFetch(`/admin/users/${user.id}/send-password-reset`, { method: "POST" });
+      setResetSent(true);
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Failed to send password reset.");
+    } finally {
+      setResetLoading(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      <div className="flex-1 bg-foreground/30" onClick={onClose} />
+      <aside className="w-full max-w-[480px] bg-card border-l border-border h-full flex flex-col">
+        <header className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+          <div>
+            <div className="text-xs text-muted-foreground uppercase tracking-wide">Account</div>
+            <div className="text-sm font-semibold">{fullName ?? user.username}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+          >
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+          {errorMsg && (
+            <div className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2">
+              {errorMsg}
+            </div>
+          )}
+
+          {/* Profile details */}
+          <section className="space-y-3">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Profile</h3>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+              {fullName && (
+                <>
+                  <div className="text-muted-foreground">Full name</div>
+                  <div className="font-medium">{fullName}</div>
+                </>
+              )}
+              <div className="text-muted-foreground">Username</div>
+              <div className="font-mono text-xs font-medium">@{user.username}</div>
+
+              <div className="text-muted-foreground">Email</div>
+              <div className="text-xs truncate">{user.email || <span className="text-muted-foreground/50">—</span>}</div>
+
+              <div className="text-muted-foreground">Practice</div>
+              <div className="text-xs">{user.practiceName || <span className="text-muted-foreground/50">—</span>}</div>
+
+              <div className="text-muted-foreground">Role</div>
+              <div>
+                <span className="text-[11px] uppercase tracking-wide bg-secondary text-secondary-foreground rounded-full px-2 py-0.5">
+                  {user.role || "user"}
+                </span>
+              </div>
+
+              <div className="text-muted-foreground">Status</div>
+              <div>
+                <span className={`text-[11px] px-2 py-0.5 rounded-full ${
+                  isActive ? "bg-success/15 text-success" : "bg-warning/20 text-warning"
+                }`}>
+                  {isActive ? "Active" : "Inactive"}
+                </span>
+              </div>
+
+              {user.platformAccountNumber && (
+                <>
+                  <div className="text-muted-foreground">Account #</div>
+                  <div className="font-mono text-xs font-medium">{user.platformAccountNumber}</div>
+                </>
+              )}
+
+              <div className="text-muted-foreground">Last login</div>
+              <div className="text-xs text-muted-foreground">
+                {user.lastLoginAt ? formatDate(user.lastLoginAt) : <span className="text-muted-foreground/50">Never</span>}
+              </div>
+
+              {user.createdAt && (
+                <>
+                  <div className="text-muted-foreground">Joined</div>
+                  <div className="text-xs text-muted-foreground">{formatDate(user.createdAt)}</div>
+                </>
+              )}
+            </div>
+          </section>
+
+          {/* Admin actions */}
+          <section className="space-y-3">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Admin actions</h3>
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={handleToggleActive}
+                disabled={toggleLoading}
+                className={`w-full inline-flex items-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  isActive
+                    ? "border-warning/40 text-warning hover:bg-warning/10"
+                    : "border-success/40 text-success hover:bg-success/10"
+                }`}
+              >
+                {toggleLoading ? (
+                  <Loader2 size={14} className="animate-spin shrink-0" />
+                ) : isActive ? (
+                  <UserX size={14} className="shrink-0" />
+                ) : (
+                  <UserCheck size={14} className="shrink-0" />
+                )}
+                {isActive ? "Deactivate account" : "Reactivate account"}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSendReset}
+                disabled={resetLoading || resetSent || !user.email}
+                title={!user.email ? "No email address on file" : undefined}
+                className="w-full inline-flex items-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium border border-border hover:bg-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {resetLoading ? (
+                  <Loader2 size={14} className="animate-spin shrink-0" />
+                ) : (
+                  <KeyRound size={14} className="shrink-0" />
+                )}
+                {resetSent ? "Reset email sent ✓" : "Send password reset email"}
+              </button>
+              {!user.email && (
+                <p className="text-xs text-muted-foreground px-1">
+                  Password reset requires an email address on the account.
+                </p>
+              )}
+            </div>
+          </section>
+        </div>
+      </aside>
     </div>
   );
 }
