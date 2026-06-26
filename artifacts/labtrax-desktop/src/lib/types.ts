@@ -249,6 +249,10 @@ export interface Payment {
   amount: string | number;
   method?: string | null;
   reference?: string | null;
+  // The API returns the raw payment row columns; these are the authoritative
+  // field names for the payment method and reference number.
+  paymentMethod?: string | null;
+  referenceNumber?: string | null;
   paidAt?: string | null;
   notes?: string | null;
 }

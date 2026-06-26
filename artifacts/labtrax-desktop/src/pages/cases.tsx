@@ -125,6 +125,14 @@ const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "remake", label: "Remake" },
 ];
 
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  card: "Card",
+  ach: "ACH",
+  check: "Check",
+  cash: "Cash",
+  other: "Other",
+};
+
 type SortKey =
   | "caseNumber"
   | "doctorName"
@@ -7075,6 +7083,43 @@ export function CaseDrawer({
                       <Field label="Due" value={formatDate(caseInvoice.dueDate)} />
                     )}
                   </div>
+                  {(invoiceDetailQuery.data?.payments?.length ?? 0) > 0 && (
+                    <div className="space-y-2">
+                      <h4 className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Payments received
+                      </h4>
+                      <div className="border border-border rounded-md overflow-hidden">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+                              <th className="text-left font-medium px-3 py-1.5">Date</th>
+                              <th className="text-left font-medium px-3 py-1.5">Method</th>
+                              <th className="text-right font-medium px-3 py-1.5 w-24">Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {invoiceDetailQuery.data!.payments!.map((p) => {
+                              const rawMethod = p.paymentMethod ?? p.method ?? "";
+                              const method = (PAYMENT_METHOD_LABELS[rawMethod] ?? rawMethod) || "—";
+                              const ref = (p.referenceNumber ?? p.reference)?.trim();
+                              return (
+                                <tr key={p.id} className="border-t border-border">
+                                  <td className="px-3 py-1.5">{formatDate(p.paidAt)}</td>
+                                  <td className="px-3 py-1.5">
+                                    {method}
+                                    {ref && (
+                                      <span className="text-muted-foreground"> · {ref}</span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{formatMoney(p.amount)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-3">

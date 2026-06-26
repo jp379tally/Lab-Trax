@@ -87,6 +87,121 @@ describe("CaseDrawer smoke render", () => {
   });
 });
 
+// The Invoice tab card lists payments recorded against the case invoice
+// (date, method/reference, amount) below the line items and summary. This
+// test stubs the invoice + invoice-detail endpoints with a recorded payment
+// and asserts the "Payments received" section renders it.
+describe("CaseDrawer invoice payments", () => {
+  it("lists recorded payments on the Invoice tab", async () => {
+    const caseId = "case-1";
+
+    const json = (body: unknown, status = 200) =>
+      new Response(typeof body === "string" ? body : JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const path = new URL(url, "http://localhost").pathname;
+        const search = new URL(url, "http://localhost").search;
+
+        if (path.endsWith("/invoices") && search.includes("caseId=")) {
+          return json([
+            {
+              id: "inv-1",
+              invoiceNumber: "INV-26-1",
+              status: "partially_paid",
+              total: "200.00",
+              balanceDue: "50.00",
+              labOrganizationId: "lab-1",
+              providerOrganizationId: "prov-1",
+            },
+          ]);
+        }
+        if (path.endsWith("/invoices/inv-1")) {
+          return json({
+            id: "inv-1",
+            invoiceNumber: "INV-26-1",
+            status: "partially_paid",
+            total: "200.00",
+            balanceDue: "50.00",
+            labOrganizationId: "lab-1",
+            providerOrganizationId: "prov-1",
+            items: [],
+            payments: [
+              {
+                id: "pay-1",
+                invoiceId: "inv-1",
+                amount: "150.00",
+                paymentMethod: "check",
+                referenceNumber: "1234",
+                paidAt: "2026-06-20T10:00:00.000Z",
+              },
+            ],
+          });
+        }
+        if (path.endsWith(`/cases/${caseId}`)) {
+          return json({
+            id: caseId,
+            caseNumber: "26-1",
+            patientFirstName: "Jane",
+            patientLastName: "Doe",
+            doctorName: "Dr. Smith",
+            status: "received",
+            priority: "normal",
+            dueDate: null,
+            createdAt: "2026-01-15T10:00:00.000Z",
+            updatedAt: "2026-01-15T10:00:00.000Z",
+            totalPrice: "200",
+            restorations: [],
+            notes: [],
+          });
+        }
+        if (path.endsWith("/cases")) return json([]);
+        if (path.endsWith("/organizations")) return json([]);
+        return json({});
+      }),
+    );
+
+    const fakeCase = {
+      id: caseId,
+      caseNumber: "26-1",
+      patientFirstName: "Jane",
+      patientLastName: "Doe",
+      doctorName: "Dr. Smith",
+      status: "received",
+      priority: "normal",
+      dueDate: null,
+      createdAt: "2026-01-15T10:00:00.000Z",
+      updatedAt: "2026-01-15T10:00:00.000Z",
+      totalPrice: "200",
+    } as unknown as LabCase;
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        {withAiPanel(<CaseDrawer labCase={fakeCase} onClose={() => {}} />)}
+      </Wrapper>,
+    );
+
+    // Switch to the Invoice tab.
+    const invoiceTab = (await screen.findAllByRole("button")).find(
+      (b) => b.textContent?.trim() === "Invoice",
+    );
+    expect(invoiceTab).toBeTruthy();
+    fireEvent.click(invoiceTab!);
+
+    // The payments section header and the recorded payment row render.
+    expect(await screen.findByText(/Payments received/i)).toBeInTheDocument();
+    expect(screen.getByText(/Check/)).toBeInTheDocument();
+    expect(screen.getByText(/1234/)).toBeInTheDocument();
+    expect(screen.getByText("$150.00")).toBeInTheDocument();
+  });
+});
+
 // Regression for Task #2409: editing a case's due date must keep the new date
 // on screen after saving. The bug cleared the staged edit (pendingCaseEdit)
 // immediately after the PATCH, so the field briefly reverted to the stale
