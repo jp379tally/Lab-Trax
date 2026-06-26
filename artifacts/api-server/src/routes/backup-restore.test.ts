@@ -628,7 +628,12 @@ maybe("Backup Restore Integrity", () => {
       await db.insert(userSessions).values({
         id: sess16Id,
         userId: ownerId,
-        tokenHash: createHash("sha256").update("tok-test16").digest("hex"),
+        // Derive the token hash from the per-run random id (not a fixed
+        // string) so this row never collides on a persistent dev DB. Test 16
+        // intentionally aborts the restore BEFORE the user_sessions TRUNCATE,
+        // so unlike the other session tests its row is never cleared — a fixed
+        // token_hash would violate user_sessions_token_hash_unique on re-run.
+        tokenHash: createHash("sha256").update(sess16Id).digest("hex"),
         expiresAt: new Date(Date.now() + 60_000),
       });
 

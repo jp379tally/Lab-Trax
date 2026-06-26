@@ -46,25 +46,45 @@ jobs:
     name: Rotate CI_GOOGLE_CREDENTIALS_JSON
     runs-on: ubuntu-latest
 
-    # Skip entirely when the rotation secrets are not configured so this
-    # workflow does not fail for repos that haven't set up rotation yet.
-    if: |
-      secrets.CI_ROTATION_CREDENTIALS_JSON != '' &&
-      secrets.ROTATION_GITHUB_PAT != '' &&
-      secrets.CI_GOOGLE_CREDENTIALS_JSON != ''
-
     permissions:
       # Needed to open a failure issue via gh
       issues: write
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      # GitHub forbids referencing the `secrets` context in a job-level `if:`
+      # ("Unrecognized named-value: 'secrets'"), which previously caused this
+      # workflow to startup_failure. Instead, map the rotation secrets into
+      # `env` here and emit an `enabled` output; every subsequent step is gated
+      # on that output so the workflow skips cleanly when rotation has not been
+      # configured and runs end-to-end when it has. (Mapping secrets to env and
+      # reading them in a script is the only allowed way to branch on a secret's
+      # presence — `if:` step conditions also cannot reference `secrets`.)
+      - name: Preflight — detect rotation secrets
+        id: preflight
+        shell: bash
+        env:
+          CI_ROTATION_CREDENTIALS_JSON: ${{ secrets.CI_ROTATION_CREDENTIALS_JSON }}
+          ROTATION_GITHUB_PAT: ${{ secrets.ROTATION_GITHUB_PAT }}
+          CI_GOOGLE_CREDENTIALS_JSON: ${{ secrets.CI_GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          if [[ -n "$CI_ROTATION_CREDENTIALS_JSON" && -n "$ROTATION_GITHUB_PAT" && -n "$CI_GOOGLE_CREDENTIALS_JSON" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Rotation secrets are configured — proceeding with key rotation."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Rotation secrets are not configured — skipping key rotation cleanly. Set CI_ROTATION_CREDENTIALS_JSON, ROTATION_GITHUB_PAT and CI_GOOGLE_CREDENTIALS_JSON to enable it."
+          fi
+
+      - name: Checkout
+        if: steps.preflight.outputs.enabled == 'true'
+        uses: actions/checkout@v4
 
       # Install a pinned version of the Cloud SDK so runner-image updates
       # cannot change gcloud behaviour under us.  jq and gh are already
       # present on all GitHub-hosted ubuntu-latest runners.
       - name: Set up gcloud CLI
+        if: steps.preflight.outputs.enabled == 'true'
         uses: google-github-actions/setup-gcloud@v2
         with:
           version: '>= 500.0.0'
@@ -74,6 +94,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Authenticate rotation service account
         id: auth
+        if: steps.preflight.outputs.enabled == 'true'
         run: |
           echo '${{ secrets.CI_ROTATION_CREDENTIALS_JSON }}' > /tmp/rotation-key.json
           gcloud auth activate-service-account --key-file=/tmp/rotation-key.json
@@ -85,6 +106,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Extract current key metadata
         id: current
+        if: steps.preflight.outputs.enabled == 'true'
         run: |
           CREDS='${{ secrets.CI_GOOGLE_CREDENTIALS_JSON }}'
           SA_EMAIL=$(echo "$CREDS" | jq -r '.client_email')
@@ -107,6 +129,7 @@ jobs:
       # this workflow.
       # -----------------------------------------------------------------------
       - name: Check existing key age
+        if: steps.preflight.outputs.enabled == 'true'
         env:
           SA_EMAIL: ${{ steps.current.outputs.sa_email }}
           OLD_KEY_ID: ${{ steps.current.outputs.old_key_id }}
@@ -135,6 +158,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Create new GCS key
         id: new-key
+        if: steps.preflight.outputs.enabled == 'true'
         env:
           SA_EMAIL: ${{ steps.current.outputs.sa_email }}
           PROJECT: ${{ steps.current.outputs.project }}
@@ -172,7 +196,7 @@ jobs:
       # Push the new key to the repository secret
       # -----------------------------------------------------------------------
       - name: Update CI_GOOGLE_CREDENTIALS_JSON secret
-        if: steps.new-key.outputs.skipped != 'true'
+        if: steps.preflight.outputs.enabled == 'true' && steps.new-key.outputs.skipped != 'true'
         env:
           GH_TOKEN: ${{ secrets.ROTATION_GITHUB_PAT }}
         run: |
@@ -189,7 +213,7 @@ jobs:
       # than failing the workflow.
       # -----------------------------------------------------------------------
       - name: Delete old GCS key
-        if: steps.new-key.outputs.skipped != 'true'
+        if: steps.preflight.outputs.enabled == 'true' && steps.new-key.outputs.skipped != 'true'
         env:
           SA_EMAIL: ${{ steps.current.outputs.sa_email }}
           OLD_KEY_ID: ${{ steps.current.outputs.old_key_id }}
@@ -212,7 +236,7 @@ jobs:
       # Dry-run summary
       # -----------------------------------------------------------------------
       - name: Dry-run summary
-        if: inputs.dry_run == true || inputs.dry_run == 'true'
+        if: steps.preflight.outputs.enabled == 'true' && (inputs.dry_run == true || inputs.dry_run == 'true')
         env:
           SA_EMAIL: ${{ steps.current.outputs.sa_email }}
           OLD_KEY_ID: ${{ steps.current.outputs.old_key_id }}
@@ -236,7 +260,7 @@ jobs:
       # On failure, open a GitHub issue so the team is notified
       # -----------------------------------------------------------------------
       - name: Open failure issue
-        if: failure()
+        if: steps.preflight.outputs.enabled == 'true' && failure()
         env:
           GH_TOKEN: ${{ secrets.ROTATION_GITHUB_PAT }}
         run: |

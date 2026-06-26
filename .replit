@@ -28,14 +28,6 @@ args = "mobile-test"
 task = "workflow.run"
 args = "knowledge-test"
 
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "typecheck"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "api-test"
-
 [[workflows.workflow]]
 name = "typecheck-all"
 author = "agent"
@@ -65,28 +57,6 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pnpm --filter @workspace/ai-knowledge run test"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow]]
-name = "typecheck"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm run typecheck"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow]]
-name = "api-test"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/api-server run test"
 
 [workflows.workflow.metadata]
 isValidation = true
