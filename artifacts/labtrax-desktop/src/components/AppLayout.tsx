@@ -71,36 +71,59 @@ interface NavItem {
 interface NavGroup {
   label: string;
   icon: typeof LayoutDashboard;
-  children: NavItem[];
+  /** When set, the group header navigates here; a separate chevron toggles the children. */
+  path?: string;
+  children: (NavItem | NavGroup)[];
+  adminOnly?: boolean;
+  billingOnly?: boolean;
 }
 
 const NAV: (NavItem | NavGroup)[] = [
   { label: "Dashboard", path: "/", icon: LayoutDashboard },
   { label: "Cases", path: "/cases", icon: FileText },
-  { label: "Customer Center", path: "/accounts", icon: Building2 },
-  {
-    label: "Financial",
-    icon: Wallet,
-    children: [
-      { label: "Invoices", path: "/invoices", icon: Receipt },
-      { label: "Statements", path: "/statements", icon: CreditCard },
-      { label: "Bank Register", path: "/finance", icon: Wallet },
-    ],
-  },
-  { label: "Pricing", path: "/pricing", icon: Tag },
-  { label: "Lists", path: "/lists", icon: List, billingOnly: true },
-  { label: "Reports", path: "/reports", icon: FileBarChart2, billingOnly: true },
 ];
 
 function isGroup(item: NavItem | NavGroup): item is NavGroup {
   return "children" in item;
 }
 
+function navPathActive(path: string, location: string): boolean {
+  if (path === "/") return location === "/" || location === "";
+  return location.startsWith(path);
+}
+
+function groupContainsActive(group: NavGroup, location: string): boolean {
+  return group.children.some((child) =>
+    isGroup(child)
+      ? groupContainsActive(child, location)
+      : navPathActive(child.path, location),
+  );
+}
+
 const BILLING_ROLES = new Set(["owner", "admin", "billing"]);
 
-const SECONDARY: NavItem[] = [
+const SECONDARY: (NavItem | NavGroup)[] = [
   { label: "Subscription", path: "/billing", icon: Zap },
-  { label: "Admin Settings", path: "/settings", icon: Settings },
+  {
+    label: "Admin Settings",
+    path: "/settings",
+    icon: Settings,
+    children: [
+      { label: "Customer Center", path: "/accounts", icon: Building2 },
+      {
+        label: "Financial",
+        icon: Wallet,
+        children: [
+          { label: "Invoices", path: "/invoices", icon: Receipt },
+          { label: "Statements", path: "/statements", icon: CreditCard },
+          { label: "Bank Register", path: "/finance", icon: Wallet },
+        ],
+      },
+      { label: "Pricing", path: "/pricing", icon: Tag },
+      { label: "Lists", path: "/lists", icon: List, billingOnly: true },
+      { label: "Reports", path: "/reports", icon: FileBarChart2, billingOnly: true },
+    ],
+  },
   { label: "Maintenance", path: "/maintenance", icon: HardDrive, adminOnly: true },
   { label: "Download Desktop App", path: "/download", icon: MonitorDown },
 ];
@@ -224,9 +247,7 @@ export function AppLayout({ children }: Props) {
     [meQuery.data],
   );
 
-  const financialPaths = ["/invoices", "/statements", "/finance"];
-  const financialActive = financialPaths.some((p) => location.startsWith(p));
-  const [financialOpen, setFinancialOpen] = useState(financialActive);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 
   const successCount = entries.filter((e) => e.status === "success").length;
   const errorCount = entries.filter((e) => e.status === "error").length;
@@ -335,25 +356,26 @@ export function AppLayout({ children }: Props) {
     setSelectedNotif(notif);
   }
 
-  function renderNavItem(item: NavItem, indent = false) {
+  function renderNavItem(item: NavItem, depth = 0) {
     if (item.billingOnly && !hasBillingLab) return null;
     if (item.adminOnly && user?.role !== "admin") return null;
-    const active =
-      item.path === "/"
-        ? location === "/" || location === ""
-        : location.startsWith(item.path);
+    const active = navPathActive(item.path, location);
     const Icon = item.icon;
+    const indent = depth > 0;
+    const showBackupDot = backupOverdue && item.path === "/settings";
     return (
       <li key={item.path}>
         <Link
           href={item.path}
+          title={showBackupDot ? "Backup overdue — visit Settings → Backup" : undefined}
           className={`flex items-center gap-3 rounded-md text-sm font-medium transition-colors ${
-            indent ? "px-3 py-1.5 pl-9" : "px-3 py-2"
+            indent ? "py-1.5" : "px-3 py-2"
           } ${
             active
               ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
               : "text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
           }`}
+          style={indent ? { paddingLeft: 24 + depth * 12, paddingRight: 12 } : undefined}
         >
           <Icon size={indent ? 14 : 16} strokeWidth={2.2} />
           <span className="flex-1">{item.label}</span>
@@ -362,9 +384,111 @@ export function AppLayout({ children }: Props) {
               {item.badge}
             </span>
           )}
+          {showBackupDot && (
+            <AlertTriangle
+              size={13}
+              className="shrink-0 text-amber-400"
+              aria-label="Backup overdue"
+            />
+          )}
         </Link>
       </li>
     );
+  }
+
+  function renderNavGroup(group: NavGroup, depth = 0) {
+    if (group.billingOnly && !hasBillingLab) return null;
+    if (group.adminOnly && user?.role !== "admin") return null;
+    const open = openGroups[group.label] ?? groupContainsActive(group, location);
+    const Icon = group.icon;
+    const indent = depth > 0;
+    const toggle = () =>
+      setOpenGroups((prev) => ({ ...prev, [group.label]: !open }));
+    const chevron = open ? (
+      <ChevronDown size={14} className="shrink-0 opacity-60" />
+    ) : (
+      <ChevronRight size={14} className="shrink-0 opacity-60" />
+    );
+    const childList = open ? (
+      <ul className="mt-0.5 space-y-0.5">
+        {group.children.map((child) => renderNavNode(child, depth + 1))}
+      </ul>
+    ) : null;
+
+    if (group.path) {
+      const headerActive =
+        navPathActive(group.path, location) ||
+        (!open && groupContainsActive(group, location));
+      const showBackupDot = backupOverdue && group.path === "/settings";
+      return (
+        <li key={group.label}>
+          <div className="flex items-center gap-1">
+            <Link
+              href={group.path}
+              title={showBackupDot ? "Backup overdue — visit Settings → Backup" : undefined}
+              className={`flex flex-1 items-center gap-3 rounded-md text-sm font-medium transition-colors ${
+                indent ? "py-1.5" : "px-3 py-2"
+              } ${
+                headerActive
+                  ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
+                  : "text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              }`}
+              style={indent ? { paddingLeft: 24 + depth * 12 } : undefined}
+            >
+              <Icon size={indent ? 14 : 16} strokeWidth={2.2} />
+              <span className="flex-1">{group.label}</span>
+              {showBackupDot && (
+                <AlertTriangle
+                  size={13}
+                  className="shrink-0 text-amber-400"
+                  aria-label="Backup overdue"
+                />
+              )}
+            </Link>
+            <button
+              type="button"
+              onClick={toggle}
+              aria-expanded={open}
+              aria-label={open ? `Collapse ${group.label}` : `Expand ${group.label}`}
+              className="shrink-0 rounded-md p-2 text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            >
+              {chevron}
+            </button>
+          </div>
+          {childList}
+        </li>
+      );
+    }
+
+    const headerActive = groupContainsActive(group, location) && !open;
+    return (
+      <li key={group.label}>
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          className={`w-full flex items-center gap-3 rounded-md text-sm font-medium transition-colors ${
+            indent ? "py-1.5" : "px-3 py-2"
+          } ${
+            headerActive
+              ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
+              : "text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          }`}
+          style={indent ? { paddingLeft: 24 + depth * 12, paddingRight: 12 } : undefined}
+        >
+          <Icon size={indent ? 14 : 16} strokeWidth={2.2} />
+          <span className="flex-1 text-left">{group.label}</span>
+          {chevron}
+        </button>
+        {childList}
+      </li>
+    );
+  }
+
+  function renderNavNode(node: NavItem | NavGroup, depth = 0) {
+    return isGroup(node)
+      ? renderNavGroup(node, depth)
+      : renderNavItem(node, depth);
   }
 
   return (
@@ -380,73 +504,14 @@ export function AppLayout({ children }: Props) {
             Workspace
           </div>
           <ul className="space-y-0.5">
-            {NAV.map((item) => {
-              if (isGroup(item)) {
-                const isOpen = financialOpen || financialActive;
-                const Icon = item.icon;
-                return (
-                  <li key={item.label}>
-                    <button
-                      type="button"
-                      onClick={() => setFinancialOpen((v) => !v)}
-                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                        financialActive && !isOpen
-                          ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
-                          : "text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                      }`}
-                    >
-                      <Icon size={16} strokeWidth={2.2} />
-                      <span className="flex-1 text-left">{item.label}</span>
-                      {isOpen ? (
-                        <ChevronDown size={14} className="shrink-0 opacity-60" />
-                      ) : (
-                        <ChevronRight size={14} className="shrink-0 opacity-60" />
-                      )}
-                    </button>
-                    {isOpen && (
-                      <ul className="mt-0.5 space-y-0.5">
-                        {item.children.map((child) => renderNavItem(child, true))}
-                      </ul>
-                    )}
-                  </li>
-                );
-              }
-              return renderNavItem(item as NavItem);
-            })}
+            {NAV.map((item) => renderNavNode(item, 0))}
           </ul>
 
           <div className="text-[10px] uppercase tracking-[0.2em] text-sidebar-foreground/45 px-3 pt-6 pb-2">
             System
           </div>
           <ul className="space-y-0.5">
-            {SECONDARY.filter((item) => !item.adminOnly || user?.role === "admin").map((item) => {
-              const active = location.startsWith(item.path);
-              const Icon = item.icon;
-              const showBackupDot = backupOverdue && item.path === "/settings";
-              return (
-                <li key={item.path}>
-                  <Link
-                    href={item.path}
-                    title={showBackupDot ? "Backup overdue — visit Settings → Backup" : undefined}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                      active
-                        ? "bg-sidebar-primary text-sidebar-primary-foreground"
-                        : "text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                    }`}
-                  >
-                    <Icon size={16} strokeWidth={2.2} />
-                    <span className="flex-1">{item.label}</span>
-                    {showBackupDot && (
-                      <AlertTriangle
-                        size={13}
-                        className="shrink-0 text-amber-400"
-                        aria-label="Backup overdue"
-                      />
-                    )}
-                  </Link>
-                </li>
-              );
-            })}
+            {SECONDARY.map((item) => renderNavNode(item, 0))}
           </ul>
         </nav>
         <div className="px-3 pb-3">

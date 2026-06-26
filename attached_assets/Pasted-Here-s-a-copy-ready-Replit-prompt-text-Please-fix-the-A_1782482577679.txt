@@ -1,0 +1,104 @@
+Here’s a copy-ready Replit prompt:
+
+```text
+Please fix the Admin Settings structure in LabTracks so the sections better match the real product model.
+
+Goal:
+Clean up Admin Settings by removing confusing “Users” admin navigation and clarifying the lab team area. The Customer Center should remain unchanged and should continue showing dental practices and the dentists within each practice. The Profile area should keep the existing “Lab Team Status” panel, but add the current lab name above it, for example “SDR1 Lab Environment.”
+
+Current problem:
+Admin Settings currently has overlapping/confusing concepts:
+- “Organizations” appears to list dental practices and possibly the dental lab itself.
+- “Customer Center” already handles dental practices and dentists, and should remain the source of truth for customers.
+- “Users” mixes dentists/customer users with dental lab technicians/team members, which is confusing.
+- Profile already has a good “Lab Team Status” section showing the lab owner and other lab users/team members with roles.
+
+Desired behavior:
+1. Leave Customer Center as-is.
+   - It should still show dental practices.
+   - It should still show dentists within each practice.
+   - Do not rename, remove, or restructure Customer Center unless absolutely required.
+
+2. Remove or hide the “Users” section from Admin Settings navigation.
+   - The admin should no longer see a generic “Users” section in Admin Settings.
+   - Before deleting code/data paths, inspect whether this section is used elsewhere for permissions, invitations, auth, routing, or role management.
+   - If removing it would cause a major regression, stop and explain the risk before making destructive changes.
+
+3. Keep the existing Profile > Lab Team Status section.
+   - Do not remove or redesign the Lab Team Status panel.
+   - It currently shows the owner and three other users/team members, and that behavior is good.
+   - Add the lab name above the Lab Team Status window, using the current lab/environment name from the app data if available.
+   - Example heading: “SDR1 Lab Environment”
+   - Under that, keep “Lab Team Status” and the existing list of lab users/roles.
+
+4. Clarify the data model in the UI:
+   - Dental practices and dentists belong in Customer Center.
+   - Lab users/team members belong in the lab environment/team status area.
+   - Avoid generic “Users” language where it mixes customer users with lab staff.
+
+Likely root cause:
+The Admin Settings navigation and labels are mixing separate concepts:
+- customer organizations/dental practices
+- dentists tied to those practices
+- internal lab team members
+- generic app users/auth records
+
+This likely created duplicate or confusing admin areas: Organizations, Customer Center, Users, and Profile/Lab Team Status.
+
+Implementation steps:
+1. Inspect the Admin Settings routing/navigation components.
+   - Find where “Users,” “Organizations,” “Customer Center,” and “Profile” are defined.
+   - Identify whether “Users” is only a navigation/view concern or whether it is tied to important permission/invitation logic.
+
+2. Inspect the current “Users” admin page.
+   - Determine what data it loads.
+   - Check whether it mixes lab technicians, dentists, owners, admins, or customer users.
+   - Check whether any create/edit/delete user actions exist there.
+   - Do not delete backend APIs, database tables, or auth logic just to remove the UI entry.
+
+3. Remove or hide the “Users” section from Admin Settings navigation.
+   - Prefer a low-risk UI removal/hide first.
+   - Remove any dead route only if it is clearly unused and safe.
+   - If there are deep links, handle them gracefully with redirect or a not-found/admin fallback.
+
+4. Inspect Profile > Lab Team Status.
+   - Find the component rendering Lab Team Status.
+   - Keep the existing status list and roles.
+   - Add the lab/environment name above the panel.
+   - Use real lab data if available, such as the active lab name, organization name, tenant name, or environment name.
+   - If no lab name is available, use a safe fallback like “Lab Environment,” but note the missing source.
+
+5. Evaluate “Organizations.”
+   - Do not remove Organizations blindly.
+   - First determine whether it powers Customer Center, lab tenancy, billing, permissions, or practice records.
+   - If it is redundant and safe to hide from Admin Settings, explain that.
+   - If removing it could break customer/practice/lab relationships, leave it in place and explain the risk.
+
+Important constraints:
+- Do not break Customer Center.
+- Do not change dentist/practice relationships.
+- Do not delete users, practices, organizations, lab members, or roles from the database.
+- Do not remove backend auth/permissions logic unless it is proven unused.
+- Avoid broad refactors.
+- Preserve the current Lab Team Status behavior.
+- Warn before making any change that could affect permissions, invitations, customer access, lab team access, or tenant/lab ownership.
+
+Regression checks:
+Before finishing, verify:
+- Customer Center still loads dental practices.
+- Customer Center still shows dentists inside each practice.
+- Admin Settings no longer shows a generic “Users” section.
+- Profile still shows Lab Team Status.
+- Profile now shows the lab name above Lab Team Status.
+- Existing lab owner and lab team members still appear with the correct roles.
+- No auth, permissions, invite, or role-management flows are broken.
+- Direct navigation to the old Users route does not crash the app.
+- No console errors are introduced.
+- Existing tests pass, or explain which checks could not be run.
+
+Please summarize:
+- What files/components you changed.
+- Whether “Users” was only hidden from navigation or fully removed.
+- Whether “Organizations” is safe to remove/hide or should remain because of backend/data-model dependencies.
+- Any risks or assumptions discovered during implementation.
+```
