@@ -1,0 +1,83 @@
+Please debug and fix this LabTrax Customer Center issue:
+
+Newly added practices still are not showing up in Customer Center after I add them.
+
+Current evidence:
+- The visible page is Customer Center, but the current route appears to be `/accounts`.
+- In `artifacts/labtrax-desktop/src/App.tsx`, `/customer-center` redirects to `/accounts`.
+- The current Customer Center implementation is likely `artifacts/labtrax-desktop/src/pages/accounts.tsx`.
+- `accounts.tsx` fetches organizations with:
+  `GET /organizations?includeArchived=true&includeLabPractices=true`
+  using query key:
+  `["organizations", { includeArchived: true, includeLabPractices: true }]`
+- It renders orgs where `o.type === "provider" || o.type === "lab"`.
+- It hides archived rows unless `Show archived` is checked.
+- The Add Practice dialog is imported from `artifacts/labtrax-desktop/src/pages/practices.tsx` as `AddPracticeDialog`.
+- `AddPracticeDialog` posts to `POST /organizations` with `type: "provider"` and `parentLabOrganizationId`.
+- Backend route is `artifacts/api-server/src/routes/organizations.ts`.
+- Screenshot shows `8 of 10` with `Show archived (2)` unchecked, so the page has more orgs than it displays. A newly created practice may be missing from the fetched org list, filtered out as archived/wrong type, or the UI may not be refetching the exact active query after creation.
+
+Goal:
+When I add a new dental practice from Customer Center, the new practice should appear immediately in the Customer Center table and still appear after page refresh. It should appear even if it has zero doctors and zero cases.
+
+Please investigate and implement the safest fix.
+
+Steps:
+1. Reproduce the issue:
+   - Open Customer Center.
+   - Add a uniquely named test practice.
+   - Confirm whether `POST /organizations` succeeds.
+   - Immediately check whether `GET /organizations?includeArchived=true&includeLabPractices=true` includes the new practice.
+
+2. Inspect backend behavior in `artifacts/api-server/src/routes/organizations.ts`:
+   - Confirm `POST /organizations` creates the practice as:
+     - `type: "provider"`
+     - correct `parentLabOrganizationId`
+     - `deletedAt: null`
+   - Confirm `GET /organizations?includeArchived=true&includeLabPractices=true` returns provider practices under labs administered by the caller.
+   - If the created provider is missing from this GET response, fix the backend list logic.
+
+3. Inspect frontend behavior in:
+   - `artifacts/labtrax-desktop/src/pages/accounts.tsx`
+   - `artifacts/labtrax-desktop/src/pages/practices.tsx`
+
+   Confirm `AddPracticeDialog` updates/refetches the same organizations query used by Customer Center:
+   - `["organizations", { includeArchived: true, includeLabPractices: true }]`
+
+   If it only invalidates a broad or different query and the UI remains stale, update the cache/refetch logic. Prefer inserting/updating the returned org with `queryClient.setQueriesData` and then invalidating/refetching the relevant organization queries.
+
+4. Improve post-create UX:
+   - After successful create, the new practice should be visible immediately.
+   - If no doctors are being added, close the dialog and/or open the newly created practice drawer.
+   - Do not silently close while leaving the user unable to find the saved practice.
+
+5. Add regression coverage:
+   - Backend test in `artifacts/api-server/src/routes/organizations.test.ts`:
+     create a lab, create a provider practice under it, then assert `GET /api/organizations?includeArchived=true&includeLabPractices=true` includes that provider.
+   - Frontend test if practical:
+     verify AddPracticeDialog success invalidates or updates the organizations query used by `accounts.tsx`.
+
+Constraints:
+- Do not remove Customer Center.
+- Do not rewrite the organizations/practices model broadly.
+- Do not delete existing orgs, practices, doctors, users, memberships, cases, or invoices.
+- Do not hide zero-case practices by default.
+- Keep archived practices hidden unless `Show archived` is checked.
+- Preserve existing doctors-within-practice behavior.
+- Preserve invoice selection behavior.
+- Do not break Admin Settings, organizations/membership/roles, backup/restore, cases, or invoices.
+
+Acceptance criteria:
+- Adding a new practice immediately shows it in Customer Center.
+- The practice appears after refresh.
+- The count updates correctly.
+- New practices with no doctors/cases still show.
+- Archived filtering still works.
+- No console errors.
+- Relevant tests and typecheck pass, or explain exactly what could not be run.
+
+Before finishing, summarize:
+- Root cause found.
+- Files changed.
+- Whether the bug was backend list visibility, frontend query/cache refresh, filtering, or post-create UX.
+- Regression tests added.
