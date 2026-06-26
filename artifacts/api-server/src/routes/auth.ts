@@ -112,6 +112,9 @@ function safeUser(user: any) {
     wantsUpdates: user.wantsUpdates,
     workStatus: user.workStatus ?? "available",
     profilePhotoUrl: user.profilePhotoUrl ?? null,
+    lastLoginAt: user.lastLoginAt
+      ? new Date(user.lastLoginAt).toISOString()
+      : null,
   };
 }
 

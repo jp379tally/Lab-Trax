@@ -735,13 +735,14 @@ export default function AccountsPage() {
                   <th className="text-left font-medium py-2.5">Email</th>
                   <th className="text-left font-medium py-2.5">Practice</th>
                   <th className="text-left font-medium py-2.5">Role</th>
-                  <th className="text-left font-medium px-4 py-2.5">Status</th>
+                  <th className="text-left font-medium py-2.5">Status</th>
+                  <th className="text-left font-medium px-4 py-2.5">Last login</th>
                 </tr>
               </thead>
               <tbody>
                 {usersQuery.isLoading && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-12 text-center text-muted-foreground">
+                    <td colSpan={6} className="px-4 py-12 text-center text-muted-foreground">
                       <Loader2 size={16} className="inline animate-spin mr-2" />
                       Loading accounts…
                     </td>
@@ -749,14 +750,14 @@ export default function AccountsPage() {
                 )}
                 {usersQuery.error && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-12 text-center text-destructive text-sm">
+                    <td colSpan={6} className="px-4 py-12 text-center text-destructive text-sm">
                       {(usersQuery.error as Error).message}
                     </td>
                   </tr>
                 )}
                 {!usersQuery.isLoading && !usersQuery.error && directoryUsers.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-12 text-center text-muted-foreground">
+                    <td colSpan={6} className="px-4 py-12 text-center text-muted-foreground">
                       {dirSearch.trim() ? "No accounts match your search." : "No accounts found."}
                     </td>
                   </tr>
@@ -788,6 +789,15 @@ export default function AccountsPage() {
                       }`}>
                         {u.isActive === false ? "Inactive" : "Active"}
                       </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                      {u.lastLoginAt ? (
+                        <span title={new Date(u.lastLoginAt).toLocaleString()}>
+                          {relativeTime(u.lastLoginAt)}
+                        </span>
+                      ) : (
+                        <span className="italic">Never</span>
+                      )}
                     </td>
                   </tr>
                 ))}
