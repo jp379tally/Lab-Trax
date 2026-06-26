@@ -543,6 +543,19 @@ vi.mock("@workspace/api-client-react", () => ({
     isPending: false,
     isError: false,
   }),
+  usePreviewDraftInvoice: () => ({
+    mutateAsync: vi.fn(async () => {
+      const override = mockAppOverrides.current.previewDraftResult;
+      if (override === "error") throw new Error("preview failed");
+      return {
+        ok: true,
+        data: override ?? { lineItems: [], subtotal: "0.00", total: "0.00" },
+      };
+    }),
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  }),
   useUpdateCase: () => ({
     mutateAsync: mockUpdateCaseMutateAsync,
     mutate: vi.fn(),

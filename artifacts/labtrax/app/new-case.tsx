@@ -16,12 +16,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import {
   useCreateCase,
+  usePreviewDraftInvoice,
   useSearchDoctors,
   getSearchDoctorsQueryKey,
   useCases,
   type CreateCaseInput,
   type CreateCaseInputRestorationsItem,
   type DoctorSearchEntry,
+  type PreviewDraftInvoiceResultData,
 } from "@workspace/api-client-react";
 import { resilientFetch } from "@/lib/query-client";
 import { useMe, editableLabMemberships, type MeMembership } from "@/lib/auth-me";
@@ -91,6 +93,33 @@ export default function NewCaseScreen() {
 
   const createCase = useCreateCase();
 
+  // ── Draft-invoice preview (read-only, display-only) ──
+  // Mirrors the desktop drop-zone preview: POSTs the same restorations the case
+  // will be created with to the non-persisting /invoices/preview-draft endpoint
+  // so the user sees line items + total before creating. No persistence here.
+  const previewInvoice = usePreviewDraftInvoice();
+  const previewMutateAsync = previewInvoice.mutateAsync;
+  const [invoicePreview, setInvoicePreview] =
+    useState<PreviewDraftInvoiceResultData | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState(false);
+
+  // Restorations the preview should price — the exact set that will be created
+  // (rows missing a tooth number or type are skipped, matching handleSubmit).
+  const previewRestorations = useMemo(
+    () =>
+      restorations
+        .filter((r) => r.toothNumber.trim() && r.restorationType.trim())
+        .map((r) => ({
+          toothNumber: r.toothNumber.trim(),
+          restorationType: r.restorationType.trim(),
+          ...(r.material.trim() ? { material: r.material.trim() } : {}),
+          ...(r.shade.trim() ? { shade: r.shade.trim() } : {}),
+          quantity: 1,
+        })),
+    [restorations],
+  );
+
   // Default the lab selector to the first editable lab once /me resolves.
   useEffect(() => {
     if (!selectedLabId && labs.length > 0) setSelectedLabId(labs[0].organizationId);
@@ -138,6 +167,47 @@ export default function NewCaseScreen() {
     const t = setTimeout(() => setDebouncedDoctor(doctorInput.trim()), 300);
     return () => clearTimeout(t);
   }, [doctorInput]);
+
+  // Debounced draft-invoice preview — fires 400 ms after the last edit to the
+  // lab, practice, doctor, or restorations. Cancels in-flight requests when
+  // inputs change so the latest edit always wins.
+  useEffect(() => {
+    if (!selectedLabId || previewRestorations.length === 0) {
+      setInvoicePreview(null);
+      setPreviewError(false);
+      setPreviewLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setPreviewLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await previewMutateAsync({
+          data: {
+            labOrganizationId: selectedLabId,
+            ...(providerOrgId ? { providerOrganizationId: providerOrgId } : {}),
+            ...(doctorName.trim() ? { doctorName: doctorName.trim() } : {}),
+            restorations: previewRestorations,
+          },
+        });
+        if (!cancelled) {
+          setInvoicePreview(res?.data ?? null);
+          setPreviewError(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setInvoicePreview(null);
+          setPreviewError(true);
+        }
+      } finally {
+        if (!cancelled) setPreviewLoading(false);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [selectedLabId, providerOrgId, doctorName, previewRestorations, previewMutateAsync]);
 
   // ── Barcode conflict check — debounced, fires 400 ms after last keystroke ──
   useEffect(() => {
@@ -624,6 +694,65 @@ export default function NewCaseScreen() {
           Restorations need a tooth number and type; blank rows are skipped.
         </Text>
 
+        {/* Draft-invoice preview (read-only) */}
+        {(previewLoading || previewError || (invoicePreview?.lineItems?.length ?? 0) > 0) ? (
+          <Card style={styles.previewCard} testID="invoice-preview">
+            <View style={styles.previewHeaderRow}>
+              <Ionicons name="receipt-outline" size={15} color={colors.textSecondary} />
+              <Text style={styles.previewTitle}>Invoice preview</Text>
+              <Text style={styles.previewSub}>estimated — created with the case</Text>
+            </View>
+            {previewError ? (
+              <Text style={styles.previewMuted}>
+                Couldn't load the invoice preview. The draft invoice will still be
+                generated when you create the case.
+              </Text>
+            ) : previewLoading && !invoicePreview ? (
+              <Text style={styles.previewMuted} testID="invoice-preview-loading">
+                Calculating…
+              </Text>
+            ) : (invoicePreview?.lineItems?.length ?? 0) === 0 ? (
+              <Text style={styles.previewMuted}>No line items yet.</Text>
+            ) : (
+              <View style={[styles.previewBody, previewLoading && styles.previewBodyLoading]}>
+                {invoicePreview!.lineItems!.map((li, idx) => {
+                  const qty = li.quantity ?? 1;
+                  const unitPrice = li.unitPrice ?? "0.00";
+                  const notPriced = li.priced === false;
+                  return (
+                    <View key={idx} style={styles.previewLineRow} testID={`invoice-preview-line-${idx}`}>
+                      <Text style={styles.previewLineDesc} numberOfLines={2}>
+                        {li.toothLabel ? (
+                          <Text style={styles.previewLineTooth}>{li.toothLabel} </Text>
+                        ) : null}
+                        {li.description}
+                      </Text>
+                      <Text style={styles.previewLineQty}>
+                        {qty} × ${unitPrice}
+                      </Text>
+                      {notPriced ? (
+                        <Text style={[styles.previewLineAmount, styles.previewNotPriced]} testID={`invoice-preview-notpriced-${idx}`}>
+                          not priced
+                        </Text>
+                      ) : (
+                        <Text style={styles.previewLineAmount}>
+                          ${li.lineTotal ?? "0.00"}
+                        </Text>
+                      )}
+                    </View>
+                  );
+                })}
+                <View style={styles.previewTotalRow}>
+                  <Text style={styles.previewTotalLabel}>Total</Text>
+                  <Text style={styles.previewTotalValue} testID="invoice-preview-total">
+                    ${invoicePreview!.total ?? "0.00"}
+                  </Text>
+                </View>
+              </View>
+            )}
+          </Card>
+        ) : null}
+
         {/* Due date */}
         <Field label="Due Date" styles={styles}>
           <DateField
@@ -853,6 +982,30 @@ function makeStyles(c: ThemeColors) {
     restoCol: { flex: 1, gap: Spacing.xs },
     miniLabel: { ...Typography.caption, color: c.textTertiary },
     hint: { ...Typography.caption, color: c.textTertiary },
+    previewCard: { gap: Spacing.sm, backgroundColor: c.surfaceAlt },
+    previewHeaderRow: { flexDirection: "row", alignItems: "center", gap: Spacing.xs, flexWrap: "wrap" },
+    previewTitle: { ...Typography.captionSemibold, color: c.text },
+    previewSub: { ...Typography.caption, color: c.textTertiary },
+    previewMuted: { ...Typography.caption, color: c.textSecondary },
+    previewBody: { gap: Spacing.xs },
+    previewBodyLoading: { opacity: 0.6 },
+    previewLineRow: { flexDirection: "row", alignItems: "flex-start", gap: Spacing.sm },
+    previewLineDesc: { ...Typography.caption, color: c.text, flex: 1 },
+    previewLineTooth: { ...Typography.caption, color: c.textSecondary },
+    previewLineQty: { ...Typography.caption, color: c.textSecondary, fontVariant: ["tabular-nums"] },
+    previewLineAmount: { ...Typography.caption, color: c.text, minWidth: 64, textAlign: "right", fontVariant: ["tabular-nums"] },
+    previewNotPriced: { color: c.warning },
+    previewTotalRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+      paddingTop: Spacing.xs,
+      marginTop: Spacing.xs,
+    },
+    previewTotalLabel: { ...Typography.captionSemibold, color: c.text },
+    previewTotalValue: { ...Typography.captionSemibold, color: c.text, fontVariant: ["tabular-nums"] },
     errorText: { ...Typography.caption, color: c.error, marginTop: Spacing.xs },
     submitBtn: {
       marginTop: Spacing.lg,
