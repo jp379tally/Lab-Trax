@@ -3841,6 +3841,81 @@ router.get(
   })
 );
 
+// ---------------------------------------------------------------------------
+// GET /cases/doctor-directory
+// Returns doctor name -> provider org (practice) associations derived from
+// canonical cases, so the dashboard Rx import can auto-fill the practice when
+// a known doctor is picked. Each row is a (doctorName, providerOrganizationId)
+// pair with a case count, letting the client pick the doctor's primary
+// practice. Scoped to the caller's authorized orgs (mirrors /doctor-names).
+// Legacy `lab_cases` rows are intentionally excluded: they carry no
+// providerOrganizationId, so they cannot map a doctor to a practice.
+// ---------------------------------------------------------------------------
+router.get(
+  "/doctor-directory",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+
+    const directMembershipOrgIds = (
+      await db.query.organizationMemberships.findMany({
+        where: and(
+          eq(organizationMemberships.userId, callerId),
+          eq(organizationMemberships.status, "active"),
+          isNull(organizationMemberships.deletedAt)
+        ),
+      })
+    ).map((m: any) => m.labId as string);
+    const authorizedOrgIds = new Set<string>(directMembershipOrgIds);
+    const callerUser = await db.query.users.findFirst({
+      where: eq(users.id, callerId),
+    });
+    if (callerUser?.userType === "provider") {
+      const { providerOrgIds } =
+        await getProviderOrgIdsForUserAndLinks(callerId);
+      for (const id of providerOrgIds) authorizedOrgIds.add(id);
+    }
+
+    const membershipOrgIds = Array.from(authorizedOrgIds);
+    if (!membershipOrgIds.length) return ok(res, []);
+
+    const rows = await db
+      .select({
+        doctorName: cases.doctorName,
+        providerOrganizationId: cases.providerOrganizationId,
+        caseCount: sql<number>`count(*)::int`,
+      })
+      .from(cases)
+      .where(
+        and(
+          or(
+            inArray(cases.labOrganizationId, membershipOrgIds),
+            inArray(cases.providerOrganizationId, membershipOrgIds)
+          ),
+          notDeleted(cases),
+          isNotNull(cases.doctorName),
+          ne(cases.doctorName, ""),
+          isNotNull(cases.providerOrganizationId)
+        )
+      )
+      .groupBy(cases.doctorName, cases.providerOrganizationId)
+      // Deterministic ordering so the client's "highest case count wins" pick is
+      // stable: most cases first, then a fixed tie-break on provider org id. The
+      // client keeps the first row seen per doctor (strict `>`), so ties always
+      // resolve to the same practice instead of arbitrary DB row order.
+      .orderBy(sql`count(*) DESC`, cases.providerOrganizationId);
+
+    const out = rows
+      .map((r) => ({
+        doctorName: String(r.doctorName ?? "").trim(),
+        providerOrganizationId: String(r.providerOrganizationId ?? ""),
+        caseCount: Number(r.caseCount ?? 0),
+      }))
+      .filter((r) => r.doctorName && r.providerOrganizationId);
+
+    return ok(res, out);
+  })
+);
+
 router.get(
   "/",
   asyncHandler(async (req, res) => {

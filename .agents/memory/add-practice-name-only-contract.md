@@ -7,7 +7,7 @@ description: Provider practice creation requires only name (+ parent-lab routing
 
 The server `createOrgSchema` (POST /api/organizations) requires only `name` +
 `type` for a provider practice. `city`/`state`/`zip` are **optional** (zod
-optional, DB columns nullable). A name-only practice (e.g. "Dr. Susan Byrne") is
+optional, DB columns nullable). A name-only practice (e.g. "Dr. Jane Doe") is
 a real, intentional workflow used from Customer Center.
 
 There is a protected regression test pinning this:

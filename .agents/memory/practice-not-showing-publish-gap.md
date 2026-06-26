@@ -8,8 +8,8 @@ description: Recurring "I added a practice but it doesn't show in Customer Cente
 When a lab admin reports a newly-added provider practice not appearing in
 Customer Center (or the Practices page), **check the production database
 first — do not assume a code bug.** This has recurred for multiple practices
-(e.g. a "Dr. Nancy E. Phillips, DDS" report, then three near-duplicate
-"Susan Byrne" entries the user re-created because the first never showed).
+(e.g. a single-practice report, then several near-duplicate entries the user
+re-created because the first never showed).
 
 ## The mechanism
 - Provider creates **intentionally do not create a `lab_memberships` row** for

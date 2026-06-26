@@ -124,6 +124,7 @@ describe("DashboardDropZone — /analyze-prescription call behavior (runtime)", 
       if (endpointPath === "/legacy/cases") return { cases: [] };
       if (endpointPath === "/organizations") return [];
       if (endpointPath === "/cases/doctor-names") return [];
+      if (endpointPath === "/cases/doctor-directory") return [];
       if (endpointPath === "/analyze-prescription") {
         return {
           doctorName: "Dr. Runtime",

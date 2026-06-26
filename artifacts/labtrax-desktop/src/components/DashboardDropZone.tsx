@@ -73,6 +73,12 @@ function normalizeDueDateForInput(raw: string | null | undefined): string {
   return "";
 }
 
+interface DoctorDirectoryEntry {
+  doctorName: string;
+  providerOrganizationId: string;
+  caseCount: number;
+}
+
 interface NewPracticeDraft {
   name: string;
   phone: string;
@@ -708,6 +714,18 @@ export function DashboardDropZone() {
   });
   const dropZoneDoctorNames = doctorNamesQuery.data ?? [];
 
+  // Doctor -> practice associations (derived from each doctor's canonical
+  // cases) so picking an on-record doctor in the Rx import auto-fills the
+  // practice. Lightweight; fetched once and reused across the picker.
+  const doctorDirectoryQuery = useQuery({
+    queryKey: ["case-doctor-directory"],
+    queryFn: () =>
+      apiFetch<DoctorDirectoryEntry[]>("/cases/doctor-directory"),
+    staleTime: 60_000,
+    initialData: () =>
+      qc.getQueryData<DoctorDirectoryEntry[]>(["case-doctor-directory"]),
+  });
+
   const legacy = legacyQuery.data?.cases ?? [];
   const labOrgs = useMemo(
     () => (orgsQuery.data ?? []).filter((o) => o?.type === "lab"),
@@ -717,6 +735,28 @@ export function DashboardDropZone() {
     () => (orgsQuery.data ?? []).filter((o) => o?.type !== "lab"),
     [orgsQuery.data],
   );
+  // Normalized doctor name -> the practice (provider org) the doctor has the
+  // most cases under, restricted to practices that are actually selectable in
+  // this picker. Used to auto-fill the practice when an on-record doctor is
+  // chosen in the Rx import.
+  const doctorNameToPracticeId = useMemo(() => {
+    const data = doctorDirectoryQuery.data;
+    const rows = Array.isArray(data) ? data : [];
+    const selectableOrgIds = new Set(providerOrgs.map((p) => p.id));
+    const best = new Map<string, { orgId: string; count: number }>();
+    for (const row of rows) {
+      const key = (row?.doctorName ?? "").trim().toLowerCase();
+      const orgId = row?.providerOrganizationId ?? "";
+      if (!key || !orgId || !selectableOrgIds.has(orgId)) continue;
+      const prev = best.get(key);
+      if (!prev || (row?.caseCount ?? 0) > prev.count) {
+        best.set(key, { orgId, count: row?.caseCount ?? 0 });
+      }
+    }
+    const out = new Map<string, string>();
+    for (const [k, v] of best) out.set(k, v.orgId);
+    return out;
+  }, [doctorDirectoryQuery.data, providerOrgs]);
   const labOrg = labOrgs[0] ?? null;
 
   const materialVocabQuery = useQuery({
@@ -2474,7 +2514,21 @@ export function DashboardDropZone() {
         <div className="grid grid-cols-2 gap-2">
           <DoctorNamePicker
             value={r.doctorName || ""}
-            onChange={(name) => setRxDraft({ ...r, doctorName: name })}
+            onChange={(name) => {
+              setRxDraft({ ...r, doctorName: name });
+              // When the chosen doctor is on record, auto-fill the practice
+              // with the doctor's primary practice so the user doesn't have to
+              // re-select it from memory. Unknown/custom names leave the
+              // practice unchanged.
+              const mappedPracticeId = doctorNameToPracticeId.get(
+                name.trim().toLowerCase(),
+              );
+              if (mappedPracticeId && mappedPracticeId !== rxProviderOrgId) {
+                setRxProviderOrgId(mappedPracticeId);
+                setRxPracticeError(false);
+                setShowAliasSavePrompt(false);
+              }
+            }}
             doctorNames={dropZoneDoctorNames}
             placeholder="Doctor"
             size="sm"

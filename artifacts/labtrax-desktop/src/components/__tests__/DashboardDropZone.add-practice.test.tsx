@@ -203,6 +203,7 @@ describe("DashboardDropZone — inline Add practice", () => {
     if (path === "/organizations" && opts?.method !== "POST")
       return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
     if (path === "/cases/doctor-names") return Promise.resolve([]);
+    if (path === "/cases/doctor-directory") return Promise.resolve([]);
     if (path === "/analyze-prescription") return Promise.resolve(RX_RESPONSE);
     return null;
   }

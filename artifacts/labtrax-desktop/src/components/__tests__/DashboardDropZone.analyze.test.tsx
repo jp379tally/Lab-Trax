@@ -208,6 +208,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/organizations")
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
+      if (path === "/cases/doctor-directory") return Promise.resolve([]);
       return Promise.reject(new Error(`Unexpected apiFetch: ${path}`));
     });
     _mockDataUrl = "data:image/jpeg;base64,/9j/fakeJpegData==";
@@ -234,6 +235,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/organizations")
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
+      if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription")
         return Promise.resolve(VALID_RX_RESPONSE);
       return Promise.reject(new Error(`Unexpected: ${path}`));
@@ -266,6 +268,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/organizations")
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
+      if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription") {
         try { capturedBody = JSON.parse(opts?.body ?? "{}"); } catch {}
         return Promise.resolve(VALID_RX_RESPONSE);
@@ -299,6 +302,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/organizations")
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
+      if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription") {
         analyzeCalled = true;
         return Promise.resolve(VALID_RX_RESPONSE);
@@ -325,6 +329,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/organizations")
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
+      if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription")
         return Promise.resolve(VALID_RX_RESPONSE);
       return Promise.reject(new Error(`Unexpected: ${path}`));
@@ -355,6 +360,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path === "/organizations") return Promise.resolve([]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
+      if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription")
         return Promise.resolve({
           success: false,
@@ -386,6 +392,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path === "/organizations") return Promise.resolve([]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
+      if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription")
         return Promise.reject(new Error("Internal Server Error"));
       return Promise.reject(new Error(`Unexpected: ${path}`));
@@ -412,6 +419,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path === "/organizations") return Promise.resolve([]);
       if (path === "/cases/doctor-names") return Promise.resolve([]);
+      if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription")
         return Promise.resolve({ success: false });
       return Promise.reject(new Error(`Unexpected: ${path}`));
