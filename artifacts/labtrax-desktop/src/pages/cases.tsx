@@ -141,11 +141,6 @@ type SortKey =
   | "createdAt"
   | "totalPrice";
 
-function generateCaseNumber(): string {
-  const now = new Date();
-  const yy = String(now.getFullYear()).slice(2);
-  return `${yy}-1`;
-}
 
 interface RestorationDraft {
   id: string;
@@ -739,7 +734,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   }, [casesQuery.data]);
 
   const [form, setForm] = useState<NewCaseFormData>({
-    caseNumber: generateCaseNumber(),
+    caseNumber: "",
     labOrganizationId: "",
     providerOrganizationId: "",
     patientFirstName: "",
@@ -861,6 +856,50 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     setForm((f) => ({ ...f, dueDate: d.toISOString().slice(0, 10) }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.labOrganizationId]);
+
+  // Fetch the lab's real next available case number whenever the selected lab
+  // changes. The number is lab-specific, so clear it until a lab is chosen and
+  // re-fetch on every change. Failures degrade gracefully (field stays editable).
+  useEffect(() => {
+    // Clear immediately on any lab change so a number from a different lab is
+    // never left visible while the next-number request is in flight.
+    setForm((f) => ({ ...f, caseNumber: "" }));
+    if (!form.labOrganizationId) {
+      return;
+    }
+    let cancelled = false;
+    apiFetch<{ caseNumber: string }>(
+      `/cases/next-case-number?labOrganizationId=${encodeURIComponent(form.labOrganizationId)}`,
+    )
+      .then((res) => {
+        if (!cancelled && res?.caseNumber) {
+          setForm((f) => ({ ...f, caseNumber: res.caseNumber }));
+        }
+      })
+      .catch(() => {
+        // Non-fatal: leave the field editable so the user can type one manually.
+      });
+    return () => {
+      cancelled = true;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.labOrganizationId]);
+
+  function regenerateCaseNumber() {
+    if (!form.labOrganizationId) {
+      setError("Select a lab organization first.");
+      return;
+    }
+    apiFetch<{ caseNumber: string }>(
+      `/cases/next-case-number?labOrganizationId=${encodeURIComponent(form.labOrganizationId)}`,
+    )
+      .then((res) => {
+        if (res?.caseNumber) set("caseNumber", res.caseNumber);
+      })
+      .catch(() => {
+        // Non-fatal: leave the existing value in place.
+      });
+  }
 
   const [dueDateCapped, setDueDateCapped] = useState(false);
 
@@ -991,12 +1030,14 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                   className="flex-1 h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary font-mono"
                   value={form.caseNumber}
                   onChange={(e) => set("caseNumber", e.target.value)}
+                  placeholder={form.labOrganizationId ? "" : "Select a lab first…"}
                   required
                 />
                 <button
                   type="button"
-                  onClick={() => set("caseNumber", generateCaseNumber())}
-                  className="h-9 px-3 text-xs rounded-md bg-secondary hover:bg-secondary/80 text-muted-foreground transition-colors"
+                  onClick={regenerateCaseNumber}
+                  disabled={!form.labOrganizationId}
+                  className="h-9 px-3 text-xs rounded-md bg-secondary hover:bg-secondary/80 text-muted-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Regenerate
                 </button>
