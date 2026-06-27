@@ -56,8 +56,69 @@ jobs:
           # See "Why pushes need BUILD_BOT_TOKEN" at the top of this file.
           token: ${{ secrets.BUILD_BOT_TOKEN || github.token }}
 
+      # Defensive guard: this workflow is workflow_dispatch-only, so GitHub's
+      # path filters (paths/paths-ignore) do not apply. Compute the set of files
+      # changed since the last release and decide whether any of them can affect
+      # the desktop build. Mobile-only changes (artifacts/labtrax/**), docs, and
+      # the mockup sandbox must NOT cut a desktop release. The diff base is the
+      # latest v* tag (the last release point); if no tag exists, fall back to
+      # the previous commit. No `secrets` are referenced in this step.
+      - name: Determine whether changes are desktop-relevant
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Pick a diff base: the most recent v* tag, else the parent commit.
+          BASE=""
+          if LATEST_TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null); then
+            BASE="$LATEST_TAG"
+            echo "Diff base: latest tag ${BASE}"
+          elif git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            BASE="HEAD~1"
+            echo "Diff base: no v* tag found, using HEAD~1"
+          else
+            echo "::notice::No diff base available (single-commit history) — treating as desktop-relevant."
+            echo "desktop_relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "${BASE}" HEAD)
+          if [[ -z "$CHANGED" ]]; then
+            echo "::notice::No file changes since ${BASE} — skipping desktop release."
+            echo "desktop_relevant=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Changed files since ${BASE}:"
+          echo "$CHANGED"
+
+          # A change is desktop-relevant if any file is outside the set of
+          # paths known NOT to affect the desktop build. Desktop-relevant roots
+          # include artifacts/labtrax-desktop/**, artifacts/api-server/**, lib/**
+          # and anything not explicitly excluded below.
+          NON_DESKTOP_REGEX='^(artifacts/labtrax/|artifacts/mockup-sandbox/|docs/|\.local/)'
+          RELEVANT="false"
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            if [[ ! "$f" =~ $NON_DESKTOP_REGEX ]]; then
+              RELEVANT="true"
+              echo "Desktop-relevant change detected: $f"
+              break
+            fi
+          done <<< "$CHANGED"
+
+          if [[ "$RELEVANT" == "true" ]]; then
+            echo "::notice::Desktop-relevant changes detected — proceeding with release tag."
+            echo "desktop_relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Only non-desktop changes (mobile/docs/mockup) since ${BASE} — skipping desktop release."
+            echo "desktop_relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Bump patch version, commit, and push tag
         id: tag
+        if: ${{ steps.scope.outputs.desktop_relevant == 'true' }}
         shell: bash
         run: |
           set -euo pipefail

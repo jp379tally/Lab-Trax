@@ -103,11 +103,33 @@ jobs:
       # The script lists and deletes all objects under the CI prefix and is safe
       # to run repeatedly (prints "Nothing to clean up" when the prefix is empty).
       #
+      # GitHub forbids referencing the `secrets` context in any `if:` condition
+      # (job- or step-level) — it raises "Unrecognized named-value: 'secrets'",
+      # which is a workflow startup_failure that turns the entire CI run red on
+      # every push. Instead, map the secret into `env` in a preflight step and
+      # emit a non-secret `enabled` output; subsequent steps gate on that output.
+      # This mirrors the pattern in rotate-ci-key.yml. The secret value is never
+      # echoed. (Mapping a secret to env and reading it in a script is the only
+      # allowed way to branch on a secret's presence.)
+      - name: Preflight — detect GCS credentials
+        id: gcs_preflight
+        shell: bash
+        env:
+          CI_GOOGLE_CREDENTIALS_JSON: ${{ secrets.CI_GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          if [[ -n "$CI_GOOGLE_CREDENTIALS_JSON" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::CI GCS credentials are configured — storage integration test will run."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CI GCS credentials are not configured — storage integration test will auto-skip cleanly."
+          fi
+
       # If the secret is absent the write step is skipped, GOOGLE_APPLICATION_
       # CREDENTIALS stays unset, and the storage integration test auto-skips
       # via its own guard (SUITE_ENABLED check in installer-storage-e2e.test.ts).
       - name: Write GCS credentials file
-        if: ${{ secrets.CI_GOOGLE_CREDENTIALS_JSON != '' }}
+        if: ${{ steps.gcs_preflight.outputs.enabled == 'true' }}
         run: |
           echo '${{ secrets.CI_GOOGLE_CREDENTIALS_JSON }}' > /tmp/gcs-ci-key.json
           echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcs-ci-key.json" >> "$GITHUB_ENV"
@@ -123,7 +145,7 @@ jobs:
       # Authoritative age information is available in the "Rotate CI GCS Key"
       # workflow, which queries the IAM API directly.
       - name: Best-effort GCS key age check (heuristic, non-blocking)
-        if: ${{ secrets.CI_GOOGLE_CREDENTIALS_JSON != '' }}
+        if: ${{ steps.gcs_preflight.outputs.enabled == 'true' }}
         shell: bash
         env:
           CI_GOOGLE_CREDENTIALS_JSON: ${{ secrets.CI_GOOGLE_CREDENTIALS_JSON }}
