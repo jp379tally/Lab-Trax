@@ -1333,8 +1333,9 @@ export function InvoiceEditor({
   }, [doctorNames, queryClient]);
 
   const practicesQuery = useQuery({
-    queryKey: ["organizations"],
-    queryFn: () => apiFetch<Organization[]>("/organizations"),
+    queryKey: ["organizations", "includeLabPractices"],
+    queryFn: () =>
+      apiFetch<Organization[]>("/organizations?includeLabPractices=true"),
     enabled: isAdmin,
     staleTime: 60_000,
   });
@@ -2469,18 +2470,18 @@ export function InvoiceEditor({
                   className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
                   disabled={practicesQuery.isLoading || reassignMutation.isPending}
                 >
-                  {practices.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.displayName || p.name}
-                    </option>
-                  ))}
-                  {practices.length === 0 && (
+                  {!practices.some((p) => p.id === providerId) && (
                     <option value={providerId}>
                       {detailQuery.data?.providerOrganization?.name ||
                         invoice.providerOrganization?.name ||
                         providerId}
                     </option>
                   )}
+                  {practices.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.displayName || p.name}
+                    </option>
+                  ))}
                 </select>
               ) : (
                 <>
