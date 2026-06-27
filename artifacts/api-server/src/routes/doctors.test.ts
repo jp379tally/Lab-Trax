@@ -99,6 +99,28 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     return id;
   }
 
+  // Legacy mobile cases keep the doctor name inside a TEXT JSON blob.
+  async function insertLegacyCase(opts: {
+    id?: string;
+    caseData: unknown;
+    labId?: string;
+    deletedAt?: Date | null;
+  }) {
+    const { db, labCases } = dbMod as any;
+    const id = opts.id ?? rid("lc");
+    await db.insert(labCases).values({
+      id,
+      ownerId: adminUserId,
+      organizationId: opts.labId ?? labOrgId,
+      caseData:
+        typeof opts.caseData === "string"
+          ? opts.caseData
+          : JSON.stringify(opts.caseData),
+      deletedAt: opts.deletedAt ?? null,
+    });
+    return id;
+  }
+
   beforeAll(async () => {
     process.env["JWT_SECRET"] =
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-doctors-merge";
@@ -184,10 +206,14 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       organizationMemberships,
       userSessions,
       auditLogs,
+      labCases,
     } = dbMod as any;
     await db
       .delete(auditLogs)
       .where(inArray(auditLogs.organizationId, [labOrgId, otherLabOrgId]));
+    await db
+      .delete(labCases)
+      .where(inArray(labCases.organizationId, [labOrgId, otherLabOrgId]));
     await db
       .delete(pricingOverrides)
       .where(eq(pricingOverrides.labOrganizationId, labOrgId));
@@ -647,6 +673,228 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       .delete(pricingOverrides)
       .where(inArray(pricingOverrides.id, [ovId, newOvId]));
   });
+
+  // -------------------------------------------------------------------------
+  // Legacy `lab_cases` blob rewriting (the variant-spelling picker fix).
+  // The role-agnostic doctor-name picker unions canonical `cases.doctorName`
+  // with names parsed out of legacy mobile blobs, so a merge that only
+  // rewrites canonical rows leaves merged-away spellings resurfacing. These
+  // tests pin the blob rewrite + its undo.
+  // -------------------------------------------------------------------------
+  it("merge rewrites legacy lab_cases blobs, preserving other keys and skipping malformed", async () => {
+    const { db, labCases, cases } = dbMod as any;
+
+    const canonId = await insertCase({
+      caseNumber: rid("CN"),
+      doctorName: "Dr. Cory CouchA",
+      practiceId: practiceAId,
+    });
+
+    const legA = await insertLegacyCase({
+      caseData: {
+        doctorName: "Dr. CouchA",
+        patientName: "Jane Roe",
+        status: "in_progress",
+        nested: { keep: true },
+      },
+    });
+    // Trimmed + different case → still an exact match.
+    const legB = await insertLegacyCase({
+      caseData: { doctorName: "  dr. couchA  ", note: "keepme" },
+    });
+    // Malformed (not JSON) → must be left untouched and uncounted.
+    const malformed = await insertLegacyCase({ caseData: "{not valid json" });
+    // Unrelated doctor → untouched.
+    const other = await insertLegacyCase({
+      caseData: { doctorName: "Dr. Unrelated" },
+    });
+
+    const r = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: "Dr. Cory CouchA",
+        targetProviderOrganizationId: practiceAId,
+        sources: [{ doctorName: "Dr. CouchA", providerOrganizationId: null }],
+      });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data.legacyCasesMoved).toBe(2);
+    expect(r.body.data.entries[0].legacyCasesMoved).toBe(2);
+
+    const rows = await db
+      .select()
+      .from(labCases)
+      .where(inArray(labCases.id, [legA, legB, malformed, other]));
+    const byId = new Map<string, any>(rows.map((x: any) => [x.id, x]));
+    const a = JSON.parse(byId.get(legA).caseData);
+    expect(a.doctorName).toBe("Dr. Cory CouchA");
+    expect(a.patientName).toBe("Jane Roe");
+    expect(a.status).toBe("in_progress");
+    expect(a.nested).toEqual({ keep: true });
+    const b = JSON.parse(byId.get(legB).caseData);
+    expect(b.doctorName).toBe("Dr. Cory CouchA");
+    expect(b.note).toBe("keepme");
+    expect(byId.get(malformed).caseData).toBe("{not valid json");
+    expect(JSON.parse(byId.get(other).caseData).doctorName).toBe(
+      "Dr. Unrelated"
+    );
+
+    await db
+      .delete(labCases)
+      .where(inArray(labCases.id, [legA, legB, malformed, other]));
+    await db.delete(cases).where(eq(cases.id, canonId));
+  }, 30000);
+
+  it("merge honors includeSoftDeleted for legacy lab_cases blobs", async () => {
+    const { db, labCases } = dbMod as any;
+    const live = await insertLegacyCase({
+      caseData: { doctorName: "Dr. LegSoft" },
+    });
+    const soft = await insertLegacyCase({
+      caseData: { doctorName: "Dr. LegSoft" },
+      deletedAt: new Date(),
+    });
+
+    // Default: the soft-deleted legacy blob is left alone.
+    const r1 = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: "Dr. LegSoftTarget",
+        targetProviderOrganizationId: practiceAId,
+        sources: [{ doctorName: "Dr. LegSoft", providerOrganizationId: null }],
+      });
+    expect(r1.status).toBe(200);
+    expect(r1.body.data.legacyCasesMoved).toBe(1);
+    const softAfter1 = (
+      await db.select().from(labCases).where(eq(labCases.id, soft))
+    )[0];
+    expect(JSON.parse(softAfter1.caseData).doctorName).toBe("Dr. LegSoft");
+
+    // includeSoftDeleted:true also rewrites the soft-deleted blob.
+    const r2 = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: "Dr. LegSoftTarget",
+        targetProviderOrganizationId: practiceAId,
+        includeSoftDeleted: true,
+        sources: [{ doctorName: "Dr. LegSoft", providerOrganizationId: null }],
+      });
+    expect(r2.status).toBe(200);
+    expect(r2.body.data.legacyCasesMoved).toBe(1);
+    const softAfter2 = (
+      await db.select().from(labCases).where(eq(labCases.id, soft))
+    )[0];
+    expect(JSON.parse(softAfter2.caseData).doctorName).toBe("Dr. LegSoftTarget");
+
+    await db.delete(labCases).where(inArray(labCases.id, [live, soft]));
+  }, 30000);
+
+  it("undo restores legacy blob doctorName (preserving other keys) and refuses if renamed after merge", async () => {
+    const { db, labCases } = dbMod as any;
+    const leg = await insertLegacyCase({
+      caseData: { doctorName: "Dr. LegUndo", patientName: "Sam Poe", x: 1 },
+    });
+
+    const r = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: "Dr. LegUndoTarget",
+        targetProviderOrganizationId: practiceAId,
+        sources: [{ doctorName: "Dr. LegUndo", providerOrganizationId: null }],
+      });
+    expect(r.status).toBe(200);
+    expect(r.body.data.legacyCasesMoved).toBe(1);
+    const auditId = r.body.data.entries[0].auditLogId;
+    const movedRow = (
+      await db.select().from(labCases).where(eq(labCases.id, leg))
+    )[0];
+    expect(JSON.parse(movedRow.caseData).doctorName).toBe("Dr. LegUndoTarget");
+
+    const u = await request(appMod.default)
+      .post(`/api/doctors/merge/${auditId}/undo`)
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({});
+    expect(u.status).toBe(200);
+    expect(u.body.data.legacyReverted).toBe(1);
+    const restored = JSON.parse(
+      (await db.select().from(labCases).where(eq(labCases.id, leg)))[0].caseData
+    );
+    expect(restored.doctorName).toBe("Dr. LegUndo");
+    expect(restored.patientName).toBe("Sam Poe");
+    expect(restored.x).toBe(1);
+
+    // Re-merge, then tamper the blob's doctorName → undo must refuse (409).
+    const r2 = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: "Dr. LegUndoTarget2",
+        targetProviderOrganizationId: practiceAId,
+        sources: [{ doctorName: "Dr. LegUndo", providerOrganizationId: null }],
+      });
+    const audit2 = r2.body.data.entries[0].auditLogId;
+    await db
+      .update(labCases)
+      .set({ caseData: JSON.stringify({ doctorName: "Dr. LegUndoEdited", x: 1 }) })
+      .where(eq(labCases.id, leg));
+    const blocked = await request(appMod.default)
+      .post(`/api/doctors/merge/${audit2}/undo`)
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({});
+    expect(blocked.status).toBe(409);
+
+    await db.delete(labCases).where(eq(labCases.id, leg));
+  }, 30000);
+
+  it("doctor-names stops listing a legacy variant after it is merged away", async () => {
+    const { db, labCases, cases } = dbMod as any;
+    const canonId = await insertCase({
+      caseNumber: rid("CN"),
+      doctorName: "Dr. Cory CouchE2E",
+      practiceId: practiceAId,
+    });
+    const leg = await insertLegacyCase({
+      caseData: { doctorName: "Dr. CouchE2E" },
+    });
+
+    const before = await request(appMod.default)
+      .get("/api/cases/doctor-names")
+      .set("Authorization", `Bearer ${tokens.admin}`);
+    expect(before.status).toBe(200);
+    expect(before.body.data).toContain("Dr. CouchE2E");
+    expect(before.body.data).toContain("Dr. Cory CouchE2E");
+
+    const r = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: "Dr. Cory CouchE2E",
+        targetProviderOrganizationId: practiceAId,
+        sources: [{ doctorName: "Dr. CouchE2E", providerOrganizationId: null }],
+      });
+    expect(r.status).toBe(200);
+    expect(r.body.data.legacyCasesMoved).toBe(1);
+
+    const after = await request(appMod.default)
+      .get("/api/cases/doctor-names")
+      .set("Authorization", `Bearer ${tokens.admin}`);
+    expect(after.status).toBe(200);
+    expect(after.body.data).not.toContain("Dr. CouchE2E");
+    expect(after.body.data).toContain("Dr. Cory CouchE2E");
+
+    await db.delete(labCases).where(eq(labCases.id, leg));
+    await db.delete(cases).where(eq(cases.id, canonId));
+  }, 30000);
 });
 
 /**

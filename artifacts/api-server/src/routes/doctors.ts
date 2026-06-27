@@ -11,14 +11,21 @@
  *     Remapped to the target name; if the target already has an
  *     override row the source override is collapsed (soft-deleted) so
  *     the unique index is not violated.
+ *   - `lab_cases` (legacy mobile rows) carry the doctor name inside the
+ *     `case_data` JSON blob rather than a column. The role-agnostic
+ *     doctor-name picker (`/cases/doctor-names`) unions canonical names
+ *     with names parsed from these blobs, so a merge rewrites the blob's
+ *     `doctorName` to the target (preserving every other key) — otherwise
+ *     merged-away spellings keep resurfacing in the picker. Reversible via
+ *     the `legacyMoves` snapshot in the audit metadata. Practice-less legacy
+ *     rows are left untouched when the source name already equals the target
+ *     (a same-name/different-practice merge has no blob to disambiguate).
  *
  * The following are intentionally NOT touched by a merge:
  *   - `users.doctorName` (provider user accounts) — out of scope per
  *     task #382. Account merging stays on the cross-lab linking flow.
  *   - `invoices.doctorName` is a snapshot value computed from the case
  *     at issuance — moving cases re-derives it on the next quote/edit.
- *   - `lab_cases` (legacy mobile rows) carry doctor name inside the
- *     JSON blob; rewriting that blob is out of scope here.
  *
  * Audit + undo: every source→target rename writes a single `doctor_merged`
  * audit row containing enough before/after state for the undo endpoint
@@ -32,6 +39,7 @@ import { db } from "@workspace/db";
 import {
   auditLogs,
   cases,
+  labCases,
   organizations,
   organizationMemberships,
   pricingOverrides,
@@ -217,6 +225,68 @@ function caseSourceWhere(
   return and(...conds);
 }
 
+// ---------------------------------------------------------------------------
+// Legacy mobile cases (`lab_cases`) store the doctor name inside a TEXT JSON
+// blob rather than a column. The doctor-name picker unions canonical
+// `cases.doctorName` with names parsed out of these blobs, so a merge that
+// only rewrites canonical rows leaves the merged-away spellings resurfacing
+// in the picker. The helpers below let merge/preview/undo rewrite the blob's
+// `doctorName` safely: parsing is defensive (malformed/non-object blobs are
+// skipped, never thrown on) and every other key is preserved untouched.
+// ---------------------------------------------------------------------------
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (m) => `\\${m}`);
+}
+
+function parseLegacyDoctorName(
+  caseData: string | null
+): { obj: Record<string, unknown>; name: string } | null {
+  if (typeof caseData !== "string") return null;
+  try {
+    const obj = JSON.parse(caseData);
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+    const name = String((obj as Record<string, unknown>).doctorName ?? "").trim();
+    if (!name) return null;
+    return { obj: obj as Record<string, unknown>, name };
+  } catch {
+    return null;
+  }
+}
+
+// WHERE clause selecting legacy rows that *might* carry this doctor name.
+// The ilike on the raw blob text is only a cheap prefilter; the authoritative
+// match is the parsed `doctorName` (see matchLegacyRows).
+function legacyCaseSourceWhere(
+  labId: string,
+  doctorName: string,
+  includeSoftDeleted: boolean
+) {
+  const conds = [
+    eq(labCases.organizationId, labId),
+    ilike(labCases.caseData, `%${escapeLike(doctorName)}%`),
+  ];
+  if (!includeSoftDeleted) conds.push(isNull(labCases.deletedAt));
+  return and(...conds);
+}
+
+// Narrow prefiltered rows to exact (case-insensitive, trimmed) matches on the
+// parsed `doctorName`, skipping malformed/non-object blobs.
+function matchLegacyRows(
+  rows: Array<{ id: string; caseData: string }>,
+  doctorName: string
+): Array<{ id: string; before: string; obj: Record<string, unknown> }> {
+  const want = doctorName.trim().toLowerCase();
+  const out: Array<{ id: string; before: string; obj: Record<string, unknown> }> =
+    [];
+  for (const r of rows) {
+    const parsed = parseLegacyDoctorName(r.caseData);
+    if (!parsed) continue;
+    if (parsed.name.toLowerCase() !== want) continue;
+    out.push({ id: r.id, before: parsed.name, obj: parsed.obj });
+  }
+  return out;
+}
+
 router.post(
   "/merge/preview",
   asyncHandler(async (req, res) => {
@@ -237,9 +307,15 @@ router.post(
       lastCaseAt: string | null;
       recentCaseNumbers: string[];
       overridesCount: number;
+      legacyCases: number;
     }> = [];
     let totalCases = 0;
     let totalOverrides = 0;
+    let totalLegacyCases = 0;
+    // Track legacy rows already attributed to an earlier source so the
+    // preview's claim-once order mirrors the merge (no double counting when
+    // two sources share a doctor name but differ by practice).
+    const seenLegacyIds = new Set<string>();
 
     for (const s of sources) {
       const where = caseSourceWhere(labId, s, input.includeSoftDeleted);
@@ -290,6 +366,28 @@ router.post(
         );
       const overridesCount = Number(overrideCountRows[0]?.n ?? 0);
 
+      // Legacy mobile cases store the doctor name in the JSON blob. Count the
+      // ones this merge would rewrite so legacy-only sources don't preview as
+      // "0 cases". Skip when the source name already equals the target — the
+      // merge leaves practice-less legacy rows untouched in that case.
+      let legacyCases = 0;
+      if (
+        s.doctorName.trim().toLowerCase() !==
+        input.targetDoctorName.trim().toLowerCase()
+      ) {
+        const legacyRows = await db
+          .select({ id: labCases.id, caseData: labCases.caseData })
+          .from(labCases)
+          .where(
+            legacyCaseSourceWhere(labId, s.doctorName, input.includeSoftDeleted)
+          );
+        for (const m of matchLegacyRows(legacyRows, s.doctorName)) {
+          if (seenLegacyIds.has(m.id)) continue;
+          seenLegacyIds.add(m.id);
+          legacyCases++;
+        }
+      }
+
       const practice = s.providerOrganizationId
         ? practices.get(s.providerOrganizationId)
         : null;
@@ -299,14 +397,16 @@ router.post(
         providerOrganizationId: s.providerOrganizationId,
         practiceName:
           practice?.displayName || practice?.name || (s.providerOrganizationId ? null : "(no practice)"),
-        totalCases: exactTotal,
+        totalCases: exactTotal + legacyCases,
         firstCaseAt: first,
         lastCaseAt: last,
         recentCaseNumbers: recent.slice(0, 5).map((r) => r.caseNumber),
         overridesCount,
+        legacyCases,
       });
-      totalCases += exactTotal;
+      totalCases += exactTotal + legacyCases;
       totalOverrides += overridesCount;
+      totalLegacyCases += legacyCases;
     }
 
     let targetCases = 0;
@@ -330,6 +430,7 @@ router.post(
     return ok(res, {
       totalCases,
       totalOverrides,
+      totalLegacyCases,
       sources: sourceRows,
       targetExists,
       targetCases,
@@ -354,6 +455,10 @@ router.post(
       let casesMoved = 0;
       let overridesMoved = 0;
       let overridesCollapsed = 0;
+      let legacyCasesMoved = 0;
+      // A legacy row is rewritten by at most one source so undo can attribute
+      // it back correctly (two sources may share a name but differ by practice).
+      const claimedLegacyIds = new Set<string>();
       const entries: Array<{
         auditLogId: string;
         sourceDoctorName: string;
@@ -361,6 +466,7 @@ router.post(
         casesMoved: number;
         overridesMoved: number;
         overridesCollapsed: number;
+        legacyCasesMoved: number;
       }> = [];
 
       for (const s of sources) {
@@ -438,6 +544,39 @@ router.post(
 
         casesMoved += movedIds.length;
 
+        // 3. Legacy mobile cases store the doctor name inside the JSON blob.
+        // Rewrite matching blobs to the target so merged-away spellings stop
+        // resurfacing in the role-agnostic doctor-name picker. A source that
+        // differs from the target only by practice (same name) must not drag
+        // practice-less legacy rows around, so skip those.
+        const legacyMoves: Array<{ id: string; before: string }> = [];
+        if (
+          s.doctorName.trim().toLowerCase() !==
+          input.targetDoctorName.trim().toLowerCase()
+        ) {
+          const legacyRows = await tx
+            .select({ id: labCases.id, caseData: labCases.caseData })
+            .from(labCases)
+            .where(
+              legacyCaseSourceWhere(labId, s.doctorName, input.includeSoftDeleted)
+            );
+          for (const m of matchLegacyRows(legacyRows, s.doctorName)) {
+            if (claimedLegacyIds.has(m.id)) continue;
+            await tx
+              .update(labCases)
+              .set({
+                caseData: JSON.stringify({
+                  ...m.obj,
+                  doctorName: input.targetDoctorName,
+                }),
+              })
+              .where(eq(labCases.id, m.id));
+            claimedLegacyIds.add(m.id);
+            legacyMoves.push({ id: m.id, before: m.before });
+          }
+        }
+        legacyCasesMoved += legacyMoves.length;
+
         const sourcePractice = s.providerOrganizationId
           ? practices.get(s.providerOrganizationId)
           : null;
@@ -470,10 +609,12 @@ router.post(
               casesMoved: movedIds.length,
               overridesMoved: movedOverrideIds.length,
               overridesCollapsed: collapsedOverrideIds.length,
+              legacyCasesMoved: legacyMoves.length,
               includeSoftDeleted: input.includeSoftDeleted,
               movedCaseIds: movedIds,
               movedOverrideIds,
               collapsedOverrideIds,
+              legacyMoves,
             },
           })
           .returning({ id: auditLogs.id });
@@ -485,10 +626,17 @@ router.post(
           casesMoved: movedIds.length,
           overridesMoved: movedOverrideIds.length,
           overridesCollapsed: collapsedOverrideIds.length,
+          legacyCasesMoved: legacyMoves.length,
         });
       }
 
-      return { casesMoved, overridesMoved, overridesCollapsed, entries };
+      return {
+        casesMoved,
+        overridesMoved,
+        overridesCollapsed,
+        legacyCasesMoved,
+        entries,
+      };
     });
 
     return ok(res, {
@@ -544,6 +692,16 @@ router.post(
       meta.collapsedOverrideIds
     )
       ? meta.collapsedOverrideIds.filter((x: unknown) => typeof x === "string")
+      : [];
+    const legacyMoves: Array<{ id: string; before: string }> = Array.isArray(
+      meta.legacyMoves
+    )
+      ? meta.legacyMoves.filter(
+          (m: unknown): m is { id: string; before: string } =>
+            !!m &&
+            typeof (m as any).id === "string" &&
+            typeof (m as any).before === "string"
+        )
       : [];
 
     if (typeof before.doctorName !== "string" || typeof after.doctorName !== "string") {
@@ -712,6 +870,63 @@ router.post(
         overridesReverted += collapsedOverrideIds.length;
       }
 
+      // Restore legacy lab_cases blobs. All-or-nothing: verify every blob
+      // still holds the merge target name before touching any of them, so a
+      // post-merge edit can't be clobbered (mirrors the canonical path).
+      let legacyReverted = 0;
+      if (legacyMoves.length > 0) {
+        const ids = legacyMoves.map((m) => m.id);
+        const currentLegacy = await tx
+          .select({ id: labCases.id, caseData: labCases.caseData })
+          .from(labCases)
+          .where(inArray(labCases.id, ids));
+        if (currentLegacy.length !== ids.length) {
+          throw new HttpError(
+            409,
+            "A merged legacy case has been removed since — undo refused."
+          );
+        }
+        const byId = new Map(currentLegacy.map((r) => [r.id, r] as const));
+        const targetLc = String(after.doctorName).trim().toLowerCase();
+        const restore: Array<{
+          id: string;
+          obj: Record<string, unknown>;
+          before: string;
+        }> = [];
+        for (const mv of legacyMoves) {
+          const row = byId.get(mv.id);
+          if (!row) {
+            throw new HttpError(
+              409,
+              "A merged legacy case has been removed since — undo refused."
+            );
+          }
+          const parsed = parseLegacyDoctorName(row.caseData);
+          if (!parsed) {
+            throw new HttpError(
+              409,
+              "A merged legacy case is malformed — undo refused."
+            );
+          }
+          if (parsed.name.toLowerCase() !== targetLc) {
+            throw new HttpError(
+              409,
+              "A merged legacy case was renamed after the merge — undo refused."
+            );
+          }
+          restore.push({ id: mv.id, obj: parsed.obj, before: mv.before });
+        }
+        for (const r of restore) {
+          await tx
+            .update(labCases)
+            .set({
+              caseData: JSON.stringify({ ...r.obj, doctorName: r.before }),
+            })
+            .where(eq(labCases.id, r.id));
+        }
+        legacyReverted = restore.length;
+      }
+
       await tx.insert(auditLogs).values({
         userId,
         organizationId: auditLabId,
@@ -726,10 +941,11 @@ router.post(
           undoneAuditLogId: audit.id,
           casesReverted,
           overridesReverted,
+          legacyReverted,
         },
       });
 
-      return { casesReverted, overridesReverted };
+      return { casesReverted, overridesReverted, legacyReverted };
     });
 
     return ok(res, {
