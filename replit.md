@@ -4,6 +4,8 @@
 
 pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
 
+LabTrax is a multi-tenant dental laboratory case-tracking system: an Express 5 API (`artifacts/api-server`), an Electron + React desktop client (`artifacts/labtrax-desktop`), and an Expo (React Native) mobile app (`artifacts/labtrax`), all backed by PostgreSQL + Drizzle (`lib/db`).
+
 ## User Preferences
 
 - **Paid/publishing builds stay script-only — never Replit workflows.** EAS iOS Build + Submit and Desktop Build + Publish must be run manually from Shell (`bash scripts/eas-ios-build.sh`, `bash scripts/desktop-build-publish.sh`), never registered as Replit workflows. The reason: the workflow tooling auto-attaches any new workflow to the `Project` run aggregate (the Run button), which would fire these paid/publishing builds accidentally. Only reconsider if Replit adds a way to exclude a workflow from the `Project` aggregate; even then they must remain manual-only and off the Run button.
@@ -63,6 +65,8 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 
 ## Environment Variables
 
+Full reference (SMS, backup/OneDrive, cleanup, AI-memory cleanup, desktop installer, billing, GitHub backup): [`docs/environment-variables.md`](docs/environment-variables.md).
+
 **Required in production:**
 - `JWT_SECRET` — auth token signing; defaults to insecure value in dev
 - `PLATFORM_ADMIN_SECRET` — must be sent as `X-Platform-Admin-Secret` to access all `/api/admin/*` endpoints; if unset, all admin endpoints return 403
@@ -72,136 +76,6 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `AI_INTEGRATIONS_OPENAI_API_KEY` — enables AI features (Rx parsing, AI chat, smile preview)
 - `LABTRAX_ENABLE_DEMO_SEEDS` — set `"true"` to seed demo users on startup
 - `PLATFORM_ADMIN_PIN` — short numeric PIN alternative to `PLATFORM_ADMIN_SECRET` via `X-Platform-Admin-Pin`; requires a signed-in `role:"admin"` user (PIN alone cannot authenticate)
-
-**SMS (Vonage):**
-- `VONAGE_API_KEY` — Vonage API key for SMS
-- `VONAGE_API_SECRET` — Vonage API secret for SMS
-- `VONAGE_PHONE_NUMBER` — sender phone number for outbound SMS (must be registered with Vonage)
-
-**Backup / OneDrive:**
-- `ONEDRIVE_*` — OneDrive integration credentials. Settings → Backup shows status via `GET /api/admin/backup/onedrive-status` and a Reconnect button at `POST /api/admin/backup/onedrive-reconnect`.
-- `BACKUP_HOUR_UTC` — UTC hour for nightly OneDrive backup (default: `7`)
-- `BACKUP_HISTORY_RETENTION_DAYS` — days of `backup_runs` to keep (default: `90`; overridable per-lab)
-- `BACKUP_HISTORY_MAX_ROWS` — max `backup_runs` rows (default: `500`; overridable per-lab)
-
-**AI memory candidate cleanup:**
-- `AI_MEMORY_CANDIDATE_RETENTION_DAYS` — reviewed (approved/rejected) `ai_memory_candidates` rows older than this are pruned by the nightly billing job (default: `90`). De-dup (skip re-proposing rejected keys) is preserved within this window; rejected rows only become eligible for re-proposal after they age out.
-- `AI_MEMORY_CANDIDATE_MAX_PENDING_PER_LAB` — max pending candidates kept per lab; oldest pending rows beyond the cap are dropped (default: `500`).
-
-**Cleanup:**
-- `CLEANUP_HOUR_UTC` — UTC hour for nightly orphaned media cleanup (default: `8`)
-- `CLEANUP_ALERT_MIN_REMOVED` — min files removed before alert email (default: `1`)
-- `CLEANUP_ALERT_MIN_FREED_MB` — min MB freed before alert email (default: `0`, disabled)
-- `CLEANUP_HISTORY_RETENTION_DAYS` — days of `media_cleanup_runs` to keep (default: `365`)
-- `CLEANUP_HISTORY_MAX_ROWS` — max `media_cleanup_runs` rows (default: `1000`)
-- `MEDIA_CLEANUP_JOB_TOKEN` / `MEDIA_CLEANUP_API_URL` — for standalone cleanup script (scheduled deployment only)
-
-**Desktop installer (code-signing):**
-- `CSC_LINK` — base64-encoded PFX certificate (OV or EV) for Windows code-signing. Encode with `base64 -w 0 certificate.pfx`. When set alongside `CSC_KEY_PASSWORD`, electron-builder signs the installer automatically, removing the SmartScreen "Windows protected your PC" warning. Absent → unsigned build (SmartScreen warning present).
-- `CSC_KEY_PASSWORD` — password protecting the `CSC_LINK` PFX. Must be set together with `CSC_LINK`. Signing config (sha256, RFC 3161 via Sectigo) lives in `artifacts/labtrax-desktop/electron-builder.yml` under `signtoolOptions`.
-- `CSC_EXPECTED_PUBLISHER` — optional but strongly recommended. Exact CN (Common Name) from the code-signing certificate (e.g. `"Acme Dental Software LLC"`). When set, `desktop-build-publish.sh` verifies the built EXE's signer subject contains this string after `signtool verify /pa` passes — catches wrong-cert scenarios (expired cert renewed under a new name, dev cert used in production, etc.). Absent → publisher-name check is skipped.
-
-**Desktop installer:**
-- `DESKTOP_INSTALLER_VERSION` — version string in Desktop App settings panel (default: `"1.0.0"`)
-- `DESKTOP_INSTALLER_URL` — download URL (default: `/downloads/LabTrax-Setup.exe`); switch to `/downloads/LabTrax-Windows-Portable.zip` (portable ZIP fallback) or `/downloads/LabTrax.dmg` for those slots
-- `INSTALLER_HEALTH_CHECK_HOUR_UTC` — UTC hour for nightly installer health check (default: `6`)
-- `INSTALLER_HEALTH_BASE_URL` — base URL for the download HEAD probe (e.g. `https://your.replit.app`); if unset, reachability probe is skipped
-- `DEFAULT_OBJECT_STORAGE_BUCKET_ID`, `PRIVATE_OBJECT_DIR`, `PUBLIC_OBJECT_SEARCH_PATHS` — App Storage config (auto-set when provisioned)
-- `GITHUB_REPO_URL` — optional; shows Actions tab link in Settings → Desktop App
-- `BUILD_BOT_TOKEN` — fine-grained GitHub PAT (Contents: Read & Write + bypass branch protection) used by CI to push incremented build counters to protected branches; falls back to `github.token` if unset
-
-**Billing:**
-- `SUBSCRIPTION_TRIAL_DAYS` — free trial length (default: `30`). Changed from 14 → 30 days. Existing in-flight trials keep their original end date.
-- `SUBSCRIPTION_GRACE_DAYS` — grace period after trial/payment failure before locking (default: `7`)
-- `STRIPE_PRICE_ID` — default Stripe price ID (fallback); run `pnpm --filter @workspace/scripts run seed-stripe-products` to create all four plans
-- `STRIPE_PRICE_ID_LAB_MONTHLY` — Lab plan, monthly billing ($99/mo) — output by seed-stripe-products
-- `STRIPE_PRICE_ID_LAB_ANNUAL` — Lab plan, annual billing ($990/yr) — output by seed-stripe-products
-- `STRIPE_PRICE_ID_PROVIDER_MONTHLY` — Provider plan, monthly billing ($49/mo) — output by seed-stripe-products
-- `STRIPE_PRICE_ID_PROVIDER_ANNUAL` — Provider plan, annual billing ($490/yr) — output by seed-stripe-products
-- `STRIPE_WEBHOOK_SECRET` — Stripe webhook signing secret (store in Stripe Replit integration connector)
-- `EXPO_PUBLIC_REVENUECAT_IOS_API_KEY` / `EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY` — RevenueCat public keys for IAP
-
-## GitHub Backup (Auto-Mirror)
-
-The full project is mirrored to **github.com/jp379tally/Lab-Trax**. Because the managed Replit environment hard-blocks the `git` CLI's destructive ops (push/reset), the mirror is kept current with a pure-JS pusher built on **isomorphic-git** that speaks git smart-HTTP directly over HTTPS — it never shells out to `git`.
-
-- **Script:** `scripts/src/push-to-github.ts` → `pnpm --filter @workspace/scripts run push-to-github`
-- **What it does:** reads the remote `main` tip, computes only the commits the remote is missing, and pushes them in small chunks (default 25). Each chunk is fast-forward only (`force:false`) — it refuses to push if histories have diverged. It is **idempotent and resumable**: a crash/timeout just resumes from the new remote tip on the next run, and a run with nothing new pushes nothing.
-- **Auth:** reads the `GITHUB_PUSH_TOKEN` secret (GitHub PAT). The token is never logged.
-- **Scheduling:** run it as a **Replit Scheduled Deployment** on a nightly cadence (build command `pnpm install`, run command `pnpm --filter @workspace/scripts run push-to-github`). Configure/publish the scheduled deployment from the main version of the project (a task agent cannot publish).
-- **Manual trigger:** run the `push-to-github` command above any time to sync immediately.
-- **Env overrides (all optional):** `GITHUB_BACKUP_REPO_URL` (default the Lab-Trax repo), `GITHUB_BACKUP_BRANCH` (default `main`), `GITHUB_BACKUP_CHUNK_SIZE` (default `25` — keep small for binary-heavy history), `GITHUB_BACKUP_TIME_BUDGET_MS` (soft budget; stop starting new chunks after it elapses and exit cleanly to resume next run).
-- Background: `.agents/memory/main-agent-git-push-block.md`.
-
-## Subscription Billing
-
-LabTrax uses a free-trial + recurring subscription model. Every new org/user gets a 14-day trial automatically on signup.
-
-| Status | Access | Notes |
-|--------|--------|-------|
-| `trialing` | Full | 14-day trial starts at signup |
-| `active` | Full | Paying subscriber |
-| `past_due` | Full | Last payment failed; grace before locking |
-| `grace` | Read-only | Trial expired without payment |
-| `locked` | Locked | Grace period elapsed |
-| `canceled` | Locked | Manually canceled |
-| `legacy_free` | Full | Predates billing; grandfathered |
-
-- **Desktop/web** — Stripe hosted checkout; webhooks at `POST /api/billing/webhook/stripe`
-- **iOS/Android** — RevenueCat; webhooks at `POST /api/billing/webhook/revenuecat`
-
-Key files: `lib/entitlement.ts`, `lib/billing-jobs.ts`, `lib/stripeClient.ts`, `routes/billing.ts`
-
-Setup: connect Stripe integration → run `seed-stripe-products` → set `STRIPE_PRICE_ID` → configure webhook → set `STRIPE_WEBHOOK_SECRET`.
-
-## Desktop Installer Download
-
-Installers (`LabTrax-Windows-Portable.zip`, `LabTrax-Setup.exe`, `LabTrax.dmg`) are stored in App Storage and served at `GET /downloads/<filename>` (no auth). Object keys: `<PRIVATE_OBJECT_DIR>/desktop-installer/<filename>`.
-
-To publish a new installer:
-1. **Auto-tag desktop release (manual dispatch):** `.github/workflows/auto-tag-desktop-release.yml` is `workflow_dispatch`-only (the push trigger was removed). When run, it bumps the patch in `artifacts/labtrax-desktop/package.json`, commits with `[skip ci]`, tags `vX.Y.Z`, and pushes via `BUILD_BOT_TOKEN`. The tag fires `release.yml` → builds + publishes to `/downloads/`. An internal changed-files guard skips cleanly (no bump, no tag) when the changes since the last `v*` tag are confined to non-desktop paths (`artifacts/labtrax/**` mobile, `docs/`, `artifacts/mockup-sandbox/`, `.local/`), and also honors `[skip desktop-release]` / `[skip ci]` in the commit message. Because secrets cannot be referenced in any `if:` (GitHub raises `Unrecognized named-value: 'secrets'`, a startup failure), `ci.yml` gates its optional GCS storage-test steps via a preflight step that maps the secret into `env` and emits a non-secret `enabled` output (same pattern as `rotate-ci-key.yml`).
-2. **In-app (manual):** Settings → Desktop App → "Choose installer and upload" → `POST /api/admin/desktop-installer/upload`
-3. **CLI bootstrap:** `pnpm --filter @workspace/scripts run upload-desktop-installer`
-4. **CI tag-push (manual override):** push a `v*` tag yourself to re-run `release.yml` for a specific commit.
-
-The publish endpoint (`/publish`) accepts `X-Platform-Admin-Secret` without a user JWT so CI doesn't need an account. The Windows + macOS publish steps in `release.yml` now **fail loudly** (exit 1) when `PLATFORM_ADMIN_SECRET` or `PUBLISH_API_BASE_URL` is unset — auto-release on merge made silent skip a real foot-gun. A deduped alert email fires at most once per 6 h window for any publish failure or health-check failure. Full runbook: [`docs/desktop-publish-pipeline.md`](docs/desktop-publish-pipeline.md), [`artifacts/labtrax-desktop/docs/auto-update-runbook.md`](artifacts/labtrax-desktop/docs/auto-update-runbook.md).
-
-End-users see the current installed version and a **Check for updates** button in Settings → Desktop App (admin-only). The card mirrors auto-updater state (checking / available / downloading / ready-to-install) and exposes **Restart & install** when a build is staged. IPC: `check-for-updates`, `download-update`, `get-update-state`, plus the `update-state` broadcast channel.
-
-Auto-update channel for existing installs uses the **generic** electron-updater provider pointed at `GET /downloads/latest.yml` on the same App Storage-backed API server that serves the installer ZIPs. The feed URL is baked into `resources/app-update.yml` at build time by `scripts/desktop-build-publish.sh` (via `UPDATE_FEED_URL`). No GitHub remote or `GH_TOKEN` is required for auto-update to work.
-
-## Cross-Lab Provider Account Numbers
-
-Every provider user and org gets a platform-wide account number on creation: format `<seq><YY><F><L>` (e.g. `2926JW`), allocated atomically per `(year, entityType)` via `platform_account_sequences` (`SELECT … FOR UPDATE`). See `artifacts/api-server/src/lib/platform-account-number.ts`.
-
-- **Login:** `/api/auth/login` accepts `username` or `identifier`; `identifier` matches username or `platform_account_number` (case-insensitive).
-- **Cross-lab linking:** When a 2nd lab adds a doctor whose email/phone matches an existing platform doctor, an SMS invite is sent. Pairs tracked in `account_link_invites`.
-- **YES-reply linking:** `POST /api/sms/sms-inbound` (form-encoded, no auth) — replying YES creates a `doctor_account_links` row.
-- **Manual linking:** Mobile → Profile → "Link Labs" (`app/link-labs.tsx`) → `POST /api/account-links/manual`
-- **Provider aggregation:** Cases and invoices expand `membershipOrgIds` via `getProviderOrgIdsForUserAndLinks` — doctors see a unified worklist across linked labs.
-- **Backfill:** `pnpm --filter @workspace/scripts run backfill-platform-account-numbers` (safe to re-run)
-
-## iTero Lab-Review Auto-Import
-
-LabTrax Desktop can auto-create cases from the iTero "Lab Review" queue.
-
-1. Admin saves shared iTero credentials in Settings → iTero auto-import. Encrypted via Electron `safeStorage`, stored at `userData/itero-creds.bin`.
-2. Admin picks destination Lab + Provider org and enables polling (default 5 min; range 5–240).
-3. Poller (`electron/itero-poller.cjs`): hidden BrowserWindow logs into `us-labs.bff.cloud.myitero.com`, fetches Lab-Review orders, downloads each Rx, POSTs to `POST /api/cases/import-from-itero-rx`.
-4. API extracts patient/doctor/restorations via OpenAI, creates an Active case, sets `needsAiReview=true` + `aiImportSource='itero'`, and records the iTero order ID in `itero_imported_orders` (unique on `lab_organization_id + itero_order_id`) for idempotency.
-5. Desktop shows a Sparkles badge; case drawer shows an amber review banner. Mobile `case/[id].tsx` shows a matching banner.
-
-Portal selectors may need tweaking per tenant — failures surface as `lastError` in the Settings panel. De-dup is server-side, so wiping the local ledger (`userData/itero-seen.json`) won't create duplicates.
-
-## AI Assistant (Knowledge + Memory)
-
-Phase 1 foundation that grounds the LabTrax AI in curated knowledge plus per-lab memory. Strictly additive — no existing AI request/response contract changed.
-
-- **Curated knowledge** — `@workspace/ai-knowledge` (`lib/ai-knowledge`) ships read-only packs (`labtrax/`, `dental/`, `hipaa/`) and a pure `selectKnowledge(query, { maxChars })` that returns the most relevant snippets within a char budget. No DB, no network.
-- **Per-lab memory** — soft-deletable `ai_memory` table (`lib/db`): `(lab_organization_id, kind, key)` unique, `kind ∈ {glossary, preference, fact}`. Registered in `PROTECTED_TABLES`/`PROTECTED_DRIZZLE_EXPORTS` (soft-delete only). Adding any new protected table requires adding it to the `tables` record in every fully-mocked `@workspace/db` test (otherwise those suites throw "No <table> export").
-- **CRUD API** — `/api/ai-memory`: GET (any active member) / POST, PATCH, DELETE (lab admin only; DELETE is soft-delete). Zod-validated, lab-scoped, mirrors `vocabulary.ts`. OpenAPI under tag `ai`; hooks generated into `@workspace/api-client-react`.
-- **Prompt augmentation** — `lib/ai-knowledge-augment.ts` (`buildKnowledgeBlock`, `buildLabMemoryBlock`) is wired into `ai-chat.ts` and `ai-agent.ts` only, behind the existing AI-availability checks. Both helpers return `""` when nothing matches so the prompt is unchanged.
-- **Desktop UI** — Settings → "AI Assistant" (admin-only) manages glossary/preference/fact entries per lab.
 
 ## Lab Data Protection
 
@@ -217,8 +91,20 @@ Each carries `deleted_at` + `deleted_by_user_id` columns and an audit log entry.
 
 **Adding a protected table:** (1) add `deleted_at` + `deleted_by_user_id` to schema and push; (2) filter reads with `notDeleted(table)`; (3) add table + Drizzle export to `PROTECTED_TABLES` and `PROTECTED_DRIZZLE_EXPORTS` in `soft-delete.ts`.
 
-## Installer Storage Integration Tests (opt-in)
+## Detailed Guides
 
-`installer-storage-e2e.test.ts` (upload → download round-trip) and `installer-publish-e2e.test.ts` (atomic `/publish`) exercise real App Storage. Both are gated on `INSTALLER_E2E_OBJECT_DIR` + `PLATFORM_ADMIN_SECRET` — auto-skipped unless **both** are set. They never touch the production `PRIVATE_OBJECT_DIR`: when `INSTALLER_E2E_OBJECT_DIR` is set they redirect storage to a unique per-run prefix (`<INSTALLER_E2E_OBJECT_DIR>/e2e-run-<id>/…`, see `installer-e2e-target.ts`) for that fork only, so they can run anywhere (including a workspace whose `PRIVATE_OBJECT_DIR` points at the live bucket) with zero risk of overwriting the real desktop installer. The per-run prefix also means the two suites never collide, so no shared lock is needed. Point `INSTALLER_E2E_OBJECT_DIR` at a dedicated, non-production storage dir (in CI it reuses the staging bucket).
+Deep reference for individual subsystems lives under `docs/`:
+
+- **Environment variables (full)** — [`docs/environment-variables.md`](docs/environment-variables.md)
+- **GitHub backup (auto-mirror)** — [`docs/github-backup.md`](docs/github-backup.md)
+- **Subscription billing** — [`docs/subscription-billing.md`](docs/subscription-billing.md)
+- **Desktop installer download** — [`docs/desktop-installer.md`](docs/desktop-installer.md); publish pipeline runbook [`docs/desktop-publish-pipeline.md`](docs/desktop-publish-pipeline.md); auto-update runbook [`artifacts/labtrax-desktop/docs/auto-update-runbook.md`](artifacts/labtrax-desktop/docs/auto-update-runbook.md)
+- **Build counter recovery** — [`docs/build-counter-recovery.md`](docs/build-counter-recovery.md)
+- **Cross-lab provider account numbers** — [`docs/cross-lab-providers.md`](docs/cross-lab-providers.md)
+- **iTero lab-review auto-import** — [`docs/itero-import.md`](docs/itero-import.md)
+- **AI assistant (knowledge + memory)** — [`docs/ai-assistant.md`](docs/ai-assistant.md)
+- **Installer storage integration tests (opt-in)** — [`docs/installer-storage-tests.md`](docs/installer-storage-tests.md)
+
+Security-relevant architecture and threat categories: [`threat_model.md`](./threat_model.md).
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
