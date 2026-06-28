@@ -1,3 +1,4 @@
+- [push-to-github divergence race](push-to-github-divergence-race.md) — CI counter commits cause force-push loops; safe recovery = 45s budget + chunk_size=25, two back-to-back runs per bash call; >50s budget OOMs and spawns zombies.
 - [pnpm 10 build-script approvals](pnpm10-build-approvals.md) — "Ignored build scripts" is exit-0 warning; approval state is onlyBuiltDependencies in pnpm-workspace.yaml, no .pnpmfile.cjs generated.
 - [pnpm/action-setup@v4 version precedence](pnpm-action-setup-version-precedence.md) — explicit `version:` input overrides packageManager field; to pin via packageManager, must also remove the version: lines from all workflow steps.
 - [Replitignore must not exclude runtime assets](replitignore-runtime-assets.md) — never list node_modules/dist/build/static-build in .replitignore; it strips the server bundle from the image and kills the promote step.
