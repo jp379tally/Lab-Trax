@@ -1,3 +1,5 @@
+- [pnpm 10 build-script approvals](pnpm10-build-approvals.md) — "Ignored build scripts" is exit-0 warning; approval state is onlyBuiltDependencies in pnpm-workspace.yaml, no .pnpmfile.cjs generated.
+- [pnpm/action-setup@v4 version precedence](pnpm-action-setup-version-precedence.md) — explicit `version:` input overrides packageManager field; to pin via packageManager, must also remove the version: lines from all workflow steps.
 - [Replitignore must not exclude runtime assets](replitignore-runtime-assets.md) — never list node_modules/dist/build/static-build in .replitignore; it strips the server bundle from the image and kills the promote step.
 - [Registering a lab owner for e2e](register-lab-owner-for-e2e.md) — register without practiceName+createOrganization+userType yields a user with no membership; edit gates then read "Not available" (looks like a gating bug).
 - [getByRole name vs custom picker triggers](getbyrole-name-custom-picker.md) — labtrax-desktop vitest: getByRole("button",{name}) won't match a trigger whose name is a nested <span>; query by data-testid.
