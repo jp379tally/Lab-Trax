@@ -65,3 +65,30 @@ Pushing a large history (~1.2 GB / ~2,900 commits) in one pack fails with
 **Verify** with the GitHub REST API (read-only): repo `default_branch`/
 visibility, `branches/main` `commit.sha` == local HEAD, and commit count via
 the `commits?per_page=1` `Link: ... rel="last"` page number.
+
+## Resetting the mirror BACKWARD (remote got ahead of the workspace)
+
+If someone edits the mirror **directly on GitHub** (web UI / another machine),
+`refs/heads/main` advances to a commit the workspace doesn't have. The pusher
+correctly refuses (`remote tip is not an ancestor of local HEAD … diverged`)
+even though `status:ahead, behind_by:0` (compare API) means it's a clean
+fast-forward-ahead, not a true 3-way divergence — local is simply behind.
+
+**Do NOT fix this with isomorphic-git force-push.** A single
+`push({ref:<localTip>, force:true})` to move the ref backward makes
+isomorphic-git build a packfile reachable from the target, and on this
+binary-heavy repo that packs ~the whole history → it stalls and the bash tool
+SIGKILLs it at 120s (no error, ref unchanged). The chunked forward pusher
+exists precisely because big packs fail here; a backward reset hits the same wall.
+
+**Do this instead — server-side ref move via the GitHub REST API.** The target
+commit (the workspace's current tip) is already an **ancestor of the remote
+tip**, so it already exists on GitHub — no objects need sending, just move the
+pointer:
+`PATCH /repos/<o>/<r>/git/refs/heads/main` with `{"sha":"<localTip>","force":true}`
+(Bearer `GITHUB_PUSH_TOKEN`, never echoed). Returns 200 + new `object.sha`
+instantly. Then run the normal pusher to confirm it reports
+"Remote already up to date." This drops the remote-only commit from the tip
+(recoverable ~90d via GitHub if needed). **Get explicit user consent first —
+it discards their remote commit.** Reverting via a *new* revert commit is wrong
+here: it leaves the remote even further ahead of the one-way mirror.
