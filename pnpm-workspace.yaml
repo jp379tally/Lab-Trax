@@ -70,13 +70,11 @@ autoInstallPeers: false
 
 onlyBuiltDependencies:
   - '@swc/core'
+  - core-js
   - esbuild
   - msw
   - sharp
   - unrs-resolver
-
-ignoredBuiltDependencies:
-  - core-js
 
 overrides:
   # replit uses linux-x64 only, we can exclude all other platforms
