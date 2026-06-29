@@ -3639,13 +3639,13 @@ function DoctorPricingRow({
                 const hasBase = Number.isFinite(basePrice) && basePrice > 0;
                 // Tier price the case would use if no discount/exact price set
                 // (doctor's selected tier, else practice default tier).
+                const fallbackTierName =
+                  tierName.trim() || practiceDefaultTierName || "";
                 const tierPrice = (() => {
-                  const effectiveTierName =
-                    tierName.trim() || practiceDefaultTierName || "";
-                  if (!effectiveTierName) return 0;
+                  if (!fallbackTierName) return 0;
                   const t = tiers.find(
                     (tt) =>
-                      tt.name.toLowerCase() === effectiveTierName.toLowerCase(),
+                      tt.name.toLowerCase() === fallbackTierName.toLowerCase(),
                   );
                   const n = Number(t?.prices?.[k] ?? 0);
                   return Number.isFinite(n) && n > 0 ? n : 0;
@@ -3677,7 +3677,11 @@ function DoctorPricingRow({
                     Math.round(
                       discountBase * (1 - (effectivePct as number) / 100) * 100,
                     ) / 100;
-                  hint = `${formatMoney(amt)} (${effectivePct}% off ${formatMoney(discountBase)})`;
+                  const baseLabel =
+                    !hasBase && fallbackTierName
+                      ? `${formatMoney(discountBase)} ${fallbackTierName}`
+                      : formatMoney(discountBase);
+                  hint = `${formatMoney(amt)} (${effectivePct}% off ${baseLabel})`;
                 } else if (tierPrice > 0) {
                   hint = `${formatMoney(tierPrice)} (tier)`;
                 }
