@@ -44,7 +44,7 @@ export default function RegisterPage() {
   );
 }
 
-function RegisterTable({
+export function RegisterTable({
   organizationId,
   accountId,
   accounts,
