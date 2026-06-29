@@ -18,7 +18,10 @@ on the persistent shared dev DB (matches the documented "CI passes, local
 doesn't" pattern for api-server DB suites). The failures are DELETE-query
 errors, not assertion failures — all the test's expects pass.
 
-**How to apply:** if you see only these two tests red with that FK error,
-it is not your regression unless you touched their bodies. To actually fix
-them, delete the case (and its invoice/events) before deleting the dedicated
-provider org in each `finally`.
+**How to apply:** any test that spins up a dedicated provider org + a case
+referencing it must delete the full case graph (caseEvents, caseNotes,
+invoices, caseRestorations, then the case) BEFORE deleting that org in
+`finally` — otherwise the RESTRICT FK fires on cleanup. The two known tests
+already do this; if they (or a newly added dedicated-org test) go red with
+that FK error, it's a missing/incorrect delete-case-before-org ordering, not
+a pricing regression.

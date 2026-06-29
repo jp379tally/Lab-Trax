@@ -729,6 +729,7 @@ maybe("Pricing tiers and overrides (db integration)", () => {
 
   it("POST /pricing/overrides — re-prices existing draft invoice when override is created", async () => {
     const { db, caseRestorations: caseRestorationsTable, invoices: invoicesTable,
+      caseEvents: caseEventsTable, caseNotes: caseNotesTable, cases: casesTable,
       organizations: orgsTable, organizationConnections } = dbMod as any;
     const { access } = await makeSession(adminId);
     const doctorName = rid("RequoteDr");
@@ -756,6 +757,7 @@ maybe("Pricing tiers and overrides (db integration)", () => {
       requestedByUserId: adminId,
     });
 
+    let caseId: string | undefined;
     try {
       // Create a case with a pfm_crown restoration — auto-priced at connection tier price (119).
       const caseResp = await request(appMod.default)
@@ -769,7 +771,7 @@ maybe("Pricing tiers and overrides (db integration)", () => {
           restorations: [{ toothNumber: "30", restorationType: "Crown", material: "PFM", quantity: 1 }],
         });
       expect(caseResp.status, JSON.stringify(caseResp.body)).toBe(201);
-      const caseId: string = caseResp.body.data.id;
+      caseId = caseResp.body.data.id;
 
       // Confirm full price before override.
       const before: Array<{ unitPrice: string }> = await db
@@ -796,6 +798,15 @@ maybe("Pricing tiers and overrides (db integration)", () => {
         .from(invoicesTable).where(eq(invoicesTable.caseId, caseId));
       expect(Number(inv?.subtotal)).toBe(EXPECTED_DISCOUNTED);
     } finally {
+      // Delete the case (and rows that reference it) before the provider org,
+      // since cases.providerOrganizationId is an onDelete:"restrict" FK.
+      if (caseId) {
+        await db.delete(caseEventsTable).where(eq(caseEventsTable.caseId, caseId));
+        await db.delete(caseNotesTable).where(eq(caseNotesTable.caseId, caseId));
+        await db.delete(invoicesTable).where(eq(invoicesTable.caseId, caseId));
+        await db.delete(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+        await db.delete(casesTable).where(eq(casesTable.id, caseId));
+      }
       await db.delete(organizationConnections)
         .where(eq(organizationConnections.providerOrganizationId, reqProvId));
       await db.delete(orgsTable).where(eq(orgsTable.id, reqProvId));
@@ -871,6 +882,8 @@ maybe("Pricing tiers and overrides (db integration)", () => {
 
   it("resolveAllPricesForContext agrees with resolveServerPriceWithSource for discount items", async () => {
     const { db, caseRestorations: caseRestorationsTable,
+      caseEvents: caseEventsTable, caseNotes: caseNotesTable,
+      cases: casesTable, invoices: invoicesTable,
       organizations: orgsTable, organizationConnections } = dbMod as any;
     const { access } = await makeSession(adminId);
     const doctorName = rid("ParityDr");
@@ -897,6 +910,7 @@ maybe("Pricing tiers and overrides (db integration)", () => {
       requestedByUserId: adminId,
     });
 
+    let caseId: string | undefined;
     try {
       // Create override FIRST so case-create also resolves to the discounted price.
       const overrideResp = await request(appMod.default)
@@ -917,7 +931,7 @@ maybe("Pricing tiers and overrides (db integration)", () => {
           restorations: [{ toothNumber: "30", restorationType: "Crown", material: "PFM", quantity: 1 }],
         });
       expect(caseResp.status, JSON.stringify(caseResp.body)).toBe(201);
-      const caseId: string = caseResp.body.data.id;
+      caseId = caseResp.body.data.id;
 
       // Per-key result (resolveServerPriceWithSource via case-create).
       const restRows: Array<{ unitPrice: string; priceSource: string | null }> = await db
@@ -935,6 +949,15 @@ maybe("Pricing tiers and overrides (db integration)", () => {
       expect(pfmItem?.unitPrice).toBe(EXPECTED);
       expect(pfmItem?.source).toBe("discount");
     } finally {
+      // Delete the case (and rows that reference it) before the provider org,
+      // since cases.providerOrganizationId is an onDelete:"restrict" FK.
+      if (caseId) {
+        await db.delete(caseEventsTable).where(eq(caseEventsTable.caseId, caseId));
+        await db.delete(caseNotesTable).where(eq(caseNotesTable.caseId, caseId));
+        await db.delete(invoicesTable).where(eq(invoicesTable.caseId, caseId));
+        await db.delete(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+        await db.delete(casesTable).where(eq(casesTable.id, caseId));
+      }
       await db.delete(organizationConnections)
         .where(eq(organizationConnections.providerOrganizationId, parProvId));
       await db.delete(orgsTable).where(eq(orgsTable.id, parProvId));
