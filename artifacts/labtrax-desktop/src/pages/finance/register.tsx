@@ -6,7 +6,7 @@ import { FinanceShell } from "@/components/finance/FinanceShell";
 import { TYPE_BADGE_CLASS, TYPE_LABEL, useVendors, VendorCombobox } from "@/components/finance/VendorCombobox";
 import { CategorySelect } from "@/components/finance/CategorySelect";
 import type { BankAccount, BankTransaction, Invoice, RecurringRule, TransactionCategory } from "@/lib/types";
-import { formatDate, formatMoney } from "@/lib/format";
+import { formatDate, formatMoney, formatShortDate } from "@/lib/format";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
 import { toast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
@@ -61,8 +61,6 @@ function RegisterTable({
   const [dateTo, setDateTo] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showInlineRows, setShowInlineRows] = useState(false);
-  const [inlineDateGroup, setInlineDateGroup] = useState<string | null>(null);
-  const [inlineDateGroupIsPartial, setInlineDateGroupIsPartial] = useState(false);
   const pendingGroupInvalidateRef = useRef(false);
   const qcRef = useRef(qc);
   qcRef.current = qc;
@@ -86,12 +84,24 @@ function RegisterTable({
     useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v4");
 
   const theadRef = useRef<HTMLTableSectionElement>(null);
+  const tableContainerRef = useRef<HTMLDivElement>(null);
   const [theadHeight, setTheadHeight] = useState(33);
   useLayoutEffect(() => {
     if (theadRef.current) {
       setTheadHeight(theadRef.current.getBoundingClientRect().height);
     }
   }, [colWidths]);
+
+  useEffect(() => {
+    if (!expandedId) return;
+    function onMouseDown(e: MouseEvent) {
+      if (tableContainerRef.current && !tableContainerRef.current.contains(e.target as Node)) {
+        setExpandedId(null);
+      }
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [expandedId]);
 
   const params = useMemo(() => {
     const sp = new URLSearchParams();
@@ -125,21 +135,6 @@ function RegisterTable({
     () => new Map((vendorsQuery.data ?? []).map((v) => [v.id, v.vendorType])),
     [vendorsQuery.data]
   );
-
-  const dateGroups = useMemo(() => {
-    const rows = txnsQuery.data || [];
-    const groups: { date: string; rows: typeof rows }[] = [];
-    for (const r of rows) {
-      const d = r.txnDate.slice(0, 10);
-      const last = groups[groups.length - 1];
-      if (last && last.date === d) {
-        last.rows.push(r);
-      } else {
-        groups.push({ date: d, rows: [r] });
-      }
-    }
-    return groups;
-  }, [txnsQuery.data]);
 
   const clearingStatusMut = useMutation({
     mutationFn: ({ id, cleared, reconciled }: { id: string; cleared: boolean; reconciled: boolean }) =>
@@ -332,7 +327,7 @@ function RegisterTable({
           </div>
         )}
 
-        <div className="overflow-x-auto overflow-y-auto relative" style={{ maxHeight: "calc(100vh - 22rem)" }}>
+        <div ref={tableContainerRef} className="overflow-x-auto overflow-y-auto relative" style={{ maxHeight: "calc(100vh - 22rem)" }}>
           {resizingCol !== null && (
             <div
               className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
@@ -349,7 +344,7 @@ function RegisterTable({
             />
           )}
           <table
-            className="text-sm"
+            className="text-sm border-collapse [&_td]:border-r [&_td]:border-border/30 [&_th]:border-r [&_th]:border-border/20"
             style={{
               tableLayout: "fixed",
               width: colTotalWidth + FINANCE_FIXED_CLR + FINANCE_FIXED_ACTIONS,
@@ -371,7 +366,7 @@ function RegisterTable({
               <col style={{ width: FINANCE_FIXED_ACTIONS }} />
             </colgroup>
             <thead ref={theadRef} style={{ position: "sticky", top: 0, zIndex: 20 }}>
-              <tr className="bg-secondary text-[11px] uppercase tracking-wide text-muted-foreground">
+              <tr className="bg-white dark:bg-card border-b-2 border-border text-[11px] uppercase tracking-wide text-muted-foreground">
                 {/* Cols 0-4: Date Num Payee Account Payment */}
                 {FINANCE_PRE_LABELS.map((label, i) => {
                   const isRight = i === 4; // Payment is right-aligned
@@ -490,263 +485,208 @@ function RegisterTable({
                   </td>
                 </tr>
               )}
-              {dateGroups.map(({ date, rows: groupRows }) => (
-                <Fragment key={date}>
-                  <tr className="border-t border-border/60">
+              {(txnsQuery.data || []).map((r) => {
+                const debit = Number(r.debitAmount);
+                const credit = Number(r.creditAmount);
+                const isVoid = r.status === "void";
+                const isProjected = r.status === "projected";
+                const isSelected = expandedId === r.id;
+                const cols = isUF ? 8 : 9;
+                return (
+                  <Fragment key={r.id}>
+                  <tr
+                    onClick={() => !isUF && setExpandedId(expandedId === r.id ? null : r.id)}
+                    className={`group/row text-[12.5px] border-b border-border/40 ${isUF ? "" : "cursor-pointer"} ${
+                      isSelected
+                        ? "bg-sky-100 dark:bg-sky-950/60"
+                        : "odd:bg-white even:bg-[#f0faf4] dark:odd:bg-transparent dark:even:bg-emerald-950/10 hover:bg-sky-50 dark:hover:bg-sky-950/20"
+                    } ${isVoid ? "text-muted-foreground/60 line-through" : ""} ${isProjected ? "italic text-muted-foreground" : ""}`}
+                  >
                     <td
-                      colSpan={isUF ? 8 : 9}
-                      className="px-4 py-1 text-[11px] font-semibold text-muted-foreground tracking-wide uppercase select-none bg-muted/80"
-                      style={{ position: "sticky", top: theadHeight, zIndex: 10 }}
+                      className="px-4 py-1"
+                      onClick={(e) => { if (!r.reconciled) e.stopPropagation(); }}
                     >
-                      {formatDate(date)}
+                      <InlineDateCell
+                        txn={r}
+                        onUpdated={() => qc.invalidateQueries({ queryKey: ["finance"] })}
+                      />
                     </td>
-                  </tr>
-                  {groupRows.map((r) => {
-                    const debit = Number(r.debitAmount);
-                    const credit = Number(r.creditAmount);
-                    const isVoid = r.status === "void";
-                    const isProjected = r.status === "projected";
-                    const cols = isUF ? 8 : 9;
-                    return (
-                      <Fragment key={r.id}>
-                      <tr
-                        onClick={() => !isUF && setExpandedId(expandedId === r.id ? null : r.id)}
-                        className={`border-t border-border/30 ${isUF ? "" : "cursor-pointer hover:bg-secondary/30"} ${expandedId === r.id ? "bg-secondary/40" : ""} ${
-                          isVoid ? "text-muted-foreground line-through" : ""
-                        } ${isProjected ? "italic text-muted-foreground" : ""}`}
-                      >
-                        <td
-                          className="px-4 py-2.5"
-                          onClick={(e) => { if (!r.reconciled) e.stopPropagation(); }}
-                        >
-                          <InlineDateCell
-                            txn={r}
-                            onUpdated={() => qc.invalidateQueries({ queryKey: ["finance"] })}
-                          />
-                        </td>
-                        {/* Num — check number, empty for non-check types */}
-                        <td className="py-2.5 px-3 font-mono text-xs text-muted-foreground">
-                          {r.checkNumber || (r.type !== "other" ? <span className="capitalize">{r.type}</span> : "")}
-                        </td>
-                        {/* Payee — with vendor type badge and transfer badge; memo shown as secondary text */}
-                        <td className="py-2.5 px-3">
-                          <div className="min-w-0">
-                            {r.payee ? (
-                              <span className="flex items-center gap-1.5 min-w-0">
-                                {r.transferGroupId && (
-                                  <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
-                                    Transfer
-                                  </span>
-                                )}
-                                {r.vendorId && vendorTypeById.has(r.vendorId) && (
-                                  <span
-                                    className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[vendorTypeById.get(r.vendorId)!]}`}
-                                  >
-                                    {TYPE_LABEL[vendorTypeById.get(r.vendorId)!]}
-                                  </span>
-                                )}
-                                <span className="truncate">{r.payee}</span>
+                    {/* Num — check number, empty for non-check types */}
+                    <td className="py-1 px-3 font-mono text-xs text-muted-foreground">
+                      {r.checkNumber || (r.type !== "other" ? <span className="capitalize">{r.type}</span> : "")}
+                    </td>
+                    {/* Payee — with vendor type badge and transfer badge; memo shown as secondary text */}
+                    <td className="py-1 px-3">
+                      <div className="min-w-0">
+                        {r.payee ? (
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            {r.transferGroupId && (
+                              <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                                Transfer
                               </span>
-                            ) : r.transferGroupId ? (
-                              <span className="flex items-center gap-1.5 min-w-0">
-                                <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
-                                  Transfer
-                                </span>
-                              </span>
-                            ) : <span className="text-muted-foreground">—</span>}
-                            {r.memo && (
-                              <div className="text-[11px] text-muted-foreground truncate mt-0.5">{r.memo}</div>
                             )}
-                          </div>
-                        </td>
-                        {/* Account (Category) — shows "–split–" when multiple invoice links */}
-                        <td className="py-2.5 px-3 text-muted-foreground">
-                          {(r.invoices?.length ?? 0) > 1
-                            ? <span className="italic text-xs">–split–</span>
-                            : r.categoryId
-                              ? catNameById.get(r.categoryId) || "—"
-                              : "—"}
-                        </td>
-                        {/* Payment (debit) */}
-                        <td className="py-2.5 px-3 text-right tabular-nums">
-                          {debit > 0 ? formatMoney(debit) : ""}
-                        </td>
-                        {/* ✓ — click-to-cycle: none → C (cleared) → R (reconciled) → none */}
-                        <td
-                          className={`py-2.5 text-center${isVoid || isUF ? "" : " cursor-pointer"}`}
-                          title={
-                            isVoid || isUF
-                              ? undefined
-                              : r.reconciled
-                              ? "Reconciled — click to clear"
-                              : r.cleared
-                              ? "Cleared — click to mark reconciled"
-                              : "Uncleared — click to mark cleared"
-                          }
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (isVoid || isUF) return;
-                            if (r.reconciled) {
-                              clearingStatusMut.mutate({ id: r.id, cleared: false, reconciled: false });
-                            } else if (r.cleared) {
-                              clearingStatusMut.mutate({ id: r.id, cleared: true, reconciled: true });
-                            } else {
-                              clearingStatusMut.mutate({ id: r.id, cleared: true, reconciled: false });
-                            }
-                          }}
-                        >
-                          {r.reconciled ? (
-                            <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold select-none">R</span>
-                          ) : r.cleared ? (
-                            <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-sky-500/20 text-sky-600 dark:text-sky-400 text-[10px] font-bold select-none">C</span>
-                          ) : (
-                            <span className="inline-flex items-center justify-center h-4 w-4 rounded-full text-muted-foreground/40 text-[10px] select-none">–</span>
-                          )}
-                        </td>
-                        {/* Deposit (credit) */}
-                        <td className="py-2.5 px-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
-                          {credit > 0 ? formatMoney(credit) : ""}
-                        </td>
-                        {/* Balance — hidden for UF accounts */}
-                        {!isUF && (
-                          <td className="px-4 py-2.5 text-right tabular-nums font-medium">
-                            {formatMoney(r.runningBalance ?? 0)}
-                          </td>
+                            {r.vendorId && vendorTypeById.has(r.vendorId) && (
+                              <span
+                                className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[vendorTypeById.get(r.vendorId)!]}`}
+                              >
+                                {TYPE_LABEL[vendorTypeById.get(r.vendorId)!]}
+                              </span>
+                            )}
+                            <span className="truncate">{r.payee}</span>
+                          </span>
+                        ) : r.transferGroupId ? (
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                              Transfer
+                            </span>
+                          </span>
+                        ) : <span className="text-muted-foreground">—</span>}
+                        {r.memo && (
+                          <div className="text-[11px] text-muted-foreground truncate">{r.memo}</div>
                         )}
-                        <td
-                          className="px-2 py-2.5"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <div className="flex items-center justify-end gap-0.5">
-                            {!isUF && !isVoid && (
-                              <button
-                                type="button"
-                                onClick={() => setRecurringFor(r)}
-                                className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
-                                aria-label="Make recurring"
-                                title="Make recurring"
-                              >
-                                <Repeat size={12} />
-                              </button>
-                            )}
-                            {!isUF && !r.reconciled && !isVoid && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (r.transferGroupId) {
-                                    if (confirm("This is a transfer entry. Voiding it will also void the linked entry on the other account. Continue?"))
-                                      voidMut.mutate(r.id);
-                                  } else {
-                                    voidMut.mutate(r.id);
-                                  }
-                                }}
-                                className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
-                                aria-label="Void"
-                                title={r.transferGroupId ? "Void both transfer entries" : "Void"}
-                              >
-                                <Ban size={12} />
-                              </button>
-                            )}
-                            {!isUF && !r.reconciled && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const msg = r.transferGroupId
-                                    ? "This is a transfer entry. Deleting it will also delete the linked entry on the other account. Continue?"
-                                    : "Delete this transaction?";
-                                  if (confirm(msg))
-                                    deleteMut.mutate(r.id);
-                                }}
-                                className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
-                                aria-label="Delete"
-                                title={r.transferGroupId ? "Delete both transfer entries" : "Delete"}
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                      {expandedId === r.id && (
-                        r.transferGroupId ? (
-                          <TransferEditRow
-                            key={`xfer-edit-${r.id}`}
-                            transferGroupId={r.transferGroupId}
-                            accounts={accounts}
-                            existing={r}
-                            colSpan={cols}
-                            onClose={() => setExpandedId(null)}
-                            onSaved={() => {
-                              setExpandedId(null);
-                              void qc.invalidateQueries({ queryKey: ["finance"] });
-                            }}
-                          />
-                        ) : (
-                          <InlineEditRow
-                            key={`edit-${r.id}`}
-                            organizationId={organizationId}
-                            accountId={accountId}
-                            existing={r}
-                            categories={cats.data || []}
-                            colSpan={cols}
-                            onClose={() => setExpandedId(null)}
-                            onSaved={() => {
-                              setExpandedId(null);
-                              void qc.invalidateQueries({ queryKey: ["finance"] });
-                            }}
-                          />
-                        )
-                      )}
-                      </Fragment>
-                    );
-                  })}
-                  {inlineDateGroup === date ? (
-                    <InlineBlankRows
-                      accountId={accountId}
-                      organizationId={organizationId}
-                      accounts={accounts}
-                      categories={cats.data || []}
-                      rowCount={1}
-                      defaultDate={date}
-                      showDatePicker
-                      onSaved={() => { pendingGroupInvalidateRef.current = true; }}
-                      onAllDismissed={() => {
-                        setInlineDateGroup(null);
-                        setInlineDateGroupIsPartial(false);
-                        if (pendingGroupInvalidateRef.current) {
-                          pendingGroupInvalidateRef.current = false;
-                          void qc.invalidateQueries({ queryKey: ["finance"] });
+                      </div>
+                    </td>
+                    {/* Account (Category) — shows "–split–" when multiple invoice links */}
+                    <td className="py-1 px-3 text-muted-foreground">
+                      {(r.invoices?.length ?? 0) > 1
+                        ? <span className="italic text-xs">–split–</span>
+                        : r.categoryId
+                          ? catNameById.get(r.categoryId) || "—"
+                          : "—"}
+                    </td>
+                    {/* Payment (debit) */}
+                    <td className="py-1 px-3 text-right tabular-nums">
+                      {debit > 0 ? formatMoney(debit) : ""}
+                    </td>
+                    {/* ✓ — click-to-cycle: none → C (cleared) → R (reconciled) → none */}
+                    <td
+                      className={`py-1 text-center${isVoid || isUF ? "" : " cursor-pointer"}`}
+                      title={
+                        isVoid || isUF
+                          ? undefined
+                          : r.reconciled
+                          ? "Reconciled — click to clear"
+                          : r.cleared
+                          ? "Cleared — click to mark reconciled"
+                          : "Uncleared — click to mark cleared"
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (isVoid || isUF) return;
+                        if (r.reconciled) {
+                          clearingStatusMut.mutate({ id: r.id, cleared: false, reconciled: false });
+                        } else if (r.cleared) {
+                          clearingStatusMut.mutate({ id: r.id, cleared: true, reconciled: true });
+                        } else {
+                          clearingStatusMut.mutate({ id: r.id, cleared: true, reconciled: false });
                         }
                       }}
-                      onPartialChange={setInlineDateGroupIsPartial}
-                    />
-                  ) : (
-                    !isUF && (
-                    <tr className="border-t border-border/30">
-                      <td colSpan={8} className="px-4 py-0">
-                        <button
-                          type="button"
-                          disabled={inlineDateGroupIsPartial}
-                          title={inlineDateGroupIsPartial ? "Finish or dismiss the open entry form first" : undefined}
-                          onClick={() => {
-                            setShowInlineRows(false);
-                            setInlineDateGroupIsPartial(false);
-                            if (pendingGroupInvalidateRef.current) {
-                              pendingGroupInvalidateRef.current = false;
-                              void qc.invalidateQueries({ queryKey: ["finance"] });
-                            }
-                            setInlineDateGroup(date);
-                          }}
-                          className="text-xs text-muted-foreground/60 hover:text-primary inline-flex items-center gap-1 py-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground/60"
-                        >
-                          <Plus size={11} /> Add entry
-                        </button>
+                    >
+                      {r.reconciled ? (
+                        <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold select-none">R</span>
+                      ) : r.cleared ? (
+                        <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-sky-500/20 text-sky-600 dark:text-sky-400 text-[10px] font-bold select-none">C</span>
+                      ) : (
+                        <span className="inline-flex items-center justify-center h-4 w-4 rounded-full text-muted-foreground/40 text-[10px] select-none">–</span>
+                      )}
+                    </td>
+                    {/* Deposit (credit) */}
+                    <td className="py-1 px-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
+                      {credit > 0 ? formatMoney(credit) : ""}
+                    </td>
+                    {/* Balance — hidden for UF accounts */}
+                    {!isUF && (
+                      <td className={`px-4 py-1 text-right tabular-nums font-medium${Number(r.runningBalance) < 0 ? " text-red-600 dark:text-red-400" : ""}`}>
+                        {formatMoney(r.runningBalance ?? 0)}
                       </td>
-                    </tr>
+                    )}
+                    <td
+                      className="px-2 py-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className={`flex items-center justify-end gap-0.5 transition-opacity ${isSelected ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}>
+                        {!isUF && !isVoid && (
+                          <button
+                            type="button"
+                            onClick={() => setRecurringFor(r)}
+                            className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
+                            aria-label="Make recurring"
+                            title="Make recurring"
+                          >
+                            <Repeat size={12} />
+                          </button>
+                        )}
+                        {!isUF && !r.reconciled && !isVoid && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (r.transferGroupId) {
+                                if (confirm("This is a transfer entry. Voiding it will also void the linked entry on the other account. Continue?"))
+                                  voidMut.mutate(r.id);
+                              } else {
+                                voidMut.mutate(r.id);
+                              }
+                            }}
+                            className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
+                            aria-label="Void"
+                            title={r.transferGroupId ? "Void both transfer entries" : "Void"}
+                          >
+                            <Ban size={12} />
+                          </button>
+                        )}
+                        {!isUF && !r.reconciled && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const msg = r.transferGroupId
+                                ? "This is a transfer entry. Deleting it will also delete the linked entry on the other account. Continue?"
+                                : "Delete this transaction?";
+                              if (confirm(msg))
+                                deleteMut.mutate(r.id);
+                            }}
+                            className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
+                            aria-label="Delete"
+                            title={r.transferGroupId ? "Delete both transfer entries" : "Delete"}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {isSelected && (
+                    r.transferGroupId ? (
+                      <TransferEditRow
+                        key={`xfer-edit-${r.id}`}
+                        transferGroupId={r.transferGroupId}
+                        accounts={accounts}
+                        existing={r}
+                        colSpan={cols}
+                        onClose={() => setExpandedId(null)}
+                        onSaved={() => {
+                          setExpandedId(null);
+                          void qc.invalidateQueries({ queryKey: ["finance"] });
+                        }}
+                      />
+                    ) : (
+                      <InlineEditRow
+                        key={`edit-${r.id}`}
+                        organizationId={organizationId}
+                        accountId={accountId}
+                        existing={r}
+                        categories={cats.data || []}
+                        colSpan={cols}
+                        onClose={() => setExpandedId(null)}
+                        onSaved={() => {
+                          setExpandedId(null);
+                          void qc.invalidateQueries({ queryKey: ["finance"] });
+                        }}
+                      />
                     )
                   )}
-                </Fragment>
-              ))}
+                  </Fragment>
+                );
+              })}
               {showInlineRows && (
                 <InlineBlankRows
                   accountId={accountId}
@@ -755,8 +695,14 @@ function RegisterTable({
                   categories={cats.data || []}
                   rowCount={1}
                   showDatePicker
-                  onSaved={() => qc.invalidateQueries({ queryKey: ["finance"] })}
-                  onAllDismissed={() => setShowInlineRows(false)}
+                  onSaved={() => { pendingGroupInvalidateRef.current = true; void qc.invalidateQueries({ queryKey: ["finance"] }); }}
+                  onAllDismissed={() => {
+                    setShowInlineRows(false);
+                    if (pendingGroupInvalidateRef.current) {
+                      pendingGroupInvalidateRef.current = false;
+                      void qc.invalidateQueries({ queryKey: ["finance"] });
+                    }
+                  }}
                 />
               )}
             </tbody>
@@ -2070,7 +2016,7 @@ function InlineDateCell({
       }`}
       title={canEdit ? "Click to edit date" : "Reconciled — date is locked"}
     >
-      {formatDate(txn.txnDate)}
+      {formatShortDate(txn.txnDate)}
     </span>
   );
 }
