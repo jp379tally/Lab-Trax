@@ -1,0 +1,82 @@
+**Copy-Ready Replit Prompt**
+
+Implement duplicate/similar doctor-name detection in LabTracks, both on the Accounts / Customer Center page and during AI prescription analysis/data entry.
+
+Goal: whenever LabTracks detects two or more doctor records with very similar names, alert the user and ask whether those doctors should be merged. Do not place this in the existing notification section. Use a separate visible alert, such as a red iPhone-style badge bubble with the number of possible duplicate doctor alerts.
+
+Example: if an account contains both `Dr. Shawn Mullen` and `Shawn Mullen`, LabTracks should flag them as potential duplicates and ask: “Should these doctors be merged?”
+
+Also detect this during AI analyzation of prescriptions and manual/data-entry flows. If AI extracts or the user enters a doctor name such as `Dr. Sean Mullen`, `Sean Mullen`, `Dr. Mullen`, or `Shawn Mullen`, LabTracks should compare that name against existing doctors and alert the user immediately if it may already exist.
+
+Likely root cause / missing behavior: doctor names are probably stored and displayed exactly as entered or extracted, without normalized duplicate detection. Prefixes like `Dr.`, casing, punctuation, middle names, and small spelling differences are treated as separate records.
+
+Implementation steps:
+
+1. Find the doctor/customer data model and all places where doctor names are created, displayed, selected, extracted, or saved.
+2. Inspect the Accounts / Customer Center page, the AI prescription analysis flow, and manual prescription/data-entry forms.
+3. Create a shared doctor-name similarity helper used by all relevant flows.
+4. Normalize names before comparison:
+
+   * lowercase
+   * remove prefixes like `Dr`, `Dr.`, `Doctor`
+   * remove punctuation
+   * trim extra spaces
+   * compare first and last names separately when possible
+   * handle partial names like `Dr. Mullen`
+5. Trigger possible-duplicate detection for:
+
+   * existing doctors shown in the same customer/account
+   * doctor names extracted during AI prescription analysis
+   * doctor names entered manually during prescription/data entry
+   * doctor names being saved as new records
+6. Detection examples that should trigger:
+
+   * `Dr. Shawn Mullen` vs `Shawn Mullen`
+   * `Dr. Sean Mullen` vs `Sean Mullen`
+   * `Dr. Mullen` vs `Sean Mullen`
+   * `Shawn Mullen` vs `Sean Mullen`, if similarity confidence is high enough
+7. Do not automatically merge records. Only alert the user and ask for confirmation.
+8. On the Accounts / Customer Center page, show a separate red badge alert count near the account/customer-center controls.
+9. When the badge is clicked, open a focused panel/modal listing possible duplicate doctor groups and ask: “Should these doctors be merged?”
+10. During AI prescription analysis and manual data entry, show an inline alert or modal as soon as the extracted/entered doctor name appears to match an existing doctor.
+11. The duplicate prompt should show:
+
+* newly extracted or entered doctor name
+* existing possible matching doctor name(s)
+* associated customer/account
+* confidence/reason if helpful, such as “same last name and similar first name”
+* `Merge`, `Use Existing`, `Keep Separate`, or equivalent safe actions depending on current app patterns
+
+12. If an existing doctor merge flow already exists, reuse it.
+13. If no merge flow exists, implement the safest minimal flow:
+
+* allow user to choose the existing doctor instead of creating a new duplicate
+* allow user to keep the new doctor separate
+* do not delete or overwrite records without explicit confirmation
+
+14. Persist dismissed or resolved duplicate suggestions when possible so the same ignored suggestion does not keep appearing repeatedly.
+
+Constraints and guardrails:
+
+* Do not use the general notification section.
+* Do not auto-merge doctors.
+* Do not block prescription entry unless the user needs to choose between an existing doctor and a new doctor.
+* Do not flag every shared last name as a duplicate.
+* Start with duplicate detection within the same customer/account unless existing product rules support broader matching.
+* Avoid noisy alerts; use high-confidence matching for automatic prompts.
+* Reuse existing UI patterns, modals, badges, and merge logic where available.
+* Keep the feature fast enough for accounts with many doctors.
+* Add tests for the shared name-normalization and duplicate-detection helper.
+
+Regression checks:
+
+* `Dr. Shawn Mullen` and `Shawn Mullen` trigger one possible duplicate alert in Customer Center.
+* The Accounts / Customer Center page shows a red badge count for unresolved duplicate doctor suggestions.
+* Duplicate doctor alerts do not appear in the existing notification section.
+* AI prescription analysis flags an extracted doctor name when it matches a similar existing doctor.
+* Manual prescription/data entry flags a doctor name when it matches a similar existing doctor.
+* The user can choose an existing doctor instead of creating a duplicate.
+* The user can keep two similar doctors separate.
+* Unrelated doctors like `Dr. Jacob Woods` and `Shawn Mullen` are not flagged.
+* Existing account expansion, doctor selection, prescription entry, and AI extraction flows still work.
+* Duplicate suggestions are not repeated endlessly after the user dismisses or resolves them.
