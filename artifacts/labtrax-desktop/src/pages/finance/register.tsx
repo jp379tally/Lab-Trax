@@ -60,6 +60,7 @@ export function RegisterTable({
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showInlineRows, setShowInlineRows] = useState(false);
   const pendingGroupInvalidateRef = useRef(false);
   const qcRef = useRef(qc);
@@ -93,7 +94,7 @@ export function RegisterTable({
   function scrollSelectedIntoView() {
     const row = selectedRowRef.current;
     if (!row) return;
-    const editPanel = row.nextElementSibling;
+    const editPanel = expandedId ? row.nextElementSibling : null;
     (editPanel ?? row).scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
   useLayoutEffect(() => {
@@ -119,15 +120,16 @@ export function RegisterTable({
   }, [expandedId, theadHeight]);
 
   useEffect(() => {
-    if (!expandedId) return;
+    if (!expandedId && !selectedId) return;
     function onMouseDown(e: MouseEvent) {
       if (tableContainerRef.current && !tableContainerRef.current.contains(e.target as Node)) {
         setExpandedId(null);
+        setSelectedId(null);
       }
     }
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
-  }, [expandedId]);
+  }, [expandedId, selectedId]);
 
   // Keep the selected row's edit panel discoverable: scroll it into view when
   // opened, and surface a "jump to it" pill whenever the selection scrolls
@@ -177,6 +179,83 @@ export function RegisterTable({
     queryKey: ["finance", "txns", params],
     queryFn: () => apiFetch<BankTransaction[]>(`/finance/transactions?${params}`),
   });
+
+  // Keyboard navigation: Up/Down move the selection between entries, Enter opens
+  // the inline edit panel for the selected row, Esc clears the selection. The
+  // selection ("selectedId") is a lightweight highlight that drives the existing
+  // expandedId edit-panel model — Enter promotes the selection into an open
+  // editor. Typing inside the inline edit inputs (or any other field/filter)
+  // must not be hijacked, so events originating from form fields are ignored.
+  useEffect(() => {
+    if (isUF) return;
+    function onKeyDown(e: KeyboardEvent) {
+      // Don't steal keys while a dialog is open.
+      if (importing || transferring || reconOpen || recurringFor) return;
+      const key = e.key;
+      if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Enter" && key !== "Escape") {
+        return;
+      }
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const isFormField =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target?.isContentEditable === true;
+      // Let inputs (inline edit fields, search, filters, blank-entry rows)
+      // handle their own typing/cursor/Enter/Esc.
+      if (isFormField) return;
+
+      const rows = txnsQuery.data || [];
+      if (rows.length === 0) return;
+
+      if (key === "ArrowDown" || key === "ArrowUp") {
+        e.preventDefault();
+        const idx = rows.findIndex((r) => r.id === selectedId);
+        let nextIdx: number;
+        if (key === "ArrowDown") {
+          nextIdx = idx < 0 ? 0 : Math.min(idx + 1, rows.length - 1);
+        } else {
+          nextIdx = idx < 0 ? rows.length - 1 : Math.max(idx - 1, 0);
+        }
+        const next = rows[nextIdx];
+        if (next) {
+          setSelectedId(next.id);
+          // Moving the selection closes any open editor so the highlight and the
+          // edit panel never point at different rows.
+          setExpandedId(null);
+        }
+      } else if (key === "Enter") {
+        if (!selectedId) return;
+        e.preventDefault();
+        setExpandedId(selectedId);
+      } else if (key === "Escape") {
+        if (!selectedId && !expandedId) return;
+        e.preventDefault();
+        setExpandedId(null);
+        setSelectedId(null);
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [
+    isUF,
+    importing,
+    transferring,
+    reconOpen,
+    recurringFor,
+    txnsQuery.data,
+    selectedId,
+    expandedId,
+  ]);
+
+  // Keep the keyboard-selected row scrolled into view as the selection moves
+  // (the open-editor case is handled by the discoverability effect above).
+  useEffect(() => {
+    if (!selectedId || expandedId) return;
+    scrollSelectedIntoView();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, expandedId]);
 
   const cats = useQuery({
     queryKey: ["finance", "categories", organizationId],
@@ -548,13 +627,18 @@ export function RegisterTable({
                 const credit = Number(r.creditAmount);
                 const isVoid = r.status === "void";
                 const isProjected = r.status === "projected";
-                const isSelected = expandedId === r.id;
+                const isExpanded = expandedId === r.id;
+                const isSelected = isExpanded || selectedId === r.id;
                 const cols = isUF ? 8 : 9;
                 return (
                   <Fragment key={r.id}>
                   <tr
                     ref={isSelected ? selectedRowRef : undefined}
-                    onClick={() => !isUF && setExpandedId(expandedId === r.id ? null : r.id)}
+                    onClick={() => {
+                      if (isUF) return;
+                      setSelectedId(r.id);
+                      setExpandedId(expandedId === r.id ? null : r.id);
+                    }}
                     className={`group/row text-[12.5px] border-b border-border/40 ${isUF ? "" : "cursor-pointer"} ${
                       isSelected
                         ? "bg-sky-100 dark:bg-sky-950/60"
@@ -713,7 +797,7 @@ export function RegisterTable({
                       </div>
                     </td>
                   </tr>
-                  {isSelected && (
+                  {isExpanded && (
                     r.transferGroupId ? (
                       <TransferEditRow
                         key={`xfer-edit-${r.id}`}
