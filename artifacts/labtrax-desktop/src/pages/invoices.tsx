@@ -152,6 +152,7 @@ export default function InvoicesPage() {
     count: number;
     labOrganizationId: string;
   } | null>(null);
+  const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
 
   const { user } = useAuth();
   const isBillingUser =
@@ -297,41 +298,68 @@ export default function InvoicesPage() {
   const labOrganizationId = data?.[0]?.labOrganizationId ?? "";
 
   const bulkDeleteMutation = useMutation({
-    mutationFn: (payload: { invoiceIds?: string[]; all?: boolean }) =>
-      apiFetch("/invoices/bulk", {
+    mutationFn: ({ expected: _expected, ...payload }: { invoiceIds?: string[]; all?: boolean; expected: number }) =>
+      apiFetch<{ deletedCount: number }>("/invoices/bulk", {
         method: "DELETE",
-        body: JSON.stringify({ labOrganizationId, ...payload }),
+        body: JSON.stringify({ ...(labOrganizationId ? { labOrganizationId } : {}), ...payload }),
       }),
-    onSuccess: () => {
-      setSelected(new Set());
-      setBulkConfirm(null);
+    onSuccess: (result, variables) => {
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
+      const affected = result?.deletedCount ?? 0;
+      if (affected === 0) {
+        setBulkFeedback("No invoices were deleted. Please try again or refresh.");
+        return;
+      }
+      if (!variables.all && affected < variables.expected) {
+        setSelected(new Set());
+        setBulkFeedback(
+          `Only ${affected} of ${variables.expected} selected invoice${variables.expected !== 1 ? "s" : ""} could be deleted.`,
+        );
+        return;
+      }
+      setSelected(new Set());
+      setBulkConfirm(null);
+      setBulkFeedback(null);
     },
   });
 
   const bulkResetMutation = useMutation({
-    mutationFn: (payload: { invoiceIds?: string[]; all?: boolean }) =>
-      apiFetch("/invoices/bulk-reset", {
+    mutationFn: ({ expected: _expected, ...payload }: { invoiceIds?: string[]; all?: boolean; expected: number }) =>
+      apiFetch<{ resetCount: number }>("/invoices/bulk-reset", {
         method: "POST",
-        body: JSON.stringify({ labOrganizationId, ...payload }),
+        body: JSON.stringify({ ...(labOrganizationId ? { labOrganizationId } : {}), ...payload }),
       }),
-    onSuccess: () => {
-      setSelected(new Set());
-      setBulkConfirm(null);
+    onSuccess: (result, variables) => {
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
+      const affected = result?.resetCount ?? 0;
+      if (affected === 0) {
+        setBulkFeedback("No invoices were reset. Please try again or refresh.");
+        return;
+      }
+      if (!variables.all && affected < variables.expected) {
+        setSelected(new Set());
+        setBulkFeedback(
+          `Only ${affected} of ${variables.expected} selected invoice${variables.expected !== 1 ? "s" : ""} could be reset.`,
+        );
+        return;
+      }
+      setSelected(new Set());
+      setBulkConfirm(null);
+      setBulkFeedback(null);
     },
   });
 
   function handleBulkConfirm() {
     if (!bulkConfirm) return;
+    setBulkFeedback(null);
     if (bulkConfirm.kind === "delete_selected") {
-      bulkDeleteMutation.mutate({ invoiceIds: Array.from(selected) });
+      bulkDeleteMutation.mutate({ invoiceIds: Array.from(selected), expected: selected.size });
     } else if (bulkConfirm.kind === "reset_selected") {
-      bulkResetMutation.mutate({ invoiceIds: Array.from(selected) });
+      bulkResetMutation.mutate({ invoiceIds: Array.from(selected), expected: selected.size });
     } else if (bulkConfirm.kind === "reset_all") {
-      bulkResetMutation.mutate({ all: true });
+      bulkResetMutation.mutate({ all: true, expected: bulkConfirm.count });
     }
   }
 
@@ -486,21 +514,21 @@ export default function InvoicesPage() {
               <>
                 <button
                   type="button"
-                  onClick={() => setBulkConfirm({ kind: "delete_selected", count: selected.size, labOrganizationId })}
+                  onClick={() => { setBulkFeedback(null); setBulkConfirm({ kind: "delete_selected", count: selected.size, labOrganizationId }); }}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-destructive/10 text-destructive border border-destructive/20 text-xs font-medium hover:bg-destructive/20"
                 >
                   <Trash2 size={12} /> Delete selected
                 </button>
                 <button
                   type="button"
-                  onClick={() => setBulkConfirm({ kind: "reset_selected", count: selected.size, labOrganizationId })}
+                  onClick={() => { setBulkFeedback(null); setBulkConfirm({ kind: "reset_selected", count: selected.size, labOrganizationId }); }}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-warning/10 text-warning border border-warning/20 text-xs font-medium hover:bg-warning/20"
                 >
                   <RotateCcw size={12} /> Reset to $0
                 </button>
                 <button
                   type="button"
-                  onClick={() => setBulkConfirm({ kind: "reset_all", count: filtered.length, labOrganizationId })}
+                  onClick={() => { setBulkFeedback(null); setBulkConfirm({ kind: "reset_all", count: filtered.length, labOrganizationId }); }}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-warning/10 text-warning border border-warning/20 text-xs font-medium hover:bg-warning/20"
                 >
                   <RotateCcw size={12} /> Reset all to $0
@@ -735,7 +763,11 @@ export default function InvoicesPage() {
             (bulkDeleteMutation.error instanceof Error ? bulkDeleteMutation.error.message : null) ??
             (bulkResetMutation.error instanceof Error ? bulkResetMutation.error.message : null)
           }
-          onCancel={() => setBulkConfirm(null)}
+          feedback={bulkFeedback}
+          onCancel={() => {
+            setBulkConfirm(null);
+            setBulkFeedback(null);
+          }}
           onConfirm={handleBulkConfirm}
         />
       )}
@@ -748,6 +780,7 @@ function BulkInvoiceConfirmModal({
   count,
   pending,
   error,
+  feedback,
   onCancel,
   onConfirm,
 }: {
@@ -755,6 +788,7 @@ function BulkInvoiceConfirmModal({
   count: number;
   pending: boolean;
   error: string | null;
+  feedback: string | null;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -779,6 +813,9 @@ function BulkInvoiceConfirmModal({
         {error && (
           <p className="text-sm text-destructive bg-destructive/10 rounded-md px-3 py-2">{error}</p>
         )}
+        {feedback && !error && (
+          <p className="text-sm text-warning bg-warning/10 rounded-md px-3 py-2" data-testid="bulk-invoice-feedback">{feedback}</p>
+        )}
         <div className="flex justify-end gap-2 pt-2">
           <button
             type="button"
@@ -786,7 +823,7 @@ function BulkInvoiceConfirmModal({
             disabled={pending}
             className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
           >
-            Cancel
+            {feedback ? "Close" : "Cancel"}
           </button>
           <button
             type="button"

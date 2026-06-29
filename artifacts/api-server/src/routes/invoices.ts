@@ -1202,44 +1202,103 @@ router.post(
 //   { labOrganizationId, all: true }                     — all for the lab
 // For each invoice: void → soft-delete → hard-delete its line items.
 const bulkInvoiceTargetSchema = z.object({
-  labOrganizationId: z.string().min(1),
+  // Optional: only used to scope the practiceIds / all paths. The invoiceIds
+  // path resolves and authorizes each invoice by its OWN labOrganizationId so
+  // a selection spanning more than one lab org is handled correctly.
+  labOrganizationId: z.string().min(1).optional(),
   invoiceIds: z.array(z.string().min(1)).max(2000).optional(),
   practiceIds: z.array(z.string().min(1)).max(500).optional(),
   all: z.boolean().optional(),
 });
+
+type BulkInvoiceTargetInput = z.infer<typeof bulkInvoiceTargetSchema>;
+
+type BulkInvoiceTarget = {
+  id: string;
+  invoiceNumber: string;
+  providerOrganizationId: string | null;
+  labOrganizationId: string;
+};
+
+/**
+ * Resolve the set of non-deleted invoices a bulk delete/reset should affect,
+ * enforcing BILLING_ROLES authorization for every lab org touched.
+ *
+ * The `invoiceIds` path resolves each invoice by its OWN labOrganizationId so
+ * a selection that spans more than one lab org is handled correctly (the old
+ * code scoped the whole batch to a single client-supplied labOrganizationId,
+ * silently dropping every invoice belonging to a different org). The caller is
+ * authorized once per distinct lab org in the resolved set — if they lack a
+ * billing role for any touched org the whole request fails closed with 403.
+ *
+ * The `practiceIds` and `all` paths operate within a single lab org and still
+ * require an explicit `labOrganizationId`.
+ */
+async function resolveBulkInvoiceTargets(
+  input: BulkInvoiceTargetInput,
+  actorUserId: string,
+): Promise<BulkInvoiceTarget[]> {
+  const columns = {
+    id: true,
+    invoiceNumber: true,
+    providerOrganizationId: true,
+    labOrganizationId: true,
+  } as const;
+
+  if (input.invoiceIds && input.invoiceIds.length > 0) {
+    const targets = (await db.query.invoices.findMany({
+      where: and(
+        inArray(invoices.id, input.invoiceIds),
+        isNull(invoices.deletedAt),
+      ),
+      columns,
+    })) as BulkInvoiceTarget[];
+
+    // Authorize the caller for every distinct lab org the selection touches.
+    const orgIds = [...new Set(targets.map((inv) => inv.labOrganizationId))];
+    for (const orgId of orgIds) {
+      await requireAnyRole(actorUserId, orgId, BILLING_ROLES);
+    }
+    return targets;
+  }
+
+  if (!input.labOrganizationId) {
+    throw new HttpError(400, "labOrganizationId is required.");
+  }
+  await requireAnyRole(actorUserId, input.labOrganizationId, BILLING_ROLES);
+
+  const baseWhere = and(
+    eq(invoices.labOrganizationId, input.labOrganizationId),
+    isNull(invoices.deletedAt),
+  );
+
+  if (input.practiceIds && input.practiceIds.length > 0) {
+    return (await db.query.invoices.findMany({
+      where: and(
+        baseWhere,
+        inArray(invoices.providerOrganizationId, input.practiceIds),
+      ),
+      columns,
+    })) as BulkInvoiceTarget[];
+  }
+
+  if (input.all) {
+    return (await db.query.invoices.findMany({
+      where: baseWhere,
+      columns,
+    })) as BulkInvoiceTarget[];
+  }
+
+  throw new HttpError(400, "Specify invoiceIds, practiceIds, or all:true.");
+}
 
 router.delete(
   "/bulk",
   asyncHandler(async (req, res) => {
     const input = bulkInvoiceTargetSchema.parse(req.body);
     const actorUserId: string = (req as any).auth.userId;
-    await requireAnyRole(actorUserId, input.labOrganizationId, BILLING_ROLES);
 
-    const baseWhere = and(
-      eq(invoices.labOrganizationId, input.labOrganizationId),
-      isNull(invoices.deletedAt),
-    );
-
-    let toDelete: { id: string; invoiceNumber: string; providerOrganizationId: string | null }[];
-
-    if (input.invoiceIds && input.invoiceIds.length > 0) {
-      toDelete = await db.query.invoices.findMany({
-        where: and(baseWhere, inArray(invoices.id, input.invoiceIds)),
-        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
-      });
-    } else if (input.practiceIds && input.practiceIds.length > 0) {
-      toDelete = await db.query.invoices.findMany({
-        where: and(baseWhere, inArray(invoices.providerOrganizationId, input.practiceIds)),
-        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
-      });
-    } else if (input.all) {
-      toDelete = await db.query.invoices.findMany({
-        where: baseWhere,
-        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
-      });
-    } else {
-      throw new HttpError(400, "Specify invoiceIds, practiceIds, or all:true.");
-    }
+    const toDelete = await resolveBulkInvoiceTargets(input, actorUserId);
 
     if (toDelete.length === 0) {
       return ok(res, { deletedCount: 0 });
@@ -1266,11 +1325,11 @@ router.delete(
       // 3. Hard-delete all line items (not a protected table)
       await tx.delete(invoiceLineItems).where(inArray(invoiceLineItems.invoiceId, ids));
 
-      // 4. Audit log — one row per invoice
+      // 4. Audit log — one row per invoice, scoped to its OWN lab org
       await tx.insert(auditLogs).values(
         toDelete.map((inv) => ({
           userId: actorUserId,
-          organizationId: input.labOrganizationId,
+          organizationId: inv.labOrganizationId,
           action: "bulk_invoice_delete",
           entityType: "invoice",
           entityId: inv.id,
@@ -1287,7 +1346,7 @@ router.delete(
     });
 
     req.log?.info?.(
-      { labOrganizationId: input.labOrganizationId, count: toDelete.length },
+      { count: toDelete.length },
       "[INVOICE BULK DELETE] completed",
     );
 
@@ -1303,33 +1362,8 @@ router.post(
   asyncHandler(async (req, res) => {
     const input = bulkInvoiceTargetSchema.parse(req.body);
     const actorUserId: string = (req as any).auth.userId;
-    await requireAnyRole(actorUserId, input.labOrganizationId, BILLING_ROLES);
 
-    const baseWhere = and(
-      eq(invoices.labOrganizationId, input.labOrganizationId),
-      isNull(invoices.deletedAt),
-    );
-
-    let toReset: { id: string; invoiceNumber: string; providerOrganizationId: string | null }[];
-
-    if (input.invoiceIds && input.invoiceIds.length > 0) {
-      toReset = await db.query.invoices.findMany({
-        where: and(baseWhere, inArray(invoices.id, input.invoiceIds)),
-        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
-      });
-    } else if (input.practiceIds && input.practiceIds.length > 0) {
-      toReset = await db.query.invoices.findMany({
-        where: and(baseWhere, inArray(invoices.providerOrganizationId, input.practiceIds)),
-        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
-      });
-    } else if (input.all) {
-      toReset = await db.query.invoices.findMany({
-        where: baseWhere,
-        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
-      });
-    } else {
-      throw new HttpError(400, "Specify invoiceIds, practiceIds, or all:true.");
-    }
+    const toReset = await resolveBulkInvoiceTargets(input, actorUserId);
 
     if (toReset.length === 0) {
       return ok(res, { resetCount: 0 });
@@ -1358,11 +1392,11 @@ router.post(
       // 2. Hard-delete all line items (not a protected table)
       await tx.delete(invoiceLineItems).where(inArray(invoiceLineItems.invoiceId, ids));
 
-      // 3. Audit log — one row per invoice
+      // 3. Audit log — one row per invoice, scoped to its OWN lab org
       await tx.insert(auditLogs).values(
         toReset.map((inv) => ({
           userId: actorUserId,
-          organizationId: input.labOrganizationId,
+          organizationId: inv.labOrganizationId,
           action: "bulk_invoice_reset",
           entityType: "invoice",
           entityId: inv.id,
@@ -1379,7 +1413,7 @@ router.post(
     });
 
     req.log?.info?.(
-      { labOrganizationId: input.labOrganizationId, count: toReset.length },
+      { count: toReset.length },
       "[INVOICE BULK RESET] completed",
     );
 
