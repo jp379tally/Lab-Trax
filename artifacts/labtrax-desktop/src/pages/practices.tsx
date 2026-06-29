@@ -3642,12 +3642,13 @@ function DoctorPricingRow({
               </div>
             )}
 
-            {/* Per-item: exact price + per-item discount + effective hint */}
+            {/* Per-item: price + per-item discount + live discounted price */}
             <div className="space-y-1.5">
               <div className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-muted-foreground">
                 <span className="flex-1">Item</span>
-                <span className="w-24 text-right">Exact $</span>
-                <span className="w-20 text-right">% off</span>
+                <span className="w-24 text-right">Price</span>
+                <span className="w-20 text-right">% Discount</span>
+                <span className="w-24 text-right">Discounted Price</span>
               </div>
               {DEFAULT_PRICE_KEYS.map((k) => {
                 const basePrice = Number(practiceDefaultTier?.prices?.[k] ?? 0);
@@ -3674,90 +3675,83 @@ function DoctorPricingRow({
                     ? Number(perItemPctRaw)
                     : defaultDiscountNum;
 
-                // Effective-price guidance string.
+                // Live discounted (effective) price for this item.
                 // When a discount applies but there is no practice default tier
                 // price for this key, fall back to the doctor's effective tier
                 // price as the discount base — matching server-side behaviour.
                 const discountBase = hasBase ? basePrice : tierPrice;
-                let hint = "";
+                let effectivePrice: number | null = null;
                 if (Number.isFinite(exact) && exact > 0) {
-                  hint = `${formatMoney(exact)} (exact)`;
+                  effectivePrice = exact;
                 } else if (
                   effectivePct !== null &&
                   Number.isFinite(effectivePct) &&
                   (effectivePct as number) >= 0 &&
                   discountBase > 0
                 ) {
-                  const amt =
+                  effectivePrice =
                     Math.round(
                       discountBase * (1 - (effectivePct as number) / 100) * 100,
                     ) / 100;
-                  const baseLabel =
-                    !hasBase && fallbackTierName
-                      ? `${formatMoney(discountBase)} ${fallbackTierName}`
-                      : formatMoney(discountBase);
-                  hint = `${formatMoney(amt)} (${effectivePct}% off ${baseLabel})`;
                 } else if (tierPrice > 0) {
-                  hint = `${formatMoney(tierPrice)} (tier)`;
+                  effectivePrice = tierPrice;
                 }
 
                 return (
-                  <div key={k} className="space-y-0.5">
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="flex-1 text-muted-foreground truncate">
-                        {priceKeyLabel(k)}
-                      </span>
-                      <div className="relative w-24">
-                        <DollarSign
-                          size={11}
-                          className="absolute left-1.5 top-1.5 text-muted-foreground pointer-events-none"
-                        />
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          step="0.01"
-                          min="0"
-                          placeholder={tierPrice > 0 ? formatMoney(tierPrice) : "—"}
-                          value={prices[k] ?? ""}
-                          onChange={(e) =>
-                            setPrices((p) => ({ ...p, [k]: e.target.value }))
-                          }
-                          className="h-7 pl-5 pr-2 w-24 rounded-md bg-background border border-input text-xs text-right"
-                          disabled={saveMutation.isPending || readOnly}
-                        />
-                      </div>
-                      <div className="relative w-20">
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          step="0.01"
-                          min="0"
-                          max="100"
-                          placeholder={
-                            defaultDiscountNum !== null
-                              ? String(defaultDiscountNum)
-                              : "—"
-                          }
-                          value={discountPercents[k] ?? ""}
-                          onChange={(e) =>
-                            setDiscountPercents((p) => ({
-                              ...p,
-                              [k]: e.target.value,
-                            }))
-                          }
-                          className="h-7 pl-2 pr-5 w-20 rounded-md bg-background border border-input text-xs text-right"
-                          disabled={saveMutation.isPending || readOnly}
-                        />
-                        <span className="absolute right-1.5 top-1.5 text-muted-foreground pointer-events-none text-[11px]">
-                          %
-                        </span>
-                      </div>
+                  <div key={k} className="flex items-center gap-2 text-xs">
+                    <span className="flex-1 text-muted-foreground truncate">
+                      {priceKeyLabel(k)}
+                    </span>
+                    <div className="relative w-24">
+                      <DollarSign
+                        size={11}
+                        className="absolute left-1.5 top-1.5 text-muted-foreground pointer-events-none"
+                      />
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        step="0.01"
+                        min="0"
+                        placeholder={tierPrice > 0 ? formatMoney(tierPrice) : "—"}
+                        value={prices[k] ?? ""}
+                        onChange={(e) =>
+                          setPrices((p) => ({ ...p, [k]: e.target.value }))
+                        }
+                        className="h-7 pl-5 pr-2 w-24 rounded-md bg-background border border-input text-xs text-right"
+                        disabled={saveMutation.isPending || readOnly}
+                      />
                     </div>
-                    {hint && (
-                      <div className="text-[10px] text-muted-foreground text-right pr-1">
-                        {hint}
-                      </div>
-                    )}
+                    <div className="relative w-20">
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        step="0.01"
+                        min="0"
+                        max="100"
+                        placeholder={
+                          defaultDiscountNum !== null
+                            ? String(defaultDiscountNum)
+                            : "—"
+                        }
+                        value={discountPercents[k] ?? ""}
+                        onChange={(e) =>
+                          setDiscountPercents((p) => ({
+                            ...p,
+                            [k]: e.target.value,
+                          }))
+                        }
+                        className="h-7 pl-2 pr-5 w-20 rounded-md bg-background border border-input text-xs text-right"
+                        disabled={saveMutation.isPending || readOnly}
+                      />
+                      <span className="absolute right-1.5 top-1.5 text-muted-foreground pointer-events-none text-[11px]">
+                        %
+                      </span>
+                    </div>
+                    <span className="w-24 text-right tabular-nums text-muted-foreground">
+                      {effectivePrice !== null
+                        ? formatMoney(effectivePrice)
+                        : "—"}
+                    </span>
                   </div>
                 );
               })}
