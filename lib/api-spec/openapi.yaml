@@ -62,6 +62,27 @@ paths:
           description: Missing labOrganizationId
         "403":
           description: Not a lab member
+    delete:
+      operationId: bulkDeleteLabInboxFiles
+      tags: [lab-inbox]
+      summary: Bulk delete unassigned inbox files (lab members only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkDeleteLabInboxFilesInput"
+      responses:
+        "200":
+          description: Number of files deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkDeleteLabInboxFilesResult"
+        "400":
+          description: Invalid request
+        "403":
+          description: Not a lab member
   /lab-inbox/upload:
     post:
       operationId: uploadLabInboxFile
@@ -113,6 +134,29 @@ paths:
           description: Invalid request
         "403":
           description: Not a lab member
+  /lab-inbox/{fileId}:
+    delete:
+      operationId: deleteLabInboxFile
+      tags: [lab-inbox]
+      summary: Delete a single unassigned inbox file (lab members only)
+      parameters:
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: File deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResult"
+        "403":
+          description: Not a lab member
+        "404":
+          description: File not found
+        "409":
+          description: File has already been assigned
   /lab-inbox/{fileId}/assign:
     post:
       operationId: assignLabInboxFile
@@ -6024,4 +6068,24 @@ components:
           properties:
             attachmentId: { type: string }
             caseId: { type: string }
+    BulkDeleteLabInboxFilesInput:
+      type: object
+      required: [fileIds, labOrganizationId]
+      properties:
+        fileIds:
+          type: array
+          items: { type: string }
+          minItems: 1
+          maxItems: 50
+        labOrganizationId: { type: string }
+    BulkDeleteLabInboxFilesResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [deletedCount]
+          properties:
+            deletedCount: { type: integer }
 

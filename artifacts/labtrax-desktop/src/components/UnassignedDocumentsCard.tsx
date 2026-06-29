@@ -11,11 +11,14 @@ import {
   Inbox,
   Loader2,
   Paperclip,
+  Trash2,
   X,
 } from "lucide-react";
 import {
   useListLabInboxFiles,
   useAssignLabInboxFile,
+  useDeleteLabInboxFile,
+  useBulkDeleteLabInboxFiles,
   getListLabInboxFilesQueryKey,
 } from "@workspace/api-client-react";
 import type { LabInboxFile } from "@workspace/api-client-react";
@@ -85,10 +88,18 @@ function InboxFileRow({
   file,
   labOrganizationId,
   onAssigned,
+  selectMode,
+  selected,
+  onToggleSelect,
+  onDeleted,
 }: {
   file: LabInboxFile;
   labOrganizationId: string;
   onAssigned: (caseId: string) => void;
+  selectMode: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
+  onDeleted: (fileId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -101,6 +112,22 @@ function InboxFileRow({
   const pendingCaseIdRef = useRef<string>("");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+
+  const deleteMutation = useDeleteLabInboxFile({
+    mutation: {
+      onSuccess: () => {
+        onDeleted(file.id);
+        toast({ title: "File deleted", description: file.originalFilename });
+      },
+      onError: (err: Error) => {
+        toast({
+          title: "Could not delete file",
+          description: err.message || "Please try again.",
+          variant: "destructive",
+        });
+      },
+    },
+  });
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -182,12 +209,29 @@ function InboxFileRow({
 
   return (
     <div className="flex items-start gap-2.5 py-2.5 border-b border-border/40 last:border-0 group">
-      <span
-        className="text-base leading-none mt-0.5 shrink-0"
-        title={file.mimeType}
-      >
-        {fileIcon(file.mimeType)}
-      </span>
+      {/* Checkbox (select mode) or file icon */}
+      {selectMode ? (
+        <button
+          type="button"
+          onClick={onToggleSelect}
+          aria-label={selected ? "Deselect file" : "Select file"}
+          className="shrink-0 mt-0.5 flex items-center justify-center h-4 w-4 rounded border border-border bg-background transition-colors"
+          style={{ accentColor: "hsl(var(--primary))" }}
+        >
+          {selected && (
+            <svg viewBox="0 0 12 12" fill="none" className="h-3 w-3 text-primary" stroke="currentColor" strokeWidth={2.5}>
+              <polyline points="2,6 5,9 10,3" />
+            </svg>
+          )}
+        </button>
+      ) : (
+        <span
+          className="text-base leading-none mt-0.5 shrink-0"
+          title={file.mimeType}
+        >
+          {fileIcon(file.mimeType)}
+        </span>
+      )}
 
       <div className="flex-1 min-w-0">
         <button
@@ -274,7 +318,7 @@ function InboxFileRow({
         )}
       </div>
 
-      {!assigned && (
+      {!assigned && !selectMode && (
         <div className="flex items-center gap-1 shrink-0 mt-0.5">
           <button
             type="button"
@@ -287,6 +331,19 @@ function InboxFileRow({
               <Loader2 size={9} className="animate-spin" />
             ) : (
               <Eye size={9} />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => deleteMutation.mutate({ fileId: file.id })}
+            disabled={deleteMutation.isPending}
+            title="Delete file"
+            className="inline-flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 border border-border transition-colors disabled:opacity-60 disabled:cursor-wait opacity-0 group-hover:opacity-100"
+          >
+            {deleteMutation.isPending ? (
+              <Loader2 size={9} className="animate-spin" />
+            ) : (
+              <Trash2 size={9} />
             )}
           </button>
           <button
@@ -329,6 +386,10 @@ export function UnassignedDocumentsCard() {
   const [uploadProgress, setUploadProgress] = useState<Record<string, FileUploadState>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Multi-select state
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
   const filesQuery = useListLabInboxFiles(
     { labOrganizationId },
     {
@@ -339,6 +400,30 @@ export function UnassignedDocumentsCard() {
       },
     },
   );
+
+  const bulkDeleteMutation = useBulkDeleteLabInboxFiles({
+    mutation: {
+      onSuccess: (data) => {
+        const n = data?.data?.deletedCount ?? 0;
+        toast({
+          title: `${n} file${n === 1 ? "" : "s"} deleted`,
+          description: "The selected files have been removed.",
+        });
+        setSelectedIds(new Set());
+        setSelectMode(false);
+        void qc.invalidateQueries({
+          queryKey: getListLabInboxFilesQueryKey({ labOrganizationId }),
+        });
+      },
+      onError: (err: Error) => {
+        toast({
+          title: "Could not delete files",
+          description: err.message || "Please try again.",
+          variant: "destructive",
+        });
+      },
+    },
+  });
 
   const setFileProgress = useCallback(
     (key: string, state: FileUploadState | null) => {
@@ -477,8 +562,49 @@ export function UnassignedDocumentsCard() {
     });
   };
 
+  const handleFileDeleted = (fileId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(fileId);
+      return next;
+    });
+    void qc.invalidateQueries({
+      queryKey: getListLabInboxFilesQueryKey({ labOrganizationId }),
+    });
+  };
+
+  const toggleSelect = (fileId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    if (selectedIds.size === files.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(files.map((f) => f.id)));
+    }
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedIds.size === 0) return;
+    bulkDeleteMutation.mutate({
+      data: { fileIds: Array.from(selectedIds), labOrganizationId },
+    });
+  };
+
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
   const files = filesQuery.data?.data ?? [];
   const count = files.length;
+  const allSelected = count > 0 && selectedIds.size === count;
 
   const inFlightEntries = Object.entries(uploadProgress);
   const isUploading = inFlightEntries.some(([, s]) => s.error === null);
@@ -613,16 +739,89 @@ export function UnassignedDocumentsCard() {
           )}
 
           {count > 0 && (
-            <div className="max-h-64 overflow-y-auto -mx-1 px-1">
-              {files.map((file) => (
-                <InboxFileRow
-                  key={file.id}
-                  file={file}
-                  labOrganizationId={labOrganizationId}
-                  onAssigned={handleAssigned}
-                />
-              ))}
-            </div>
+            <>
+              {/* Select mode toolbar */}
+              <div className="flex items-center justify-between gap-2 min-h-[24px]">
+                {selectMode ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSelectAll}
+                        className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <span
+                          className="inline-flex items-center justify-center h-3.5 w-3.5 rounded border border-border bg-background"
+                        >
+                          {allSelected && (
+                            <svg viewBox="0 0 12 12" fill="none" className="h-2.5 w-2.5 text-primary" stroke="currentColor" strokeWidth={2.5}>
+                              <polyline points="2,6 5,9 10,3" />
+                            </svg>
+                          )}
+                        </span>
+                        {allSelected ? "Deselect all" : "Select all"}
+                      </button>
+                      {selectedIds.size > 0 && (
+                        <span className="text-[10px] text-muted-foreground">
+                          {selectedIds.size} selected
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      {selectedIds.size > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleBulkDelete}
+                          disabled={bulkDeleteMutation.isPending}
+                          className="inline-flex items-center gap-1 h-6 px-2 rounded text-[10px] font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {bulkDeleteMutation.isPending ? (
+                            <Loader2 size={9} className="animate-spin" />
+                          ) : (
+                            <Trash2 size={9} />
+                          )}
+                          Delete {selectedIds.size}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={exitSelectMode}
+                        className="inline-flex items-center gap-1 h-6 px-2 rounded text-[10px] font-medium border border-border bg-secondary hover:bg-secondary/70 text-foreground transition-colors"
+                      >
+                        <X size={9} />
+                        Cancel
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectMode(true);
+                    }}
+                    className="ml-auto text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Select
+                  </button>
+                )}
+              </div>
+
+              <div className="max-h-64 overflow-y-auto -mx-1 px-1">
+                {files.map((file) => (
+                  <InboxFileRow
+                    key={file.id}
+                    file={file}
+                    labOrganizationId={labOrganizationId}
+                    onAssigned={handleAssigned}
+                    selectMode={selectMode}
+                    selected={selectedIds.has(file.id)}
+                    onToggleSelect={() => toggleSelect(file.id)}
+                    onDeleted={handleFileDeleted}
+                  />
+                ))}
+              </div>
+            </>
           )}
         </div>
       )}

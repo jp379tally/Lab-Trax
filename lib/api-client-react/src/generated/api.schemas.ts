@@ -2411,6 +2411,24 @@ export interface AssignLabInboxFileResult {
   data: AssignLabInboxFileResultData;
 }
 
+export interface BulkDeleteLabInboxFilesInput {
+  /**
+   * @minItems 1
+   * @maxItems 50
+   */
+  fileIds: string[];
+  labOrganizationId: string;
+}
+
+export type BulkDeleteLabInboxFilesResultData = {
+  deletedCount: number;
+};
+
+export interface BulkDeleteLabInboxFilesResult {
+  ok: boolean;
+  data: BulkDeleteLabInboxFilesResultData;
+}
+
 export type ListLabInboxFilesParams = {
   labOrganizationId: string;
 };

@@ -40,6 +40,8 @@ import type {
   BackupRunResult,
   BackupScheduleInput,
   BackupScheduleResult,
+  BulkDeleteLabInboxFilesInput,
+  BulkDeleteLabInboxFilesResult,
   BulkReassignCasesInput,
   BulkReassignCasesResult,
   BulkRestoreCases200,
@@ -310,6 +312,96 @@ export function useListLabInboxFiles<
 }
 
 /**
+ * @summary Bulk delete unassigned inbox files (lab members only)
+ */
+export const getBulkDeleteLabInboxFilesUrl = () => {
+  return `/api/lab-inbox`;
+};
+
+export const bulkDeleteLabInboxFiles = async (
+  bulkDeleteLabInboxFilesInput: BulkDeleteLabInboxFilesInput,
+  options?: RequestInit,
+): Promise<BulkDeleteLabInboxFilesResult> => {
+  return customFetch<BulkDeleteLabInboxFilesResult>(
+    getBulkDeleteLabInboxFilesUrl(),
+    {
+      ...options,
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(bulkDeleteLabInboxFilesInput),
+    },
+  );
+};
+
+export const getBulkDeleteLabInboxFilesMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof bulkDeleteLabInboxFiles>>,
+    TError,
+    { data: BodyType<BulkDeleteLabInboxFilesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof bulkDeleteLabInboxFiles>>,
+  TError,
+  { data: BodyType<BulkDeleteLabInboxFilesInput> },
+  TContext
+> => {
+  const mutationKey = ["bulkDeleteLabInboxFiles"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof bulkDeleteLabInboxFiles>>,
+    { data: BodyType<BulkDeleteLabInboxFilesInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return bulkDeleteLabInboxFiles(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type BulkDeleteLabInboxFilesMutationResult = NonNullable<
+  Awaited<ReturnType<typeof bulkDeleteLabInboxFiles>>
+>;
+export type BulkDeleteLabInboxFilesMutationBody =
+  BodyType<BulkDeleteLabInboxFilesInput>;
+export type BulkDeleteLabInboxFilesMutationError = ErrorType<void>;
+
+/**
+ * @summary Bulk delete unassigned inbox files (lab members only)
+ */
+export const useBulkDeleteLabInboxFiles = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof bulkDeleteLabInboxFiles>>,
+    TError,
+    { data: BodyType<BulkDeleteLabInboxFilesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof bulkDeleteLabInboxFiles>>,
+  TError,
+  { data: BodyType<BulkDeleteLabInboxFilesInput> },
+  TContext
+> => {
+  return useMutation(getBulkDeleteLabInboxFilesMutationOptions(options));
+};
+
+/**
  * @summary Upload a file to the lab inbox (lab members only)
  */
 export const getUploadLabInboxFileUrl = () => {
@@ -486,6 +578,90 @@ export const useFinalizeLabInboxSession = <
   TContext
 > => {
   return useMutation(getFinalizeLabInboxSessionMutationOptions(options));
+};
+
+/**
+ * @summary Delete a single unassigned inbox file (lab members only)
+ */
+export const getDeleteLabInboxFileUrl = (fileId: string) => {
+  return `/api/lab-inbox/${fileId}`;
+};
+
+export const deleteLabInboxFile = async (
+  fileId: string,
+  options?: RequestInit,
+): Promise<SuccessResult> => {
+  return customFetch<SuccessResult>(getDeleteLabInboxFileUrl(fileId), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getDeleteLabInboxFileMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteLabInboxFile>>,
+    TError,
+    { fileId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deleteLabInboxFile>>,
+  TError,
+  { fileId: string },
+  TContext
+> => {
+  const mutationKey = ["deleteLabInboxFile"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deleteLabInboxFile>>,
+    { fileId: string }
+  > = (props) => {
+    const { fileId } = props ?? {};
+
+    return deleteLabInboxFile(fileId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeleteLabInboxFileMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deleteLabInboxFile>>
+>;
+
+export type DeleteLabInboxFileMutationError = ErrorType<void>;
+
+/**
+ * @summary Delete a single unassigned inbox file (lab members only)
+ */
+export const useDeleteLabInboxFile = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteLabInboxFile>>,
+    TError,
+    { fileId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deleteLabInboxFile>>,
+  TError,
+  { fileId: string },
+  TContext
+> => {
+  return useMutation(getDeleteLabInboxFileMutationOptions(options));
 };
 
 /**

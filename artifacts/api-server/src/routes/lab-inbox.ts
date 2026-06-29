@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Router, type Request, type Response } from "express";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import multer from "multer";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -279,6 +279,80 @@ router.get(
       }
     });
     objStream.stream.pipe(res);
+  }),
+);
+
+router.delete(
+  "/:fileId",
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).auth.userId as string;
+    const fileId = String(req.params["fileId"] ?? "");
+
+    const inboxFile = await db.query.labInboxFiles.findFirst({
+      where: eq(labInboxFiles.id, fileId),
+    });
+    if (!inboxFile) throw new HttpError(404, "Inbox file not found.");
+    if (inboxFile.assignedAt) {
+      throw new HttpError(409, "Cannot delete a file that has already been assigned to a case.");
+    }
+    await assertLabMembership(userId, inboxFile.labOrganizationId);
+
+    const srcPath = path.resolve(caseMediaDir, inboxFile.storagePath);
+    if (fs.existsSync(srcPath)) {
+      const trashDir = path.resolve(caseMediaDir, ".trash");
+      fs.mkdirSync(trashDir, { recursive: true });
+      const trashName = `${Date.now()}__${path.basename(inboxFile.storagePath)}`;
+      fs.renameSync(srcPath, path.resolve(trashDir, trashName));
+    }
+
+    await db.delete(labInboxFiles).where(eq(labInboxFiles.id, fileId));
+
+    return ok(res, { deleted: true });
+  }),
+);
+
+const bulkDeleteLabInboxSchema = z.object({
+  fileIds: z.array(z.string().min(1)).min(1).max(50),
+  labOrganizationId: z.string().min(1),
+});
+
+router.delete(
+  "/",
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).auth.userId as string;
+    const parsed = bulkDeleteLabInboxSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new HttpError(400, "Invalid request: " + parsed.error.issues.map((i) => i.message).join(", "));
+    }
+    const { fileIds, labOrganizationId } = parsed.data;
+    await assertLabMembership(userId, labOrganizationId);
+
+    const rows = await db.query.labInboxFiles.findMany({
+      where: and(
+        inArray(labInboxFiles.id, fileIds),
+        eq(labInboxFiles.labOrganizationId, labOrganizationId),
+        isNull(labInboxFiles.assignedAt),
+      ),
+    });
+
+    if (rows.length > 0) {
+      const trashDir = path.resolve(caseMediaDir, ".trash");
+      fs.mkdirSync(trashDir, { recursive: true });
+
+      for (const file of rows) {
+        const srcPath = path.resolve(caseMediaDir, file.storagePath);
+        if (fs.existsSync(srcPath)) {
+          const trashName = `${Date.now()}__${path.basename(file.storagePath)}`;
+          fs.renameSync(srcPath, path.resolve(trashDir, trashName));
+        }
+      }
+
+      await db
+        .delete(labInboxFiles)
+        .where(inArray(labInboxFiles.id, rows.map((r) => r.id)));
+    }
+
+    return ok(res, { deletedCount: rows.length });
   }),
 );
 

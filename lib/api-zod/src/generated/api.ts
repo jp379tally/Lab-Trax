@@ -40,6 +40,26 @@ export const ListLabInboxFilesResponse = zod.object({
 });
 
 /**
+ * @summary Bulk delete unassigned inbox files (lab members only)
+ */
+export const bulkDeleteLabInboxFilesBodyFileIdsMax = 50;
+
+export const BulkDeleteLabInboxFilesBody = zod.object({
+  fileIds: zod
+    .array(zod.string())
+    .min(1)
+    .max(bulkDeleteLabInboxFilesBodyFileIdsMax),
+  labOrganizationId: zod.string(),
+});
+
+export const BulkDeleteLabInboxFilesResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    deletedCount: zod.number(),
+  }),
+});
+
+/**
  * @summary Upload a file to the lab inbox (lab members only)
  */
 export const UploadLabInboxFileBody = zod.object({
@@ -56,6 +76,17 @@ export const FinalizeLabInboxSessionBody = zod.object({
   mimeType: zod.string(),
   sizeBytes: zod.number(),
   labOrganizationId: zod.string(),
+});
+
+/**
+ * @summary Delete a single unassigned inbox file (lab members only)
+ */
+export const DeleteLabInboxFileParams = zod.object({
+  fileId: zod.coerce.string(),
+});
+
+export const DeleteLabInboxFileResponse = zod.object({
+  success: zod.boolean(),
 });
 
 /**
