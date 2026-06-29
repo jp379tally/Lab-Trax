@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeftRight, Ban, CheckCircle2, Download, Landmark, Loader2, Plus, Repeat, Scale, Search, Trash2, Upload, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Ban, CheckCircle2, Download, Landmark, Loader2, Plus, Repeat, Scale, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import { TYPE_BADGE_CLASS, TYPE_LABEL, useVendors, VendorCombobox } from "@/components/finance/VendorCombobox";
@@ -85,7 +85,17 @@ function RegisterTable({
 
   const theadRef = useRef<HTMLTableSectionElement>(null);
   const tableContainerRef = useRef<HTMLDivElement>(null);
+  const selectedRowRef = useRef<HTMLTableRowElement | null>(null);
+  const [selectedOutOfView, setSelectedOutOfView] = useState(false);
+  const [selectedAbove, setSelectedAbove] = useState(false);
   const [theadHeight, setTheadHeight] = useState(33);
+
+  function scrollSelectedIntoView() {
+    const row = selectedRowRef.current;
+    if (!row) return;
+    const editPanel = row.nextElementSibling;
+    (editPanel ?? row).scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
   useLayoutEffect(() => {
     if (theadRef.current) {
       setTheadHeight(theadRef.current.getBoundingClientRect().height);
@@ -102,6 +112,41 @@ function RegisterTable({
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [expandedId]);
+
+  // Keep the selected row's edit panel discoverable: scroll it into view when
+  // opened, and surface a "jump to it" pill whenever the selection scrolls
+  // out of the register's viewport.
+  useEffect(() => {
+    if (!expandedId) {
+      setSelectedOutOfView(false);
+      return;
+    }
+    const container = tableContainerRef.current;
+    const row = selectedRowRef.current;
+    if (!container || !row) {
+      // Selected row is no longer rendered (e.g. filtered out) — clear the
+      // pill so it can't linger pointing at a row that doesn't exist.
+      setSelectedOutOfView(false);
+      return;
+    }
+
+    const editPanel = row.nextElementSibling;
+    (editPanel ?? row).scrollIntoView({ block: "nearest", behavior: "smooth" });
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        setSelectedOutOfView(!entry.isIntersecting);
+        if (!entry.isIntersecting && entry.rootBounds) {
+          setSelectedAbove(entry.boundingClientRect.top < entry.rootBounds.top);
+        }
+      },
+      { root: container, rootMargin: `-${theadHeight}px 0px 0px 0px`, threshold: 0 }
+    );
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, [expandedId, theadHeight]);
 
   const params = useMemo(() => {
     const sp = new URLSearchParams();
@@ -221,7 +266,7 @@ function RegisterTable({
         />
       </div>
 
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
+      <div className="relative bg-card border border-border rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[200px] max-w-md">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -495,6 +540,7 @@ function RegisterTable({
                 return (
                   <Fragment key={r.id}>
                   <tr
+                    ref={isSelected ? selectedRowRef : undefined}
                     onClick={() => !isUF && setExpandedId(expandedId === r.id ? null : r.id)}
                     className={`group/row text-[12.5px] border-b border-border/40 ${isUF ? "" : "cursor-pointer"} ${
                       isSelected
@@ -708,6 +754,18 @@ function RegisterTable({
             </tbody>
           </table>
         </div>
+
+        {expandedId && selectedOutOfView && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={scrollSelectedIntoView}
+            className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-sky-600 text-white text-xs font-medium shadow-lg ring-1 ring-sky-700/40 hover:bg-sky-700 transition-colors"
+          >
+            {selectedAbove ? <ArrowUp size={14} /> : <ArrowDown size={14} />}
+            1 entry selected — jump to it
+          </button>
+        )}
       </div>
 
 
