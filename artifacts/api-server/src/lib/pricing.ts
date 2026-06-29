@@ -559,6 +559,15 @@ export interface ResolvedItemRow {
   source: PriceSource | null;
   sourceId: string | null;
   sourceName: string | null;
+  /**
+   * For `source: "discount"` only: the name of the tier the discount base
+   * price was taken from when that base is a *fallback* tier (the doctor's
+   * effective tier or the lab default) rather than the practice's default
+   * (connection) tier. `null` when the base came from the practice default
+   * tier or when the source is not a discount. Lets the UI name the source
+   * tier in the case pricing preview, matching the Practices page hint.
+   */
+  discountBaseTierName?: string | null;
 }
 
 export async function resolveAllPricesForContext(
@@ -674,6 +683,12 @@ export async function resolveAllPricesForContext(
           >;
           const baseValue = Number(basePrices[key]);
           if (Number.isFinite(baseValue) && baseValue > 0) {
+            // The base is the practice default only when the connection tier
+            // both exists and is the tier that supplied this base price.
+            const isPracticeDefaultBase =
+              !!connectionTierName &&
+              baseTier.name.trim().toLowerCase() ===
+                connectionTierName.trim().toLowerCase();
             return {
               key,
               label: item.label,
@@ -681,6 +696,9 @@ export async function resolveAllPricesForContext(
               source: "discount" as const,
               sourceId: overrideRow.id,
               sourceName: overrideRow.doctorName,
+              discountBaseTierName: isPracticeDefaultBase
+                ? null
+                : baseTier.name,
             };
           }
         }

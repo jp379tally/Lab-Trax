@@ -4290,6 +4290,28 @@ export function CaseDrawer({
       ),
   });
 
+  // Resolve live per-item pricing for this case so discount-priced lines can
+  // name the tier their base price came from when it's a fallback tier (the
+  // doctor's effective tier or lab default) rather than the practice default.
+  // Mirrors the Practices page DoctorPricingRow hint (Task #2510).
+  const resolvedPricingQuery = useQuery({
+    queryKey: ["case", labCase.id, "resolve-items"],
+    queryFn: () =>
+      apiFetch<{
+        items: Array<{
+          key: string;
+          discountBaseTierName?: string | null;
+        }>;
+      }>(`/pricing/resolve-items?caseId=${encodeURIComponent(labCase.id)}`),
+  });
+  const discountBaseTierByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const it of resolvedPricingQuery.data?.items ?? []) {
+      if (it.discountBaseTierName) map.set(it.key, it.discountBaseTierName);
+    }
+    return map;
+  }, [resolvedPricingQuery.data]);
+
   // Inline "set alloy price" from the PFM reminder (Task #2077). When the
   // alloy line was added at $0 (no tier/override has an alloy price), an admin
   // can set it right here; the server writes it to the tier/override the case
@@ -6617,6 +6639,9 @@ export function CaseDrawer({
                     restoration={r}
                     caseId={labCase.id}
                     labOrganizationId={labCase.labOrganizationId}
+                    discountBaseTierName={
+                      discountBaseTierByKey.get(r.priceKey ?? "") ?? null
+                    }
                     isPendingDelete={pendingDeletes.has(r.id)}
                     canEditPrice={isAdmin}
                     onPendingDelete={() => {
@@ -7827,6 +7852,7 @@ function RestorationRow({
   onPendingDelete,
   onUndoPendingDelete,
   canEditPrice,
+  discountBaseTierName,
 }: {
   restoration: CaseRestoration;
   caseId: string;
@@ -7835,6 +7861,7 @@ function RestorationRow({
   onPendingDelete?: () => void;
   onUndoPendingDelete?: () => void;
   canEditPrice?: boolean;
+  discountBaseTierName?: string | null;
 }) {
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(false);
@@ -7967,12 +7994,19 @@ function RestorationRow({
             )}
             {!isPendingDelete && style && (
               <span
-                title={style.title}
+                title={
+                  source === "discount" && discountBaseTierName
+                    ? `Percentage discount off the ${discountBaseTierName} tier (no practice default tier price available for this item).`
+                    : style.title
+                }
                 className={`text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded ${style.className}`}
               >
                 {style.label}
                 {source !== "manual" && r.priceSourceName
                   ? ` · ${r.priceSourceName}`
+                  : ""}
+                {source === "discount" && discountBaseTierName
+                  ? ` · off ${discountBaseTierName}`
                   : ""}
               </span>
             )}

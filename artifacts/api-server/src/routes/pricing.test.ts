@@ -612,13 +612,20 @@ maybe("Pricing tiers and overrides (db integration)", () => {
       .get(`/api/pricing/resolve-items?caseId=${caseId}`)
       .set("Authorization", `Bearer ${access}`);
     expect(r.status).toBe(200);
-    const items: Array<{ key: string; unitPrice: number; source: string | null }> =
-      r.body.data?.items ?? [];
+    const items: Array<{
+      key: string;
+      unitPrice: number;
+      source: string | null;
+      discountBaseTierName?: string | null;
+    }> = r.body.data?.items ?? [];
 
     // pfm_crown: per-item 25% off 100 = 75 (per-item % beats default %).
     const pfm = items.find((i) => i.key === "pfm_crown");
     expect(pfm?.unitPrice).toBe(75);
     expect(pfm?.source).toBe("discount");
+    // Base came from the practice default (connection) tier → no source-tier
+    // name surfaced (format stays unchanged for the practice-default case).
+    expect(pfm?.discountBaseTierName ?? null).toBeNull();
 
     // emax_crown: exact dollar override (111) wins over the 10% discount.
     const emax = items.find((i) => i.key === "emax_crown");
@@ -636,6 +643,7 @@ maybe("Pricing tiers and overrides (db integration)", () => {
     const zir = items.find((i) => i.key === "zirconia_crown");
     expect(zir?.unitPrice).toBe(300);
     expect(zir?.source).toBe("discount");
+    expect(zir?.discountBaseTierName ?? null).toBeNull();
   }, 20000);
 
   // ── Discount with no connection tier ─────────────────────────────────────
@@ -696,12 +704,19 @@ maybe("Pricing tiers and overrides (db integration)", () => {
       .get(`/api/pricing/resolve-items?caseId=${caseId}`)
       .set("Authorization", `Bearer ${access}`);
     expect(r.status).toBe(200);
-    const items: Array<{ key: string; unitPrice: number; source: string | null }> =
-      r.body.data?.items ?? [];
+    const items: Array<{
+      key: string;
+      unitPrice: number;
+      source: string | null;
+      discountBaseTierName?: string | null;
+    }> = r.body.data?.items ?? [];
     const pfm = items.find((i) => i.key === "pfm_crown");
     // 10% off 100 = 90, source must be "discount".
     expect(pfm?.unitPrice).toBe(90);
     expect(pfm?.source).toBe("discount");
+    // No practice default (connection) tier → base came from the doctor's
+    // assigned (fallback) tier, so its name is surfaced for the UI hint.
+    expect(pfm?.discountBaseTierName).toBe(BASE_TIER_NAME);
   }, 20000);
 
   // ── Re-quote on override create ───────────────────────────────────────────
