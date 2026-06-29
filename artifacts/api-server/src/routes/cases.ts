@@ -7984,6 +7984,14 @@ const iteroImportBodySchema = z.object({
   caseTypeHint: z.string().optional(),
   notesHint: z.string().optional(),
   isRushHint: z.string().optional(),
+  // Remake metadata. When a user drops an iTero ZIP and chooses "Link as
+  // remake" in the duplicate prompt, the desktop client forwards these so the
+  // imported case is linked to the original (suffixed number + cross-link
+  // events) exactly like the generic ZIP-import path. `remakeCharged` arrives
+  // as a FormData string ("true"/"false") and is coerced server-side.
+  remakeOfCaseId: z.string().optional(),
+  remakeReason: z.string().optional(),
+  remakeCharged: z.enum(["true", "false"]).optional(),
 });
 
 // ── ZIP import config ────────────────────────────────────────────────────────
@@ -8220,6 +8228,32 @@ router.post(
       autoLinkedFromAi = true;
     }
 
+    // ── Remake link resolution ───────────────────────────────────────────────
+    // When the desktop "Link as remake" flow forwarded a remake target, resolve
+    // it against BOTH the canonical `cases` table and the legacy `lab_cases`
+    // table (same resolver the generic /cases create path uses). The new case
+    // gets a suffixed number, remakeOfCaseId/Reason/Charged, and cross-link
+    // events — mirroring the generic ZIP-import remake path. Cross-tenant
+    // linking is blocked by the resolver.
+    const remakeChargedFlag =
+      body.remakeCharged === "true"
+        ? true
+        : body.remakeCharged === "false"
+          ? false
+          : null;
+    const remakeOriginal = body.remakeOfCaseId
+      ? await resolveRemakeOriginal(
+          body.remakeOfCaseId,
+          body.labOrganizationId,
+          effectiveProviderOrgId,
+          doctorName,
+        )
+      : null;
+    if (body.remakeOfCaseId && !remakeOriginal) {
+      throw new HttpError(404, "Original case for remake not found in this lab.");
+    }
+    const noChargeRemake = !!remakeOriginal && remakeChargedFlag === false;
+
     const iteroAutoSuppliedDate: Date | null = extracted.dueDate
       ? (Number.isNaN(new Date(extracted.dueDate).getTime()) ? null : new Date(extracted.dueDate))
       : null;
@@ -8389,10 +8423,39 @@ router.post(
         );
       }
 
+      // For remake imports, compute the next letter suffix (B, C, D, …)
+      // against the original under a transaction-scoped advisory lock so the
+      // count + insert are atomic — mirrors the generic /cases create path.
+      // The suffixed number replaces the generated iTero number entirely.
+      let effectiveCaseNumber = caseNumber;
+      if (remakeOriginal) {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(1742068800, hashtext(${remakeOriginal.id}))`,
+        );
+        const [countRow] = await tx
+          .select({ cnt: sql<number>`count(*)::int` })
+          .from(cases)
+          .where(
+            and(
+              eq(cases.remakeOfCaseId, remakeOriginal.id),
+              notDeleted(cases),
+            ),
+          );
+        const existingCount = countRow?.cnt ?? 0;
+        if (existingCount > 23) {
+          throw new HttpError(
+            409,
+            `Too many remakes of case ${remakeOriginal.caseNumber} (maximum 24).`,
+          );
+        }
+        const suffixLetter = String.fromCharCode(66 + existingCount);
+        effectiveCaseNumber = `${remakeOriginal.caseNumber}${suffixLetter}`;
+      }
+
       const [createdCase] = await tx
         .insert(cases)
         .values({
-          caseNumber,
+          caseNumber: effectiveCaseNumber,
           labOrganizationId: body.labOrganizationId,
           providerOrganizationId: effectiveProviderOrgId,
           patientFirstName,
@@ -8414,8 +8477,54 @@ router.post(
           // the suggestion has been applied — null it out so the review
           // banner doesn't re-prompt the reviewer with a now-stale choice.
           suggestedProviderOrgId: autoLinkedFromAi ? null : suggestedProviderOrgId,
+          // Remake link metadata (only set when this import was marked as a
+          // remake in the desktop duplicate prompt).
+          remakeOfCaseId: remakeOriginal?.id ?? null,
+          remakeReason: remakeOriginal ? body.remakeReason ?? null : null,
+          remakeCharged: remakeOriginal ? remakeChargedFlag : null,
         })
         .returning();
+
+      // Write remake cross-link events INSIDE the transaction so they are
+      // atomic with case creation. The forward "remake_of" event always
+      // goes on the new case; the reciprocal "remade_by" event goes on the
+      // original only when it is a canonical case (legacy lab_cases originals
+      // get their JSON-blob activityLog patched AFTER commit, since that table
+      // can't participate in this Drizzle transaction).
+      if (remakeOriginal) {
+        await tx.insert(caseEvents).values({
+          caseId: createdCase.id,
+          eventType: "remake_of",
+          actorUserId: userId,
+          actorOrganizationId: body.labOrganizationId,
+          actorInitials: user?.initials || "SYS",
+          metadataJson: {
+            originalCaseId: remakeOriginal.id,
+            originalCaseNumber: remakeOriginal.caseNumber,
+            originalCaseKind: remakeOriginal.kind,
+            remakeReason: body.remakeReason ?? null,
+            remakeCharged: remakeChargedFlag,
+            note: `Marked as remake of ${remakeOriginal.kind === "legacy" ? "legacy " : ""}case ${remakeOriginal.caseNumber}${body.remakeReason ? ` (reason: ${body.remakeReason})` : ""}`,
+          },
+        });
+
+        if (remakeOriginal.kind === "canonical") {
+          await tx.insert(caseEvents).values({
+            caseId: remakeOriginal.id,
+            eventType: "remade_by",
+            actorUserId: userId,
+            actorOrganizationId: body.labOrganizationId,
+            actorInitials: user?.initials || "SYS",
+            metadataJson: {
+              remakeCaseId: createdCase.id,
+              remakeCaseNumber: createdCase.caseNumber,
+              remakeReason: body.remakeReason ?? null,
+              remakeCharged: remakeChargedFlag,
+              note: `Case ${createdCase.caseNumber} created as a remake of this case${body.remakeReason ? ` (reason: ${body.remakeReason})` : ""}, charged: ${remakeChargedFlag === true ? "yes" : remakeChargedFlag === false ? "no" : "unspecified"}`,
+            },
+          });
+        }
+      }
 
       if (prebuiltRestorations.length > 0) {
         await tx.insert(caseRestorations).values(
@@ -8541,6 +8650,13 @@ router.post(
             ? "Some line items use default/fallback pricing — please verify before sending."
             : null;
 
+        // No-charge remake: still create the invoice so it shows in the
+        // Invoice tab, but force every line to $0 and attach a note — same
+        // intent as the generic /cases create path.
+        const noChargeNote = noChargeRemake
+          ? `No-charge remake of case ${remakeOriginal!.caseNumber}${body.remakeReason ? ` — reason: ${body.remakeReason}` : ""}`
+          : null;
+
         const [autoInvoice] = await tx
           .insert(invoices)
           .values({
@@ -8555,6 +8671,7 @@ router.post(
             dueAt: invoiceDueDate(new Date()),
             createdByUserId: userId,
             updatedByUserId: userId,
+            ...(noChargeNote ? { notes: noChargeNote } : {}),
           })
           .onConflictDoNothing()
           .returning();
@@ -8586,6 +8703,16 @@ router.post(
                   sortOrder: 0,
                 },
               ];
+          // No-charge remake: zero out every line item (price, total, and a
+          // "(no-charge remake)" description suffix) so the invoice rings up
+          // to $0 while the line detail stays visible.
+          if (noChargeRemake) {
+            for (const it of itemsToInsert) {
+              it.description = `${it.description} (no-charge remake)`;
+              it.unitPrice = "0.00";
+              it.lineTotal = "0.00";
+            }
+          }
           const lineItemsMeta = itemsToInsert.map((it) => ({
             item: it.catalogItemLabel ?? it.description,
             description: it.description,
@@ -8704,6 +8831,24 @@ router.post(
         attachmentId: attachment?.id,
       },
     });
+
+    // Legacy remake original: the reciprocal "remade_by" history lives in the
+    // legacy lab_cases JSON blob, which can't join the Drizzle transaction
+    // above. Write it after commit. (Canonical reciprocal events are already
+    // written inside the transaction.)
+    if (remakeOriginal && remakeOriginal.kind === "legacy") {
+      await writeReciprocalRemadeBy(
+        remakeOriginal,
+        { id: createdCase.id, caseNumber: createdCase.caseNumber },
+        body.remakeReason ?? null,
+        remakeChargedFlag,
+        {
+          userId,
+          orgId: body.labOrganizationId,
+          initials: (req as any).user?.initials || "SYS",
+        },
+      );
+    }
 
     // Mirror the uploaded Rx file to object storage so it survives server
     // restarts and re-deployments. Best-effort — never blocks the response.

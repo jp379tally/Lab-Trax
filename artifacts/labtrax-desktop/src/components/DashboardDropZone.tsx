@@ -1822,6 +1822,15 @@ export function DashboardDropZone() {
           if (r.caseType?.trim()) fd.append("caseTypeHint", r.caseType.trim());
           if (r.notes?.trim()) fd.append("notesHint", r.notes.trim());
           if (r.isRush) fd.append("isRushHint", "true");
+          // Remake metadata: when the user chose "Link as remake" in the
+          // duplicate prompt, forward it so the server suffixes the case
+          // number, links remakeOfCaseId, writes the cross-link events, and
+          // respects the charge flag — same as the generic ZIP-import path.
+          if (remake?.remakeOfCaseId) {
+            fd.append("remakeOfCaseId", remake.remakeOfCaseId);
+            fd.append("remakeReason", remake.remakeReason);
+            fd.append("remakeCharged", remake.remakeCharged ? "true" : "false");
+          }
 
           const result = await apiFetch<{
             deduped: boolean;
@@ -2811,9 +2820,11 @@ export function DashboardDropZone() {
             />
             Mark as rush
           </label>
-          {/* Remake toggle: hidden for iTero ZIP imports because that path
-              uses /cases/import-from-itero-rx which does not accept remake
-              fields — the remake button only applies to standard Rx drops. */}
+          {/* Remake toggle: hidden for ZIP imports (iTero and generic). ZIP
+              drops link a remake through the duplicate-detection prompt's
+              "Link as remake" action instead of this manual toggle — both the
+              iTero (/cases/import-from-itero-rx) and generic ZIP paths now
+              forward remake fields to the server. */}
           {!zipSource && (
             <button
               type="button"
