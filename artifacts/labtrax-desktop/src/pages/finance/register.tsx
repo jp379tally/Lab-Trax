@@ -104,6 +104,22 @@ function RegisterTable({
 
   useEffect(() => {
     if (!expandedId) return;
+    const container = tableContainerRef.current;
+    const row = selectedRowRef.current;
+    if (!container || !row) return;
+    const id = requestAnimationFrame(() => {
+      const containerRect = container.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const delta = rowRect.top - containerRect.top - theadHeight;
+      if (delta > 0.5 || delta < -0.5) {
+        container.scrollTo({ top: container.scrollTop + delta, behavior: "smooth" });
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [expandedId, theadHeight]);
+
+  useEffect(() => {
+    if (!expandedId) return;
     function onMouseDown(e: MouseEvent) {
       if (tableContainerRef.current && !tableContainerRef.current.contains(e.target as Node)) {
         setExpandedId(null);
@@ -129,9 +145,6 @@ function RegisterTable({
       setSelectedOutOfView(false);
       return;
     }
-
-    const editPanel = row.nextElementSibling;
-    (editPanel ?? row).scrollIntoView({ block: "nearest", behavior: "smooth" });
 
     const observer = new IntersectionObserver(
       (entries) => {
