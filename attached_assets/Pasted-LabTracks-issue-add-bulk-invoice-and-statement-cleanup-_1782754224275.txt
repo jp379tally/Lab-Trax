@@ -1,0 +1,88 @@
+LabTracks issue: add bulk invoice and statement cleanup controls for rollout mode.
+
+Goal:
+We are currently rolling out LabTracks for lab case tracking and information only. We are not ready to use the financial/invoicing side yet. The app is already generating invoices and statement balances, which will create a large cleanup problem before we officially begin using invoices. Add safe bulk controls so I can either delete selected invoices/statements or reset them to zero.
+
+Current visible problem:
+On the Invoices page, I can select invoices, and the screenshot shows many invoices already selected, but the only bulk action appears to be “Send invoices.” I need bulk cleanup actions:
+1. Select all invoices.
+2. Delete selected invoices.
+3. Reset selected invoices to $0.
+4. Reset all invoices to $0 when I choose the all-reset action.
+
+On the Statements page, there is currently no checkbox/multi-select behavior at all. I need the same kind of bulk selection and cleanup controls for statements, including:
+1. Checkboxes for individual statement rows.
+2. A select-all checkbox.
+3. Delete selected statements.
+4. Reset selected statements to $0.
+5. Reset all statements to $0 if I choose that action.
+
+Likely root cause:
+The billing UI assumes invoices/statements are always part of the active financial workflow. It supports invoice generation and sending, but does not support a pre-financial-rollout cleanup mode. The invoices table already has selection state, but the available bulk actions are incomplete. The statements table appears to be a rollup by practice and does not currently expose row selection or destructive/reset actions.
+
+Implementation steps:
+1. Inspect the invoice page/table components, invoice selection state, bulk action toolbar, invoice API routes/mutations, and database schema/models for invoice totals, balances, status, payments, line items, and invoice deletion.
+2. Add bulk invoice actions to the selected-invoices toolbar:
+   - “Delete selected”
+   - “Reset selected to $0”
+   - “Reset all invoices to $0”
+3. For invoice deletion, use the safest existing app pattern:
+   - Prefer soft delete/archive if the app already supports it.
+   - If hard delete is the only current pattern, require confirmation and make sure related invoice items, balances, and statement rollups do not leave orphaned data.
+4. For reset-to-zero, do not just change the displayed total. Update the underlying financial fields consistently:
+   - invoice total
+   - balance/open balance
+   - subtotal/tax/fees if present
+   - line items or adjustment records if those drive invoice totals
+   - statement/practice rollups
+   - dashboard summary cards
+5. Add a clear confirmation modal before any destructive or bulk financial action. The modal should state exactly how many records will be affected.
+6. Add statement row checkboxes and select-all behavior on the Statements page.
+7. Inspect whether statements are persisted records or computed rollups from invoices:
+   - If statements are persisted records, implement delete/reset actions directly on selected statement records.
+   - If statements are computed by practice from invoices, implement the statement bulk actions by resetting or clearing the underlying invoices for the selected practice rows, then regenerate/recalculate the statement totals.
+8. After invoice or statement reset/delete actions, refresh all affected UI state:
+   - invoice table
+   - statement table
+   - billing summary cards
+   - open balance totals
+   - overdue totals
+   - paid/collected totals
+   - practice-level rollups
+9. Add backend validation so these actions cannot run accidentally from the client only. Bulk delete/reset should be protected by the same auth/role rules used for billing administration.
+10. If there is an audit log/activity log pattern, record who performed the bulk action, when, how many records were affected, and whether it was delete or reset.
+
+Constraints and guardrails:
+- Do not delete or alter patient cases, practice records, case tracking data, uploaded files, notes, prescriptions, or lab workflow data.
+- These actions should affect only billing/invoice/statement financial records.
+- Do not break normal invoice creation for later financial rollout.
+- Do not allow a single accidental click to wipe billing data. Require confirmation.
+- Preserve invoice numbering history if the app depends on invoice numbers for uniqueness.
+- If deleting invoices would break references elsewhere, use soft delete/archive instead.
+- If resetting to zero is safer than deleting, prefer reset for the “reset all” action.
+- Make the UI wording clear: “Delete selected invoices,” “Reset selected invoices to $0,” and “Reset all invoices to $0.”
+- For statements, make the action wording clear and explain in code comments only if statements are computed from invoices.
+
+Acceptance criteria:
+- On the Invoices page, I can select individual invoices and select all visible/filtered invoices.
+- When invoices are selected, I see bulk actions for delete and reset-to-zero, not only “Send invoices.”
+- I can choose an all-invoices reset action that resets every invoice balance/total to $0.
+- After reset, invoice totals and balances display as $0.00.
+- After reset, statement totals and dashboard billing summary totals recalculate correctly.
+- On the Statements page, each row has a checkbox and the table has a select-all checkbox.
+- I can delete or reset selected statement rows, depending on whether statements are persisted or derived.
+- I can reset all statements to $0.
+- Confirmation modals appear before destructive/bulk actions.
+- Case tracking and non-financial LabTracks workflows remain unchanged.
+
+Regression checks:
+- Create a new case and confirm case tracking still works.
+- Confirm existing patient/case/practice records are not removed when invoices/statements are deleted or reset.
+- Confirm invoice generation still works after cleanup.
+- Confirm selected-only actions affect only selected rows.
+- Confirm reset-all actions affect all intended invoice/statement records, not just the current page of results, unless the UI explicitly says “current page only.”
+- Confirm filters/search do not cause confusing behavior with select-all.
+- Confirm statement rollups match invoice totals after deletion/reset.
+- Confirm open balance, overdue, paid/collected, and total billed cards update correctly.
+- Confirm permissions prevent non-admin or unauthorized users from running bulk financial cleanup actions.
+- Explain any tradeoffs or assumptions before finishing, especially if statements are computed rather than stored records.

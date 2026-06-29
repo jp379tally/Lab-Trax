@@ -1,0 +1,115 @@
+Goal:
+Improve the LabTrax Financial > Bank Register so it looks and functions more like the QuickBooks desktop register shown in the reference screenshot.
+
+Current user-visible problem:
+The LabTrax register currently feels more like a modern transaction list than a true accounting register. Compared with QuickBooks, it has too much vertical whitespace, grouped date sections, truncated dates, a less dense table, row action icons cluttering the register, and weaker spreadsheet-style behavior. The goal is not to copy QuickBooks exactly, but to make the LabTrax register faster to scan, easier to edit, and closer to the familiar QuickBooks register workflow.
+
+Reference behavior from QuickBooks screenshot:
+- Dense spreadsheet-style register rows.
+- Columns: Date, Number, Payee, Account, Payment, cleared status, Deposit, Balance.
+- Running balance visible on every row.
+- Payments and deposits split into separate right-aligned money columns.
+- Very compact row height.
+- Light green register background with thin grid lines.
+- Narrow cleared/reconciled status column showing checkmarks or status markers.
+- Selected row is clearly highlighted across the full row.
+- Bottom/new-entry row acts like an inline transaction entry area.
+- Register prioritizes data entry and scanning over large cards or grouped sections.
+
+Likely root cause:
+The current LabTrax register UI is built as a styled transaction table/list with grouped date headers and per-row action controls, rather than as a compact accounting-register grid. The data model may already support the needed fields, but the presentation layer and interaction pattern need to be adjusted to support QuickBooks-like density, inline entry/editing, stable columns, and running-balance readability.
+
+Areas to inspect:
+- Financial / Bank Register page or route.
+- Register table component.
+- Transaction row component.
+- Add entry / edit entry behavior.
+- Filters and toolbar above the register.
+- Any data formatting utilities for dates, payment/deposit amounts, cleared status, and running balance.
+- Any CSS or design-system styles controlling table density, row grouping, column widths, hover states, and selected-row states.
+
+Implementation steps:
+1. Find the Bank Register page/component currently rendering the LabTrax register.
+2. Refactor the register area into a dense grid/table layout modeled after QuickBooks:
+   - Date
+   - Num
+   - Payee
+   - Account
+   - Payment
+   - Cleared status
+   - Deposit
+   - Balance
+3. Remove or reduce grouped date section headers. Prefer one transaction per row with the full date shown in the Date column.
+4. Make the table compact:
+   - Smaller row height.
+   - Thin grid lines.
+   - Minimal vertical padding.
+   - Right-align Payment, Deposit, and Balance.
+   - Keep text readable and avoid truncating important values unless necessary.
+5. Add a subtle register background similar to QuickBooks:
+   - Pale green or lightly tinted rows.
+   - White or slightly stronger header row.
+   - Thin borders between cells.
+   - Avoid making the register look like large cards.
+6. Preserve the existing top summary cards and toolbar unless they interfere with the register, but make the register itself the main working surface.
+7. Replace always-visible row action icons with a less intrusive pattern:
+   - Show actions on hover, row selection, or in a compact actions menu.
+   - Do not let action icons crowd the balance/payment columns.
+8. Improve selected-row behavior:
+   - Clicking a row should select/highlight the full row.
+   - Selected row should be visually obvious, similar to QuickBooks’ full-row blue outline/highlight.
+9. Improve inline entry/editing:
+   - Provide an inline “new transaction” row at the bottom or top of the register.
+   - Let users enter date, num, payee, account, payment/deposit, and cleared status in-place where feasible.
+   - Keep the existing Add Entry modal/button if needed, but the register should support a QuickBooks-like entry workflow.
+10. Keep running balance behavior correct:
+   - Every row must show the balance after that transaction.
+   - Deposits increase the balance.
+   - Payments decrease the balance.
+   - Sorting/filtering must not accidentally display misleading balances.
+11. Fix visible formatting issues from the screenshot:
+   - Do not truncate dates like “May 23,...” when there is room.
+   - Prevent deposit and balance values from visually colliding.
+   - Ensure very large amounts still fit or align cleanly.
+   - Use consistent currency formatting.
+12. Ensure cleared/reconciled status is represented in a narrow column:
+   - Use checkmark/status indicator for cleared.
+   - Use dash/blank for uncleared.
+   - Preserve existing reconciliation logic.
+
+Constraints and guardrails:
+- Do not rewrite unrelated financial modules.
+- Do not change transaction math, database schema, or reconciliation behavior unless absolutely necessary.
+- Preserve existing import CSV, export, new transfer, reconcile, and add entry workflows.
+- Preserve existing filters: search, status, categories, date range.
+- Keep the page responsive, but prioritize desktop register usability because this is a dense accounting workflow.
+- Do not hide critical accounting fields on normal desktop widths.
+- Do not introduce fake balances or front-end-only calculations if the backend already provides authoritative balances.
+- If existing data contracts are unclear, inspect the API/query layer before changing calculations.
+- If changing running balance logic, explain the assumptions clearly.
+
+Acceptance criteria:
+- The LabTrax register visually resembles a compact QuickBooks-style register rather than a card/list view.
+- Users can scan many more transactions on screen at once.
+- Date, Num, Payee, Account, Payment, cleared status, Deposit, and Balance columns are visible and aligned.
+- Payment, Deposit, and Balance columns are right-aligned and do not overlap.
+- Full dates are readable.
+- Running balance displays correctly per transaction.
+- Selected row is clearly highlighted.
+- Row actions no longer visually clutter the register.
+- New transaction entry is easier and closer to an inline register workflow.
+- Existing filters and toolbar actions still work.
+
+Regression checks:
+- Add a payment transaction and confirm the running balance decreases.
+- Add a deposit transaction and confirm the running balance increases.
+- Edit an existing transaction and confirm balance recalculates/displays correctly.
+- Toggle cleared/reconciled status and confirm the status indicator updates.
+- Use search/filter/date range and confirm rows remain aligned and balances are not misleading.
+- Test import CSV, export, new transfer, reconcile, and add entry flows still open and function.
+- Check large currency values like $9,999,999.00 and negative balances for clean formatting.
+- Check a narrow laptop viewport and a wide desktop viewport for column overlap or clipped text.
+- Verify no unrelated Financial tabs were broken: Receive Payments, Make Deposits, Reconcile, Cash Flow, Recurring, and Payees.
+
+Before finishing:
+Explain what files/components were changed, any assumptions about the transaction/balance data source, and any tradeoffs made between exact QuickBooks visual matching and the LabTrax design system.
