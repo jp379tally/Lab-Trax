@@ -2018,6 +2018,12 @@ export function DashboardDropZone() {
         qc.invalidateQueries({ queryKey: ["legacy-cases-for-dropzone"] });
         qc.invalidateQueries({ queryKey: ["cases"] });
         qc.invalidateQueries({ queryKey: ["invoices"] });
+        // The Customer Center and the provider's practice-account views derive
+        // their practice rows from the organizations query. Invalidate it too so
+        // the remake case (and its draft invoice) surface in those scoped views
+        // without a manual page reload — matching the cases+invoices+organizations
+        // invalidation pattern used after case mutations in practices.tsx.
+        qc.invalidateQueries({ queryKey: ["organizations"] });
         if (remake?.remakeOfCaseId) {
           qc.invalidateQueries({ queryKey: ["case", remake.remakeOfCaseId] });
         }
@@ -2159,6 +2165,12 @@ export function DashboardDropZone() {
       qc.invalidateQueries({ queryKey: ["legacy-cases-for-dropzone"] });
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["invoices"] });
+      // The Customer Center and the provider's practice-account views derive
+      // their practice rows from the organizations query. Invalidate it too so
+      // the remake case (and its draft invoice) surface in those scoped views
+      // without a manual page reload — matching the cases+invoices+organizations
+      // invalidation pattern used after case mutations in practices.tsx.
+      qc.invalidateQueries({ queryKey: ["organizations"] });
       // When a remake is created, the original case's detail cache must also
       // be invalidated so its History tab immediately shows the new
       // "Remade By" event and its remake-children banner appears without

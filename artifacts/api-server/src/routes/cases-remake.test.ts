@@ -467,6 +467,68 @@ maybe("Remake case creation invariants (db integration)", () => {
       "no-charge remake invoice must carry a no-charge note").toBe(true);
   });
 
+  // ── (5b) Remake visible in the provider-scoped (practice-account) list ───
+
+  it("(5b) canonical remake appears in GET /api/cases?providerOrganizationId=... (Customer Center / practice-account view)", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable } = dbMod as any;
+
+    const originalId = rid("origPC");
+    const originalNumber = rid("PCV");
+    await db.insert(casesTable).values({
+      id: originalId,
+      caseNumber: originalNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Pam",
+      patientLastName: "Center",
+      doctorName: "Dr. Center",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(originalId);
+
+    const r = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Pam",
+        patientLastName: "Center",
+        doctorName: "Dr. Center",
+        status: "received",
+        remakeOfCaseId: originalId,
+        remakeReason: "Customer Center visibility",
+        remakeCharged: true,
+      });
+
+    expect(r.status, `expected 201 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(201);
+    const remake = r.body.data;
+    createdCaseIds.push(remake.id);
+    expect(remake.caseNumber).toBe(`${originalNumber}B`);
+
+    // The Customer Center and the provider's practice-account case lists query
+    // /api/cases scoped to a specific providerOrganizationId. The remake case
+    // must surface in that scoped result so those views update without a manual
+    // page reload (the React Query ["cases"] invalidation in DashboardDropZone
+    // refetches exactly this request).
+    const scoped = await request(appMod.default)
+      .get(
+        `/api/cases?labOrganizationId=${encodeURIComponent(labOrgId)}&providerOrganizationId=${encodeURIComponent(providerOrgId)}`,
+      )
+      .set("Authorization", `Bearer ${access}`);
+    expect(scoped.status).toBe(200);
+    const scopedArr: any[] = scoped.body.data ?? scoped.body;
+    const foundScoped = scopedArr.find((c: any) => c.id === remake.id);
+    expect(
+      foundScoped,
+      "remake case must appear in the provider-scoped GET /api/cases used by Customer Center / practice-account views",
+    ).toBeDefined();
+    expect(foundScoped.caseNumber).toBe(`${originalNumber}B`);
+    expect(foundScoped.providerOrganizationId).toBe(providerOrgId);
+  });
+
   // ── (5) Duplicate suffix → 409 not 500 ──────────────────────────────────
 
   it("(5) case-number unique-constraint collision returns 409 (not 500)", async () => {
