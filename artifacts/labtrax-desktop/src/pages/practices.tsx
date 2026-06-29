@@ -3588,11 +3588,42 @@ function DoctorPricingRow({
                 </span>
               </div>
             </label>
+            {defaultDiscountNum !== null &&
+              defaultDiscountNum > 0 &&
+              (() => {
+                const firstKey = DEFAULT_PRICE_KEYS[0];
+                if (!firstKey) return null;
+                let baseAmt = Number(
+                  practiceDefaultTier?.prices?.[firstKey] ?? 0,
+                );
+                if (!Number.isFinite(baseAmt) || baseAmt <= 0) {
+                  const effectiveTierName =
+                    tierName.trim() || practiceDefaultTierName || "";
+                  const t = effectiveTierName
+                    ? tiers.find(
+                        (tt) =>
+                          tt.name.toLowerCase() ===
+                          effectiveTierName.toLowerCase(),
+                      )
+                    : null;
+                  baseAmt = Number(t?.prices?.[firstKey] ?? 0);
+                }
+                if (!Number.isFinite(baseAmt) || baseAmt <= 0) return null;
+                const discountAmt =
+                  Math.round(
+                    (baseAmt * defaultDiscountNum) / 100 * 100,
+                  ) / 100;
+                return (
+                  <div className="text-[10px] text-muted-foreground text-right">
+                    {formatMoney(discountAmt)} off a {formatMoney(baseAmt)} item
+                    at {defaultDiscountNum}%
+                  </div>
+                );
+              })()}
             {!practiceDefaultTier && (
               <div className="text-[11px] text-muted-foreground">
-                No practice default tier is set, so percentage discounts have no
-                base price to apply to. Set a tier on the practice connection or
-                use exact dollar prices below.
+                No practice default tier is set — percentage discounts will
+                apply off the doctor&apos;s selected tier price.
               </div>
             )}
 
@@ -3629,6 +3660,10 @@ function DoctorPricingRow({
                     : defaultDiscountNum;
 
                 // Effective-price guidance string.
+                // When a discount applies but there is no practice default tier
+                // price for this key, fall back to the doctor's effective tier
+                // price as the discount base — matching server-side behaviour.
+                const discountBase = hasBase ? basePrice : tierPrice;
                 let hint = "";
                 if (Number.isFinite(exact) && exact > 0) {
                   hint = `${formatMoney(exact)} (exact)`;
@@ -3636,13 +3671,13 @@ function DoctorPricingRow({
                   effectivePct !== null &&
                   Number.isFinite(effectivePct) &&
                   (effectivePct as number) >= 0 &&
-                  hasBase
+                  discountBase > 0
                 ) {
                   const amt =
                     Math.round(
-                      basePrice * (1 - (effectivePct as number) / 100) * 100,
+                      discountBase * (1 - (effectivePct as number) / 100) * 100,
                     ) / 100;
-                  hint = `${formatMoney(amt)} (${effectivePct}% off ${formatMoney(basePrice)})`;
+                  hint = `${formatMoney(amt)} (${effectivePct}% off ${formatMoney(discountBase)})`;
                 } else if (tierPrice > 0) {
                   hint = `${formatMoney(tierPrice)} (tier)`;
                 }

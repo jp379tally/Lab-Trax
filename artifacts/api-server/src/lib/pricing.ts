@@ -380,25 +380,57 @@ export async function resolveServerPriceWithSource(
     };
   };
 
-  // Percentage discount off the practice's default tier (the tier on the
-  // lab↔practice connection). Precedence: an exact dollar override (handled
-  // above) wins; otherwise a configured discount beats the doctor's assigned
-  // tier and the rest of the chain. When the practice-default-tier base price
-  // for this key can't be resolved (no connection tier, missing tier, or no
-  // price for the key), we skip the discount and fall through.
+  // Percentage discount applied to the best available base price.
+  // Priority: practice default (connection) tier → doctor's effective tier
+  // chain (doctor tier → lab default → Standard → oldest). An exact dollar
+  // override (handled above) wins over any discount. When no base price can
+  // be resolved at all, we fall through to the normal tier chain.
   const discountPct = effectiveDiscountPercent(match, key);
-  if (match && discountPct !== null && connectionTierName) {
-    const baseTier = findByName(connectionTierName);
-    const basePrices = (baseTier?.pricesJson ?? {}) as Record<string, unknown>;
-    const baseValue = Number(basePrices[key]);
-    if (Number.isFinite(baseValue) && baseValue > 0) {
-      return {
-        amount: round2(baseValue * (1 - discountPct / 100)),
-        source: "discount",
-        sourceId: match.id,
-        sourceName: match.doctorName,
-        key,
-      };
+  if (match && discountPct !== null) {
+    // Build an ordered list of tier names to try as the discount base.
+    // connectionTierName (practice default) takes priority; candidateNames
+    // covers the doctor's effective tier chain. Deduplicate while preserving
+    // order so the connection tier isn't tried twice unnecessarily.
+    const seen = new Set<string>();
+    const discountBaseTierNames: string[] = [];
+    for (const n of [connectionTierName, ...candidateNames]) {
+      if (n && !seen.has(n)) {
+        seen.add(n);
+        discountBaseTierNames.push(n);
+      }
+    }
+    for (const name of discountBaseTierNames) {
+      const baseTier = findByName(name);
+      if (!baseTier) continue;
+      const basePrices = (baseTier.pricesJson ?? {}) as Record<string, unknown>;
+      const baseValue = Number(basePrices[key]);
+      if (Number.isFinite(baseValue) && baseValue > 0) {
+        return {
+          amount: round2(baseValue * (1 - discountPct / 100)),
+          source: "discount",
+          sourceId: match.id,
+          sourceName: match.doctorName,
+          key,
+        };
+      }
+    }
+    // Standard / oldest-tier last resort
+    const fallbackTier = findByName("Standard") ?? sortedTiers[0];
+    if (fallbackTier) {
+      const basePrices = (fallbackTier.pricesJson ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const baseValue = Number(basePrices[key]);
+      if (Number.isFinite(baseValue) && baseValue > 0) {
+        return {
+          amount: round2(baseValue * (1 - discountPct / 100)),
+          source: "discount",
+          sourceId: match.id,
+          sourceName: match.doctorName,
+          key,
+        };
+      }
     }
   }
 
@@ -623,24 +655,33 @@ export async function resolveAllPricesForContext(
           sourceName: overrideRow.doctorName,
         };
       }
-      // Percentage discount off the practice's default (connection) tier.
+      // Percentage discount off the best available base price.
+      // Priority: practice default (connection) tier first, then the
+      // doctor's effective tier chain (already in candidateTiers, ordered
+      // oldest-first with Standard before oldest). This mirrors the fallback
+      // added to resolveServerPriceWithSource so invoice charges match the UI.
       const discountPct = effectiveDiscountPercent(overrideRow, key);
-      if (discountPct !== null && connectionTierName) {
-        const baseTier = findTierByName(connectionTierName);
-        const basePrices = (baseTier?.pricesJson ?? {}) as Record<
-          string,
-          unknown
-        >;
-        const baseValue = Number(basePrices[key]);
-        if (Number.isFinite(baseValue) && baseValue > 0) {
-          return {
-            key,
-            label: item.label,
-            unitPrice: round2(baseValue * (1 - discountPct / 100)),
-            source: "discount" as const,
-            sourceId: overrideRow.id,
-            sourceName: overrideRow.doctorName,
-          };
+      if (discountPct !== null) {
+        const discountBaseTiers = [
+          connectionTierName ? findTierByName(connectionTierName) : null,
+          ...candidateTiers.map((c) => c.tier),
+        ].filter((t): t is NonNullable<typeof t> => t != null);
+        for (const baseTier of discountBaseTiers) {
+          const basePrices = (baseTier.pricesJson ?? {}) as Record<
+            string,
+            unknown
+          >;
+          const baseValue = Number(basePrices[key]);
+          if (Number.isFinite(baseValue) && baseValue > 0) {
+            return {
+              key,
+              label: item.label,
+              unitPrice: round2(baseValue * (1 - discountPct / 100)),
+              source: "discount" as const,
+              sourceId: overrideRow.id,
+              sourceName: overrideRow.doctorName,
+            };
+          }
         }
       }
     }
