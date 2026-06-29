@@ -1,0 +1,47 @@
+Goal:
+Add the ability in LabTrax to assign a pricing tier at the practice level, so all doctors under that practice can inherit the same pricing tier without configuring each doctor individually.
+
+Issue:
+Right now, pricing tiers appear to be assigned only at the individual doctor level. If a practice has five doctors that should all use the same pricing tier, I have to assign the tier five separate times. I want to assign one pricing tier to the practice and have all doctors in that practice use it by default.
+
+Likely root cause:
+The app likely stores or resolves pricing tier only from the doctor record, without a practice-level pricing tier field or fallback lookup.
+
+Desired behavior:
+1. A practice can have an assigned pricing tier.
+2. Doctors can still have their own individual pricing tier if explicitly set.
+3. Pricing tier resolution should work like this:
+   - If the doctor has an individual pricing tier, use that.
+   - Otherwise, if the doctor belongs to a practice with a pricing tier, use the practice pricing tier.
+   - Otherwise, use the existing default/no-tier behavior.
+
+Implementation steps:
+1. Inspect the data model for practices, doctors, and pricing tiers.
+2. Add a nullable practice-level pricing tier field, such as `pricingTierId`.
+3. Update practice create/edit forms so a pricing tier can be selected for the practice.
+4. Update practice create/update APIs or server actions to save the selected tier.
+5. Centralize pricing tier lookup in a shared resolver/helper.
+6. Replace direct doctor-only pricing tier reads with the resolver where pricing/orders/billing are calculated.
+7. Preserve doctor-level overrides.
+8. Show inherited pricing clearly in the doctor UI, for example: “Inherited from practice: [Tier Name]”.
+9. Allow clearing a doctor-level override so the doctor returns to the practice-level tier.
+
+Constraints:
+- Do not remove existing doctor-level pricing tier assignment.
+- Do not overwrite existing doctor-specific pricing tiers.
+- Prefer inheritance/fallback logic over copying the practice tier onto every doctor.
+- Keep schema changes backward-compatible and nullable where possible.
+- Follow existing LabTrax naming, UI, API, and database patterns.
+- If pricing tier is used in multiple places, make the lookup consistent everywhere.
+
+Regression checks:
+1. Assign Pricing Tier A to a practice with five doctors.
+2. Confirm all five doctors use Pricing Tier A when they do not have individual overrides.
+3. Assign Pricing Tier B directly to one doctor.
+4. Confirm that doctor uses Pricing Tier B while the others still use Pricing Tier A.
+5. Clear the doctor-level override and confirm it returns to Pricing Tier A.
+6. Change the practice to Pricing Tier C and confirm inherited doctors now use Pricing Tier C.
+7. Confirm explicit doctor-level overrides are not changed.
+8. Confirm existing practices and doctors without pricing tiers still behave as before.
+
+Please implement this safely, list the files changed, and explain how pricing tier inheritance now works in LabTrax.
