@@ -139,6 +139,7 @@ type SortKey =
   | "status"
   | "dueDate"
   | "createdAt"
+  | "receivedAt"
   | "totalPrice";
 
 
@@ -2298,6 +2299,13 @@ export default function CasesPage() {
           const vb = Number(b.totalPrice ?? 0);
           return sortDir === "asc" ? va - vb : vb - va;
         }
+        if (sortKey === "receivedAt") {
+          // Mirror the column's fallback so canonical and legacy/mobile cases
+          // without a received timestamp sort by their created date instead.
+          const va = (a.receivedAt ?? a.createdAt ?? "") as string;
+          const vb = (b.receivedAt ?? b.createdAt ?? "") as string;
+          return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+        }
         const va = (a[sortKey] || "") as string;
         const vb = (b[sortKey] || "") as string;
         return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
@@ -2340,6 +2348,7 @@ export default function CasesPage() {
   const caseCols = useTableColumns<LabCase>(
     [
       { id: "createdAt", label: <SortHeader k="createdAt">Created</SortHeader>, menuLabel: "Created", align: "left", defaultWidth: 100, render: (c) => <span className="text-muted-foreground">{formatShortDate(c.createdAt)}</span> },
+      { id: "receivedAt", label: <SortHeader k="receivedAt">Received</SortHeader>, menuLabel: "Received", align: "left", defaultWidth: 100, render: (c) => <span className="text-muted-foreground">{formatShortDate(c.receivedAt ?? c.createdAt)}</span> },
       { id: "caseNumber", label: <SortHeader k="caseNumber">Case #</SortHeader>, menuLabel: "Case #", align: "left", defaultWidth: 160, render: (c) => (
         <div className="flex items-center gap-1.5">
           {c.needsAiReview && (
