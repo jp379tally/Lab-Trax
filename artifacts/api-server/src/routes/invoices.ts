@@ -1191,6 +1191,198 @@ router.post(
   }),
 );
 
+// ── Bulk invoice soft-delete ───────────────────────────────────────────────
+// Accepts one of:
+//   { labOrganizationId, invoiceIds: string[] }          — specific IDs
+//   { labOrganizationId, practiceIds: string[] }         — all for practices
+//   { labOrganizationId, all: true }                     — all for the lab
+// For each invoice: void → soft-delete → hard-delete its line items.
+const bulkInvoiceTargetSchema = z.object({
+  labOrganizationId: z.string().min(1),
+  invoiceIds: z.array(z.string().min(1)).max(2000).optional(),
+  practiceIds: z.array(z.string().min(1)).max(500).optional(),
+  all: z.boolean().optional(),
+});
+
+router.delete(
+  "/bulk",
+  asyncHandler(async (req, res) => {
+    const input = bulkInvoiceTargetSchema.parse(req.body);
+    const actorUserId: string = (req as any).auth.userId;
+    await requireAnyRole(actorUserId, input.labOrganizationId, BILLING_ROLES);
+
+    const baseWhere = and(
+      eq(invoices.labOrganizationId, input.labOrganizationId),
+      isNull(invoices.deletedAt),
+    );
+
+    let toDelete: { id: string; invoiceNumber: string; providerOrganizationId: string | null }[];
+
+    if (input.invoiceIds && input.invoiceIds.length > 0) {
+      toDelete = await db.query.invoices.findMany({
+        where: and(baseWhere, inArray(invoices.id, input.invoiceIds)),
+        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
+      });
+    } else if (input.practiceIds && input.practiceIds.length > 0) {
+      toDelete = await db.query.invoices.findMany({
+        where: and(baseWhere, inArray(invoices.providerOrganizationId, input.practiceIds)),
+        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
+      });
+    } else if (input.all) {
+      toDelete = await db.query.invoices.findMany({
+        where: baseWhere,
+        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
+      });
+    } else {
+      throw new HttpError(400, "Specify invoiceIds, practiceIds, or all:true.");
+    }
+
+    if (toDelete.length === 0) {
+      return ok(res, { deletedCount: 0 });
+    }
+
+    const ids = toDelete.map((inv) => inv.id);
+    const now = new Date();
+    const actorIp: string | null = req.ip ?? null;
+    const actorUserAgent: string | null = req.get("user-agent") ?? null;
+
+    await db.transaction(async (tx) => {
+      // 1. Mark invoices as void first
+      await tx
+        .update(invoices)
+        .set({ status: "void", voidedAt: now, voidedByUserId: actorUserId, voidReason: "bulk_delete", updatedByUserId: actorUserId })
+        .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
+
+      // 2. Soft-delete the invoice rows
+      await tx
+        .update(invoices)
+        .set({ deletedAt: now, deletedByUserId: actorUserId })
+        .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
+
+      // 3. Hard-delete all line items (not a protected table)
+      await tx.delete(invoiceLineItems).where(inArray(invoiceLineItems.invoiceId, ids));
+
+      // 4. Audit log — one row per invoice
+      await tx.insert(auditLogs).values(
+        toDelete.map((inv) => ({
+          userId: actorUserId,
+          organizationId: input.labOrganizationId,
+          action: "bulk_invoice_delete",
+          entityType: "invoice",
+          entityId: inv.id,
+          ipAddress: actorIp,
+          userAgent: actorUserAgent,
+          metadataJson: {
+            invoiceNumber: inv.invoiceNumber,
+            providerOrganizationId: inv.providerOrganizationId,
+            totalAffected: toDelete.length,
+          },
+          createdAt: now,
+        })),
+      );
+    });
+
+    req.log?.info?.(
+      { labOrganizationId: input.labOrganizationId, count: toDelete.length },
+      "[INVOICE BULK DELETE] completed",
+    );
+
+    return ok(res, { deletedCount: toDelete.length });
+  }),
+);
+
+// ── Bulk invoice reset to $0 ───────────────────────────────────────────────
+// Zeros all money fields, sets status→draft, hard-deletes line items.
+// Invoice rows are NOT soft-deleted — they stay visible with $0 balance.
+router.post(
+  "/bulk-reset",
+  asyncHandler(async (req, res) => {
+    const input = bulkInvoiceTargetSchema.parse(req.body);
+    const actorUserId: string = (req as any).auth.userId;
+    await requireAnyRole(actorUserId, input.labOrganizationId, BILLING_ROLES);
+
+    const baseWhere = and(
+      eq(invoices.labOrganizationId, input.labOrganizationId),
+      isNull(invoices.deletedAt),
+    );
+
+    let toReset: { id: string; invoiceNumber: string; providerOrganizationId: string | null }[];
+
+    if (input.invoiceIds && input.invoiceIds.length > 0) {
+      toReset = await db.query.invoices.findMany({
+        where: and(baseWhere, inArray(invoices.id, input.invoiceIds)),
+        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
+      });
+    } else if (input.practiceIds && input.practiceIds.length > 0) {
+      toReset = await db.query.invoices.findMany({
+        where: and(baseWhere, inArray(invoices.providerOrganizationId, input.practiceIds)),
+        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
+      });
+    } else if (input.all) {
+      toReset = await db.query.invoices.findMany({
+        where: baseWhere,
+        columns: { id: true, invoiceNumber: true, providerOrganizationId: true },
+      });
+    } else {
+      throw new HttpError(400, "Specify invoiceIds, practiceIds, or all:true.");
+    }
+
+    if (toReset.length === 0) {
+      return ok(res, { resetCount: 0 });
+    }
+
+    const ids = toReset.map((inv) => inv.id);
+    const now = new Date();
+    const actorIp: string | null = req.ip ?? null;
+    const actorUserAgent: string | null = req.get("user-agent") ?? null;
+
+    await db.transaction(async (tx) => {
+      // 1. Zero all money fields, set status → draft
+      await tx
+        .update(invoices)
+        .set({
+          subtotal: "0",
+          tax: "0",
+          discount: "0",
+          total: "0",
+          balanceDue: "0",
+          status: "draft",
+          updatedByUserId: actorUserId,
+        })
+        .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
+
+      // 2. Hard-delete all line items (not a protected table)
+      await tx.delete(invoiceLineItems).where(inArray(invoiceLineItems.invoiceId, ids));
+
+      // 3. Audit log — one row per invoice
+      await tx.insert(auditLogs).values(
+        toReset.map((inv) => ({
+          userId: actorUserId,
+          organizationId: input.labOrganizationId,
+          action: "bulk_invoice_reset",
+          entityType: "invoice",
+          entityId: inv.id,
+          ipAddress: actorIp,
+          userAgent: actorUserAgent,
+          metadataJson: {
+            invoiceNumber: inv.invoiceNumber,
+            providerOrganizationId: inv.providerOrganizationId,
+            totalAffected: toReset.length,
+          },
+          createdAt: now,
+        })),
+      );
+    });
+
+    req.log?.info?.(
+      { labOrganizationId: input.labOrganizationId, count: toReset.length },
+      "[INVOICE BULK RESET] completed",
+    );
+
+    return ok(res, { resetCount: toReset.length });
+  }),
+);
+
 router.post(
   "/cases/:caseId/generate-invoice",
   asyncHandler(async (req, res) => {

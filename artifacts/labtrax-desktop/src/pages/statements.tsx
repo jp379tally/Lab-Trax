@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CalendarClock, ChevronDown, ChevronUp, Download, Eye, History, Loader2, Mail, MessageSquare, Printer, Receipt, RefreshCw, Search, Send, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, ChevronDown, ChevronUp, Download, Eye, History, Loader2, Mail, MessageSquare, Printer, Receipt, RefreshCw, RotateCcw, Search, Send, Trash2, X } from "lucide-react";
 import { ApiError, apiFetch } from "@/lib/api";
 import { useLabOrganizations, useSelectedOrg } from "@/lib/finance";
 import type { Invoice, Organization } from "@/lib/types";
@@ -97,10 +97,23 @@ export default function StatementsPage() {
   const [sortKey, setSortKey] = useState<SortKey>("openBalance");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<StatementRow | null>(null);
+  const [selectedPractices, setSelectedPractices] = useState<Set<string>>(new Set());
   const [showSchedule, setShowSchedule] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showGenerate, setShowGenerate] = useState(false);
+  const [bulkConfirm, setBulkConfirm] = useState<{
+    kind: "delete_practices" | "reset_practices" | "reset_all";
+    practiceCount: number;
+    invoiceCount: number;
+  } | null>(null);
   const [orgId] = useSelectedOrg();
+  const queryClient = useQueryClient();
+
+  const { user } = useAuth();
+  const isBillingUser =
+    user?.role === "owner" ||
+    user?.role === "admin" ||
+    user?.role === "billing";
 
   const scheduleQuery = useQuery({
     queryKey: ["statement-schedule", orgId],
@@ -242,6 +255,49 @@ export default function StatementsPage() {
     downloadCsv(filename, data);
   }
 
+  const selectedPracticeInvoiceCount = useMemo(() => {
+    return invoices.filter((inv) => selectedPractices.has(inv.providerOrganizationId)).length;
+  }, [invoices, selectedPractices]);
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (payload: { practiceIds?: string[]; all?: boolean }) =>
+      apiFetch("/invoices/bulk", {
+        method: "DELETE",
+        body: JSON.stringify({ labOrganizationId: orgId, ...payload }),
+      }),
+    onSuccess: () => {
+      setSelectedPractices(new Set());
+      setBulkConfirm(null);
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    },
+  });
+
+  const bulkResetMutation = useMutation({
+    mutationFn: (payload: { practiceIds?: string[]; all?: boolean }) =>
+      apiFetch("/invoices/bulk-reset", {
+        method: "POST",
+        body: JSON.stringify({ labOrganizationId: orgId, ...payload }),
+      }),
+    onSuccess: () => {
+      setSelectedPractices(new Set());
+      setBulkConfirm(null);
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    },
+  });
+
+  function handleBulkConfirm() {
+    if (!bulkConfirm) return;
+    if (bulkConfirm.kind === "delete_practices") {
+      bulkDeleteMutation.mutate({ practiceIds: Array.from(selectedPractices) });
+    } else if (bulkConfirm.kind === "reset_practices") {
+      bulkResetMutation.mutate({ practiceIds: Array.from(selectedPractices) });
+    } else if (bulkConfirm.kind === "reset_all") {
+      bulkResetMutation.mutate({ all: true });
+    }
+  }
+
   return (
     <div className="px-8 py-7">
       <div className="flex items-start justify-between mb-6">
@@ -335,10 +391,63 @@ export default function StatementsPage() {
           </select>
         </div>
 
+        {isBillingUser && selectedPractices.size > 0 && orgId && (
+          <div className="flex items-center gap-3 px-5 py-2 bg-primary/5 border border-primary/20 rounded-md mb-2 text-sm">
+            <span className="font-medium text-primary">
+              {selectedPractices.size} practice{selectedPractices.size !== 1 ? "s" : ""} selected
+              {selectedPracticeInvoiceCount > 0 && ` (${selectedPracticeInvoiceCount} invoice${selectedPracticeInvoiceCount !== 1 ? "s" : ""})`}
+            </span>
+            <button
+              type="button"
+              onClick={() => setBulkConfirm({ kind: "delete_practices", practiceCount: selectedPractices.size, invoiceCount: selectedPracticeInvoiceCount })}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-destructive/10 text-destructive border border-destructive/20 text-xs font-medium hover:bg-destructive/20"
+            >
+              <Trash2 size={12} /> Delete invoices for selected
+            </button>
+            <button
+              type="button"
+              onClick={() => setBulkConfirm({ kind: "reset_practices", practiceCount: selectedPractices.size, invoiceCount: selectedPracticeInvoiceCount })}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-warning/10 text-warning border border-warning/20 text-xs font-medium hover:bg-warning/20"
+            >
+              <RotateCcw size={12} /> Reset to $0
+            </button>
+            <button
+              type="button"
+              onClick={() => setBulkConfirm({ kind: "reset_all", practiceCount: filtered.length, invoiceCount: invoices.length })}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-warning/10 text-warning border border-warning/20 text-xs font-medium hover:bg-warning/20"
+            >
+              <RotateCcw size={12} /> Reset all to $0
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedPractices(new Set())}
+              className="ml-auto text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear selection
+            </button>
+          </div>
+        )}
+
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-secondary/40">
+                {isBillingUser && (
+                  <th className="w-10 px-3 py-2.5">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5"
+                      checked={filtered.length > 0 && filtered.every((r) => selectedPractices.has(r.practiceId))}
+                      ref={(el) => {
+                        if (el) el.indeterminate = selectedPractices.size > 0 && !filtered.every((r) => selectedPractices.has(r.practiceId));
+                      }}
+                      onChange={(e) => {
+                        setSelectedPractices(e.target.checked ? new Set(filtered.map((r) => r.practiceId)) : new Set());
+                      }}
+                      title="Select all practices"
+                    />
+                  </th>
+                )}
                 <th className="text-left px-5 py-2.5"><SortHeader k="practiceName">Practice</SortHeader></th>
                 <th className="text-right py-2.5"><SortHeader k="invoiceCount" align="right">Invoices</SortHeader></th>
                 <th className="text-right py-2.5"><SortHeader k="totalBilled" align="right">Billed</SortHeader></th>
@@ -350,7 +459,7 @@ export default function StatementsPage() {
             <tbody>
               {invoicesQuery.isLoading && (
                 <tr>
-                  <td colSpan={6} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={isBillingUser ? 7 : 6} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading statements…
                   </td>
@@ -358,12 +467,12 @@ export default function StatementsPage() {
               )}
               {invoicesQuery.error && (
                 <tr>
-                  <td colSpan={6} className="px-5 py-12 text-center text-destructive">{(invoicesQuery.error as Error).message}</td>
+                  <td colSpan={isBillingUser ? 7 : 6} className="px-5 py-12 text-center text-destructive">{(invoicesQuery.error as Error).message}</td>
                 </tr>
               )}
               {!invoicesQuery.isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={isBillingUser ? 7 : 6} className="px-5 py-12 text-center text-muted-foreground">
                     No statements match the current filters.
                   </td>
                 </tr>
@@ -374,6 +483,26 @@ export default function StatementsPage() {
                   onClick={() => setSelected(r)}
                   className="border-t border-border cursor-pointer hover:bg-secondary/40"
                 >
+                  {isBillingUser && (
+                    <td
+                      className="px-3 py-3"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5"
+                        checked={selectedPractices.has(r.practiceId)}
+                        onChange={(e) => {
+                          setSelectedPractices((prev) => {
+                            const next = new Set(prev);
+                            if (e.target.checked) next.add(r.practiceId);
+                            else next.delete(r.practiceId);
+                            return next;
+                          });
+                        }}
+                      />
+                    </td>
+                  )}
                   <td className="px-5 py-3 font-medium">{r.practiceName}</td>
                   <td className="py-3 text-right tabular-nums">{r.invoiceCount}</td>
                   <td className="py-3 text-right tabular-nums">{formatMoney(r.totalBilled)}</td>
@@ -427,6 +556,88 @@ export default function StatementsPage() {
           onClose={() => setShowGenerate(false)}
         />
       )}
+      {bulkConfirm && orgId && (
+        <BulkStatementConfirmModal
+          kind={bulkConfirm.kind}
+          practiceCount={bulkConfirm.practiceCount}
+          invoiceCount={bulkConfirm.invoiceCount}
+          pending={bulkDeleteMutation.isPending || bulkResetMutation.isPending}
+          error={
+            (bulkDeleteMutation.error instanceof Error ? bulkDeleteMutation.error.message : null) ??
+            (bulkResetMutation.error instanceof Error ? bulkResetMutation.error.message : null)
+          }
+          onCancel={() => setBulkConfirm(null)}
+          onConfirm={handleBulkConfirm}
+        />
+      )}
+    </div>
+  );
+}
+
+function BulkStatementConfirmModal({
+  kind,
+  practiceCount,
+  invoiceCount,
+  pending,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  kind: "delete_practices" | "reset_practices" | "reset_all";
+  practiceCount: number;
+  invoiceCount: number;
+  pending: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const isDelete = kind === "delete_practices";
+  const isResetAll = kind === "reset_all";
+  const invoiceLabel = invoiceCount > 0 ? ` (${invoiceCount} invoice${invoiceCount !== 1 ? "s" : ""})` : "";
+  const title = isDelete
+    ? `Delete invoices for ${practiceCount} practice${practiceCount !== 1 ? "s" : ""}?`
+    : isResetAll
+    ? "Reset all invoices to $0?"
+    : `Reset invoices for ${practiceCount} practice${practiceCount !== 1 ? "s" : ""} to $0?`;
+  const description = isDelete
+    ? `This will permanently void and hide all invoices for the ${practiceCount} selected practice${practiceCount !== 1 ? "s" : ""}${invoiceLabel}. They will no longer appear in the invoices list or statement rollups. This cannot be undone.`
+    : isResetAll
+    ? `This will zero out all invoice totals and line items across every practice. Invoices will show $0.00 total and $0.00 balance due and their status will be reset to draft. This cannot be undone.`
+    : `This will zero out the totals and line items for all invoices belonging to the ${practiceCount} selected practice${practiceCount !== 1 ? "s" : ""}${invoiceLabel}. Each will show $0.00 total and $0.00 balance due. This cannot be undone.`;
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+      <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
+        <h3 className="text-base font-semibold">{title}</h3>
+        <p className="text-sm text-muted-foreground">{description}</p>
+        {error && (
+          <p className="text-sm text-destructive bg-destructive/10 rounded-md px-3 py-2">{error}</p>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={pending}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={pending}
+            className={`h-9 px-3 rounded-md text-sm font-medium text-white disabled:opacity-50 ${isDelete ? "bg-destructive hover:bg-destructive/90" : "bg-warning hover:bg-warning/90"}`}
+          >
+            {pending ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : isDelete ? (
+              "Delete invoices"
+            ) : (
+              "Reset to $0"
+            )}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

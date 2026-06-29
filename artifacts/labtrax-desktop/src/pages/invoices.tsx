@@ -147,6 +147,17 @@ export default function InvoicesPage() {
   const [statementBuilderOpen, setStatementBuilderOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkSendOpen, setBulkSendOpen] = useState(false);
+  const [bulkConfirm, setBulkConfirm] = useState<{
+    kind: "delete_selected" | "reset_selected" | "reset_all";
+    count: number;
+    labOrganizationId: string;
+  } | null>(null);
+
+  const { user } = useAuth();
+  const isBillingUser =
+    user?.role === "owner" ||
+    user?.role === "admin" ||
+    user?.role === "billing";
 
   const queryString = useMemo(() => {
     const sp = new URLSearchParams();
@@ -282,6 +293,47 @@ export default function InvoicesPage() {
     }
     return { openBalance, openCount, overdueBalance, overdueCount, paidThisMonth, paidCount };
   }, [data]);
+
+  const labOrganizationId = data?.[0]?.labOrganizationId ?? "";
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (payload: { invoiceIds?: string[]; all?: boolean }) =>
+      apiFetch("/invoices/bulk", {
+        method: "DELETE",
+        body: JSON.stringify({ labOrganizationId, ...payload }),
+      }),
+    onSuccess: () => {
+      setSelected(new Set());
+      setBulkConfirm(null);
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    },
+  });
+
+  const bulkResetMutation = useMutation({
+    mutationFn: (payload: { invoiceIds?: string[]; all?: boolean }) =>
+      apiFetch("/invoices/bulk-reset", {
+        method: "POST",
+        body: JSON.stringify({ labOrganizationId, ...payload }),
+      }),
+    onSuccess: () => {
+      setSelected(new Set());
+      setBulkConfirm(null);
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    },
+  });
+
+  function handleBulkConfirm() {
+    if (!bulkConfirm) return;
+    if (bulkConfirm.kind === "delete_selected") {
+      bulkDeleteMutation.mutate({ invoiceIds: Array.from(selected) });
+    } else if (bulkConfirm.kind === "reset_selected") {
+      bulkResetMutation.mutate({ invoiceIds: Array.from(selected) });
+    } else if (bulkConfirm.kind === "reset_all") {
+      bulkResetMutation.mutate({ all: true });
+    }
+  }
 
   return (
     <div className="px-8 py-7">
@@ -430,6 +482,31 @@ export default function InvoicesPage() {
             >
               <Send size={12} /> Send {selected.size > 1 ? `${selected.size} invoices` : "invoice"}
             </button>
+            {isBillingUser && labOrganizationId && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setBulkConfirm({ kind: "delete_selected", count: selected.size, labOrganizationId })}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-destructive/10 text-destructive border border-destructive/20 text-xs font-medium hover:bg-destructive/20"
+                >
+                  <Trash2 size={12} /> Delete selected
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBulkConfirm({ kind: "reset_selected", count: selected.size, labOrganizationId })}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-warning/10 text-warning border border-warning/20 text-xs font-medium hover:bg-warning/20"
+                >
+                  <RotateCcw size={12} /> Reset to $0
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBulkConfirm({ kind: "reset_all", count: filtered.length, labOrganizationId })}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-warning/10 text-warning border border-warning/20 text-xs font-medium hover:bg-warning/20"
+                >
+                  <RotateCcw size={12} /> Reset all to $0
+                </button>
+              </>
+            )}
             <button
               type="button"
               onClick={() => setSelected(new Set())}
@@ -649,6 +726,84 @@ export default function InvoicesPage() {
           onSent={() => { setSelected(new Set()); setBulkSendOpen(false); }}
         />
       )}
+      {bulkConfirm && (
+        <BulkInvoiceConfirmModal
+          kind={bulkConfirm.kind}
+          count={bulkConfirm.count}
+          pending={bulkDeleteMutation.isPending || bulkResetMutation.isPending}
+          error={
+            (bulkDeleteMutation.error instanceof Error ? bulkDeleteMutation.error.message : null) ??
+            (bulkResetMutation.error instanceof Error ? bulkResetMutation.error.message : null)
+          }
+          onCancel={() => setBulkConfirm(null)}
+          onConfirm={handleBulkConfirm}
+        />
+      )}
+    </div>
+  );
+}
+
+function BulkInvoiceConfirmModal({
+  kind,
+  count,
+  pending,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  kind: "delete_selected" | "reset_selected" | "reset_all";
+  count: number;
+  pending: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const isDelete = kind === "delete_selected";
+  const isResetAll = kind === "reset_all";
+  const title = isDelete
+    ? `Delete ${count} invoice${count !== 1 ? "s" : ""}?`
+    : isResetAll
+    ? "Reset all invoices to $0?"
+    : `Reset ${count} invoice${count !== 1 ? "s" : ""} to $0?`;
+  const description = isDelete
+    ? `This will permanently void and hide ${count} invoice${count !== 1 ? "s" : ""}. They will no longer appear in the invoices list or statement rollups. This cannot be undone.`
+    : isResetAll
+    ? `This will zero out all invoice totals and line items across every practice. Invoices will show $0.00 total and $0.00 balance due and their status will be reset to draft. This cannot be undone.`
+    : `This will zero out the totals and line items for ${count} selected invoice${count !== 1 ? "s" : ""}. Each will show $0.00 total and $0.00 balance due and its status will be reset to draft. This cannot be undone.`;
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+      <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
+        <h3 className="text-base font-semibold">{title}</h3>
+        <p className="text-sm text-muted-foreground">{description}</p>
+        {error && (
+          <p className="text-sm text-destructive bg-destructive/10 rounded-md px-3 py-2">{error}</p>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={pending}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={pending}
+            className={`h-9 px-3 rounded-md text-sm font-medium text-white disabled:opacity-50 ${isDelete ? "bg-destructive hover:bg-destructive/90" : "bg-warning hover:bg-warning/90"}`}
+          >
+            {pending ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : isDelete ? (
+              "Delete invoices"
+            ) : (
+              "Reset to $0"
+            )}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
