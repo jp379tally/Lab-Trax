@@ -1,0 +1,154 @@
+### Replit Build Brief
+
+**Objective**
+Restore the LabTrax desktop installer download so admins/users can successfully download `LabTrax-Setup.exe` from Settings → Desktop app.
+
+**User-visible problem**
+The browser download tray shows `LabTrax-Setup.exe` with the error:
+
+`File wasn’t available on site`
+
+This means Chrome reached the download URL, but the server/site did not provide the file. It is most consistent with a `404`, missing object, bad route, or stale deployment.
+
+**Likely root cause**
+The UI is pointing to `LabTrax-Setup.exe`, but the deployed environment does not currently have the EXE available at the expected download path.
+
+The repo’s intended contract is:
+
+* Public download route: `/downloads/LabTrax-Setup.exe`
+* Storage object: `<PRIVATE_OBJECT_DIR>/desktop-installer/LabTrax-Setup.exe`
+* API route: `artifacts/api-server/src/app.ts`
+* Storage helper: `artifacts/api-server/src/lib/desktop-installer-storage.ts`
+* Publish/upload script: `scripts/src/upload-desktop-installer.ts`
+* Desktop download UI: `artifacts/labtrax-desktop/src/pages/download.tsx`
+* Mobile/web settings surface: `artifacts/labtrax/app/settings/desktop.tsx`
+
+The backend route exists and tests cover `/downloads/LabTrax-Setup.exe`, so the most likely failure is deployment/storage state: the EXE was never uploaded, was uploaded to the wrong bucket/object key, metadata points at an EXE while only ZIP exists, or the deployed API is not the current build with `/downloads/LabTrax-Setup.exe`.
+
+**Implementation plan**
+
+1. Verify the live URL directly:
+
+   * `HEAD /downloads/LabTrax-Setup.exe`
+   * `GET /api/desktop-installer`
+   * `GET /api/admin/settings/desktop-installer` as platform admin
+2. Confirm whether App Storage contains:
+
+   * `desktop-installer/LabTrax-Setup.exe`
+   * `desktop-installer/LabTrax-Windows-Portable.zip`
+   * `desktop-installer/latest.yml`
+3. If the EXE object is missing, rebuild/publish the desktop installer and upload it using the existing pipeline:
+
+   * `scripts/desktop-build-publish.sh`
+   * or `pnpm --filter @workspace/scripts run upload-desktop-installer -- /path/to/LabTrax-Setup.exe`
+4. If the object exists but download still fails, fix route/deployment wiring:
+
+   * ensure deployed API includes `artifacts/api-server/src/app.ts` routes for `/downloads/LabTrax-Setup.exe`
+   * ensure `PRIVATE_OBJECT_DIR` is set in the deployed Replit environment
+   * ensure storage auth works in Replit
+5. Fix UI guardrails if needed:
+
+   * Settings/download page must not show an enabled EXE download button when `fileFound === false`
+   * public metadata should prefer the EXE only when the EXE object is actually available
+   * otherwise show “installer temporarily unavailable” or fall back to ZIP intentionally, not silently
+6. Add/verify regression tests:
+
+   * `/downloads/LabTrax-Setup.exe` returns `200` when uploaded
+   * returns clear `404` when missing
+   * public metadata does not advertise a missing installer as downloadable
+   * publish fails loudly if upload or metadata push fails
+
+**Acceptance criteria**
+
+* Settings → Desktop app download succeeds.
+* `GET /downloads/LabTrax-Setup.exe` returns `200` or a `302` to GCS, not `404`.
+* Chrome downloads `LabTrax-Setup.exe` successfully.
+* `/api/desktop-installer` reports `fileFound: true` for the advertised download URL.
+* Admin installer status does not show missing EXE when the button is enabled.
+* Release metadata points to the actual uploaded installer.
+
+**Regression risks to check**
+
+* Do not break ZIP fallback or macOS DMG downloads.
+* Do not publish `latest.yml` from ZIP builds.
+* Do not hide a real storage/auth failure behind a fake “available” UI.
+* Ensure large downloads still use the signed/direct GCS redirect path where possible.
+
+### Copy-Ready Replit Prompt
+
+```text
+We need to fix the LabTrax desktop installer download. The user clicks “Download for Windows” from Settings → Desktop app, and Chrome shows `LabTrax-Setup.exe` with the error “File wasn’t available on site.”
+
+Please diagnose and fix the real download path, not just the UI.
+
+Relevant repo areas:
+- artifacts/api-server/src/app.ts
+- artifacts/api-server/src/lib/desktop-installer-storage.ts
+- artifacts/api-server/src/installer-download.test.ts
+- artifacts/labtrax-desktop/src/pages/download.tsx
+- artifacts/labtrax/app/settings/desktop.tsx
+- scripts/src/upload-desktop-installer.ts
+- scripts/desktop-build-publish.sh
+- docs/desktop-installer.md
+
+Expected contract:
+- Windows EXE should be downloadable at `/downloads/LabTrax-Setup.exe`
+- App Storage object should be `<PRIVATE_OBJECT_DIR>/desktop-installer/LabTrax-Setup.exe`
+- `/api/desktop-installer` should only advertise a download URL that actually exists, or should clearly report unavailable/missing state.
+- The download button must not point users to a missing file.
+
+Please do the following:
+1. Check the live/deployed behavior for `/downloads/LabTrax-Setup.exe`, `/api/desktop-installer`, and the admin desktop installer status endpoint.
+2. Verify whether `PRIVATE_OBJECT_DIR` is configured and whether App Storage contains `desktop-installer/LabTrax-Setup.exe`.
+3. If the EXE is missing, restore the publish/upload pipeline so `LabTrax-Setup.exe` is built and uploaded to App Storage, then metadata is updated to point to `/downloads/LabTrax-Setup.exe`.
+4. If the EXE exists but the route fails, fix the deployed API/storage route wiring.
+5. If metadata advertises a missing file, fix the metadata/public info logic so missing installers are not shown as downloadable.
+6. Preserve ZIP and DMG behavior.
+7. Add or update tests so:
+   - `/downloads/LabTrax-Setup.exe` returns 200/302 when the EXE exists
+   - it returns a clear 404 when missing
+   - `/api/desktop-installer` does not advertise a missing installer as available
+   - publish/upload fails loudly if installer upload or metadata push fails
+
+Before finishing, run the relevant API tests and manually verify the download URL. Report the exact root cause found, files changed, tests run, and any deployment/env variables that must be set.
+```
+
+### Debug Analysis
+
+**Probable root cause**
+The download button is reaching a URL for `LabTrax-Setup.exe`, but the deployed site cannot serve that file. The most likely concrete cause is that `desktop-installer/LabTrax-Setup.exe` is missing from App Storage or the deployed environment is missing `PRIVATE_OBJECT_DIR`/storage access.
+
+**Supporting evidence**
+
+* Screenshot shows Chrome download error: `File wasn’t available on site`.
+* Repo docs say installers are served at `GET /downloads/<filename>` from App Storage.
+* `desktop-installer-storage.ts` maps EXE to `desktop-installer/LabTrax-Setup.exe`.
+* `app.ts` has an explicit route for `/downloads/LabTrax-Setup.exe`.
+* `installer-download.test.ts` already tests the EXE route.
+* Prior attached repo note says the installer had been showing as missing and warned that `LabTrax-Setup.exe` would return 404.
+
+**Alternate hypotheses worth checking**
+
+* The UI metadata points to `/downloads/LabTrax-Setup.exe`, but only the ZIP was uploaded.
+* The EXE was uploaded, but to the wrong bucket/object path.
+* The current Replit deployment is stale and does not include the `/downloads/LabTrax-Setup.exe` route.
+* Storage auth is failing, causing a storage error or unavailable response.
+* The button is using a relative URL from the wrong origin, though the existing `toAbsoluteDownloadUrl` helper appears designed to prevent that.
+
+**Confidence level**
+High that this is a missing/incorrectly served installer artifact, not a browser issue. Medium on the exact subcause until Replit checks live App Storage and deployed endpoint responses.
+
+### Step-by-Step Fix Plan
+
+1. In Replit, run a live check against the deployed app:
+
+   * `curl -I https://<app-host>/downloads/LabTrax-Setup.exe`
+   * `curl https://<app-host>/api/desktop-installer`
+2. Check admin installer status from the Settings panel or admin endpoint.
+3. Confirm `PRIVATE_OBJECT_DIR` is set in Replit.
+4. Inspect App Storage for `desktop-installer/LabTrax-Setup.exe`.
+5. If missing, build and upload the EXE through the existing desktop publish/upload pipeline.
+6. Confirm metadata now points to `/downloads/LabTrax-Setup.exe`.
+7. Re-test the download button in Chrome.
+8. Run the installer download tests and any desktop installer status tests.
+9. Add a guardrail so publish cannot mark the desktop release as available unless the advertised installer URL returns success.
