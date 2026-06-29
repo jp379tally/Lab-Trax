@@ -1,32 +1,31 @@
 /**
- * Generic SMS provider module.  Currently backed by Vonage (Nexmo) — the API
- * is simple enough that switching to another provider later only requires
+ * Generic SMS provider module.  Backed by Twilio -- the API is wrapped in a
+ * thin local interface so switching to another provider later only requires
  * changing this file.
  *
  * Env vars:
- *   VONAGE_API_KEY      — Vonage API key
- *   VONAGE_API_SECRET   — Vonage API secret
- *   VONAGE_PHONE_NUMBER — Sender number (E.164, e.g. +15551234567)
+ *   TWILIO_ACCOUNT_SID   -- Twilio Account SID
+ *   TWILIO_AUTH_TOKEN    -- Twilio Auth Token
+ *   TWILIO_PHONE_NUMBER  -- Sender phone number in E.164 (e.g. +15551234567)
  *
  * In dev mode (NODE_ENV=development) or when VITEST is set, the module
- * logs the message instead of dispatching it, so tests and local dev work
+ * logs the message instead of dispatching, so tests and local dev work
  * without live credentials.
  */
 
 import type { Logger } from "pino";
-
-const VONAGE_SEND_URL = "https://rest.nexmo.com/sms/json";
+import twilio from "twilio";
 
 function getCredentials() {
-  const key = process.env["VONAGE_API_KEY"];
-  const secret = process.env["VONAGE_API_SECRET"];
-  const from = process.env["VONAGE_PHONE_NUMBER"];
-  return { key, secret, from };
+  const accountSid = process.env["TWILIO_ACCOUNT_SID"];
+  const authToken = process.env["TWILIO_AUTH_TOKEN"];
+  const from = process.env["TWILIO_PHONE_NUMBER"];
+  return { accountSid, authToken, from };
 }
 
 export function isConfigured(): boolean {
-  const { key, secret, from } = getCredentials();
-  return !!(key && secret && from);
+  const { accountSid, authToken, from } = getCredentials();
+  return !!(accountSid && authToken && from);
 }
 
 export function isDevOrTest(): boolean {
@@ -45,29 +44,29 @@ export interface SendSmsArgs {
 
 export interface SendSmsResult {
   ok: boolean;
-  /** Provider message id (e.g. Vonage message-id) when successful. */
+  /** Provider message id when successful. */
   messageId?: string;
   /** Error code from the provider when the request is rejected. */
   errorCode?: string;
   /** Human-readable error message. */
   errorMessage?: string;
-  /** True when the provider is not configured (dev) — the caller may still
+  /** True when the provider is not configured (dev) -- the caller may still
    *  proceed with side-effects (e.g. persisting the invite row). */
   skipped?: boolean;
 }
 
 /**
- * Send a single SMS via Vonage.  Returns a result object so callers can
+ * Send a single SMS via Twilio.  Returns a result object so callers can
  * decide whether to fail the request or just log the issue.
  */
 export async function sendSms(args: SendSmsArgs): Promise<SendSmsResult> {
-  const { key, secret, from } = getCredentials();
+  const { accountSid, authToken, from } = getCredentials();
 
-  if (!key || !secret || !from) {
+  if (!accountSid || !authToken || !from) {
     if (isDevOrTest()) {
       args.log?.info?.(
         { phone: maskPhone(args.to) },
-        "SMS not configured — logging demo message (dev/test)",
+        "SMS not configured -- logging demo message (dev/test)",
       );
       return { ok: true, skipped: true };
     }
@@ -79,52 +78,22 @@ export async function sendSms(args: SendSmsArgs): Promise<SendSmsResult> {
   }
 
   try {
-    const resp = await globalThis.fetch(VONAGE_SEND_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        api_key: key,
-        api_secret: secret,
-        from,
-        to: args.to,
-        text: args.body,
-      }),
+    const client = twilio(accountSid, authToken);
+    const message = await client.messages.create({
+      from,
+      to: args.to,
+      body: args.body,
     });
 
-    const data = (await resp.json()) as any;
-    const messages = Array.isArray(data?.messages) ? data.messages : [];
-    const first = messages[0] as any;
-
-    // Vonage returns 200 even for rejected messages; inspect the inner status.
-    const status = first?.["status"] ?? "unknown";
-    if (status !== "0") {
-      const errorText = first?.["error-text"] ?? "Unknown SMS error";
-      args.log?.warn?.(
-        {
-          phone: maskPhone(args.to),
-          providerStatus: status,
-          providerError: errorText,
-        },
-        "SMS provider rejected message",
-      );
-      return {
-        ok: false,
-        errorCode: String(status),
-        errorMessage: errorText,
-      };
-    }
-
-    return { ok: true, messageId: String(first?.["message-id"] ?? "") };
+    return { ok: true, messageId: message.sid };
   } catch (err: any) {
-    args.log?.error?.(
-      { err: err?.message ?? String(err), phone: maskPhone(args.to) },
-      "SMS provider request failed",
+    const errorCode = String(err.code ?? err.status ?? "unknown");
+    const errorMessage = err.message ?? String(err);
+    args.log?.warn?.(
+      { phone: maskPhone(args.to), providerErrorCode: errorCode, providerError: errorMessage },
+      "SMS provider rejected message",
     );
-    return {
-      ok: false,
-      errorCode: "network_error",
-      errorMessage: err?.message ?? String(err),
-    };
+    return { ok: false, errorCode, errorMessage };
   }
 }
 
@@ -155,18 +124,19 @@ export interface InboundSmsPayload {
 }
 
 /**
- * Normalise a Vonage inbound webhook payload.
- * Vonage posts x-www-form-urlencoded with keys: msisdn, to, text, messageId,
- * message-timestamp, etc.
+ * Normalise an inbound SMS webhook payload (Twilio format by default).
+ * Twilio posts x-www-form-urlencoded with keys: From, To, Body, MessageSid,
+ * etc.  This also accepts Vonage keys for backward compatibility during
+ * transition: msisdn, text, message-timestamp, message-id.
  */
 export function parseInboundSms(
   body: Record<string, unknown>,
 ): InboundSmsPayload | null {
-  const from = String(body["msisdn"] ?? body["from"] ?? "").trim();
-  const to = String(body["to"] ?? "").trim();
-  const text = String(body["text"] ?? body["Body"] ?? "").trim();
-  const timestamp = String(body["message-timestamp"] ?? "").trim() || undefined;
-  const messageId = String(body["messageId"] ?? body["message-id"] ?? "").trim() || undefined;
+  const from = String(body["From"] ?? body["msisdn"] ?? body["from"] ?? "").trim();
+  const to = String(body["To"] ?? body["to"] ?? "").trim();
+  const text = String(body["Body"] ?? body["text"] ?? "").trim();
+  const timestamp = String(body["DateSent"] ?? body["message-timestamp"] ?? "").trim() || undefined;
+  const messageId = String(body["MessageSid"] ?? body["messageId"] ?? body["message-id"] ?? "").trim() || undefined;
 
   if (!from || !text) return null;
   return { from, to, text, timestamp, messageId };

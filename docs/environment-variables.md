@@ -16,11 +16,13 @@ here.
 - `LABTRAX_ENABLE_DEMO_SEEDS` — set `"true"` to seed demo users on startup
 - `PLATFORM_ADMIN_PIN` — short numeric PIN alternative to `PLATFORM_ADMIN_SECRET` via `X-Platform-Admin-Pin`; requires a signed-in `role:"admin"` user (PIN alone cannot authenticate)
 
-## SMS (Vonage)
+## SMS (Twilio)
 
-- `VONAGE_API_KEY` — Vonage API key for SMS
-- `VONAGE_API_SECRET` — Vonage API secret for SMS
-- `VONAGE_PHONE_NUMBER` — sender phone number for outbound SMS (must be registered with Vonage)
+- `TWILIO_ACCOUNT_SID` — Twilio Account SID for SMS
+- `TWILIO_AUTH_TOKEN` — Twilio Auth Token for SMS
+- `TWILIO_PHONE_NUMBER` — sender phone number for outbound SMS in E.164 (must be registered with Twilio)
+
+> Legacy Vonage vars (`VONAGE_API_KEY`, `VONAGE_API_SECRET`, `VONAGE_PHONE_NUMBER`) are no longer read.
 
 ## Backup / OneDrive
 

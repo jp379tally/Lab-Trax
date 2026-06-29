@@ -480,12 +480,16 @@ router.post(
     });
     if (!practice) throw new HttpError(404, "Practice not found.");
 
-    const recipient = (input.to ?? (practice as any).phone ?? "").trim();
-    if (!recipient) {
+    const rawRecipient = (input.to ?? (practice as any).phone ?? "").trim();
+    if (!rawRecipient) {
       throw new HttpError(
         400,
         "This practice has no phone number on file. Add one first or enter a number.",
       );
+    }
+    const recipient = normalizePhoneE164(rawRecipient);
+    if (!recipient) {
+      throw new HttpError(400, "Invalid phone number. Please use a 10-digit US number or E.164 format (e.g. +18503633336).");
     }
 
     const { sendSms } = await import("../lib/sms.js");
