@@ -47,6 +47,7 @@ All test paths below are relative to the repo root unless already prefixed. Serv
 | 21 | Desktop installer availability | desktop | `installer-settings-status.test.ts`, `installer-publish-e2e.test.ts` (gated on real App Storage env) | Yes — API tests + desktop publish gate |
 | 22 | Signed desktop build verification | desktop | `bash scripts/test-signing-verification.sh` | Yes — **blocks desktop release** |
 | 23 | latest.yml auto-update feed guard | desktop | `scripts/src/__tests__/latest-yml-guard.test.ts` (`pnpm --filter @workspace/scripts run test`) | Yes — **blocks desktop release** |
+| 24 | Remake case creation — case appears in Case Center, correct suffixed number (B/C), draft invoice, original cross-linked | desktop | `routes/cases-remake.test.ts` (server: suffix letter, invoice, cross-link, 409 on collision, legacy-original support) ; UI _(pending)_ | Yes — API tests |
 
 ### Protected Workflow Matrix — Mobile (21)
 
@@ -695,6 +696,17 @@ Run command:
 pnpm --filter @workspace/api-server run test -- --reporter=verbose invoices cases-ai-reader cases-invoice-creation
 ```
 
+### Remake Case Creation
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| API integration | `artifacts/api-server/src/routes/cases-remake.test.ts` | Remake of canonical original: 201, suffixed caseNumber (B/C), remakeOfCaseId set, visible in GET /api/cases, invoice created. Remake of legacy lab_cases original: 201, caseNumber suffixed, activityLog updated on original. Multiple remakes get sequential suffix letters (B→C). No-charge remake (remakeCharged: false) still creates an invoice. Case-number unique-constraint violation returns 409 not 500. |
+
+Run command:
+```
+pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-remake
+```
+
 ### Mobile Case Viewer (Read-Only)
 
 | Layer | File | What it guards |
@@ -867,7 +879,7 @@ pnpm --filter @workspace/api-server run test -- auth two-factor account-epic-ver
 ### Run the full protected suite at once
 
 ```bash
-pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync cases-canonical-mobile
+pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation cases-remake mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync cases-canonical-mobile
 pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke normalize-case-status auth-hydration reconnecting-indicator share-intent-config invoice-editor.smoke terminology-parity role-parity open-attachment case-pdf pdf-viewer.smoke authed-media-cache
 pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
 pnpm --filter @workspace/scripts run test

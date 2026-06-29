@@ -1501,17 +1501,22 @@ export function rethrowBarcodeConflict(err: unknown, barcode: string): never {
           : null
       : null;
 
-  if (
-    pgLike != null &&
-    (pgLike as { code: unknown }).code === "23505" &&
-    "constraint" in pgLike &&
-    (pgLike as { constraint: unknown }).constraint ===
-      "cases_barcode_unique_per_lab"
-  ) {
-    throw new HttpError(
-      409,
-      `Barcode "${barcode}" is already assigned to another active case. Each barcode can only be assigned to one active case at a time.`,
-    );
+  if (pgLike != null && (pgLike as { code: unknown }).code === "23505") {
+    const constraint = "constraint" in pgLike
+      ? (pgLike as { constraint: unknown }).constraint
+      : null;
+    if (constraint === "cases_barcode_unique_per_lab") {
+      throw new HttpError(
+        409,
+        `Barcode "${barcode}" is already assigned to another active case. Each barcode can only be assigned to one active case at a time.`,
+      );
+    }
+    if (constraint === "cases_case_number_unique") {
+      throw new HttpError(
+        409,
+        "A case with this number already exists in this lab. If you are creating a remake the server assigns the suffix letter automatically — please try again.",
+      );
+    }
   }
   wrapDbError(err, {
     fallback: "Failed to save case. Please try again.",
@@ -3422,6 +3427,61 @@ router.post(
         })
         .returning();
 
+      // Write remake cross-link events INSIDE the transaction so they are
+      // atomic with case creation.
+      //
+      // Canonical originals: both the forward "remake_of" event (on the new
+      // case) and the backward "remade_by" event (on the original) are written
+      // here using tx. If either insert fails, the entire transaction rolls
+      // back — no orphan case, no silent partial success.
+      //
+      // Legacy originals: only the forward "remake_of" event is written here.
+      // The reciprocal blob update on the legacy lab_cases row is a JSON patch
+      // on a separate table that can't participate in this Drizzle transaction;
+      // it runs after the transaction commits and surfaces as a user-visible
+      // warning field in the 201 response if it fails.
+      if (remakeOriginal) {
+        const txReason = input.remakeReason ?? null;
+        const txCharged = input.remakeCharged ?? null;
+        const txActorUserId = (req as any).auth.userId as string;
+        const txActorInitials = (req as any).user?.initials || "SYS";
+
+        await tx.insert(caseEvents).values({
+          caseId: created.id,
+          eventType: "remake_of",
+          actorUserId: txActorUserId,
+          actorOrganizationId: input.labOrganizationId,
+          actorInitials: txActorInitials,
+          metadataJson: {
+            originalCaseId: remakeOriginal.id,
+            originalCaseNumber: remakeOriginal.caseNumber,
+            originalCaseKind: remakeOriginal.kind,
+            remakeReason: txReason,
+            remakeCharged: txCharged,
+            note: `Marked as remake of ${remakeOriginal.kind === "legacy" ? "legacy " : ""}case ${remakeOriginal.caseNumber}${txReason ? ` (reason: ${txReason})` : ""}`,
+          },
+        });
+
+        if (remakeOriginal.kind === "canonical") {
+          // Canonical original: write the reciprocal event inside the same
+          // transaction. Both events commit or both roll back.
+          await tx.insert(caseEvents).values({
+            caseId: remakeOriginal.id,
+            eventType: "remade_by",
+            actorUserId: txActorUserId,
+            actorOrganizationId: input.labOrganizationId,
+            actorInitials: txActorInitials,
+            metadataJson: {
+              remakeCaseId: created.id,
+              remakeCaseNumber: created.caseNumber,
+              remakeReason: txReason,
+              remakeCharged: txCharged,
+              note: `Case ${created.caseNumber} created as a remake of this case${txReason ? ` (reason: ${txReason})` : ""}, charged: ${txCharged === true ? "yes" : txCharged === false ? "no" : "unspecified"}`,
+            },
+          });
+        }
+      }
+
       return created;
       } catch (err) {
         // The cases_barcode_unique_per_lab partial index is the atomic guard
@@ -3543,6 +3603,39 @@ router.post(
       }));
     }
 
+    // For legacy originals, run the reciprocal blob update (activityLog
+    // append on the lab_cases row) synchronously BEFORE the auto-invoice
+    // Promise.all so any failure is surfaced as a user-visible warning in
+    // the 201 response rather than being silently swallowed.
+    //
+    // The forward "remake_of" and — for canonical originals — the backward
+    // "remade_by" case_events rows were already written inside the main
+    // transaction (atomic with case creation). Only the legacy JSON blob
+    // patch cannot participate in that transaction, so it runs here.
+    let remakeLegacyHistoryWarning: string | null = null;
+    if (remakeOriginal?.kind === "legacy") {
+      const legacyReason = input.remakeReason ?? null;
+      const legacyCharged = input.remakeCharged ?? null;
+      await writeReciprocalRemadeBy(
+        remakeOriginal,
+        { id: createdCase.id, caseNumber: createdCase.caseNumber },
+        legacyReason,
+        legacyCharged,
+        {
+          userId: (req as any).auth.userId,
+          orgId: input.labOrganizationId,
+          initials: user?.initials || "SYS",
+        },
+      ).catch((err: unknown) => {
+        req.log.warn(
+          { err, newCaseId: createdCase.id, originalId: remakeOriginal!.id },
+          "writeReciprocalRemadeBy (legacy blob) failed — forward case_events row is committed, but lab_cases activityLog may be incomplete",
+        );
+        remakeLegacyHistoryWarning =
+          "The original case's history (a legacy mobile case) could not be updated. The remake link is recorded and the new case is fully created, but the original's timeline may not show this remake. Please check the original case manually.";
+      });
+    }
+
     // No-charge remake exception: when the user explicitly marked the
     // remake as "no charge" we still create the invoice so it's visible
     // in the Invoice tab, but force it to $0 with all restoration line
@@ -3555,8 +3648,9 @@ router.post(
     // Fire all independent post-insert work concurrently:
     //   • case_created timeline event
     //   • audit log write
-    //   • remake cross-link events (when applicable)
     //   • auto-invoice generation
+    // (Remake cross-link events are now written atomically inside the
+    // main transaction above, so they no longer appear here.)
     // None of these depend on each other's result, so running them in
     // parallel cuts the perceived latency of the "Creating case…" spinner
     // roughly in half compared to the previous sequential chain.
@@ -3586,50 +3680,6 @@ router.post(
         entityId: createdCase.id,
         afterJson: createdCase,
       }),
-
-      // ── remake cross-link events (no-op when not a remake) ────────────
-      // Cross-link history entries on both the new (remake) case and the
-      // original being remade so staff can navigate between them and see
-      // the remake reason / charge decision in the timeline forever.
-      remakeOriginal
-        ? (async () => {
-            const reason = input.remakeReason ?? null;
-            const charged = input.remakeCharged ?? null;
-            // Forward-side event on the new canonical case is always
-            // written to case_events. Reciprocal "remade_by" goes to
-            // case_events when the original is canonical, or onto the
-            // legacy activityLog when the original is a legacy lab_cases
-            // row (handled by helper).
-            await db.insert(caseEvents).values({
-              caseId: createdCase.id,
-              eventType: "remake_of",
-              actorUserId: (req as any).auth.userId,
-              actorOrganizationId: input.labOrganizationId,
-              actorInitials: user?.initials || "SYS",
-              metadataJson: {
-                originalCaseId: remakeOriginal.id,
-                originalCaseNumber: remakeOriginal.caseNumber,
-                originalCaseKind: remakeOriginal.kind,
-                remakeReason: reason,
-                remakeCharged: charged,
-                note: `Marked as remake of ${remakeOriginal.kind === "legacy" ? "legacy " : ""}case ${remakeOriginal.caseNumber}${reason ? ` (reason: ${reason})` : ""}`,
-              },
-            }).catch((err: unknown): never => wrapDbError(err, {
-              fallback: "Failed to record remake_of timeline event.",
-            }));
-            await writeReciprocalRemadeBy(
-              remakeOriginal,
-              { id: createdCase.id, caseNumber: createdCase.caseNumber },
-              reason,
-              charged,
-              {
-                userId: (req as any).auth.userId,
-                orgId: input.labOrganizationId,
-                initials: user?.initials || "SYS",
-              },
-            );
-          })()
-        : Promise.resolve(),
 
       // ── auto-invoice generation ────────────────────────────────────────
       // Auto-generate an invoice for every new case so the History tab
@@ -3823,7 +3873,13 @@ router.post(
       })(),
     ]);
 
-    return ok(res, createdCase, 201);
+    return ok(
+      res,
+      remakeLegacyHistoryWarning
+        ? { ...createdCase, remakeWarning: remakeLegacyHistoryWarning }
+        : createdCase,
+      201,
+    );
       })(),
       timeoutSignal,
     ]);

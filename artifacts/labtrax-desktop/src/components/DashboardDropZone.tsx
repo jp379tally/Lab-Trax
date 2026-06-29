@@ -412,20 +412,16 @@ function DuplicatePromptPanel({
   const [charge, setCharge] = useState<"yes" | "no" | "">("");
   const [err, setErr] = useState<string | null>(null);
 
-  // Legacy/mobile cases can't be linked as a remake (the modern
-  // remakeOfCaseId column references the canonical cases table).
+  // Both canonical (desktop/web) and legacy (mobile) originals are
+  // supported by the server's resolveRemakeOriginal helper, so any
+  // match from the duplicate-prompt list can be selected as the
+  // remake original.
   const selectedMatch = matches.find((m) => m.id === selectedId);
-  const canLinkSelection = selectedMatch?.source === "canonical";
+  const canLinkSelection = !!selectedMatch;
 
   function submitRemake() {
     if (!selectedId) {
       setErr("Pick the prior case being remade.");
-      return;
-    }
-    if (!canLinkSelection) {
-      setErr(
-        "That case was created on the mobile app and can't be linked here. Pick a website-created case, or use 'Create as new case anyway'.",
-      );
       return;
     }
     if (!reason.trim()) {
@@ -1927,12 +1923,15 @@ export function DashboardDropZone() {
                 }]
               : undefined;
 
-        const caseNumberPromise: Promise<string> =
-          apiFetch<{ caseNumber: string }>(
-            `/cases/next-case-number?labOrganizationId=${encodeURIComponent(rxLabOrgId)}`,
-          )
-            .then((res) => res?.caseNumber || requestedCaseNumber)
-            .catch(() => requestedCaseNumber);
+        // For remake cases the server assigns the suffixed case number
+        // automatically, so skip the next-case-number fetch.
+        const caseNumberPromise: Promise<string> = remake
+          ? Promise.resolve(requestedCaseNumber)
+          : apiFetch<{ caseNumber: string }>(
+              `/cases/next-case-number?labOrganizationId=${encodeURIComponent(rxLabOrgId)}`,
+            )
+              .then((res) => res?.caseNumber || requestedCaseNumber)
+              .catch(() => requestedCaseNumber);
 
         const rxUploadPromise = uploadMediaFile(rxFile).catch(() => null);
 
@@ -1957,6 +1956,10 @@ export function DashboardDropZone() {
             // Always carry the top-level shade to the case row so it is
             // available for display even before restoration rows are confirmed.
             ...(r.shade ? { shade: r.shade } : {}),
+            // Remake metadata (remakeOfCaseId, remakeReason, remakeCharged)
+            // must be forwarded to the server so it can compute the suffix
+            // letter, set remakeOfCaseId, and write the cross-link events.
+            ...(remake ?? {}),
           }),
         });
 
@@ -2015,6 +2018,9 @@ export function DashboardDropZone() {
         qc.invalidateQueries({ queryKey: ["legacy-cases-for-dropzone"] });
         qc.invalidateQueries({ queryKey: ["cases"] });
         qc.invalidateQueries({ queryKey: ["invoices"] });
+        if (remake?.remakeOfCaseId) {
+          qc.invalidateQueries({ queryKey: ["case", remake.remakeOfCaseId] });
+        }
         setZipSource(null);
 
         const scanSuffix =
@@ -2028,8 +2034,8 @@ export function DashboardDropZone() {
         setPhase({
           kind: "done",
           message: rxAttached
-            ? `Case ${created.caseNumber} created · Rx attached${scanSuffix} · draft invoice ready.${failSuffix}`
-            : `Case ${created.caseNumber} created${scanSuffix} · draft invoice ready. (Rx PDF could not be attached — add manually in the Files tab.)${failSuffix}`,
+            ? `Case ${created.caseNumber} created${remake ? " (remake)" : ""} · Rx attached${scanSuffix} · draft invoice ready.${failSuffix}`
+            : `Case ${created.caseNumber} created${remake ? " (remake)" : ""}${scanSuffix} · draft invoice ready. (Rx PDF could not be attached — add manually in the Files tab.)${failSuffix}`,
         });
         scheduleIdleReset(5000);
       } catch (e: any) {
