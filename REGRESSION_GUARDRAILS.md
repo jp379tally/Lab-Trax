@@ -27,7 +27,7 @@ All test paths below are relative to the repo root unless already prefixed. Serv
 | 1 | Login / logout | desktop | `routes/auth.test.ts` (server login/session) + Desktop manual smoke | Yes — API tests |
 | 2 | Dashboard loads | desktop | _(pending)_ — Desktop manual smoke | Manual |
 | 3 | Desktop AI prescription intake | desktop | `routes/analyze-prescription.test.ts`, `routes/cases-ai-reader.test.ts` (server endpoints) + Desktop manual smoke | Yes — API tests |
-| 4 | Drag / drop prescription upload | desktop | `routes/analyze-prescription.test.ts` (server) ; DropZone UI _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
+| 4 | Drag / drop prescription upload | desktop | `routes/analyze-prescription.test.ts` (server) ; `src/components/__tests__/DashboardDropZone.analyze.test.tsx`, `DashboardDropZone.remake-zip.test.tsx` (DropZone UI: analyze + ZIP-import remake) + Desktop manual smoke | Yes — API + desktop tests / Manual |
 | 5 | New provider / practice save from AI intake | desktop | `routes/organizations.test.ts` (org/provider create) ; intake-specific save _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
 | 6 | Case creation from AI intake | desktop | `routes/cases-ai-reader.test.ts`, `routes/cases-ai-intake-carry-through.test.ts` | Yes — API tests |
 | 7 | AI intake data carry-through (patient, doctor/practice, due date, tooth #, shade, material, restorative type, notes, case pan barcode) | desktop | `routes/cases-ai-intake-carry-through.test.ts` | Yes — API tests |
@@ -47,7 +47,7 @@ All test paths below are relative to the repo root unless already prefixed. Serv
 | 21 | Desktop installer availability | desktop | `installer-settings-status.test.ts`, `installer-publish-e2e.test.ts` (gated on real App Storage env) | Yes — API tests + desktop publish gate |
 | 22 | Signed desktop build verification | desktop | `bash scripts/test-signing-verification.sh` | Yes — **blocks desktop release** |
 | 23 | latest.yml auto-update feed guard | desktop | `scripts/src/__tests__/latest-yml-guard.test.ts` (`pnpm --filter @workspace/scripts run test`) | Yes — **blocks desktop release** |
-| 24 | Remake case creation — case appears in Case Center, correct suffixed number (B/C), draft invoice, original cross-linked | desktop | `routes/cases-remake.test.ts` (server: suffix letter, invoice, cross-link, 409 on collision, legacy-original support) ; UI _(pending)_ | Yes — API tests |
+| 24 | Remake case creation — case appears in Case Center, correct suffixed number (B/C), draft invoice, original cross-linked | desktop | `routes/cases-remake.test.ts` (server: suffix letter, invoice, cross-link, 409 on collision, legacy-original support) ; `src/components/__tests__/DashboardDropZone.remake-zip.test.tsx` (desktop UI: ZIP-import duplicate-prompt remake forwards remakeOfCaseId/Reason/Charged + skips next-case-number) | Yes — API + desktop tests |
 
 ### Protected Workflow Matrix — Mobile (21)
 
