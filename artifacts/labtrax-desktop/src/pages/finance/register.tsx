@@ -81,6 +81,14 @@ export function RegisterTable({
   const account = accounts.find((a) => a.id === accountId);
   const isUF = account?.accountType === "undeposited_funds";
 
+  // Single source of truth for the Register table's column count. The grid has
+  // 5 leading columns (Date, Num, Payee, Account, Payment), a fixed ✓ column, a
+  // Deposit column, a Balance column (hidden for Undeposited Funds accounts),
+  // and a fixed Actions column. Every spanning cell (loading/empty states) and
+  // the inline/transfer edit drawers must derive their colSpan from this value
+  // so they can never drift apart when columns are added or removed.
+  const registerColCount = isUF ? 8 : 9;
+
   const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn } =
     useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v4");
 
@@ -609,7 +617,7 @@ export function RegisterTable({
             <tbody>
               {txnsQuery.isLoading && (
                 <tr>
-                  <td colSpan={isUF ? 8 : 9} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={registerColCount} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading register…
                   </td>
@@ -617,7 +625,7 @@ export function RegisterTable({
               )}
               {txnsQuery.data?.length === 0 && !txnsQuery.isLoading && (
                 <tr>
-                  <td colSpan={isUF ? 8 : 9} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={registerColCount} className="px-5 py-12 text-center text-muted-foreground">
                     No transactions match the current filters.
                   </td>
                 </tr>
@@ -629,7 +637,7 @@ export function RegisterTable({
                 const isProjected = r.status === "projected";
                 const isExpanded = expandedId === r.id;
                 const isSelected = isExpanded || selectedId === r.id;
-                const cols = isUF ? 8 : 9;
+                const cols = registerColCount;
                 return (
                   <Fragment key={r.id}>
                   <tr
