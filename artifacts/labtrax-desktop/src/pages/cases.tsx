@@ -45,6 +45,11 @@ import { uploadMediaFile } from "@/lib/upload-media-file";
 import { DoctorNamePicker } from "@/components/DoctorNamePicker";
 import { FieldCombobox } from "@/components/FieldCombobox";
 import { setNavBlocker } from "@/lib/nav-guard";
+import {
+  computeCaseDateRange,
+  caseWithinDateRange,
+  type DateRangeFilter as CaseDateRangeFilter,
+} from "@/lib/case-date-filter";
 import { AuthedImage, AuthedVideo, isSameApiOrigin } from "@/components/AuthedMedia";
 import type {
   CaseAttachment,
@@ -1537,7 +1542,7 @@ const CASES_FILTER_STORAGE_KEY = "cases_filters_v2";
 const CASES_SCROLL_STORAGE_KEY = "cases_scroll_v1";
 const CASES_ITERO_BATCH_KEY = "cases_itero_batch_v1";
 
-type DateRangeFilter = "all" | "today" | "30" | "60" | "90" | "custom";
+type DateRangeFilter = CaseDateRangeFilter;
 
 function readCasesFilters(): {
   search: string;
@@ -2240,31 +2245,11 @@ export default function CasesPage() {
     const rows = barcodeFilterActive ? (barcodeSearch.data ?? []) : (data ?? []);
     const q = search.trim().toLowerCase();
 
-    let startDate: Date | null = null;
-    let endDate: Date | null = null;
-
-    if (dateRangeFilter === "today") {
-      const now = new Date();
-      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-    } else if (dateRangeFilter === "30" || dateRangeFilter === "60" || dateRangeFilter === "90") {
-      const days = Number(dateRangeFilter);
-      const now = new Date();
-      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - days + 1);
-      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-    } else if (dateRangeFilter === "custom") {
-      if (customStartDate) {
-        const [y, m, d] = customStartDate.split("-").map(Number);
-        startDate = new Date(y, m - 1, d);
-      }
-      if (customEndDate) {
-        const [y, m, d] = customEndDate.split("-").map(Number);
-        endDate = new Date(y, m - 1, d + 1);
-      } else {
-        const now = new Date();
-        endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-      }
-    }
+    const { startDate, endDate } = computeCaseDateRange(
+      dateRangeFilter,
+      customStartDate,
+      customEndDate,
+    );
 
     const batchCaseIdSet = iteroActiveBatch ? new Set(iteroActiveBatch.caseIds) : null;
 
@@ -2274,17 +2259,7 @@ export default function CasesPage() {
         if (conflictsOnly && !isConflicting(c)) return false;
         if (statusFilter !== "all" && c.status !== statusFilter) return false;
         if (priorityFilter !== "all" && c.priority !== priorityFilter) return false;
-        if (startDate !== null || endDate !== null) {
-          // Filter by the case's received date (when the lab received it),
-          // falling back to the created date so cases without a received
-          // timestamp never silently disappear.
-          const dateSource = c.receivedAt ?? c.createdAt;
-          if (!dateSource) return false;
-          const d = new Date(dateSource);
-          if (Number.isNaN(d.getTime())) return false;
-          if (startDate !== null && d < startDate) return false;
-          if (endDate !== null && d >= endDate) return false;
-        }
+        if (!caseWithinDateRange(c, startDate, endDate)) return false;
         if (!q) return true;
         return (
           c.caseNumber.toLowerCase().includes(q) ||
