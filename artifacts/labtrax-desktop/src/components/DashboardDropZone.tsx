@@ -379,7 +379,7 @@ function initialsFromName(name: string): string {
 const inputCls =
   "h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary";
 
-interface DuplicatePromptPhase {
+export interface DuplicatePromptPhase {
   kind: "duplicatePrompt";
   file: File;
   caseNumber: string;
@@ -387,7 +387,7 @@ interface DuplicatePromptPhase {
   patientName: string;
 }
 
-function DuplicatePromptPanel({
+export function DuplicatePromptPanel({
   phase,
   onBack,
   onCancel,
