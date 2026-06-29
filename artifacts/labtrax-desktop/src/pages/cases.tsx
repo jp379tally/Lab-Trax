@@ -1536,7 +1536,7 @@ const CASES_FILTER_STORAGE_KEY = "cases_filters_v2";
 const CASES_SCROLL_STORAGE_KEY = "cases_scroll_v1";
 const CASES_ITERO_BATCH_KEY = "cases_itero_batch_v1";
 
-type DateRangeFilter = "all" | "30" | "60" | "90" | "custom";
+type DateRangeFilter = "all" | "today" | "30" | "60" | "90" | "custom";
 
 function readCasesFilters(): {
   search: string;
@@ -2242,7 +2242,11 @@ export default function CasesPage() {
     let startDate: Date | null = null;
     let endDate: Date | null = null;
 
-    if (dateRangeFilter === "30" || dateRangeFilter === "60" || dateRangeFilter === "90") {
+    if (dateRangeFilter === "today") {
+      const now = new Date();
+      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    } else if (dateRangeFilter === "30" || dateRangeFilter === "60" || dateRangeFilter === "90") {
       const days = Number(dateRangeFilter);
       const now = new Date();
       startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - days + 1);
@@ -2270,8 +2274,12 @@ export default function CasesPage() {
         if (statusFilter !== "all" && c.status !== statusFilter) return false;
         if (priorityFilter !== "all" && c.priority !== priorityFilter) return false;
         if (startDate !== null || endDate !== null) {
-          if (!c.createdAt) return false;
-          const d = new Date(c.createdAt);
+          // Filter by the case's received date (when the lab received it),
+          // falling back to the created date so cases without a received
+          // timestamp never silently disappear.
+          const dateSource = c.receivedAt ?? c.createdAt;
+          if (!dateSource) return false;
+          const d = new Date(dateSource);
           if (Number.isNaN(d.getTime())) return false;
           if (startDate !== null && d < startDate) return false;
           if (endDate !== null && d >= endDate) return false;
@@ -2505,6 +2513,7 @@ export default function CasesPage() {
             className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
           >
             <option value="all">All time</option>
+            <option value="today">Today</option>
             <option value="30">Last 30 days</option>
             <option value="60">Last 60 days</option>
             <option value="90">Last 90 days</option>

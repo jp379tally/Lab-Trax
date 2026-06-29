@@ -4202,6 +4202,14 @@ router.get(
         const updatedAt = parsed.updatedAt
           ? new Date(Number(parsed.updatedAt)).toISOString()
           : createdAt;
+        // Synthesize a received timestamp for legacy/mobile cases (no real
+        // received_at column). Mirror the desktop-promotion path, which uses
+        // the row's updatedAt as the received date, and fall back to the
+        // created date so the desktop date-range filter never silently drops
+        // a case that lacks an explicit received timestamp.
+        const receivedAt = mr.updatedAt
+          ? new Date(mr.updatedAt).toISOString()
+          : updatedAt ?? createdAt;
         enriched.push({
           id: mr.id,
           caseNumber: String(parsed.caseNumber ?? ""),
@@ -4216,6 +4224,7 @@ router.get(
           createdByUserId: mr.ownerId,
           createdAt,
           updatedAt,
+          receivedAt,
           restorationCount: 0,
           restorationTypes: parsed.caseType ?? null,
           restorationMaterials: parsed.material ?? null,

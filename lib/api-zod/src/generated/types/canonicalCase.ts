@@ -21,6 +21,12 @@ export interface CanonicalCase {
   status: string;
   priority?: string | null;
   dueDate?: string | null;
+  /** When the case was received by the lab. For canonical cases this is
+the `received_at` column; for projected legacy/mobile cases it is a
+synthesized timestamp (falls back to the created date when absent).
+The desktop date-range filter uses this field.
+ */
+  receivedAt?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   restorationCount?: number | null;

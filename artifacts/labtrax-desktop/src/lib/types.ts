@@ -31,6 +31,13 @@ export interface LabCase {
   status: CaseStatus;
   priority: CasePriority;
   dueDate?: string | null;
+  /**
+   * When the case was received by the lab. Canonical cases expose the
+   * `received_at` column; legacy/mobile-projected cases get a synthesized
+   * timestamp (falls back to the created date). The Cases page date-range
+   * filter compares against this field, falling back to createdAt.
+   */
+  receivedAt?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   restorationCount?: number;

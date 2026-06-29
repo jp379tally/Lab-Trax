@@ -1120,6 +1120,12 @@ export const ListCasesResponse = zod.object({
         status: zod.string(),
         priority: zod.string().nullish(),
         dueDate: zod.string().nullish(),
+        receivedAt: zod
+          .string()
+          .nullish()
+          .describe(
+            "When the case was received by the lab. For canonical cases this is\nthe `received_at` column; for projected legacy\/mobile cases it is a\nsynthesized timestamp (falls back to the created date when absent).\nThe desktop date-range filter uses this field.\n",
+          ),
         createdAt: zod.string().nullish(),
         updatedAt: zod.string().nullish(),
         restorationCount: zod.number().nullish(),
@@ -1299,6 +1305,12 @@ export const ListProviderCasesResponse = zod.object({
         status: zod.string(),
         priority: zod.string().nullish(),
         dueDate: zod.string().nullish(),
+        receivedAt: zod
+          .string()
+          .nullish()
+          .describe(
+            "When the case was received by the lab. For canonical cases this is\nthe `received_at` column; for projected legacy\/mobile cases it is a\nsynthesized timestamp (falls back to the created date when absent).\nThe desktop date-range filter uses this field.\n",
+          ),
         createdAt: zod.string().nullish(),
         updatedAt: zod.string().nullish(),
         restorationCount: zod.number().nullish(),
@@ -2071,6 +2083,12 @@ export const GetCaseResponse = zod.object({
       status: zod.string(),
       priority: zod.string().nullish(),
       dueDate: zod.string().nullish(),
+      receivedAt: zod
+        .string()
+        .nullish()
+        .describe(
+          "When the case was received by the lab. For canonical cases this is\nthe `received_at` column; for projected legacy\/mobile cases it is a\nsynthesized timestamp (falls back to the created date when absent).\nThe desktop date-range filter uses this field.\n",
+        ),
       createdAt: zod.string().nullish(),
       updatedAt: zod.string().nullish(),
       restorationCount: zod.number().nullish(),
