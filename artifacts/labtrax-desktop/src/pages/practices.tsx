@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Building2, ChevronDown, ChevronRight, DollarSign, GitMerge, Link2, Loader2, Mail, MailX, Plus, Search, Send, Stethoscope, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
+import { Archive, ArchiveRestore, Building2, ChevronDown, ChevronRight, DollarSign, GitMerge, Loader2, Mail, MailX, Plus, Search, Send, Stethoscope, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
 import {
   getListUnassignedDoctorsQueryKey,
   useListUnassignedDoctors,
@@ -1812,6 +1812,13 @@ export function PracticeEditor({
             <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</div>
           )}
 
+          {org.type === "provider" && (
+            <ConnectionTierSection
+              providerOrg={org}
+              currentUserId={currentUser?.id}
+            />
+          )}
+
           <section className="grid grid-cols-2 gap-4">
             <FormField label="Legal name">
               <input value={fields.name} onChange={(e) => update("name", e.target.value)} className={inputCls} />
@@ -1885,10 +1892,6 @@ export function PracticeEditor({
 
           {org.type === "provider" && (
             <>
-              <ConnectionTierSection
-                providerOrg={org}
-                currentUserId={currentUser?.id}
-              />
               <PracticeDoctorsSection
                 providerOrg={org}
                 currentUserId={currentUser?.id}
@@ -2711,6 +2714,33 @@ export function ConnectionTierSection({
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
+  const meQuery = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+    enabled: !!currentUserId,
+  });
+
+  // Labs the current user can administer (owner/admin on a lab org).
+  const adminLabOrgs = useMemo(() => {
+    const out: { id: string; name: string }[] = [];
+    for (const m of meQuery.data?.memberships ?? []) {
+      if (
+        m.status === "active" &&
+        (m.role === "owner" || m.role === "admin") &&
+        m.organization?.type === "lab"
+      ) {
+        out.push({
+          id: m.organizationId,
+          name:
+            (m.organization?.displayName as string | null) ||
+            m.organization?.name ||
+            "Lab",
+        });
+      }
+    }
+    return out;
+  }, [meQuery.data]);
+
   const connectionsQuery = useQuery({
     queryKey: ["organization-connections", providerOrg.id, currentUserId],
     queryFn: () =>
@@ -2721,10 +2751,27 @@ export function ConnectionTierSection({
   });
 
   const connections = connectionsQuery.data ?? [];
-  const labIds = useMemo(
-    () => [...new Set(connections.map((c) => c.labOrganizationId))],
-    [connections]
-  );
+
+  // The lab to attach to when no connection exists yet powers setting a tier
+  // directly — without a separate "Connect to lab" step — for practices that
+  // already belong to one of the admin's labs.
+  // Only the practice's own parent lab is an eligible auto-connect target, and
+  // only when the current user administers that lab. We never fall back to an
+  // unrelated admin lab, which would silently connect the practice to the wrong
+  // lab. When there is no eligible parent lab we show a non-blocking message.
+  const targetLab = useMemo(() => {
+    const parentId = providerOrg.parentLabOrganizationId ?? "";
+    if (!parentId) return null;
+    return adminLabOrgs.find((l) => l.id === parentId) ?? null;
+  }, [providerOrg.parentLabOrganizationId, adminLabOrgs]);
+
+  // Load tiers for every lab we might show a dropdown for: existing connection
+  // labs, plus the implicit target lab when no connection exists yet.
+  const labIds = useMemo(() => {
+    const ids = new Set(connections.map((c) => c.labOrganizationId));
+    if (connections.length === 0 && targetLab) ids.add(targetLab.id);
+    return [...ids];
+  }, [connections, targetLab]);
 
   // NOTE: this query key is intentionally namespaced ("practice-default-tier")
   // so it never collides with PracticeDoctorsSection's per-lab tiers query,
@@ -2763,18 +2810,67 @@ export function ConnectionTierSection({
     },
   });
 
+  // Set (or clear) the practice's default tier. When no connection exists yet
+  // for the target lab, this first creates and auto-approves the connection
+  // (the admin is on the lab side), then PATCHes the chosen tier — so the
+  // admin never has to click a separate "Connect to lab" button first.
   const tierMutation = useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       connectionId,
+      labOrganizationId,
       tierName,
     }: {
-      connectionId: string;
+      connectionId: string | null;
+      labOrganizationId: string;
       tierName: string | null;
-    }) =>
-      apiFetch<ConnectionRecord>(`/organizations/connections/${connectionId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ tierName }),
-      }),
+    }) => {
+      let id = connectionId;
+      if (!id) {
+        const created = await apiFetch<{
+          id?: string;
+          alreadyExists?: boolean;
+        }>(`/organizations/connections`, {
+          method: "POST",
+          body: JSON.stringify({
+            labOrganizationId,
+            providerOrganizationId: providerOrg.id,
+          }),
+        });
+        if (created?.id) {
+          id = created.id;
+          // Auto-approve the freshly created connection (admin is on the lab
+          // side). If it's already active on the other side, approval throws
+          // but the connection is still usable, so swallow and continue.
+          try {
+            await apiFetch(
+              `/organizations/connections/${created.id}/approve`,
+              { method: "POST" }
+            );
+          } catch {
+            /* already approved on the other side — still usable */
+          }
+        } else {
+          // Connection already existed (onConflictDoNothing returned no row)
+          // but wasn't in our list yet — refetch and locate it.
+          const refreshed = await apiFetch<ConnectionRecord[]>(
+            `/organizations/connections?providerOrganizationId=${encodeURIComponent(providerOrg.id)}`
+          );
+          const existing = refreshed.find(
+            (c) => c.labOrganizationId === labOrganizationId
+          );
+          if (!existing)
+            throw new Error("Could not establish a connection to the lab.");
+          id = existing.id;
+        }
+      }
+      return apiFetch<ConnectionRecord>(
+        `/organizations/connections/${id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ tierName }),
+        }
+      );
+    },
     onSuccess: () => {
       setError(null);
       queryClient.invalidateQueries({
@@ -2786,6 +2882,9 @@ export function ConnectionTierSection({
   });
 
   if (!currentUserId) return null;
+
+  const isLoading = connectionsQuery.isLoading || meQuery.isLoading;
+  const hasConnections = connections.length > 0;
 
   return (
     <section className="space-y-3">
@@ -2803,235 +2902,151 @@ export function ConnectionTierSection({
         </div>
       )}
 
-      {connectionsQuery.isLoading && (
-        <div className="text-sm text-muted-foreground">Loading connections…</div>
+      {isLoading && (
+        <div className="text-sm text-muted-foreground">Loading…</div>
       )}
 
-      {!connectionsQuery.isLoading && connections.length === 0 && (
-        <ConnectPracticeToLab
-          providerOrg={providerOrg}
-          onConnected={() => {
-            queryClient.invalidateQueries({
-              queryKey: ["organization-connections", providerOrg.id],
-            });
-          }}
-        />
+      {/* No connection yet — let the admin set a tier directly. Establishing
+          and approving the connection happens transparently on first select. */}
+      {!isLoading && !hasConnections && targetLab && (
+        <div className="border border-border rounded-md">
+          <TierDropdownRow
+            labName={targetLab.name}
+            status={null}
+            tierName={null}
+            tiers={tiersByLabQueries.data?.map?.[targetLab.id] ?? []}
+            tierError={tiersByLabQueries.data?.errors?.[targetLab.id] ?? null}
+            tiersLoading={tiersByLabQueries.isLoading}
+            isBusy={tierMutation.isPending}
+            onChange={(tierName) =>
+              tierMutation.mutate({
+                connectionId: null,
+                labOrganizationId: targetLab.id,
+                tierName,
+              })
+            }
+          />
+        </div>
       )}
 
-      <div className="border border-border rounded-md divide-y divide-border">
-        {connections.map((c) => {
-          const tiers =
-            tiersByLabQueries.data?.map?.[c.labOrganizationId] ?? [];
-          const tierError =
-            tiersByLabQueries.data?.errors?.[c.labOrganizationId] ?? null;
-          const noTiers =
-            !tiersByLabQueries.isLoading && !tierError && tiers.length === 0;
-          const labName =
-            c.labOrganization?.displayName ||
-            c.labOrganization?.name ||
-            "Your lab";
-          const isBusy =
-            tierMutation.isPending &&
-            tierMutation.variables?.connectionId === c.id;
-          return (
-            <div key={c.id} className="px-3 py-2 text-sm space-y-1.5">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium truncate">{labName}</div>
-                  <div className="text-xs text-muted-foreground">
-                    Status: {c.status}
-                  </div>
-                </div>
-                <select
-                  value={c.tierName ?? ""}
-                  disabled={isBusy || tiersByLabQueries.isLoading}
-                  onChange={(e) =>
-                    tierMutation.mutate({
-                      connectionId: c.id,
-                      tierName: e.target.value === "" ? null : e.target.value,
-                    })
-                  }
-                  className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[160px]"
-                >
-                  <option value="">— No default tier —</option>
-                  {tiers.map((t) => (
-                    <option key={t.id} value={t.name}>
-                      {t.name}
-                    </option>
-                  ))}
-                  {c.tierName &&
-                    !tiers.some((t) => t.name === c.tierName) && (
-                      <option value={c.tierName}>
-                        {c.tierName} (missing)
-                      </option>
-                    )}
-                </select>
-              </div>
-              {tierError && (
-                <div className="text-xs text-destructive bg-destructive/10 px-2 py-1 rounded">
-                  Couldn't load pricing tiers for {labName}: {tierError}
-                </div>
-              )}
-              {noTiers && (
-                <div className="text-xs text-muted-foreground">
-                  No tiers yet — create one on the Pricing page.
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      {/* Genuinely no parent lab / no admin lab — clear, non-blocking note. */}
+      {!isLoading && !hasConnections && !targetLab && (
+        <div className="text-sm text-muted-foreground border border-border rounded-md px-3 py-3">
+          This practice isn't linked to any of your labs yet, so there's no
+          default tier to set. Connect it to a lab to start assigning pricing.
+        </div>
+      )}
+
+      {hasConnections && (
+        <div className="border border-border rounded-md divide-y divide-border">
+          {connections.map((c) => {
+            const labName =
+              c.labOrganization?.displayName ||
+              c.labOrganization?.name ||
+              "Your lab";
+            const isBusy =
+              tierMutation.isPending &&
+              tierMutation.variables?.connectionId === c.id;
+            return (
+              <TierDropdownRow
+                key={c.id}
+                labName={labName}
+                status={c.status}
+                tierName={c.tierName ?? null}
+                tiers={tiersByLabQueries.data?.map?.[c.labOrganizationId] ?? []}
+                tierError={
+                  tiersByLabQueries.data?.errors?.[c.labOrganizationId] ?? null
+                }
+                tiersLoading={tiersByLabQueries.isLoading}
+                isBusy={isBusy}
+                onChange={(tierName) =>
+                  tierMutation.mutate({
+                    connectionId: c.id,
+                    labOrganizationId: c.labOrganizationId,
+                    tierName,
+                  })
+                }
+              />
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
 
-// ── Connect practice to lab (creates + auto-approves an organization
-// connection so the lab admin can immediately assign a default tier).
-function ConnectPracticeToLab({
-  providerOrg,
-  onConnected,
+// ── Single lab/tier dropdown row, shared by the connected and not-yet-
+// connected states of ConnectionTierSection. For the not-yet-connected case
+// `status` is null (no status line) and the parent supplies an onChange that
+// transparently creates + approves the connection before saving the tier.
+function TierDropdownRow({
+  labName,
+  status,
+  tierName,
+  tiers,
+  tierError,
+  tiersLoading,
+  isBusy,
+  onChange,
 }: {
-  providerOrg: Organization;
-  onConnected: () => void;
+  labName: string;
+  status: string | null;
+  tierName: string | null;
+  tiers: PricingTierRecord[];
+  tierError: string | null;
+  tiersLoading: boolean;
+  isBusy: boolean;
+  onChange: (tierName: string | null) => void;
 }) {
-  const meQuery = useQuery({
-    queryKey: ["auth", "me"],
-    queryFn: () => apiFetch<MeResponse>("/auth/me"),
-  });
-
-  // Labs the current user can administer. We surface either:
-  //   * the practice's parent lab if the user is an admin there, or
-  //   * a picker over their admin labs if multiple
-  const adminLabOrgs = useMemo(() => {
-    const out: { id: string; name: string }[] = [];
-    for (const m of meQuery.data?.memberships ?? []) {
-      if (
-        m.status === "active" &&
-        (m.role === "owner" || m.role === "admin") &&
-        m.organization?.type === "lab"
-      ) {
-        out.push({
-          id: m.organizationId,
-          name:
-            (m.organization?.displayName as string | null) ||
-            m.organization?.name ||
-            "Lab",
-        });
-      }
-    }
-    return out;
-  }, [meQuery.data]);
-
-  const initialLabId = useMemo(() => {
-    const parentId = providerOrg.parentLabOrganizationId ?? "";
-    if (parentId && adminLabOrgs.some((l) => l.id === parentId))
-      return parentId;
-    return adminLabOrgs[0]?.id ?? "";
-  }, [providerOrg.parentLabOrganizationId, adminLabOrgs]);
-
-  const [labId, setLabId] = useState<string>(initialLabId);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setLabId(initialLabId);
-  }, [initialLabId]);
-
-  const connectMutation = useMutation({
-    mutationFn: async () => {
-      if (!labId) throw new Error("Pick a lab to connect this practice to.");
-      const created = await apiFetch<{
-        id?: string;
-        alreadyExists?: boolean;
-      }>(`/organizations/connections`, {
-        method: "POST",
-        body: JSON.stringify({
-          labOrganizationId: labId,
-          providerOrganizationId: providerOrg.id,
-        }),
-      });
-      // Auto-approve if newly created (lab admin is on the lab side).
-      if (created?.id) {
-        try {
-          await apiFetch(
-            `/organizations/connections/${created.id}/approve`,
-            { method: "POST" },
-          );
-        } catch {
-          /* If approval fails (e.g. already approved on the other side),
-             the connection is still usable and the dropdown will show
-             the current status. */
-        }
-      }
-      return created;
-    },
-    onSuccess: () => {
-      setError(null);
-      onConnected();
-    },
-    onError: (e: Error) =>
-      setError(e.message || "Could not connect this practice to a lab."),
-  });
-
-  if (meQuery.isLoading) {
-    return (
-      <div className="text-sm text-muted-foreground border border-border rounded-md px-3 py-3">
-        Loading…
-      </div>
-    );
-  }
-
-  if (adminLabOrgs.length === 0) {
-    return (
-      <div className="text-sm text-muted-foreground border border-border rounded-md px-3 py-3">
-        No connection between this practice and one of your labs yet.
-      </div>
-    );
-  }
-
+  const noTiers = !tiersLoading && !tierError && tiers.length === 0;
   return (
-    <div className="border border-border rounded-md px-3 py-3 space-y-2">
-      <p className="text-xs text-muted-foreground">
-        This practice isn't linked to any of your labs yet. Connect it to
-        start assigning a pricing tier.
-      </p>
-      {error && (
-        <div className="text-xs text-destructive bg-destructive/10 px-2 py-1 rounded">
-          {error}
+    <div className="px-3 py-2 text-sm space-y-1.5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium truncate">{labName}</div>
+          {status && (
+            <div className="text-xs text-muted-foreground">
+              Status: {status}
+            </div>
+          )}
         </div>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        {adminLabOrgs.length > 1 ? (
+        <div className="flex items-center gap-2">
+          {isBusy && (
+            <Loader2
+              size={12}
+              className="animate-spin text-muted-foreground"
+            />
+          )}
           <select
-            value={labId}
-            onChange={(e) => setLabId(e.target.value)}
-            className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[180px]"
-            disabled={connectMutation.isPending}
+            value={tierName ?? ""}
+            disabled={isBusy || tiersLoading}
+            onChange={(e) =>
+              onChange(e.target.value === "" ? null : e.target.value)
+            }
+            className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[160px]"
           >
-            {adminLabOrgs.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.name}
+            <option value="">— No default tier —</option>
+            {tiers.map((t) => (
+              <option key={t.id} value={t.name}>
+                {t.name}
               </option>
             ))}
+            {tierName && !tiers.some((t) => t.name === tierName) && (
+              <option value={tierName}>{tierName} (missing)</option>
+            )}
           </select>
-        ) : (
-          <span className="text-xs text-muted-foreground">
-            Lab: <span className="font-medium text-foreground">{adminLabOrgs[0].name}</span>
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={() => connectMutation.mutate()}
-          disabled={connectMutation.isPending || !labId}
-          className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
-        >
-          {connectMutation.isPending ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : (
-            <Link2 size={12} />
-          )}
-          Connect to lab
-        </button>
+        </div>
       </div>
+      {tierError && (
+        <div className="text-xs text-destructive bg-destructive/10 px-2 py-1 rounded">
+          Couldn't load pricing tiers for {labName}: {tierError}
+        </div>
+      )}
+      {noTiers && (
+        <div className="text-xs text-muted-foreground">
+          No tiers yet — create one on the Pricing page.
+        </div>
+      )}
     </div>
   );
 }

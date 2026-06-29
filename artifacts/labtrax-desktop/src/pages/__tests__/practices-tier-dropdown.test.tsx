@@ -140,6 +140,208 @@ describe("ConnectionTierSection — pricing tier dropdown", () => {
 });
 
 /**
+ * Direct-set regression: a practice that already belongs to one of the admin's
+ * labs must expose the default-tier dropdown immediately (no "Connect to lab"
+ * wall). Selecting a tier when no connection row exists yet must transparently
+ * create + approve the connection, then PATCH the chosen tier.
+ */
+const PROVIDER_WITH_PARENT = {
+  id: "org-provider-1",
+  name: "Bright Smiles",
+  displayName: "Bright Smiles Dental",
+  parentLabOrganizationId: LAB_ID,
+} as unknown as Organization;
+
+const ADMIN_ME = {
+  memberships: [
+    {
+      organizationId: LAB_ID,
+      status: "active",
+      role: "admin",
+      organization: { id: LAB_ID, type: "lab", name: "Acme Dental Lab" },
+    },
+  ],
+};
+
+describe("ConnectionTierSection — set tier without a prior connection", () => {
+  it("renders the dropdown directly and creates+approves+sets the tier on select", async () => {
+    const calls: { url: string; method?: string; body?: string }[] = [];
+    apiFetchMock.mockImplementation((url: string, opts?: RequestInit) => {
+      calls.push({ url, method: opts?.method, body: opts?.body as string });
+      if (url.startsWith("/organizations/connections")) {
+        if (opts?.method === "POST" && url.endsWith("/connections")) {
+          return Promise.resolve({ id: "new-conn" });
+        }
+        if (opts?.method === "POST" && url.endsWith("/approve")) {
+          return Promise.resolve({});
+        }
+        if (opts?.method === "PATCH") {
+          return Promise.resolve({
+            id: "new-conn",
+            labOrganizationId: LAB_ID,
+            providerOrganizationId: "org-provider-1",
+            status: "active",
+            tierName: "Premium",
+          });
+        }
+        // GET connections — none exist yet.
+        return Promise.resolve([]);
+      }
+      if (url === "/auth/me") return Promise.resolve(ADMIN_ME);
+      if (url.startsWith("/pricing/tiers")) {
+        return Promise.resolve({
+          labOrganizationId: LAB_ID,
+          tiers: [
+            { id: "t1", labOrganizationId: LAB_ID, name: "Standard" },
+            { id: "t2", labOrganizationId: LAB_ID, name: "Premium" },
+          ],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    render(
+      <ConnectionTierSection
+        providerOrg={PROVIDER_WITH_PARENT}
+        currentUserId="u1"
+      />,
+      { wrapper: makeAuthWrapper() },
+    );
+
+    // Dropdown is shown directly — no "Connect to lab" button anywhere.
+    const select = (await screen.findByRole("combobox")) as HTMLSelectElement;
+    expect(
+      await screen.findByRole("option", { name: "Premium" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Connect to lab/i)).not.toBeInTheDocument();
+
+    fireEvent.change(select, { target: { value: "Premium" } });
+
+    await waitFor(() => {
+      const patch = calls.find((c) => c.method === "PATCH");
+      expect(patch).toBeTruthy();
+      expect(patch!.url).toBe("/organizations/connections/new-conn");
+      expect(JSON.parse(patch!.body!)).toEqual({ tierName: "Premium" });
+    });
+    // Connection was created then approved before the tier was set.
+    expect(
+      calls.some(
+        (c) => c.method === "POST" && c.url.endsWith("/connections"),
+      ),
+    ).toBe(true);
+    expect(
+      calls.some((c) => c.method === "POST" && c.url.endsWith("/approve")),
+    ).toBe(true);
+  });
+
+  it("shows a non-blocking message when there is no parent or admin lab", async () => {
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/organizations/connections")) {
+        return Promise.resolve([]);
+      }
+      if (url === "/auth/me") return Promise.resolve({ memberships: [] });
+      return Promise.resolve(null);
+    });
+
+    render(
+      <ConnectionTierSection providerOrg={PROVIDER_ORG} currentUserId="u1" />,
+      { wrapper: makeAuthWrapper() },
+    );
+
+    expect(
+      await screen.findByText(/isn't linked to any of your labs yet/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("shows the non-blocking message when the practice has no parent lab even though the user administers a lab", async () => {
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/organizations/connections")) {
+        return Promise.resolve([]);
+      }
+      if (url === "/auth/me") return Promise.resolve(ADMIN_ME);
+      if (url.startsWith("/pricing/tiers")) {
+        return Promise.resolve({
+          labOrganizationId: LAB_ID,
+          tiers: [{ id: "t1", labOrganizationId: LAB_ID, name: "Standard" }],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    // PROVIDER_ORG has no parentLabOrganizationId; ADMIN_ME administers LAB_ID.
+    render(
+      <ConnectionTierSection providerOrg={PROVIDER_ORG} currentUserId="u1" />,
+      { wrapper: makeAuthWrapper() },
+    );
+
+    expect(
+      await screen.findByText(/isn't linked to any of your labs yet/i),
+    ).toBeInTheDocument();
+    // It must NOT auto-connect to the user's unrelated admin lab.
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("shows the non-blocking message when the parent lab is not administered by the current user", async () => {
+    const OTHER_ADMIN_LAB = "lab_other_999";
+    const PROVIDER_PARENT_NOT_ADMINED = {
+      id: "org-provider-1",
+      name: "Bright Smiles",
+      displayName: "Bright Smiles Dental",
+      parentLabOrganizationId: LAB_ID, // user does NOT administer this lab
+    } as unknown as Organization;
+
+    apiFetchMock.mockImplementation((url: string, opts?: RequestInit) => {
+      if (url.startsWith("/organizations/connections")) {
+        // Fail loudly if anything tries to auto-connect.
+        if (opts?.method) {
+          return Promise.reject(new Error("must-not-auto-connect"));
+        }
+        return Promise.resolve([]);
+      }
+      if (url === "/auth/me") {
+        return Promise.resolve({
+          memberships: [
+            {
+              organizationId: OTHER_ADMIN_LAB,
+              status: "active",
+              role: "admin",
+              organization: {
+                id: OTHER_ADMIN_LAB,
+                type: "lab",
+                name: "Other Lab",
+              },
+            },
+          ],
+        });
+      }
+      if (url.startsWith("/pricing/tiers")) {
+        return Promise.resolve({
+          labOrganizationId: OTHER_ADMIN_LAB,
+          tiers: [
+            { id: "t1", labOrganizationId: OTHER_ADMIN_LAB, name: "Standard" },
+          ],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    render(
+      <ConnectionTierSection
+        providerOrg={PROVIDER_PARENT_NOT_ADMINED}
+        currentUserId="u1"
+      />,
+      { wrapper: makeAuthWrapper() },
+    );
+
+    expect(
+      await screen.findByText(/isn't linked to any of your labs yet/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+});
+
+/**
  * Cross-section regression: mount ConnectionTierSection (practice default tier)
  * and PracticeDoctorsSection (per-doctor tier) together under a single
  * QueryClient. Both read the same `/pricing/tiers` endpoint; the original bug
