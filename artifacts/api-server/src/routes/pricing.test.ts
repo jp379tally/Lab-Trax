@@ -638,6 +638,294 @@ maybe("Pricing tiers and overrides (db integration)", () => {
     expect(zir?.source).toBe("discount");
   }, 20000);
 
+  // ── Discount with no connection tier ─────────────────────────────────────
+  //
+  // Root cause fix: when the practice has no connection tier assigned, the
+  // discount must still apply — off the doctor's own assigned tier (or whatever
+  // the normal chain resolves to), not be silently skipped.
+  //
+  // This test uses a uniquely-named tier set as the override's tierName so
+  // we don't compete with other tests' "Standard" tier price.
+
+  it("GET /pricing/resolve-items — discount applies off doctor tier when practice has no connection tier", async () => {
+    const { access } = await makeSession(adminId);
+    const doctorName = rid("NoConnTierDr");
+    const BASE_TIER_NAME = rid("NoConnBase");
+    const BASE_PRICE = 100;
+
+    // Create a uniquely-named base tier. Set it as the doctor's assigned
+    // tier (override.tierName) so candidateNames includes it via doctorTierName
+    // — proving discount applies through the candidate chain, not just
+    // connectionTierName (which stays null because providerOrgId has no
+    // connection tier in this test setup).
+    const tierResp = await request(appMod.default)
+      .post("/api/pricing/tiers")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ labOrganizationId: labOrgId, name: BASE_TIER_NAME, prices: { pfm_crown: BASE_PRICE } });
+    expect(tierResp.status).toBe(201);
+
+    // 10% discount + doctor assigned to the base tier. No connection tier
+    // on providerOrgId, so connectionTierName = null throughout.
+    const override = await request(appMod.default)
+      .post("/api/pricing/overrides")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        doctorName,
+        defaultDiscountPercent: 10,
+        tierName: BASE_TIER_NAME,
+      });
+    expect(override.status).toBe(201);
+
+    const caseResp = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("CN"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId, // no connection tier
+        doctorName,
+        patientFirstName: "NoConn",
+        patientLastName: rid("Pat"),
+        status: "received",
+      });
+    expect(caseResp.status).toBe(201);
+    const caseId: string = caseResp.body.data.id;
+
+    const r = await request(appMod.default)
+      .get(`/api/pricing/resolve-items?caseId=${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(200);
+    const items: Array<{ key: string; unitPrice: number; source: string | null }> =
+      r.body.data?.items ?? [];
+    const pfm = items.find((i) => i.key === "pfm_crown");
+    // 10% off 100 = 90, source must be "discount".
+    expect(pfm?.unitPrice).toBe(90);
+    expect(pfm?.source).toBe("discount");
+  }, 20000);
+
+  // ── Re-quote on override create ───────────────────────────────────────────
+  //
+  // When a discount override is created, the doctor's existing draft/open
+  // unpaid invoices must be re-priced immediately.
+  //
+  // Uses a dedicated provider org + connection tier so the base price is
+  // isolated from other tests that share the "Standard" tier name.
+
+  it("POST /pricing/overrides — re-prices existing draft invoice when override is created", async () => {
+    const { db, caseRestorations: caseRestorationsTable, invoices: invoicesTable,
+      organizations: orgsTable, organizationConnections } = dbMod as any;
+    const { access } = await makeSession(adminId);
+    const doctorName = rid("RequoteDr");
+    const BASE_TIER_NAME = rid("RequoteBase");
+    const BASE_PRICE = 119;
+    const DISCOUNT_PCT = 5.04;
+    // round2(119 * (1 - 5.04/100)) = round2(119 * 0.9496) = round2(113.0024) = 113.00
+    const EXPECTED_DISCOUNTED = 113.00;
+
+    // Dedicated provider org + connection tier so base price is isolated.
+    const reqProvId = rid("reqprov");
+    await db.insert(orgsTable).values({
+      id: reqProvId, type: "provider", name: rid("RequoteProv"),
+      parentLabOrganizationId: labOrgId,
+    });
+    const tierResp = await request(appMod.default)
+      .post("/api/pricing/tiers")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ labOrganizationId: labOrgId, name: BASE_TIER_NAME, prices: { pfm_crown: BASE_PRICE } });
+    expect(tierResp.status).toBe(201);
+    await db.insert(organizationConnections).values({
+      id: rid("reqconn"), labOrganizationId: labOrgId,
+      providerOrganizationId: reqProvId, status: "active",
+      tierName: BASE_TIER_NAME, requestedByOrgId: labOrgId,
+      requestedByUserId: adminId,
+    });
+
+    try {
+      // Create a case with a pfm_crown restoration — auto-priced at connection tier price (119).
+      const caseResp = await request(appMod.default)
+        .post("/api/cases")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          caseNumber: rid("CN"), labOrganizationId: labOrgId,
+          providerOrganizationId: reqProvId, doctorName,
+          patientFirstName: "Requote", patientLastName: rid("Pat"),
+          status: "received",
+          restorations: [{ toothNumber: "30", restorationType: "Crown", material: "PFM", quantity: 1 }],
+        });
+      expect(caseResp.status, JSON.stringify(caseResp.body)).toBe(201);
+      const caseId: string = caseResp.body.data.id;
+
+      // Confirm full price before override.
+      const before: Array<{ unitPrice: string }> = await db
+        .select({ unitPrice: caseRestorationsTable.unitPrice })
+        .from(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+      expect(Number(before[0]?.unitPrice)).toBe(BASE_PRICE);
+
+      // Create discount override — triggers re-quote.
+      const overrideResp = await request(appMod.default)
+        .post("/api/pricing/overrides")
+        .set("Authorization", `Bearer ${access}`)
+        .send({ labOrganizationId: labOrgId, doctorName, defaultDiscountPercent: DISCOUNT_PCT });
+      expect(overrideResp.status).toBe(201);
+
+      // Restoration and invoice must now reflect the discounted price.
+      const after: Array<{ unitPrice: string; priceSource: string }> = await db
+        .select({ unitPrice: caseRestorationsTable.unitPrice, priceSource: caseRestorationsTable.priceSource })
+        .from(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+      expect(Number(after[0]?.unitPrice)).toBe(EXPECTED_DISCOUNTED);
+      expect(after[0]?.priceSource).toBe("discount");
+
+      const [inv]: Array<{ subtotal: string }> = await db
+        .select({ subtotal: invoicesTable.subtotal })
+        .from(invoicesTable).where(eq(invoicesTable.caseId, caseId));
+      expect(Number(inv?.subtotal)).toBe(EXPECTED_DISCOUNTED);
+    } finally {
+      await db.delete(organizationConnections)
+        .where(eq(organizationConnections.providerOrganizationId, reqProvId));
+      await db.delete(orgsTable).where(eq(orgsTable.id, reqProvId));
+    }
+  }, 30000);
+
+  // ── Manual priceSource preserved on re-quote ──────────────────────────────
+  //
+  // A restoration with priceSource="manual" (user explicitly set the price)
+  // must not be overwritten by the re-quote triggered by an override create.
+
+  it("POST /pricing/overrides — manual priceSource restoration is preserved on re-quote", async () => {
+    const { db, caseRestorations: caseRestorationsTable } = dbMod as any;
+    const { access } = await makeSession(adminId);
+    const doctorName = rid("ManualDr");
+    const MANUAL_PRICE = 999;
+
+    // Create case with priceOverridden=true on the restoration → priceSource="manual".
+    // The Standard tier price doesn't matter for this test — we only assert the
+    // manually-set price (999) is preserved.
+    const caseResp = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("CN"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        doctorName,
+        patientFirstName: "Manual",
+        patientLastName: rid("Pat"),
+        status: "received",
+        restorations: [{
+          toothNumber: "30",
+          restorationType: "Crown",
+          material: "PFM",
+          quantity: 1,
+          unitPrice: MANUAL_PRICE,
+          priceOverridden: true,
+        }],
+      });
+    expect(caseResp.status, JSON.stringify(caseResp.body)).toBe(201);
+    const caseId: string = caseResp.body.data.id;
+
+    // Confirm priceSource="manual" before override.
+    const before: Array<{ unitPrice: string; priceSource: string | null }> = await db
+      .select({ unitPrice: caseRestorationsTable.unitPrice, priceSource: caseRestorationsTable.priceSource })
+      .from(caseRestorationsTable)
+      .where(eq(caseRestorationsTable.caseId, caseId));
+    expect(before[0]?.priceSource).toBe("manual");
+
+    // Create override with 20% discount — should NOT touch the manual restoration.
+    const overrideResp = await request(appMod.default)
+      .post("/api/pricing/overrides")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ labOrganizationId: labOrgId, doctorName, defaultDiscountPercent: 20 });
+    expect(overrideResp.status).toBe(201);
+
+    const after: Array<{ unitPrice: string; priceSource: string | null }> = await db
+      .select({ unitPrice: caseRestorationsTable.unitPrice, priceSource: caseRestorationsTable.priceSource })
+      .from(caseRestorationsTable)
+      .where(eq(caseRestorationsTable.caseId, caseId));
+    // Price and source must remain unchanged.
+    expect(Number(after[0]?.unitPrice)).toBe(MANUAL_PRICE);
+    expect(after[0]?.priceSource).toBe("manual");
+  }, 30000);
+
+  // ── Both resolvers agree on discounted price (parity check) ───────────────
+  //
+  // resolveAllPricesForContext (batch) and resolveServerPriceWithSource
+  // (per-key) must produce the same amount and source for discount items.
+  //
+  // Uses a dedicated provider org + connection tier to isolate base price.
+
+  it("resolveAllPricesForContext agrees with resolveServerPriceWithSource for discount items", async () => {
+    const { db, caseRestorations: caseRestorationsTable,
+      organizations: orgsTable, organizationConnections } = dbMod as any;
+    const { access } = await makeSession(adminId);
+    const doctorName = rid("ParityDr");
+    const BASE_TIER_NAME = rid("ParityBase");
+    const BASE_PRICE = 160;
+    const DISCOUNT_PCT = 12.5;
+    // 160 * (1 - 0.125) = 160 * 0.875 = 140
+    const EXPECTED = 140;
+
+    const parProvId = rid("parprov");
+    await db.insert(orgsTable).values({
+      id: parProvId, type: "provider", name: rid("ParityProv"),
+      parentLabOrganizationId: labOrgId,
+    });
+    const tierResp = await request(appMod.default)
+      .post("/api/pricing/tiers")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ labOrganizationId: labOrgId, name: BASE_TIER_NAME, prices: { pfm_crown: BASE_PRICE } });
+    expect(tierResp.status).toBe(201);
+    await db.insert(organizationConnections).values({
+      id: rid("parconn"), labOrganizationId: labOrgId,
+      providerOrganizationId: parProvId, status: "active",
+      tierName: BASE_TIER_NAME, requestedByOrgId: labOrgId,
+      requestedByUserId: adminId,
+    });
+
+    try {
+      // Create override FIRST so case-create also resolves to the discounted price.
+      const overrideResp = await request(appMod.default)
+        .post("/api/pricing/overrides")
+        .set("Authorization", `Bearer ${access}`)
+        .send({ labOrganizationId: labOrgId, doctorName, defaultDiscountPercent: DISCOUNT_PCT });
+      expect(overrideResp.status).toBe(201);
+
+      // Case with pfm_crown — price resolved by resolveServerPriceWithSource (per-key).
+      const caseResp = await request(appMod.default)
+        .post("/api/cases")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          caseNumber: rid("CN"), labOrganizationId: labOrgId,
+          providerOrganizationId: parProvId, doctorName,
+          patientFirstName: "Parity", patientLastName: rid("Pat"),
+          status: "received",
+          restorations: [{ toothNumber: "30", restorationType: "Crown", material: "PFM", quantity: 1 }],
+        });
+      expect(caseResp.status, JSON.stringify(caseResp.body)).toBe(201);
+      const caseId: string = caseResp.body.data.id;
+
+      // Per-key result (resolveServerPriceWithSource via case-create).
+      const restRows: Array<{ unitPrice: string; priceSource: string | null }> = await db
+        .select({ unitPrice: caseRestorationsTable.unitPrice, priceSource: caseRestorationsTable.priceSource })
+        .from(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+      expect(Number(restRows[0]?.unitPrice)).toBe(EXPECTED);
+      expect(restRows[0]?.priceSource).toBe("discount");
+
+      // Batch result (resolveAllPricesForContext via resolve-items endpoint).
+      const resolveR = await request(appMod.default)
+        .get(`/api/pricing/resolve-items?caseId=${caseId}`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(resolveR.status).toBe(200);
+      const pfmItem = (resolveR.body.data?.items ?? []).find((i: any) => i.key === "pfm_crown");
+      expect(pfmItem?.unitPrice).toBe(EXPECTED);
+      expect(pfmItem?.source).toBe("discount");
+    } finally {
+      await db.delete(organizationConnections)
+        .where(eq(organizationConnections.providerOrganizationId, parProvId));
+      await db.delete(orgsTable).where(eq(orgsTable.id, parProvId));
+    }
+  }, 30000);
+
   // ── Tier history after PATCH ───────────────────────────────────────────────
 
   it("GET /pricing/tiers/:id/history returns audit entries after a PATCH", async () => {

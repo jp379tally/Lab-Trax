@@ -1,4 +1,4 @@
-import { and, eq, sum } from "drizzle-orm";
+import { and, eq, sql, sum } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   caseRestorations,
@@ -8,7 +8,13 @@ import {
   payments,
 } from "@workspace/db";
 import { sumMoney } from "./case";
-import { materialToPriceKey, resolveItemLabelFromMap } from "./pricing";
+import {
+  materialToPriceKey,
+  normalizeDoctor,
+  resolveItemLabelFromMap,
+  resolveServerPriceWithSource,
+} from "./pricing";
+import { notDeleted } from "./soft-delete";
 import {
   buildBridgeAwareLineItems,
   parseToothInt,
@@ -446,4 +452,92 @@ function buildLabelWithTooth(toothStr: string, label: string): string {
   if (!t) return label;
   if (/^\d+$/.test(t)) return `#${t} ${label}`;
   return `${t} ${label}`;
+}
+
+/**
+ * Re-resolve and re-sync invoices for all of a doctor's existing draft/open,
+ * unpaid cases in a lab after a pricing override is created or edited.
+ *
+ * For each matching case:
+ *  - Restorations with `priceSource = "manual"` (user-set prices) are
+ *    preserved exactly — only auto-priced restorations are updated.
+ *  - All existing `syncInvoiceFromRestorations` safety rules apply:
+ *    paid / void / cancelled invoices are skipped; invoices with any recorded
+ *    payment are skipped; no-charge remake $0 intent is preserved.
+ *
+ * This is fire-and-forget safe: individual case failures are silently
+ * skipped so one bad row doesn't abort the whole batch.
+ */
+export async function requoteDoctorDraftInvoices(args: {
+  labOrganizationId: string;
+  doctorName: string;
+  actorUserId: string | null;
+}): Promise<void> {
+  const { labOrganizationId, doctorName, actorUserId } = args;
+  const normalized = normalizeDoctor(doctorName);
+  if (!normalized) return;
+
+  // Mirror the SQL normalization used by findDoctorOverride.
+  const normalizedDoctorExpr = sql`regexp_replace(lower(trim(${cases.doctorName})), '^dr\\.?\\s*', '')`;
+
+  const matchingCases = await db.query.cases.findMany({
+    where: and(
+      eq(cases.labOrganizationId, labOrganizationId),
+      notDeleted(cases),
+      sql`${normalizedDoctorExpr} = ${normalized}`,
+    ),
+  });
+
+  for (const caseRow of matchingCases) {
+    try {
+      const invoice = await db.query.invoices.findFirst({
+        where: eq(invoices.caseId, caseRow.id),
+      });
+      if (!invoice) continue;
+      if (invoice.status !== "draft" && invoice.status !== "open") continue;
+
+      const [paidAgg] = await db
+        .select({ value: sum(payments.amount) })
+        .from(payments)
+        .where(eq(payments.invoiceId, invoice.id));
+      if (Number(paidAgg?.value ?? 0) > 0) continue;
+
+      const restorations = await db.query.caseRestorations.findMany({
+        where: eq(caseRestorations.caseId, caseRow.id),
+      });
+
+      for (const r of restorations) {
+        // Skip missing-tooth markers (no price) and manually-set prices.
+        if (r.restorationType === "missing") continue;
+        if (r.priceSource === "manual") continue;
+
+        const repriced = await resolveServerPriceWithSource(
+          {
+            labOrganizationId,
+            doctorName: caseRow.doctorName,
+            providerOrganizationId: (caseRow as any).providerOrganizationId ?? null,
+          },
+          r.material,
+          r.restorationType,
+        );
+        if (!repriced) continue;
+
+        await db
+          .update(caseRestorations)
+          .set({
+            unitPrice: repriced.amount.toFixed(2),
+            priceSource: repriced.source,
+            priceSourceId: repriced.sourceId,
+            priceSourceName: repriced.sourceName,
+            priceKey: repriced.key,
+            updatedAt: new Date(),
+          })
+          .where(eq(caseRestorations.id, r.id));
+      }
+
+      await syncInvoiceFromRestorations({ caseId: caseRow.id, actorUserId });
+    } catch {
+      // Skip this case silently — one bad row shouldn't abort the batch.
+    }
+  }
 }

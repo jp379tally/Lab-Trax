@@ -29,6 +29,7 @@ import {
   resolveServerPrice,
   saveLabItemLabels,
 } from "../lib/pricing";
+import { requoteDoctorDraftInvoices } from "../lib/invoice-sync";
 
 const router = Router();
 router.use(requireAuth);
@@ -511,6 +512,17 @@ router.post(
       afterJson: created,
     });
 
+    // Re-price the doctor's existing draft/open unpaid invoices so the new
+    // override takes effect immediately. Errors here are non-fatal — they must
+    // not prevent the 201 from reaching the client.
+    try {
+      await requoteDoctorDraftInvoices({
+        labOrganizationId: labId,
+        doctorName: created.doctorName,
+        actorUserId: (req as any).auth.userId,
+      });
+    } catch { /* non-fatal */ }
+
     return ok(
       res,
       {
@@ -598,6 +610,16 @@ router.patch(
       beforeJson: row,
       afterJson: updated,
     });
+
+    // Re-price the doctor's existing draft/open unpaid invoices so the edited
+    // override takes effect immediately. Errors here are non-fatal.
+    try {
+      await requoteDoctorDraftInvoices({
+        labOrganizationId: row.labOrganizationId,
+        doctorName: updated.doctorName,
+        actorUserId: (req as any).auth.userId,
+      });
+    } catch { /* non-fatal */ }
 
     return ok(res, {
       id: updated.id,

@@ -432,6 +432,7 @@ export async function resolveServerPriceWithSource(
         };
       }
     }
+    // No base price found in any tier — fall through to the normal chain.
   }
 
   for (const name of candidateNames) {
@@ -683,6 +684,7 @@ export async function resolveAllPricesForContext(
             };
           }
         }
+        // No base price in any candidate tier — fall through to normal chain.
       }
     }
     for (const { tier, source } of candidateTiers) {
