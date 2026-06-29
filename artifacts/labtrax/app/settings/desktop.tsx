@@ -26,6 +26,7 @@ interface InstallerInfo {
   fileName?: string | null;
   releaseNotes?: string | null;
   available?: boolean;
+  fileFound?: boolean;
 }
 
 interface AdminInstallerInfo {
@@ -160,6 +161,10 @@ export default function DesktopAppScreen() {
   const info = latestInfo ?? query.data;
   const statusOk = info?.available !== false;
   const statusColor = statusOk ? colors.success : colors.warning;
+  // fileNotFound: the API responded but reported the installer file is absent
+  // from App Storage (fileFound === false). Mirror the desktop app's behaviour
+  // and suppress the download button rather than linking users to a 404.
+  const fileNotFound = info !== undefined && info.fileFound === false;
 
   async function handleDownload() {
     const url = info?.downloadUrl;
@@ -290,8 +295,20 @@ export default function DesktopAppScreen() {
                   </Text>
                 </Pressable>
 
-                {/* Download button */}
-                {info.downloadUrl && (
+                {/* Download button — hidden when installer file is missing from storage */}
+                {fileNotFound ? (
+                  <View
+                    style={[
+                      styles.downloadBtn,
+                      { backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border },
+                    ]}
+                  >
+                    <Ionicons name="alert-circle-outline" size={15} color={colors.textSecondary} />
+                    <Text style={[styles.downloadBtnText, { color: colors.textSecondary }]}>
+                      Temporarily unavailable
+                    </Text>
+                  </View>
+                ) : info.downloadUrl ? (
                   <Pressable
                     style={[
                       styles.downloadBtn,
@@ -307,7 +324,7 @@ export default function DesktopAppScreen() {
                       {updatePhase === "available" ? "Download update" : "Download"}
                     </Text>
                   </Pressable>
-                )}
+                ) : null}
               </View>
             </View>
 

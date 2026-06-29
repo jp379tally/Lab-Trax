@@ -339,7 +339,7 @@ async function pushInstallerMetadata(downloadUrl: string): Promise<void> {
     console.error(
       `[upload-installer] ✗ Metadata push failed (HTTP ${res.status}): ${body}`,
     );
-    return;
+    process.exit(1);
   }
 
   console.log(

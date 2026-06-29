@@ -4632,14 +4632,14 @@ Important rules:
           return null;
         })
       : null;
-    // `available` means "a URL is configured and we can hand users a link to
-    // click" — true whenever validateInstallerUrl passed above.
-    // `fileFound` narrows it further: for locally-served /downloads/ paths we
-    // check whether the file actually exists in App Storage (admins use this
-    // for diagnostics). For external https:// URLs we can't check without a
-    // round-trip, so report true and let the browser handle a 404.
+    // `fileFound` narrows availability: for locally-served /downloads/ paths we
+    // check whether the file actually exists in App Storage. For external
+    // https:// URLs we can't check without a round-trip, so report true and
+    // let the browser handle a 404.
+    // `available` mirrors `fileFound` so UI clients have a single field to gate
+    // on — do NOT hardcode true here when the installer file is absent.
     const fileFound = isLocalDownload ? installerObject !== null : true;
-    const available = true;
+    const available = fileFound;
     return res.json({
       version,
       downloadUrl: rawUrl,

@@ -28,6 +28,10 @@ args = "mobile-test"
 task = "workflow.run"
 args = "knowledge-test"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "installer-download-test"
+
 [[workflows.workflow]]
 name = "typecheck-all"
 author = "agent"
@@ -60,6 +64,17 @@ args = "pnpm --filter @workspace/ai-knowledge run test"
 
 [workflows.workflow.metadata]
 isValidation = true
+
+[[workflows.workflow]]
+name = "installer-download-test"
+author = "agent"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/api-server exec vitest run --reporter=verbose src/installer-download.test.ts"
 
 [agent]
 stack = "PNPM_WORKSPACE"

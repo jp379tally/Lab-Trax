@@ -13,6 +13,7 @@ import { Readable } from "node:stream";
 import http from "node:http";
 import type { Server } from "node:http";
 import request from "supertest";
+import express from "express";
 
 // ---------------------------------------------------------------------------
 // Mock all app.ts side-effect dependencies before any module is imported.
@@ -68,6 +69,7 @@ import {
   openDesktopInstallerStream,
   getSignedDownloadUrl,
   getDirectDownloadUrl,
+  getDesktopInstallerMetadata,
 } from "./lib/desktop-installer-storage.js";
 
 // ---------------------------------------------------------------------------
@@ -866,6 +868,86 @@ describe.each(OTHER_INSTALLERS)("GET $url", ({ url, fixture }) => {
 
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ ok: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /api/desktop-installer metadata endpoint — available / fileFound field tests
+//
+// The full route lives in labtrax-routes.ts (mocked out above), so we build a
+// minimal Express app that mirrors just the available/fileFound logic and
+// drive it with the same getDesktopInstallerMetadata mock that is already wired
+// in this file's module-level vi.mock().
+// ---------------------------------------------------------------------------
+
+describe("GET /api/desktop-installer — available/fileFound guardrail", () => {
+  let metaServer: Server;
+
+  beforeAll(() => {
+    // Minimal express app that mirrors the handler's available/fileFound logic.
+    // Auth and DB reads are omitted — we test the storage-state → response-field
+    // mapping only.
+    const miniApp = express();
+    miniApp.get("/api/desktop-installer", async (_req, res) => {
+      const rawUrl = "/downloads/LabTrax-Setup.exe";
+      const isLocalDownload = rawUrl.startsWith("/downloads/");
+      const activeKind = "exe" as const;
+      const installerObject = await getDesktopInstallerMetadata(activeKind).catch(
+        () => null,
+      );
+      const fileFound = isLocalDownload ? installerObject !== null : true;
+      const available = fileFound; // mirrors the fixed route behaviour
+      res.json({
+        version: "1.0.0",
+        downloadUrl: rawUrl,
+        fileName: "LabTrax-Setup.exe",
+        fileFound,
+        available,
+      });
+    });
+    metaServer = miniApp.listen(0);
+  });
+
+  afterAll(() => {
+    metaServer.close();
+  });
+
+  beforeEach(() => {
+    vi.mocked(getDesktopInstallerMetadata).mockReset();
+  });
+
+  it("returns available: false and fileFound: false when EXE is missing from storage", async () => {
+    vi.mocked(getDesktopInstallerMetadata).mockResolvedValue(null);
+
+    const res = await request(metaServer).get("/api/desktop-installer");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ available: false, fileFound: false });
+  });
+
+  it("returns available: true and fileFound: true when EXE is present in storage", async () => {
+    vi.mocked(getDesktopInstallerMetadata).mockResolvedValue({
+      size: 145_000_000,
+      uploadedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const res = await request(metaServer).get("/api/desktop-installer");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ available: true, fileFound: true });
+  });
+
+  it("does not advertise a missing EXE as downloadable — downloadUrl is present but available is false", async () => {
+    // The configured downloadUrl is preserved in the response so admins can see
+    // what path is configured, but available must be false so UI suppresses the
+    // download button rather than linking users to a 404.
+    vi.mocked(getDesktopInstallerMetadata).mockResolvedValue(null);
+
+    const res = await request(metaServer).get("/api/desktop-installer");
+
+    expect(res.body.downloadUrl).toBe("/downloads/LabTrax-Setup.exe");
+    expect(res.body.available).toBe(false);
+    expect(res.body.fileFound).toBe(false);
   });
 });
 
