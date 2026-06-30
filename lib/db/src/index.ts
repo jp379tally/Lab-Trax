@@ -97,6 +97,10 @@ function getDbInstance(): Database {
   return dbInstance;
 }
 
+function getDbQuery(): Database["query"] {
+  return getDbInstance().query;
+}
+
 function bindIfFunction<T extends object>(target: T, prop: PropertyKey) {
   const value = Reflect.get(target, prop);
   return typeof value === "function" ? value.bind(target) : value;
@@ -130,10 +134,25 @@ const lazyDbTarget = {
   execute: (...args: Parameters<Database["execute"]>) => getDbInstance().execute(...args),
   transaction: (...args: Parameters<Database["transaction"]>) =>
     getDbInstance().transaction(...args),
-  get query() {
-    return getDbInstance().query;
-  },
 };
+
+const lazyDbQuery = new Proxy({} as Database["query"], {
+  get(_target, prop) {
+    return bindIfFunction(getDbQuery() as object, prop);
+  },
+  set(_target, prop, value) {
+    Reflect.set(getDbQuery() as object, prop, value);
+    return true;
+  },
+});
+
+Object.defineProperty(lazyDbTarget, "query", {
+  enumerable: true,
+  configurable: true,
+  get() {
+    return lazyDbQuery;
+  },
+});
 
 export const db = new Proxy(lazyDbTarget as Database, {
   get(target, prop, receiver) {
