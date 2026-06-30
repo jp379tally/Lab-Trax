@@ -25,6 +25,7 @@ import { LocateCaseSheet } from "@/components/LocateCaseSheet";
 import { useAuth } from "@/lib/auth-context";
 import { useMe, activeMemberships } from "@/lib/auth-me";
 import { JoinLabCard } from "@/components/JoinLabCard";
+import { UnassignedDocumentsCard } from "@/components/UnassignedDocumentsCard";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -502,6 +503,7 @@ export default function DashboardScreen() {
             />
           }
         >
+          <UnassignedDocumentsCard />
           {sectionOrder.map((id) => sectionRenderers[id]())}
         </ScrollView>
       )}

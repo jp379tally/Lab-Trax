@@ -26,7 +26,6 @@ import {
   type CanonicalCase,
 } from "@workspace/api-client-react";
 import { LocateCaseSheet } from "@/components/LocateCaseSheet";
-import { UnassignedDocumentsCard } from "@/components/UnassignedDocumentsCard";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
@@ -790,9 +789,6 @@ export default function CasesListScreen() {
 
       {/* Trial status banner */}
       <MobileTrialBanner />
-
-      {/* Unassigned documents inbox */}
-      <UnassignedDocumentsCard />
 
       {/* Share-intent banner */}
       {pendingShared.length > 0 ? (
