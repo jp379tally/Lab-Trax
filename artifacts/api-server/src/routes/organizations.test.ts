@@ -782,6 +782,71 @@ maybe("Organizations CRUD (db integration)", () => {
     }
   });
 
+  it("re-approving an already-approved request does not surface a soft-deleted (removed) membership", async () => {
+    const { access } = await makeSession(ownerId);
+    const { db, users, userSessions, organizationMemberships, organizationJoinRequests } =
+      dbMod as any;
+
+    const orgName = rid("ReApproveRemovedOrg");
+    const create = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(orgName));
+    expect(create.status).toBe(201);
+    const orgId = create.body.data.id;
+    createdOrgIds.push(orgId);
+
+    const joinerId = rid("joiner");
+    await db.insert(users).values({
+      id: joinerId,
+      username: `joiner_${joinerId}`,
+      password: "x",
+    });
+    const reqId = rid("jr");
+    await db.insert(organizationJoinRequests).values({
+      id: reqId,
+      labId: orgId,
+      userId: joinerId,
+      requestedRole: "user",
+      status: "pending",
+    });
+
+    try {
+      // 1) Approve the pending request → creates an active membership and
+      //    flips the request to "approved".
+      const firstApprove = await request(appMod.default)
+        .post(`/api/organizations/join-requests/${reqId}/approve`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(firstApprove.status).toBe(200);
+      expect(firstApprove.body.data.membership).toBeTruthy();
+
+      // 2) The member is later removed (soft-deleted).
+      await db
+        .update(organizationMemberships)
+        .set({ deletedAt: new Date(), deletedByUserId: ownerId })
+        .where(
+          and(
+            eq(organizationMemberships.labId, orgId),
+            eq(organizationMemberships.userId, joinerId)
+          )
+        );
+
+      // 3) Re-approving the already-approved request must NOT surface the
+      //    removed (soft-deleted) membership.
+      const reApprove = await request(appMod.default)
+        .post(`/api/organizations/join-requests/${reqId}/approve`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(reApprove.status).toBe(200);
+      expect(reApprove.body.data.request.status).toBe("approved");
+      expect(reApprove.body.data.membership).toBeNull();
+    } finally {
+      await db.delete(organizationJoinRequests).where(eq(organizationJoinRequests.userId, joinerId));
+      await db.delete(organizationMemberships).where(eq(organizationMemberships.userId, joinerId));
+      await db.delete(userSessions).where(eq(userSessions.userId, joinerId));
+      await db.delete(users).where(eq(users.id, joinerId));
+    }
+  });
+
   it("invite acceptance succeeds when a soft-deleted membership already exists (partial unique index)", async () => {
     const { access: adminAccess } = await makeSession(ownerId);
     const { db, users, userSessions, organizationMemberships } = dbMod as any;

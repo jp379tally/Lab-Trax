@@ -3094,7 +3094,8 @@ router.post(
         await db.query.organizationMemberships.findFirst({
           where: and(
             eq(organizationMemberships.labId, request.labId),
-            eq(organizationMemberships.userId, request.userId)
+            eq(organizationMemberships.userId, request.userId),
+            notDeleted(organizationMemberships)
           ),
         });
       return ok(res, { membership: existingMembership ?? null, request });
