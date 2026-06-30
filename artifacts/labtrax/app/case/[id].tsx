@@ -306,6 +306,31 @@ function eventDescription(
   return null;
 }
 
+// Invoice lifecycle events (`invoice_updated` / `invoice_voided`, written by the
+// server's bulk invoice-status handler) carry the affected invoice number in
+// their metadata. Surface it on the timeline row so a mobile viewer can tell
+// WHICH invoice changed, mirroring the desktop History tab.
+function eventInvoiceNumber(ev: DetailEvent): string | null {
+  if (ev.eventType !== "invoice_updated" && ev.eventType !== "invoice_voided") {
+    return null;
+  }
+  let meta: Record<string, unknown> | null = null;
+  if (ev.metadataJson && typeof ev.metadataJson === "object") {
+    meta = ev.metadataJson as Record<string, unknown>;
+  } else if (typeof ev.metadataJson === "string" && ev.metadataJson.trim()) {
+    try {
+      const parsed = JSON.parse(ev.metadataJson);
+      if (parsed && typeof parsed === "object") meta = parsed as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+  if (!meta) return null;
+  return typeof meta.invoiceNumber === "string" && meta.invoiceNumber
+    ? meta.invoiceNumber
+    : null;
+}
+
 // Tappable attachment carried by a history event's metadata, mirroring desktop:
 // prefer the legacy/mobile imageUri (works without auth headers, including data:
 // URIs) and fall back to the canonical id-based /file route. Returns null for
@@ -4281,6 +4306,7 @@ function HistorySection({
     <Card padding="none">
       {events.map((ev, i) => {
         const desc = eventDescription(ev, notesById);
+        const invoiceNumber = eventInvoiceNumber(ev);
         const actor = ev.actorName || ev.actorInitials;
         const att = eventAttachment(ev, caseId);
         const opening = openingId === ev.id;
@@ -4289,6 +4315,9 @@ function HistorySection({
             <View style={styles.eventDot} />
             <View style={styles.eventBody}>
               <Text style={styles.eventTitle}>{formatEventType(ev.eventType)}</Text>
+              {invoiceNumber ? (
+                <Text style={styles.eventInvoiceNumber}>{invoiceNumber}</Text>
+              ) : null}
               {desc ? <Text style={styles.eventDesc}>{desc}</Text> : null}
               {att ? (
                 att.isImage ? (
@@ -4517,6 +4546,7 @@ function makeStyles(c: ThemeColors) {
     eventDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.tint, marginTop: 6 },
     eventBody: { flex: 1 },
     eventTitle: { ...Typography.bodySemibold, color: c.text },
+    eventInvoiceNumber: { ...Typography.bodySemibold, color: c.tint, marginTop: 2 },
     eventDesc: { ...Typography.body, color: c.textSecondary, marginTop: 2 },
     eventMeta: { ...Typography.caption, color: c.textTertiary, marginTop: 4 },
     emptyState: { alignItems: "center", justifyContent: "center", paddingVertical: Spacing.huge, gap: Spacing.md },

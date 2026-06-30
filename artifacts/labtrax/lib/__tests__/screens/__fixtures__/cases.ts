@@ -133,6 +133,44 @@ export const caseWithNoteHistory = {
   ],
 };
 
+// A case whose History timeline contains the invoice lifecycle events the
+// server writes when an invoice's status is changed in bulk (see the bulk-status
+// handler in `artifacts/api-server/src/routes/invoices.ts`). Each event carries
+// `invoiceNumber` + a `previousStatus → newStatus` transition in its metadata.
+// The mobile History view must render these into readable rows so bulk status
+// changes are never silently hidden from mobile users.
+export const caseWithInvoiceEventHistory = {
+  ...inProgressCase,
+  id: "case-invoice-events",
+  caseNumber: "5005",
+  events: [
+    {
+      id: "evt-invoice-updated",
+      eventType: "invoice_updated",
+      actorInitials: "BK",
+      metadataJson: {
+        invoiceId: "inv-1",
+        invoiceNumber: "INV-9001",
+        previousStatus: "draft",
+        newStatus: "open",
+      },
+      occurredAt: "2024-02-02T10:00:00.000Z",
+    },
+    {
+      id: "evt-invoice-voided",
+      eventType: "invoice_voided",
+      actorInitials: "BK",
+      metadataJson: {
+        invoiceId: "inv-2",
+        invoiceNumber: "INV-9002",
+        previousStatus: "open",
+        newStatus: "void",
+      },
+      occurredAt: "2024-02-03T10:00:00.000Z",
+    },
+  ],
+};
+
 export const aiImportedCase = {
   ...inProgressCase,
   id: "case-ai",

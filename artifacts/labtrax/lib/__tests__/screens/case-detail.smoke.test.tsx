@@ -18,6 +18,7 @@ import { getAuthedMediaUri } from "@/lib/authed-media-cache";
 
 import CaseDetailScreen from "@/app/case/[id]";
 import {
+  caseWithInvoiceEventHistory,
   caseWithNoteHistory,
   completedCaseWithInvoice,
   inProgressCase,
@@ -109,6 +110,48 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       // The internal note's id is not in the visible notes map, so even though a
       // stale `noteText` lingers in the event metadata, the client withholds it.
       expect(queryByText(/TOP SECRET internal lab note/)).toBeNull();
+    });
+  });
+
+  // The server mirrors invoice bulk-status changes onto the case timeline by
+  // inserting `invoice_updated` / `invoice_voided` caseEvents (see the bulk-status
+  // handler in `artifacts/api-server/src/routes/invoices.ts`). Backend + desktop
+  // tests prove those rows are persisted and rendered, but nothing on mobile
+  // proved the History view renders them — a rendering regression could silently
+  // hide bulk status changes from mobile users.
+  describe("invoice lifecycle events on the History timeline (desktop parity)", () => {
+    beforeEach(() => {
+      setMockSearchParams({ id: caseWithInvoiceEventHistory.id });
+      setMockAppState({ cases: [caseWithInvoiceEventHistory], invoices: [] });
+    });
+
+    it("renders an invoice_updated event as an 'Invoice Updated' timeline row", () => {
+      const { getByTestId, getAllByText } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-history"));
+      expect(getAllByText("Invoice Updated").length).toBeGreaterThan(0);
+    });
+
+    it("renders an invoice_voided event as an 'Invoice Voided' timeline row", () => {
+      const { getByTestId, getAllByText } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-history"));
+      expect(getAllByText("Invoice Voided").length).toBeGreaterThan(0);
+    });
+
+    it("surfaces the affected invoice number on each invoice event row", () => {
+      const { getByTestId, getAllByText } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-history"));
+      expect(getAllByText("INV-9001").length).toBeGreaterThan(0);
+      expect(getAllByText("INV-9002").length).toBeGreaterThan(0);
+    });
+
+    it("renders the previousStatus → newStatus transition for each invoice event", () => {
+      const { getByTestId, getAllByText } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-history"));
+      // The mobile timeline title-cases the status transition (see eventDescription).
+      // invoice_updated: draft → open
+      expect(getAllByText("Draft → Open").length).toBeGreaterThan(0);
+      // invoice_voided: open → void
+      expect(getAllByText("Open → Void").length).toBeGreaterThan(0);
     });
   });
 
