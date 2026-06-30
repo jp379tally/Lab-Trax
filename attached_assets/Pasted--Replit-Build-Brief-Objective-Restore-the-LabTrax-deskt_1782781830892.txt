@@ -1,0 +1,154 @@
+### Replit Build Brief
+
+**Objective**
+Restore the LabTrax desktop download so clicking the Windows desktop download successfully downloads an available installer/package instead of Chrome showing `LabTrax-Setup.exe - File wasn't available on site`.
+
+**User-visible problem**
+The browser starts a download for `LabTrax-Setup.exe`, then fails immediately with “File wasn’t available on site.”
+
+**Likely root cause**
+The app is pointing users to `/downloads/LabTrax-Setup.exe`, but the `LabTrax-Setup.exe` object is missing from App Storage or was never published after the latest Windows build.
+
+Repo evidence:
+
+* `artifacts/api-server/src/app.ts` serves `/downloads/LabTrax-Setup.exe` from App Storage as installer kind `exe`.
+* `artifacts/api-server/src/lib/desktop-installer-storage.ts` maps that file to `desktop-installer/LabTrax-Setup.exe`.
+* `artifacts/labtrax-desktop/scripts/electron-build.mjs` notes that Linux/Replit builds may only create `LabTrax-Windows-Portable.zip` if NSIS/Wine cannot produce the `.exe`.
+* `.github/workflows/build-windows.yml` and `.github/workflows/release.yml` publish `LabTrax-Setup.exe` only if the Windows build succeeds and `PLATFORM_ADMIN_SECRET` plus `PUBLISH_API_BASE_URL` are configured.
+
+**Exact areas to inspect/change**
+
+* `artifacts/api-server/src/app.ts`
+* `artifacts/api-server/src/lib/desktop-installer-storage.ts`
+* `.github/workflows/build-windows.yml`
+* `.github/workflows/release.yml`
+* Any desktop download UI/settings code that stores or renders the download URL. Search for:
+
+  * `/downloads/LabTrax-Setup.exe`
+  * `desktop-installer`
+  * `downloadUrl`
+  * `LabTrax-Windows-Portable.zip`
+
+**Implementation plan**
+
+1. Verify whether App Storage contains `desktop-installer/LabTrax-Setup.exe`.
+2. If missing, publish a real Windows `.exe` from the Windows GitHub Actions workflow, not from a Linux/Replit build.
+3. Confirm the publish endpoint receives the file: `/api/admin/desktop-installer/publish`.
+4. Update the UI/download settings so the button does not point at a missing file.
+5. Add fallback behavior: if the `.exe` is unavailable but `LabTrax-Windows-Portable.zip` exists, show/download the ZIP instead with clear copy.
+6. Add a server or UI availability check before rendering “Download Windows Installer.”
+
+**Important guardrails**
+
+* Do not rename the installer casually. The server and workflow expect `LabTrax-Setup.exe`.
+* Do not rely on a Replit/Linux build to produce the NSIS `.exe`; use `windows-latest`.
+* Do not mask missing installer storage as success. A missing installer should be visible to admins.
+* Keep `/downloads/LabTrax-Setup.exe` auth-free for end users, but keep upload/publish admin-protected.
+
+**Acceptance criteria**
+
+* Visiting `/downloads/LabTrax-Setup.exe` returns `200` or a valid redirect, not `404`.
+* Browser download completes for `LabTrax-Setup.exe`.
+* If `.exe` is absent, the UI does not offer a dead `.exe` link.
+* ZIP fallback works at `/downloads/LabTrax-Windows-Portable.zip` when available.
+* Admin settings/status clearly show whether EXE, ZIP, and DMG are uploaded.
+
+**Regression risks to check**
+
+* Existing desktop auto-update still reads `/downloads/latest.yml`.
+* Windows workflow still uploads release artifacts.
+* Mac download `/downloads/LabTrax.dmg` is unaffected.
+* Large file downloads still bypass Replit proxy through the signed/direct GCS redirect path.
+
+### Copy-Ready Replit Prompt
+
+Debug and fix the LabTrax desktop download issue.
+
+Symptom: clicking the desktop Windows download starts `LabTrax-Setup.exe`, but Chrome reports: “File wasn’t available on site.” This strongly suggests `/downloads/LabTrax-Setup.exe` is being offered by the UI but the backing App Storage object is missing or was not published.
+
+Please inspect these areas:
+
+* `artifacts/api-server/src/app.ts`
+* `artifacts/api-server/src/lib/desktop-installer-storage.ts`
+* `.github/workflows/build-windows.yml`
+* `.github/workflows/release.yml`
+* Any UI/settings code that references `/downloads/LabTrax-Setup.exe`, `LabTrax-Windows-Portable.zip`, `downloadUrl`, or `desktop-installer`.
+
+Desired fix:
+
+1. Verify the server route for `/downloads/LabTrax-Setup.exe` checks App Storage object kind `exe`.
+2. Verify whether `desktop-installer/LabTrax-Setup.exe` exists in App Storage.
+3. If it is missing, do not pretend the link works. Either publish the real Windows EXE via the Windows GitHub Actions build/publish flow, or update the app to offer the available ZIP fallback.
+4. Add availability-aware UI behavior: only show the EXE download button when the EXE object exists. If only `LabTrax-Windows-Portable.zip` exists, show that download instead with clear “Portable ZIP” labeling.
+5. Make sure the publish workflow fails loudly or alerts if it cannot publish the EXE to `/api/admin/desktop-installer/publish`.
+6. Verify the required publish secrets are configured: `PLATFORM_ADMIN_SECRET` and `PUBLISH_API_BASE_URL`.
+7. Do not build the Windows NSIS installer from Linux/Replit as the primary fix; the `.exe` should come from a `windows-latest` build.
+
+Before finishing, run or document these checks:
+
+* `HEAD /downloads/LabTrax-Setup.exe` returns 200/302 when EXE is available.
+* `GET /downloads/LabTrax-Setup.exe` downloads successfully.
+* `HEAD /downloads/LabTrax-Windows-Portable.zip` works if ZIP fallback is enabled.
+* Missing EXE no longer creates a dead user-facing button.
+* `/downloads/latest.yml` and macOS download behavior are not broken.
+
+If you find contradictory evidence, explain the tradeoff and choose the safest fix that prevents users from clicking a dead desktop download link.
+
+### Debug Analysis
+
+**Probable root cause**
+The app is sending users to a valid route with an invalid/missing backing file. The route exists, but the App Storage object for `LabTrax-Setup.exe` likely does not.
+
+**Supporting evidence**
+
+* Screenshot shows a browser-level download failure for `LabTrax-Setup.exe`, not an in-app validation error.
+* Server code explicitly serves `/downloads/LabTrax-Setup.exe` from App Storage.
+* Storage mapping expects `desktop-installer/LabTrax-Setup.exe`.
+* The build script says Replit/Linux may create only `LabTrax-Windows-Portable.zip` when a true NSIS `.exe` build cannot complete.
+* Workflows publish the EXE only when Windows build and publish secrets are correct.
+
+**Alternate hypotheses**
+
+* The EXE exists, but the direct GCS redirect URL is invalid or expired too early.
+* `PRIVATE_OBJECT_DIR` or Replit Object Storage is misconfigured.
+* The UI/admin settings still point to an older stale download URL.
+* The publish endpoint failed after upload but before settings were updated.
+
+**Why this fix is best**
+The durable fix is not just changing the text on the button. The app needs to align the visible download option with real storage availability, and the release pipeline must reliably publish the artifact users are being asked to download.
+
+**Confidence**
+High that this is a missing/unpublished installer or stale download URL. I could not directly test the live URL from this container because outbound access to the Replit app was blocked, but the screenshot plus repo code point strongly at the storage/publish path.
+
+### Step-by-Step Fix Plan
+
+1. In Replit, check the current download setting or button URL. Confirm whether it points to `/downloads/LabTrax-Setup.exe`.
+
+2. Check App Storage for:
+
+   * `desktop-installer/LabTrax-Setup.exe`
+   * `desktop-installer/LabTrax-Windows-Portable.zip`
+   * `desktop-installer/latest.yml`
+
+3. If `LabTrax-Setup.exe` is missing, run the Windows GitHub Actions workflow or upload the latest `LabTrax-Setup.exe` through the admin Desktop App settings/publish endpoint.
+
+4. Confirm these secrets are set for auto-publish:
+
+   * `PLATFORM_ADMIN_SECRET`
+   * `PUBLISH_API_BASE_URL`
+   * `VITE_API_BASE_URL`
+   * Windows signing secrets if official signed EXE is required.
+
+5. Add UI logic so the Windows download button is availability-aware:
+
+   * EXE exists: show “Download Windows Installer.”
+   * EXE missing but ZIP exists: show “Download Windows Portable ZIP.”
+   * neither exists: show admin-facing “Desktop installer has not been uploaded.”
+
+6. Verify with browser and network checks:
+
+   * `/downloads/LabTrax-Setup.exe`
+   * `/downloads/LabTrax-Windows-Portable.zip`
+   * `/downloads/latest.yml`
+
+7. Re-test from a normal desktop browser, then clear any cached failed download and try the button again.
