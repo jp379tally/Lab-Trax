@@ -1,0 +1,194 @@
+### Replit Build Brief
+
+**Objective**
+Clean up LabTrax signup so a new lab employee can create a personal account, search for their existing lab, confirm the lab by name/address, and send a join request. Only true lab creators should enter lab setup details.
+
+**User-visible problem**
+The current flow asks “Dental lab or dental provider?” and if the user selects dental lab, it assumes they are creating a new lab. That is why it asks for the lab name and full lab details. For an employee joining an existing lab, that feels jagged and wrong.
+
+**Part of the app involved**
+Primary files/components:
+
+* `artifacts/labtrax-desktop/src/components/SignupWizard.tsx`
+* `artifacts/labtrax-desktop/src/lib/api.ts`
+* `artifacts/api-server/src/routes/auth.ts`
+* `artifacts/api-server/src/routes/organizations.ts`
+* `lib/db/src/schema/schema.ts`
+* `artifacts/labtrax-desktop/src/components/PlanPickerOnboarding.tsx`
+
+**Likely root cause**
+The frontend signup wizard collapses two different intents into one `userType === "lab"` path:
+
+1. “I am creating a lab workspace”
+2. “I work at a lab and need to join it”
+
+Right now, choosing lab goes straight to `lab_info`, then later still asks for role selection and join group. That creates the confusing sequence you saw.
+
+The backend is actually in better shape than the frontend. It already has:
+
+* `join_requests`
+* `lab_memberships`
+* pending join request creation during `/auth/register` when `joinOrganizationId` is supplied
+* admin approve/reject routes for join requests
+* invite routes
+
+So this should mostly be a signup workflow cleanup, not a broad database rebuild.
+
+**Recommended workflow**
+
+1. Account basics
+   Username, email, password.
+
+2. Account category
+   Ask: “What are you doing in LabTrax?”
+
+   Options:
+
+   * “Join an existing dental lab”
+   * “Create a new dental lab”
+   * “I am a dental provider”
+
+3. Join existing dental lab
+   Show a lab search field. User types the lab name. Results should show:
+
+   * Lab display name
+   * Street address
+   * City, state, ZIP
+   * Phone if available
+
+   User selects the correct lab and clicks “Send join request.”
+
+4. Email verification
+   User verifies email with the current verification code flow.
+
+5. Registration completion
+   Create the user with:
+
+   * `userType: "lab"`
+   * `role: "user"`
+   * `createOrganization: false`
+   * `joinOrganizationId: selectedLabId`
+   * no lab name/details required
+   * no requested role selection
+
+6. Post-signup state
+   User lands on a plain dashboard or pending-access screen:
+
+   * “Your request to join [Lab Name] is pending admin approval.”
+   * No cases yet.
+   * No billing prompt.
+   * No admin/user role choice.
+
+7. Admin approval
+   Lab owner/admin reviews the join request, approves it, and assigns role:
+
+   * `user`
+   * `admin`
+   * optionally `billing` / `read_only` if those are active roles in the app
+
+**Important constraints**
+
+* Do not let a public signup self-assign admin.
+* Do not ask lab joiners for lab name, license number, lab phone, lab email, or billing plan.
+* Do not create a new lab organization unless the user explicitly chose “Create a new dental lab.”
+* Keep join requests durable and server-backed.
+* Expand `/api/labs/lookup` if needed so it returns enough address detail for confirmation.
+
+**Acceptance criteria**
+
+* A lab employee can sign up, search an existing lab, confirm it by address, send a join request, verify email, and reach an empty/pending dashboard.
+* The employee is not asked whether they are an admin or user.
+* The employee is not asked to choose a billing plan.
+* The admin can see the pending join request from the server and approve/reject it.
+* Approval creates or updates an active `lab_memberships` row and assigns the role selected by the admin.
+* A true lab creator can still create a new lab with required lab details.
+
+**Regression risks to check**
+
+* New lab creation still works.
+* Provider signup still works.
+* Invite acceptance still works.
+* Existing admin approval routes still work.
+* Users with pending join requests cannot see lab cases, invoices, or financial screens before approval.
+
+### Copy-Ready Replit Prompt
+
+Please clean up the LabTrax desktop signup workflow.
+
+Problem: when a new employee signs up to join an existing dental lab, the current wizard asks “Are you a dental lab or dental provider?” If they choose dental lab, it assumes they are creating a lab and asks for lab name/details. That is wrong. Most lab users are joining an existing lab, not creating one.
+
+Inspect and update:
+
+* `artifacts/labtrax-desktop/src/components/SignupWizard.tsx`
+* `artifacts/labtrax-desktop/src/lib/api.ts`
+* `artifacts/api-server/src/routes/auth.ts`
+* `artifacts/api-server/src/routes/organizations.ts`
+* `lib/db/src/schema/schema.ts`
+* `artifacts/labtrax-desktop/src/components/PlanPickerOnboarding.tsx`
+
+Desired signup flow:
+
+1. Collect username, email, and password.
+2. Ask the user what they want to do:
+
+   * Join an existing dental lab
+   * Create a new dental lab
+   * I am a dental provider
+3. If “Join an existing dental lab”:
+
+   * Show a lab search field.
+   * Search existing lab organizations.
+   * Display lab name plus enough address info to confirm the correct lab: street, city, state, ZIP, and phone if available.
+   * Let the user select a lab and send a join request.
+   * Do not ask for lab name, lab license, lab email, billing info, or role.
+   * Do not let them select admin/user during signup.
+   * Register them as `userType: "lab"`, global `role: "user"`, `createOrganization: false`, and `joinOrganizationId: selectedLabId`.
+4. If “Create a new dental lab”:
+
+   * Keep the existing lab creation fields and backend validation.
+   * This user becomes owner/admin through the existing membership flow.
+5. If “Dental provider”:
+
+   * Preserve the existing provider signup/match behavior unless it conflicts with this cleanup.
+
+Use the existing server-backed join request system. The schema already has `join_requests`, `lab_memberships`, and admin approve/reject routes. Do not rebuild this with local state.
+
+Also suppress the billing plan picker for users who just created a pending lab join request. Billing should belong to lab owners/admins, not new employees waiting for approval.
+
+If `/api/labs/lookup` currently returns only city/state, expand it safely to include street address, ZIP, and phone for lab confirmation. Do not expose provider/private data.
+
+Add or update tests where practical for:
+
+* lab join signup creates a pending join request and no lab organization
+* lab creator signup still creates a lab organization and owner membership
+* pending join user cannot self-select admin
+* plan picker does not appear for pending join users
+* admin approval still creates active membership with admin-selected role
+
+Before finishing, explain any tradeoffs or assumptions and run the relevant typecheck/tests.
+
+### Debug Analysis
+
+**Probable root cause**
+`SignupWizard.tsx` treats `userType: "lab"` as “create a lab,” not “I am a lab-side person.” The `LAB_STEPS` path sends users through `lab_info`, then `role_select`, `join_group`, and `plan_select`. That is exactly why an employee joining your lab gets asked for lab details and role/billing decisions that should belong to the lab admin.
+
+**Supporting evidence**
+The wizard’s `selectUserType("lab")` goes directly to `lab_info`. Registration then sends `practiceName: labName`, `createOrganization: !joinTargetOrgId`, and can create a new lab if no join target is selected. Meanwhile the backend already supports pending join requests through `organizationJoinRequests`, and `/auth/register` creates a pending request when `joinOrganizationId` is provided.
+
+**Alternate hypotheses worth checking**
+There may also be a missing or weak UI surface for admins to notice pending join requests. The API routes exist, but Replit should confirm the admin dashboard/settings screen actually loads `/organizations/:organizationId/join-requests`.
+
+**Why this approach is best**
+It reuses the existing durable server model instead of adding new tables or a parallel workflow. The risky part is not the database; it is the frontend branching and post-signup UX.
+
+### Step-by-Step Fix Plan
+
+1. Refactor `SignupWizard.tsx` so “lab user joining” and “lab creator” are separate choices.
+2. Add a new join-lab step before lab details.
+3. Expand lab lookup response/display to include full confirmation address.
+4. For joiners, submit registration with `joinOrganizationId` and no org creation fields.
+5. Remove role selection from signup for joiners; default requested role should be `user`.
+6. Suppress signup-time and post-login billing plan prompts for pending join-request users.
+7. Add a pending-access empty dashboard/message after signup.
+8. Confirm admin join-request review UI is wired to the server routes.
+9. Test lab join, lab creation, provider signup, admin approve/reject, and post-approval access.
