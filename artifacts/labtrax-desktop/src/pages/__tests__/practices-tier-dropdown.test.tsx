@@ -489,3 +489,198 @@ describe("Practices page — both tier dropdowns share one QueryClient", () => {
     ).toBeInTheDocument();
   });
 });
+
+/**
+ * Regression suite: per-doctor "Discounted Price" column (Task #2551 column).
+ *
+ * The per-item table in the expanded doctor pricing editor shows, as its third
+ * column, the *effective* price a case would actually be billed for each item:
+ *  - an exact price typed into the Price input wins outright,
+ *  - else a percent discount (per-item, falling back to the row's default
+ *    discount) computed off the practice-default tier price (its base), or off
+ *    the doctor's effective tier price when the default tier has no base,
+ *  - else the plain tier price when nothing is overridden,
+ *  - else a "—" dash when nothing is computable.
+ *
+ * These tests pin that math so a future edit to the resolver can't silently
+ * show lab admins a wrong discounted price.
+ */
+const CONNECTION_WITH_TIER = {
+  id: "conn-1",
+  labOrganizationId: LAB_ID,
+  providerOrganizationId: "org-provider-1",
+  status: "active",
+  // Practice default tier — drives the discount base + the no-input tier price.
+  tierName: "Standard",
+  labOrganization: { id: LAB_ID, name: "Acme Dental Lab", displayName: null },
+};
+
+const TIERS_WITH_PRICES = [
+  {
+    id: "t1",
+    labOrganizationId: LAB_ID,
+    name: "Standard",
+    prices: {
+      zirconia_crown: 100, // percent-discount scenario (has a base price)
+      emax_crown: 200, // exact-price scenario
+      pfm_crown: 80, // only-a-tier-price scenario (no input)
+      // denture: intentionally absent → "—" dash scenario
+      // implant: intentionally absent → no practice-default base price, so
+      //          a discount must fall back to the doctor's selected tier price
+    },
+  },
+  {
+    id: "t2",
+    labOrganizationId: LAB_ID,
+    name: "Premium",
+    prices: {
+      implant: 300, // only the doctor's selected (non-default) tier prices this
+    },
+  },
+];
+
+function renderDoctorPricingEditor() {
+  apiFetchMock.mockImplementation((url: string) => {
+    if (url.startsWith("/organizations/connections")) {
+      return Promise.resolve([CONNECTION_WITH_TIER]);
+    }
+    if (url.startsWith("/pricing/tiers")) {
+      return Promise.resolve({
+        labOrganizationId: LAB_ID,
+        tiers: TIERS_WITH_PRICES,
+      });
+    }
+    if (url.startsWith("/pricing/overrides")) {
+      return Promise.resolve({ overrides: [] });
+    }
+    if (url === "/cases") {
+      return Promise.resolve([]);
+    }
+    if (url === "/auth/me") {
+      return Promise.resolve(ADMIN_ME);
+    }
+    if (url.endsWith("/members")) {
+      return Promise.resolve([DOCTOR_MEMBER]);
+    }
+    return Promise.resolve(null);
+  });
+
+  return render(
+    <PracticeDoctorsSection
+      providerOrg={PROVIDER_ORG}
+      currentUserId="u1"
+      isArchived={false}
+    />,
+    { wrapper: makeAuthWrapper() },
+  );
+}
+
+// The row for a given item label: <span label><div price><div %><span result>.
+// The label span is a direct child of the row, so its parent is the row.
+function itemRow(label: string): HTMLElement {
+  return screen.getByText(label).parentElement as HTMLElement;
+}
+
+// The third column (the live "Discounted Price" cell) is the only tabular-nums
+// span in the row.
+function discountedPrice(label: string): string {
+  const cell = itemRow(label).querySelector(
+    "span.tabular-nums",
+  ) as HTMLElement | null;
+  return (cell?.textContent ?? "").trim();
+}
+
+function priceInput(label: string): HTMLElement {
+  return within(itemRow(label)).getAllByRole("spinbutton")[0];
+}
+
+function percentInput(label: string): HTMLElement {
+  return within(itemRow(label)).getAllByRole("spinbutton")[1];
+}
+
+async function expandDoctorEditor() {
+  const expandBtn = await screen.findByRole("button", {
+    name: /Adjust pricing/i,
+  });
+  fireEvent.click(expandBtn);
+  // Wait for the per-item table to render.
+  await screen.findByText("Discounted Price");
+}
+
+describe("PracticeDoctorsSection — Discounted Price column", () => {
+  it("shows the plain tier price when no exact price or discount is entered", async () => {
+    renderDoctorPricingEditor();
+    await expandDoctorEditor();
+
+    // pfm_crown only has a tier price (no override input) → shows that price.
+    expect(discountedPrice("PFM Crown")).toBe("$80.00");
+    // zirconia/emax also default to their tier prices initially.
+    expect(discountedPrice("Zirconia Crown")).toBe("$100.00");
+    expect(discountedPrice("E.max Crown")).toBe("$200.00");
+  });
+
+  it("shows a dash when no tier price, exact price, or discount is computable", async () => {
+    renderDoctorPricingEditor();
+    await expandDoctorEditor();
+
+    // denture is absent from the only tier and has no input → not computable.
+    expect(discountedPrice("Denture")).toBe("—");
+  });
+
+  it("shows the exact price entered and updates the column live", async () => {
+    renderDoctorPricingEditor();
+    await expandDoctorEditor();
+
+    expect(discountedPrice("E.max Crown")).toBe("$200.00");
+
+    fireEvent.change(priceInput("E.max Crown"), {
+      target: { value: "55.50" },
+    });
+
+    await waitFor(() =>
+      expect(discountedPrice("E.max Crown")).toBe("$55.50"),
+    );
+  });
+
+  it("computes a percent discount off the base tier price and updates live", async () => {
+    renderDoctorPricingEditor();
+    await expandDoctorEditor();
+
+    expect(discountedPrice("Zirconia Crown")).toBe("$100.00");
+
+    // 10% off the $100 base tier price → $90.00.
+    fireEvent.change(percentInput("Zirconia Crown"), {
+      target: { value: "10" },
+    });
+    await waitFor(() =>
+      expect(discountedPrice("Zirconia Crown")).toBe("$90.00"),
+    );
+
+    // Changing the percent re-computes live: 25% off $100 → $75.00.
+    fireEvent.change(percentInput("Zirconia Crown"), {
+      target: { value: "25" },
+    });
+    await waitFor(() =>
+      expect(discountedPrice("Zirconia Crown")).toBe("$75.00"),
+    );
+  });
+
+  it("falls back to the doctor's selected tier price as the discount base when the practice-default tier has no price", async () => {
+    renderDoctorPricingEditor();
+    await expandDoctorEditor();
+
+    // Implant has no price in the practice-default (Standard) tier → "—".
+    expect(discountedPrice("Implant")).toBe("—");
+
+    // Select the doctor's own tier (Premium), which does price the implant.
+    fireEvent.change(screen.getByRole("combobox"), {
+      target: { value: "Premium" },
+    });
+    await waitFor(() => expect(discountedPrice("Implant")).toBe("$300.00"));
+
+    // A percent discount now computes off the Premium tier price (the base
+    // fallback): 20% off $300 → $240.00.
+    fireEvent.change(percentInput("Implant"), { target: { value: "20" } });
+    await waitFor(() => expect(discountedPrice("Implant")).toBe("$240.00"));
+  });
+});
