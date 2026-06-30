@@ -144,6 +144,8 @@ interface DetailedCase {
    * admin can fix pricing before billing.
    */
   unrecognizedMaterials?: string[] | null;
+  viewerCanUploadAttachments?: boolean | null;
+  viewerCanManageAttachments?: boolean | null;
 }
 
 // Shape returned by GET /api/organizations/:id/case-print-template
@@ -970,6 +972,18 @@ export default function CaseDetailScreen() {
   const caseOrgId = c?.organizationId ?? c?.labOrganizationId ?? null;
   const canEdit = canEditOrg(meQuery.data, caseOrgId);
 
+  // Any active lab member can upload files and add notes.
+  // Prefer server-side flag when available; fall back to local membership check.
+  const canUpload = useMemo(() => {
+    if (typeof c?.viewerCanUploadAttachments === "boolean") return c.viewerCanUploadAttachments;
+    const memberships = (meQuery.data as any)?.memberships ?? [];
+    return memberships.some(
+      (m: any) =>
+        (m.labId === caseOrgId || m.organizationId === caseOrgId) &&
+        m.status === "active",
+    );
+  }, [c?.viewerCanUploadAttachments, meQuery.data, caseOrgId]);
+
   // Admin/owner-only: can initiate the 3-step case deletion flow.
   const isAdminOfCase = useMemo(() => {
     const memberships = (meQuery.data as any)?.memberships ?? [];
@@ -1008,7 +1022,7 @@ export default function CaseDetailScreen() {
   useEffect(() => {
     let cancelled = false;
     async function checkInbox() {
-      if (!canEdit || sharePromptOpenRef.current) return;
+      if (!canUpload || sharePromptOpenRef.current) return;
       const entries = await peekSharedFiles();
       if (cancelled || entries.length === 0 || sharePromptOpenRef.current) return;
       sharePromptOpenRef.current = true;
@@ -1319,6 +1333,7 @@ export default function CaseDetailScreen() {
             caseNotes={c.caseNotes}
             notes={c.notes ?? []}
             caseId={c.id}
+            canUpload={canUpload}
             canEdit={canEdit}
             onSaved={() => caseQuery.refetch()}
             styles={styles}
@@ -1332,6 +1347,7 @@ export default function CaseDetailScreen() {
             attachments={attachments}
             loading={attachmentsQuery.isLoading}
             onOpenImage={setLightboxUrl}
+            canUpload={canUpload}
             canEdit={canEdit}
             onRefresh={onRefresh}
             pendingShared={pendingShared}
@@ -2967,6 +2983,7 @@ function NotesSection({
   caseNotes,
   notes,
   caseId,
+  canUpload,
   canEdit,
   onSaved,
   styles,
@@ -2975,6 +2992,7 @@ function NotesSection({
   caseNotes?: string | null;
   notes: DetailNote[];
   caseId: string;
+  canUpload: boolean;
   canEdit: boolean;
   onSaved: () => void | Promise<unknown>;
   styles: Styles;
@@ -2999,7 +3017,7 @@ function NotesSection({
 
   return (
     <View style={styles.sectionGap}>
-      {canEdit ? (
+      {canUpload ? (
         <Card>
           <Text style={styles.cardHeading}>Add a note</Text>
           <TextInput
@@ -3093,6 +3111,7 @@ function FilesSection({
   attachments,
   loading,
   onOpenImage,
+  canUpload,
   canEdit,
   onRefresh,
   pendingShared,
@@ -3104,6 +3123,7 @@ function FilesSection({
   attachments: { id: string; fileName?: string | null; fileType?: string | null; uploaderName?: string | null; createdAt?: string | null; note?: string | null }[];
   loading: boolean;
   onOpenImage: (url: string) => void;
+  canUpload: boolean;
   canEdit: boolean;
   onRefresh: () => void;
   pendingShared: InboxEntry[] | null;
@@ -3440,7 +3460,7 @@ function FilesSection({
         </KeyboardAvoidingView>
       </Modal>
 
-      {canEdit ? (
+      {canUpload ? (
         <Pressable
           onPress={openAddSheet}
           style={{

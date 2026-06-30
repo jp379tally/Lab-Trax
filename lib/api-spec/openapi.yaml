@@ -4017,6 +4017,18 @@ components:
             $ref: "#/components/schemas/CanonicalRemakeRef"
           nullable: true
         _source: { type: string }
+        viewerCanUploadAttachments:
+          type: boolean
+          nullable: true
+          description: >
+            Whether the requesting user is permitted to upload new attachments or
+            add notes to this case. True for any active member of the case's lab.
+        viewerCanManageAttachments:
+          type: boolean
+          nullable: true
+          description: >
+            Whether the requesting user can delete or toggle visibility of existing
+            attachments on this case. Restricted to lab admins and owners.
       additionalProperties: true
     CaseListResult:
       type: object

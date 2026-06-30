@@ -515,6 +515,12 @@ before billing. Only populated on the case-detail response.
   remakeOriginal?: CanonicalRemakeRef | null;
   remakeChildren?: CanonicalRemakeRef[] | null;
   _source?: string;
+  /** Whether the requesting user is permitted to upload new attachments or add notes to this case. True for any active member of the case's lab.
+   */
+  viewerCanUploadAttachments?: boolean | null;
+  /** Whether the requesting user can delete or toggle visibility of existing attachments on this case. Restricted to lab admins and owners.
+   */
+  viewerCanManageAttachments?: boolean | null;
   [key: string]: unknown;
 }
 

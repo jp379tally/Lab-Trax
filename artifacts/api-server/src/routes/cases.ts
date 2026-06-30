@@ -4853,6 +4853,7 @@ router.get(
 
     const isLabMember = !!access.labMembership;
     const labRole = access.labMembership?.role as string | undefined;
+    const viewerCanUploadAttachments = isLabMember;
     const viewerCanManageAttachments =
       isLabMember && !!labRole && (ADMIN_ROLES as string[]).includes(labRole);
 
@@ -5143,6 +5144,7 @@ router.get(
       remakeOriginal,
       remakeChildren,
       viewerIsLabMember: isLabMember,
+      viewerCanUploadAttachments,
       viewerCanManageAttachments,
       statusHistory,
     });

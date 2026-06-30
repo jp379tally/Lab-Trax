@@ -3192,6 +3192,7 @@ type DetailedCase = LabCase & {
   remakeChildrenEvents?: Array<{ caseId: string; caseNumber: string; events: CaseEvent[] }>;
   attachments: CaseAttachment[];
   viewerIsLabMember?: boolean;
+  viewerCanUploadAttachments?: boolean;
   viewerCanManageAttachments?: boolean;
   /**
    * Distinct restoration material names that couldn't be mapped to a price
@@ -6723,14 +6724,15 @@ export function CaseDrawer({
                   </div>
                 ))}
               </div>
-              <div className="border border-border rounded-md p-3 space-y-2">
-                <textarea
-                  value={noteText}
-                  onChange={(e) => { setNoteText(e.target.value); setNoteError(null); }}
-                  placeholder="Add a note…"
-                  rows={3}
-                  className="w-full text-sm bg-transparent resize-none focus:outline-none placeholder:text-muted-foreground"
-                />
+              {data?.viewerCanUploadAttachments && (
+                <div className="border border-border rounded-md p-3 space-y-2">
+                  <textarea
+                    value={noteText}
+                    onChange={(e) => { setNoteText(e.target.value); setNoteError(null); }}
+                    placeholder="Add a note…"
+                    rows={3}
+                    className="w-full text-sm bg-transparent resize-none focus:outline-none placeholder:text-muted-foreground"
+                  />
                 <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
                   <input
                     type="checkbox"
@@ -6760,6 +6762,7 @@ export function CaseDrawer({
                 </div>
                 {noteError && <p className="text-xs text-destructive">{noteError}</p>}
               </div>
+              )}
 
               {/* ── NOTIFY MODAL ── */}
               {notifyModal.open && (
@@ -6914,7 +6917,7 @@ export function CaseDrawer({
                     <Printer size={12} />
                     Print
                   </button>
-                  {labCase._source !== "mobile" && (
+                  {labCase._source !== "mobile" && data?.viewerCanUploadAttachments && (
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
@@ -7007,7 +7010,7 @@ export function CaseDrawer({
                   </>
                 );
               })()}
-              {!isLoading && !!data?.viewerCanManageAttachments && fileCount > 0 && (
+              {!isLoading && !!data?.viewerCanUploadAttachments && fileCount > 0 && (
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}

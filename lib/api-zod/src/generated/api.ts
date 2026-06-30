@@ -1226,6 +1226,18 @@ export const ListCasesResponse = zod.object({
           )
           .nullish(),
         _source: zod.string().optional(),
+        viewerCanUploadAttachments: zod
+          .boolean()
+          .nullish()
+          .describe(
+            "Whether the requesting user is permitted to upload new attachments or add notes to this case. True for any active member of the case's lab.\n",
+          ),
+        viewerCanManageAttachments: zod
+          .boolean()
+          .nullish()
+          .describe(
+            "Whether the requesting user can delete or toggle visibility of existing attachments on this case. Restricted to lab admins and owners.\n",
+          ),
       }),
     )
     .optional(),
@@ -1411,6 +1423,18 @@ export const ListProviderCasesResponse = zod.object({
           )
           .nullish(),
         _source: zod.string().optional(),
+        viewerCanUploadAttachments: zod
+          .boolean()
+          .nullish()
+          .describe(
+            "Whether the requesting user is permitted to upload new attachments or add notes to this case. True for any active member of the case's lab.\n",
+          ),
+        viewerCanManageAttachments: zod
+          .boolean()
+          .nullish()
+          .describe(
+            "Whether the requesting user can delete or toggle visibility of existing attachments on this case. Restricted to lab admins and owners.\n",
+          ),
       }),
     )
     .optional(),
@@ -2189,6 +2213,18 @@ export const GetCaseResponse = zod.object({
         )
         .nullish(),
       _source: zod.string().optional(),
+      viewerCanUploadAttachments: zod
+        .boolean()
+        .nullish()
+        .describe(
+          "Whether the requesting user is permitted to upload new attachments or add notes to this case. True for any active member of the case's lab.\n",
+        ),
+      viewerCanManageAttachments: zod
+        .boolean()
+        .nullish()
+        .describe(
+          "Whether the requesting user can delete or toggle visibility of existing attachments on this case. Restricted to lab admins and owners.\n",
+        ),
     })
     .optional(),
 });
