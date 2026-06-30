@@ -1495,11 +1495,18 @@ export function MergeDialog({
   initialSources,
   onClose,
   onMerged,
+  singleReassign = false,
 }: {
   labOrganizationId: string;
   initialSources: MergeSourceInput[];
   onClose: () => void;
   onMerged: (r: MergeDialogResult) => void;
+  // When true the dialog runs in "reassign one case's doctor" mode: the
+  // current (wrong) doctor is locked in as the only source, the target
+  // practice is pinned to that source's practice, and the user only picks
+  // the correct existing target doctor name. Reuses the exact same merge
+  // preview/merge/undo endpoints as the full duplicate-doctor flow.
+  singleReassign?: boolean;
 }) {
   // Smart initialization: when the selection contains a mix of doctors with a
   // known practice and doctors with "Unknown practice", automatically promote
@@ -1536,16 +1543,24 @@ export function MergeDialog({
           ),
       );
 
-  const [sources, setSources] = useState<MergeSourceInput[]>(_autoSources);
+  const [sources, setSources] = useState<MergeSourceInput[]>(
+    singleReassign ? initialSources : _autoSources,
+  );
   const [targetMode, setTargetMode] = useState<"existing" | "new">("existing");
+  // In reassign mode the user starts with no target chosen (they pick the
+  // correct doctor) and the practice is pinned to the source's practice.
   const [targetName, setTargetName] = useState<string>(
-    _autoTarget?.doctorName ?? "",
+    singleReassign ? "" : (_autoTarget?.doctorName ?? ""),
   );
   const [targetProviderId, setTargetProviderId] = useState<string | null>(
-    _autoTarget?.providerOrganizationId ?? null,
+    singleReassign
+      ? (initialSources[0]?.providerOrganizationId ?? null)
+      : (_autoTarget?.providerOrganizationId ?? null),
   );
   const [targetPracticeName, setTargetPracticeName] = useState<string>(
-    _autoTarget?.practiceName ?? "",
+    singleReassign
+      ? (initialSources[0]?.practiceName ?? "")
+      : (_autoTarget?.practiceName ?? ""),
   );
   const [includeSoftDeleted, setIncludeSoftDeleted] = useState(false);
   const [searchInput, setSearchInput] = useState("");
@@ -1736,8 +1751,12 @@ export function MergeDialog({
     const name = entry.doctorName ?? "";
     if (!name) return;
     setTargetName(name);
-    setTargetProviderId(entry.providerOrganizationId ?? null);
-    setTargetPracticeName(entry.practiceName ?? "");
+    // Reassign mode keeps the case in its own practice — only the doctor
+    // name changes, so don't follow the picked entry's practice.
+    if (!singleReassign) {
+      setTargetProviderId(entry.providerOrganizationId ?? null);
+      setTargetPracticeName(entry.practiceName ?? "");
+    }
   }
 
   const targetSelfMerge = sources.some(
@@ -1746,22 +1765,43 @@ export function MergeDialog({
       (s.providerOrganizationId ?? null) === (targetProviderId ?? null),
   );
 
+  // In reassign mode the target MUST be an existing doctor in the case's own
+  // practice — never a brand-new doctor and never one from another practice.
+  // Restrict the picker to same-practice candidates (excluding the current,
+  // wrong doctor) so a stray pick can't create or cross-link records.
+  const visibleEntries = useMemo(() => {
+    if (!singleReassign) return searchAccumulated;
+    const curName = (initialSources[0]?.doctorName ?? "").trim().toLowerCase();
+    const practiceId = targetProviderId ?? null;
+    return searchAccumulated.filter(
+      (e) =>
+        (e.providerOrganizationId ?? null) === practiceId &&
+        (e.doctorName ?? "").trim().toLowerCase() !== curName,
+    );
+  }, [singleReassign, searchAccumulated, targetProviderId, initialSources]);
+
   const canMerge =
     !!targetName.trim() &&
     !!targetProviderId &&
     sources.length > 0 &&
     !targetSelfMerge &&
-    !mergeMutation.isPending;
+    !mergeMutation.isPending &&
+    // Reassign must land on an existing doctor; block until the preview
+    // confirms the target already exists in this practice.
+    (!singleReassign || preview?.targetExists === true);
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-foreground/40 p-4">
       <div className="bg-card border border-border rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col">
         <header className="px-6 py-4 border-b border-border flex items-center justify-between">
           <div>
-            <h2 className="text-base font-semibold">Merge doctors</h2>
+            <h2 className="text-base font-semibold">
+              {singleReassign ? "Reassign doctor" : "Merge doctors"}
+            </h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              All cases and pricing overrides from the sources will be moved
-              onto the target. You'll have 10 minutes to undo.
+              {singleReassign
+                ? "Pick the doctor this case should belong to. The case (and any others under the current doctor in this practice) moves to your pick. You'll have time to undo."
+                : "All cases and pricing overrides from the sources will be moved onto the target. You'll have 10 minutes to undo."}
             </p>
           </div>
           <button
@@ -1777,7 +1817,7 @@ export function MergeDialog({
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
           <section>
             <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
-              Sources ({sources.length})
+              {singleReassign ? "Current doctor" : `Sources (${sources.length})`}
             </div>
             {sources.length === 0 ? (
               <div className="text-sm text-muted-foreground border border-dashed border-border rounded-md px-3 py-3">
@@ -1796,14 +1836,16 @@ export function MergeDialog({
                         {s.practiceName || "(no practice)"}
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => removeSource(i)}
-                      className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
-                      aria-label="Remove source"
-                    >
-                      <X size={14} />
-                    </button>
+                    {!singleReassign && (
+                      <button
+                        type="button"
+                        onClick={() => removeSource(i)}
+                        className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                        aria-label="Remove source"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -1813,28 +1855,30 @@ export function MergeDialog({
           <section>
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                Target
+                {singleReassign ? "Reassign to" : "Target"}
               </div>
-              <div className="flex items-center rounded-md border border-border text-xs overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setTargetMode("existing")}
-                  className={`px-2 py-1 ${targetMode === "existing" ? "bg-secondary font-medium" : "text-muted-foreground hover:bg-secondary/40"}`}
-                >
-                  Pick existing
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTargetMode("new");
-                    setTargetName("");
-                    setTargetPracticeId(null);
-                  }}
-                  className={`px-2 py-1 border-l border-border ${targetMode === "new" ? "bg-secondary font-medium" : "text-muted-foreground hover:bg-secondary/40"}`}
-                >
-                  Create new
-                </button>
-              </div>
+              {!singleReassign && (
+                <div className="flex items-center rounded-md border border-border text-xs overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setTargetMode("existing")}
+                    className={`px-2 py-1 ${targetMode === "existing" ? "bg-secondary font-medium" : "text-muted-foreground hover:bg-secondary/40"}`}
+                  >
+                    Pick existing
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTargetMode("new");
+                      setTargetName("");
+                      setTargetPracticeId(null);
+                    }}
+                    className={`px-2 py-1 border-l border-border ${targetMode === "new" ? "bg-secondary font-medium" : "text-muted-foreground hover:bg-secondary/40"}`}
+                  >
+                    Create new
+                  </button>
+                </div>
+              )}
             </div>
 
             {targetMode === "existing" ? (
@@ -1947,12 +1991,14 @@ export function MergeDialog({
                   Searching…
                 </div>
               )}
-              {!searchQuery.isLoading && searchAccumulated.length === 0 && (
+              {!searchQuery.isLoading && visibleEntries.length === 0 && (
                 <div className="px-3 py-4 text-sm text-muted-foreground text-center">
-                  No matches.
+                  {singleReassign
+                    ? "No other doctors in this practice. Add the correct doctor first, then reassign."
+                    : "No matches."}
                 </div>
               )}
-              {searchAccumulated.map((e, i) => {
+              {visibleEntries.map((e, i) => {
                 const k = `${(e.doctorName ?? "").toLowerCase()}|${e.providerOrganizationId ?? ""}`;
                 const inSources = sourceKeys.has(k);
                 const isTarget =
@@ -1979,14 +2025,16 @@ export function MergeDialog({
                         {(e.totalCases ?? 0) === 1 ? "" : "s"}
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => addSource(e)}
-                      disabled={inSources || isTarget}
-                      className="h-7 px-2 rounded-md text-xs hover:bg-secondary disabled:opacity-40"
-                    >
-                      {inSources ? "Source" : "+ Source"}
-                    </button>
+                    {!singleReassign && (
+                      <button
+                        type="button"
+                        onClick={() => addSource(e)}
+                        disabled={inSources || isTarget}
+                        className="h-7 px-2 rounded-md text-xs hover:bg-secondary disabled:opacity-40"
+                      >
+                        {inSources ? "Source" : "+ Source"}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => pickAsTarget(e)}
@@ -2013,16 +2061,18 @@ export function MergeDialog({
             </div>
           </section>
 
-          <section>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={includeSoftDeleted}
-                onChange={(e) => setIncludeSoftDeleted(e.target.checked)}
-              />
-              Also remap soft-deleted cases under each source
-            </label>
-          </section>
+          {!singleReassign && (
+            <section>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={includeSoftDeleted}
+                  onChange={(e) => setIncludeSoftDeleted(e.target.checked)}
+                />
+                Also remap soft-deleted cases under each source
+              </label>
+            </section>
+          )}
 
           <section className="border border-border rounded-md p-4 bg-secondary/20">
             <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
@@ -2111,7 +2161,13 @@ export function MergeDialog({
             }}
             className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
           >
-            {mergeMutation.isPending ? "Merging…" : "Merge"}
+            {mergeMutation.isPending
+              ? singleReassign
+                ? "Reassigning…"
+                : "Merging…"
+              : singleReassign
+                ? "Reassign"
+                : "Merge"}
           </button>
         </footer>
       </div>

@@ -45,6 +45,8 @@ import { apiFetch, ApiError, getAccessToken, getApiOrigin } from "@/lib/api";
 import { uploadMediaFile } from "@/lib/upload-media-file";
 import { DoctorNamePicker } from "@/components/DoctorNamePicker";
 import { FieldCombobox } from "@/components/FieldCombobox";
+import { MergeDialog, type MergeSourceInput } from "./doctors";
+import { undoDoctorMerge } from "@workspace/api-client-react";
 import { setNavBlocker } from "@/lib/nav-guard";
 import {
   computeCaseDateRange,
@@ -3577,6 +3579,7 @@ export function CaseDrawer({
   >(null);
   const setLightboxUrl = (url: string | null) => setLightbox(url ? { url, kind: "image" } : null);
   const [confirmDeleteCase, setConfirmDeleteCase] = useState(false);
+  const [reassignDoctorOpen, setReassignDoctorOpen] = useState(false);
   const [showPrintLayoutEditor, setShowPrintLayoutEditor] = useState(false);
   const [showCaseAdvancedEditor, setShowCaseAdvancedEditor] = useState(false);
   const [rxPreviewOpen, setRxPreviewOpen] = useState(false);
@@ -6023,7 +6026,36 @@ export function CaseDrawer({
                         </button>
                       </div>
                     </div>
-                    <Field label="Doctor" value={pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName} />
+                    <div>
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Doctor</div>
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        <span className="text-sm break-words">
+                          {(pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName) || "—"}
+                        </span>
+                        {(() => {
+                          const curDoctor = pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName;
+                          const curPracticeId = pendingCaseEdit?.providerOrganizationId ?? data?.providerOrganizationId ?? labCase.providerOrganizationId;
+                          const labOrgId = data?.labOrganizationId ?? labCase.labOrganizationId;
+                          const canReassign =
+                            (user?.role === "admin" || user?.role === "owner") &&
+                            !!curDoctor &&
+                            !!curPracticeId &&
+                            !!labOrgId;
+                          if (!canReassign) return null;
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => setReassignDoctorOpen(true)}
+                              className="inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-medium text-primary/80 hover:text-primary hover:bg-primary/10 transition-colors shrink-0"
+                              title="Reassign this case to a different doctor in the same practice"
+                            >
+                              <GitBranch size={10} />
+                              Reassign
+                            </button>
+                          );
+                        })()}
+                      </div>
+                    </div>
                     <Field label="Practice" value={(() => {
                       const pid = pendingCaseEdit?.providerOrganizationId ?? data?.providerOrganizationId ?? labCase.providerOrganizationId;
                       if (!pid) return "—";
@@ -7922,6 +7954,63 @@ export function CaseDrawer({
           onClose={() => setRxPreviewOpen(false)}
         />
       )}
+
+      {/* Reassign doctor — reuses the duplicate-doctor merge flow with a single
+          locked source (this case's current doctor) and the practice pinned. */}
+      {reassignDoctorOpen && (() => {
+        const curDoctor = pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName;
+        const curPracticeId = pendingCaseEdit?.providerOrganizationId ?? data?.providerOrganizationId ?? labCase.providerOrganizationId;
+        const labOrgId = data?.labOrganizationId ?? labCase.labOrganizationId;
+        if (!curDoctor || !curPracticeId || !labOrgId) return null;
+        const curOrg = drawerProviderOrgs.find((o) => o.id === curPracticeId);
+        const initialSources: MergeSourceInput[] = [
+          {
+            doctorName: curDoctor,
+            providerOrganizationId: curPracticeId,
+            practiceName: curOrg?.displayName ?? curOrg?.name ?? "",
+          },
+        ];
+        return (
+          <MergeDialog
+            singleReassign
+            labOrganizationId={labOrgId}
+            initialSources={initialSources}
+            onClose={() => setReassignDoctorOpen(false)}
+            onMerged={(result) => {
+              qc.invalidateQueries({ queryKey: ["cases"] });
+              qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+              qc.invalidateQueries({ queryKey: ["invoices"] });
+              qc.invalidateQueries({ queryKey: ["organizations"] });
+              setReassignDoctorOpen(false);
+              toast.success(result.message, {
+                duration: result.undoWindowMs,
+                action: {
+                  label: "Undo",
+                  onClick: () => {
+                    (async () => {
+                      try {
+                        for (const id of result.auditLogIds) {
+                          await undoDoctorMerge(id);
+                        }
+                        qc.invalidateQueries({ queryKey: ["cases"] });
+                        qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+                        qc.invalidateQueries({ queryKey: ["invoices"] });
+                        qc.invalidateQueries({ queryKey: ["organizations"] });
+                        toast.success("Reassignment undone.");
+                      } catch (err) {
+                        toast.error(
+                          (err as { message?: string })?.message ??
+                            "Couldn't undo — the window may have passed.",
+                        );
+                      }
+                    })();
+                  },
+                },
+              });
+            }}
+          />
+        );
+      })()}
 
       {/* Delete case — 3-step security flow */}
       {confirmDeleteCase && (

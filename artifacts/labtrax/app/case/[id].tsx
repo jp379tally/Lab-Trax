@@ -56,6 +56,7 @@ import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { AuthedImage } from "@/components/ui/AuthedImage";
+import { DoctorReassignSheet } from "@/components/DoctorReassignSheet";
 import { ReadOnlyToothChart } from "@/components/ReadOnlyToothChart";
 import { ToothChart } from "@/components/ToothChart";
 import { ToothActionSheet, type ToothActionPayload } from "@/components/ToothActionSheet";
@@ -136,6 +137,7 @@ interface DetailedCase {
   remakeReason?: string | null;
   organizationId?: string | null;
   labOrganizationId?: string | null;
+  providerOrganizationId?: string | null;
   needsAiReview?: boolean | null;
   aiImportSource?: string | null;
   /**
@@ -1537,6 +1539,7 @@ function OverviewSection({
   const [printLoading, setPrintLoading] = useState(false);
   const [pendingPrintBarcode, setPendingPrintBarcode] = useState<string | null>(null);
   const [rxPreviewOpen, setRxPreviewOpen] = useState(false);
+  const [reassignOpen, setReassignOpen] = useState(false);
   const insets = useSafeAreaInsets();
 
   // ── PFM "don't forget to charge for alloy" reminder ──────────────────
@@ -2202,7 +2205,25 @@ function OverviewSection({
                 </Pressable>
               </View>
             </View>
-            <FieldRow label="Doctor" value={c.doctorName || "—"} styles={styles} />
+            <View style={styles.fieldRow}>
+              <Text style={styles.fieldLabel}>Doctor</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs, flexShrink: 1, justifyContent: "flex-end" }}>
+                <Text style={styles.fieldValue}>{c.doctorName || "—"}</Text>
+                {isAdmin &&
+                !!c.doctorName &&
+                !!c.providerOrganizationId &&
+                !!(c.labOrganizationId ?? c.organizationId) ? (
+                  <Pressable
+                    hitSlop={8}
+                    onPress={() => setReassignOpen(true)}
+                    style={{ flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: 6, paddingVertical: 2, borderRadius: Radius.xs, backgroundColor: colors.tintLight }}
+                  >
+                    <Ionicons name="swap-horizontal" size={11} color={colors.tint} />
+                    <Text style={{ fontSize: 10, color: colors.tint, fontWeight: "600" }}>Reassign</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
             <FieldRow label="Case #" value={c.caseNumber || "—"} styles={styles} />
             <View style={styles.fieldRow}>
               <Text style={styles.fieldLabel}>Priority</Text>
@@ -2547,6 +2568,21 @@ function OverviewSection({
           </View>
         </View>
       </Modal>
+
+      {/* Reassign doctor — reuses the duplicate-doctor merge endpoints. */}
+      {c.providerOrganizationId && (c.labOrganizationId ?? c.organizationId) ? (
+        <DoctorReassignSheet
+          visible={reassignOpen}
+          labOrganizationId={(c.labOrganizationId ?? c.organizationId) as string}
+          currentDoctorName={c.doctorName ?? ""}
+          currentPracticeId={c.providerOrganizationId}
+          onClose={() => setReassignOpen(false)}
+          onReassigned={() => {
+            qc.invalidateQueries({ queryKey: ["case", caseId] });
+            qc.invalidateQueries({ queryKey: ["cases"] });
+          }}
+        />
+      ) : null}
 
       {/* Prescription preview */}
       <Modal
