@@ -7778,6 +7778,31 @@ export function CaseDrawer({
                                   </div>
                                 );
                               })()}
+                              {isInvoice &&
+                                (metadata.invoiceNumber != null ||
+                                  metadata.previousStatus != null ||
+                                  metadata.newStatus != null) && (
+                                <div className="mt-1 text-xs space-y-0.5">
+                                  {metadata.invoiceNumber != null && (
+                                    <div className="font-mono text-muted-foreground">
+                                      {String(metadata.invoiceNumber)}
+                                    </div>
+                                  )}
+                                  {metadata.previousStatus != null &&
+                                    metadata.newStatus != null &&
+                                    metadata.previousStatus !== metadata.newStatus && (
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="capitalize text-muted-foreground">
+                                        {String(metadata.previousStatus).replace(/_/g, " ")}
+                                      </span>
+                                      <span className="text-muted-foreground">→</span>
+                                      <span className="capitalize font-medium">
+                                        {String(metadata.newStatus).replace(/_/g, " ")}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                               {eventType === "case_restoration_price_updated" && (
                                 <div className="mt-1.5 text-xs space-y-0.5">
                                   {!!(metadata.restorationType || metadata.toothNumber) && (
