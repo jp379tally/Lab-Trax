@@ -53,7 +53,8 @@ import type {
   Organization,
   PracticeStatement,
 } from "@/lib/types";
-import { formatDate, formatMoney } from "@/lib/format";
+import { formatDate, formatMoney, statusLabel } from "@/lib/format";
+import { toast } from "@/hooks/use-toast";
 import {
   deriveRxSummary,
   formatRxTeethLabel,
@@ -148,9 +149,10 @@ export default function InvoicesPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkSendOpen, setBulkSendOpen] = useState(false);
   const [bulkConfirm, setBulkConfirm] = useState<{
-    kind: "delete_selected" | "reset_selected" | "reset_all";
+    kind: "delete_selected" | "reset_selected" | "reset_all" | "status_change";
     count: number;
     labOrganizationId: string;
+    targetStatus?: (typeof EDITABLE_STATUSES)[number];
   } | null>(null);
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
 
@@ -351,6 +353,49 @@ export default function InvoicesPage() {
     },
   });
 
+  const bulkStatusMutation = useMutation({
+    mutationFn: ({ expected: _expected, ...payload }: { invoiceIds: string[]; status: (typeof EDITABLE_STATUSES)[number]; expected: number }) =>
+      apiFetch<{ updatedCount: number; skippedFrozenCount: number; status: string }>("/invoices/bulk-status", {
+        method: "POST",
+        body: JSON.stringify({ ...(labOrganizationId ? { labOrganizationId } : {}), ...payload }),
+      }),
+    onSuccess: (result, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+      const affected = result?.updatedCount ?? 0;
+      const label = statusLabel(variables.status);
+      if (affected === 0) {
+        setBulkFeedback(
+          result?.skippedFrozenCount
+            ? "No invoices were updated — frozen invoices cannot change status."
+            : "No invoices were updated. Please try again or refresh.",
+        );
+        return;
+      }
+      setSelected(new Set());
+      setBulkConfirm(null);
+      setBulkFeedback(null);
+      const skipped = result?.skippedFrozenCount ?? 0;
+      toast({
+        title: `Updated ${affected} invoice${affected !== 1 ? "s" : ""} to ${label}`,
+        description:
+          skipped > 0
+            ? `${skipped} frozen invoice${skipped !== 1 ? "s were" : " was"} skipped.`
+            : undefined,
+      });
+    },
+  });
+
+  function applyBulkStatus(target: (typeof EDITABLE_STATUSES)[number]) {
+    if (!labOrganizationId || selected.size === 0) return;
+    setBulkFeedback(null);
+    if (target === "paid" || target === "void") {
+      setBulkConfirm({ kind: "status_change", count: selected.size, labOrganizationId, targetStatus: target });
+      return;
+    }
+    bulkStatusMutation.mutate({ invoiceIds: Array.from(selected), status: target, expected: selected.size });
+  }
+
   function handleBulkConfirm() {
     if (!bulkConfirm) return;
     setBulkFeedback(null);
@@ -360,6 +405,8 @@ export default function InvoicesPage() {
       bulkResetMutation.mutate({ invoiceIds: Array.from(selected), expected: selected.size });
     } else if (bulkConfirm.kind === "reset_all") {
       bulkResetMutation.mutate({ all: true, expected: bulkConfirm.count });
+    } else if (bulkConfirm.kind === "status_change" && bulkConfirm.targetStatus) {
+      bulkStatusMutation.mutate({ invoiceIds: Array.from(selected), status: bulkConfirm.targetStatus, expected: selected.size });
     }
   }
 
@@ -533,6 +580,22 @@ export default function InvoicesPage() {
                 >
                   <RotateCcw size={12} /> Reset all to $0
                 </button>
+                <select
+                  aria-label="Change status"
+                  value=""
+                  disabled={bulkStatusMutation.isPending}
+                  onChange={(e) => {
+                    const v = e.target.value as (typeof EDITABLE_STATUSES)[number];
+                    e.target.value = "";
+                    if (v) applyBulkStatus(v);
+                  }}
+                  className="px-3 py-1.5 rounded-md bg-secondary text-foreground border border-border text-xs font-medium hover:bg-secondary/70 disabled:opacity-50"
+                >
+                  <option value="">Change status…</option>
+                  {EDITABLE_STATUSES.map((s) => (
+                    <option key={s} value={s}>{statusLabel(s)}</option>
+                  ))}
+                </select>
               </>
             )}
             <button
@@ -758,10 +821,12 @@ export default function InvoicesPage() {
         <BulkInvoiceConfirmModal
           kind={bulkConfirm.kind}
           count={bulkConfirm.count}
-          pending={bulkDeleteMutation.isPending || bulkResetMutation.isPending}
+          targetStatusLabel={bulkConfirm.targetStatus ? statusLabel(bulkConfirm.targetStatus) : null}
+          pending={bulkDeleteMutation.isPending || bulkResetMutation.isPending || bulkStatusMutation.isPending}
           error={
             (bulkDeleteMutation.error instanceof Error ? bulkDeleteMutation.error.message : null) ??
-            (bulkResetMutation.error instanceof Error ? bulkResetMutation.error.message : null)
+            (bulkResetMutation.error instanceof Error ? bulkResetMutation.error.message : null) ??
+            (bulkStatusMutation.error instanceof Error ? bulkStatusMutation.error.message : null)
           }
           feedback={bulkFeedback}
           onCancel={() => {
@@ -778,14 +843,16 @@ export default function InvoicesPage() {
 function BulkInvoiceConfirmModal({
   kind,
   count,
+  targetStatusLabel,
   pending,
   error,
   feedback,
   onCancel,
   onConfirm,
 }: {
-  kind: "delete_selected" | "reset_selected" | "reset_all";
+  kind: "delete_selected" | "reset_selected" | "reset_all" | "status_change";
   count: number;
+  targetStatusLabel?: string | null;
   pending: boolean;
   error: string | null;
   feedback: string | null;
@@ -794,15 +861,21 @@ function BulkInvoiceConfirmModal({
 }) {
   const isDelete = kind === "delete_selected";
   const isResetAll = kind === "reset_all";
+  const isStatus = kind === "status_change";
+  const statusName = targetStatusLabel ?? "the selected status";
   const title = isDelete
     ? `Delete ${count} invoice${count !== 1 ? "s" : ""}?`
     : isResetAll
     ? "Reset all invoices to $0?"
+    : isStatus
+    ? `Mark ${count} invoice${count !== 1 ? "s" : ""} as ${statusName}?`
     : `Reset ${count} invoice${count !== 1 ? "s" : ""} to $0?`;
   const description = isDelete
     ? `This will permanently void and hide ${count} invoice${count !== 1 ? "s" : ""}. They will no longer appear in the invoices list or statement rollups. This cannot be undone.`
     : isResetAll
     ? `This will zero out all invoice totals and line items across every practice. Invoices will show $0.00 total and $0.00 balance due and their status will be reset to draft. This cannot be undone.`
+    : isStatus
+    ? `This will change the status of ${count} selected invoice${count !== 1 ? "s" : ""} to ${statusName}. Frozen invoices will be skipped.`
     : `This will zero out the totals and line items for ${count} selected invoice${count !== 1 ? "s" : ""}. Each will show $0.00 total and $0.00 balance due and its status will be reset to draft. This cannot be undone.`;
 
   return (
@@ -829,12 +902,14 @@ function BulkInvoiceConfirmModal({
             type="button"
             onClick={onConfirm}
             disabled={pending}
-            className={`h-9 px-3 rounded-md text-sm font-medium text-white disabled:opacity-50 ${isDelete ? "bg-destructive hover:bg-destructive/90" : "bg-warning hover:bg-warning/90"}`}
+            className={`h-9 px-3 rounded-md text-sm font-medium text-white disabled:opacity-50 ${isDelete ? "bg-destructive hover:bg-destructive/90" : isStatus ? "bg-primary hover:bg-primary/90" : "bg-warning hover:bg-warning/90"}`}
           >
             {pending ? (
               <Loader2 size={14} className="animate-spin" />
             ) : isDelete ? (
               "Delete invoices"
+            ) : isStatus ? (
+              `Mark as ${statusName}`
             ) : (
               "Reset to $0"
             )}

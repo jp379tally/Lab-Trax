@@ -1213,6 +1213,16 @@ const bulkInvoiceTargetSchema = z.object({
 
 type BulkInvoiceTargetInput = z.infer<typeof bulkInvoiceTargetSchema>;
 
+// Bulk status change: a selection of invoice ids plus a single target status.
+// The target is validated against the same status set the single-invoice PATCH
+// accepts so bulk and single updates stay in lockstep.
+const bulkInvoiceStatusSchema = z.object({
+  // Optional hint only; each invoice is authorized by its OWN labOrganizationId.
+  labOrganizationId: z.string().min(1).optional(),
+  invoiceIds: z.array(z.string().min(1)).min(1).max(2000),
+  status: z.enum(["draft", "open", "partially_paid", "paid", "void"]),
+});
+
 type BulkInvoiceTarget = {
   id: string;
   invoiceNumber: string;
@@ -1418,6 +1428,145 @@ router.post(
     );
 
     return ok(res, { resetCount: toReset.length });
+  }),
+);
+
+// ── Bulk invoice status change ─────────────────────────────────────────────
+// Applies a single target status to a selection of invoices. Mirrors the
+// per-invoice PATCH side effects so bulk and single updates behave identically:
+//   - one audit log row per invoice, scoped to its OWN lab org
+//   - a case-history event (invoice_voided when target=void, else invoice_updated)
+//   - paid-status ledgering: ensureInvoiceDeposit when entering "paid",
+//     reverseInvoiceDepositIfAny when leaving "paid"
+// Frozen invoices (their linked case was deleted) are skipped, never changed.
+// All status writes + audit + case events run in a single transaction; if the
+// caller lacks a billing role for any touched lab org the whole request fails
+// closed with 403 and nothing is changed.
+router.post(
+  "/bulk-status",
+  asyncHandler(async (req, res) => {
+    const input = bulkInvoiceStatusSchema.parse(req.body);
+    const actorUserId: string = (req as any).auth.userId;
+    const targetStatus = input.status;
+
+    const targets = await db.query.invoices.findMany({
+      where: and(
+        inArray(invoices.id, input.invoiceIds),
+        isNull(invoices.deletedAt),
+      ),
+      columns: {
+        id: true,
+        invoiceNumber: true,
+        providerOrganizationId: true,
+        labOrganizationId: true,
+        status: true,
+        caseId: true,
+        frozen: true,
+        total: true,
+      },
+    });
+
+    // Authorize the caller for every distinct lab org the selection touches.
+    const orgIds = [...new Set(targets.map((inv) => inv.labOrganizationId))];
+    for (const orgId of orgIds) {
+      await requireAnyRole(actorUserId, orgId, BILLING_ROLES);
+    }
+
+    // Frozen invoices (linked case deleted) cannot be changed — skip them.
+    const updatable = targets.filter((inv) => !inv.frozen);
+    const skippedFrozenCount = targets.length - updatable.length;
+
+    if (updatable.length === 0) {
+      return ok(res, {
+        updatedCount: 0,
+        skippedFrozenCount,
+        status: targetStatus,
+      });
+    }
+
+    const ids = updatable.map((inv) => inv.id);
+    const now = new Date();
+    const actorIp: string | null = req.ip ?? null;
+    const actorUserAgent: string | null = req.get("user-agent") ?? null;
+    const actorInitials: string = (req as any).user?.initials || "SYS";
+
+    await db.transaction(async (tx) => {
+      // 1. Apply the new status (money fields untouched — status-only change).
+      await tx
+        .update(invoices)
+        .set({ status: targetStatus, updatedByUserId: actorUserId })
+        .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
+
+      // 2. Audit log — one row per invoice, scoped to its OWN lab org.
+      await tx.insert(auditLogs).values(
+        updatable.map((inv) => ({
+          userId: actorUserId,
+          organizationId: inv.labOrganizationId,
+          action: "bulk_invoice_status_change",
+          entityType: "invoice",
+          entityId: inv.id,
+          ipAddress: actorIp,
+          userAgent: actorUserAgent,
+          metadataJson: {
+            invoiceNumber: inv.invoiceNumber,
+            providerOrganizationId: inv.providerOrganizationId,
+            previousStatus: inv.status,
+            newStatus: targetStatus,
+            totalAffected: updatable.length,
+          },
+          createdAt: now,
+        })),
+      );
+
+      // 3. Mirror onto the case History tab for invoices linked to a case.
+      const withCase = updatable.filter((inv) => inv.caseId);
+      if (withCase.length) {
+        await tx.insert(caseEvents).values(
+          withCase.map((inv) => ({
+            caseId: inv.caseId as string,
+            eventType:
+              targetStatus === "void" ? "invoice_voided" : "invoice_updated",
+            actorUserId,
+            actorOrganizationId: inv.labOrganizationId,
+            actorInitials,
+            metadataJson: {
+              invoiceId: inv.id,
+              invoiceNumber: inv.invoiceNumber,
+              previousStatus: inv.status,
+              newStatus: targetStatus,
+            },
+          })),
+        );
+      }
+    });
+
+    // 4. Paid-status ledgering — mirror the single PATCH, run after commit.
+    for (const inv of updatable) {
+      if (targetStatus === "paid" && inv.status !== "paid") {
+        await ensureInvoiceDeposit(
+          {
+            id: inv.id,
+            invoiceNumber: inv.invoiceNumber,
+            total: String(inv.total),
+            labOrganizationId: inv.labOrganizationId,
+          },
+          actorUserId,
+        );
+      } else if (inv.status === "paid" && targetStatus !== "paid") {
+        await reverseInvoiceDepositIfAny(inv.id, actorUserId);
+      }
+    }
+
+    req.log?.info?.(
+      { count: updatable.length, status: targetStatus },
+      "[INVOICE BULK STATUS] completed",
+    );
+
+    return ok(res, {
+      updatedCount: updatable.length,
+      skippedFrozenCount,
+      status: targetStatus,
+    });
   }),
 );
 
