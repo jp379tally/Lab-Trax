@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -14,7 +14,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
-import { useDuplicateDoctorClusters } from "@/lib/duplicate-doctors";
+import {
+  useDuplicateDoctorClusters,
+  type DoctorDuplicateCluster,
+} from "@/lib/duplicate-doctors";
+import { DoctorMergeSheet } from "@/components/DoctorMergeSheet";
 
 export default function DuplicateDoctorsScreen() {
   const insets = useSafeAreaInsets();
@@ -23,6 +27,9 @@ export default function DuplicateDoctorsScreen() {
 
   const { query, clusters, totalGroups } = useDuplicateDoctorClusters();
   const isRefreshing = query.isFetching && !query.isLoading;
+  const [activeCluster, setActiveCluster] = useState<DoctorDuplicateCluster | null>(
+    null,
+  );
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -72,7 +79,7 @@ export default function DuplicateDoctorsScreen() {
           }
         >
           <Text style={styles.note}>
-            These doctor names look similar enough to be the same person. Open LabTrax Desktop to review and merge them.
+            These doctor names look similar enough to be the same person. Tap a group to merge them.
           </Text>
           {clusters.map((cluster, ci) => {
             const doctors = cluster.doctors ?? [];
@@ -81,7 +88,11 @@ export default function DuplicateDoctorsScreen() {
                 ? `${Math.round(cluster.topScore * 100)}% similar`
                 : null;
             return (
-              <Card key={`${cluster.labOrganizationId}-${ci}`} style={styles.clusterCard}>
+              <Card
+                key={`${cluster.labOrganizationId}-${ci}`}
+                style={styles.clusterCard}
+                onPress={() => setActiveCluster(cluster)}
+              >
                 <View style={styles.clusterHeader}>
                   <View style={styles.clusterHeaderMain}>
                     <Ionicons name="git-merge-outline" size={18} color={colors.tint} />
@@ -105,11 +116,21 @@ export default function DuplicateDoctorsScreen() {
                     </View>
                   ))}
                 </View>
+                <View style={styles.mergeHint}>
+                  <Ionicons name="git-merge-outline" size={14} color={colors.tint} />
+                  <Text style={styles.mergeHintText}>Tap to merge</Text>
+                  <Ionicons name="chevron-forward" size={14} color={colors.textTertiary} />
+                </View>
               </Card>
             );
           })}
         </ScrollView>
       )}
+
+      <DoctorMergeSheet
+        cluster={activeCluster}
+        onClose={() => setActiveCluster(null)}
+      />
     </View>
   );
 }
@@ -153,5 +174,15 @@ function makeStyles(c: ThemeColors) {
     doctorMain: { flex: 1 },
     doctorName: { ...Typography.bodyMedium, color: c.text },
     doctorMeta: { ...Typography.caption, color: c.textSecondary },
+    mergeHint: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      marginTop: Spacing.xs,
+      paddingTop: Spacing.sm,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+    },
+    mergeHintText: { ...Typography.captionSemibold, color: c.tint, flex: 1 },
   });
 }

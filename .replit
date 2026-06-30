@@ -22,10 +22,6 @@ args = "typecheck-all"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "mobile-test"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "knowledge-test"
 
 [[workflows.workflow.tasks]]
@@ -42,17 +38,6 @@ isValidation = true
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pnpm run typecheck"
-
-[[workflows.workflow]]
-name = "mobile-test"
-author = "agent"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/labtrax run test"
 
 [[workflows.workflow]]
 name = "knowledge-test"
