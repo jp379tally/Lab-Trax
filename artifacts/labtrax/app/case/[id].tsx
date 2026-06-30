@@ -331,6 +331,46 @@ function eventInvoiceNumber(ev: DetailEvent): string | null {
     : null;
 }
 
+// Plain-language one-line summary for invoice lifecycle events
+// (`invoice_updated` / `invoice_voided`). Non-technical lab users read
+// sentences, not a stacked title + invoice number + "Draft → Open" arrow, so
+// collapse the affected invoice number and its resulting status into a single
+// friendly line: "Invoice INV-9001 marked Open" or "Invoice INV-9002 voided".
+// Returns null for any other event type so the default title/description
+// rendering is used.
+function eventInvoiceSummary(ev: DetailEvent): string | null {
+  if (ev.eventType !== "invoice_updated" && ev.eventType !== "invoice_voided") {
+    return null;
+  }
+  let meta: Record<string, unknown> | null = null;
+  if (ev.metadataJson && typeof ev.metadataJson === "object") {
+    meta = ev.metadataJson as Record<string, unknown>;
+  } else if (typeof ev.metadataJson === "string" && ev.metadataJson.trim()) {
+    try {
+      const parsed = JSON.parse(ev.metadataJson);
+      if (parsed && typeof parsed === "object") meta = parsed as Record<string, unknown>;
+    } catch {
+      meta = null;
+    }
+  }
+  const invoiceNumber =
+    meta && typeof meta.invoiceNumber === "string" && meta.invoiceNumber
+      ? meta.invoiceNumber
+      : null;
+  const newStatus =
+    meta && typeof meta.newStatus === "string" && meta.newStatus
+      ? meta.newStatus
+      : null;
+  const subject = invoiceNumber ? `Invoice ${invoiceNumber}` : "Invoice";
+  if (ev.eventType === "invoice_voided" || newStatus === "void") {
+    return `${subject} voided`;
+  }
+  if (newStatus) {
+    return `${subject} marked ${titleCase(newStatus)}`;
+  }
+  return `${subject} updated`;
+}
+
 // Tappable attachment carried by a history event's metadata, mirroring desktop:
 // prefer the legacy/mobile imageUri (works without auth headers, including data:
 // URIs) and fall back to the canonical id-based /file route. Returns null for
@@ -4307,6 +4347,7 @@ function HistorySection({
       {events.map((ev, i) => {
         const desc = eventDescription(ev, notesById);
         const invoiceNumber = eventInvoiceNumber(ev);
+        const invoiceSummary = eventInvoiceSummary(ev);
         const actor = ev.actorName || ev.actorInitials;
         const att = eventAttachment(ev, caseId);
         const opening = openingId === ev.id;
@@ -4314,11 +4355,17 @@ function HistorySection({
           <View key={ev.id} style={[styles.eventRow, i > 0 && styles.eventDivider]}>
             <View style={styles.eventDot} />
             <View style={styles.eventBody}>
-              <Text style={styles.eventTitle}>{formatEventType(ev.eventType)}</Text>
-              {invoiceNumber ? (
-                <Text style={styles.eventInvoiceNumber}>{invoiceNumber}</Text>
-              ) : null}
-              {desc ? <Text style={styles.eventDesc}>{desc}</Text> : null}
+              {invoiceSummary ? (
+                <Text style={styles.eventTitle}>{invoiceSummary}</Text>
+              ) : (
+                <>
+                  <Text style={styles.eventTitle}>{formatEventType(ev.eventType)}</Text>
+                  {invoiceNumber ? (
+                    <Text style={styles.eventInvoiceNumber}>{invoiceNumber}</Text>
+                  ) : null}
+                  {desc ? <Text style={styles.eventDesc}>{desc}</Text> : null}
+                </>
+              )}
               {att ? (
                 att.isImage ? (
                   <Pressable

@@ -142,43 +142,31 @@ describe("Case History tab — invoice lifecycle events", () => {
     vi.stubGlobal("fetch", makeFetchStub());
   });
 
-  it("renders an invoice_updated event as an 'Invoice Updated' timeline row", async () => {
+  it("renders an invoice_updated event as a plain-language one-line summary", async () => {
     await renderHistoryTab();
 
+    // The row reads as a sentence instead of a stacked "Invoice Updated" title +
+    // number + "draft → open" transition, matching the mobile History wording.
     await waitFor(() => {
-      expect(screen.getByText("Invoice Updated")).toBeInTheDocument();
+      expect(screen.getByText("Invoice INV-9001 marked Open")).toBeInTheDocument();
     });
   });
 
-  it("renders an invoice_voided event as an 'Invoice Voided' timeline row", async () => {
+  it("renders an invoice_voided event as a plain-language one-line summary", async () => {
     await renderHistoryTab();
 
     await waitFor(() => {
-      expect(screen.getByText("Invoice Voided")).toBeInTheDocument();
+      expect(screen.getByText("Invoice INV-9002 voided")).toBeInTheDocument();
     });
   });
 
-  it("surfaces the invoice number metadata on the timeline row", async () => {
+  it("surfaces the invoice number + status change within each summary", async () => {
     await renderHistoryTab();
 
+    // The one-line summary still names WHICH invoice changed and its new status.
     await waitFor(() => {
-      expect(screen.getByText("INV-9001")).toBeInTheDocument();
+      expect(screen.getByText("Invoice INV-9001 marked Open")).toBeInTheDocument();
     });
-    expect(screen.getByText("INV-9002")).toBeInTheDocument();
-  });
-
-  it("renders the previousStatus → newStatus transition for each invoice event", async () => {
-    await renderHistoryTab();
-
-    // invoice_updated: draft → open
-    await waitFor(() => {
-      expect(screen.getByText("draft")).toBeInTheDocument();
-    });
-    // "open" is both the updated event's newStatus and the voided event's
-    // previousStatus, so it appears twice.
-    expect(screen.getAllByText("open").length).toBe(2);
-
-    // invoice_voided: open → void
-    expect(screen.getByText("void")).toBeInTheDocument();
+    expect(screen.getByText("Invoice INV-9002 voided")).toBeInTheDocument();
   });
 });

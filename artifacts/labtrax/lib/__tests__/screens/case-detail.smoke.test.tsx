@@ -125,33 +125,26 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       setMockAppState({ cases: [caseWithInvoiceEventHistory], invoices: [] });
     });
 
-    it("renders an invoice_updated event as an 'Invoice Updated' timeline row", () => {
+    it("renders an invoice_updated event as a plain-language one-line summary", () => {
       const { getByTestId, getAllByText } = render(<CaseDetailScreen />);
       fireEvent.press(getByTestId("section-tab-history"));
-      expect(getAllByText("Invoice Updated").length).toBeGreaterThan(0);
+      // The row reads as a sentence ("Invoice INV-9001 marked Open") instead of
+      // a stacked "Invoice Updated" title + number + "Draft → Open" arrow.
+      expect(getAllByText("Invoice INV-9001 marked Open").length).toBeGreaterThan(0);
     });
 
-    it("renders an invoice_voided event as an 'Invoice Voided' timeline row", () => {
+    it("renders an invoice_voided event as a plain-language one-line summary", () => {
       const { getByTestId, getAllByText } = render(<CaseDetailScreen />);
       fireEvent.press(getByTestId("section-tab-history"));
-      expect(getAllByText("Invoice Voided").length).toBeGreaterThan(0);
+      expect(getAllByText("Invoice INV-9002 voided").length).toBeGreaterThan(0);
     });
 
-    it("surfaces the affected invoice number on each invoice event row", () => {
+    it("surfaces the affected invoice number + status change within each summary", () => {
       const { getByTestId, getAllByText } = render(<CaseDetailScreen />);
       fireEvent.press(getByTestId("section-tab-history"));
-      expect(getAllByText("INV-9001").length).toBeGreaterThan(0);
-      expect(getAllByText("INV-9002").length).toBeGreaterThan(0);
-    });
-
-    it("renders the previousStatus → newStatus transition for each invoice event", () => {
-      const { getByTestId, getAllByText } = render(<CaseDetailScreen />);
-      fireEvent.press(getByTestId("section-tab-history"));
-      // The mobile timeline title-cases the status transition (see eventDescription).
-      // invoice_updated: draft → open
-      expect(getAllByText("Draft → Open").length).toBeGreaterThan(0);
-      // invoice_voided: open → void
-      expect(getAllByText("Open → Void").length).toBeGreaterThan(0);
+      // The one-line summary still names WHICH invoice changed and its new status.
+      expect(getAllByText("Invoice INV-9001 marked Open").length).toBeGreaterThan(0);
+      expect(getAllByText("Invoice INV-9002 voided").length).toBeGreaterThan(0);
     });
   });
 
