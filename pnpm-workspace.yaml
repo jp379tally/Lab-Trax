@@ -191,6 +191,7 @@ overrides:
   "google-auth-library": "9.15.1"
 
 allowBuilds:
-  core-js: set this to true or false
-  esbuild: set this to true or false
-  sharp: set this to true or false
+  core-js: true
+  electron: true
+  esbuild: true
+  sharp: true

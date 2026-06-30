@@ -68,7 +68,7 @@ function createPool() {
   // automatically; logging here is sufficient — the next query will simply
   // acquire a fresh connection.
   nextPool.on("error", (err) => {
-    console.error("[db] idle client error — connection will be recycled:", err.message);
+    console.error("[db] idle client error — connection will be recycled:", err);
   });
 
   return nextPool;
