@@ -1,0 +1,97 @@
+### Replit Build Brief
+
+**Objective:** Fix join-request approval in LabTrax so an owner/admin can approve a pending “Wants to join” request from the lab team panel.
+
+**User-visible problem:** In Settings/Profile → `SDR1 Environment` → `Lab team status`, clicking `Approve` on a pending join request shows: “Could not approve request. An unexpected error occurred.”
+
+**Most likely root cause:** The failing path is backend membership approval in `artifacts/api-server/src/routes/organizations.ts`, route:
+
+`POST /api/organizations/join-requests/:joinRequestId/approve`
+
+That route inserts into `organizationMemberships` with:
+
+`onConflictDoUpdate({ target: [labId, userId], ... })`
+
+But the DB schema defines the unique membership constraint as a **partial unique index**:
+
+`memberships_org_user_unique` on `(lab_id, user_id)` **where `deleted_at IS NULL`**
+
+Postgres needs the conflict target to match the partial index predicate. Without `targetWhere: deleted_at IS NULL`, the upsert can fail with no matching unique/exclusion constraint, surfacing as the generic approve error.
+
+**Code areas involved:**
+
+* `artifacts/api-server/src/routes/organizations.ts`
+* `lib/db/src/schema/schema.ts`
+* `artifacts/api-server/src/routes/organizations.test.ts`
+* The affected UI is the lab team membership/profile panel that calls join-request approve.
+
+**Implementation plan:**
+
+1. In `organizations.ts`, update the join-request approve upsert to match the partial unique index:
+
+   * Add `targetWhere: sql`${organizationMemberships.deletedAt} IS NULL`` or equivalent.
+   * Ensure the update also clears `deletedAt` / `deletedByUserId` if needed.
+2. Apply the same fix to invite acceptance, because `POST /api/organizations/invites/:token/accept` uses the same membership upsert pattern.
+3. Add DB-backed tests in `organizations.test.ts`:
+
+   * approving a pending join request creates an active membership
+   * approving when a live membership already exists updates/reactivates instead of failing
+   * invite accept still works with the partial unique index
+4. Keep authorization unchanged: only `owner` / `admin` should approve.
+5. Do not broaden the unique index or remove soft-delete behavior.
+
+**Acceptance criteria:**
+
+* Clicking `Approve` on pending requests removes the pending row and adds/updates the user as an active member.
+* Re-approving or approving a stale duplicate request does not crash.
+* Existing members are not duplicated.
+* Soft-deleted historical memberships remain compatible with the restore/new-active behavior.
+* Tests pass for `routes/organizations.test.ts`.
+
+### Copy-Ready Replit Prompt
+
+Fix the LabTrax join-request approval error.
+
+User symptom: In Settings/Profile → lab team status, approving a pending “Wants to join” request shows “Could not approve request. An unexpected error occurred.”
+
+Please inspect `artifacts/api-server/src/routes/organizations.ts`, especially:
+
+* `POST /api/organizations/join-requests/:joinRequestId/approve`
+* `POST /api/organizations/invites/:token/accept`
+
+The database schema in `lib/db/src/schema/schema.ts` defines `organizationMemberships` / `lab_memberships` with a partial unique index:
+
+`memberships_org_user_unique` on `(lab_id, user_id)` where `deleted_at IS NULL`.
+
+The current membership upserts use `onConflictDoUpdate` with target `[organizationMemberships.labId, organizationMemberships.userId]` but do not include the partial-index predicate. That can make Postgres reject the upsert because the conflict target does not match the partial unique index.
+
+Implement the safest backend fix:
+
+* Update membership upserts to match the partial unique index using `targetWhere` for `deletedAt IS NULL`, or replace the upsert with a transaction-safe helper that correctly handles existing active, removed, and soft-deleted membership rows.
+* Preserve existing admin authorization checks.
+* Do not create duplicate active memberships.
+* Mark the join request approved only after membership creation/update succeeds.
+* Apply the same membership-upsert fix to invite acceptance if it has the same bug.
+* Validate `role` values defensively if the route accepts an override role.
+* Add or update DB-backed tests in `artifacts/api-server/src/routes/organizations.test.ts` for approving a join request and for the already-existing membership case.
+
+Before finishing, run the relevant API test file and explain any assumptions or tradeoffs.
+
+### Debug Analysis
+
+The involved app area is Organizations / membership / roles. The visible screen is the lab team status panel inside the profile/settings area for the `SDR1` lab environment.
+
+Primary root-cause hypothesis: backend upsert mismatch with a partial unique index. The schema uses a partial unique index on memberships where `deleted_at IS NULL`, while the approval route uses a plain `(labId, userId)` conflict target. That is a classic cause of an unexpected Postgres failure.
+
+Supporting evidence: the screenshot shows approval failing only when converting a pending join request into membership. The route code does exactly that insert/upsert, and the schema confirms the partial unique index.
+
+Alternate hypothesis: production may already contain duplicate/stale membership or join-request rows for the same user/lab. The screenshot shows `omsdrdl` as both an active admin row and a pending “Wants to join” row, so the route must be idempotent and handle already-member cases cleanly.
+
+### Step-by-Step Fix Plan
+
+1. Patch `organizations.ts` membership upserts to match `memberships_org_user_unique`.
+2. Add `targetWhere: deleted_at IS NULL` or use a transaction helper that updates/restores existing rows before inserting.
+3. Ensure approval is idempotent when the user already has an active membership.
+4. Add regression tests for pending join request approval and already-existing membership approval.
+5. Run `pnpm --filter @workspace/api-server run test -- src/routes/organizations.test.ts`.
+6. Smoke test the UI: approve both pending rows, confirm they disappear from “Wants to join,” and confirm the member count/status updates.
