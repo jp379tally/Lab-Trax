@@ -1,0 +1,135 @@
+### Replit Build Brief
+
+**Objective**
+Allow a new **dental lab user** to create only a personal LabTrax account without creating a new lab organization, so they can wait for an invite to an existing lab.
+
+**User-visible problem**
+In the desktop signup flow, selecting **Dental Lab** immediately forces the user through “Lab details.” That is correct for a lab owner creating a new lab, but wrong for an employee or teammate who only needs a username/password account before being invited.
+
+**Likely root cause**
+The signup wizard conflates `userType: "lab"` with “create a new lab organization.”
+
+Relevant files:
+
+* `artifacts/labtrax-desktop/src/components/SignupWizard.tsx`
+* `artifacts/api-server/src/routes/auth.ts`
+* `artifacts/api-server/src/lib/lab-creation.ts`
+* `lib/db/src/schema/schema.ts`
+* dashboard empty-state areas:
+
+  * `artifacts/labtrax-desktop/src/pages/dashboard.tsx`
+  * `artifacts/labtrax/app/(tabs)/dashboard.tsx`
+
+The backend already mostly supports the desired state: `/api/auth/register` only creates an organization when `createOrganization` is true and `practiceName` is present. If those are omitted, it creates a user with `userType: "lab"` and no active `lab_memberships` row. There is even an internal repo note confirming this behavior in `.agents/memory/register-lab-owner-for-e2e.md`.
+
+**Implementation plan**
+
+Add an explicit choice after the user selects **Dental Lab**:
+
+1. **Create a new lab**
+   Continue to the existing `lab_info` flow. Keep all required lab fields and backend validation.
+
+2. **Join an existing lab / I’ve been invited**
+   Skip lab details, email verification, HIPAA notice, then register the user with:
+
+   * `userType: "lab"`
+   * no `practiceName`
+   * no lab address/phone/license fields
+   * `createOrganization: false`
+   * no `joinOrganizationId` unless the user chooses a lab from search
+
+For the dashboard, add a friendly no-lab-membership state instead of a confusing blank or broken lab dashboard:
+
+> “Your account is ready. You’ll see your lab dashboard after a lab admin invites or approves you.”
+
+Hide or disable lab-only actions like **Add case**, drop zone, unassigned docs, AI lab tools, and case lists when the user has no active lab membership.
+
+**Important guardrails**
+
+Do not weaken lab creation validation. A user creating a new lab must still provide lab name, address, license number, phone number, and billing/contact email.
+
+Do not create a placeholder lab organization for joiners. That would pollute tenant data and make later invitations harder.
+
+Do not elevate `users.role`. Ownership/admin rights should continue to live in `organizationMemberships`.
+
+**Acceptance criteria**
+
+* A lab owner can still select **Dental Lab → Create a new lab**, fill lab details, and get an active owner membership.
+* A lab employee can select **Dental Lab → Join existing lab / wait for invite**, create username/password, verify email, accept terms, and finish without entering lab details.
+* The resulting user has `userType: "lab"` but no organization membership until invited/approved.
+* The dashboard shows a clear waiting state and does not expose lab actions while there is no active lab membership.
+* Existing provider signup/match/join flows are unchanged.
+* Backend tests cover both “lab org creation requires fields” and “lab user without org is allowed.”
+
+### Copy-Ready Replit Prompt
+
+Please inspect and update the LabTrax signup flow so a new dental lab user can create an account without creating a new lab organization.
+
+Current problem: In `artifacts/labtrax-desktop/src/components/SignupWizard.tsx`, when the user selects Dental Lab, the wizard immediately sends them to `lab_info` and requires lab name/address/license/phone/email. That is correct for someone creating a new lab, but wrong for a lab employee who is joining an existing lab and should only create a personal account, then wait for a lab invite.
+
+Relevant backend context: `artifacts/api-server/src/routes/auth.ts` already computes `shouldCreateOrganization` from `createOrganization && practiceName && userType`. If `createOrganization` is false/omitted and no `practiceName` is sent, it creates a user only. Keep that behavior. Do not weaken `assertLabCreationFields` in `artifacts/api-server/src/lib/lab-creation.ts`.
+
+Implement the safest fix:
+
+1. In `SignupWizard.tsx`, after selecting `userType === "lab"`, add a choice step:
+
+   * “Create a new lab”
+   * “Join an existing lab / wait for invite”
+
+2. If the user chooses “Create a new lab,” keep the current lab details flow unchanged.
+
+3. If the user chooses “Join an existing lab / wait for invite,” skip the lab details step. Continue through email verification and required legal/terms steps, then call `register()` with:
+
+   * `userType: "lab"`
+   * `createOrganization: false`
+   * no `practiceName`
+   * no lab address/phone/license fields
+   * no `joinOrganizationId` unless the user explicitly selected a lab from search
+
+4. Make sure the existing join search remains optional. “Skip for now” should mean no join request and no organization creation.
+
+5. Add or update backend tests in `artifacts/api-server/src/routes/auth.test.ts`:
+
+   * keep the test that `createOrganization:true` for a lab without required fields returns `400 LAB_FIELDS_REQUIRED`
+   * add a test proving `userType:"lab"` with no `createOrganization` and no `practiceName` returns 200 and does not create a membership/org
+
+6. Add a dashboard empty state for users with no active lab membership in:
+
+   * `artifacts/labtrax-desktop/src/pages/dashboard.tsx`
+   * and, if the same state affects mobile, `artifacts/labtrax/app/(tabs)/dashboard.tsx`
+
+The empty state should say the account is ready and the user will see the lab dashboard after a lab admin invites or approves them. Hide/disable lab-only actions like Add Case, drop zone, unassigned docs, and case lists until membership exists.
+
+Before finishing, verify:
+
+* lab owner signup still creates a lab org and owner membership
+* lab joiner signup creates only a user
+* provider signup behavior is unchanged
+* no tenant data or placeholder lab is created for joiners
+
+Explain any tradeoffs or contradictory evidence you find.
+
+### Debug Analysis
+
+Primary root cause: the frontend flow treats “I am a dental lab” as “I am creating a lab organization.” In `SignupWizard.tsx`, `LAB_STEPS` includes `lab_info` before verification, and `handleLabInfoNext()` blocks unless all lab fields are filled. Later, `completeRegistration()` sends `createOrganization: !isMatchedJoin && !joinTargetOrgId`, which means a lab user who skips only the join search can still end up on the organization-creation path.
+
+Supporting evidence: the backend register handler only creates an org in the `shouldCreateOrganization` branch. If that branch is not triggered, it creates the user and session without membership. The repo memory note explicitly says omitting `practiceName` creates a lab user with no `lab_memberships` row.
+
+Alternate hypothesis: dashboard blankness may also be caused by `/cases` or membership-dependent queries not handling “no active lab membership” gracefully. Even if signup is fixed, the dashboard should intentionally render a waiting state.
+
+Recommended approach: fix the branching at the signup wizard and preserve backend validation. This avoids risky schema changes, avoids fake labs, and uses the backend’s existing valid “user with no membership yet” state.
+
+Confidence: high for the signup root cause; medium-high for the dashboard behavior until Replit runs the UI against an actual no-membership test account.
+
+### Step-by-Step Fix Plan
+
+1. Add a new lab-intent step in `SignupWizard.tsx`, for example `lab_path`.
+2. Route `selectUserType("lab")` to `lab_path` instead of `lab_info`.
+3. Add state like `labSignupMode: "create_lab" | "join_existing" | null`.
+4. For `create_lab`, continue to `lab_info`.
+5. For `join_existing`, skip lab fields and move to email verification.
+6. In `completeRegistration()`, compute `createOrganization` from the explicit mode, not from the absence of `joinTargetOrgId`.
+7. When `labSignupMode === "join_existing"`, omit lab org fields from the payload.
+8. Add the backend regression test for lab user-only registration.
+9. Add dashboard no-membership empty state.
+10. Test owner signup, joiner signup, provider signup, and dashboard rendering for no-membership users.
