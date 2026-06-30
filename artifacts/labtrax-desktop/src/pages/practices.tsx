@@ -12,6 +12,7 @@ import { formatMoney, formatPhone, relativeTime } from "@/lib/format";
 
 import { DEFAULT_PRICE_KEYS, priceKeyLabel } from "@/lib/pricing-keys";
 import { RemoveDoctorDialog } from "@/components/RemoveDoctorDialog";
+import { toast } from "@/hooks/use-toast";
 
 // Canonicalize a doctor name for cross-source matching: drop a leading
 // "dr"/"dr." honorific and all non-alphanumerics so "Dr. Byrne" and "byrne"
@@ -3500,10 +3501,19 @@ function DoctorPricingRow({
     },
     onSuccess: () => {
       setError(null);
+      toast({ title: "Pricing saved", duration: 3000 });
       onSaved();
     },
-    onError: (e: Error) =>
-      setError(e.message || "Could not save pricing for this doctor."),
+    onError: (e: Error) => {
+      const message = e.message || "Could not save pricing for this doctor.";
+      setError(message);
+      toast({
+        title: "Could not save pricing",
+        description: message,
+        variant: "destructive",
+        duration: 4000,
+      });
+    },
   });
 
   const tierMissing =

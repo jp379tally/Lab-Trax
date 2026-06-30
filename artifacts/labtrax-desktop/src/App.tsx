@@ -16,6 +16,7 @@ import { OfflineBanner } from "@/components/OfflineBanner";
 import { MessengerProvider } from "@/context/MessengerContext";
 import { canReceivePayments } from "@/components/finance/FinanceShell";
 import PlanPickerOnboarding from "@/components/PlanPickerOnboarding";
+import { Toaster } from "@/components/ui/toaster";
 
 const DashboardPage = lazy(() => import("@/pages/dashboard"));
 const CasesPage = lazy(() => import("@/pages/cases"));
@@ -244,6 +245,7 @@ function App() {
           <Gate />
         </WouterRouter>
       </AuthProvider>
+      <Toaster />
     </QueryClientProvider>
   );
 }
