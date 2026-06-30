@@ -98,6 +98,8 @@ const ALLOWED_MAIN_STDERR = [
   /ANGLE|SwiftShader/i,
   // Source-map / DevTools warnings.
   /DevTools listening/i,
+  /Debugger ending on ws:\/\//i,
+  /For help, see: https:\/\/nodejs\.org\/en\/docs\/inspector/i,
   // electron-updater logs to stderr at "info" level via electron-log when no
   // file transport is configured; we already gate the updater off in CI but
   // keep this defensive.
