@@ -12,6 +12,8 @@
  *
  * Coverage:
  *  - valid transition across two lab orgs updates ALL of them
+ *  - a case-history event is written for case-linked invoices (invoice_updated
+ *    on a non-void target, invoice_voided when target is "void")
  *  - frozen invoices are skipped (skippedFrozenCount), never changed
  *  - an invalid status value is rejected with 400 and changes nothing
  *  - 403 (and no change) when the caller lacks a billing role for a touched org
@@ -77,6 +79,7 @@ maybe("Bulk invoice status change (db integration)", () => {
     total?: string;
     balanceDue?: string;
     frozen?: boolean;
+    caseId?: string;
   }): Promise<string> {
     const { db, invoices } = dbMod as any;
     const id = rid("inv");
@@ -89,6 +92,26 @@ maybe("Bulk invoice status change (db integration)", () => {
       total: opts.total ?? "100.00",
       balanceDue: opts.balanceDue ?? "100.00",
       frozen: opts.frozen ?? false,
+      caseId: opts.caseId ?? null,
+      createdByUserId: billingUserId,
+    });
+    return id;
+  }
+
+  async function insertCase(opts: {
+    labOrganizationId: string;
+    providerOrganizationId: string;
+  }): Promise<string> {
+    const { db, cases } = dbMod as any;
+    const id = rid("case");
+    await db.insert(cases).values({
+      id,
+      caseNumber: rid("CASE"),
+      labOrganizationId: opts.labOrganizationId,
+      providerOrganizationId: opts.providerOrganizationId,
+      patientFirstName: "Test",
+      patientLastName: "Patient",
+      doctorName: "Dr. Test",
       createdByUserId: billingUserId,
     });
     return id;
@@ -151,6 +174,8 @@ maybe("Bulk invoice status change (db integration)", () => {
       userSessions,
       auditLogs,
       bankTransactions,
+      caseEvents,
+      cases,
     } = dbMod as any;
     await db
       .delete(bankTransactions)
@@ -161,6 +186,14 @@ maybe("Bulk invoice status change (db integration)", () => {
     await db
       .delete(invoices)
       .where(inArray(invoices.labOrganizationId, [labAOrgId, labBOrgId]));
+    // caseEvents cascade-delete with their case, but delete explicitly first to
+    // be robust against partial state, then the cases they reference.
+    await db
+      .delete(caseEvents)
+      .where(inArray(caseEvents.actorOrganizationId, [labAOrgId, labBOrgId]));
+    await db
+      .delete(cases)
+      .where(inArray(cases.labOrganizationId, [labAOrgId, labBOrgId]));
     await db
       .delete(organizationMemberships)
       .where(inArray(organizationMemberships.userId, [billingUserId, labAOnlyUserId]));
@@ -216,6 +249,57 @@ maybe("Bulk invoice status change (db integration)", () => {
     expect(byId[a1]?.organizationId).toBe(labAOrgId);
     expect(byId[b1]?.organizationId).toBe(labBOrgId);
     expect(byId[a1]?.action).toBe("bulk_invoice_status_change");
+  });
+
+  it("writes an invoice_updated case-history event for a case-linked invoice on a non-void status", async () => {
+    const caseId = await insertCase({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId });
+    const inv = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "draft", caseId });
+
+    const r = await request(appMod.default)
+      .post("/api/invoices/bulk-status")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "open" });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.updatedCount).toBe(1);
+
+    const { db, caseEvents } = dbMod as any;
+    const events = await db.query.caseEvents.findMany({
+      where: eq(caseEvents.caseId, caseId),
+      columns: { eventType: true, actorOrganizationId: true, metadataJson: true },
+    });
+    const evt = events.find((e: any) => e.metadataJson?.invoiceId === inv);
+    expect(evt, "expected a case-history event for the linked invoice").toBeTruthy();
+    expect(evt.eventType).toBe("invoice_updated");
+    expect(evt.actorOrganizationId).toBe(labAOrgId);
+    expect(evt.metadataJson.invoiceNumber).toBeTruthy();
+    expect(evt.metadataJson.previousStatus).toBe("draft");
+    expect(evt.metadataJson.newStatus).toBe("open");
+  });
+
+  it("writes an invoice_voided case-history event for a case-linked invoice when target is void", async () => {
+    const caseId = await insertCase({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId });
+    const inv = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "open", caseId });
+
+    const r = await request(appMod.default)
+      .post("/api/invoices/bulk-status")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "void" });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.updatedCount).toBe(1);
+
+    const { db, caseEvents } = dbMod as any;
+    const events = await db.query.caseEvents.findMany({
+      where: eq(caseEvents.caseId, caseId),
+      columns: { eventType: true, actorOrganizationId: true, metadataJson: true },
+    });
+    const evt = events.find((e: any) => e.metadataJson?.invoiceId === inv);
+    expect(evt, "expected a case-history event for the voided invoice").toBeTruthy();
+    expect(evt.eventType).toBe("invoice_voided");
+    expect(evt.actorOrganizationId).toBe(labAOrgId);
+    expect(evt.metadataJson.previousStatus).toBe("open");
+    expect(evt.metadataJson.newStatus).toBe("void");
   });
 
   it("skips frozen invoices (skippedFrozenCount) and changes them not at all", async () => {
