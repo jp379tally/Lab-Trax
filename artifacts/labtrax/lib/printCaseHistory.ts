@@ -127,6 +127,31 @@ function eventDescription(
   return null;
 }
 
+// Invoice lifecycle events (`invoice_updated` / `invoice_voided`, written by the
+// server's bulk invoice-status handler) carry the affected invoice number in
+// their metadata. Surface it in the printed history so a shared/printed record
+// shows WHICH invoice changed, mirroring the on-screen mobile History tab.
+function eventInvoiceNumber(ev: PrintableEvent): string | null {
+  if (ev.eventType !== "invoice_updated" && ev.eventType !== "invoice_voided") {
+    return null;
+  }
+  let meta: Record<string, unknown> | null = null;
+  if (ev.metadataJson && typeof ev.metadataJson === "object") {
+    meta = ev.metadataJson as Record<string, unknown>;
+  } else if (typeof ev.metadataJson === "string" && ev.metadataJson.trim()) {
+    try {
+      const parsed = JSON.parse(ev.metadataJson);
+      if (parsed && typeof parsed === "object") meta = parsed as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+  if (!meta) return null;
+  return typeof meta.invoiceNumber === "string" && meta.invoiceNumber
+    ? meta.invoiceNumber
+    : null;
+}
+
 // ─── CSS ──────────────────────────────────────────────────────────────────────
 
 const HISTORY_CSS = `
@@ -181,6 +206,11 @@ h2 {
   font-size: 12px;
   color: #111;
 }
+.event-invoice {
+  color: #555;
+  font-size: 11px;
+  font-weight: 500;
+}
 .event-actor {
   color: #777;
   font-size: 10px;
@@ -229,12 +259,14 @@ export function buildCaseHistoryHtml(
       const when = fmtDateTime(ev.occurredAt ?? ev.createdAt);
       const what = formatEventType(ev.eventType);
       const desc = eventDescription(ev, notesById);
+      const invoiceNumber = eventInvoiceNumber(ev);
       const actor = ev.actorName ?? ev.actorInitials ?? null;
       return `
 <div class="event">
   <div class="event-when">${esc(when)}</div>
   <div>
     <div class="event-what">${esc(what)}</div>
+    ${invoiceNumber ? `<div class="event-invoice">${esc(invoiceNumber)}</div>` : ""}
     ${actor ? `<div class="event-actor">${esc(actor)}</div>` : ""}
     ${desc ? `<div class="event-desc">${esc(desc)}</div>` : ""}
   </div>
