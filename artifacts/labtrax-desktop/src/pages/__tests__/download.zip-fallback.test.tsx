@@ -1,14 +1,20 @@
 /** @vitest-environment jsdom */
 /**
- * Tests for the Windows ZIP fallback on the desktop download page.
+ * Tests for the desktop download page trusting the server's resolved installer.
+ *
+ * The API server is authoritative about which installer to serve: for locally
+ * served /downloads/ paths it resolves the configured kind to the best
+ * *available* App Storage slot (active kind → portable ZIP → macOS DMG), or
+ * returns downloadUrl:null + fileFound:false when nothing is uploaded. The page
+ * no longer carries its own EXE→ZIP fallback — it renders directly from the
+ * server's resolved downloadUrl/fileName.
  *
  * Invariants protected:
- *  - When the active EXE is missing from storage but the portable ZIP slot is
- *    available, the page offers the ZIP download (correct label + URL) instead
- *    of the "Installer temporarily unavailable" message.
- *  - When neither the EXE nor the ZIP is available, the page still shows the
- *    "Installer temporarily unavailable" / use-the-web-app block.
- *  - When the active EXE is present, the EXE download is offered unchanged.
+ *  - When the server resolves the active installer to the portable ZIP, the page
+ *    offers that ZIP download (correct label + URL).
+ *  - When the server reports no installer is available (fileFound:false), the
+ *    page shows the "Installer temporarily unavailable" / use-the-web-app block.
+ *  - When the server resolves to the EXE, the EXE download is offered unchanged.
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
@@ -23,17 +29,10 @@ vi.mock("@/lib/api", () => ({
   getApiOrigin: () => "https://api.example.test",
 }));
 
-interface SlotMap {
-  zip: { available: boolean };
-  exe: { available: boolean };
-  dmg: { available: boolean };
-}
-
 function installerResponse(opts: {
-  downloadUrl: string;
-  fileName: string;
+  downloadUrl: string | null;
+  fileName: string | null;
   fileFound: boolean;
-  slots: SlotMap;
 }) {
   return {
     version: "1.2.3",
@@ -43,7 +42,7 @@ function installerResponse(opts: {
     available: opts.fileFound,
     fileFound: opts.fileFound,
     installerObject: null,
-    installerSlots: opts.slots,
+    installerSlots: null,
   };
 }
 
@@ -55,22 +54,17 @@ function wireApiFetch(installer: ReturnType<typeof installerResponse>) {
   });
 }
 
-describe("DownloadPage — Windows ZIP fallback", () => {
+describe("DownloadPage — server-resolved installer", () => {
   beforeEach(() => {
     mockApiFetch.mockReset();
   });
 
-  it("offers the portable ZIP when the active EXE is missing but the ZIP slot is available", async () => {
+  it("offers the portable ZIP when the server resolves the active installer to the ZIP", async () => {
     wireApiFetch(
       installerResponse({
-        downloadUrl: "/downloads/LabTrax-Setup.exe",
-        fileName: "LabTrax-Setup.exe",
-        fileFound: false,
-        slots: {
-          zip: { available: true },
-          exe: { available: false },
-          dmg: { available: false },
-        },
+        downloadUrl: "/downloads/LabTrax-Windows-Portable.zip",
+        fileName: "LabTrax-Windows-Portable.zip",
+        fileFound: true,
       }),
     );
 
@@ -95,17 +89,12 @@ describe("DownloadPage — Windows ZIP fallback", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows the temporarily-unavailable block when neither the EXE nor the ZIP exists", async () => {
+  it("shows the temporarily-unavailable block when the server reports no installer is available", async () => {
     wireApiFetch(
       installerResponse({
-        downloadUrl: "/downloads/LabTrax-Setup.exe",
-        fileName: "LabTrax-Setup.exe",
+        downloadUrl: null,
+        fileName: null,
         fileFound: false,
-        slots: {
-          zip: { available: false },
-          exe: { available: false },
-          dmg: { available: false },
-        },
       }),
     );
 
@@ -121,17 +110,12 @@ describe("DownloadPage — Windows ZIP fallback", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("offers the EXE download unchanged when the active EXE is present", async () => {
+  it("offers the EXE download unchanged when the server resolves to the EXE", async () => {
     wireApiFetch(
       installerResponse({
         downloadUrl: "/downloads/LabTrax-Setup.exe",
         fileName: "LabTrax-Setup.exe",
         fileFound: true,
-        slots: {
-          zip: { available: true },
-          exe: { available: true },
-          dmg: { available: false },
-        },
       }),
     );
 
