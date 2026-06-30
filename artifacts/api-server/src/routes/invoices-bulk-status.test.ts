@@ -323,6 +323,37 @@ maybe("Bulk invoice status change (db integration)", () => {
     expect(frozenRow.status).toBe("draft");
   });
 
+  it("does not write a case-history event for a skipped frozen case-linked invoice", async () => {
+    const caseId = await insertCase({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId });
+    const frozen = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "draft", frozen: true, caseId });
+
+    const r = await request(appMod.default)
+      .post("/api/invoices/bulk-status")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [frozen], status: "open" });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.updatedCount).toBe(0);
+    expect(r.body.data.skippedFrozenCount).toBe(1);
+
+    const { db, invoices, caseEvents } = dbMod as any;
+
+    // The frozen invoice's status is untouched.
+    const frozenRow = await db.query.invoices.findFirst({
+      where: eq(invoices.id, frozen),
+      columns: { status: true },
+    });
+    expect(frozenRow.status).toBe("draft");
+
+    // No phantom timeline entry for the skipped invoice's case.
+    const events = await db.query.caseEvents.findMany({
+      where: eq(caseEvents.caseId, caseId),
+      columns: { eventType: true, metadataJson: true },
+    });
+    const phantom = events.find((e: any) => e.metadataJson?.invoiceId === frozen);
+    expect(phantom, "a skipped frozen invoice must not produce a case-history event").toBeFalsy();
+  });
+
   it("rejects an invalid status value with 400 and changes nothing", async () => {
     const a1 = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "draft" });
 
