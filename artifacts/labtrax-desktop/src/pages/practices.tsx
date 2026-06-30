@@ -3689,16 +3689,24 @@ function DoctorPricingRow({
                 // When a discount applies but there is no practice default tier
                 // price for this key, fall back to the doctor's effective tier
                 // price as the discount base — matching server-side behaviour.
-                const discountBase = hasBase ? basePrice : tierPrice;
-                let effectivePrice: number | null = null;
-                if (Number.isFinite(exact) && exact > 0) {
-                  effectivePrice = exact;
-                } else if (
+                const hasDiscount =
                   effectivePct !== null &&
                   Number.isFinite(effectivePct) &&
-                  (effectivePct as number) >= 0 &&
-                  discountBase > 0
-                ) {
+                  (effectivePct as number) >= 0;
+                // A legacy exact price that merely mirrors the practice default
+                // tier price no longer blocks the live discounted price when a
+                // discount is set; a truly custom exact price still wins.
+                const exactIsMirror =
+                  Number.isFinite(exact) &&
+                  exact > 0 &&
+                  hasBase &&
+                  hasDiscount &&
+                  Math.abs(exact - basePrice) < 0.005;
+                const discountBase = hasBase ? basePrice : tierPrice;
+                let effectivePrice: number | null = null;
+                if (Number.isFinite(exact) && exact > 0 && !exactIsMirror) {
+                  effectivePrice = exact;
+                } else if (hasDiscount && discountBase > 0) {
                   effectivePrice =
                     Math.round(
                       discountBase * (1 - (effectivePct as number) / 100) * 100,

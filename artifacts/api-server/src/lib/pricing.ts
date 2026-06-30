@@ -260,6 +260,11 @@ function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
+/** True when two currency amounts are equal within half a cent. */
+function pricesEqual(a: number, b: number): boolean {
+  return Math.abs(a - b) < 0.005;
+}
+
 export interface ResolvedPriceDetails {
   amount: number;
   source: Exclude<PriceSource, "manual">;
@@ -291,23 +296,19 @@ export async function resolveServerPriceWithSource(
 
   let doctorTierName: string | null = null;
 
-  // Per-doctor override beats tier
+  // Per-doctor override. An exact dollar price normally beats the tier, but a
+  // legacy exact price that merely mirrors the practice default tier price is
+  // treated as non-blocking when a discount is configured (decided below, once
+  // the practice default tier and discount are known) so the discount can win.
   const match = await findDoctorOverride(
     ctx.labOrganizationId,
     ctx.doctorName,
   );
+  let overrideExactValue: number | null = null;
   if (match) {
     const prices = (match.pricesJson ?? {}) as Record<string, unknown>;
     const value = Number(prices[key]);
-    if (Number.isFinite(value) && value > 0) {
-      return {
-        amount: value,
-        source: "override",
-        sourceId: match.id,
-        sourceName: match.doctorName,
-        key,
-      };
-    }
+    if (Number.isFinite(value) && value > 0) overrideExactValue = value;
     if (match.tierName) doctorTierName = match.tierName;
   }
 
@@ -386,6 +387,43 @@ export async function resolveServerPriceWithSource(
   // override (handled above) wins over any discount. When no base price can
   // be resolved at all, we fall through to the normal tier chain.
   const discountPct = effectiveDiscountPercent(match, key);
+
+  // Decide whether the captured exact override price wins. A truly custom
+  // exact price (different from the practice default tier price) always wins.
+  // A legacy exact price that merely mirrors the practice default tier price is
+  // treated as non-blocking when a discount is configured, so the discount
+  // below can win. With no practice default tier price to compare against, the
+  // exact price is preserved (safe fallback).
+  if (match && overrideExactValue !== null) {
+    const practiceDefaultTier = connectionTierName
+      ? findByName(connectionTierName)
+      : undefined;
+    const pdRaw = practiceDefaultTier
+      ? Number(
+          ((practiceDefaultTier.pricesJson ?? {}) as Record<string, unknown>)[
+            key
+          ],
+        )
+      : NaN;
+    const practiceDefaultPrice =
+      Number.isFinite(pdRaw) && pdRaw > 0 ? pdRaw : null;
+    const isMirror =
+      discountPct !== null &&
+      practiceDefaultPrice !== null &&
+      pricesEqual(overrideExactValue, practiceDefaultPrice);
+    if (!isMirror) {
+      return {
+        amount: overrideExactValue,
+        source: "override",
+        sourceId: match.id,
+        sourceName: match.doctorName,
+        key,
+      };
+    }
+    // Mirror price + discount configured → fall through; the discount block
+    // below resolves source: "discount".
+  }
+
   if (match && discountPct !== null) {
     // Build an ordered list of tier names to try as the discount base.
     // connectionTierName (practice default) takes priority; candidateNames
@@ -644,6 +682,12 @@ export async function resolveAllPricesForContext(
     candidateTiers.push({ tier: sortedTiers[0], source: "default" });
   }
 
+  // The practice default tier (connection tier) is the comparison base for
+  // detecting legacy "mirror" exact prices that should yield to a discount.
+  const practiceDefaultTier = connectionTierName
+    ? findTierByName(connectionTierName)
+    : undefined;
+
   // 4. Resolve each known item key against the same priority chain
   //    used by resolveServerPriceWithSource.
   const defaultKeySet = new Set<string>(DEFAULT_TIER_ITEMS.map((i) => i.key));
@@ -655,7 +699,28 @@ export async function resolveAllPricesForContext(
         unknown
       >;
       const value = Number(prices[key]);
-      if (Number.isFinite(value) && value > 0) {
+      const hasExact = Number.isFinite(value) && value > 0;
+      const discountPct = effectiveDiscountPercent(overrideRow, key);
+      // A truly custom exact price (different from the practice default tier
+      // price) wins. A legacy exact price that merely mirrors the practice
+      // default tier price is non-blocking when a discount is configured, so
+      // the discount below can win. With no practice default tier price to
+      // compare against, the exact price is preserved (safe fallback).
+      const pdRaw = practiceDefaultTier
+        ? Number(
+            ((practiceDefaultTier.pricesJson ?? {}) as Record<string, unknown>)[
+              key
+            ],
+          )
+        : NaN;
+      const practiceDefaultPrice =
+        Number.isFinite(pdRaw) && pdRaw > 0 ? pdRaw : null;
+      const isMirror =
+        hasExact &&
+        discountPct !== null &&
+        practiceDefaultPrice !== null &&
+        pricesEqual(value, practiceDefaultPrice);
+      if (hasExact && !isMirror) {
         return {
           key,
           label: item.label,
@@ -670,7 +735,6 @@ export async function resolveAllPricesForContext(
       // doctor's effective tier chain (already in candidateTiers, ordered
       // oldest-first with Standard before oldest). This mirrors the fallback
       // added to resolveServerPriceWithSource so invoice charges match the UI.
-      const discountPct = effectiveDiscountPercent(overrideRow, key);
       if (discountPct !== null) {
         const discountBaseTiers = [
           connectionTierName ? findTierByName(connectionTierName) : null,

@@ -719,6 +719,195 @@ maybe("Pricing tiers and overrides (db integration)", () => {
     expect(pfm?.discountBaseTierName).toBe(BASE_TIER_NAME);
   }, 20000);
 
+  // ── Legacy mirror exact prices yield to a discount ────────────────────────
+  //
+  // Older per-doctor overrides have exact dollar prices saved that merely
+  // mirror the practice default tier price. A discount must win over such a
+  // mirror price, while a genuinely custom exact price (different from the
+  // default tier) still beats the discount. A per-item discount still beats
+  // the default discount, and a key with no practice default tier price keeps
+  // its exact override (safe fallback).
+
+  it("GET /pricing/resolve-items — discount wins over legacy mirror price; custom exact still wins; per-item beats default; missing default keeps exact", async () => {
+    const { access } = await makeSession(adminId);
+    const { db, organizations, organizationConnections } = dbMod as any;
+
+    const mirrorProviderId = rid("mirrorprov");
+    await db.insert(organizations).values({
+      id: mirrorProviderId,
+      type: "provider",
+      name: rid("MirrorProv"),
+      parentLabOrganizationId: labOrgId,
+    });
+
+    // Practice default tier on the lab↔practice connection. pfm_crown=100,
+    // emax_crown=200, zirconia_crown=300; gold_crown intentionally unpriced.
+    const baseTierName = rid("MirrorBaseTier");
+    await db.insert(organizationConnections).values({
+      id: rid("conn"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: mirrorProviderId,
+      status: "active",
+      tierName: baseTierName,
+      requestedByOrgId: labOrgId,
+      requestedByUserId: adminId,
+    });
+    const tier = await request(appMod.default)
+      .post("/api/pricing/tiers")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        name: baseTierName,
+        prices: { pfm_crown: 100, emax_crown: 200, zirconia_crown: 300 },
+      });
+    expect(tier.status).toBe(201);
+
+    const doctorName = rid("MirrorDr");
+    // Override:
+    //  - pfm_crown exact 100 == default tier 100 (legacy mirror)
+    //  - emax_crown exact 150 != default tier 200 (truly custom)
+    //  - gold_crown exact 500 with no default tier price for that key
+    //  - default 10% off; zirconia_crown per-item 20% off
+    const override = await request(appMod.default)
+      .post("/api/pricing/overrides")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        doctorName,
+        providerOrganizationId: mirrorProviderId,
+        prices: { pfm_crown: 100, emax_crown: 150, gold_crown: 500 },
+        defaultDiscountPercent: 10,
+        discountPercents: { zirconia_crown: 20 },
+      });
+    expect(override.status).toBe(201);
+
+    const caseResp = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("CN"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: mirrorProviderId,
+        doctorName,
+        patientFirstName: "Mirror",
+        patientLastName: rid("Pat"),
+        status: "received",
+      });
+    expect(caseResp.status).toBe(201);
+    const caseId: string = caseResp.body.data.id;
+
+    const r = await request(appMod.default)
+      .get(`/api/pricing/resolve-items?caseId=${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(200);
+    const items: Array<{ key: string; unitPrice: number; source: string | null }> =
+      r.body.data?.items ?? [];
+
+    // (a) Legacy mirror exact (100 == default 100) yields to the 10% discount.
+    const pfm = items.find((i) => i.key === "pfm_crown");
+    expect(pfm?.unitPrice).toBe(90);
+    expect(pfm?.source).toBe("discount");
+
+    // (b) Custom exact (150 != default 200) still beats the discount.
+    const emax = items.find((i) => i.key === "emax_crown");
+    expect(emax?.unitPrice).toBe(150);
+    expect(emax?.source).toBe("override");
+
+    // (c) Per-item 20% beats the default 10%: 300 * 0.8 = 240.
+    const zir = items.find((i) => i.key === "zirconia_crown");
+    expect(zir?.unitPrice).toBe(240);
+    expect(zir?.source).toBe("discount");
+
+    // (d) No default tier price for gold_crown → exact override preserved.
+    const gold = items.find((i) => i.key === "gold_crown");
+    expect(gold?.unitPrice).toBe(500);
+    expect(gold?.source).toBe("override");
+  }, 20000);
+
+  // ── Per-key resolver agrees: case-create prices a mirror item as discount ──
+  //
+  // resolveServerPriceWithSource (used by case-create / invoice line items)
+  // must apply the same mirror rule so the persisted charge matches the editor.
+
+  it("POST /api/cases — case-create discounts a legacy mirror price but keeps a custom exact price", async () => {
+    const { db, caseRestorations: caseRestorationsTable,
+      caseEvents: caseEventsTable, caseNotes: caseNotesTable,
+      cases: casesTable, invoices: invoicesTable,
+      organizations: orgsTable, organizationConnections } = dbMod as any;
+    const { access } = await makeSession(adminId);
+    const doctorName = rid("MirrorCaseDr");
+    const baseTierName = rid("MirrorCaseBase");
+
+    const provId = rid("mirrorcaseprov");
+    await db.insert(orgsTable).values({
+      id: provId, type: "provider", name: rid("MirrorCaseProv"),
+      parentLabOrganizationId: labOrgId,
+    });
+    const tierResp = await request(appMod.default)
+      .post("/api/pricing/tiers")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ labOrganizationId: labOrgId, name: baseTierName, prices: { pfm_crown: 100, emax_crown: 200 } });
+    expect(tierResp.status).toBe(201);
+    await db.insert(organizationConnections).values({
+      id: rid("conn"), labOrganizationId: labOrgId,
+      providerOrganizationId: provId, status: "active",
+      tierName: baseTierName, requestedByOrgId: labOrgId,
+      requestedByUserId: adminId,
+    });
+
+    // pfm_crown exact 100 mirrors the tier (100) → discount wins.
+    // emax_crown exact 150 differs from tier (200) → exact wins.
+    const override = await request(appMod.default)
+      .post("/api/pricing/overrides")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId, doctorName,
+        providerOrganizationId: provId,
+        prices: { pfm_crown: 100, emax_crown: 150 },
+        defaultDiscountPercent: 10,
+      });
+    expect(override.status).toBe(201);
+
+    let caseId: string | undefined;
+    try {
+      const caseResp = await request(appMod.default)
+        .post("/api/cases")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          caseNumber: rid("CN"), labOrganizationId: labOrgId,
+          providerOrganizationId: provId, doctorName,
+          patientFirstName: "MirrorCase", patientLastName: rid("Pat"),
+          status: "received",
+          restorations: [
+            { toothNumber: "30", restorationType: "Crown", material: "PFM", quantity: 1 },
+            { toothNumber: "31", restorationType: "Crown", material: "Emax", quantity: 1 },
+          ],
+        });
+      expect(caseResp.status, JSON.stringify(caseResp.body)).toBe(201);
+      caseId = caseResp.body.data.id;
+
+      const rows: Array<{ unitPrice: string; priceSource: string | null }> = await db
+        .select({ unitPrice: caseRestorationsTable.unitPrice, priceSource: caseRestorationsTable.priceSource })
+        .from(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+      const byPrice = rows.map((x) => ({ price: Number(x.unitPrice), source: x.priceSource }));
+      // Mirror pfm_crown discounted to 90 (source discount).
+      expect(byPrice).toContainEqual({ price: 90, source: "discount" });
+      // Custom emax_crown stays at 150 (source override).
+      expect(byPrice).toContainEqual({ price: 150, source: "override" });
+    } finally {
+      if (caseId) {
+        await db.delete(caseEventsTable).where(eq(caseEventsTable.caseId, caseId));
+        await db.delete(caseNotesTable).where(eq(caseNotesTable.caseId, caseId));
+        await db.delete(invoicesTable).where(eq(invoicesTable.caseId, caseId));
+        await db.delete(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+        await db.delete(casesTable).where(eq(casesTable.id, caseId));
+      }
+      await db.delete(organizationConnections)
+        .where(eq(organizationConnections.providerOrganizationId, provId));
+      await db.delete(orgsTable).where(eq(orgsTable.id, provId));
+    }
+  }, 30000);
+
   // ── Re-quote on override create ───────────────────────────────────────────
   //
   // When a discount override is created, the doctor's existing draft/open
