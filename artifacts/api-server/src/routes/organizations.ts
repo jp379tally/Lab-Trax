@@ -32,7 +32,7 @@ import {
   DEFAULT_CORRESPONDENCE_TEMPLATE,
   correspondenceTemplateSchema,
 } from "../lib/correspondence-template";
-import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -41,6 +41,7 @@ import {
   invoices,
   labCases,
   labUnassignedDoctors,
+  notifications,
   organizationConnections,
   organizationInvites,
   organizationJoinRequests,
@@ -2853,6 +2854,10 @@ router.post(
   })
 );
 
+// How long a declined join request keeps surfacing on the waiting card so the
+// user can see the explicit "declined" message before it drops off.
+const RECENT_REJECTED_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
 const joinRequestSchema = z.object({
   requestedRole: z
     .enum(["admin", "user", "billing", "read_only"])
@@ -2924,11 +2929,36 @@ router.get(
   "/join-requests/mine/pending",
   asyncHandler(async (req, res) => {
     const currentUserId = (req as any).auth.userId;
+    // Surface pending requests plus recently resolved ones (approved or
+    // declined) so the waiting card can react the moment an admin acts:
+    // an approval lets the client refetch membership and drop into the lab
+    // dashboard, and a decline shows an explicit "your request was declined"
+    // message instead of silently resetting to search. Resolved rows older
+    // than the window (or dismissed via DELETE) drop off so we don't resurface
+    // stale decisions.
+    const resolvedCutoff = new Date(Date.now() - RECENT_REJECTED_WINDOW_MS);
     const requests = await db.query.organizationJoinRequests.findMany({
       where: and(
         eq(organizationJoinRequests.userId, currentUserId),
-        eq(organizationJoinRequests.status, "pending")
+        or(
+          eq(organizationJoinRequests.status, "pending"),
+          and(
+            inArray(organizationJoinRequests.status, ["approved", "rejected"]),
+            gte(organizationJoinRequests.reviewedAt, resolvedCutoff)
+          )
+        )
       ),
+    });
+
+    // Pending first, then most recently reviewed — so an active wait always
+    // takes precedence over a stale decision on the card.
+    requests.sort((a, b) => {
+      if ((a.status === "pending") !== (b.status === "pending")) {
+        return a.status === "pending" ? -1 : 1;
+      }
+      const aTime = a.reviewedAt?.getTime() ?? a.createdAt?.getTime() ?? 0;
+      const bTime = b.reviewedAt?.getTime() ?? b.createdAt?.getTime() ?? 0;
+      return bTime - aTime;
     });
 
     const organizationIds = [...new Set(requests.map((request) => request.labId))];
@@ -3068,6 +3098,31 @@ router.post(
 
     repairLabCaseAffiliations(request.labId).catch(() => {});
 
+    // Notify the requesting user their access was granted (closes the loop so
+    // they don't have to keep watching the pending card).
+    try {
+      const org = await db.query.organizations.findFirst({
+        where: eq(organizations.id, request.labId),
+      });
+      const orgLabel = org?.displayName || org?.name || "the lab";
+      await db
+        .insert(notifications)
+        .values({
+          userId: request.userId,
+          type: "join_request_approved",
+          title: "Join request approved",
+          body: `You've been approved to join ${orgLabel}. You now have access to the lab.`,
+          dataJson: { organizationId: request.labId, joinRequestId: request.id },
+        })
+        .catch((err: unknown): never =>
+          wrapDbError(err, {
+            fallback: "Failed to send join approval notification.",
+          })
+        );
+    } catch {
+      // Best-effort — never fail the approval because the notification insert failed.
+    }
+
     await writeAuditLog({
       req,
       labId: request.labId,
@@ -3096,14 +3151,23 @@ router.delete(
       throw new HttpError(403, "You can only cancel your own join request.");
     }
 
-    if (request.status !== "pending") {
-      throw new HttpError(409, "Only pending join requests can be cancelled.");
+    // Pending: the user is cancelling a request still awaiting review.
+    // Rejected: the user is acknowledging/dismissing a decline so the waiting
+    // card stops surfacing it and returns to lab search.
+    if (request.status !== "pending" && request.status !== "rejected") {
+      throw new HttpError(
+        409,
+        "Only pending or declined join requests can be dismissed."
+      );
     }
+
+    const nextStatus =
+      request.status === "rejected" ? "dismissed" : "cancelled";
 
     const [updated] = await db
       .update(organizationJoinRequests)
       .set({
-        status: "cancelled",
+        status: nextStatus,
         reviewedByUserId: (req as any).auth.userId,
         reviewedAt: new Date(),
       })
@@ -3113,7 +3177,10 @@ router.delete(
     await writeAuditLog({
       req,
       labId: request.labId,
-      action: "organization_join_cancelled",
+      action:
+        nextStatus === "dismissed"
+          ? "organization_join_dismissed"
+          : "organization_join_cancelled",
       entityType: "organization_join_request",
       entityId: request.id,
       afterJson: updated,
@@ -3160,6 +3227,31 @@ router.post(
       })
       .where(eq(organizationJoinRequests.id, request.id))
       .returning();
+
+    // Notify the requesting user their request was declined so the waiting card
+    // shows an explicit message instead of silently resetting to search.
+    try {
+      const org = await db.query.organizations.findFirst({
+        where: eq(organizations.id, request.labId),
+      });
+      const orgLabel = org?.displayName || org?.name || "the lab";
+      await db
+        .insert(notifications)
+        .values({
+          userId: request.userId,
+          type: "join_request_rejected",
+          title: "Join request declined",
+          body: `Your request to join ${orgLabel} was declined. You can search for another lab to join.`,
+          dataJson: { organizationId: request.labId, joinRequestId: request.id },
+        })
+        .catch((err: unknown): never =>
+          wrapDbError(err, {
+            fallback: "Failed to send join decline notification.",
+          })
+        );
+    } catch {
+      // Best-effort — never fail the rejection because the notification insert failed.
+    }
 
     await writeAuditLog({
       req,

@@ -96,7 +96,23 @@ function JoinLabCard() {
       apiFetch<MyJoinRequest[]>("/organizations/join-requests/mine/pending"),
     refetchInterval: 20_000,
   });
-  const pendingRequest = pendingQuery.data?.[0] ?? null;
+  const activeRequest = pendingQuery.data?.[0] ?? null;
+  const pendingRequest =
+    activeRequest?.status === "pending" ? activeRequest : null;
+  const declinedRequest =
+    activeRequest?.status === "rejected" ? activeRequest : null;
+  const approvedRequest =
+    activeRequest?.status === "approved" ? activeRequest : null;
+
+  // The moment an admin approves the request, the polled list flips it to
+  // "approved". Refetch membership (the ["auth","me"] cache that gates this
+  // card) so the user immediately drops out of the waiting state and into the
+  // full lab dashboard, and refresh cases for the new lab.
+  useEffect(() => {
+    if (!approvedRequest) return;
+    void queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+    void queryClient.invalidateQueries({ queryKey: ["cases"] });
+  }, [approvedRequest, queryClient]);
 
   const lookupQuery = useQuery({
     queryKey: ["labs", "lookup", debounced],
@@ -104,7 +120,7 @@ function JoinLabCard() {
       apiFetch<{ labs: LabLookupResult[] }>(
         `/labs/lookup?q=${encodeURIComponent(debounced)}`,
       ),
-    enabled: debounced.length >= 2 && !pendingRequest,
+    enabled: debounced.length >= 2 && !activeRequest,
   });
   const labs = lookupQuery.data?.labs ?? [];
 
@@ -140,6 +156,29 @@ function JoinLabCard() {
     },
   });
 
+  if (approvedRequest) {
+    const labName =
+      approvedRequest.organization?.displayName ||
+      approvedRequest.organization?.name ||
+      "the lab";
+    return (
+      <div className="max-w-md w-full text-center bg-card border border-border rounded-xl shadow-sm p-8">
+        <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-emerald-500/10 flex items-center justify-center">
+          <CheckCircle2 className="text-emerald-500" size={24} />
+        </div>
+        <h1 className="text-xl font-semibold tracking-tight">
+          Request approved
+        </h1>
+        <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+          You've been approved to join{" "}
+          <span className="font-medium text-foreground">{labName}</span>. Loading
+          your dashboard…
+        </p>
+        <Loader2 className="mx-auto mt-5 w-5 h-5 text-muted-foreground animate-spin" />
+      </div>
+    );
+  }
+
   if (pendingRequest) {
     const labName =
       pendingRequest.organization?.displayName ||
@@ -163,6 +202,37 @@ function JoinLabCard() {
           className="mt-5 inline-flex items-center justify-center h-9 px-4 rounded-md border border-border text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
         >
           {cancelRequestMutation.isPending ? "Cancelling…" : "Cancel request"}
+        </button>
+      </div>
+    );
+  }
+
+  if (declinedRequest) {
+    const labName =
+      declinedRequest.organization?.displayName ||
+      declinedRequest.organization?.name ||
+      "the lab";
+    return (
+      <div className="max-w-md w-full text-center bg-card border border-border rounded-xl shadow-sm p-8">
+        <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-destructive/10 flex items-center justify-center">
+          <XCircle className="text-destructive" size={24} />
+        </div>
+        <h1 className="text-xl font-semibold tracking-tight">
+          Request declined
+        </h1>
+        <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+          Your request to join{" "}
+          <span className="font-medium text-foreground">{labName}</span> was
+          declined. You can search for another lab to join, or wait for a lab
+          admin to invite you.
+        </p>
+        <button
+          type="button"
+          onClick={() => cancelRequestMutation.mutate(declinedRequest.id)}
+          disabled={cancelRequestMutation.isPending}
+          className="mt-5 inline-flex items-center justify-center h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+        >
+          {cancelRequestMutation.isPending ? "Dismissing…" : "Find another lab"}
         </button>
       </div>
     );

@@ -12,6 +12,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch, apiRequest } from "@/lib/query-client";
+import { ME_QUERY_KEY } from "@/lib/auth-me";
 
 interface LabLookupResult {
   id: string;
@@ -63,7 +64,21 @@ export function JoinLabCard() {
     },
     refetchInterval: 20_000,
   });
-  const pendingRequest = pendingQuery.data?.[0] ?? null;
+  const activeRequest = pendingQuery.data?.[0] ?? null;
+  const pendingRequest =
+    activeRequest?.status === "pending" ? activeRequest : null;
+  const declinedRequest =
+    activeRequest?.status === "rejected" ? activeRequest : null;
+  const approvedRequest =
+    activeRequest?.status === "approved" ? activeRequest : null;
+
+  // The moment an admin approves the request, the polled list flips it to
+  // "approved". Refetch membership (the cache that gates this card) so the user
+  // immediately drops out of the waiting state and into the lab dashboard.
+  useEffect(() => {
+    if (!approvedRequest) return;
+    void queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
+  }, [approvedRequest, queryClient]);
 
   const lookupQuery = useQuery<LabLookupResult[]>({
     queryKey: ["labs", "lookup", debounced],
@@ -75,7 +90,7 @@ export function JoinLabCard() {
       const body = await res.json();
       return Array.isArray(body?.labs) ? body.labs : [];
     },
-    enabled: debounced.length >= 2 && !pendingRequest,
+    enabled: debounced.length >= 2 && !activeRequest,
   });
   const labs = lookupQuery.data ?? [];
 
@@ -110,6 +125,43 @@ export function JoinLabCard() {
       void queryClient.invalidateQueries({ queryKey: PENDING_KEY });
     },
   });
+
+  if (approvedRequest) {
+    const labName =
+      approvedRequest.organization?.displayName ||
+      approvedRequest.organization?.name ||
+      "the lab";
+    return (
+      <View style={styles.center}>
+        <Ionicons name="checkmark-circle-outline" size={48} color={colors.success} />
+        <Text
+          style={[
+            Typography.h2,
+            { color: colors.text, marginTop: Spacing.md, textAlign: "center" },
+          ]}
+        >
+          Request approved
+        </Text>
+        <Text
+          style={[
+            Typography.body,
+            {
+              color: colors.textSecondary,
+              marginTop: Spacing.sm,
+              textAlign: "center",
+            },
+          ]}
+        >
+          You've been approved to join {labName}. Loading your dashboard…
+        </Text>
+        <ActivityIndicator
+          size="small"
+          color={colors.textTertiary}
+          style={{ marginTop: Spacing.lg }}
+        />
+      </View>
+    );
+  }
 
   if (pendingRequest) {
     const labName =
@@ -150,6 +202,51 @@ export function JoinLabCard() {
         >
           <Text style={[Typography.bodyMedium, { color: colors.textSecondary }]}>
             {cancelRequestMutation.isPending ? "Cancelling…" : "Cancel request"}
+          </Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  if (declinedRequest) {
+    const labName =
+      declinedRequest.organization?.displayName ||
+      declinedRequest.organization?.name ||
+      "the lab";
+    return (
+      <View style={styles.center}>
+        <Ionicons name="close-circle-outline" size={48} color={colors.error} />
+        <Text
+          style={[
+            Typography.h2,
+            { color: colors.text, marginTop: Spacing.md, textAlign: "center" },
+          ]}
+        >
+          Request declined
+        </Text>
+        <Text
+          style={[
+            Typography.body,
+            {
+              color: colors.textSecondary,
+              marginTop: Spacing.sm,
+              textAlign: "center",
+            },
+          ]}
+        >
+          Your request to join {labName} was declined. You can search for another
+          lab to join, or wait for a lab admin to invite you.
+        </Text>
+        <Pressable
+          onPress={() => cancelRequestMutation.mutate(declinedRequest.id)}
+          disabled={cancelRequestMutation.isPending}
+          style={[
+            styles.primaryBtn,
+            { backgroundColor: colors.tint, opacity: cancelRequestMutation.isPending ? 0.5 : 1 },
+          ]}
+        >
+          <Text style={[Typography.bodyMedium, { color: colors.textInverse }]}>
+            {cancelRequestMutation.isPending ? "Dismissing…" : "Find another lab"}
           </Text>
         </Pressable>
       </View>
@@ -332,6 +429,14 @@ const styles = StyleSheet.create({
   secondaryBtn: {
     marginTop: Spacing.lg,
     borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.lg,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  primaryBtn: {
+    marginTop: Spacing.lg,
     borderRadius: Radius.md,
     paddingHorizontal: Spacing.lg,
     height: 42,

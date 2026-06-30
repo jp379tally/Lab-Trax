@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 import { AiChatPanel } from "./AiChatPanel";
 import { AiPanelContext, type AiCaseContext } from "@/lib/ai-panel-context";
+import { toast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
 import { useUploads } from "@/lib/uploads-context";
 import { Logo } from "./Logo";
@@ -209,6 +210,13 @@ export function getNotificationDestination(notif: Notification): string | null {
     return "/settings?tab=sessions";
   }
 
+  if (
+    notif.type === "join_request_approved" ||
+    notif.type === "join_request_rejected"
+  ) {
+    return "/";
+  }
+
   return null;
 }
 
@@ -244,6 +252,9 @@ export function AppLayout({ children }: Props) {
   const [notifLoading, setNotifLoading] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
   const markReadInflight = useRef(false);
+  // Notification ids already observed by the poller. `null` until the first
+  // poll seeds it, so we don't toast pre-existing notifications on mount.
+  const seenNotifIdsRef = useRef<Set<string> | null>(null);
   const [selectedNotif, setSelectedNotif] = useState<Notification | null>(null);
 
   const backupScheduleQuery = useQuery<BackupScheduleShape>({
@@ -344,6 +355,33 @@ export function AppLayout({ children }: Props) {
       const items = await apiFetch<Notification[]>("/notifications");
       const unread = items.some((n) => !n.readAt);
       setHasUnread(unread);
+
+      // Pop a proactive toast the moment a join-request decision lands, so the
+      // user doesn't have to open the bell to learn they were approved or
+      // declined. On the first poll we seed the seen-set without toasting to
+      // avoid replaying pre-existing notifications on mount.
+      const seen = seenNotifIdsRef.current;
+      if (seen === null) {
+        seenNotifIdsRef.current = new Set(items.map((n) => n.id));
+      } else {
+        for (const n of items) {
+          if (seen.has(n.id)) continue;
+          seen.add(n.id);
+          if (n.readAt) continue;
+          if (
+            n.type === "join_request_approved" ||
+            n.type === "join_request_rejected"
+          ) {
+            toast({
+              title: n.title,
+              description: n.body,
+              variant:
+                n.type === "join_request_rejected" ? "destructive" : "default",
+              duration: 6000,
+            });
+          }
+        }
+      }
     } catch {
       /* ignore */
     }
