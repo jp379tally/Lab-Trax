@@ -7,7 +7,7 @@ import React, { useEffect, useMemo } from "react";
 import { View, ActivityIndicator, StyleSheet, PanResponder, Platform } from "react-native";
 import { pushSharedFile } from "@/lib/shared-file-inbox";
 import { resilientFetch, queryClient, getAccessToken, refreshAndGetAccessToken } from "@/lib/query-client";
-import { useShareIntent } from "expo-share-intent";
+import { useShareIntent } from "@/lib/share-intent";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { LinearGradient } from "expo-linear-gradient";
