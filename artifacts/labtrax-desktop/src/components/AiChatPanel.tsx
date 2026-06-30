@@ -1189,7 +1189,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           const body = await resp.json().catch(() => ({})) as { error?: string };
           setMicState("error");
           setMicErrorKind("other");
-          setMicErrorMsg(body.error || "Transcription failed. Please try again or type your message.");
+          setMicErrorMsg(body.error || "Voice transcription is temporarily unavailable. You can still type your message.");
           return;
         }
         const body = await resp.json() as { ok?: boolean; transcript?: string };
@@ -1204,7 +1204,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       } catch {
         setMicState("error");
         setMicErrorKind("other");
-        setMicErrorMsg("Could not transcribe audio. Please try again or type your message.");
+        setMicErrorMsg("Voice transcription is temporarily unavailable. You can still type your message.");
       }
     };
     mr.onerror = () => {

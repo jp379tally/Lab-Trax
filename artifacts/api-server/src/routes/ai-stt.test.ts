@@ -1,13 +1,18 @@
 /**
- * End-to-end tests for the Whisper STT endpoint.
+ * End-to-end tests for the speech-to-text (STT) endpoint.
+ *
+ * Transcription runs through an env-configurable model fallback chain
+ * (gpt-4o-mini-transcribe → gpt-4o-transcribe by default), so the OpenAI mock
+ * stubs `audio.transcriptions.create`.
  *
  * Coverage:
  * - POST /api/ai-stt rejects unauthenticated requests (401)
  * - POST /api/ai-stt rejects requests with no audio file (400)
  * - POST /api/ai-stt returns { ok: true, transcript } on a happy-path multipart POST
- * - POST /api/ai-stt returns a structured 500 when the Whisper API fails
+ * - POST /api/ai-stt falls back to the next model when the first model fails
+ * - POST /api/ai-stt returns a structured, user-safe 500 when every model fails
  * - POST /api/ai-stt returns 503 when AI is not configured
- * - POST /api/ai-stt returns { ok: true, transcript: '' } when Whisper returns empty text
+ * - POST /api/ai-stt returns { ok: true, transcript: '' } on empty text
  * - POST /api/ai-stt returns 429 when the per-user rate limit is exceeded
  * - POST /api/ai-stt rate limit is per-user (different users have independent counters)
  */
@@ -127,10 +132,32 @@ describe("POST /api/ai-stt", () => {
     expect(res.body.transcript).toBe("Incisor crown, porcelain fused to metal.");
   });
 
-  it("returns 500 with structured error when the Whisper API fails", async () => {
-    mockTranscriptionsCreate.mockRejectedValueOnce(
-      new Error("Whisper service unavailable"),
-    );
+  it("falls back to the next model when the first transcription model fails", async () => {
+    mockTranscriptionsCreate.mockClear();
+    mockTranscriptionsCreate
+      .mockRejectedValueOnce(new Error("Model 'gpt-4o-mini-transcribe' is not supported."))
+      .mockResolvedValueOnce({ text: "Fallback model transcript." });
+
+    const app = makeApp("user-123");
+    const res = await request(app)
+      .post("/api/ai-stt")
+      .attach("audio", Buffer.from("audio content"), {
+        filename: "recording.webm",
+        contentType: "audio/webm",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.transcript).toBe("Fallback model transcript.");
+    expect(mockTranscriptionsCreate.mock.calls[0]![0].model).toBe("gpt-4o-mini-transcribe");
+    expect(mockTranscriptionsCreate.mock.calls[1]![0].model).toBe("gpt-4o-transcribe");
+  });
+
+  it("returns a structured, user-safe 500 when every transcription model fails", async () => {
+    mockTranscriptionsCreate.mockClear();
+    mockTranscriptionsCreate
+      .mockRejectedValueOnce(new Error("gpt-4o-mini-transcribe provider error"))
+      .mockRejectedValueOnce(new Error("gpt-4o-transcribe provider error"));
 
     const app = makeApp("user-123");
     const res = await request(app)
@@ -142,7 +169,10 @@ describe("POST /api/ai-stt", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error).toMatch(/transcription failed/i);
+    expect(res.body.error).toMatch(/temporarily unavailable/i);
+    // Never leak raw provider payloads or stack traces to the client.
+    expect(JSON.stringify(res.body)).not.toMatch(/provider error|at Object|Error:/);
+    expect(mockTranscriptionsCreate).toHaveBeenCalledTimes(2);
   });
 
   it("returns 503 when AI is not configured", async () => {

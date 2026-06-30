@@ -13,6 +13,8 @@ here.
 
 - `EXPO_PUBLIC_DOMAIN` — set automatically from `$REPLIT_DEV_DOMAIN` in the labtrax dev script
 - `AI_INTEGRATIONS_OPENAI_API_KEY` — enables AI features (Rx parsing, AI chat, smile preview)
+- `AI_STT_MODEL` — optional override for the Maynard voice-input transcription model (`POST /api/ai-stt`). When unset, the route tries `gpt-4o-mini-transcribe` then `gpt-4o-transcribe`. `whisper-1` is intentionally not a default — the Replit AI Integrations proxy rejects it (`UNSUPPORTED_MODEL`); only set this to `whisper-1` if a future proxy re-adds support.
+- `AI_TTS_MODEL` — optional override for the Maynard spoken-reply model (`POST /api/ai-tts`). When unset, the route tries `gpt-audio` then `gpt-audio-mini` via chat-completions. The `audio/speech` REST endpoint (e.g. `tts-1`, `gpt-4o-mini-tts`) is unsupported by the proxy, so only set this to another chat-completions audio model.
 - `LABTRAX_ENABLE_DEMO_SEEDS` — set `"true"` to seed demo users on startup
 - `PLATFORM_ADMIN_PIN` — short numeric PIN alternative to `PLATFORM_ADMIN_SECRET` via `X-Platform-Admin-Pin`; requires a signed-in `role:"admin"` user (PIN alone cannot authenticate)
 

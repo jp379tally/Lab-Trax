@@ -1,21 +1,27 @@
 /**
  * Speech-to-text transcription route.
  *
- * POST /ai-stt  — Transcribe audio to text via OpenAI Whisper.
+ * POST /ai-stt  — Transcribe audio to text via the Replit AI Integrations
+ *                 OpenAI proxy.
  *
  * Authentication: bearer token or session cookie (requireAuth).
  * Rate limit:     10 requests per minute per authenticated user. Requests over
  *                 the limit receive 429 Too Many Requests.
  * Body:          multipart/form-data with `audio` file field (max 25 MB).
- * Returns:       { transcript: string }
+ * Returns:       { ok: true, transcript: string }
+ *
+ * Model selection is an env-configurable fallback chain (see sttModelChain).
+ * On a model failure the route tries the next model before surfacing an error,
+ * so a single model going unsupported through the proxy no longer breaks voice
+ * input.
  */
 
 import { type IRouter, type RequestHandler } from "express";
-import OpenAI from "openai";
 import { toFile } from "openai/uploads";
 import multer from "multer";
 import { requireAuth } from "../middlewares/auth";
 import { createUserRateLimit } from "../lib/rate-limit";
+import { createOpenAIClient } from "../lib/ai-openai-client";
 
 const sttUpload = multer({
   storage: multer.memoryStorage(),
@@ -29,6 +35,52 @@ const defaultSttRateLimit = createUserRateLimit({
   message: "Too many transcription requests. Please wait a moment and try again.",
 });
 
+/**
+ * Ordered transcription-model fallback chain.
+ *
+ * Prefers `AI_STT_MODEL` when set, then the proxy-supported gpt-4o transcribe
+ * models. `whisper-1` is intentionally omitted from the defaults: the Replit AI
+ * Integrations proxy rejects it with `UNSUPPORTED_MODEL` (verified against the
+ * live proxy), which is exactly what broke voice input. Set
+ * `AI_STT_MODEL=whisper-1` only if a future proxy re-adds support for it.
+ */
+function sttModelChain(): string[] {
+  const chain: string[] = [];
+  const override = process.env.AI_STT_MODEL?.trim();
+  if (override) chain.push(override);
+  for (const model of ["gpt-4o-mini-transcribe", "gpt-4o-transcribe"]) {
+    if (!chain.includes(model)) chain.push(model);
+  }
+  return chain;
+}
+
+/**
+ * Map a provider error to a safe, low-cardinality category for structured
+ * logging. Never log or return raw provider payloads, secrets, or stack traces.
+ */
+function categorizeAudioError(err: unknown): string {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (
+    msg.includes("unsupported_model") ||
+    msg.includes("not supported") ||
+    msg.includes("invalid_endpoint") ||
+    msg.includes("does not exist")
+  ) {
+    return "unsupported_model";
+  }
+  if (
+    msg.includes("unsupported audio format") ||
+    msg.includes("invalid file format") ||
+    msg.includes("audio format") ||
+    msg.includes("could not be decoded")
+  ) {
+    return "unsupported_format";
+  }
+  if (msg.includes("rate limit") || msg.includes("429")) return "rate_limited";
+  if (msg.includes("timeout") || msg.includes("timed out") || msg.includes("etimedout")) return "timeout";
+  return "provider_error";
+}
+
 export function registerAiSttRoutes(
   router: IRouter,
   options?: { rateLimiter?: RequestHandler },
@@ -36,8 +88,8 @@ export function registerAiSttRoutes(
   const rateLimiter = options?.rateLimiter ?? defaultSttRateLimit;
 
   router.post("/ai-stt", requireAuth, rateLimiter, sttUpload.single("audio"), async (req, res) => {
-    const apiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
-    if (!apiKey) {
+    const openai = createOpenAIClient();
+    if (!openai) {
       res.status(503).json({ ok: false, error: "AI not configured" });
       return;
     }
@@ -48,42 +100,46 @@ export function registerAiSttRoutes(
       return;
     }
 
-    // Must include baseURL when using Replit AI Integrations proxy — the key is
-    // a proxy credential that only works against AI_INTEGRATIONS_OPENAI_BASE_URL,
-    // not directly against api.openai.com.
-    const baseURL = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL;
-    const openai = new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
-    try {
-      // Strip codec params (e.g. "audio/webm;codecs=opus" → "audio/webm").
-      // OpenAI Whisper only recognises base MIME types; sending codec params causes
-      // it to reject the file with an unsupported format error.
-      const baseType = (req.file.mimetype || "audio/webm").split(";")[0]!.trim() || "audio/webm";
-      const file = await toFile(
-        req.file.buffer,
-        req.file.originalname || "audio.webm",
-        { type: baseType },
-      );
+    // Strip codec params (e.g. "audio/webm;codecs=opus" → "audio/webm"). The
+    // transcription models only recognise base MIME types; codec params cause an
+    // unsupported-format rejection.
+    const baseType = (req.file.mimetype || "audio/webm").split(";")[0]!.trim() || "audio/webm";
+    const filename = req.file.originalname || "audio.webm";
+    const sizeBytes = req.file.size;
+    const buffer = req.file.buffer;
 
-      const transcription = await openai.audio.transcriptions.create({
-        model: "whisper-1",
-        file,
-      });
+    const models = sttModelChain();
+    let lastCategory = "provider_error";
 
-      if (!transcription.text.trim()) {
-        req.log.warn({ mimetype: req.file.mimetype, size: req.file.size }, "[AI STT] Whisper returned empty transcript");
-        res.json({ ok: true, transcript: "" });
+    for (const model of models) {
+      try {
+        // Recreate the upload per attempt — the SDK consumes the file stream, so
+        // a previous failed attempt may have already read it.
+        const file = await toFile(buffer, filename, { type: baseType });
+        const transcription = await openai.audio.transcriptions.create({ model, file });
+        const text = (transcription.text ?? "").trim();
+        req.log.info(
+          { model, mimetype: baseType, sizeBytes, transcriptChars: text.length },
+          "[AI STT] transcription succeeded",
+        );
+        res.json({ ok: true, transcript: text });
         return;
+      } catch (err: unknown) {
+        lastCategory = categorizeAudioError(err);
+        req.log.error(
+          { model, mimetype: baseType, sizeBytes, errorCategory: lastCategory },
+          "[AI STT] transcription attempt failed",
+        );
+        // Fall through to the next model in the chain.
       }
-
-      res.json({ ok: true, transcript: transcription.text });
-    } catch (err: unknown) {
-      const errMessage = err instanceof Error ? err.message : "Unknown error";
-      const isUnsupportedFormat = errMessage.toLowerCase().includes("unsupported audio format") || errMessage.toLowerCase().includes("invalid file format") || errMessage.toLowerCase().includes("audio format");
-      req.log.error({ err, mimetype: req.file.mimetype, size: req.file.size }, "[AI STT] Whisper transcription error");
-      res.status(500).json({
-        ok: false,
-        error: isUnsupportedFormat ? "Audio format not supported. Please try again or type your message." : "Speech transcription failed. Please try again.",
-      });
     }
+
+    res.status(500).json({
+      ok: false,
+      error:
+        lastCategory === "unsupported_format"
+          ? "That audio format isn't supported. You can still type your message."
+          : "Voice transcription is temporarily unavailable. You can still type your message.",
+    });
   });
 }
