@@ -78,7 +78,7 @@ interface MyJoinRequest {
 // yet a member of any active lab. Lets them search for a lab by name/city and
 // send a join request the lab admin can approve, and reflects a pending request
 // back to the user.
-function JoinLabCard() {
+export function JoinLabCard() {
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
