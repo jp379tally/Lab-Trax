@@ -1,0 +1,82 @@
+### Replit Build Brief
+
+**Objective:** Get Lab-Trax GitHub workflows green without weakening CI, release signing, storage integration, or supply-chain protections.
+
+**App area involved:** This is mostly the GitHub Actions/build layer, not a normal UI feature bug. Relevant files are:
+
+* `.github/workflows/ci.yml`
+* `.github/workflows/rotate-ci-key.yml`
+* `.github/workflows/auto-tag-desktop-release.yml`
+* `.github/workflows/release.yml`
+* `.github/workflows/build-windows.yml`
+* `artifacts/labtrax/package.json`
+* `pnpm-lock.yaml`
+* likely `scripts/src/check-expo-deps.ts`
+
+**Most likely wrong:** The failures are a cluster of workflow/configuration issues:
+
+1. Older runs failed because workflows referenced `secrets` inside `if:` expressions, which GitHub rejects at workflow startup.
+2. Mobile CI then failed from Expo SDK dependency drift, especially `expo-av` being behind SDK 54 expectations.
+3. The latest mobile fix added `@react-navigation/native` directly and updated the lockfile, which is probably correct, but CI should still verify `pnpm install --frozen-lockfile`, `pnpm run typecheck`, and mobile tests.
+4. Any remaining API/storage red is probably not code: prior commit notes say live installer storage/publish e2e was failing because `CI_GOOGLE_CREDENTIALS_JSON` was expired or partially configured.
+5. Desktop release automation is now manual-only, but `auto-tag-desktop-release.yml` still contains stale comments saying tag push triggers `release.yml`; current `release.yml` is `workflow_dispatch` only.
+
+**Safest fix:** Do not weaken or skip tests. Re-run CI on the latest `main`, then fix only the currently red jobs:
+
+* If the failure is `Unrecognized named-value: 'secrets'`, ensure all workflows use the preflight-output pattern already present in `ci.yml` and `rotate-ci-key.yml`.
+* If the failure is Expo drift, run the repo’s Expo dependency check and update only SDK-expected stable packages in `artifacts/labtrax/package.json`, then regenerate `pnpm-lock.yaml`.
+* If the failure is GCS auth/storage, refresh GitHub Actions secrets instead of changing tests.
+* If release/manual workflows fail because signing or publish secrets are absent, treat that as expected fail-loud behavior for manual release workflows, not something to bypass.
+
+**Acceptance criteria:**
+
+* `pnpm install --frozen-lockfile` succeeds with pnpm `10.26.1`.
+* `pnpm run typecheck` succeeds.
+* `pnpm --filter @workspace/api-server run test` succeeds or storage tests skip cleanly when all four CI storage secrets are absent.
+* `pnpm --filter @workspace/labtrax run test` succeeds.
+* `pnpm --filter @workspace/labtrax-desktop run test` and real Electron smoke workflow succeed.
+* No workflow `if:` condition references `secrets.*`.
+
+### Copy-Ready Replit Prompt
+
+Please inspect and fix all currently failed GitHub Actions workflows for `jp379tally/Lab-Trax`.
+
+Focus on the workflow/build layer, especially:
+
+* `.github/workflows/ci.yml`
+* `.github/workflows/rotate-ci-key.yml`
+* `.github/workflows/auto-tag-desktop-release.yml`
+* `.github/workflows/release.yml`
+* `.github/workflows/build-windows.yml`
+* `artifacts/labtrax/package.json`
+* `pnpm-lock.yaml`
+* `scripts/src/check-expo-deps.ts`
+
+Use the latest GitHub Actions logs as the source of truth. Do not weaken CI, do not remove tests, do not bypass signing/publish guards, and do not disable the pnpm minimum release age protection.
+
+Check for these known failure modes:
+
+1. GitHub workflow startup failure from using `secrets.*` inside `if:` conditions. Replace any remaining cases with a preflight step that maps secrets into `env`, emits a non-secret output, and gates later steps on that output.
+2. Expo SDK dependency drift in the mobile app. Run the repo’s Expo dependency check and update only SDK-expected stable package versions in `artifacts/labtrax/package.json`; regenerate `pnpm-lock.yaml`.
+3. Frozen lockfile mismatch after dependency changes. Run `pnpm install` with pnpm `10.26.1` and commit the resulting lockfile changes.
+4. GCS storage integration failure from expired or partial CI secrets. If logs show auth/credential failure, do not weaken tests. Report exactly which secrets must be refreshed: `CI_PRIVATE_OBJECT_DIR`, `CI_DEFAULT_OBJECT_STORAGE_BUCKET_ID`, `CI_GOOGLE_CREDENTIALS_JSON`, and `CI_PLATFORM_ADMIN_SECRET`. All four should be present together, or all absent so the test skips cleanly.
+5. Desktop release workflow failures due to missing signing/publish secrets. Keep those fail-loud for manual release workflows. If `auto-tag-desktop-release.yml` still claims tag pushes trigger `release.yml`, align comments/behavior with the current manual-only release model.
+
+Before finishing, run:
+
+* `pnpm install --frozen-lockfile`
+* `pnpm run typecheck`
+* `pnpm --filter @workspace/scripts run guard-session-beforeeach`
+* `pnpm --filter @workspace/api-server run test`
+* `pnpm --filter @workspace/labtrax run test`
+* `pnpm --filter @workspace/labtrax-desktop run test`
+
+Then summarize which workflows were failing, what changed, what remains dependent on GitHub secrets, and whether any manual rerun is required.
+
+### Debug Analysis
+
+The strongest evidence points to CI/release configuration, not a single LabTracks feature. Recent commits already fixed `secrets` usage in workflow `if:` expressions, pinned pnpm, changed release automation to manual-only, bumped `expo-av` for Expo SDK 54, and added `@react-navigation/native` to the mobile package.
+
+The remaining risky spots are secrets and dependency drift. If GitHub still shows failures after the latest commit, the first thing to inspect is the exact failed step. A red `pnpm install --frozen-lockfile` means dependency/lockfile mismatch. A red Expo drift check means another mobile Expo package needs a stable SDK-compatible bump. A red storage integration test with auth errors means `CI_GOOGLE_CREDENTIALS_JSON` or the related CI storage secrets need refreshing.
+
+The safest approach is targeted: preserve the tests and guards, fix only the exact failed class, and rerun the workflows on latest `main`. I would not remove the GCS tests, signing checks, or pnpm release-age policy.

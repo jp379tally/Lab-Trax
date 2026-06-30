@@ -26,6 +26,7 @@ import {
   openCaseMediaObjectStream,
   writeCaseMediaToObjectStorage,
 } from "../lib/case-media-object-storage";
+import { extractMediaFileName } from "../lib/case-media";
 
 const router = Router();
 router.use(requireAuth);
@@ -196,8 +197,12 @@ router.post(
     // Verify the chunked upload actually landed in object storage before committing
     // the DB row.  Without this check, a failed or partial upload would register an
     // inbox entry whose file is permanently missing after a server restart.
+    // The client may send either a bare filename or a full public URL; canonicalize it.
     if (caseMediaObjectStorageAvailable()) {
-      const fileExists = await caseMediaObjectStorageKeyExists(storagePath);
+      const diskFileName = extractMediaFileName(storagePath);
+      const fileExists = diskFileName
+        ? await caseMediaObjectStorageKeyExists(diskFileName)
+        : false;
       if (!fileExists) {
         throw new HttpError(
           409,

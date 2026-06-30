@@ -456,38 +456,55 @@ export function UnassignedDocumentsCard() {
     if (isUploading || !labOrgId) return;
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        multiple: false,
+        multiple: true,
         copyToCacheDirectory: true,
       });
       if (result.canceled || !result.assets?.length) return;
-      const asset = result.assets[0];
-      if (!asset) return;
 
       setIsUploading(true);
-      setUploadProgress(0);
-      const uploadResult = await chunkedUploadCaseMedia(
-        asset.uri,
-        asset.name,
-        asset.mimeType ?? "application/octet-stream",
-        (fraction) => setUploadProgress(Math.round(fraction * 100)),
-      );
 
-      if (!uploadResult.ok) {
-        Alert.alert("Upload failed", "Could not upload the file. Please try again.");
-        return;
+      for (let i = 0; i < result.assets.length; i++) {
+        const asset = result.assets[i];
+        if (!asset) continue;
+
+        setUploadProgress(0);
+        const uploadResult = await chunkedUploadCaseMedia(
+          asset.uri,
+          asset.name,
+          asset.mimeType ?? "application/octet-stream",
+          (fraction) => setUploadProgress(Math.round(fraction * 100)),
+        );
+
+        if (!uploadResult.ok) {
+          Alert.alert(
+            "Upload failed",
+            `Could not upload ${asset.name}. Please try again.`
+          );
+          break;
+        }
+
+        const finalizeRes = await resilientFetch("/api/lab-inbox/finalize-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            storagePath: uploadResult.url,
+            originalFilename: asset.name,
+            mimeType: asset.mimeType ?? "application/octet-stream",
+            sizeBytes: asset.size ?? 0,
+            labOrganizationId: labOrgId,
+          }),
+        });
+
+        if (!finalizeRes.ok) {
+          let detail = "";
+          try { detail = await finalizeRes.text(); } catch {}
+          Alert.alert(
+            "Upload failed",
+            `Could not save ${asset.name} (${finalizeRes.status})${detail ? ": " + detail : ""}`
+          );
+          break;
+        }
       }
-
-      await resilientFetch("/api/lab-inbox/finalize-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          storagePath: uploadResult.url,
-          originalFilename: asset.name,
-          mimeType: asset.mimeType ?? "application/octet-stream",
-          sizeBytes: asset.size ?? 0,
-          labOrganizationId: labOrgId,
-        }),
-      });
 
       void qc.invalidateQueries({
         queryKey: getListLabInboxFilesQueryKey({ labOrganizationId: labOrgId }),
