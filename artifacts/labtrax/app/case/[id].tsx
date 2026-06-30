@@ -243,8 +243,30 @@ function formatEventType(eventType?: string | null): string {
   return titleCase(eventType);
 }
 
+// Resolve the stable note id an event references, checking the known key
+// variants the server (and legacy paths) have used over time.
+function eventNoteId(meta: Record<string, unknown>): string | null {
+  return (
+    (typeof meta.noteId === "string" && meta.noteId) ||
+    (typeof meta.caseNoteId === "string" && meta.caseNoteId) ||
+    (typeof meta.id === "string" && meta.id) ||
+    null
+  );
+}
+
 // Best-effort one-line description from a history event's metadata blob.
-function eventDescription(ev: DetailEvent): string | null {
+//
+// For `note_added` events the note body is resolved by the event's stable note
+// id against the viewer-authorized `notesById` map first, so internal lab-only
+// notes the server withheld from this viewer are never surfaced. The server
+// also strips note text from internal `note_added` event metadata for non-lab
+// viewers, but resolving against the visible notes payload is the primary,
+// defense-in-depth guard: if an event points at a note that is not in the
+// viewer's visible notes, we never fall back to raw metadata text.
+function eventDescription(
+  ev: DetailEvent,
+  notesById?: Map<string, DetailNote>,
+): string | null {
   let meta: Record<string, unknown> | null = null;
   if (ev.metadataJson && typeof ev.metadataJson === "object") {
     meta = ev.metadataJson as Record<string, unknown>;
@@ -264,8 +286,21 @@ function eventDescription(ev: DetailEvent): string | null {
       ? `${titleCase(from)} → ${titleCase(to)}`
       : titleCase(to);
   }
+  if (ev.eventType === "note_added") {
+    const noteId = eventNoteId(meta);
+    if (noteId && notesById) {
+      const matched = notesById.get(noteId);
+      if (matched) return matched.noteText?.trim() || null;
+      // Note id present but the note is not among the viewer's authorized
+      // notes (an internal lab-only note hidden from a provider): never
+      // reveal the body from raw metadata, even if a copy lingers there.
+      return null;
+    }
+  }
+  if (typeof meta.noteText === "string" && meta.noteText) return meta.noteText;
   if (typeof meta.note === "string" && meta.note) return meta.note;
   if (typeof meta.message === "string" && meta.message) return meta.message;
+  if (typeof meta.description === "string" && meta.description) return meta.description;
   return null;
 }
 
@@ -1103,7 +1138,7 @@ export default function CaseDetailScreen() {
   async function handlePrintHistory() {
     if (!c) return;
     try {
-      await printCaseHistory(c, history);
+      await printCaseHistory(c, history, c.notes ?? []);
     } catch (e) {
       Alert.alert("Couldn't print history", errorMessage(e));
     }
@@ -1376,6 +1411,7 @@ export default function CaseDetailScreen() {
         {active === "history" && (
           <HistorySection
             events={history}
+            notes={c.notes ?? []}
             caseId={c.id}
             onOpenImage={setLightboxUrl}
             styles={styles}
@@ -4157,12 +4193,14 @@ function InvoiceSection({
 
 function HistorySection({
   events,
+  notes,
   caseId,
   onOpenImage,
   styles,
   colors,
 }: {
   events: DetailEvent[];
+  notes: DetailNote[];
   caseId: string;
   onOpenImage: (url: string) => void;
   styles: Styles;
@@ -4170,6 +4208,15 @@ function HistorySection({
 }) {
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [openProgress, setOpenProgress] = useState<number | null>(null);
+
+  // Index the viewer-authorized notes by id so `note_added` history rows can
+  // resolve their body from the visible notes payload (the server already
+  // withholds internal lab-only notes from non-lab viewers).
+  const notesById = useMemo(() => {
+    const m = new Map<string, DetailNote>();
+    for (const n of notes) if (n?.id) m.set(n.id, n);
+    return m;
+  }, [notes]);
 
   if (events.length === 0) {
     return <EmptyState icon="time-outline" text="No history yet." styles={styles} colors={colors} />;
@@ -4197,7 +4244,7 @@ function HistorySection({
   return (
     <Card padding="none">
       {events.map((ev, i) => {
-        const desc = eventDescription(ev);
+        const desc = eventDescription(ev, notesById);
         const actor = ev.actorName || ev.actorInitials;
         const att = eventAttachment(ev, caseId);
         const opening = openingId === ev.id;

@@ -87,6 +87,52 @@ export const completedCaseWithInvoice = {
   ],
 };
 
+// A case whose History timeline contains `note_added` events. The server embeds
+// the note body in each event's metadata (`noteText` + a stable `noteId`) so the
+// timeline can render it without a second lookup. This fixture models a PROVIDER
+// (non-lab) payload: the shared note is present in `notes` and its body resolves
+// in the timeline, while the internal lab-only note is absent from `notes` — the
+// client must NOT surface its body even if a stale `noteText` lingers in event
+// metadata.
+export const caseWithNoteHistory = {
+  ...inProgressCase,
+  id: "case-note-history",
+  caseNumber: "5004",
+  notes: [
+    {
+      id: "note-shared",
+      noteText: "Shared note body visible to everyone",
+      visibility: "shared_with_provider",
+      authorName: "Alex Brown",
+      createdAt: "2024-01-11T09:00:00.000Z",
+    },
+  ],
+  events: [
+    {
+      id: "evt-note-shared",
+      eventType: "note_added",
+      actorInitials: "AB",
+      metadataJson: {
+        visibility: "shared_with_provider",
+        noteId: "note-shared",
+        noteText: "Shared note body visible to everyone",
+      },
+      occurredAt: "2024-01-12T09:00:00.000Z",
+    },
+    {
+      id: "evt-note-internal",
+      eventType: "note_added",
+      actorInitials: "AB",
+      metadataJson: {
+        visibility: "internal_lab_only",
+        noteId: "note-internal",
+        noteText: "TOP SECRET internal lab note",
+      },
+      occurredAt: "2024-01-12T10:00:00.000Z",
+    },
+  ],
+};
+
 export const aiImportedCase = {
   ...inProgressCase,
   id: "case-ai",

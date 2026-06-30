@@ -1553,6 +1553,32 @@ function visibleAttachmentsFor(
   );
 }
 
+// Notes carry the same `internal_lab_only` / `shared_with_provider` visibility
+// as attachments. Non-lab viewers (providers / read-only users) must never
+// receive internal lab-only note bodies, so the notes payload is filtered the
+// same way `visibleAttachmentsFor` filters attachments.
+function visibleNotesFor(notes: any[], isLabMember: boolean): any[] {
+  if (isLabMember) return notes;
+  return notes.filter((n: any) => n.visibility !== "internal_lab_only");
+}
+
+// `note_added` history events embed the note body (`noteText`) in their
+// metadata so the History timeline can render it without a second lookup. For
+// non-lab viewers we strip that body from internal lab-only note events so the
+// case-detail payload can never leak an internal note's text through raw event
+// metadata. The event itself (and its visibility label) is preserved; only the
+// withheld body fields are removed.
+function sanitizeNoteEventsFor(events: any[], isLabMember: boolean): any[] {
+  if (isLabMember) return events;
+  return events.map((ev: any) => {
+    if (ev?.eventType !== "note_added") return ev;
+    const meta = (ev.metadataJson ?? {}) as Record<string, unknown>;
+    if (meta.visibility !== "internal_lab_only") return ev;
+    const { noteText: _noteText, note: _note, description: _description, ...rest } = meta;
+    return { ...ev, metadataJson: rest };
+  });
+}
+
 const createCaseSchema = z.object({
   // Optional for remake cases — server assigns the suffixed number (e.g. "26-11B").
   // Required for non-remake cases. Empty strings are treated as omitted.
@@ -5125,20 +5151,25 @@ router.get(
       ),
     );
 
+    // Notes/note bodies are visibility-scoped: non-lab viewers never receive
+    // internal lab-only note text — neither through the `notes` array, the
+    // `caseNotes` Rx-fallback summary, nor raw `note_added` event metadata.
+    const visibleNotes = visibleNotesFor(enrichedNotes, isLabMember);
+
     return ok(res, {
       ...found,
-      caseNotes: (found as any).rxNotes ?? (enrichedNotes.length > 0 ? enrichedNotes.map((n: any) => n.noteText).join("\n\n") : null),
+      caseNotes: (found as any).rxNotes ?? (visibleNotes.length > 0 ? visibleNotes.map((n: any) => n.noteText).join("\n\n") : null),
       suggestedPracticeName,
       providerOrganizationContact,
       restorations,
       unrecognizedMaterials,
-      notes: enrichedNotes,
+      notes: visibleNotes,
       attachments: visibleAttachmentsFor(enrichedAttachments, isLabMember),
-      events: enrichEventsWithNote(events),
-      originalCaseEvents: enrichEventsWithNote(originalCaseEvents),
+      events: sanitizeNoteEventsFor(enrichEventsWithNote(events), isLabMember),
+      originalCaseEvents: sanitizeNoteEventsFor(enrichEventsWithNote(originalCaseEvents), isLabMember),
       remakeChildrenEvents: remakeChildrenEvents.map((rc) => ({
         ...rc,
-        events: enrichEventsWithNote(rc.events),
+        events: sanitizeNoteEventsFor(enrichEventsWithNote(rc.events), isLabMember),
       })),
       locations,
       remakeOriginal,

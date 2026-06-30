@@ -123,6 +123,25 @@ function eventMetaLine(event: CaseEvent): string {
   return "";
 }
 
+// The note body for a `note_added` event, read straight from the metadata the
+// server returned to this viewer. The server strips note text from internal
+// lab-only `note_added` event metadata for non-lab viewers, so reading it here
+// cannot leak a withheld body — this mirrors the on-screen desktop history,
+// which renders `metadata.noteText ?? metadata.description` directly.
+function eventNoteBody(event: CaseEvent): string {
+  if (event.eventType !== "note_added") return "";
+  const meta =
+    event.metadataJson && typeof event.metadataJson === "object"
+      ? (event.metadataJson as Record<string, unknown>)
+      : {};
+  const body =
+    (typeof meta.noteText === "string" && meta.noteText) ||
+    (typeof meta.note === "string" && meta.note) ||
+    (typeof meta.description === "string" && meta.description) ||
+    "";
+  return body.trim();
+}
+
 function caseHeaderHtml(labCase: LabCase): string {
   const patient = `${labCase.patientFirstName ?? ""} ${
     labCase.patientLastName ?? ""
@@ -156,6 +175,7 @@ export function printCaseHistory(
       const when = formatDateTime(e.occurredAt || e.createdAt);
       const what = formatEventTitle(e.eventType);
       const meta = eventMetaLine(e);
+      const noteBody = eventNoteBody(e);
       const actor = e.actorInitials ? ` · ${escapeHtml(e.actorInitials)}` : "";
       return `
 <div class="lt-event">
@@ -163,6 +183,7 @@ export function printCaseHistory(
   <div>
     <div class="lt-event-what">${escapeHtml(what)}${actor}</div>
     ${meta ? `<div class="lt-event-meta">${escapeHtml(meta)}</div>` : ""}
+    ${noteBody ? `<div class="lt-event-note" style="white-space:pre-wrap">${escapeHtml(noteBody)}</div>` : ""}
   </div>
 </div>`;
     })

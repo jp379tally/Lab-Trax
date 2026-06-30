@@ -18,6 +18,7 @@ import { getAuthedMediaUri } from "@/lib/authed-media-cache";
 
 import CaseDetailScreen from "@/app/case/[id]";
 import {
+  caseWithNoteHistory,
   completedCaseWithInvoice,
   inProgressCase,
   sampleInvoice,
@@ -85,6 +86,29 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       const { getByTestId, getAllByText } = render(<CaseDetailScreen />);
       fireEvent.press(getByTestId("section-tab-history"));
       expect(getAllByText(/Status Change/).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("history note bodies (Task #2597)", () => {
+    beforeEach(() => {
+      setMockSearchParams({ id: caseWithNoteHistory.id });
+      setMockAppState({ cases: [caseWithNoteHistory], invoices: [] });
+    });
+
+    it("renders the note body inline on a 'Note Added' history row", () => {
+      const { getByTestId, getAllByText } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-history"));
+      expect(
+        getAllByText(/Shared note body visible to everyone/).length
+      ).toBeGreaterThan(0);
+    });
+
+    it("does not leak an internal note body that is absent from the viewer's visible notes", () => {
+      const { getByTestId, queryByText } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-history"));
+      // The internal note's id is not in the visible notes map, so even though a
+      // stale `noteText` lingers in the event metadata, the client withholds it.
+      expect(queryByText(/TOP SECRET internal lab note/)).toBeNull();
     });
   });
 

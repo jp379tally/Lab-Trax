@@ -30,6 +30,12 @@ export interface PrintableCaseHeader {
   priority?: string | null;
 }
 
+export interface PrintableNote {
+  id: string;
+  noteText?: string | null;
+  visibility?: string | null;
+}
+
 // ─── Local formatting helpers ─────────────────────────────────────────────────
 
 function esc(value: unknown): string {
@@ -69,8 +75,21 @@ function formatEventType(eventType?: string | null): string {
   return titleCaseLocal(eventType);
 }
 
-// Mirror eventDescription from the case detail screen.
-function eventDescription(ev: PrintableEvent): string | null {
+// Mirror eventNoteId / eventDescription from the case detail screen so the
+// printed history shows the same note bodies as the on-screen timeline.
+function eventNoteId(meta: Record<string, unknown>): string | null {
+  return (
+    (typeof meta.noteId === "string" && meta.noteId) ||
+    (typeof meta.caseNoteId === "string" && meta.caseNoteId) ||
+    (typeof meta.id === "string" && meta.id) ||
+    null
+  );
+}
+
+function eventDescription(
+  ev: PrintableEvent,
+  notesById?: Map<string, PrintableNote>,
+): string | null {
   let meta: Record<string, unknown> | null = null;
   if (ev.metadataJson && typeof ev.metadataJson === "object") {
     meta = ev.metadataJson as Record<string, unknown>;
@@ -90,8 +109,20 @@ function eventDescription(ev: PrintableEvent): string | null {
       ? `${titleCaseLocal(from)} → ${titleCaseLocal(to)}`
       : titleCaseLocal(to);
   }
+  if (ev.eventType === "note_added") {
+    const noteId = eventNoteId(meta);
+    if (noteId && notesById) {
+      const matched = notesById.get(noteId);
+      if (matched) return matched.noteText?.trim() || null;
+      // Note id present but withheld from this viewer (internal lab-only note
+      // hidden from a provider): never reveal the body from raw metadata.
+      return null;
+    }
+  }
+  if (typeof meta.noteText === "string" && meta.noteText) return meta.noteText;
   if (typeof meta.note === "string" && meta.note) return meta.note;
   if (typeof meta.message === "string" && meta.message) return meta.message;
+  if (typeof meta.description === "string" && meta.description) return meta.description;
   if (typeof meta.fileName === "string" && meta.fileName) return meta.fileName;
   return null;
 }
@@ -174,10 +205,17 @@ h2 {
 export function buildCaseHistoryHtml(
   c: PrintableCaseHeader,
   events: PrintableEvent[],
+  notes: PrintableNote[] = [],
 ): string {
   const patientName = `${c.patientFirstName ?? ""} ${c.patientLastName ?? ""}`.trim() || "Unnamed patient";
   const doctorLine = c.doctorName ? `Dr. ${c.doctorName}` : null;
   const metaParts = [patientName, doctorLine].filter(Boolean);
+
+  // Index the viewer-authorized notes by id so `note_added` rows resolve their
+  // body from the visible notes payload (the server withholds internal lab-only
+  // notes from non-lab viewers).
+  const notesById = new Map<string, PrintableNote>();
+  for (const n of notes) if (n?.id) notesById.set(n.id, n);
 
   // Chronological: oldest → newest
   const sorted = [...events].sort((a, b) => {
@@ -190,7 +228,7 @@ export function buildCaseHistoryHtml(
     .map((ev) => {
       const when = fmtDateTime(ev.occurredAt ?? ev.createdAt);
       const what = formatEventType(ev.eventType);
-      const desc = eventDescription(ev);
+      const desc = eventDescription(ev, notesById);
       const actor = ev.actorName ?? ev.actorInitials ?? null;
       return `
 <div class="event">
@@ -222,7 +260,8 @@ ${eventRows || '<div class="empty">No activity logged.</div>'}
 export async function printCaseHistory(
   c: PrintableCaseHeader,
   events: PrintableEvent[],
+  notes: PrintableNote[] = [],
 ): Promise<void> {
-  const html = buildCaseHistoryHtml(c, events);
+  const html = buildCaseHistoryHtml(c, events, notes);
   await Print.printAsync({ html });
 }
