@@ -102,6 +102,10 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
   // Stable ref so the notification-click subscription (registered once) always
   // calls the current version of openConversation without needing to re-subscribe.
   const openConversationRef = useRef<(id: string) => void>(() => {});
+  // Mirror of the latest conversations so openConversation can read current
+  // unread/last-message state without taking a reactive dependency on it.
+  const conversationsRef = useRef<ConversationSummary[]>([]);
+  conversationsRef.current = conversations;
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -297,13 +301,39 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
       ].slice(0, MAX_OPEN_PANELS);
       return next;
     });
+    // Durably persist the read state on the server the moment the conversation
+    // is opened, decoupled from the chat panel's later post-fetch markRead. The
+    // panel's fetch can be skipped (MAX_OPEN_PANELS cap, opened minimized) or
+    // fail, which previously left the server unread and made the badge/
+    // notification reappear on the next login. Guard against redundant calls
+    // when we already know the conversation has no unread messages.
+    const conv = conversationsRef.current.find((c) => c.id === conversationId);
+    const alreadyRead = conv ? (conv.unreadCount ?? 0) === 0 : false;
+    if (!alreadyRead) {
+      apiFetch(`/messenger/conversations/${conversationId}/read`, {
+        method: "POST",
+      }).catch(() => {
+        /* ignore network errors */
+      });
+      // Also drive the other user's "Seen" indicator over the socket if we know
+      // the last message; the REST call above is the durable source of truth.
+      if (conv?.lastMessage) {
+        socketSend({
+          type: "mark_read",
+          payload: {
+            conversationId,
+            lastMessageId: conv.lastMessage.id,
+          },
+        });
+      }
+    }
     setConversations((prev) =>
       prev.map((c) =>
         c.id === conversationId ? { ...c, unreadCount: 0 } : c
       )
     );
     setInboxOpen(false);
-  }, []);
+  }, [socketSend]);
   // Keep the ref current on every render so the notification-click handler
   // (registered once on mount) always delegates to the latest callback.
   openConversationRef.current = openConversation;
