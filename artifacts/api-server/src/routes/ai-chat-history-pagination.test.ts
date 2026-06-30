@@ -24,7 +24,7 @@
  * afterAll so the suite is safe against a shared dev DB. Gated on DATABASE_URL,
  * same as the other route integration suites.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -126,8 +126,11 @@ maybe("AI chat-history cursor pagination (db integration)", () => {
       { id: rid("m"), labId: labOrgId, userId: labUserId, role: "admin", status: "active" },
     ]);
 
-    labToken = await makeSession(labUserId);
     await seedHistory();
+  });
+
+  beforeEach(async () => {
+    labToken = await makeSession(labUserId);
   });
 
   afterAll(async () => {

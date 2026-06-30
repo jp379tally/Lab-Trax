@@ -25,7 +25,6 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
 import request from "supertest";
 import express from "express";
-import bodyParser from "body-parser";
 import { registerAiAgentRoutes } from "./ai-agent";
 import { TOOL_BY_NAME } from "../lib/ai-agent-tools";
 
@@ -108,7 +107,7 @@ vi.mock("../middlewares/auth", () => ({
 
 function makeApp(userId?: string) {
   const app = express();
-  app.use(bodyParser.json());
+  app.use(express.json());
   app.use((req: any, _res, next) => {
     if (userId) req.user = { id: userId, userType: "lab" };
     next();
@@ -200,7 +199,7 @@ describe("POST /api/ai-agent/stream — auth and validation", () => {
     vi.resetModules();
     const { registerAiAgentRoutes: freshRegister } = await import("./ai-agent");
     const freshApp = express();
-    freshApp.use(bodyParser.json());
+    freshApp.use(express.json());
     freshApp.use((req: any, _res, next) => {
       req.user = { id: "user-503", userType: "lab" };
       next();

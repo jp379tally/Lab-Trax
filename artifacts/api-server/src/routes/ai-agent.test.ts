@@ -23,7 +23,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
 import express from "express";
-import bodyParser from "body-parser";
 import {
   AGENT_TOOLS,
   TOOL_BY_NAME,
@@ -125,7 +124,7 @@ vi.mock("../middlewares/auth", () => ({
 
 function makeApp(userId?: string) {
   const app = express();
-  app.use(bodyParser.json());
+  app.use(express.json());
 
   // Stub auth middleware — sets req.user so requireAuth (mocked above) can gate routes
   app.use((req: any, _res, next) => {
@@ -224,7 +223,7 @@ describe("POST /api/ai-agent", () => {
     const freshRouter = express.Router();
     freshRegister(freshRouter);
     const freshApp = express();
-    freshApp.use(bodyParser.json());
+    freshApp.use(express.json());
     freshApp.use((req: any, _res, next) => {
       req.user = { id: "user-123", userType: "lab" };
       next();
