@@ -76,6 +76,7 @@ import type {
   DeleteVocabularyItem200,
   DeletedResult,
   DisableBackupSchedule200,
+  DoctorDuplicateClustersResult,
   DoctorMergePreview,
   DoctorMergeRequest,
   DoctorMergeResult,
@@ -5130,6 +5131,93 @@ export function useSearchDoctors<
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getSearchDoctorsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Returns likely-duplicate doctor clusters across every lab the caller
+owns/administers, grouped per lab and honoring each lab's
+`duplicateSuggestionThreshold` (clamped 0.5–0.95, default 0.7). Reuses
+the same normalized-name + bigram-similarity logic as the merge tooling
+so the count matches what the merge UI would flag. Powers the
+navigation duplicate-count badge on desktop and mobile. `totalGroups`
+is the badge count; it decreases as merges collapse clusters.
+
+ * @summary Possible-duplicate doctor clusters across the caller's admin labs
+ */
+export const getGetDoctorDuplicateClustersUrl = () => {
+  return `/api/doctors/duplicate-clusters`;
+};
+
+export const getDoctorDuplicateClusters = async (
+  options?: RequestInit,
+): Promise<DoctorDuplicateClustersResult> => {
+  return customFetch<DoctorDuplicateClustersResult>(
+    getGetDoctorDuplicateClustersUrl(),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetDoctorDuplicateClustersQueryKey = () => {
+  return [`/api/doctors/duplicate-clusters`] as const;
+};
+
+export const getGetDoctorDuplicateClustersQueryOptions = <
+  TData = Awaited<ReturnType<typeof getDoctorDuplicateClusters>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getDoctorDuplicateClusters>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetDoctorDuplicateClustersQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getDoctorDuplicateClusters>>
+  > = ({ signal }) => getDoctorDuplicateClusters({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getDoctorDuplicateClusters>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetDoctorDuplicateClustersQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getDoctorDuplicateClusters>>
+>;
+export type GetDoctorDuplicateClustersQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Possible-duplicate doctor clusters across the caller's admin labs
+ */
+
+export function useGetDoctorDuplicateClusters<
+  TData = Awaited<ReturnType<typeof getDoctorDuplicateClusters>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getDoctorDuplicateClusters>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetDoctorDuplicateClustersQueryOptions(options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

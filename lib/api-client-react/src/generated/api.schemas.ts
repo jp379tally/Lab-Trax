@@ -1135,6 +1135,34 @@ export interface DoctorSearchResult {
   data?: DoctorSearchResultData;
 }
 
+export interface DoctorDuplicateEntry {
+  doctorName?: string;
+  providerOrganizationId?: string | null;
+  practiceName?: string | null;
+  totalCases?: number;
+}
+
+export interface DoctorDuplicateCluster {
+  labOrganizationId?: string;
+  labName?: string | null;
+  /** Highest pairwise similarity within the cluster (0..1). */
+  topScore?: number;
+  doctors?: DoctorDuplicateEntry[];
+}
+
+export type DoctorDuplicateClustersResultData = {
+  /** Number of duplicate clusters — the nav badge count. */
+  totalGroups?: number;
+  /** Total doctor entries across all clusters. */
+  totalDoctors?: number;
+  clusters?: DoctorDuplicateCluster[];
+};
+
+export interface DoctorDuplicateClustersResult {
+  ok?: boolean;
+  data?: DoctorDuplicateClustersResultData;
+}
+
 /**
  * What to do with the doctor's existing cases + invoices. `move` is
 only honoured when a destination is supplied.

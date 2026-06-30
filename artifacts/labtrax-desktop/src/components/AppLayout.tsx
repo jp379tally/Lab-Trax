@@ -43,6 +43,10 @@ import { useAuth } from "@/lib/auth-context";
 import { useUploads } from "@/lib/uploads-context";
 import { Logo } from "./Logo";
 import { useQuery } from "@tanstack/react-query";
+import {
+  useGetDoctorDuplicateClusters,
+  getGetDoctorDuplicateClustersQueryKey,
+} from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
 import type { MeResponse } from "@/lib/types";
 
@@ -97,6 +101,30 @@ function groupContainsActive(group: NavGroup, location: string): boolean {
     isGroup(child)
       ? groupContainsActive(child, location)
       : navPathActive(child.path, location),
+  );
+}
+
+function groupContainsPath(group: NavGroup, path: string): boolean {
+  return group.children.some((child) =>
+    isGroup(child)
+      ? groupContainsPath(child, path)
+      : child.path === path,
+  );
+}
+
+// iPhone-style red count badge used on nav items/group headers.
+function DuplicateCountBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span
+      className="shrink-0 inline-flex items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-semibold leading-none text-white"
+      style={{ minWidth: 18, height: 18 }}
+      aria-label={`${count} possible duplicate doctor ${
+        count === 1 ? "group" : "groups"
+      }`}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
   );
 }
 
@@ -247,6 +275,16 @@ export function AppLayout({ children }: Props) {
     [meQuery.data],
   );
 
+  const dupClustersQuery = useGetDoctorDuplicateClusters({
+    query: {
+      queryKey: getGetDoctorDuplicateClustersQueryKey(),
+      enabled: !!user,
+      refetchInterval: POLL_INTERVAL_MS,
+      staleTime: 30_000,
+    },
+  });
+  const dupClusterCount = dupClustersQuery.data?.data?.totalGroups ?? 0;
+
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 
   const successCount = entries.filter((e) => e.status === "success").length;
@@ -363,11 +401,21 @@ export function AppLayout({ children }: Props) {
     const Icon = item.icon;
     const indent = depth > 0;
     const showBackupDot = backupOverdue && item.path === "/settings";
+    const showDupBadge = item.path === "/accounts" && dupClusterCount > 0;
+    const href = showDupBadge ? "/accounts?view=duplicates" : item.path;
     return (
       <li key={item.path}>
         <Link
-          href={item.path}
-          title={showBackupDot ? "Backup overdue — visit Settings → Backup" : undefined}
+          href={href}
+          title={
+            showBackupDot
+              ? "Backup overdue — visit Settings → Backup"
+              : showDupBadge
+                ? `${dupClusterCount} possible duplicate doctor ${
+                    dupClusterCount === 1 ? "group" : "groups"
+                  } — review and merge`
+                : undefined
+          }
           className={`flex items-center gap-3 rounded-md text-sm font-medium transition-colors ${
             indent ? "py-1.5" : "px-3 py-2"
           } ${
@@ -379,6 +427,7 @@ export function AppLayout({ children }: Props) {
         >
           <Icon size={indent ? 14 : 16} strokeWidth={2.2} />
           <span className="flex-1">{item.label}</span>
+          {showDupBadge && <DuplicateCountBadge count={dupClusterCount} />}
           {item.badge && (
             <span className="text-[10px] bg-sidebar-accent text-sidebar-accent-foreground px-1.5 py-0.5 rounded-full">
               {item.badge}
@@ -420,6 +469,8 @@ export function AppLayout({ children }: Props) {
         navPathActive(group.path, location) ||
         (!open && groupContainsActive(group, location));
       const showBackupDot = backupOverdue && group.path === "/settings";
+      const showGroupDupBadge =
+        !open && dupClusterCount > 0 && groupContainsPath(group, "/accounts");
       return (
         <li key={group.label}>
           <div className="flex items-center gap-1">
@@ -437,6 +488,7 @@ export function AppLayout({ children }: Props) {
             >
               <Icon size={indent ? 14 : 16} strokeWidth={2.2} />
               <span className="flex-1">{group.label}</span>
+              {showGroupDupBadge && <DuplicateCountBadge count={dupClusterCount} />}
               {showBackupDot && (
                 <AlertTriangle
                   size={13}

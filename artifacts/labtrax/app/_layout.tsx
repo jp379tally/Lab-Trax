@@ -94,6 +94,7 @@ function RootLayoutNav() {
         <Stack.Screen name="manage/lists" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="manage/reports" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="manage/ai-knowledge" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="duplicate-doctors" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="settings" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="ai-reader" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="ai-assistant" options={{ headerShown: false, presentation: "card" }} />

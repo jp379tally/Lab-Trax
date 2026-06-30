@@ -1180,4 +1180,238 @@ router.get(
   })
 );
 
+// ---------------------------------------------------------------------------
+// GET /doctors/duplicate-clusters
+//
+// Centralized possible-duplicate detection that powers the navigation
+// duplicate-count badge on both desktop and mobile. Computes likely-duplicate
+// doctor clusters across every lab the caller owns/administers, honoring each
+// lab's configured `duplicateSuggestionThreshold`. Reuses the same
+// `normalizeForCompare` + `similarity` (bigram jaccard) helpers as the merge
+// tooling, so the badge count matches what the merge UI would surface.
+//
+// `totalGroups` is the badge count and decreases as merges collapse clusters.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_DUP_SIMILARITY_THRESHOLD = 0.7;
+
+// Clamp + parse a per-lab override from organizations.duplicateSuggestionThreshold.
+// Mirrors resolveLabDupThreshold on the desktop client (clamp 0.5–0.95).
+function resolveLabDupThreshold(
+  raw: string | number | null | undefined
+): number {
+  if (raw === null || raw === undefined || raw === "")
+    return DEFAULT_DUP_SIMILARITY_THRESHOLD;
+  const n = typeof raw === "number" ? raw : parseFloat(raw);
+  if (!Number.isFinite(n)) return DEFAULT_DUP_SIMILARITY_THRESHOLD;
+  return Math.min(0.95, Math.max(0.5, n));
+}
+
+interface DupDoctorNode {
+  doctorName: string;
+  providerOrganizationId: string | null;
+  practiceName: string | null;
+  totalCases: number;
+}
+
+// Union-find clustering over pairs whose similarity(a, b) >= threshold.
+// Mirrors buildDuplicateClusters on the desktop, scoped to a single lab.
+function buildDoctorClusters(
+  nodes: DupDoctorNode[],
+  threshold: number
+): Array<{ topScore: number; doctors: DupDoctorNode[] }> {
+  const out: Array<{ topScore: number; doctors: DupDoctorNode[] }> = [];
+  if (nodes.length < 2) return out;
+  const parent = nodes.map((_, i) => i);
+  const find = (i: number): number => {
+    let cur = i;
+    while (parent[cur] !== cur) {
+      parent[cur] = parent[parent[cur]];
+      cur = parent[cur];
+    }
+    return cur;
+  };
+  const union = (a: number, b: number) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+  const pairScores = new Map<string, number>();
+  for (let i = 0; i < nodes.length; i++) {
+    const ni = nodes[i].doctorName;
+    if (!ni) continue;
+    for (let j = i + 1; j < nodes.length; j++) {
+      const nj = nodes[j].doctorName;
+      if (!nj) continue;
+      const s = similarity(ni, nj);
+      if (s >= threshold) {
+        union(i, j);
+        pairScores.set(`${i}|${j}`, s);
+      }
+    }
+  }
+  const groups = new Map<number, number[]>();
+  for (let i = 0; i < nodes.length; i++) {
+    const root = find(i);
+    const arr = groups.get(root) ?? [];
+    arr.push(i);
+    groups.set(root, arr);
+  }
+  for (const idxs of groups.values()) {
+    if (idxs.length < 2) continue;
+    let topScore = 0;
+    for (let a = 0; a < idxs.length; a++) {
+      for (let b = a + 1; b < idxs.length; b++) {
+        const lo = Math.min(idxs[a], idxs[b]);
+        const hi = Math.max(idxs[a], idxs[b]);
+        const sc = pairScores.get(`${lo}|${hi}`) ?? 0;
+        if (sc > topScore) topScore = sc;
+      }
+    }
+    out.push({ topScore, doctors: idxs.map((i) => nodes[i]) });
+  }
+  out.sort((a, b) => b.topScore - a.topScore);
+  return out;
+}
+
+router.get(
+  "/duplicate-clusters",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+
+    // Labs the caller owns/administers. Only lab-type orgs carry a doctor
+    // directory + a duplicateSuggestionThreshold, so scope to those. Detection
+    // is admin-only to match the merge tooling that resolves the clusters.
+    const memberLabs = await db
+      .select({
+        labId: organizationMemberships.labId,
+        role: organizationMemberships.role,
+        name: organizations.name,
+        displayName: organizations.displayName,
+        threshold: organizations.duplicateSuggestionThreshold,
+      })
+      .from(organizationMemberships)
+      .innerJoin(
+        organizations,
+        eq(organizations.id, organizationMemberships.labId)
+      )
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.status, "active"),
+          isNull(organizationMemberships.deletedAt),
+          eq(organizations.type, "lab"),
+          isNull(organizations.deletedAt)
+        )
+      );
+
+    const labs = memberLabs.filter((l) =>
+      (ADMIN_ROLES as string[]).includes(l.role)
+    );
+    const labIds = labs.map((l) => l.labId);
+    if (labIds.length === 0) {
+      return ok(res, { totalGroups: 0, totalDoctors: 0, clusters: [] });
+    }
+
+    // Distinct (doctor, practice) groups per lab, mirroring the desktop's
+    // DoctorRow keying. Only non-deleted canonical cases with a real name.
+    const groups = await db
+      .select({
+        labOrganizationId: cases.labOrganizationId,
+        doctorName: cases.doctorName,
+        providerOrganizationId: cases.providerOrganizationId,
+        totalCases: sql<number>`count(*)::int`.as("total_cases"),
+      })
+      .from(cases)
+      .where(
+        and(
+          inArray(cases.labOrganizationId, labIds),
+          notDeleted(cases),
+          sql`${cases.doctorName} is not null and trim(${cases.doctorName}) <> ''`
+        )
+      )
+      .groupBy(
+        cases.labOrganizationId,
+        cases.doctorName,
+        cases.providerOrganizationId
+      );
+
+    const orgIds = Array.from(
+      new Set(
+        groups
+          .map((g) => g.providerOrganizationId)
+          .filter((x): x is string => !!x)
+      )
+    );
+    const orgs = orgIds.length
+      ? await db
+          .select({
+            id: organizations.id,
+            name: organizations.name,
+            displayName: organizations.displayName,
+          })
+          .from(organizations)
+          .where(inArray(organizations.id, orgIds))
+      : [];
+    const orgName = new Map(
+      orgs.map((o) => [o.id, o.displayName || o.name] as const)
+    );
+
+    const labMeta = new Map(
+      labs.map(
+        (l) =>
+          [
+            l.labId,
+            {
+              name: l.displayName || l.name,
+              threshold: resolveLabDupThreshold(l.threshold),
+            },
+          ] as const
+      )
+    );
+
+    const byLab = new Map<string, DupDoctorNode[]>();
+    for (const g of groups) {
+      if (!g.doctorName) continue;
+      const arr = byLab.get(g.labOrganizationId) ?? [];
+      arr.push({
+        doctorName: g.doctorName,
+        providerOrganizationId: g.providerOrganizationId,
+        practiceName: g.providerOrganizationId
+          ? orgName.get(g.providerOrganizationId) ?? null
+          : null,
+        totalCases: g.totalCases,
+      });
+      byLab.set(g.labOrganizationId, arr);
+    }
+
+    const clusters: Array<{
+      labOrganizationId: string;
+      labName: string | null;
+      topScore: number;
+      doctors: DupDoctorNode[];
+    }> = [];
+    for (const [labId, nodes] of byLab) {
+      const meta = labMeta.get(labId);
+      if (!meta) continue;
+      for (const c of buildDoctorClusters(nodes, meta.threshold)) {
+        clusters.push({
+          labOrganizationId: labId,
+          labName: meta.name,
+          topScore: c.topScore,
+          doctors: c.doctors,
+        });
+      }
+    }
+    clusters.sort((a, b) => b.topScore - a.topScore);
+
+    const totalDoctors = clusters.reduce((n, c) => n + c.doctors.length, 0);
+    return ok(res, {
+      totalGroups: clusters.length,
+      totalDoctors,
+      clusters,
+    });
+  })
+);
+
 export default router;

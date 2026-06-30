@@ -895,6 +895,133 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     await db.delete(labCases).where(eq(labCases.id, leg));
     await db.delete(cases).where(eq(cases.id, canonId));
   }, 30000);
+
+  // -------------------------------------------------------------------------
+  // GET /doctors/duplicate-clusters — the nav duplicate-count badge source.
+  // -------------------------------------------------------------------------
+  describe("GET /doctors/duplicate-clusters", () => {
+    it("clusters near-duplicate doctor names and reports the badge count", async () => {
+      const ids = [
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: "Dr. Clusterson",
+          practiceId: practiceAId,
+        }),
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: "Dr Clusterson",
+          practiceId: practiceAId,
+        }),
+        // A distinct name that should not join the cluster.
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: "Dr. Zticklebrook",
+          practiceId: practiceBId,
+        }),
+      ];
+
+      const r = await request(appMod.default)
+        .get("/api/doctors/duplicate-clusters")
+        .set("Authorization", `Bearer ${tokens.admin}`);
+
+      expect(r.status).toBe(200);
+      expect(r.body.ok).toBe(true);
+      const cluster = r.body.data.clusters.find((c: any) =>
+        c.doctors.some((d: any) => d.doctorName === "Dr. Clusterson")
+      );
+      expect(cluster).toBeDefined();
+      const names = cluster.doctors.map((d: any) => d.doctorName).sort();
+      expect(names).toEqual(["Dr Clusterson", "Dr. Clusterson"]);
+      expect(cluster.topScore).toBeGreaterThan(0.7);
+      expect(r.body.data.totalGroups).toBeGreaterThanOrEqual(1);
+
+      const { db, cases } = dbMod as any;
+      await db.delete(cases).where(inArray(cases.id, ids));
+    });
+
+    it("excludes soft-deleted cases from clustering", async () => {
+      const live = await insertCase({
+        caseNumber: rid("CN"),
+        doctorName: "Dr. Softclust",
+        practiceId: practiceAId,
+      });
+      const soft = await insertCase({
+        caseNumber: rid("CN"),
+        doctorName: "Dr Softclust",
+        practiceId: practiceAId,
+        deletedAt: new Date(),
+      });
+
+      const r = await request(appMod.default)
+        .get("/api/doctors/duplicate-clusters")
+        .set("Authorization", `Bearer ${tokens.admin}`);
+
+      expect(r.status).toBe(200);
+      const cluster = r.body.data.clusters.find((c: any) =>
+        c.doctors.some((d: any) => d.doctorName === "Dr. Softclust")
+      );
+      // Only the live row remains → no second member → no cluster.
+      expect(cluster).toBeUndefined();
+
+      const { db, cases } = dbMod as any;
+      await db.delete(cases).where(inArray(cases.id, [live, soft]));
+    });
+
+    it("returns an empty result for a non-admin member", async () => {
+      const ids = [
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: "Dr. Memberclust",
+          practiceId: practiceAId,
+        }),
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: "Dr Memberclust",
+          practiceId: practiceAId,
+        }),
+      ];
+
+      const r = await request(appMod.default)
+        .get("/api/doctors/duplicate-clusters")
+        .set("Authorization", `Bearer ${tokens.member}`);
+
+      expect(r.status).toBe(200);
+      expect(r.body.data.totalGroups).toBe(0);
+      expect(r.body.data.clusters).toEqual([]);
+
+      const { db, cases } = dbMod as any;
+      await db.delete(cases).where(inArray(cases.id, ids));
+    });
+
+    it("does not leak clusters from a lab the caller does not administer", async () => {
+      // Cases live in labOrgId (admin's lab); the other-lab admin must not see them.
+      const ids = [
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: "Dr. Crossclust",
+          practiceId: practiceAId,
+        }),
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: "Dr Crossclust",
+          practiceId: practiceAId,
+        }),
+      ];
+
+      const r = await request(appMod.default)
+        .get("/api/doctors/duplicate-clusters")
+        .set("Authorization", `Bearer ${tokens.otherLabAdmin}`);
+
+      expect(r.status).toBe(200);
+      const leaked = r.body.data.clusters.find((c: any) =>
+        c.doctors.some((d: any) => d.doctorName === "Dr. Crossclust")
+      );
+      expect(leaked).toBeUndefined();
+
+      const { db, cases } = dbMod as any;
+      await db.delete(cases).where(inArray(cases.id, ids));
+    });
+  });
 });
 
 /**

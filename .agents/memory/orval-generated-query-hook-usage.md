@@ -18,6 +18,13 @@ flow into `TData` by inference. Don't fight it — skip `select`, take the raw
 result, and map in a `useMemo`. Cleaner than casting options or threading an
 explicit `<TData>` generic.
 
+**Any `query:` options object requires an explicit `queryKey`.** Even a plain
+`{ query: { enabled, staleTime, refetchInterval } }` (no `select`) fails with
+TS2741 "Property 'queryKey' is missing" — the generated options type is the
+full `UseQueryOptions`, not a Partial. Always pass
+`queryKey: getXQueryKey(params)` alongside the other options (import the
+generated `getXQueryKey` helper). Bites desktop and mobile identically.
+
 **Mutation variable shapes** (from `getXMutationOptions`):
 - `useUpdateInvoice().mutateAsync({ invoiceId, data })`
 - `useGenerateInvoiceForCase().mutateAsync({ caseId, data })` — body is

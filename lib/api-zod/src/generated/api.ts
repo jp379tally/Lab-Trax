@@ -1885,6 +1885,57 @@ export const SearchDoctorsResponse = zod.object({
 });
 
 /**
+ * Returns likely-duplicate doctor clusters across every lab the caller
+owns/administers, grouped per lab and honoring each lab's
+`duplicateSuggestionThreshold` (clamped 0.5–0.95, default 0.7). Reuses
+the same normalized-name + bigram-similarity logic as the merge tooling
+so the count matches what the merge UI would flag. Powers the
+navigation duplicate-count badge on desktop and mobile. `totalGroups`
+is the badge count; it decreases as merges collapse clusters.
+
+ * @summary Possible-duplicate doctor clusters across the caller's admin labs
+ */
+export const GetDoctorDuplicateClustersResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      totalGroups: zod
+        .number()
+        .optional()
+        .describe("Number of duplicate clusters — the nav badge count."),
+      totalDoctors: zod
+        .number()
+        .optional()
+        .describe("Total doctor entries across all clusters."),
+      clusters: zod
+        .array(
+          zod.object({
+            labOrganizationId: zod.string().optional(),
+            labName: zod.string().nullish(),
+            topScore: zod
+              .number()
+              .optional()
+              .describe(
+                "Highest pairwise similarity within the cluster (0..1).",
+              ),
+            doctors: zod
+              .array(
+                zod.object({
+                  doctorName: zod.string().optional(),
+                  providerOrganizationId: zod.string().nullish(),
+                  practiceName: zod.string().nullish(),
+                  totalCases: zod.number().optional(),
+                }),
+              )
+              .optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
+});
+
+/**
  * Returns aggregate counts for what a merge would move: per-source
 case count + date range + last few case numbers + count of
 pricing overrides that would follow. Includes soft-deleted cases

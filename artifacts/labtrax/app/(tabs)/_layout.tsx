@@ -3,6 +3,7 @@ import { Tabs } from "expo-router";
 import { Platform, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/theme-context";
+import { useDuplicateDoctorClusters } from "@/lib/duplicate-doctors";
 
 // Land on Dashboard (not the Cases `index` route) when the authenticated tab
 // group mounts — on first login and on authenticated relaunch.
@@ -13,6 +14,7 @@ export const unstable_settings = {
 export default function TabLayout() {
   const { colors } = useTheme();
   const isWeb = Platform.OS === "web";
+  const { totalGroups } = useDuplicateDoctorClusters();
 
   return (
     <View
@@ -75,6 +77,8 @@ export default function TabLayout() {
           name="more"
           options={{
             title: "More",
+            tabBarBadge: totalGroups > 0 ? (totalGroups > 99 ? "99+" : totalGroups) : undefined,
+            tabBarBadgeStyle: { backgroundColor: "#ef4444", color: "#ffffff" },
             tabBarIcon: ({ color, focused }) => (
               <Ionicons name={focused ? "ellipsis-horizontal-circle" : "ellipsis-horizontal-circle-outline"} size={22} color={color} />
             ),

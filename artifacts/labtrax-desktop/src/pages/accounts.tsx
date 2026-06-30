@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -32,7 +32,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { StatusBadge } from "@/components/StatusBadge";
-import { useUndoDoctorMerge } from "@workspace/api-client-react";
+import {
+  useUndoDoctorMerge,
+  useGetDoctorDuplicateClusters,
+  getGetDoctorDuplicateClustersQueryKey,
+} from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization, OrgMemberRow } from "@/lib/types";
@@ -164,6 +168,35 @@ export default function AccountsPage() {
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
   const queryClient = useQueryClient();
   const pageRef = useRef<HTMLDivElement>(null);
+  const dupBannerRef = useRef<HTMLDivElement>(null);
+  const searchString = useSearch();
+
+  const dupClustersQuery = useGetDoctorDuplicateClusters({
+    query: {
+      queryKey: getGetDoctorDuplicateClustersQueryKey(),
+      staleTime: 30_000,
+      refetchInterval: 60_000,
+    },
+  });
+  const dupClusters = dupClustersQuery.data?.data?.clusters ?? [];
+
+  // Deep-link from the nav badge: /accounts?view=duplicates focuses the
+  // possible-duplicate banner.
+  const focusDuplicates = useMemo(() => {
+    return new URLSearchParams(searchString).get("view") === "duplicates";
+  }, [searchString]);
+
+  useEffect(() => {
+    if (focusDuplicates) setPageView("practices");
+  }, [focusDuplicates]);
+
+  useEffect(() => {
+    if (!focusDuplicates) return;
+    if (dupClusters.length === 0) return;
+    const el = dupBannerRef.current;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [focusDuplicates, dupClusters.length]);
 
   const adminLabIds = useMemo(() => {
     const set = new Set<string>();
@@ -208,6 +241,9 @@ export default function AccountsPage() {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: ["cases"] });
         queryClient.invalidateQueries({ queryKey: ["invoices"] });
+        queryClient.invalidateQueries({
+          queryKey: getGetDoctorDuplicateClustersQueryKey(),
+        });
         setUndoToast(null);
       },
     },
@@ -707,6 +743,71 @@ export default function AccountsPage() {
           )}
         </div>
       </div>
+
+      {pageView === "practices" && isAdmin && dupClusters.length > 0 && (
+        <div
+          ref={dupBannerRef}
+          className={`mb-6 rounded-xl border bg-card overflow-hidden ${
+            focusDuplicates ? "border-red-400 ring-2 ring-red-400/40" : "border-border"
+          }`}
+        >
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-red-500/5">
+            <span className="inline-flex items-center justify-center rounded-full bg-red-500 px-1.5 text-[11px] font-semibold leading-none text-white" style={{ minWidth: 20, height: 20 }}>
+              {dupClusters.length > 99 ? "99+" : dupClusters.length}
+            </span>
+            <div className="flex-1">
+              <div className="text-sm font-semibold">Possible duplicate doctors</div>
+              <div className="text-xs text-muted-foreground">
+                These doctor names look like the same person. Review each group and merge to clean up your directory.
+              </div>
+            </div>
+          </div>
+          <ul className="divide-y divide-border">
+            {dupClusters.map((cluster, ci) => {
+              const doctors = cluster.doctors ?? [];
+              return (
+                <li
+                  key={`${cluster.labOrganizationId}-${ci}`}
+                  className="flex items-center gap-3 px-4 py-3"
+                >
+                  <Stethoscope size={16} className="shrink-0 text-muted-foreground" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">
+                      {doctors.map((d) => d.doctorName).join("  ·  ")}
+                    </div>
+                    <div className="text-xs text-muted-foreground truncate">
+                      {cluster.labName ? `${cluster.labName} — ` : ""}
+                      {doctors.length} variations
+                      {typeof cluster.topScore === "number"
+                        ? ` · ${Math.round(cluster.topScore * 100)}% similar`
+                        : ""}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sources: MergeSourceInput[] = doctors.map((d) => ({
+                        doctorName: d.doctorName ?? "",
+                        providerOrganizationId: d.providerOrganizationId ?? null,
+                        practiceName: d.practiceName ?? "",
+                      }));
+                      if (sources.length < 2 || !cluster.labOrganizationId) return;
+                      setMergeDialog({
+                        sources,
+                        labOrganizationId: cluster.labOrganizationId,
+                      });
+                    }}
+                    className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-border text-sm font-semibold hover:bg-secondary"
+                  >
+                    <GitMerge size={14} />
+                    Review &amp; merge
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
       {pageView === "directory" && isAdmin && (
         <div className="bg-card border border-border rounded-xl overflow-hidden">
@@ -1306,6 +1407,9 @@ export default function AccountsPage() {
           onMerged={(result: MergeDialogResult) => {
             queryClient.invalidateQueries({ queryKey: ["cases"] });
             queryClient.invalidateQueries({ queryKey: ["invoices"] });
+            queryClient.invalidateQueries({
+              queryKey: getGetDoctorDuplicateClustersQueryKey(),
+            });
             setPicked(new Set());
             setSelectedDoctor(null);
             setMergeDialog(null);

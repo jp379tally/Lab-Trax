@@ -1391,6 +1391,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DoctorSearchResult"
+  /doctors/duplicate-clusters:
+    get:
+      operationId: getDoctorDuplicateClusters
+      tags: [doctors]
+      summary: Possible-duplicate doctor clusters across the caller's admin labs
+      description: |
+        Returns likely-duplicate doctor clusters across every lab the caller
+        owns/administers, grouped per lab and honoring each lab's
+        `duplicateSuggestionThreshold` (clamped 0.5–0.95, default 0.7). Reuses
+        the same normalized-name + bigram-similarity logic as the merge tooling
+        so the count matches what the merge UI would flag. Powers the
+        navigation duplicate-count badge on desktop and mobile. `totalGroups`
+        is the badge count; it decreases as merges collapse clusters.
+      responses:
+        "200":
+          description: Duplicate clusters (may be empty)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorDuplicateClustersResult"
   /doctors/merge/preview:
     post:
       operationId: previewDoctorMerge
@@ -4762,6 +4782,48 @@ components:
             total: { type: integer }
             offset: { type: integer }
             limit: { type: integer }
+    DoctorDuplicateEntry:
+      type: object
+      properties:
+        doctorName: { type: string }
+        providerOrganizationId:
+          type: string
+          nullable: true
+        practiceName:
+          type: string
+          nullable: true
+        totalCases: { type: integer }
+    DoctorDuplicateCluster:
+      type: object
+      properties:
+        labOrganizationId: { type: string }
+        labName:
+          type: string
+          nullable: true
+        topScore:
+          type: number
+          description: Highest pairwise similarity within the cluster (0..1).
+        doctors:
+          type: array
+          items:
+            $ref: "#/components/schemas/DoctorDuplicateEntry"
+    DoctorDuplicateClustersResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            totalGroups:
+              type: integer
+              description: Number of duplicate clusters — the nav badge count.
+            totalDoctors:
+              type: integer
+              description: Total doctor entries across all clusters.
+            clusters:
+              type: array
+              items:
+                $ref: "#/components/schemas/DoctorDuplicateCluster"
     RemoveDoctorFromPracticeInput:
       type: object
       required: [existingCases]

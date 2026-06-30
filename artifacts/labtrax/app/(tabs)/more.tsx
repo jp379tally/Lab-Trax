@@ -17,6 +17,7 @@ import {
   primaryLabOrgId,
   adminLabMemberships,
 } from "@/lib/auth-me";
+import { useDuplicateDoctorClusters } from "@/lib/duplicate-doctors";
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -33,6 +34,8 @@ interface MenuItem {
   requiresLabMember?: boolean;
   // show the pending AI-suggestion count badge (admin-only) on this row
   showAiCandidateBadge?: boolean;
+  // show the possible-duplicate doctor count badge (admin-only) on this row
+  showDuplicateDoctorBadge?: boolean;
 }
 
 const ITEMS: MenuItem[] = [
@@ -75,6 +78,14 @@ const ITEMS: MenuItem[] = [
     icon: "bar-chart-outline",
     route: "/manage/reports",
     requiresAdmin: true,
+  },
+  {
+    title: "Possible duplicate doctors",
+    subtitle: "Review likely-duplicate doctor names and merge",
+    icon: "git-merge-outline",
+    route: "/duplicate-doctors",
+    requiresAdmin: true,
+    showDuplicateDoctorBadge: true,
   },
   {
     title: "Deleted Cases",
@@ -123,6 +134,8 @@ export default function MoreMenuScreen() {
   );
   const candidateCount = canManageLab ? (candidatesQ.data?.data?.length ?? 0) : 0;
 
+  const { totalGroups: duplicateDoctorCount } = useDuplicateDoctorClusters();
+
   const visible = ITEMS.filter(
     (item) =>
       (!item.requiresEdit || canEdit) &&
@@ -151,6 +164,11 @@ export default function MoreMenuScreen() {
             {item.showAiCandidateBadge && candidateCount > 0 ? (
               <View style={styles.badge} testID="ai-candidate-badge">
                 <Text style={styles.badgeText}>{candidateCount > 99 ? "99+" : candidateCount}</Text>
+              </View>
+            ) : null}
+            {item.showDuplicateDoctorBadge && duplicateDoctorCount > 0 ? (
+              <View style={[styles.badge, styles.dupBadge]} testID="duplicate-doctor-badge">
+                <Text style={styles.badgeText}>{duplicateDoctorCount > 99 ? "99+" : duplicateDoctorCount}</Text>
               </View>
             ) : null}
             <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
@@ -189,5 +207,6 @@ function makeStyles(c: ThemeColors) {
       justifyContent: "center",
     },
     badgeText: { ...Typography.captionSemibold, color: c.textInverse },
+    dupBadge: { backgroundColor: "#ef4444" },
   });
 }
