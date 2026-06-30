@@ -204,7 +204,6 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
 
       - name: Verify installer signature
-        if: env.CSC_LINK != ''
         shell: pwsh
         env:
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
