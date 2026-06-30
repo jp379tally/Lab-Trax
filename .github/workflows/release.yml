@@ -261,23 +261,7 @@ jobs:
           fi
           VERSION=$(node -p "require('./artifacts/labtrax-desktop/package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          NOTES=$(node -e "
-const fs = require('fs');
-const ver = 'v${VERSION}';
-let raw;
-try { raw = fs.readFileSync('artifacts/labtrax-desktop/RELEASE_NOTES.md', 'utf8'); } catch { process.exit(0); }
-const lines = raw.split(/\r?\n/);
-let inBlock = false, out = [];
-for (const line of lines) {
-  if (/^## v/.test(line)) {
-    if (inBlock) break;
-    if (line.replace(/^##\s+/, '').trim() === ver) inBlock = true;
-    continue;
-  }
-  if (inBlock) out.push(line);
-}
-process.stdout.write(out.join('\n').trim());
-" 2>/dev/null) || true
+          NOTES=$(node -e "const fs=require('fs'),ver='v${VERSION}';let raw;try{raw=fs.readFileSync('artifacts/labtrax-desktop/RELEASE_NOTES.md','utf8')}catch(e){process.exit(0)}const lines=raw.split(/\r?\n/),out=[];let inBlock=false;for(const l of lines){if(/^## v/.test(l)){if(inBlock)break;if(l.replace(/^##\s+/,'').trim()===ver)inBlock=true;continue}if(inBlock)out.push(l)}process.stdout.write(out.join('\n').trim())" 2>/dev/null) || true
           if [[ -z "$NOTES" ]]; then
             NOTES="Manually released from GitHub Actions workflow dispatch (run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA})."
             echo "::notice::No entry for v${VERSION} found in RELEASE_NOTES.md — using generic notes."
@@ -459,23 +443,7 @@ process.stdout.write(out.join('\n').trim());
             exit 1
           fi
           VERSION=$(node -p "require('./artifacts/labtrax-desktop/package.json').version")
-          NOTES=$(node -e "
-const fs = require('fs');
-const ver = 'v${VERSION}';
-let raw;
-try { raw = fs.readFileSync('artifacts/labtrax-desktop/RELEASE_NOTES.md', 'utf8'); } catch { process.exit(0); }
-const lines = raw.split(/\r?\n/);
-let inBlock = false, out = [];
-for (const line of lines) {
-  if (/^## v/.test(line)) {
-    if (inBlock) break;
-    if (line.replace(/^##\s+/, '').trim() === ver) inBlock = true;
-    continue;
-  }
-  if (inBlock) out.push(line);
-}
-process.stdout.write(out.join('\n').trim());
-" 2>/dev/null) || true
+          NOTES=$(node -e "const fs=require('fs'),ver='v${VERSION}';let raw;try{raw=fs.readFileSync('artifacts/labtrax-desktop/RELEASE_NOTES.md','utf8')}catch(e){process.exit(0)}const lines=raw.split(/\r?\n/),out=[];let inBlock=false;for(const l of lines){if(/^## v/.test(l)){if(inBlock)break;if(l.replace(/^##\s+/,'').trim()===ver)inBlock=true;continue}if(inBlock)out.push(l)}process.stdout.write(out.join('\n').trim())" 2>/dev/null) || true
           if [[ -z "$NOTES" ]]; then
             NOTES="Manually released from GitHub Actions workflow dispatch (run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA})."
             echo "::notice::No entry for v${VERSION} found in RELEASE_NOTES.md — using generic notes."
