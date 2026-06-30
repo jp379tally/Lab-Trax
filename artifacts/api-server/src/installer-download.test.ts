@@ -897,12 +897,36 @@ describe("GET /api/desktop-installer — available/fileFound guardrail", () => {
       );
       const fileFound = isLocalDownload ? installerObject !== null : true;
       const available = fileFound; // mirrors the fixed route behaviour
+      // Mirror getDesktopInstallerSlots(): per-kind availability map.
+      const slotKinds = ["zip", "exe", "dmg"] as const;
+      const slotResults = await Promise.allSettled(
+        slotKinds.map((k) => getDesktopInstallerMetadata(k)),
+      );
+      const installerSlots = Object.fromEntries(
+        slotKinds.map((k, i) => {
+          const result = slotResults[i]!;
+          if (result.status === "fulfilled") {
+            const meta = result.value;
+            return [
+              k,
+              {
+                available: meta !== null,
+                size: meta?.size ?? null,
+                uploadedAt: meta?.uploadedAt ?? null,
+                error: null,
+              },
+            ];
+          }
+          return [k, { available: false, size: null, uploadedAt: null, error: "err" }];
+        }),
+      );
       res.json({
         version: "1.0.0",
         downloadUrl: rawUrl,
         fileName: "LabTrax-Setup.exe",
         fileFound,
         available,
+        installerSlots,
       });
     });
     metaServer = miniApp.listen(0);
@@ -948,6 +972,40 @@ describe("GET /api/desktop-installer — available/fileFound guardrail", () => {
     expect(res.body.downloadUrl).toBe("/downloads/LabTrax-Setup.exe");
     expect(res.body.available).toBe(false);
     expect(res.body.fileFound).toBe(false);
+  });
+
+  it("reports ZIP-available-but-EXE-missing via installerSlots so the client can fall back", async () => {
+    // The active EXE is absent from storage but the portable ZIP is present.
+    // installerSlots must reflect zip:true / exe:false so the download page can
+    // offer the ZIP instead of the "temporarily unavailable" message.
+    vi.mocked(getDesktopInstallerMetadata).mockImplementation(async (kind) => {
+      if (kind === "zip") {
+        return { size: 145_000_000, uploadedAt: "2026-01-01T00:00:00.000Z" };
+      }
+      return null; // exe + dmg missing
+    });
+
+    const res = await request(metaServer).get("/api/desktop-installer");
+
+    expect(res.status).toBe(200);
+    // Active EXE is missing.
+    expect(res.body.available).toBe(false);
+    expect(res.body.fileFound).toBe(false);
+    // …but the ZIP slot is available for fallback.
+    expect(res.body.installerSlots.zip.available).toBe(true);
+    expect(res.body.installerSlots.exe.available).toBe(false);
+    expect(res.body.installerSlots.dmg.available).toBe(false);
+  });
+
+  it("reports no Windows slot available when both EXE and ZIP are missing", async () => {
+    vi.mocked(getDesktopInstallerMetadata).mockResolvedValue(null);
+
+    const res = await request(metaServer).get("/api/desktop-installer");
+
+    expect(res.status).toBe(200);
+    expect(res.body.installerSlots.zip.available).toBe(false);
+    expect(res.body.installerSlots.exe.available).toBe(false);
+    expect(res.body.installerSlots.dmg.available).toBe(false);
   });
 });
 

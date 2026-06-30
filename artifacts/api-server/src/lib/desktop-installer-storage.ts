@@ -359,3 +359,66 @@ export function installerKindFromUrl(url: string): DesktopInstallerKind | null {
   if (lower.endsWith(".dmg")) return "dmg";
   return null;
 }
+
+export interface DesktopInstallerSlotStatus {
+  available: boolean;
+  size: number | null;
+  uploadedAt: string | null;
+  error: string | null;
+}
+
+/** Installer kinds checked by the per-slot availability map, in display order. */
+export const ALL_DESKTOP_INSTALLER_KINDS: readonly DesktopInstallerKind[] = [
+  "zip",
+  "exe",
+  "dmg",
+];
+
+/**
+ * Probes App Storage for every installer kind in parallel and returns a
+ * per-slot availability map (`{ zip, exe, dmg }`). A slot is `available` when
+ * an object of that kind is present in storage, regardless of which kind is
+ * currently the active download URL.
+ *
+ * Never throws: a per-slot storage failure is captured in that slot's `error`
+ * field with `available: false` so a single bad slot can't fail the whole map.
+ * This is the single source of truth shared by the admin settings endpoint, the
+ * public installer endpoint, and the health check.
+ */
+export async function getDesktopInstallerSlots(): Promise<
+  Record<DesktopInstallerKind, DesktopInstallerSlotStatus>
+> {
+  const kinds = ALL_DESKTOP_INSTALLER_KINDS;
+  const results = await Promise.allSettled(
+    kinds.map((k) => getDesktopInstallerMetadata(k)),
+  );
+  return Object.fromEntries(
+    kinds.map((k, i) => {
+      const result = results[i];
+      if (!result) {
+        return [k, { available: false, size: null, uploadedAt: null, error: "No result" }];
+      }
+      if (result.status === "fulfilled") {
+        const meta = result.value;
+        return [
+          k,
+          {
+            available: meta !== null,
+            size: meta?.size ?? null,
+            uploadedAt: meta?.uploadedAt ?? null,
+            error: null,
+          },
+        ];
+      }
+      return [
+        k,
+        {
+          available: false,
+          size: null,
+          uploadedAt: null,
+          error: (result.reason as Error)?.message ?? String(result.reason),
+        },
+      ];
+    }),
+  ) as Record<DesktopInstallerKind, DesktopInstallerSlotStatus>;
+}

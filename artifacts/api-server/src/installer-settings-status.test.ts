@@ -49,6 +49,19 @@ const getMetadataMock = vi.fn<(key: string) => Promise<{ size: number; uploadedA
 
 vi.mock("./lib/desktop-installer-storage.js", () => ({
   getDesktopInstallerMetadata: (key: string) => getMetadataMock(key),
+  getDesktopInstallerSlots: async () => {
+    const kinds = ["zip", "exe", "dmg"] as const;
+    const results = await Promise.allSettled(kinds.map((k) => getMetadataMock(k)));
+    return Object.fromEntries(
+      kinds.map((k, i) => {
+        const r = results[i]!;
+        if (r.status === "fulfilled") {
+          return [k, { available: r.value !== null, size: r.value?.size ?? null, uploadedAt: r.value?.uploadedAt ?? null, error: null }];
+        }
+        return [k, { available: false, size: null, uploadedAt: null, error: "err" }];
+      }),
+    );
+  },
   openDesktopInstallerStream: vi.fn().mockResolvedValue(null),
   deleteDesktopInstaller: vi.fn().mockResolvedValue(undefined),
   writeDesktopInstallerFromBuffer: vi.fn().mockResolvedValue({ size: 0, uploadedAt: new Date().toISOString() }),

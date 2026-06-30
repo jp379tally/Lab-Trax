@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import archiver from "archiver";
 import {
   getDesktopInstallerMetadata,
+  getDesktopInstallerSlots,
   uploadDesktopInstaller,
   installerKindFromUrl,
   DesktopInstallerNotConfiguredError,
@@ -4640,6 +4641,14 @@ Important rules:
     // on — do NOT hardcode true here when the installer file is absent.
     const fileFound = isLocalDownload ? installerObject !== null : true;
     const available = fileFound;
+    // Per-kind availability so clients can fall back to another Windows
+    // installer (e.g. the portable ZIP) when the active one is missing. Reuses
+    // the same slot-availability logic as the admin settings + health
+    // endpoints. Never throws — a storage failure is captured per slot.
+    const installerSlots = await getDesktopInstallerSlots().catch((err) => {
+      req.log.error({ err }, "Failed to compute desktop installer slot availability");
+      return null;
+    });
     return res.json({
       version,
       downloadUrl: rawUrl,
@@ -4648,6 +4657,7 @@ Important rules:
       installerObject,
       available,
       fileFound,
+      installerSlots,
     });
   });
 
@@ -4780,21 +4790,8 @@ Important rules:
     }
     // Per-slot availability: check all three installer kinds in parallel so
     // the UI can show which ones are present regardless of the active URL.
-    const INSTALLER_SLOT_KINDS = ["zip", "exe", "dmg"] as const;
-    const slotResults = await Promise.allSettled(
-      INSTALLER_SLOT_KINDS.map((k) => getDesktopInstallerMetadata(k)),
-    );
-    const installerSlots = Object.fromEntries(
-      INSTALLER_SLOT_KINDS.map((k, i) => {
-        const result = slotResults[i];
-        if (!result) return [k, { available: false, size: null, uploadedAt: null, error: "No result" }];
-        if (result.status === "fulfilled") {
-          const meta = result.value;
-          return [k, { available: meta !== null, size: meta?.size ?? null, uploadedAt: meta?.uploadedAt ?? null, error: null }];
-        }
-        return [k, { available: false, size: null, uploadedAt: null, error: (result.reason as Error)?.message ?? String(result.reason) }];
-      }),
-    ) as Record<string, { available: boolean; size: number | null; uploadedAt: string | null; error: string | null }>;
+    // Shared with the public installer endpoint + health check.
+    const installerSlots = await getDesktopInstallerSlots();
     // Status badge: classify the active download URL so admins see at a glance
     // whether the link will actually work.
     //   - "external": URL is https://… so we can't introspect it; assume ok.

@@ -31,6 +31,13 @@ function toAbsoluteDownloadUrl(url: string): string {
   return `${origin}${url}`;
 }
 
+interface InstallerSlotStatus {
+  available: boolean;
+  size: number | null;
+  uploadedAt: string | null;
+  error: string | null;
+}
+
 interface DesktopInstallerPublicInfo {
   version: string;
   downloadUrl: string;
@@ -39,7 +46,11 @@ interface DesktopInstallerPublicInfo {
   available?: boolean;
   fileFound?: boolean;
   installerObject?: { size: number; uploadedAt: string } | null;
+  installerSlots?: Record<"zip" | "exe" | "dmg", InstallerSlotStatus> | null;
 }
+
+const PORTABLE_ZIP_FILE_NAME = "LabTrax-Windows-Portable.zip";
+const PORTABLE_ZIP_DOWNLOAD_PATH = "/downloads/" + PORTABLE_ZIP_FILE_NAME;
 
 const FALLBACK_VERSION = "1.0.0";
 const FALLBACK_FILE_NAME = "LabTrax-Windows-Portable.zip";
@@ -110,12 +121,11 @@ export default function DownloadPage() {
 
   const info = query.data;
   const version = info?.version ?? FALLBACK_VERSION;
-  const fileName = info?.fileName ?? FALLBACK_FILE_NAME;
-  const downloadUrl = toAbsoluteDownloadUrl(info?.downloadUrl ?? FALLBACK_DOWNLOAD_URL);
+  const activeFileName = info?.fileName ?? FALLBACK_FILE_NAME;
+  const activeDownloadUrl = toAbsoluteDownloadUrl(info?.downloadUrl ?? FALLBACK_DOWNLOAD_URL);
   const releaseNotes = info?.releaseNotes ?? null;
-  const isExe = downloadUrl.toLowerCase().endsWith(".exe");
-  const isZip = downloadUrl.toLowerCase().endsWith(".zip");
-  const isDmg = downloadUrl.toLowerCase().endsWith(".dmg");
+  const activeIsExe = activeDownloadUrl.toLowerCase().endsWith(".exe");
+  const isDmg = activeDownloadUrl.toLowerCase().endsWith(".dmg");
   const queryFailed = !info && query.isError;
   const queryError = query.error as Error | undefined;
   const is503 =
@@ -123,11 +133,32 @@ export default function DownloadPage() {
     queryError &&
     "status" in queryError &&
     (queryError as { status?: number }).status === 503;
-  // fileNotFound: the API responded successfully but reported the installer
-  // file is missing from storage (fileFound === false). Only possible for
-  // /downloads/ paths — external https:// URLs are always reported as found.
+  // fileNotFound: the API responded successfully but reported the active
+  // installer file is missing from storage (fileFound === false). Only possible
+  // for /downloads/ paths — external https:// URLs are always reported as found.
   const fileNotFound = info !== undefined && info.fileFound === false;
-  const showDownloadButton = !!info?.downloadUrl && !fileNotFound;
+
+  // Windows ZIP fallback: when the active download is an EXE that is missing
+  // from storage but the portable ZIP slot IS available, transparently offer
+  // the ZIP instead of showing the "temporarily unavailable" message. This
+  // never applies to macOS (.dmg) — that path is left untouched.
+  const zipSlotAvailable = info?.installerSlots?.zip?.available === true;
+  const useZipFallback = fileNotFound && activeIsExe && zipSlotAvailable;
+
+  // Effective download target: the ZIP when falling back, otherwise the active
+  // installer. The rest of the page (button, copy, instructions) renders from
+  // these effective values.
+  const fileName = useZipFallback ? PORTABLE_ZIP_FILE_NAME : activeFileName;
+  const downloadUrl = useZipFallback
+    ? toAbsoluteDownloadUrl(PORTABLE_ZIP_DOWNLOAD_PATH)
+    : activeDownloadUrl;
+  const isExe = activeIsExe && !useZipFallback;
+  const isZip = downloadUrl.toLowerCase().endsWith(".zip");
+
+  // Only show the "temporarily unavailable" block when the active installer is
+  // missing AND there is no usable Windows fallback.
+  const showUnavailable = fileNotFound && !useZipFallback;
+  const showDownloadButton = (!!info?.downloadUrl && !fileNotFound) || useZipFallback;
 
   const latestVersion = versionQuery.data?.version ?? null;
   const updateAvailable =
@@ -239,7 +270,7 @@ export default function DownloadPage() {
                     : "Desktop download."}
             </p>
 
-            {fileNotFound ? (
+            {showUnavailable ? (
               <div className="mt-4 space-y-3">
                 <div className="rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-950/30 px-4 py-3 flex items-start gap-2.5 text-sm">
                   <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
