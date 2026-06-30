@@ -24,6 +24,7 @@ import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { LocateCaseSheet } from "@/components/LocateCaseSheet";
 import { useAuth } from "@/lib/auth-context";
 import { useMe, activeMemberships } from "@/lib/auth-me";
+import { JoinLabCard } from "@/components/JoinLabCard";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -398,22 +399,16 @@ export default function DashboardScreen() {
   if (noActiveMembership) {
     return (
       <View style={[styles.screen, { paddingTop: insets.top }]}>
-        <View style={styles.center}>
-          <Ionicons name="time-outline" size={48} color={colors.tint} />
-          <Text
-            style={[Typography.h2, { color: colors.text, marginTop: Spacing.md, textAlign: "center" }]}
-          >
-            Your account is ready
-          </Text>
-          <Text
-            style={[
-              Typography.body,
-              { color: colors.textSecondary, marginTop: Spacing.sm, textAlign: "center" },
-            ]}
-          >
-            You'll see your lab dashboard after a lab admin invites or approves you.
-          </Text>
-        </View>
+        <ScrollView
+          contentContainerStyle={{
+            flexGrow: 1,
+            justifyContent: "center",
+            padding: Spacing.xl,
+          }}
+          keyboardShouldPersistTaps="handled"
+        >
+          <JoinLabCard />
+        </ScrollView>
       </View>
     );
   }

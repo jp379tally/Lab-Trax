@@ -1567,23 +1567,36 @@ router.get(
     if (teamUserIds.length === 0) {
       return res.json({ team: [], callerRole, pendingInvites: [] });
     }
-    // Fetch pending invites only for the labs where the caller is actually admin/owner.
+    // Fetch pending invites and join requests only for the labs where the
+    // caller is actually admin/owner.
     const adminLabIdList = [...callerAdminLabIds];
-    const [teammateRows, labRows, pendingInviteRows] = await Promise.all([
-      db.select().from(users).where(inArray(users.id, teamUserIds)),
-      db.select().from(organizations).where(inArray(organizations.id, labIds)),
-      adminLabIdList.length > 0
-        ? db
-            .select()
-            .from(organizationInvites)
-            .where(
-              and(
-                inArray(organizationInvites.labId, adminLabIdList),
-                eq(organizationInvites.status, "pending")
+    const [teammateRows, labRows, pendingInviteRows, pendingJoinRequestRows] =
+      await Promise.all([
+        db.select().from(users).where(inArray(users.id, teamUserIds)),
+        db.select().from(organizations).where(inArray(organizations.id, labIds)),
+        adminLabIdList.length > 0
+          ? db
+              .select()
+              .from(organizationInvites)
+              .where(
+                and(
+                  inArray(organizationInvites.labId, adminLabIdList),
+                  eq(organizationInvites.status, "pending")
+                )
               )
-            )
-        : Promise.resolve([]),
-    ]);
+          : Promise.resolve([]),
+        adminLabIdList.length > 0
+          ? db
+              .select()
+              .from(organizationJoinRequests)
+              .where(
+                and(
+                  inArray(organizationJoinRequests.labId, adminLabIdList),
+                  eq(organizationJoinRequests.status, "pending")
+                )
+              )
+          : Promise.resolve([]),
+      ]);
     const labsById = new Map(labRows.map((o) => [o.id, o]));
     const membershipByUser = new Map<string, typeof teamMemberships>();
     for (const m of teamMemberships) {
@@ -1634,7 +1647,52 @@ router.get(
       createdAt: inv.createdAt,
       expiresAt: inv.expiresAt,
     }));
-    return res.json({ team, callerRole, pendingInvites });
+
+    // Resolve requester identities so admins can recognise who is asking to
+    // join. The requesters are usually not already team members, so fetch any
+    // ids not already present in teammateRows.
+    const requesterIds = [
+      ...new Set(pendingJoinRequestRows.map((r) => r.userId)),
+    ];
+    const missingRequesterIds = requesterIds.filter(
+      (id) => !teammateRows.some((u) => u.id === id)
+    );
+    const requesterRows = missingRequesterIds.length
+      ? await db
+          .select()
+          .from(users)
+          .where(inArray(users.id, missingRequesterIds))
+      : [];
+    const usersById = new Map(
+      [...teammateRows, ...requesterRows].map((u) => [u.id, u])
+    );
+    const pendingJoinRequests = pendingJoinRequestRows.map((r) => {
+      const requester = usersById.get(r.userId);
+      const lab = labsById.get(r.labId);
+      return {
+        id: r.id,
+        organizationId: r.labId,
+        labName: lab?.displayName || lab?.name || null,
+        requestedByUserId: r.userId,
+        requestedRole: r.requestedRole,
+        message: r.message,
+        createdAt: r.createdAt,
+        requesterName: requester
+          ? [requester.firstName, requester.lastName]
+              .filter(Boolean)
+              .join(" ") || requester.username
+          : null,
+        requesterUsername: requester?.username ?? null,
+        requesterEmail: requester?.email ?? null,
+      };
+    });
+
+    return res.json({
+      team,
+      callerRole,
+      pendingInvites,
+      pendingJoinRequests,
+    });
   })
 );
 

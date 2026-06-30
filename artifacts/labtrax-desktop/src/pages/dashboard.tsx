@@ -59,6 +59,199 @@ function formatBytes(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
 }
 
+interface LabLookupResult {
+  id: string;
+  name: string;
+  displayName: string;
+  city: string | null;
+  state: string | null;
+}
+
+interface MyJoinRequest {
+  id: string;
+  organizationId: string;
+  status: string;
+  organization?: { id: string; name: string; displayName?: string | null } | null;
+}
+
+// Self-serve "request to join a lab" card shown to signed-up users who are not
+// yet a member of any active lab. Lets them search for a lab by name/city and
+// send a join request the lab admin can approve, and reflects a pending request
+// back to the user.
+function JoinLabCard() {
+  const queryClient = useQueryClient();
+  const [query, setQuery] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim()), 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const pendingQuery = useQuery({
+    queryKey: ["join-requests", "mine", "pending"],
+    queryFn: () =>
+      apiFetch<MyJoinRequest[]>("/organizations/join-requests/mine/pending"),
+    refetchInterval: 20_000,
+  });
+  const pendingRequest = pendingQuery.data?.[0] ?? null;
+
+  const lookupQuery = useQuery({
+    queryKey: ["labs", "lookup", debounced],
+    queryFn: () =>
+      apiFetch<{ labs: LabLookupResult[] }>(
+        `/labs/lookup?q=${encodeURIComponent(debounced)}`,
+      ),
+    enabled: debounced.length >= 2 && !pendingRequest,
+  });
+  const labs = lookupQuery.data?.labs ?? [];
+
+  const sendRequestMutation = useMutation({
+    mutationFn: async (labId: string) => {
+      setSelectedLabId(labId);
+      return apiFetch(`/organizations/${labId}/join-requests`, {
+        method: "POST",
+        body: JSON.stringify({ requestedRole: "user" }),
+      });
+    },
+    onSuccess: () => {
+      setErrorMsg(null);
+      setQuery("");
+      setDebounced("");
+      void queryClient.invalidateQueries({
+        queryKey: ["join-requests", "mine", "pending"],
+      });
+    },
+    onError: (err: Error) => {
+      setErrorMsg(err.message || "Could not send your request. Please try again.");
+    },
+    onSettled: () => setSelectedLabId(null),
+  });
+
+  const cancelRequestMutation = useMutation({
+    mutationFn: async (id: string) =>
+      apiFetch(`/organizations/join-requests/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["join-requests", "mine", "pending"],
+      });
+    },
+  });
+
+  if (pendingRequest) {
+    const labName =
+      pendingRequest.organization?.displayName ||
+      pendingRequest.organization?.name ||
+      "the lab";
+    return (
+      <div className="max-w-md w-full text-center bg-card border border-border rounded-xl shadow-sm p-8">
+        <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-amber-500/10 flex items-center justify-center">
+          <Clock className="text-amber-500" size={24} />
+        </div>
+        <h1 className="text-xl font-semibold tracking-tight">Request pending</h1>
+        <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+          Your request to join{" "}
+          <span className="font-medium text-foreground">{labName}</span> has been
+          sent. You'll get access as soon as a lab admin approves it.
+        </p>
+        <button
+          type="button"
+          onClick={() => cancelRequestMutation.mutate(pendingRequest.id)}
+          disabled={cancelRequestMutation.isPending}
+          className="mt-5 inline-flex items-center justify-center h-9 px-4 rounded-md border border-border text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+        >
+          {cancelRequestMutation.isPending ? "Cancelling…" : "Cancel request"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-md w-full bg-card border border-border rounded-xl shadow-sm p-8">
+      <div className="text-center">
+        <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
+          <Clock className="text-primary" size={24} />
+        </div>
+        <h1 className="text-xl font-semibold tracking-tight">
+          Your account is ready
+        </h1>
+        <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+          Find your lab below and send a request to join, or wait for a lab admin
+          to invite you.
+        </p>
+      </div>
+
+      <div className="mt-6 space-y-3 text-left">
+        <label className="text-xs font-medium text-muted-foreground">
+          Search for your lab
+        </label>
+        <div className="relative">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Lab name or city"
+            className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          {lookupQuery.isFetching && (
+            <Loader2 className="absolute right-3 top-2.5 w-5 h-5 text-muted-foreground animate-spin" />
+          )}
+        </div>
+
+        {errorMsg && (
+          <div className="text-xs text-destructive">{errorMsg}</div>
+        )}
+
+        {debounced.length >= 2 && (
+          <ul className="border border-border rounded-md divide-y divide-border max-h-64 overflow-y-auto">
+            {labs.length === 0 && !lookupQuery.isFetching && (
+              <li className="px-3 py-3 text-xs text-muted-foreground text-center">
+                No labs found. Try a different search.
+              </li>
+            )}
+            {labs.map((lab) => {
+              const location = [lab.city, lab.state].filter(Boolean).join(", ");
+              const sending =
+                sendRequestMutation.isPending && selectedLabId === lab.id;
+              return (
+                <li
+                  key={lab.id}
+                  className="px-3 py-2.5 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">
+                      {lab.displayName || lab.name}
+                    </div>
+                    {location && (
+                      <div className="text-xs text-muted-foreground truncate">
+                        {location}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => sendRequestMutation.mutate(lab.id)}
+                    disabled={sendRequestMutation.isPending}
+                    className="shrink-0 inline-flex items-center gap-1 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                  >
+                    {sending ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      "Request to join"
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface CleanupScheduleSettings {
   hourUtc: number;
 }
@@ -936,18 +1129,7 @@ export default function DashboardPage() {
     return (
       <div className="px-8 py-7 max-w-[1400px] mx-auto">
         <div className="flex items-center justify-center min-h-[60vh]">
-          <div className="max-w-md w-full text-center bg-card border border-border rounded-xl shadow-sm p-8">
-            <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
-              <Clock className="text-primary" size={24} />
-            </div>
-            <h1 className="text-xl font-semibold tracking-tight">
-              Your account is ready
-            </h1>
-            <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-              You'll see your lab dashboard after a lab admin invites or
-              approves you.
-            </p>
-          </div>
+          <JoinLabCard />
         </div>
       </div>
     );

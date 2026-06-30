@@ -253,6 +253,19 @@ interface PendingInvite {
   expiresAt: string | Date | null;
 }
 
+interface PendingJoinRequest {
+  id: string;
+  organizationId: string;
+  labName: string | null;
+  requestedByUserId: string;
+  requestedRole: string | null;
+  message: string | null;
+  createdAt: string | Date | null;
+  requesterName: string | null;
+  requesterUsername: string | null;
+  requesterEmail: string | null;
+}
+
 const LOGO_PLACEMENT_OPTIONS = [
   { key: "invoices", label: "Invoices", desc: "Show logo on invoice PDFs sent to practices" },
   { key: "statements", label: "Statements", desc: "Show logo on monthly billing statement PDFs" },
@@ -492,7 +505,7 @@ function ProfilePanel() {
     },
   });
 
-  const teamQuery = useQuery<{ team: LabTeamMember[]; callerRole: string | null; pendingInvites: PendingInvite[] }>({
+  const teamQuery = useQuery<{ team: LabTeamMember[]; callerRole: string | null; pendingInvites: PendingInvite[]; pendingJoinRequests?: PendingJoinRequest[] }>({
     queryKey: ["lab-team"],
     queryFn: () => apiFetch("/auth/lab-team"),
     refetchInterval: 30_000,
@@ -560,6 +573,36 @@ function ProfilePanel() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
       toast({ title: "Invite revoked", duration: 3000 });
+    },
+  });
+
+  const approveJoinRequestMutation = useMutation({
+    mutationFn: async (joinRequestId: string) => {
+      return apiFetch(`/organizations/join-requests/${joinRequestId}/approve`, {
+        method: "POST",
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
+      toast({ title: "Request approved", description: "They now have access to the lab.", duration: 4000 });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not approve request", description: err.message, variant: "destructive", duration: 4000 });
+    },
+  });
+
+  const rejectJoinRequestMutation = useMutation({
+    mutationFn: async (joinRequestId: string) => {
+      return apiFetch(`/organizations/join-requests/${joinRequestId}/reject`, {
+        method: "POST",
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
+      toast({ title: "Request declined", duration: 3000 });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not decline request", description: err.message, variant: "destructive", duration: 4000 });
     },
   });
 
@@ -1193,9 +1236,60 @@ function ProfilePanel() {
               </div>
             </li>
           ))}
+          {/* Pending join requests (self-serve requests from waiting users) */}
+          {isTeamAdmin && (teamQuery.data?.pendingJoinRequests ?? []).map((reqItem) => {
+            const requesterLabel =
+              reqItem.requesterName || reqItem.requesterUsername || "Someone";
+            return (
+              <li
+                key={reqItem.id}
+                className="px-4 py-2.5 flex items-center justify-between text-sm"
+              >
+                <div className="min-w-0">
+                  <div className="font-medium truncate">{requesterLabel}</div>
+                  <div className="text-xs text-muted-foreground truncate">
+                    {reqItem.requestedRole || "user"} ·{" "}
+                    <span className="text-sky-500 font-medium">
+                      Wants to join
+                    </span>
+                    {reqItem.requesterEmail && (
+                      <span className="text-muted-foreground/60"> · {reqItem.requesterEmail}</span>
+                    )}
+                  </div>
+                </div>
+                <div className="inline-flex items-center gap-2 shrink-0 ml-3">
+                  <button
+                    type="button"
+                    onClick={() => approveJoinRequestMutation.mutate(reqItem.id)}
+                    disabled={
+                      approveJoinRequestMutation.isPending ||
+                      rejectJoinRequestMutation.isPending
+                    }
+                    className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-500 transition-colors disabled:opacity-50"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => rejectJoinRequestMutation.mutate(reqItem.id)}
+                    disabled={
+                      approveJoinRequestMutation.isPending ||
+                      rejectJoinRequestMutation.isPending
+                    }
+                    title="Decline request"
+                    className="text-xs text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </li>
+            );
+          })}
           {!teamQuery.isLoading &&
             (teamQuery.data?.team.length ?? 0) === 0 &&
-            (teamQuery.data?.pendingInvites?.length ?? 0) === 0 && (
+            (teamQuery.data?.pendingInvites?.length ?? 0) === 0 &&
+            (teamQuery.data?.pendingJoinRequests?.length ?? 0) === 0 && (
               <li className="px-4 py-3 text-xs text-muted-foreground">
                 No teammates found.
               </li>
