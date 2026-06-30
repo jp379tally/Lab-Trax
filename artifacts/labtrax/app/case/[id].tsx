@@ -1492,6 +1492,7 @@ function OverviewSection({
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<OverviewForm>(() => formFromCase(c));
   const [picker, setPicker] = useState<"dueDate" | "expectedDeliveryDate" | "locate" | null>(null);
+  const [togglingRush, setTogglingRush] = useState(false);
   const update = useUpdateCase();
   const qc = useQueryClient();
 
@@ -1840,6 +1841,26 @@ function OverviewSection({
     }
   }
 
+  // Quick rush toggle — always available outside Edit mode. Flips priority
+  // between "rush" and "normal" via the same case PATCH the edit form uses,
+  // then refreshes so the badge/detail/read-only display update immediately.
+  async function toggleRush() {
+    const isRushNow = (c.priority ?? "normal").toLowerCase() === "rush";
+    const next: UpdateCaseInputPriority = isRushNow ? "normal" : "rush";
+    setTogglingRush(true);
+    try {
+      await update.mutateAsync({ caseId, data: { priority: next } });
+      await Promise.all([
+        onSaved(),
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+      ]);
+    } catch (e) {
+      Alert.alert("Couldn't update rush status", errorMessage(e));
+    } finally {
+      setTogglingRush(false);
+    }
+  }
+
   async function printLabel() {
     if (!pendingPrintBarcode) return;
     setPrintLoading(true);
@@ -2147,7 +2168,84 @@ function OverviewSection({
             </View>
             <FieldRow label="Doctor" value={c.doctorName || "—"} styles={styles} />
             <FieldRow label="Case #" value={c.caseNumber || "—"} styles={styles} />
-            <FieldRow label="Priority" value={c.priority ? titleCase(c.priority) : "Standard"} styles={styles} />
+            <View style={styles.fieldRow}>
+              <Text style={styles.fieldLabel}>Priority</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs, flexShrink: 1, justifyContent: "flex-end" }}>
+                <Text style={styles.fieldValue}>
+                  {(c.priority ?? "normal").toLowerCase() === "rush" ? "Rush" : "Standard"}
+                </Text>
+                {canEdit ? (
+                  <Pressable
+                    hitSlop={8}
+                    onPress={toggleRush}
+                    disabled={togglingRush}
+                    testID="rush-toggle"
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      (c.priority ?? "normal").toLowerCase() === "rush"
+                        ? "Clear rush"
+                        : "Mark as rush"
+                    }
+                    style={[
+                      {
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 3,
+                        paddingHorizontal: 8,
+                        paddingVertical: 3,
+                        borderRadius: Radius.xs,
+                        backgroundColor:
+                          (c.priority ?? "normal").toLowerCase() === "rush"
+                            ? colors.errorLight
+                            : colors.tintLight,
+                      },
+                      togglingRush && { opacity: 0.5 },
+                    ]}
+                  >
+                    {togglingRush ? (
+                      <ActivityIndicator
+                        size="small"
+                        color={
+                          (c.priority ?? "normal").toLowerCase() === "rush"
+                            ? colors.error
+                            : colors.tint
+                        }
+                      />
+                    ) : (
+                      <>
+                        <Ionicons
+                          name={
+                            (c.priority ?? "normal").toLowerCase() === "rush"
+                              ? "flash"
+                              : "flash-outline"
+                          }
+                          size={12}
+                          color={
+                            (c.priority ?? "normal").toLowerCase() === "rush"
+                              ? colors.error
+                              : colors.tint
+                          }
+                        />
+                        <Text
+                          style={{
+                            fontSize: 11,
+                            fontWeight: "600",
+                            color:
+                              (c.priority ?? "normal").toLowerCase() === "rush"
+                                ? colors.error
+                                : colors.tint,
+                          }}
+                        >
+                          {(c.priority ?? "normal").toLowerCase() === "rush"
+                            ? "Clear rush"
+                            : "Mark rush"}
+                        </Text>
+                      </>
+                    )}
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
             <FieldRow label="Case type" value={uniqueJoin((c.restorations ?? []).map((r) => r.restorationType))} styles={styles} />
             <FieldRow label="Tooth number" value={uniqueJoin((c.restorations ?? []).map((r) => r.toothNumber))} styles={styles} />
             <FieldRow label="Shade" value={uniqueJoin((c.restorations ?? []).map((r) => r.shade)) || (c as any).shade || null} styles={styles} />

@@ -38,6 +38,7 @@ import {
   Sparkles,
   Trash2,
   X,
+  Zap,
 } from "lucide-react";
 import QRCodeSVG from "react-qr-code";
 import { apiFetch, getAccessToken, getApiOrigin } from "@/lib/api";
@@ -4023,6 +4024,25 @@ export function CaseDrawer({
     onError: (e: Error) => setEditError(e.message),
   });
 
+  // Quick rush toggle — flips priority immediately via the same case PATCH the
+  // edit form uses, available outside Edit mode. Keeps the edit-form select and
+  // any staged (pending) edit in sync so the new quick toggle and the in-edit
+  // priority control never conflict.
+  const rushMutation = useMutation({
+    mutationFn: (next: "normal" | "rush") =>
+      apiFetch(`/cases/${labCase.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ priority: next }),
+      }),
+    onSuccess: (_res, next) => {
+      setEditForm((f) => ({ ...f, priority: next }));
+      setPendingCaseEdit((p) => (p ? { ...p, priority: next } : p));
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+    },
+    onError: (e: Error) => setEditError(e.message),
+  });
+
   const barcodeMutation = useMutation({
     mutationFn: ({ value, allowDuplicate }: { value: string; allowDuplicate?: boolean }) =>
       apiFetch(`/cases/${labCase.id}`, {
@@ -5818,10 +5838,40 @@ export function CaseDrawer({
                       return org?.displayName ?? org?.name ?? "—";
                     })()} />
                     <Field label="Status" value={statusLabel(currentStatus)} />
-                    <Field
-                      label="Priority"
-                      value={(pendingCaseEdit?.priority ?? data?.priority ?? labCase.priority) === "rush" ? "Rush" : "Normal"}
-                    />
+                    <div>
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Priority
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        {(() => {
+                          const effRush =
+                            (pendingCaseEdit?.priority ?? data?.priority ?? labCase.priority) === "rush";
+                          return (
+                            <>
+                              <span className="text-sm">{effRush ? "Rush" : "Normal"}</span>
+                              <button
+                                type="button"
+                                onClick={() => rushMutation.mutate(effRush ? "normal" : "rush")}
+                                disabled={rushMutation.isPending}
+                                title={effRush ? "Clear rush on this case" : "Mark this case as rush"}
+                                className={`inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${
+                                  effRush
+                                    ? "text-destructive hover:bg-destructive/10"
+                                    : "text-primary/80 hover:text-primary hover:bg-primary/10"
+                                }`}
+                              >
+                                <Zap size={10} />
+                                {rushMutation.isPending
+                                  ? "Saving…"
+                                  : effRush
+                                    ? "Clear rush"
+                                    : "Mark rush"}
+                              </button>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
                     <Field label="Due date" value={formatDueDate(pendingCaseEdit?.dueDate ?? data?.dueDate ?? labCase.dueDate)} />
                     <Field label="Created" value={formatDate(data?.createdAt ?? labCase.createdAt)} />
                     <Field label="Tooth #" value={toothLabel} />
