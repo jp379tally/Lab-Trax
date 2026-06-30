@@ -80,7 +80,10 @@ maybe("POST /api/cases/bulk-reassign and /bulk-status (db integration)", () => {
     return token;
   }
 
-  async function insertCanonical(caseNumber: string): Promise<string> {
+  async function insertCanonical(
+    caseNumber: string,
+    opts: { casePanBarcode?: string; status?: string } = {}
+  ): Promise<string> {
     const { db, cases } = dbMod as any;
     const id = rid("c");
     await db.insert(cases).values({
@@ -91,8 +94,11 @@ maybe("POST /api/cases/bulk-reassign and /bulk-status (db integration)", () => {
       doctorName: "Dr. Test",
       patientFirstName: "Pat",
       patientLastName: "Test",
-      status: "draft",
+      status: opts.status ?? "draft",
       createdByUserId: adminUserId,
+      ...(opts.casePanBarcode !== undefined
+        ? { casePanBarcode: opts.casePanBarcode }
+        : {}),
     });
     return id;
   }
@@ -396,6 +402,117 @@ maybe("POST /api/cases/bulk-reassign and /bulk-status (db integration)", () => {
         .send({ caseIds: [rid("c")], status: "complete" });
 
       expect(r.status).toBe(401);
+    });
+
+    // ── REGRESSION: bulk-status to complete must clear case pan barcode ──────
+
+    it("bulk-status to complete clears barcode on canonical cases", async () => {
+      const barcode = rid("PAN");
+      const c1 = await insertCanonical(rid("BRC1"), {
+        casePanBarcode: barcode,
+        status: "qc",
+      });
+
+      const r = await request(appMod.default)
+        .post("/api/cases/bulk-status")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .send({ caseIds: [c1], status: "complete" });
+
+      expect(r.status).toBe(200);
+      expect(r.body.ok).toBe(true);
+
+      const { db, cases } = dbMod as any;
+      const [row] = await db
+        .select({ status: cases.status, casePanBarcode: cases.casePanBarcode })
+        .from(cases)
+        .where(eq(cases.id, c1));
+      expect(row.status).toBe("complete");
+      expect(row.casePanBarcode).toBeNull();
+    });
+
+    it("bulk-status to complete clears barcode on legacy cases", async () => {
+      const barcode = rid("PAN");
+      const { db, labCases } = dbMod as any;
+      const l1 = rid("legacy");
+      await db.insert(labCases).values({
+        id: l1,
+        ownerId: adminUserId,
+        organizationId: labOrgId,
+        caseData: JSON.stringify({
+          patientName: "Legacy Pat",
+          status: "QC",
+          assignedBarcode: barcode,
+        }),
+      });
+
+      const r = await request(appMod.default)
+        .post("/api/cases/bulk-status")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .send({ caseIds: [l1], status: "complete" });
+
+      expect(r.status).toBe(200);
+      expect(r.body.ok).toBe(true);
+
+      const [row] = await db
+        .select({ caseData: labCases.caseData })
+        .from(labCases)
+        .where(eq(labCases.id, l1));
+      const parsed = JSON.parse(row.caseData);
+      expect(parsed.status).toBe("COMPLETE");
+      expect(parsed.assignedBarcode).toBeNull();
+    });
+
+    it("after bulk-status to complete, the freed barcode can be reassigned", async () => {
+      const barcode = rid("PAN");
+      const c1 = await insertCanonical(rid("BRC1"), {
+        casePanBarcode: barcode,
+        status: "qc",
+      });
+
+      // Complete case 1 → barcode freed.
+      await request(appMod.default)
+        .post("/api/cases/bulk-status")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .send({ caseIds: [c1], status: "complete" });
+
+      // Create a new case and assign the same barcode — must succeed.
+      const c2 = await insertCanonical(rid("BRC2"));
+      const assign = await request(appMod.default)
+        .patch(`/api/cases/${c2}`)
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .send({ casePanBarcode: barcode });
+
+      expect(assign.status).toBe(200);
+      expect(assign.body.ok).toBe(true);
+
+      const { db, cases } = dbMod as any;
+      const [row] = await db
+        .select({ casePanBarcode: cases.casePanBarcode })
+        .from(cases)
+        .where(eq(cases.id, c2));
+      expect(row.casePanBarcode).toBe(barcode);
+    });
+
+    it("non-complete bulk-status does NOT clear the barcode", async () => {
+      const barcode = rid("PAN");
+      const c1 = await insertCanonical(rid("BRC1"), {
+        casePanBarcode: barcode,
+        status: "qc",
+      });
+
+      const r = await request(appMod.default)
+        .post("/api/cases/bulk-status")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .send({ caseIds: [c1], status: "shipped" });
+
+      expect(r.status).toBe(200);
+
+      const { db, cases } = dbMod as any;
+      const [row] = await db
+        .select({ casePanBarcode: cases.casePanBarcode })
+        .from(cases)
+        .where(eq(cases.id, c1));
+      expect(row.casePanBarcode).toBe(barcode);
     });
   });
 });

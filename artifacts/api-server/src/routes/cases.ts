@@ -2475,9 +2475,15 @@ router.post(
     const canonicalIds = canonicalMatches.map((c) => c.id);
 
     if (canonicalIds.length > 0) {
+      const canonicalSet: Record<string, unknown> = {
+        status: input.status,
+        updatedAt: new Date(),
+      };
+      // When locating to Complete, free the pan barcode atomically.
+      if (input.status === "complete") canonicalSet.casePanBarcode = null;
       await db
         .update(cases)
-        .set({ status: input.status, updatedAt: new Date() })
+        .set(canonicalSet)
         .where(inArray(cases.id, canonicalIds));
     }
 

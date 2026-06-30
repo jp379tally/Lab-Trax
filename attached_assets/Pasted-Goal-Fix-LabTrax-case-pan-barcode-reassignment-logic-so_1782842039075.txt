@@ -1,0 +1,73 @@
+Goal:
+Fix LabTrax case pan barcode reassignment logic so that when a case is marked complete in the case status/location workflow, the case pan barcode is automatically unassigned from that case and becomes available for reassignment to another case.
+
+User-visible problem:
+Case pan barcode number 4 was previously assigned to a patient with last name Bellamy. That case appears to have been marked complete, but when trying to reassign case pan barcode 4 to another case, LabTrax still reports that barcode 4 is assigned to Bellamy. This means the “complete” workflow is not reliably clearing the case pan barcode assignment.
+
+Likely root cause:
+The app likely has incomplete or inconsistent cleanup logic when a case’s location/status is changed to complete. Possible causes include:
+- The barcode unassignment logic only runs for one “complete” field but not the other.
+- The app distinguishes between “status location complete” and “location complete,” but only one path clears the barcode.
+- The frontend updates the visible case status, but the backend/database assignment record is not cleared.
+- The barcode availability check is reading from a case_pan/barcode assignment table that still contains the Bellamy assignment.
+- The status comparison may be too strict, for example checking `Complete` but not `complete`, `Location Complete`, `completed`, or the actual stored enum/string value.
+
+Implementation steps:
+1. Locate the code responsible for updating a case’s status/location.
+   - Search for case update handlers, status/location fields, and complete-related logic.
+   - Look for routes, mutations, services, or components that update case status.
+   - Also inspect the barcode/case pan assignment logic and the barcode availability validation.
+
+2. Identify all fields that can represent completion.
+   - Confirm the exact field names used by LabTrax, especially anything like:
+     - `status`
+     - `location`
+     - `statusLocation`
+     - `caseLocation`
+     - `locationStatus`
+     - `caseStatus`
+   - Confirm the exact stored value for complete, for example `complete`, `Complete`, `LOCATION_COMPLETE`, etc.
+
+3. Add centralized cleanup logic.
+   - When a case is saved or updated and its relevant status/location indicates complete, clear the case pan barcode assignment.
+   - The cleanup should happen on the backend/server side, not only in the UI.
+   - If there is a separate assignment table, delete or null out the active assignment record.
+   - If the barcode is stored directly on the case record, set that field to `null` or the app’s equivalent unassigned value.
+   - If both exist, keep them consistent.
+
+4. Make the logic cover both completion paths.
+   - If “status location complete” and “location complete” are separate fields or workflows, both must trigger barcode unassignment.
+   - Do not rely on only one UI dropdown or one route.
+   - Any API endpoint or mutation that can mark a case complete should trigger the same cleanup behavior.
+
+5. Ensure barcode availability checks use the cleaned assignment state.
+   - After a case is marked complete, barcode number 4 should no longer be considered assigned to Bellamy.
+   - The reassignment validation should only block barcodes that are actively assigned to non-complete/open cases.
+
+6. Add or update tests if the project has tests.
+   - Test that assigning a case pan barcode works normally.
+   - Test that marking the case complete clears the barcode assignment.
+   - Test that the same barcode can then be assigned to a different case.
+   - Test both completion fields/workflows if both exist.
+   - Include a regression case for barcode 4/Bellamy-style stale assignment behavior.
+
+Constraints:
+- Do not remove barcode conflict validation entirely. Barcodes should still be blocked when assigned to active/incomplete cases.
+- Do not make completed cases disappear or lose unrelated case data.
+- Do not clear barcodes when the case is only moved to a non-complete location.
+- Keep the fix server-side so it works regardless of which UI path updates the case.
+- Avoid broad refactors unless necessary. Make the smallest reliable change that centralizes completion-triggered barcode cleanup.
+- Preserve historical case information if the app needs audit/history. If there is an audit log or assignment history table, mark the assignment inactive instead of deleting history.
+
+Regression checks:
+Before finishing, verify:
+1. A case can be assigned case pan barcode 4.
+2. Marking that case’s location/status as complete clears the barcode assignment.
+3. Barcode 4 becomes available for a different case immediately after completion.
+4. The old patient, Bellamy, no longer blocks reassignment of barcode 4 once complete.
+5. Active/incomplete cases still prevent duplicate barcode assignment.
+6. Both “status location complete” and “location complete” paths trigger unassignment if both exist.
+7. Refreshing the page or restarting the app does not bring back the stale assignment.
+8. The UI accurately shows the completed case as having no active case pan barcode.
+
+Please inspect the relevant code paths first, explain the exact root cause you find, then implement the fix safely. After the fix, summarize which files changed, what logic was added, and what regression checks were performed.
