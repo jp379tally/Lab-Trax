@@ -993,6 +993,64 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       await db.delete(cases).where(inArray(cases.id, ids));
     });
 
+    it("serves a short-TTL cached badge and recomputes after the TTL", async () => {
+      // The endpoint disables its cache under VITEST so the other tests in this
+      // file stay deterministic; opt this one test back in with a tiny TTL so we
+      // can observe a cache hit (stale data still served) and TTL expiry
+      // (recompute from fresh data) without hanging the suite.
+      process.env["DOCTOR_DUP_CLUSTER_CACHE_FORCE"] = "1";
+      process.env["DOCTOR_DUP_CLUSTER_CACHE_TTL_MS"] = "300";
+      const { db, cases } = dbMod as any;
+      const ids = [
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: "Dr. Cacheford",
+          practiceId: practiceAId,
+        }),
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: "Dr Cacheford",
+          practiceId: practiceAId,
+        }),
+      ];
+
+      try {
+        const findCluster = (body: any) =>
+          body.data.clusters.find((c: any) =>
+            c.doctors.some((d: any) => d.doctorName === "Dr. Cacheford")
+          );
+
+        // First poll computes + caches the cluster.
+        const r1 = await request(appMod.default)
+          .get("/api/doctors/duplicate-clusters")
+          .set("Authorization", `Bearer ${tokens.admin}`);
+        expect(r1.status).toBe(200);
+        expect(findCluster(r1.body)).toBeDefined();
+
+        // Remove the underlying rows directly (bypassing the route's
+        // invalidation). A second poll within the TTL must still serve the
+        // cached cluster — proving the poll didn't recompute from scratch.
+        await db.delete(cases).where(inArray(cases.id, ids));
+        const r2 = await request(appMod.default)
+          .get("/api/doctors/duplicate-clusters")
+          .set("Authorization", `Bearer ${tokens.admin}`);
+        expect(r2.status).toBe(200);
+        expect(findCluster(r2.body)).toBeDefined();
+
+        // After the TTL lapses the next poll recomputes from the now-empty data.
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        const r3 = await request(appMod.default)
+          .get("/api/doctors/duplicate-clusters")
+          .set("Authorization", `Bearer ${tokens.admin}`);
+        expect(r3.status).toBe(200);
+        expect(findCluster(r3.body)).toBeUndefined();
+      } finally {
+        delete process.env["DOCTOR_DUP_CLUSTER_CACHE_FORCE"];
+        delete process.env["DOCTOR_DUP_CLUSTER_CACHE_TTL_MS"];
+        await db.delete(cases).where(inArray(cases.id, ids));
+      }
+    });
+
     it("does not leak clusters from a lab the caller does not administer", async () => {
       // Cases live in labOrgId (admin's lab); the other-lab admin must not see them.
       const ids = [
