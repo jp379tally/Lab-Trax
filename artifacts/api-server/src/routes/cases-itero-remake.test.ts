@@ -510,4 +510,135 @@ maybe("iTero Rx import remake invariants (db integration)", () => {
 
     try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
   });
+
+  // ── (4) Duplicate-doctor auto-merge on import ────────────────────────────
+  //
+  // The manual create-case flow rejects a near-duplicate doctor with a 409 so
+  // a human can confirm. Auto-import has no human at create time, so instead of
+  // rejecting it adopts the existing spelling when the parsed name clears the
+  // lab similarity threshold within the SAME practice — and records a
+  // "doctor_auto_merged_from_itero" audit event. Below threshold it must keep
+  // the parsed name verbatim and emit no merge event.
+
+  it("(4a) near-duplicate parsed doctor is merged into the existing spelling + audit event", async () => {
+    const adminToken = await makeSession(adminUserId);
+    const { db, cases, caseEvents } = dbMod as any;
+
+    // Seed an existing doctor in this practice.
+    const existingDoctor = "Dr. Katherine Johnson";
+    const seedId = rid("seed");
+    await db.insert(cases).values({
+      id: seedId,
+      caseNumber: rid("DUP"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Seed",
+      patientLastName: "Patient",
+      doctorName: existingDoctor,
+      createdByUserId: adminUserId,
+    });
+    createdCaseIds.push(seedId);
+
+    // The AI "extracts" a near-duplicate spelling (missing period).
+    const parsedDoctor = "Dr Katherine Johnson";
+    mockChatCreate.mockResolvedValue(aiExtractedRx({ doctorName: parsedDoctor }));
+
+    const orderId = rid("order");
+    const rxFile = makeTempRxFile();
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", rxFile, "iTero_Rx_dup.pdf")
+      .field("iteroOrderId", orderId)
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId);
+
+    expect(r.status, `expected 201 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(201);
+    const caseId = r.body.data.caseId as string;
+    createdCaseIds.push(caseId);
+
+    // Created case adopted the existing spelling, not the parsed one.
+    const [caseRow] = await db
+      .select({ doctorName: cases.doctorName })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+    expect(caseRow.doctorName).toBe(existingDoctor);
+
+    // A merge audit event was recorded with both names + similarity.
+    const events = await db
+      .select()
+      .from(caseEvents)
+      .where(
+        and(
+          eq(caseEvents.caseId, caseId),
+          eq(caseEvents.eventType, "doctor_auto_merged_from_itero"),
+        ),
+      );
+    expect(events.length).toBe(1);
+    expect(events[0].metadataJson.parsedDoctorName).toBe(parsedDoctor);
+    expect(events[0].metadataJson.mergedToDoctorName).toBe(existingDoctor);
+    expect(typeof events[0].metadataJson.similarity).toBe("number");
+
+    try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
+  });
+
+  it("(4b) below-threshold parsed doctor is kept verbatim with no merge event", async () => {
+    const adminToken = await makeSession(adminUserId);
+    const { db, cases, caseEvents } = dbMod as any;
+
+    // Seed an unrelated doctor in this practice.
+    const seedId = rid("seed");
+    await db.insert(cases).values({
+      id: seedId,
+      caseNumber: rid("NOM"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Seed",
+      patientLastName: "Patient",
+      doctorName: "Dr. Alan Turing",
+      createdByUserId: adminUserId,
+    });
+    createdCaseIds.push(seedId);
+
+    // A completely different parsed name — well below the similarity threshold.
+    const parsedDoctor = "Dr. Grace Hopper";
+    mockChatCreate.mockResolvedValue(aiExtractedRx({ doctorName: parsedDoctor }));
+
+    const orderId = rid("order");
+    const rxFile = makeTempRxFile();
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", rxFile, "iTero_Rx_nomerge.pdf")
+      .field("iteroOrderId", orderId)
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId);
+
+    expect(r.status, `expected 201 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(201);
+    const caseId = r.body.data.caseId as string;
+    createdCaseIds.push(caseId);
+
+    // Parsed name kept verbatim.
+    const [caseRow] = await db
+      .select({ doctorName: cases.doctorName })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+    expect(caseRow.doctorName).toBe(parsedDoctor);
+
+    // No merge event.
+    const events = await db
+      .select()
+      .from(caseEvents)
+      .where(
+        and(
+          eq(caseEvents.caseId, caseId),
+          eq(caseEvents.eventType, "doctor_auto_merged_from_itero"),
+        ),
+      );
+    expect(events.length).toBe(0);
+
+    try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
+  });
 });

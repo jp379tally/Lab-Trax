@@ -1727,6 +1727,54 @@ async function findSimilarDoctorsInPractice(
   return matches;
 }
 
+/**
+ * iTero auto-import duplicate-doctor guard.
+ *
+ * The manual "create a case" flow rejects near-duplicate doctor names with a
+ * 409 so a human can confirm. The iTero auto-import paths have no human typing
+ * a name at create time, so instead of rejecting we auto-merge: when the parsed
+ * doctor name is a near-duplicate (>= the lab's similarity threshold) of an
+ * existing doctor in the SAME practice, we adopt the existing spelling rather
+ * than silently creating a new doctor (e.g. "Dr. Jane Smith" → "Jane Smith").
+ *
+ * Safety: this reuses `findSimilarDoctorsInPractice`, which honors the per-lab
+ * threshold and NEVER returns a literal-exact match, so we never merge below
+ * the lab threshold and never rewrite a name that already matches exactly. The
+ * "Unknown Doctor" placeholder is left untouched. When no match clears the
+ * threshold the parsed name is kept verbatim and surfaced for review via the
+ * existing `suggestedDoctorName` banner.
+ */
+async function resolveIteroDoctorAutoMerge(
+  labOrganizationId: string,
+  providerOrganizationId: string,
+  parsedDoctorName: string,
+): Promise<{
+  doctorName: string;
+  autoMergedFrom: string | null;
+  similarity: number | null;
+}> {
+  const trimmed = (parsedDoctorName ?? "").trim();
+  if (!trimmed || trimmed === "Unknown Doctor") {
+    return { doctorName: parsedDoctorName, autoMergedFrom: null, similarity: null };
+  }
+  const matches = await findSimilarDoctorsInPractice(
+    labOrganizationId,
+    providerOrganizationId,
+    trimmed,
+  );
+  if (matches.length === 0) {
+    return { doctorName: parsedDoctorName, autoMergedFrom: null, similarity: null };
+  }
+  // findSimilarDoctorsInPractice returns matches sorted by descending
+  // similarity, so the first entry is the closest existing doctor.
+  const best = matches[0]!;
+  return {
+    doctorName: best.doctorName,
+    autoMergedFrom: trimmed,
+    similarity: best.similarity,
+  };
+}
+
 export interface PatientSimilarityHit {
   id: string;
   source: "canonical" | "legacy";
@@ -8404,6 +8452,29 @@ router.post(
       autoLinkedFromAi = true;
     }
 
+    // ── Duplicate-doctor auto-merge ──────────────────────────────────────────
+    // Auto-import has no human typing a name to confirm, so instead of the
+    // manual create flow's 409 we adopt an existing near-duplicate doctor name
+    // in the effective practice (>= the lab threshold). Runs AFTER the practice
+    // is finalized so "same practice" reflects any AI auto-link above.
+    const {
+      doctorName: effectiveDoctorName,
+      autoMergedFrom: doctorAutoMergedFrom,
+      similarity: doctorAutoMergeSimilarity,
+    } = await resolveIteroDoctorAutoMerge(
+      body.labOrganizationId,
+      effectiveProviderOrgId,
+      doctorName,
+    );
+    // The suggestion banner is redundant once we've already adopted that name.
+    if (
+      suggestedDoctorName &&
+      suggestedDoctorName.trim().toLowerCase() ===
+        effectiveDoctorName.trim().toLowerCase()
+    ) {
+      suggestedDoctorName = null;
+    }
+
     // ── Remake link resolution ───────────────────────────────────────────────
     // When the desktop "Link as remake" flow forwarded a remake target, resolve
     // it against BOTH the canonical `cases` table and the legacy `lab_cases`
@@ -8422,7 +8493,7 @@ router.post(
           body.remakeOfCaseId,
           body.labOrganizationId,
           effectiveProviderOrgId,
-          doctorName,
+          effectiveDoctorName,
         )
       : null;
     if (body.remakeOfCaseId && !remakeOriginal) {
@@ -8506,8 +8577,8 @@ router.post(
           const fallback = await resolveServerPriceWithSource(
             {
               labOrganizationId: body.labOrganizationId,
-              doctorName,
-              providerOrganizationId: body.providerOrganizationId,
+              doctorName: effectiveDoctorName,
+              providerOrganizationId: effectiveProviderOrgId,
             },
             extracted.material ?? null,
             normalizedCaseType
@@ -8636,7 +8707,7 @@ router.post(
           providerOrganizationId: effectiveProviderOrgId,
           patientFirstName,
           patientLastName,
-          doctorName,
+          doctorName: effectiveDoctorName,
           status: "received",
           priority: extracted.isRush ? "rush" : "normal",
           dueDate,
@@ -8774,6 +8845,25 @@ router.post(
             fromProviderOrgId: body.providerOrganizationId,
             toProviderOrgId: effectiveProviderOrgId,
             suggestedDoctorName,
+          },
+        });
+      }
+
+      // Record the duplicate-doctor auto-merge so reviewers can see (and undo)
+      // that the parsed name was reused as an existing doctor in this practice.
+      if (doctorAutoMergedFrom && doctorAutoMergedFrom !== effectiveDoctorName) {
+        await tx.insert(caseEvents).values({
+          caseId: createdCase.id,
+          eventType: "doctor_auto_merged_from_itero",
+          actorUserId: userId,
+          actorOrganizationId: body.labOrganizationId,
+          actorInitials: user?.initials || "SYS",
+          metadataJson: {
+            source: "itero_auto_poller",
+            parsedDoctorName: doctorAutoMergedFrom,
+            mergedToDoctorName: effectiveDoctorName,
+            similarity: doctorAutoMergeSimilarity,
+            note: `Auto-import reused existing doctor "${effectiveDoctorName}" instead of creating "${doctorAutoMergedFrom}" (near-duplicate in this practice).`,
           },
         });
       }
@@ -9564,6 +9654,26 @@ router.post(
       );
     }
 
+    // ── Duplicate-doctor auto-merge ──────────────────────────────────────────
+    // Adopt an existing near-duplicate doctor name in this practice rather than
+    // silently creating a new one (same guard as the iTero Rx import path).
+    const {
+      doctorName: effectiveDoctorName,
+      autoMergedFrom: doctorAutoMergedFrom,
+      similarity: doctorAutoMergeSimilarity,
+    } = await resolveIteroDoctorAutoMerge(
+      body.labOrganizationId,
+      body.providerOrganizationId,
+      doctorName,
+    );
+    if (
+      suggestedDoctorName &&
+      suggestedDoctorName.trim().toLowerCase() ===
+        effectiveDoctorName.trim().toLowerCase()
+    ) {
+      suggestedDoctorName = null;
+    }
+
     let iteroZipSuppliedDate: Date | null = null;
     if (extracted.dueDate) {
       const parsed = new Date(extracted.dueDate);
@@ -9654,7 +9764,7 @@ router.post(
           const fallback = await resolveServerPriceWithSource(
             {
               labOrganizationId: body.labOrganizationId,
-              doctorName,
+              doctorName: effectiveDoctorName,
               providerOrganizationId: body.providerOrganizationId,
             },
             extracted.material ?? null,
@@ -9742,7 +9852,7 @@ router.post(
           providerOrganizationId: body.providerOrganizationId,
           patientFirstName,
           patientLastName,
-          doctorName,
+          doctorName: effectiveDoctorName,
           status: "received",
           priority: extracted.isRush ? "rush" : "normal",
           dueDate,
@@ -9819,6 +9929,25 @@ router.post(
           extraFileCount: otherEntries.length,
         },
       });
+
+      // Record the duplicate-doctor auto-merge so reviewers can see (and undo)
+      // that the parsed name was reused as an existing doctor in this practice.
+      if (doctorAutoMergedFrom && doctorAutoMergedFrom !== effectiveDoctorName) {
+        await tx.insert(caseEvents).values({
+          caseId: createdCase.id,
+          eventType: "doctor_auto_merged_from_itero",
+          actorUserId: userId,
+          actorOrganizationId: body.labOrganizationId,
+          actorInitials: user?.initials || "SYS",
+          metadataJson: {
+            source: "zip",
+            parsedDoctorName: doctorAutoMergedFrom,
+            mergedToDoctorName: effectiveDoctorName,
+            similarity: doctorAutoMergeSimilarity,
+            note: `Auto-import reused existing doctor "${effectiveDoctorName}" instead of creating "${doctorAutoMergedFrom}" (near-duplicate in this practice).`,
+          },
+        });
+      }
 
       // ── Auto-create draft invoice ──────────────────────────────────────────
       let autoInvoiceId: string | null = null;
@@ -10320,6 +10449,32 @@ async function processOneIteroZipFile(
     autoLinkedFromAi = true;
   }
 
+  // ── Duplicate-doctor auto-merge ────────────────────────────────────────────
+  // Adopt an existing near-duplicate doctor name in the effective practice
+  // rather than silently creating a new one (same guard as the iTero Rx import
+  // path). Skipped when no practice is resolved, since "same practice" is the
+  // scope of the dedup.
+  let effectiveDoctorName = doctorName;
+  let doctorAutoMergedFrom: string | null = null;
+  let doctorAutoMergeSimilarity: number | null = null;
+  if (effectiveProviderOrgId) {
+    const merged = await resolveIteroDoctorAutoMerge(
+      body.labOrganizationId,
+      effectiveProviderOrgId,
+      doctorName,
+    );
+    effectiveDoctorName = merged.doctorName;
+    doctorAutoMergedFrom = merged.autoMergedFrom;
+    doctorAutoMergeSimilarity = merged.similarity;
+  }
+  if (
+    suggestedDoctorName &&
+    suggestedDoctorName.trim().toLowerCase() ===
+      effectiveDoctorName.trim().toLowerCase()
+  ) {
+    suggestedDoctorName = null;
+  }
+
   let dueDate: Date | null = null;
   if (extracted.dueDate) {
     const parsed = new Date(extracted.dueDate);
@@ -10360,7 +10515,7 @@ async function processOneIteroZipFile(
   if (teethList.length > 0 && normalizedCaseType) {
     prebuiltRestorations = await Promise.all(teethList.map(async (toothNumber) => {
       const fallback = await resolveServerPriceWithSource(
-        { labOrganizationId: body.labOrganizationId, doctorName, providerOrganizationId: body.providerOrganizationId },
+        { labOrganizationId: body.labOrganizationId, doctorName: effectiveDoctorName, providerOrganizationId: effectiveProviderOrgId ?? body.providerOrganizationId },
         extracted.material ?? null, normalizedCaseType,
       );
       return {
@@ -10410,7 +10565,7 @@ async function processOneIteroZipFile(
       caseNumber,
       labOrganizationId: body.labOrganizationId,
       providerOrganizationId: effectiveProviderOrgId,
-      patientFirstName, patientLastName, doctorName,
+      patientFirstName, patientLastName, doctorName: effectiveDoctorName,
       status: "received",
       priority: extracted.isRush ? "rush" : "normal",
       dueDate, expectedDeliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
@@ -10468,6 +10623,25 @@ async function processOneIteroZipFile(
           fromProviderOrgId: body.providerOrganizationId || null,
           toProviderOrgId: effectiveProviderOrgId,
           suggestedDoctorName,
+        },
+      });
+    }
+
+    // Record the duplicate-doctor auto-merge so reviewers can see (and undo)
+    // that the parsed name was reused as an existing doctor in this practice.
+    if (doctorAutoMergedFrom && doctorAutoMergedFrom !== effectiveDoctorName) {
+      await tx.insert(caseEvents).values({
+        caseId: createdCase.id,
+        eventType: "doctor_auto_merged_from_itero",
+        actorUserId: userId,
+        actorOrganizationId: body.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          source: "itero_zip_batch",
+          parsedDoctorName: doctorAutoMergedFrom,
+          mergedToDoctorName: effectiveDoctorName,
+          similarity: doctorAutoMergeSimilarity,
+          note: `Auto-import reused existing doctor "${effectiveDoctorName}" instead of creating "${doctorAutoMergedFrom}" (near-duplicate in this practice).`,
         },
       });
     }

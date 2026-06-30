@@ -17,7 +17,7 @@ flag. That 409 is the authoritative, unavoidable gate.
 - **Literal-exact** (case-insensitive, trimmed) names are NEVER flagged — the user is reusing a known doctor.
 - **Normalized-equal** names like "Kanesha Cole" vs "Dr. Kanesha Cole" ARE flagged: the matcher strips a leading `dr` token, so they normalize-equal while staying different literals.
 - **Remakes** skip the check (name is inherited, not typed).
-- The **iTero PDF auto-import** create path intentionally does NOT enforce it — the doctor name comes from a parsed document, not user typing. Covering auto-import later means threading the check there separately.
+- The **iTero auto-import** paths cannot 409 (no human at create time), so instead they **auto-merge**: shared helper `resolveIteroDoctorAutoMerge()` (reuses `findSimilarDoctorsInPractice`) adopts an existing near-duplicate name in the SAME practice when `>=` the lab threshold, records a `doctor_auto_merged_from_itero` case event, and leaves below-threshold names verbatim (still surfaced via the 0.4 `suggestedDoctorName` banner). Must be threaded into ALL THREE iTero create paths (rx route, zip route, poller helper `processOneIteroZipFile`) — same fan-out as `itero-parallel-case-create-paths.md`. Thread the merged name into BOTH pricing resolution and the case insert in each.
 
 ## Two client layers, one gate
 Clients also do a pre-submit similarity probe for nicer UX, but must STILL
