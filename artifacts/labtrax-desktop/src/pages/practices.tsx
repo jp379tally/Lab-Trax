@@ -2912,7 +2912,7 @@ export function ConnectionTierSection({
       {!isLoading && !hasConnections && targetLab && (
         <div className="border border-border rounded-md">
           <TierDropdownRow
-            labName={targetLab.name}
+            labName="This practice's tier"
             status={null}
             tierName={null}
             tiers={tiersByLabQueries.data?.map?.[targetLab.id] ?? []}
@@ -2942,9 +2942,11 @@ export function ConnectionTierSection({
         <div className="border border-border rounded-md divide-y divide-border">
           {connections.map((c) => {
             const labName =
-              c.labOrganization?.displayName ||
-              c.labOrganization?.name ||
-              "Your lab";
+              connections.length === 1
+                ? "This practice's tier"
+                : c.labOrganization?.displayName ||
+                  c.labOrganization?.name ||
+                  "Your lab";
             const isBusy =
               tierMutation.isPending &&
               tierMutation.variables?.connectionId === c.id;
