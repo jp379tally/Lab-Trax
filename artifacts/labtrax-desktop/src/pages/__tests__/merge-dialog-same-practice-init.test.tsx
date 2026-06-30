@@ -30,9 +30,26 @@ import {
 import { makeAuthWrapper } from "../../__tests__/test-utils";
 
 const previewMutate = vi.fn();
+const mergeMutate = vi.fn();
+// Captures the options object passed to useMergeDoctors on every render so a
+// test can drive the success/error handlers exactly as the real mutation would.
+const mergeHookCalls: Array<{
+  mutation?: {
+    onSuccess?: (res: unknown) => void;
+    onError?: (err: unknown) => void;
+  };
+}> = [];
 
 vi.mock("@workspace/api-client-react", () => ({
-  useMergeDoctors: () => ({ mutate: vi.fn(), isPending: false }),
+  useMergeDoctors: (opts: {
+    mutation?: {
+      onSuccess?: (res: unknown) => void;
+      onError?: (err: unknown) => void;
+    };
+  }) => {
+    mergeHookCalls.push(opts);
+    return { mutate: mergeMutate, isPending: false };
+  },
   usePreviewDoctorMerge: () => ({ mutate: previewMutate, data: undefined }),
   useUndoDoctorMerge: () => ({ mutate: vi.fn(), isPending: false }),
   useListUnassignedDoctors: () => ({ data: { ok: true, data: [] } }),
@@ -65,15 +82,20 @@ import { MergeDialog, type MergeSourceInput } from "@/pages/doctors";
 
 beforeEach(() => {
   previewMutate.mockReset();
+  mergeMutate.mockReset();
+  mergeHookCalls.length = 0;
 });
 
-function renderDialog(initialSources: MergeSourceInput[]) {
+function renderDialog(
+  initialSources: MergeSourceInput[],
+  onMerged: (r: unknown) => void = () => {},
+) {
   return render(
     <MergeDialog
       labOrganizationId={LAB_ID}
       initialSources={initialSources}
       onClose={() => {}}
-      onMerged={() => {}}
+      onMerged={onMerged}
     />,
     { wrapper: makeAuthWrapper() },
   );
@@ -173,5 +195,71 @@ describe("MergeDialog — same-practice duplicate initialization", () => {
       expect(screen.getByText(/Same as a source/i)).toBeInTheDocument(),
     );
     expect(screen.getByRole("button", { name: "Merge" })).toBeDisabled();
+  });
+});
+
+describe("MergeDialog — submitting an enabled merge", () => {
+  it("sends the expected DoctorMergeRequest body and fires onMerged on success", async () => {
+    const onMerged = vi.fn();
+    renderDialog(
+      [
+        {
+          doctorName: "Dr. Kanesha Cole",
+          providerOrganizationId: PROVIDER_ID,
+          practiceName: "Mahan Village Dental Care",
+        },
+        {
+          doctorName: "Kanesha Cole",
+          providerOrganizationId: PROVIDER_ID,
+          practiceName: "Mahan Village Dental Care",
+        },
+      ],
+      onMerged,
+    );
+
+    const mergeBtn = screen.getByRole("button", { name: "Merge" });
+    await waitFor(() => expect(mergeBtn).toBeEnabled());
+
+    fireEvent.click(mergeBtn);
+
+    // The mutation is invoked exactly once with the merge request body: the
+    // first doctor is the target (excluded from sources) and the duplicate
+    // remains the lone source.
+    expect(mergeMutate).toHaveBeenCalledTimes(1);
+    expect(mergeMutate).toHaveBeenCalledWith({
+      data: {
+        labOrganizationId: LAB_ID,
+        sources: [
+          { doctorName: "Kanesha Cole", providerOrganizationId: PROVIDER_ID },
+        ],
+        targetDoctorName: "Dr. Kanesha Cole",
+        targetProviderOrganizationId: PROVIDER_ID,
+        includeSoftDeleted: false,
+      },
+    });
+
+    // Drive the mutation's success handler the way the real hook would, and
+    // confirm onMerged surfaces a sensible message + server undo window.
+    const onSuccess =
+      mergeHookCalls[mergeHookCalls.length - 1]?.mutation?.onSuccess;
+    expect(onSuccess).toBeTypeOf("function");
+    onSuccess?.({
+      data: {
+        targetDoctorName: "Dr. Kanesha Cole",
+        casesMoved: 3,
+        overridesMoved: 1,
+        overridesCollapsed: 0,
+        undoWindowMs: 5 * 60 * 1000,
+        entries: [{ auditLogId: "audit-1" }],
+      },
+    });
+
+    expect(onMerged).toHaveBeenCalledTimes(1);
+    expect(onMerged).toHaveBeenCalledWith({
+      auditLogIds: ["audit-1"],
+      message:
+        "3 cases merged + 1 pricing override into Dr. Kanesha Cole.",
+      undoWindowMs: 5 * 60 * 1000,
+    });
   });
 });
