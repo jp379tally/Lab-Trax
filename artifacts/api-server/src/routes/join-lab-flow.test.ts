@@ -17,7 +17,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
-import { inArray, eq } from "drizzle-orm";
+import { inArray, eq, and } from "drizzle-orm";
 import request from "supertest";
 import * as path from "node:path";
 
@@ -129,6 +129,7 @@ maybe("Join-a-lab flow (db integration)", () => {
     const {
       db,
       auditLogs,
+      notifications,
       organizationJoinRequests,
       organizationMemberships,
       organizations,
@@ -152,6 +153,9 @@ maybe("Join-a-lab flow (db integration)", () => {
     await db
       .delete(organizationJoinRequests)
       .where(inArray(organizationJoinRequests.userId, allUserIds));
+    await db
+      .delete(notifications)
+      .where(inArray(notifications.userId, allUserIds));
     await db.delete(auditLogs).where(inArray(auditLogs.userId, allUserIds));
     await db
       .delete(organizationMemberships)
@@ -210,13 +214,22 @@ maybe("Join-a-lab flow (db integration)", () => {
     );
     expect(memberUserIds).toContain(requesterId);
 
-    // The requester no longer has a pending request.
+    // The requester no longer has a *pending* request. The route intentionally
+    // surfaces the just-approved request (within the recent-resolution window)
+    // so the waiting card can detect approval and refetch membership — so it may
+    // still appear here, but only with status "approved", never "pending".
     const mineAfter = await request(appMod.default)
       .get("/api/organizations/join-requests/mine/pending")
       .set("Authorization", `Bearer ${requesterAccess}`);
     expect(mineAfter.status).toBe(200);
+    const stillListed = (mineAfter.body.data ?? []).find(
+      (r: any) => r.id === joinRequestId
+    );
+    if (stillListed) {
+      expect(stillListed.status).toBe("approved");
+    }
     expect(
-      (mineAfter.body.data ?? []).some((r: any) => r.id === joinRequestId)
+      (mineAfter.body.data ?? []).some((r: any) => r.status === "pending")
     ).toBe(false);
 
     // Cleanup is handled by afterAll (membership rows are removed by labId).
@@ -466,6 +479,190 @@ maybe("Join-a-lab flow (db integration)", () => {
     expect(cancel.status).toBe(403);
 
     // Clean up the still-pending request.
+    await request(appMod.default)
+      .delete(`/api/organizations/join-requests/${joinRequestId}`)
+      .set("Authorization", `Bearer ${requesterAccess}`);
+  });
+
+  // ── notifications: approve / decline close the loop ───────────────────────
+
+  it("approving a join request inserts a join_request_approved notification for the requester", async () => {
+    const { access: ownerAccess } = await makeSession(ownerId);
+    const labId = await createOwnedLab(ownerAccess);
+    const { access: requesterAccess } = await makeSession(requesterId);
+
+    const create = await request(appMod.default)
+      .post(`/api/organizations/${labId}/join-requests`)
+      .set("Authorization", `Bearer ${requesterAccess}`)
+      .send({ requestedRole: "user" });
+    expect(create.status).toBe(201);
+    const joinRequestId: string = create.body.data.id;
+
+    const approve = await request(appMod.default)
+      .post(`/api/organizations/join-requests/${joinRequestId}/approve`)
+      .set("Authorization", `Bearer ${ownerAccess}`)
+      .send({});
+    expect(approve.status).toBe(200);
+
+    // The requester gets a join_request_approved notification referencing the
+    // lab and the resolved request — this is what closes the waiting loop.
+    const { db, notifications } = dbMod as any;
+    const rows = await db
+      .select()
+      .from(notifications)
+      .where(
+        and(
+          eq(notifications.userId, requesterId),
+          eq(notifications.type, "join_request_approved")
+        )
+      );
+    const match = rows.find(
+      (n: any) => n.dataJson?.joinRequestId === joinRequestId
+    );
+    expect(
+      match,
+      "approving must insert a join_request_approved notification"
+    ).toBeTruthy();
+    expect(match.dataJson?.organizationId).toBe(labId);
+    expect(match.title).toBeTruthy();
+    expect(match.body).toBeTruthy();
+  });
+
+  it("rejecting a join request inserts a join_request_rejected notification for the requester", async () => {
+    const { access: ownerAccess } = await makeSession(ownerId);
+    const labId = await createOwnedLab(ownerAccess);
+    const { access: requesterAccess } = await makeSession(requesterId);
+
+    const create = await request(appMod.default)
+      .post(`/api/organizations/${labId}/join-requests`)
+      .set("Authorization", `Bearer ${requesterAccess}`)
+      .send({ requestedRole: "user" });
+    expect(create.status).toBe(201);
+    const joinRequestId: string = create.body.data.id;
+
+    const reject = await request(appMod.default)
+      .post(`/api/organizations/join-requests/${joinRequestId}/reject`)
+      .set("Authorization", `Bearer ${ownerAccess}`)
+      .send({});
+    expect(reject.status).toBe(200);
+    expect(reject.body.data.status).toBe("rejected");
+
+    const { db, notifications } = dbMod as any;
+    const rows = await db
+      .select()
+      .from(notifications)
+      .where(
+        and(
+          eq(notifications.userId, requesterId),
+          eq(notifications.type, "join_request_rejected")
+        )
+      );
+    const match = rows.find(
+      (n: any) => n.dataJson?.joinRequestId === joinRequestId
+    );
+    expect(
+      match,
+      "rejecting must insert a join_request_rejected notification"
+    ).toBeTruthy();
+    expect(match.dataJson?.organizationId).toBe(labId);
+    expect(match.title).toBeTruthy();
+    expect(match.body).toBeTruthy();
+
+    // Dismiss so the rejected row doesn't bleed into later mine/pending checks.
+    await request(appMod.default)
+      .delete(`/api/organizations/join-requests/${joinRequestId}`)
+      .set("Authorization", `Bearer ${requesterAccess}`);
+  });
+
+  // ── mine/pending: recently-declined surfaces, then dismiss hides it ────────
+
+  it("mine/pending surfaces a recently-rejected request and DELETE dismisses it", async () => {
+    const { access: ownerAccess } = await makeSession(ownerId);
+    const labId = await createOwnedLab(ownerAccess);
+    const { access: requesterAccess } = await makeSession(requesterId);
+
+    const create = await request(appMod.default)
+      .post(`/api/organizations/${labId}/join-requests`)
+      .set("Authorization", `Bearer ${requesterAccess}`)
+      .send({ requestedRole: "user" });
+    expect(create.status).toBe(201);
+    const joinRequestId: string = create.body.data.id;
+
+    const reject = await request(appMod.default)
+      .post(`/api/organizations/join-requests/${joinRequestId}/reject`)
+      .set("Authorization", `Bearer ${ownerAccess}`)
+      .send({});
+    expect(reject.status).toBe(200);
+
+    // The decline still shows on the waiting card (within the 14-day window) so
+    // the requester sees an explicit "declined" state instead of a silent reset.
+    const mine = await request(appMod.default)
+      .get("/api/organizations/join-requests/mine/pending")
+      .set("Authorization", `Bearer ${requesterAccess}`);
+    expect(mine.status).toBe(200);
+    const declined = (mine.body.data ?? []).find(
+      (r: any) => r.id === joinRequestId
+    );
+    expect(
+      declined,
+      "a recently-rejected request must surface on mine/pending"
+    ).toBeTruthy();
+    expect(declined.status).toBe("rejected");
+    expect(declined.organizationId).toBe(labId);
+
+    // Dismissing it (the "Find another lab" action) flips it to "dismissed"...
+    const dismiss = await request(appMod.default)
+      .delete(`/api/organizations/join-requests/${joinRequestId}`)
+      .set("Authorization", `Bearer ${requesterAccess}`);
+    expect(dismiss.status).toBe(200);
+    expect(dismiss.body.data.status).toBe("dismissed");
+
+    // ...and it stops surfacing on the waiting card.
+    const mineAfter = await request(appMod.default)
+      .get("/api/organizations/join-requests/mine/pending")
+      .set("Authorization", `Bearer ${requesterAccess}`);
+    expect(mineAfter.status).toBe(200);
+    expect(
+      (mineAfter.body.data ?? []).some((r: any) => r.id === joinRequestId)
+    ).toBe(false);
+  });
+
+  it("mine/pending excludes a rejected request older than the 14-day window", async () => {
+    const { access: ownerAccess } = await makeSession(ownerId);
+    const labId = await createOwnedLab(ownerAccess);
+    const { access: requesterAccess } = await makeSession(requesterId);
+
+    const create = await request(appMod.default)
+      .post(`/api/organizations/${labId}/join-requests`)
+      .set("Authorization", `Bearer ${requesterAccess}`)
+      .send({ requestedRole: "user" });
+    expect(create.status).toBe(201);
+    const joinRequestId: string = create.body.data.id;
+
+    const reject = await request(appMod.default)
+      .post(`/api/organizations/join-requests/${joinRequestId}/reject`)
+      .set("Authorization", `Bearer ${ownerAccess}`)
+      .send({});
+    expect(reject.status).toBe(200);
+
+    // Backdate the review so it falls outside the 14-day recent-decline window.
+    const { db, organizationJoinRequests } = dbMod as any;
+    const staleReviewedAt = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    await db
+      .update(organizationJoinRequests)
+      .set({ reviewedAt: staleReviewedAt })
+      .where(eq(organizationJoinRequests.id, joinRequestId));
+
+    const mine = await request(appMod.default)
+      .get("/api/organizations/join-requests/mine/pending")
+      .set("Authorization", `Bearer ${requesterAccess}`);
+    expect(mine.status).toBe(200);
+    expect(
+      (mine.body.data ?? []).some((r: any) => r.id === joinRequestId),
+      "a decline older than the window must not surface"
+    ).toBe(false);
+
+    // Dismiss for cleanliness (still allowed since status is rejected).
     await request(appMod.default)
       .delete(`/api/organizations/join-requests/${joinRequestId}`)
       .set("Authorization", `Bearer ${requesterAccess}`);

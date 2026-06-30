@@ -203,3 +203,43 @@ describe("JoinLabCard — pending state", () => {
     );
   });
 });
+
+describe("JoinLabCard — declined state", () => {
+  it("renders the 'Request declined' state when the active request was rejected", async () => {
+    mockState.pendingRequests = [
+      {
+        id: "jr-7",
+        organizationId: "lab-3",
+        status: "rejected",
+        organization: { id: "lab-3", displayName: "Crystal Dental Lab" },
+      },
+    ];
+    const { getByText } = renderCard();
+
+    await waitFor(() => expect(getByText("Request declined")).toBeTruthy());
+    expect(getByText(/Crystal Dental Lab/)).toBeTruthy();
+    expect(getByText("Find another lab")).toBeTruthy();
+  });
+
+  it("dismisses the declined request via apiRequest DELETE on 'Find another lab'", async () => {
+    mockState.pendingRequests = [
+      {
+        id: "jr-7",
+        organizationId: "lab-3",
+        status: "rejected",
+        organization: { id: "lab-3", displayName: "Crystal Dental Lab" },
+      },
+    ];
+    const { getByText } = renderCard();
+    await waitFor(() => expect(getByText("Find another lab")).toBeTruthy());
+
+    fireEvent.press(getByText("Find another lab"));
+
+    await waitFor(() =>
+      expect(mockApiRequest).toHaveBeenCalledWith(
+        "DELETE",
+        "/api/organizations/join-requests/jr-7",
+      ),
+    );
+  });
+});
