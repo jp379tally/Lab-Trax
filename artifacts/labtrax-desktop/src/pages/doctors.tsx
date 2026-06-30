@@ -1518,7 +1518,23 @@ export function MergeDialog({
   const _autoTarget = _mixedSelection
     ? _knownPracticeSources[0]
     : initialSources[0];
-  const _autoSources = _mixedSelection ? _unknownPracticeSources : initialSources;
+  // Exclude the auto-picked target from the initial sources so the modal does
+  // not open with the target also listed as a source (which would trip the
+  // "Same as a source" self-merge guard and permanently disable the Merge
+  // button). The mixed path already drops the known-practice target by only
+  // keeping the unknown-practice sources; the same-practice path must exclude
+  // the target explicitly (matched by name + providerOrganizationId).
+  const _autoSources = _mixedSelection
+    ? _unknownPracticeSources
+    : initialSources.filter(
+        (s) =>
+          !(
+            s.doctorName.trim().toLowerCase() ===
+              (_autoTarget?.doctorName ?? "").trim().toLowerCase() &&
+            (s.providerOrganizationId ?? null) ===
+              (_autoTarget?.providerOrganizationId ?? null)
+          ),
+      );
 
   const [sources, setSources] = useState<MergeSourceInput[]>(_autoSources);
   const [targetMode, setTargetMode] = useState<"existing" | "new">("existing");
