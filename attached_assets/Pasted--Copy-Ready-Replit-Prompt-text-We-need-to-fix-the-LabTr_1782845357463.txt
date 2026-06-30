@@ -1,0 +1,93 @@
+**Copy-Ready Replit Prompt**
+
+```text
+We need to fix the LabTracks case creation flow so duplicate doctors are caught before a new doctor record is created.
+
+Goal:
+When a user creates a case and enters/selects a doctor name that appears to match an existing doctor on file, the app should ask the user whether they mean the existing doctor before allowing a new doctor record to be created. This should prevent duplicate doctors like “Kanesha Cole” vs “Dr. Kanesha Cole,” which currently causes pricing/invoicing problems and forces manual doctor merges later.
+
+Current user-visible problem:
+The app currently allows a new doctor to be created during case creation even when the name is effectively the same as an existing doctor, just formatted differently. The screenshot shows the duplicate cleanup panel catching examples after the fact:
+- “Dr. Kanesha Cole · Kanesha Cole”
+- “Dr. Andrew Peloquin · Andrew Peloquin”
+- “Dr. Richard Bastien · Richard Bastien”
+- “Dr. Shawn Mullen · Shawn Mullen”
+
+That means the duplicate detection exists somewhere, but it is happening too late. By the time the duplicate appears in the “Possible duplicate doctors” area, pricing and invoice data may already be tied to the wrong doctor record.
+
+Likely root cause:
+The case creation flow either creates a doctor record automatically from free-text doctor input, or accepts a doctor name without requiring confirmation against existing similar doctors. The matching logic used for post-creation duplicate detection is not being reused as a pre-save validation/confirmation step during case creation.
+
+Implementation steps:
+1. Inspect the case creation flow, especially the doctor/practice selector or doctor entry field.
+   - Look for components, forms, routes, mutations, or API handlers involved in creating a case.
+   - Also inspect the doctor creation logic that runs when the entered doctor does not exactly match an existing doctor.
+
+2. Find the existing duplicate doctor detection logic.
+   - The screenshot shows a “Possible duplicate doctors” panel, so there is likely already logic that compares doctor names.
+   - Reuse or extract that logic instead of creating a totally separate fuzzy-match system.
+   - Matching should normalize common prefixes/titles such as “Dr.”, punctuation, capitalization, spacing, and suffixes where reasonable.
+
+3. Add a pre-create duplicate confirmation step during case creation.
+   - When the entered doctor name does not exactly match an existing doctor, check for likely existing doctor matches before creating a new doctor.
+   - Example: if the user enters “Kanesha Cole” and “Dr. Kanesha Cole” exists, show a confirmation prompt/modal:
+     “Did you mean Dr. Kanesha Cole?”
+   - Provide clear choices:
+     - Yes, use existing doctor
+     - No, add a new doctor
+
+4. If the user selects “Yes, use existing doctor”:
+   - Attach the case to the existing doctor record.
+   - Do not create a new doctor.
+   - Continue the case creation flow normally.
+   - Ensure doctor-specific pricing uses the existing doctor’s pricing rules.
+
+5. If the user selects “No, add a new doctor”:
+   - Require the user to intentionally create a new doctor record.
+   - Do not silently create the duplicate from the case form.
+   - Keep this flow explicit so accidental duplicates are reduced.
+
+6. Add backend protection if the case creation API can create doctors directly.
+   - The UI prompt is important, but the backend should also prevent silent duplicate doctor creation when possible.
+   - If an API request tries to create a doctor whose normalized name matches or strongly resembles an existing doctor, return a structured response requiring confirmation rather than creating the doctor immediately.
+   - If there is already a “force create” or “confirm new doctor” flag, use it carefully; otherwise add one.
+
+7. Preserve the existing duplicate review/merge screen for legacy cleanup, but do not rely on it as the primary prevention mechanism.
+   - The new behavior should reduce future duplicates at case creation time.
+   - Do not remove existing merge tools unless the surrounding app clearly supports that removal safely.
+
+Constraints and guardrails:
+- Do not break existing case creation for known doctors.
+- Do not auto-merge doctors.
+- Do not silently change historical invoices or pricing.
+- Do not delete existing doctor records.
+- Avoid broad schema changes unless absolutely necessary.
+- Prefer reusing the existing duplicate detection logic already powering the “Possible duplicate doctors” panel.
+- Make the confirmation step unavoidable when there is a strong likely match.
+- Keep the UI fast and clear; this should feel like a simple checkpoint, not a separate cleanup workflow.
+- If multiple likely matches exist, show a short list and require the user to choose one or explicitly create a new doctor.
+
+Acceptance criteria:
+- Entering “Kanesha Cole” during case creation detects existing “Dr. Kanesha Cole.”
+- The user is asked whether they mean the existing doctor before the case is saved.
+- Selecting “Yes” uses the existing doctor and does not create a duplicate.
+- Selecting “No” takes the user into an explicit new doctor creation path.
+- Doctor-specific pricing and invoice generation use the selected existing doctor when the user confirms the match.
+- The post-creation duplicate doctors panel should no longer receive obvious title-only duplicates from new case creation.
+
+Regression checks:
+- Create a case with an exact existing doctor match.
+- Create a case with a title variation, such as “Kanesha Cole” vs “Dr. Kanesha Cole.”
+- Create a case with capitalization/spacing differences.
+- Create a case where the doctor really is new and no similar doctor exists.
+- Create a case where there are multiple similar doctors and confirm the UI handles that safely.
+- Verify invoice pricing after case creation uses the selected doctor’s pricing.
+- Verify existing duplicate review/merge functionality still works for older records.
+- Verify archived doctors, doctors from other practices/accounts, and doctors with open cases are handled according to current app rules.
+
+Before finishing:
+- Explain which files/components/routes were changed.
+- Explain whether the existing duplicate detection logic was reused or why it could not be reused.
+- Call out any assumptions about doctor/practice scoping.
+- Run the relevant tests or manually verify the case creation flows above.
+```

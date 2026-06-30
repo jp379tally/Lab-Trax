@@ -42,7 +42,15 @@ import { extractLookupCase } from "@/lib/barcode-lookup";
 import { pickBestBarcode, guideBoxFromLayout } from "@/lib/barcode-guide-box";
 import { useMe, primaryLabOrgId } from "@/lib/auth-me";
 
-type DueFilter = "all" | "today" | "tomorrow" | "custom";
+type DateFilterPreset = "all" | "today" | "yesterday" | "thisWeek" | "thisMonth" | "custom";
+
+const DATE_PRESET_OPTIONS: { value: DateFilterPreset; label: string }[] = [
+  { value: "today", label: "Today" },
+  { value: "yesterday", label: "Yesterday" },
+  { value: "thisWeek", label: "This week" },
+  { value: "thisMonth", label: "This month" },
+  { value: "custom", label: "Custom range" },
+];
 
 interface ScanMatch {
   barcode: string;
@@ -234,6 +242,36 @@ function endOfDay(d: Date): Date {
 function addDays(d: Date, n: number): Date {
   const r = new Date(d);
   r.setDate(r.getDate() + n);
+  return r;
+}
+
+function startOfWeek(d: Date): Date {
+  const r = new Date(d);
+  const day = r.getDay();
+  r.setDate(r.getDate() - day);
+  r.setHours(0, 0, 0, 0);
+  return r;
+}
+
+function endOfWeek(d: Date): Date {
+  const r = new Date(d);
+  const day = r.getDay();
+  r.setDate(r.getDate() + (6 - day));
+  r.setHours(23, 59, 59, 999);
+  return r;
+}
+
+function startOfMonth(d: Date): Date {
+  const r = new Date(d);
+  r.setDate(1);
+  r.setHours(0, 0, 0, 0);
+  return r;
+}
+
+function endOfMonth(d: Date): Date {
+  const r = new Date(d);
+  r.setMonth(r.getMonth() + 1, 0);
+  r.setHours(23, 59, 59, 999);
   return r;
 }
 
@@ -476,14 +514,24 @@ export default function CasesListScreen() {
     await lookupBarcode(code);
   }
 
-  // ── Due-date filter
-  const [dueFilter, setDueFilter] = useState<DueFilter>("all");
-  const [customFrom, setCustomFrom] = useState<Date | null>(null);
-  const [customTo, setCustomTo] = useState<Date | null>(null);
+  // ── Date filters
+  const [createdFilter, setCreatedFilter] = useState<DateFilterPreset>("all");
+  const [dueFilter, setDueFilter] = useState<DateFilterPreset>("all");
+
+  // Per-target custom date range state
+  const [createdCustomFrom, setCreatedCustomFrom] = useState<Date | null>(null);
+  const [createdCustomTo, setCreatedCustomTo] = useState<Date | null>(null);
+  const [dueCustomFrom, setDueCustomFrom] = useState<Date | null>(null);
+  const [dueCustomTo, setDueCustomTo] = useState<Date | null>(null);
+  const [customTarget, setCustomTarget] = useState<"created" | "due">("due");
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [draftFrom, setDraftFrom] = useState("");
   const [draftTo, setDraftTo] = useState("");
   const [customError, setCustomError] = useState("");
+
+  // Date picker sheet (for Today/Yesterday/This week/This month/Custom)
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [datePickerTarget, setDatePickerTarget] = useState<"created" | "due">("due");
 
   // ── Barcode quick-filter (exact pan-barcode match)
   const [barcodeFilter, setBarcodeFilter] = useState("");
@@ -638,26 +686,25 @@ export default function CasesListScreen() {
       });
     }
 
+    // Created-date filter
+    if (createdFilter !== "all") {
+      const today = new Date();
+      result = result.filter((c) => {
+        if (!c.createdAt) return false;
+        const d = new Date(c.createdAt);
+        if (Number.isNaN(d.getTime())) return false;
+        return dateMatchesPreset(d, today, createdFilter, createdCustomFrom, createdCustomTo);
+      });
+    }
+
     // Due-date filter
     if (dueFilter !== "all") {
       const today = new Date();
-      const todayStart = startOfDay(today);
-      const todayEnd = endOfDay(today);
-      const tomorrowStart = startOfDay(addDays(today, 1));
-      const tomorrowEnd = endOfDay(addDays(today, 1));
-
       result = result.filter((c) => {
         if (!c.dueDate) return false;
         const d = new Date(c.dueDate);
         if (Number.isNaN(d.getTime())) return false;
-        if (dueFilter === "today") return d >= todayStart && d <= todayEnd;
-        if (dueFilter === "tomorrow") return d >= tomorrowStart && d <= tomorrowEnd;
-        if (dueFilter === "custom") {
-          if (customFrom && d < startOfDay(customFrom)) return false;
-          if (customTo && d > endOfDay(customTo)) return false;
-          return true;
-        }
-        return true;
+        return dateMatchesPreset(d, today, dueFilter, dueCustomFrom, dueCustomTo);
       });
     }
 
@@ -682,12 +729,44 @@ export default function CasesListScreen() {
     }
 
     return result;
-  }, [cases, query, dueFilter, customFrom, customTo, locationFilter, barcodeFilter, conflictFilter, conflictIds]);
+  }, [cases, query, createdFilter, dueFilter, createdCustomFrom, createdCustomTo, dueCustomFrom, dueCustomTo, locationFilter, barcodeFilter, conflictFilter, conflictIds]);
+
+  // ── Date preset matching helper ─────────────────────────────────────────
+  function dateMatchesPreset(
+    d: Date,
+    today: Date,
+    preset: DateFilterPreset,
+    from: Date | null,
+    to: Date | null,
+  ): boolean {
+    const todayStart = startOfDay(today);
+    const todayEnd = endOfDay(today);
+    const yesterdayStart = startOfDay(addDays(today, -1));
+    const yesterdayEnd = endOfDay(addDays(today, -1));
+    const weekStart = startOfWeek(today);
+    const weekEnd = endOfWeek(today);
+    const monthStart = startOfMonth(today);
+    const monthEnd = endOfMonth(today);
+
+    if (preset === "today") return d >= todayStart && d <= todayEnd;
+    if (preset === "yesterday") return d >= yesterdayStart && d <= yesterdayEnd;
+    if (preset === "thisWeek") return d >= weekStart && d <= weekEnd;
+    if (preset === "thisMonth") return d >= monthStart && d <= monthEnd;
+    if (preset === "custom") {
+      if (from && d < startOfDay(from)) return false;
+      if (to && d > endOfDay(to)) return false;
+      return true;
+    }
+    return true;
+  }
 
   // ── Custom date modal actions ─────────────────────────────────────────────
-  function openCustomModal() {
-    setDraftFrom(customFrom ? customFrom.toLocaleDateString("en-US") : "");
-    setDraftTo(customTo ? customTo.toLocaleDateString("en-US") : "");
+  function openCustomModal(target: "created" | "due") {
+    setCustomTarget(target);
+    const from = target === "created" ? createdCustomFrom : dueCustomFrom;
+    const to = target === "created" ? createdCustomTo : dueCustomTo;
+    setDraftFrom(from ? from.toLocaleDateString("en-US") : "");
+    setDraftTo(to ? to.toLocaleDateString("en-US") : "");
     setCustomError("");
     setShowCustomModal(true);
   }
@@ -709,30 +788,65 @@ export default function CasesListScreen() {
       return;
     }
 
-    setCustomFrom(from);
-    setCustomTo(to);
-    setDueFilter("custom");
+    if (customTarget === "created") {
+      setCreatedCustomFrom(from);
+      setCreatedCustomTo(to);
+      setCreatedFilter("custom");
+    } else {
+      setDueCustomFrom(from);
+      setDueCustomTo(to);
+      setDueFilter("custom");
+    }
     setCustomError("");
     setShowCustomModal(false);
   }
 
-  function clearCustom() {
-    setCustomFrom(null);
-    setCustomTo(null);
-    setDueFilter("all");
+  function clearCustom(target?: "created" | "due") {
+    if (!target || target === "created") {
+      setCreatedCustomFrom(null);
+      setCreatedCustomTo(null);
+      setCreatedFilter("all");
+    }
+    if (!target || target === "due") {
+      setDueCustomFrom(null);
+      setDueCustomTo(null);
+      setDueFilter("all");
+    }
     setDraftFrom("");
     setDraftTo("");
     setCustomError("");
     setShowCustomModal(false);
   }
 
-  // ── Due-chip label for "Custom" ──────────────────────────────────────────
-  function customChipLabel(): string {
-    if (dueFilter !== "custom" || (!customFrom && !customTo)) return "Custom…";
-    const parts: string[] = [];
-    if (customFrom) parts.push(formatShort(customFrom));
-    if (customTo) parts.push(formatShort(customTo));
-    return parts.join(" – ");
+  // ── Chip labels ──────────────────────────────────────────────────────────
+  function dateChipLabel(target: "created" | "due"): string {
+    const filter = target === "created" ? createdFilter : dueFilter;
+    if (filter === "today") return "Today";
+    if (filter === "yesterday") return "Yesterday";
+    if (filter === "thisWeek") return "This week";
+    if (filter === "thisMonth") return "This month";
+    if (filter === "custom") {
+      const from = target === "created" ? createdCustomFrom : dueCustomFrom;
+      const to = target === "created" ? createdCustomTo : dueCustomTo;
+      if (!from && !to) return "Custom…";
+      const parts: string[] = [];
+      if (from) parts.push(formatShort(from));
+      if (to) parts.push(formatShort(to));
+      return parts.join(" \u2013 ");
+    }
+    return target === "created" ? "Date created" : "Date due";
+  }
+
+  function clearAllDates() {
+    setCreatedFilter("all");
+    setDueFilter("all");
+    setCreatedCustomFrom(null);
+    setCreatedCustomTo(null);
+    setDueCustomFrom(null);
+    setDueCustomTo(null);
+    setDraftFrom("");
+    setDraftTo("");
+    setCustomError("");
   }
 
   // ── Location chip label ──────────────────────────────────────────────────
@@ -745,7 +859,7 @@ export default function CasesListScreen() {
   }, [locationFilter]);
 
   const activeFilters =
-    dueFilter !== "all" || locationFilter.length > 0 || barcodeFilter.trim().length > 0 || conflictFilter;
+    createdFilter !== "all" || dueFilter !== "all" || locationFilter.length > 0 || barcodeFilter.trim().length > 0 || conflictFilter;
 
   // Derived: the CanonicalCase objects for the currently selected IDs
   const selectedCases = useMemo(
@@ -834,49 +948,94 @@ export default function CasesListScreen() {
 
       {/* ── Filter row ── */}
       <View style={styles.filterRow}>
-        {/* Due-date chips */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.chipScroll}
         >
-          {(["all", "today", "tomorrow"] as const).map((f) => {
-            const active = dueFilter === f;
-            const label = f === "all" ? "All dates" : f === "today" ? "Today" : "Tomorrow";
-            return (
-              <Pressable
-                key={f}
-                style={[styles.chip, active && { backgroundColor: colors.tint, borderColor: colors.tint }]}
-                onPress={() => setDueFilter(f)}
-              >
-                <Text style={[styles.chipText, active && { color: colors.textInverse }]}>{label}</Text>
-              </Pressable>
-            );
-          })}
-
-          {/* Custom chip */}
+          {/* All — clears both date filters */}
           <Pressable
             style={[
               styles.chip,
-              dueFilter === "custom" && { backgroundColor: colors.tint, borderColor: colors.tint },
+              createdFilter === "all" && dueFilter === "all" && { backgroundColor: colors.tint, borderColor: colors.tint },
             ]}
-            onPress={openCustomModal}
+            onPress={clearAllDates}
           >
-            {dueFilter !== "custom" && (
-              <Ionicons name="calendar-outline" size={13} color={colors.textSecondary} style={{ marginRight: 4 }} />
-            )}
             <Text
               style={[
                 styles.chipText,
-                dueFilter === "custom" && { color: colors.textInverse },
+                createdFilter === "all" && dueFilter === "all" && { color: colors.textInverse },
               ]}
             >
-              {customChipLabel()}
+              All
             </Text>
-            {dueFilter === "custom" && (
+          </Pressable>
+
+          {/* Date created chip */}
+          <Pressable
+            style={[
+              styles.chip,
+              createdFilter !== "all" && { backgroundColor: colors.tint, borderColor: colors.tint },
+            ]}
+            onPress={() => {
+              setDatePickerTarget("created");
+              setShowDatePicker(true);
+            }}
+          >
+            <Ionicons
+              name="time-outline"
+              size={13}
+              color={createdFilter !== "all" ? colors.textInverse : colors.textSecondary}
+              style={{ marginRight: 4 }}
+            />
+            <Text
+              style={[
+                styles.chipText,
+                createdFilter !== "all" && { color: colors.textInverse },
+              ]}
+            >
+              {dateChipLabel("created")}
+            </Text>
+            {createdFilter !== "all" && (
               <Pressable
                 hitSlop={8}
-                onPress={(e) => { e.stopPropagation(); clearCustom(); }}
+                onPress={(e) => { e.stopPropagation(); clearCustom("created"); }}
+                style={{ marginLeft: 4 }}
+              >
+                <Ionicons name="close-circle" size={14} color={colors.textInverse} />
+              </Pressable>
+            )}
+          </Pressable>
+
+          {/* Date due chip */}
+          <Pressable
+            style={[
+              styles.chip,
+              dueFilter !== "all" && { backgroundColor: colors.tint, borderColor: colors.tint },
+            ]}
+            onPress={() => {
+              setDatePickerTarget("due");
+              setShowDatePicker(true);
+            }}
+          >
+            <Ionicons
+              name="calendar-outline"
+              size={13}
+              color={dueFilter !== "all" ? colors.textInverse : colors.textSecondary}
+              style={{ marginRight: 4 }}
+            />
+            <Text
+              style={[
+                styles.chipText,
+                dueFilter !== "all" && { color: colors.textInverse },
+              ]}
+            >
+              {dateChipLabel("due")}
+            </Text>
+            {dueFilter !== "all" && (
+              <Pressable
+                hitSlop={8}
+                onPress={(e) => { e.stopPropagation(); clearCustom("due"); }}
                 style={{ marginLeft: 4 }}
               >
                 <Ionicons name="close-circle" size={14} color={colors.textInverse} />
@@ -1122,6 +1281,9 @@ export default function CasesListScreen() {
                         ) : null}
                       </View>
                     ) : null}
+                    {item.createdAt ? (
+                      <Text style={styles.rowDue}>Created {formatDate(item.createdAt)}</Text>
+                    ) : null}
                     <Text style={styles.rowDue}>Due {formatDate(item.dueDate)}</Text>
                   </View>
                   <View style={styles.rowRight}>
@@ -1164,6 +1326,93 @@ export default function CasesListScreen() {
         />
       )}
 
+      {/* ══ Date Picker Sheet Modal ═════════════════════════════════════════════════════ */}
+      <Modal
+        visible={showDatePicker}
+        transparent
+        animationType='slide'
+        onRequestClose={() => setShowDatePicker(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowDatePicker(false)}>
+          <View style={styles.modalBackdrop} />
+        </TouchableWithoutFeedback>
+
+        <View style={styles.modalSheet}>
+          <View style={[styles.sheetInner, { paddingBottom: Math.max(insets.bottom, Spacing.lg) }]}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>
+              {datePickerTarget === 'created' ? 'Date created' : 'Date due'}
+            </Text>
+
+            <ScrollView style={styles.locationList} bounces={false}>
+              {DATE_PRESET_OPTIONS.map((opt) => {
+                const isActive =
+                  (datePickerTarget === 'created' ? createdFilter : dueFilter) === opt.value;
+                return (
+                  <Pressable
+                    key={opt.value}
+                    style={styles.locationRow}
+                    onPress={() => {
+                      if (opt.value === 'custom') {
+                        setShowDatePicker(false);
+                        openCustomModal(datePickerTarget);
+                        return;
+                      }
+                      if (datePickerTarget === 'created') {
+                        setCreatedFilter(opt.value);
+                      } else {
+                        setDueFilter(opt.value);
+                      }
+                      setShowDatePicker(false);
+                    }}
+                  >
+                    <View style={[
+                      styles.locationCheckbox,
+                      isActive && { backgroundColor: colors.tint, borderColor: colors.tint },
+                      !isActive && { borderColor: colors.border },
+                    ]}>
+                      {isActive && <Ionicons name='checkmark' size={13} color='#fff' />}
+                    </View>
+                    <Text style={[styles.locationLabel, { color: isActive ? colors.tint : colors.text }]}>
+                      {opt.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            <View style={styles.sheetActions}>
+              <Pressable
+                style={styles.clearBtn}
+                onPress={() => {
+                  if (datePickerTarget === 'created') {
+                    setCreatedFilter('all');
+                  } else {
+                    setDueFilter('all');
+                  }
+                  if (datePickerTarget === 'created') {
+                    setCreatedCustomFrom(null);
+                    setCreatedCustomTo(null);
+                  } else {
+                    setDueCustomFrom(null);
+                    setDueCustomTo(null);
+                  }
+                  setShowDatePicker(false);
+                }}
+              >
+                <Text style={[styles.clearBtnText, { color: colors.textSecondary }]}>Clear</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.applyBtn, { backgroundColor: colors.tint }]}
+                onPress={() => setShowDatePicker(false)}
+              >
+                <Text style={[styles.applyBtnText, { color: colors.textInverse }]}>Done</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* ══ Custom Date Range Modal ══════════════════════════════════════════ */}
       <Modal
         visible={showCustomModal}
@@ -1181,7 +1430,9 @@ export default function CasesListScreen() {
         >
           <View style={[styles.sheetInner, { paddingBottom: Math.max(insets.bottom, Spacing.lg) }]}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>Custom date range</Text>
+            <Text style={styles.sheetTitle}>
+              {customTarget === "created" ? "Custom created date" : "Custom due date"}
+            </Text>
             <Text style={styles.sheetHint}>Enter dates in M/D/YYYY format</Text>
 
             {/* From */}
@@ -1220,7 +1471,7 @@ export default function CasesListScreen() {
             ) : null}
 
             <View style={styles.sheetActions}>
-              <Pressable style={styles.clearBtn} onPress={clearCustom}>
+              <Pressable style={styles.clearBtn} onPress={() => clearCustom(customTarget)}>
                 <Text style={[styles.clearBtnText, { color: colors.textSecondary }]}>Clear</Text>
               </Pressable>
               <Pressable style={[styles.applyBtn, { backgroundColor: colors.tint }]} onPress={applyCustom}>

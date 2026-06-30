@@ -1,0 +1,70 @@
+Here’s a copy-ready Replit prompt:
+
+```text
+We need to add a bulk “Change status” workflow to the LabTrax Invoices page.
+
+Goal:
+Allow users to select multiple invoices from the invoice table and change their invoice status all at once. The UI already supports selecting multiple invoices and shows a bulk action bar with actions like “Send 4 invoices,” “Delete selected,” “Reset to $0,” and “Reset all to $0.” Add a new bulk action for changing status.
+
+User-visible problem:
+On the Invoices page, users can select multiple invoice rows, but there is no way to update the selected invoices’ statuses in bulk. They currently have to open or edit invoices one by one.
+
+Likely root cause:
+The invoice list already has multi-select state and a selected-invoices bulk toolbar, but the available bulk actions do not include a status update action. The missing piece is likely a frontend bulk action control plus a backend/API mutation or route that updates the status field for multiple invoice IDs safely.
+
+Relevant product surface:
+- Invoices page
+- Invoice table row selection
+- Bulk action toolbar shown when invoices are selected
+- Invoice status badges/values such as OPEN and DRAFT
+- Any invoice update API/mutation/server action used for single-invoice status changes
+
+Implementation steps:
+1. Inspect the existing Invoices page/component and identify where selected invoice IDs are tracked and where the bulk action toolbar is rendered.
+2. Add a bulk “Change status” button or dropdown to the selected-invoices toolbar.
+3. When clicked, let the user choose the target status from valid invoice statuses already supported by the app, such as Draft, Open, Paid, Void, Overdue, or whatever statuses exist in the current invoice schema/business logic.
+4. Implement the bulk status update using the app’s existing data patterns:
+   - Prefer reusing existing invoice update services, mutations, validation schemas, and permission checks.
+   - If there is no bulk endpoint/mutation, add one that accepts an array of invoice IDs and a target status.
+   - Validate that all selected IDs belong to the current tenant/practice/account scope.
+   - Validate that the requested status is allowed.
+5. Add confirmation if the status change is potentially destructive or financially meaningful, especially for statuses like Paid, Void, or Reset-like behavior.
+6. After success:
+   - Clear or preserve selection intentionally based on existing bulk action behavior.
+   - Refresh invoice list data and summary cards.
+   - Show a success toast such as “Updated 4 invoices to Open.”
+7. On failure:
+   - Show a useful error message.
+   - Avoid partially misleading UI state.
+   - If partial success is possible, report exactly which invoices failed or prefer an all-or-nothing transaction if the backend supports it.
+8. Update any tests or add focused coverage for the new bulk status behavior.
+
+Constraints and guardrails:
+- Do not remove or break the existing bulk actions: Send invoices, Delete selected, Reset to $0, Reset all to $0, Clear selection.
+- Do not allow invalid status transitions if the app already enforces invoice lifecycle rules.
+- Do not bypass tenant/practice authorization checks.
+- Do not hardcode statuses if the app already has a central enum, schema, constant, or database constraint.
+- Do not mark invoices as Paid unless the existing app rules allow status-only paid updates without recording payment details.
+- Keep the UI consistent with the existing invoice toolbar styling.
+- Avoid broad refactors; keep the change scoped to invoices and invoice bulk actions.
+
+Acceptance criteria:
+- Selecting one or more invoices shows a “Change status” action in the bulk action toolbar.
+- The user can choose a valid target status and apply it to all selected invoices.
+- The selected invoices’ status badges update correctly after the operation.
+- Invoice summary cards/counts refresh if affected by the status change.
+- The action handles loading, success, and error states clearly.
+- Invalid or unauthorized invoice IDs cannot be updated.
+- Existing invoice filters, search, selection, send, delete, reset, and statements behavior still work.
+
+Regression checks:
+- Select multiple Draft invoices and change them to Open.
+- Select multiple Open invoices and change them to Draft only if that transition is allowed by current business rules.
+- Try changing status with no invoices selected; the action should not be available.
+- Confirm filters such as Open/All and status badges update after the bulk change.
+- Confirm selected invoice count remains accurate before and after the action.
+- Confirm existing bulk actions still work.
+- Confirm invoice totals, balances, and summary cards are not incorrectly changed by a status-only update.
+- Confirm users cannot bulk-update invoices outside their organization/practice scope.
+- Confirm mobile or narrow layouts still show the bulk action toolbar cleanly.
+```
