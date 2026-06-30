@@ -1,0 +1,86 @@
+**Replit Build Brief**
+
+Objective: make mobile Case History show the actual note text for `note_added` events, while preserving existing photo/file history behavior.
+
+User-visible problem: notes added from the mobile Notes tab are saved and appear as “Note Added” in History, but the note body is blank. Photos and files work because their history events include renderable attachment metadata.
+
+Likely root cause: the mobile case detail screen renders History from `events[]` in `artifacts/labtrax/app/case/[id].tsx`. Its `eventDescription()` helper only checks status fields, `meta.note`, and `meta.message`. The canonical note API uses `noteText`, and the database stores note bodies in `case_notes.note_text`. The history event likely stores only note metadata such as visibility/note id, so the History tab has no logic to resolve/display the note body.
+
+Exact areas involved:
+`artifacts/labtrax/app/case/[id].tsx`
+`artifacts/labtrax/lib/printCaseHistory.ts`
+`artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx`
+Potentially `artifacts/api-server/src/routes/cases.ts` if the note event metadata is missing a `noteId`.
+
+Implementation plan:
+
+1. Update mobile history rendering so `note_added` events can display the corresponding visible note text.
+2. Prefer resolving by note id from event metadata, for example `noteId`, `caseNoteId`, or `id`, against `c.notes`.
+3. Also support `metadataJson.noteText`, `metadataJson.note`, `metadataJson.message`, and `metadataJson.description` as fallbacks.
+4. Pass `c.notes ?? []` into `HistorySection`.
+5. Update `printCaseHistory.ts` with the same note-text logic, or pass notes into the print helper if needed.
+6. Add/extend a smoke test where a case has a note and a `note_added` history event, then assert the History tab shows the note body.
+
+Guardrail: do not expose internal lab-only notes to provider users. The safest approach is to display note text only when it exists in the already-filtered `c.notes` array returned by `GET /api/cases/:id`, or when the server has explicitly returned note text in event metadata for the current viewer.
+
+Acceptance criteria:
+
+* Add a note on mobile.
+* Open Case History.
+* The history row shows “Note Added” and the actual note text.
+* Existing image thumbnails and file hyperlinks in History still work.
+* Notes tab still displays the note normally.
+* No internal-only note appears to a provider/read-only user unless that user is authorized to see it.
+
+**Copy-Ready Replit Prompt**
+
+Fix the LabTrax mobile Case History note display bug.
+
+Problem: On mobile, adding a note works and creates a “Note Added” entry in Case History, but the actual note text is not visible there. Photos/files in History still render correctly.
+
+Investigate and update these areas:
+
+* `artifacts/labtrax/app/case/[id].tsx`
+* `artifacts/labtrax/lib/printCaseHistory.ts`
+* `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx`
+* Check `artifacts/api-server/src/routes/cases.ts` only if the note event metadata does not include a stable note id.
+
+Likely cause: `HistorySection` renders `events[]` and calls `eventDescription(ev)`. That helper only looks for status metadata plus `meta.note` or `meta.message`. Case notes are created with `noteText` and stored separately in `case_notes.note_text`, while note history events likely only carry metadata such as visibility/note id.
+
+Implement the safest fix:
+
+* Pass visible `notes` from the case detail payload into `HistorySection`.
+* For `note_added` events, resolve the note body from the visible `notes[]` array using metadata fields like `noteId`, `caseNoteId`, or similar.
+* Add fallback support for `metadataJson.noteText`, `metadataJson.note`, `metadataJson.message`, and `metadataJson.description`.
+* Do not show internal lab-only note text to provider users unless that note is present in the already-authorized `notes[]` payload for that viewer.
+* Keep current attachment thumbnail/file-link behavior unchanged.
+* Update mobile print history to show the same note text when safe.
+* Add a test proving the History tab displays a note body for a `note_added` event.
+
+Before finishing, run the relevant mobile tests/typecheck and explain any tradeoffs or assumptions if the server event metadata differs from expected.
+
+**Debug Analysis**
+
+The app surface is the mobile case detail screen, especially the Notes and History tabs. Notes are added through `useAddCaseNote()` with `{ noteText, visibility }`, and the Notes tab already renders `notes[].noteText`. History, however, renders `events[]` only.
+
+The strongest evidence is in `artifacts/labtrax/app/case/[id].tsx`: `HistorySection` displays `eventDescription(ev)`, and `eventDescription()` only returns text for status changes or metadata fields named `note`/`message`. The API schema confirms the note input field is `noteText`. The database schema confirms note content lives in `case_notes.note_text`, while `case_events.metadata_json` is separate.
+
+Primary hypothesis: the note event is present, but its note body is either stored as `noteText` or stored only as a note id/visibility in event metadata, and the mobile History renderer does not resolve it.
+
+Alternate hypotheses:
+
+* The server creates `note_added` events without any note id, making frontend resolution impossible without a server patch.
+* The server filters `notes[]` correctly but not `events[]`, so blindly putting note text in event metadata could create a privacy leak for internal notes.
+* Mobile print history has the same description gap because it mirrors the same limited metadata parsing.
+
+Confidence: high that this is a mobile history rendering/data-contract gap, medium on the exact event metadata key until Replit inspects the live route.
+
+**Step-by-Step Fix Plan**
+
+1. Inspect one real `note_added` event shape from `GET /api/cases/:id`.
+2. In `CaseDetailScreen`, pass `notes={c.notes ?? []}` into `HistorySection`.
+3. Change `eventDescription` to accept optional visible notes and handle `note_added`.
+4. Resolve note text by metadata note id first, then safe text fields like `noteText`, `note`, `message`, `description`.
+5. Mirror that behavior in `printCaseHistory.ts`.
+6. Add a fixture/test for a `note_added` event with visible note text.
+7. Verify History still renders status changes, image attachments, and document links.
