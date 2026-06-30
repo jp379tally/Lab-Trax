@@ -266,10 +266,15 @@ jobs:
       # and there is nothing to clean up.
       #
       # The GCP project ID is extracted from the credentials JSON (project_id
-      # field) so no additional secret is required.
+      # field) so no additional secret is required.  The step authenticates
+      # gcloud explicitly via `auth activate-service-account` because
+      # GOOGLE_APPLICATION_CREDENTIALS is only consumed by Google Cloud client
+      # libraries — the gcloud CLI has its own auth layer and ignores it.
       - name: Clean up CI staging bucket (on failure)
         if: failure()
         shell: bash
+        env:
+          DEFAULT_OBJECT_STORAGE_BUCKET_ID: ${{ secrets.CI_DEFAULT_OBJECT_STORAGE_BUCKET_ID }}
         run: |
           if [[ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
             echo "::notice::Skipping bucket cleanup — GCS credentials not configured."
@@ -280,7 +285,15 @@ jobs:
             echo "::warning::Could not extract project_id from GCS credentials — skipping bucket cleanup."
             exit 0
           fi
-          bash .github/scripts/cleanup-ci-staging-bucket.sh --project "$PROJECT"
+          # Authenticate gcloud with the service account key.  GOOGLE_APPLICATION_CREDENTIALS
+          # is only consumed by Google Cloud client libraries; the gcloud CLI requires an
+          # explicit `auth activate-service-account` call before it can issue storage commands.
+          gcloud auth activate-service-account --key-file="$GOOGLE_APPLICATION_CREDENTIALS" --project="$PROJECT"
+          EXTRA_ARGS=()
+          if [[ -n "${DEFAULT_OBJECT_STORAGE_BUCKET_ID:-}" ]]; then
+            EXTRA_ARGS+=(--bucket "$DEFAULT_OBJECT_STORAGE_BUCKET_ID")
+          fi
+          bash .github/scripts/cleanup-ci-staging-bucket.sh --project "$PROJECT" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 
   test-labtrax-desktop:
     name: Desktop client tests
