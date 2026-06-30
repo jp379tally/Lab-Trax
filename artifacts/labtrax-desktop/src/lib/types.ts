@@ -119,6 +119,13 @@ export interface PatientSimilarityHit {
   hasInvoice: boolean;
 }
 
+export interface DoctorMatchCandidate {
+  doctorName: string;
+  providerOrganizationId: string | null;
+  similarity: number;
+  totalCases: number;
+}
+
 export type RestorationPriceSource =
   | "default"
   | "tier"

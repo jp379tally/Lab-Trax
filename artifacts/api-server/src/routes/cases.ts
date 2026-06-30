@@ -84,35 +84,16 @@ import { normalizePhoneE164 } from "../lib/account-link-sms.js";
 import { getEffectiveAdminPinAsync } from "../lib/admin-pin.js";
 
 // ---------------------------------------------------------------------------
-// Bigram similarity helpers — used for AI-extracted doctor name suggestions.
-// Intentionally self-contained so no dependency on the doctors route.
+// Doctor-name fuzzy-matching helpers. Shared with the doctors route (duplicate
+// clusters + merge) so the pre-create duplicate check, the duplicate-clusters
+// panel, and the AI "Did you mean?" suggestion path all use identical matching.
+// Aliased to the historical names to keep existing call sites unchanged.
 // ---------------------------------------------------------------------------
-function _normalizeDoctorForSim(name: string): string {
-  return (name ?? "")
-    .toLowerCase()
-    .replace(/\bdr\.?\s*/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-function _bigramSimilarity(a: string, b: string): number {
-  const an = _normalizeDoctorForSim(a);
-  const bn = _normalizeDoctorForSim(b);
-  if (!an || !bn) return 0;
-  if (an === bn) return 1;
-  const bigrams = (s: string): Set<string> => {
-    const set = new Set<string>();
-    const p = ` ${s} `;
-    for (let i = 0; i < p.length - 1; i++) set.add(p.slice(i, i + 2));
-    return set;
-  };
-  const A = bigrams(an);
-  const B = bigrams(bn);
-  let inter = 0;
-  for (const g of A) if (B.has(g)) inter++;
-  const union = A.size + B.size - inter;
-  return union === 0 ? 0 : inter / union;
-}
+import {
+  normalizeDoctorForCompare as _normalizeDoctorForSim,
+  doctorNameSimilarity as _bigramSimilarity,
+  resolveLabDupThreshold,
+} from "../lib/doctor-similarity.js";
 
 // ---------------------------------------------------------------------------
 // Practice-name normalization for similarity matching.
@@ -1648,6 +1629,12 @@ const createCaseSchema = z.object({
   // Top-level shade extracted from the Rx (stored directly on the case row so
   // it's visible in the overview even when no tooth indices were identified).
   shade: z.string().optional(),
+  // When true, bypass the pre-create duplicate-doctor confirmation checkpoint.
+  // The server normally rejects a create whose doctorName strongly resembles an
+  // existing doctor in the same practice with a structured 409 listing the
+  // candidate matches; the client re-submits with this flag once the user has
+  // explicitly chosen "add a new doctor". Defaults to undefined → check runs.
+  confirmNewDoctor: z.boolean().optional(),
 }).refine(
   // caseNumber is required for non-remake cases; server assigns it for remakes.
   (v) => !!v.remakeOfCaseId || (typeof v.caseNumber === "string" && v.caseNumber.trim().length > 0),
@@ -1659,6 +1646,86 @@ const createCaseSchema = z.object({
   (v) => !v.remakeOfCaseId || typeof v.remakeCharged === "boolean",
   { message: "remakeCharged (true/false) is required when remakeOfCaseId is set.", path: ["remakeCharged"] },
 );
+
+// ---------------------------------------------------------------------------
+// Pre-create duplicate-doctor detection.
+//
+// A "doctor" is not a standalone record — it is a distinct
+// (doctorName, providerOrganizationId) pair on `cases` rows. When a user types
+// a free-text doctor name that strongly resembles an existing doctor in the
+// SAME practice (e.g. "Kanesha Cole" vs "Dr. Kanesha Cole"), saving silently
+// would split pricing/invoicing across two effective doctors. This helper finds
+// the likely existing matches above the lab's similarity threshold so the
+// client (and the POST /cases enforcement) can ask the user which doctor they
+// mean BEFORE the case is saved, reusing the exact same fuzzy matching that
+// powers the duplicate-doctors panel.
+//
+// Scoping: matching is restricted to the selected practice
+// (providerOrganizationId) so the same name at a different practice is not
+// falsely flagged. A literal (case-insensitive, trimmed) exact name match is
+// never flagged — that is the user picking an existing doctor verbatim.
+// ---------------------------------------------------------------------------
+export interface DoctorMatchCandidate {
+  doctorName: string;
+  providerOrganizationId: string | null;
+  similarity: number;
+  totalCases: number;
+}
+
+async function findSimilarDoctorsInPractice(
+  labOrganizationId: string,
+  providerOrganizationId: string,
+  doctorName: string,
+): Promise<DoctorMatchCandidate[]> {
+  const typed = doctorName.trim();
+  if (!typed) return [];
+
+  // Resolve the lab's configured suggestion threshold (defaults to 0.7).
+  const labOrg = await db.query.organizations.findFirst({
+    where: eq(organizations.id, labOrganizationId),
+    columns: { duplicateSuggestionThreshold: true },
+  });
+  const threshold = resolveLabDupThreshold(
+    labOrg?.duplicateSuggestionThreshold ?? null,
+  );
+
+  // Distinct doctor-name groups for this (lab, practice).
+  const groups = await db
+    .select({
+      doctorName: cases.doctorName,
+      totalCases: sql<number>`count(*)::int`.as("total"),
+    })
+    .from(cases)
+    .where(
+      and(
+        eq(cases.labOrganizationId, labOrganizationId),
+        eq(cases.providerOrganizationId, providerOrganizationId),
+        notDeleted(cases),
+        sql`${cases.doctorName} is not null and trim(${cases.doctorName}) <> ''`,
+      ),
+    )
+    .groupBy(cases.doctorName);
+
+  const typedLower = typed.toLowerCase();
+  const matches: DoctorMatchCandidate[] = [];
+  for (const g of groups) {
+    const existing = (g.doctorName ?? "").trim();
+    if (!existing) continue;
+    // Literal exact match → the user is reusing an existing doctor; never flag.
+    if (existing.toLowerCase() === typedLower) continue;
+    const sim = _bigramSimilarity(typed, existing);
+    if (sim >= threshold) {
+      matches.push({
+        doctorName: existing,
+        providerOrganizationId,
+        similarity: sim,
+        totalCases: g.totalCases,
+      });
+    }
+  }
+  matches.sort((a, b) => b.similarity - a.similarity);
+  return matches;
+}
 
 export interface PatientSimilarityHit {
   id: string;
@@ -1693,6 +1760,40 @@ const patientSimilarityQuerySchema = z.object({
   providerOrganizationId: z.string().optional(),
   doctorName: z.string().optional(),
 });
+
+const doctorSimilarityQuerySchema = z.object({
+  labOrganizationId: z.string().min(1),
+  providerOrganizationId: z.string().min(1),
+  doctorName: z.string().min(1),
+});
+
+// GET /cases/doctor-similarity
+// Pre-submit checkpoint: returns existing doctors in the same practice whose
+// name strongly resembles the typed name (above the lab threshold), excluding a
+// literal exact match. Clients call this before saving so they can ask the user
+// which doctor they mean; POST /cases enforces the same check as a fallback.
+router.get(
+  "/doctor-similarity",
+  asyncHandler(async (req, res) => {
+    const params = doctorSimilarityQuerySchema.parse({
+      labOrganizationId: String(req.query.labOrganizationId ?? ""),
+      providerOrganizationId: String(req.query.providerOrganizationId ?? ""),
+      doctorName: String(req.query.doctorName ?? ""),
+    });
+
+    const userId = (req as any).auth.userId as string;
+    // Authorization: caller MUST be an active member of the lab they're
+    // searching. Results are scoped to that lab + practice only.
+    await requireMembership(userId, params.labOrganizationId);
+
+    const matches = await findSimilarDoctorsInPractice(
+      params.labOrganizationId,
+      params.providerOrganizationId,
+      params.doctorName,
+    );
+    ok(res, { matches });
+  }),
+);
 
 router.get(
   "/patient-similarity",
@@ -3338,6 +3439,33 @@ router.post(
     // this pre-check is a fast-path that names the conflicting case.
     if (input.casePanBarcode) {
       await checkBarcodeUniqueness(input.casePanBarcode, input.labOrganizationId);
+    }
+
+    // Pre-create duplicate-doctor checkpoint. If the typed doctor name strongly
+    // resembles an existing doctor in the SAME practice (above the lab
+    // threshold) and the client has not yet confirmed, reject with a structured
+    // 409 listing the candidate matches so the client can ask the user which
+    // doctor they mean. Skipped for remakes (the doctor name is inherited from
+    // the original case, not freshly typed) and when the client re-submits with
+    // confirmNewDoctor=true after the user explicitly chose "add new doctor".
+    if (!input.remakeOfCaseId && !input.confirmNewDoctor) {
+      const doctorMatches = await findSimilarDoctorsInPractice(
+        input.labOrganizationId,
+        input.providerOrganizationId,
+        input.doctorName,
+      );
+      if (doctorMatches.length > 0) {
+        throw new HttpError(
+          409,
+          "This doctor name closely matches an existing doctor in this practice. Please confirm which doctor you mean.",
+          {
+            code: "DOCTOR_CONFIRMATION_REQUIRED",
+            doctorName: input.doctorName.trim(),
+            providerOrganizationId: input.providerOrganizationId,
+            candidates: doctorMatches,
+          },
+        );
+      }
     }
 
     // Validate remake link target. The original may live in either the

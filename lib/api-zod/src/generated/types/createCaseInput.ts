@@ -27,4 +27,7 @@ export interface CreateCaseInput {
   /** Inline restoration line items created alongside the case. */
   restorations?: CreateCaseInputRestorationsItem[] | null;
   needsAiReview?: boolean | null;
+  /** Bypass the pre-create duplicate-doctor checkpoint. When the typed doctorName strongly resembles an existing doctor in the same practice, POST /cases returns a 409 (code DOCTOR_CONFIRMATION_REQUIRED) listing candidate matches. Re-submit with confirmNewDoctor=true once the user confirms they want to add a new doctor.
+   */
+  confirmNewDoctor?: boolean | null;
 }

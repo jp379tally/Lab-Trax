@@ -99,48 +99,16 @@ function normalizeKey(name: string, providerId: string | null) {
   return `${name.trim().toLowerCase()}|${providerId ?? ""}`;
 }
 
-function normalizeForCompare(name: string | null | undefined) {
-  return (name ?? "")
-    .toString()
-    .toLowerCase()
-    .replace(/\bdr\.?\b/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-// bigram set — cheap and good enough for short doctor names.
-function bigrams(s: string): Set<string> {
-  const set = new Set<string>();
-  const padded = ` ${s} `;
-  for (let i = 0; i < padded.length - 1; i++) set.add(padded.slice(i, i + 2));
-  return set;
-}
-
-// Bigram Jaccard over two already-normalized strings and their precomputed
-// bigram sets. Splitting this out lets the O(n²) clustering loop normalize and
-// gram each name once instead of re-deriving both on every pair — the result is
-// byte-for-byte identical to calling `similarity(a, b)`.
-function bigramJaccard(
-  an: string,
-  A: Set<string>,
-  bn: string,
-  B: Set<string>
-): number {
-  if (!an || !bn) return 0;
-  if (an === bn) return 1;
-  let inter = 0;
-  for (const g of A) if (B.has(g)) inter++;
-  const union = A.size + B.size - inter;
-  return union === 0 ? 0 : inter / union;
-}
-
-function similarity(a: string, b: string): number {
-  const an = normalizeForCompare(a);
-  const bn = normalizeForCompare(b);
-  if (!an || !bn) return 0;
-  if (an === bn) return 1;
-  return bigramJaccard(an, bigrams(an), bn, bigrams(bn));
-}
+// Doctor-name fuzzy-matching helpers now live in a shared module so the
+// pre-create duplicate check, the duplicate-clusters panel, and the cases
+// route all use identical normalization, scoring, and thresholds.
+import {
+  normalizeDoctorForCompare as normalizeForCompare,
+  doctorNameBigrams as bigrams,
+  bigramJaccard,
+  doctorNameSimilarity as similarity,
+  resolveLabDupThreshold,
+} from "../lib/doctor-similarity.js";
 
 async function loadAndAuthorizeMerge(
   userId: string,
@@ -1212,20 +1180,6 @@ router.get(
 //
 // `totalGroups` is the badge count and decreases as merges collapse clusters.
 // ---------------------------------------------------------------------------
-
-const DEFAULT_DUP_SIMILARITY_THRESHOLD = 0.7;
-
-// Clamp + parse a per-lab override from organizations.duplicateSuggestionThreshold.
-// Mirrors resolveLabDupThreshold on the desktop client (clamp 0.5–0.95).
-function resolveLabDupThreshold(
-  raw: string | number | null | undefined
-): number {
-  if (raw === null || raw === undefined || raw === "")
-    return DEFAULT_DUP_SIMILARITY_THRESHOLD;
-  const n = typeof raw === "number" ? raw : parseFloat(raw);
-  if (!Number.isFinite(n)) return DEFAULT_DUP_SIMILARITY_THRESHOLD;
-  return Math.min(0.95, Math.max(0.5, n));
-}
 
 interface DupDoctorNode {
   doctorName: string;

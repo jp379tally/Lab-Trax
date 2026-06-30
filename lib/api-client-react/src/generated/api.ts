@@ -82,6 +82,7 @@ import type {
   DoctorMergeResult,
   DoctorMergeUndoResult,
   DoctorSearchResult,
+  DoctorSimilarityResult,
   EmailInvoice200,
   EmailInvoiceBody,
   EmailPreferencesInput,
@@ -94,6 +95,7 @@ import type {
   GetCaseByBarcode200,
   GetCaseByBarcodeParams,
   GetConversationMessagesParams,
+  GetDoctorSimilarityParams,
   GetItemLabelsParams,
   GetIteroImportHistoryParams,
   GetLocationsParams,
@@ -4726,6 +4728,118 @@ export function useGetCaseByBarcode<
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getGetCaseByBarcodeQueryOptions(code, params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Returns existing doctor names within the given
+`(labOrganizationId, providerOrganizationId)` practice that closely
+match the typed `doctorName`, using the shared bigram-similarity
+matcher (literal-exact names are never returned). Powers the
+pre-create duplicate-doctor confirmation prompt; the authoritative
+gate is the 409 `DOCTOR_CONFIRMATION_REQUIRED` returned by
+`POST /cases`. The caller must be an active member of
+`labOrganizationId`.
+
+ * @summary Find similar doctors for duplicate detection before case creation
+ */
+export const getGetDoctorSimilarityUrl = (
+  params: GetDoctorSimilarityParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/cases/doctor-similarity?${stringifiedParams}`
+    : `/api/cases/doctor-similarity`;
+};
+
+export const getDoctorSimilarity = async (
+  params: GetDoctorSimilarityParams,
+  options?: RequestInit,
+): Promise<DoctorSimilarityResult> => {
+  return customFetch<DoctorSimilarityResult>(
+    getGetDoctorSimilarityUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetDoctorSimilarityQueryKey = (
+  params?: GetDoctorSimilarityParams,
+) => {
+  return [`/api/cases/doctor-similarity`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetDoctorSimilarityQueryOptions = <
+  TData = Awaited<ReturnType<typeof getDoctorSimilarity>>,
+  TError = ErrorType<void>,
+>(
+  params: GetDoctorSimilarityParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getDoctorSimilarity>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetDoctorSimilarityQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getDoctorSimilarity>>
+  > = ({ signal }) =>
+    getDoctorSimilarity(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getDoctorSimilarity>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetDoctorSimilarityQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getDoctorSimilarity>>
+>;
+export type GetDoctorSimilarityQueryError = ErrorType<void>;
+
+/**
+ * @summary Find similar doctors for duplicate detection before case creation
+ */
+
+export function useGetDoctorSimilarity<
+  TData = Awaited<ReturnType<typeof getDoctorSimilarity>>,
+  TError = ErrorType<void>,
+>(
+  params: GetDoctorSimilarityParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getDoctorSimilarity>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetDoctorSimilarityQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

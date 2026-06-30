@@ -1246,6 +1246,44 @@ paths:
           description: Caller is not a member of the lab
         "404":
           description: No case found with that barcode
+  /cases/doctor-similarity:
+    get:
+      operationId: getDoctorSimilarity
+      tags: [cases]
+      summary: Find similar doctors for duplicate detection before case creation
+      description: |
+        Returns existing doctor names within the given
+        `(labOrganizationId, providerOrganizationId)` practice that closely
+        match the typed `doctorName`, using the shared bigram-similarity
+        matcher (literal-exact names are never returned). Powers the
+        pre-create duplicate-doctor confirmation prompt; the authoritative
+        gate is the 409 `DOCTOR_CONFIRMATION_REQUIRED` returned by
+        `POST /cases`. The caller must be an active member of
+        `labOrganizationId`.
+      parameters:
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: providerOrganizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: doctorName
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Doctor-similarity matches (may be empty array)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorSimilarityResult"
+        "400":
+          description: Missing required query parameters
+        "403":
+          description: Caller is not a member of the lab
   /cases/patient-similarity:
     get:
       operationId: getPatientSimilarity
@@ -4140,6 +4178,35 @@ components:
         needsAiReview:
           type: boolean
           nullable: true
+        confirmNewDoctor:
+          type: boolean
+          nullable: true
+          description: >
+            Bypass the pre-create duplicate-doctor checkpoint. When the typed
+            doctorName strongly resembles an existing doctor in the same
+            practice, POST /cases returns a 409 (code
+            DOCTOR_CONFIRMATION_REQUIRED) listing candidate matches. Re-submit
+            with confirmNewDoctor=true once the user confirms they want to add a
+            new doctor.
+    DoctorMatchCandidate:
+      type: object
+      required: [doctorName, similarity, totalCases]
+      properties:
+        doctorName: { type: string }
+        providerOrganizationId: { type: string, nullable: true }
+        similarity: { type: number }
+        totalCases: { type: number }
+    DoctorSimilarityResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            matches:
+              type: array
+              items:
+                $ref: "#/components/schemas/DoctorMatchCandidate"
     CaseDetailResult:
       type: object
       properties:

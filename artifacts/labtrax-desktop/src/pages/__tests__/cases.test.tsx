@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import CasesPage, { CaseDrawer } from "@/pages/cases";
+import CasesPage, { CaseDrawer, NewCaseModal } from "@/pages/cases";
 import type { LabCase } from "@/lib/types";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
 import { AiPanelContext } from "@/lib/ai-panel-context";
@@ -319,5 +319,112 @@ describe("CaseDrawer due-date persistence", () => {
     await waitFor(() => {
       expect(screen.getByText("Jul 10, 2026")).toBeInTheDocument();
     });
+  });
+});
+
+// Task #2621: the duplicate-doctor checkpoint must be unavoidable. Even when the
+// pre-submit /cases/doctor-similarity probe fails (so the client never opens the
+// modal proactively), the server returns 409 DOCTOR_CONFIRMATION_REQUIRED on
+// POST /cases. The mutation's onError must detect that and open the same
+// confirmation modal so the user still has to choose a doctor before saving.
+describe("NewCaseModal server-side duplicate-doctor fallback", () => {
+  it("opens the doctor confirmation modal from a POST /cases 409 when the preflight probe failed", async () => {
+    const json = (body: unknown, status = 200) =>
+      new Response(typeof body === "string" ? body : JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    let postAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const path = new URL(url, "http://localhost").pathname;
+        const method = (init?.method ?? "GET").toUpperCase();
+
+        if (path.endsWith("/organizations")) {
+          return json([
+            { id: "lab-1", type: "lab", name: "Acme Lab", displayName: "Acme Lab" },
+            { id: "prov-1", type: "provider", name: "Bright Dental", displayName: "Bright Dental" },
+          ]);
+        }
+        // Pre-submit doctor-similarity probe FAILS -> client falls through to
+        // submit without proactively showing the modal.
+        if (path.endsWith("/cases/doctor-similarity")) {
+          return json({ message: "probe unavailable" }, 500);
+        }
+        // No patient duplicates -> proceed straight to the create call.
+        if (path.endsWith("/cases/patient-similarity")) {
+          return json({ matches: [] });
+        }
+        if (path.endsWith("/cases") && method === "POST") {
+          postAttempts += 1;
+          return json(
+            {
+              ok: false,
+              message: "Confirm the doctor for this case.",
+              details: {
+                code: "DOCTOR_CONFIRMATION_REQUIRED",
+                doctorName: "Kanesha Cole",
+                providerOrganizationId: "prov-1",
+                candidates: [
+                  {
+                    doctorName: "Dr. Kanesha Cole",
+                    providerOrganizationId: "prov-1",
+                    totalCases: 3,
+                    similarity: 0.92,
+                  },
+                ],
+              },
+            },
+            409,
+          );
+        }
+        if (path.endsWith("/cases")) return json([]);
+        return json({});
+      }),
+    );
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(<Wrapper>{withAiPanel(<NewCaseModal onClose={() => {}} />)}</Wrapper>);
+
+    // Select the lab (native select).
+    const labSelect = document.querySelector("select") as HTMLSelectElement | null;
+    expect(labSelect).toBeTruthy();
+    await waitFor(() => {
+      expect(
+        Array.from(labSelect!.options).some((o) => o.value === "lab-1"),
+      ).toBe(true);
+    });
+    fireEvent.change(labSelect!, { target: { value: "lab-1" } });
+
+    // Select the practice via the ProviderPicker (button -> option).
+    fireEvent.click(screen.getByText("Select practice…"));
+    fireEvent.click(await screen.findByText("Bright Dental"));
+
+    // Patient name.
+    fireEvent.change(screen.getByPlaceholderText("First"), {
+      target: { value: "Jane" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Last"), {
+      target: { value: "Doe" },
+    });
+
+    // Doctor name (FieldCombobox input).
+    fireEvent.change(screen.getByPlaceholderText("Dr. Smith"), {
+      target: { value: "Kanesha Cole" },
+    });
+
+    // Submit the form -> doctor-similarity probe 500s -> patient probe empty ->
+    // POST /cases 409 -> onError opens the confirmation modal.
+    const form = document.querySelector("form") as HTMLFormElement | null;
+    expect(form).toBeTruthy();
+    fireEvent.submit(form!);
+
+    // The server-driven confirmation modal appears with the existing candidate.
+    expect(await screen.findByText("Which doctor do you mean?")).toBeInTheDocument();
+    expect(screen.getByText("Dr. Kanesha Cole")).toBeInTheDocument();
+    expect(postAttempts).toBe(1);
   });
 });

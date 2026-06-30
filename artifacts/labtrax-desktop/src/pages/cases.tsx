@@ -41,7 +41,7 @@ import {
   Zap,
 } from "lucide-react";
 import QRCodeSVG from "react-qr-code";
-import { apiFetch, getAccessToken, getApiOrigin } from "@/lib/api";
+import { apiFetch, ApiError, getAccessToken, getApiOrigin } from "@/lib/api";
 import { uploadMediaFile } from "@/lib/upload-media-file";
 import { DoctorNamePicker } from "@/components/DoctorNamePicker";
 import { FieldCombobox } from "@/components/FieldCombobox";
@@ -57,6 +57,7 @@ import type {
   CaseEvent,
   CaseRestoration,
   CaseStatus,
+  DoctorMatchCandidate,
   Invoice,
   LabCase,
   Organization,
@@ -472,6 +473,111 @@ interface RemakeCaseHit {
 }
 
 /**
+ * Modal that lists existing doctors in the same practice whose name closely
+ * matches the typed doctor name, and asks the user which doctor they mean
+ * BEFORE the case is saved. Shown only when `/cases/doctor-similarity` (or the
+ * POST /cases 409 fallback) returns at least one candidate.
+ *
+ * Three exits:
+ *   - "Use this doctor": adopt the existing doctor's exact name and continue.
+ *   - "Add as a new doctor": keep the typed name as a new, distinct doctor.
+ *   - "Cancel": close; do not create.
+ */
+function DoctorConfirmationModal({
+  matches,
+  typedName,
+  onCancel,
+  onUseExisting,
+  onAddNew,
+}: {
+  matches: DoctorMatchCandidate[];
+  typedName: string;
+  onCancel: () => void;
+  onUseExisting: (candidate: DoctorMatchCandidate) => void;
+  onAddNew: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div
+        className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[90vh] flex flex-col"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Possible duplicate doctor"
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={18} className="text-amber-500" />
+            <h2 className="text-base font-semibold">Which doctor do you mean?</h2>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-6 py-4 overflow-y-auto flex-1 space-y-4">
+          <p className="text-sm text-muted-foreground">
+            "<span className="font-medium text-foreground">{typedName}</span>"
+            closely matches{" "}
+            {matches.length === 1
+              ? "an existing doctor"
+              : `${matches.length} existing doctors`}{" "}
+            in this practice. Pick the existing doctor to avoid creating a
+            duplicate, or confirm this is a new doctor.
+          </p>
+
+          <div className="space-y-2">
+            {matches.map((m) => (
+              <button
+                key={`${m.providerOrganizationId ?? ""}:${m.doctorName}`}
+                type="button"
+                onClick={() => onUseExisting(m)}
+                className="w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border border-border bg-secondary/30 hover:bg-secondary/60 hover:border-primary/40 transition-colors text-left"
+              >
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-foreground truncate">
+                    {m.doctorName}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {m.totalCases} case{m.totalCases === 1 ? "" : "s"} ·{" "}
+                    {Math.round(m.similarity * 100)}% match
+                  </div>
+                </div>
+                <span className="shrink-0 text-xs font-medium text-primary">
+                  Use this doctor
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex gap-2 px-6 py-3 border-t border-border bg-secondary/20">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="h-9 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            Cancel
+          </button>
+          <div className="flex-1" />
+          <button
+            type="button"
+            onClick={onAddNew}
+            className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90"
+          >
+            Add "{typedName}" as a new doctor
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Modal that lists previously-seen cases for the same patient name and asks
  * the user whether the new case is a remake. Shown only when the server's
  * `/cases/patient-similarity` endpoint returns at least one match.
@@ -755,6 +861,15 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     PatientSimilarityHit[] | null
   >(null);
   const [checkingDupes, setCheckingDupes] = useState(false);
+  // Pre-create duplicate-DOCTOR checkpoint. When the typed doctor name strongly
+  // resembles an existing doctor in the same practice, we ask the user which
+  // doctor they mean before saving. `confirmNewDoctorRef` carries the user's
+  // "add as new doctor" decision through the subsequent patient-similarity
+  // checkpoint and into the create payload (so the server check is bypassed).
+  const [doctorMatches, setDoctorMatches] = useState<
+    DoctorMatchCandidate[] | null
+  >(null);
+  const confirmNewDoctorRef = useRef(false);
 
   // ── New-case barcode conflict check ──────────────────────────────────────
   const [newBarcodeConflict, setNewBarcodeConflict] = useState<LabCase | null>(null);
@@ -816,7 +931,21 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
       setDuplicateMatches(null);
       onClose();
     },
-    onError: (e: Error) => setError(e.message),
+    onError: (e: Error) => {
+      // Server-side duplicate-DOCTOR fallback. Even if the pre-submit probe was
+      // skipped or stale, the create endpoint returns 409
+      // DOCTOR_CONFIRMATION_REQUIRED with candidate matches — open the same
+      // confirmation modal so the checkpoint is unavoidable.
+      if (e instanceof ApiError && e.status === 409) {
+        const details = (e.body as { details?: { code?: string; candidates?: DoctorMatchCandidate[] } } | null)?.details;
+        if (details?.code === "DOCTOR_CONFIRMATION_REQUIRED" && Array.isArray(details.candidates)) {
+          setDuplicateMatches(null);
+          setDoctorMatches(details.candidates);
+          return;
+        }
+      }
+      setError(e.message);
+    },
   });
 
   function set<K extends keyof NewCaseFormData>(k: K, v: NewCaseFormData[K]) {
@@ -974,14 +1103,49 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
       return;
     }
 
+    // Reset any prior "add new doctor" decision for this submission attempt.
+    confirmNewDoctorRef.current = false;
+
+    // Checkpoint 1 — duplicate DOCTOR. If the typed name strongly resembles an
+    // existing doctor in this practice, ask the user which doctor they mean
+    // before doing anything else.
     setCheckingDupes(true);
     try {
       const params = new URLSearchParams({
-        patientFirstName: form.patientFirstName.trim(),
-        patientLastName: form.patientLastName.trim(),
-        providerOrganizationId: form.providerOrganizationId,
         labOrganizationId: form.labOrganizationId,
+        providerOrganizationId: form.providerOrganizationId,
         doctorName: form.doctorName.trim(),
+      });
+      const res = await apiFetch<{ matches: DoctorMatchCandidate[] }>(
+        `/cases/doctor-similarity?${params.toString()}`,
+      );
+      if (res.matches && res.matches.length > 0) {
+        setDoctorMatches(res.matches);
+        setCheckingDupes(false);
+        return;
+      }
+    } catch (err) {
+      // Non-fatal: a flaky lookup must not block creation. The server's 409
+      // fallback still enforces the checkpoint on submit.
+      console.warn("doctor-similarity check failed", err);
+    }
+
+    // Checkpoint 2 — duplicate PATIENT (existing behaviour).
+    await runPatientCheckAndSubmit(form);
+  }
+
+  // Runs the patient-similarity checkpoint then submits. `confirmNewDoctorRef`
+  // is threaded into the payload so a user who confirmed "add new doctor"
+  // bypasses the server's duplicate-doctor 409 on the final submit.
+  async function runPatientCheckAndSubmit(f: NewCaseFormData) {
+    setCheckingDupes(true);
+    try {
+      const params = new URLSearchParams({
+        patientFirstName: f.patientFirstName.trim(),
+        patientLastName: f.patientLastName.trim(),
+        providerOrganizationId: f.providerOrganizationId,
+        labOrganizationId: f.labOrganizationId,
+        doctorName: f.doctorName.trim(),
       });
       const res = await apiFetch<{ matches: PatientSimilarityHit[] }>(
         `/cases/patient-similarity?${params.toString()}`,
@@ -997,7 +1161,11 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
       console.warn("patient-similarity check failed", err);
     }
     setCheckingDupes(false);
-    mutation.mutate({ ...form, restorations: buildRestorationPayload() } as Parameters<typeof mutation.mutate>[0]);
+    mutation.mutate({
+      ...f,
+      confirmNewDoctor: confirmNewDoctorRef.current || undefined,
+      restorations: buildRestorationPayload(),
+    } as Parameters<typeof mutation.mutate>[0]);
   }
 
   return (
@@ -1516,6 +1684,31 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
         </form>
       </div>
 
+      {doctorMatches && (
+        <DoctorConfirmationModal
+          matches={doctorMatches}
+          typedName={form.doctorName.trim()}
+          onCancel={() => setDoctorMatches(null)}
+          onUseExisting={(candidate) => {
+            // The user picked an existing doctor — adopt that exact name and
+            // continue. confirmNewDoctor bypasses the server's doctor 409 since
+            // the decision is now made.
+            confirmNewDoctorRef.current = true;
+            setForm((f) => ({ ...f, doctorName: candidate.doctorName }));
+            setDoctorMatches(null);
+            void runPatientCheckAndSubmit({
+              ...form,
+              doctorName: candidate.doctorName,
+            });
+          }}
+          onAddNew={() => {
+            // The user confirmed this really is a new, distinct doctor.
+            confirmNewDoctorRef.current = true;
+            setDoctorMatches(null);
+            void runPatientCheckAndSubmit(form);
+          }}
+        />
+      )}
       {duplicateMatches && (
         <PossibleDuplicateModal
           matches={duplicateMatches}
@@ -1525,13 +1718,13 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
           onCancel={() => setDuplicateMatches(null)}
           onProceedAsNew={() => {
             setDuplicateMatches(null);
-            mutation.mutate({ ...form, restorations: buildRestorationPayload() } as Parameters<typeof mutation.mutate>[0]);
+            mutation.mutate({ ...form, confirmNewDoctor: confirmNewDoctorRef.current || undefined, restorations: buildRestorationPayload() } as Parameters<typeof mutation.mutate>[0]);
           }}
           onProceedAsRemake={(decision) => {
             // Omit caseNumber so the server assigns the suffixed number
             // (e.g. "26-11B") automatically based on the original case.
             const { caseNumber: _ignored, ...formWithoutCaseNumber } = form;
-            mutation.mutate({ ...formWithoutCaseNumber, ...decision, restorations: buildRestorationPayload() } as Parameters<typeof mutation.mutate>[0]);
+            mutation.mutate({ ...formWithoutCaseNumber, ...decision, confirmNewDoctor: confirmNewDoctorRef.current || undefined, restorations: buildRestorationPayload() } as Parameters<typeof mutation.mutate>[0]);
           }}
         />
       )}

@@ -22,6 +22,7 @@ import {
   useCases,
   type CreateCaseInput,
   type CreateCaseInputRestorationsItem,
+  type DoctorMatchCandidate,
   type DoctorSearchEntry,
   type PreviewDraftInvoiceResultData,
 } from "@workspace/api-client-react";
@@ -32,6 +33,7 @@ import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { DateField } from "@/components/DateField";
 import { SuggestionInput } from "@/components/ui/SuggestionInput";
+import { FormSheet } from "@/components/ui/FormSheet";
 
 interface RestorationDraft {
   key: string;
@@ -90,6 +92,10 @@ export default function NewCaseScreen() {
 
   const [submitting, setSubmitting] = useState(false);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
+  const [doctorConfirm, setDoctorConfirm] = useState<{
+    candidates: DoctorMatchCandidate[];
+    typedName: string;
+  } | null>(null);
 
   const createCase = useCreateCase();
 
@@ -360,14 +366,8 @@ export default function NewCaseScreen() {
     else router.replace("/(tabs)" as never);
   }
 
-  async function handleSubmit() {
-    setAttemptedSubmit(true);
-    if (hasErrors || !selectedLabId || !providerOrgId) {
-      if (errors.doctor) {
-        Alert.alert("Select a doctor", "Choose a doctor from the search results so the case is linked to their practice.");
-      }
-      return;
-    }
+  function buildPayload(opts?: { confirmNewDoctor?: boolean }): CreateCaseInput | null {
+    if (!selectedLabId || !providerOrgId) return null;
 
     const cleanRestorations: CreateCaseInputRestorationsItem[] = restorations
       .filter((r) => r.toothNumber.trim() && r.restorationType.trim())
@@ -378,7 +378,7 @@ export default function NewCaseScreen() {
         ...(r.shade.trim() ? { shade: r.shade.trim() } : {}),
       }));
 
-    const payload: CreateCaseInput = {
+    return {
       caseNumber: caseNumber.trim(),
       labOrganizationId: selectedLabId,
       providerOrganizationId: providerOrgId,
@@ -390,8 +390,11 @@ export default function NewCaseScreen() {
       ...(notes.trim() ? { notes: notes.trim() } : {}),
       ...(cleanRestorations.length ? { restorations: cleanRestorations } : {}),
       ...(casePanBarcode.trim() ? { casePanBarcode: casePanBarcode.trim() } : {}),
+      ...(opts?.confirmNewDoctor ? { confirmNewDoctor: true } : {}),
     };
+  }
 
+  async function submitCase(payload: CreateCaseInput) {
     setSubmitting(true);
     try {
       const result = await createCase.mutateAsync({ data: payload });
@@ -401,12 +404,55 @@ export default function NewCaseScreen() {
         goBack();
         return;
       }
+      setDoctorConfirm(null);
       router.replace(`/case/${newId}` as never);
     } catch (e) {
+      const err = e as { status?: number; data?: { details?: unknown } };
+      const details = err?.data?.details as
+        | { code?: string; candidates?: DoctorMatchCandidate[] }
+        | undefined;
+      if (err?.status === 409 && details?.code === "DOCTOR_CONFIRMATION_REQUIRED") {
+        setDoctorConfirm({
+          candidates: Array.isArray(details.candidates) ? details.candidates : [],
+          typedName: (payload.doctorName ?? "").trim(),
+        });
+        return;
+      }
       Alert.alert("Couldn't create case", errorMessage(e));
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function handleSubmit() {
+    setAttemptedSubmit(true);
+    if (hasErrors || !selectedLabId || !providerOrgId) {
+      if (errors.doctor) {
+        Alert.alert("Select a doctor", "Choose a doctor from the search results so the case is linked to their practice.");
+      }
+      return;
+    }
+
+    const payload = buildPayload();
+    if (!payload) return;
+    await submitCase(payload);
+  }
+
+  function handleUseExistingDoctor(candidate: DoctorMatchCandidate) {
+    setDoctorName(candidate.doctorName);
+    setDoctorInput(candidate.doctorName);
+    if (candidate.providerOrganizationId) {
+      setProviderOrgId(candidate.providerOrganizationId);
+    }
+    const payload = buildPayload({ confirmNewDoctor: true });
+    if (!payload) return;
+    void submitCase({ ...payload, doctorName: candidate.doctorName });
+  }
+
+  function handleKeepNewDoctor() {
+    const payload = buildPayload({ confirmNewDoctor: true });
+    if (!payload) return;
+    void submitCase(payload);
   }
 
   // ── Loading / no-lab states ──
@@ -841,6 +887,39 @@ export default function NewCaseScreen() {
         </Pressable>
         <View style={{ height: insets.bottom + Spacing.xxl }} />
       </ScrollView>
+
+      <FormSheet
+        visible={!!doctorConfirm}
+        title="Is this the same doctor?"
+        onClose={() => setDoctorConfirm(null)}
+        onSubmit={handleKeepNewDoctor}
+        submitting={submitting}
+        submitLabel={`Create as new doctor`}
+      >
+        <Text style={styles.confirmIntro}>
+          {`"${doctorConfirm?.typedName ?? ""}" looks similar to ${
+            (doctorConfirm?.candidates.length ?? 0) === 1 ? "a doctor" : "doctors"
+          } already on file in this practice. Tap one to use it, or create a new doctor.`}
+        </Text>
+        {(doctorConfirm?.candidates ?? []).map((c) => (
+          <Pressable
+            key={`${c.doctorName}::${c.providerOrganizationId ?? ""}`}
+            style={styles.confirmRow}
+            onPress={() => handleUseExistingDoctor(c)}
+            disabled={submitting}
+            testID="doctor-confirm-candidate"
+          >
+            <Ionicons name="person-circle-outline" size={22} color={colors.tint} />
+            <View style={styles.confirmRowMain}>
+              <Text style={styles.confirmRowName}>{c.doctorName}</Text>
+              <Text style={styles.confirmRowMeta} numberOfLines={1}>
+                {`${c.totalCases} ${c.totalCases === 1 ? "case" : "cases"}`}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+          </Pressable>
+        ))}
+      </FormSheet>
     </View>
   );
 }
@@ -907,6 +986,21 @@ function makeStyles(c: ThemeColors) {
     backBtn: { padding: Spacing.xs },
     headerTitle: { ...Typography.h2, color: c.text, flex: 1 },
     headerRight: { minWidth: 64, alignItems: "flex-end" },
+    confirmIntro: { ...Typography.body, color: c.textSecondary },
+    confirmRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.sm,
+      borderRadius: Radius.lg,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      backgroundColor: c.surfaceAlt,
+    },
+    confirmRowMain: { flex: 1 },
+    confirmRowName: { ...Typography.bodySemibold, color: c.text },
+    confirmRowMeta: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
     saveBtn: {
       paddingHorizontal: Spacing.lg,
       paddingVertical: Spacing.sm,

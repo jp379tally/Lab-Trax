@@ -1290,6 +1290,12 @@ export const CreateCaseBody = zod.object({
     .nullish()
     .describe("Inline restoration line items created alongside the case."),
   needsAiReview: zod.boolean().nullish(),
+  confirmNewDoctor: zod
+    .boolean()
+    .nullish()
+    .describe(
+      "Bypass the pre-create duplicate-doctor checkpoint. When the typed doctorName strongly resembles an existing doctor in the same practice, POST \/cases returns a 409 (code DOCTOR_CONFIRMATION_REQUIRED) listing candidate matches. Re-submit with confirmNewDoctor=true once the user confirms they want to add a new doctor.\n",
+    ),
 });
 
 /**
@@ -1677,6 +1683,42 @@ export const GetCaseByBarcodeResponse = zod.object({
         .passthrough()
         .optional()
         .describe("The matching case row (Drizzle shape)"),
+    })
+    .optional(),
+});
+
+/**
+ * Returns existing doctor names within the given
+`(labOrganizationId, providerOrganizationId)` practice that closely
+match the typed `doctorName`, using the shared bigram-similarity
+matcher (literal-exact names are never returned). Powers the
+pre-create duplicate-doctor confirmation prompt; the authoritative
+gate is the 409 `DOCTOR_CONFIRMATION_REQUIRED` returned by
+`POST /cases`. The caller must be an active member of
+`labOrganizationId`.
+
+ * @summary Find similar doctors for duplicate detection before case creation
+ */
+export const GetDoctorSimilarityQueryParams = zod.object({
+  labOrganizationId: zod.coerce.string(),
+  providerOrganizationId: zod.coerce.string(),
+  doctorName: zod.coerce.string(),
+});
+
+export const GetDoctorSimilarityResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      matches: zod
+        .array(
+          zod.object({
+            doctorName: zod.string(),
+            providerOrganizationId: zod.string().nullish(),
+            similarity: zod.number(),
+            totalCases: zod.number(),
+          }),
+        )
+        .optional(),
     })
     .optional(),
 });

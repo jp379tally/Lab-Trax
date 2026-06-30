@@ -503,6 +503,140 @@ maybe("Cases core lifecycle (db integration)", () => {
 
   // ── DELETE /api/cases/:caseId (soft-delete) ───────────────────────────────
 
+  // ── Pre-create duplicate-doctor checkpoint ────────────────────────────────
+
+  it("POST /api/cases blocks a near-duplicate doctor name with a 409 confirmation", async () => {
+    const { access } = await makeSession(labOwnerId);
+
+    // Seed an existing doctor in the practice.
+    const seed = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("DD1"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Dup",
+        patientLastName: "Seed",
+        doctorName: "Dr. Kanesha Cole",
+      });
+    expect(seed.status).toBe(201);
+    createdCaseIds.push(seed.body.data.id);
+
+    // A normalized-equal variant ("Kanesha Cole") must be caught before saving.
+    const blocked = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("DD2"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Dup",
+        patientLastName: "Blocked",
+        doctorName: "Kanesha Cole",
+      });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.details?.code).toBe("DOCTOR_CONFIRMATION_REQUIRED");
+    const candidateNames: string[] = (blocked.body.details?.candidates ?? []).map(
+      (c: any) => c.doctorName,
+    );
+    expect(candidateNames).toContain("Dr. Kanesha Cole");
+  });
+
+  it("POST /api/cases with confirmNewDoctor=true bypasses the checkpoint", async () => {
+    const { access } = await makeSession(labOwnerId);
+
+    const seed = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("DC1"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Confirm",
+        patientLastName: "Seed",
+        doctorName: "Dr. Marcus Webb",
+      });
+    expect(seed.status).toBe(201);
+    createdCaseIds.push(seed.body.data.id);
+
+    const confirmed = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("DC2"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Confirm",
+        patientLastName: "New",
+        doctorName: "Marcus Webb",
+        confirmNewDoctor: true,
+      });
+    expect(confirmed.status).toBe(201);
+    createdCaseIds.push(confirmed.body.data.id);
+  });
+
+  it("POST /api/cases does NOT flag a literal-exact existing doctor name", async () => {
+    const { access } = await makeSession(labOwnerId);
+
+    const seed = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("EX1"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Exact",
+        patientLastName: "Seed",
+        doctorName: "Dr. Olivia Pratt",
+      });
+    expect(seed.status).toBe(201);
+    createdCaseIds.push(seed.body.data.id);
+
+    // Reusing the exact same doctor name (case-insensitive) must save directly.
+    const reuse = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("EX2"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Exact",
+        patientLastName: "Reuse",
+        doctorName: "dr. olivia pratt",
+      });
+    expect(reuse.status).toBe(201);
+    createdCaseIds.push(reuse.body.data.id);
+  });
+
+  it("GET /api/cases/doctor-similarity returns matching doctors in the practice", async () => {
+    const { access } = await makeSession(labOwnerId);
+
+    const seed = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("DS1"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Sim",
+        patientLastName: "Seed",
+        doctorName: "Dr. Priya Nair",
+      });
+    expect(seed.status).toBe(201);
+    createdCaseIds.push(seed.body.data.id);
+
+    const sim = await request(appMod.default)
+      .get(
+        `/api/cases/doctor-similarity?labOrganizationId=${labOrgId}` +
+          `&providerOrganizationId=${providerOrgId}&doctorName=${encodeURIComponent("Priya Nair")}`,
+      )
+      .set("Authorization", `Bearer ${access}`);
+    expect(sim.status).toBe(200);
+    const names: string[] = (sim.body.data?.matches ?? []).map((m: any) => m.doctorName);
+    expect(names).toContain("Dr. Priya Nair");
+  });
+
   it("DELETE /api/cases/:caseId soft-deletes the case (row still exists with deletedAt set)", async () => {
     const { access } = await makeSession(labOwnerId);
     const caseNumber = rid("DC");

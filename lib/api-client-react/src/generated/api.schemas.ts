@@ -570,6 +570,25 @@ export interface CreateCaseInput {
   /** Inline restoration line items created alongside the case. */
   restorations?: CreateCaseInputRestorationsItem[] | null;
   needsAiReview?: boolean | null;
+  /** Bypass the pre-create duplicate-doctor checkpoint. When the typed doctorName strongly resembles an existing doctor in the same practice, POST /cases returns a 409 (code DOCTOR_CONFIRMATION_REQUIRED) listing candidate matches. Re-submit with confirmNewDoctor=true once the user confirms they want to add a new doctor.
+   */
+  confirmNewDoctor?: boolean | null;
+}
+
+export interface DoctorMatchCandidate {
+  doctorName: string;
+  providerOrganizationId?: string | null;
+  similarity: number;
+  totalCases: number;
+}
+
+export type DoctorSimilarityResultData = {
+  matches?: DoctorMatchCandidate[];
+};
+
+export interface DoctorSimilarityResult {
+  ok?: boolean;
+  data?: DoctorSimilarityResultData;
 }
 
 export interface CaseDetailResult {
@@ -2659,6 +2678,12 @@ export type GetCaseByBarcode200Data = {
 export type GetCaseByBarcode200 = {
   ok?: boolean;
   data?: GetCaseByBarcode200Data;
+};
+
+export type GetDoctorSimilarityParams = {
+  labOrganizationId: string;
+  providerOrganizationId: string;
+  doctorName: string;
 };
 
 export type GetPatientSimilarityParams = {
