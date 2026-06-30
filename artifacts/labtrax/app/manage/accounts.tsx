@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
+  Pressable,
   FlatList,
   ActivityIndicator,
   RefreshControl,
@@ -166,7 +167,12 @@ export default function AccountsScreen() {
     return (
       <View style={[styles.container, { paddingTop: insets.top + Spacing.lg }]}>
         <View style={styles.header}>
-          <Text style={styles.title}>Accounts</Text>
+          <Pressable onPress={() => router.back()} hitSlop={8} style={styles.backBtn}>
+            <Ionicons name="chevron-back" size={24} color={colors.text} />
+          </Pressable>
+          <View style={styles.headerText}>
+            <Text style={styles.title}>Accounts</Text>
+          </View>
         </View>
         <View style={styles.blocked}>
           <Ionicons name="briefcase-outline" size={36} color={colors.textTertiary} />
@@ -182,12 +188,17 @@ export default function AccountsScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Accounts</Text>
-        <Text style={styles.subtitle}>
-          {isLoading
-            ? "Loading…"
-            : `${practices.length} practice${practices.length === 1 ? "" : "s"}`}
-        </Text>
+        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.backBtn}>
+          <Ionicons name="chevron-back" size={24} color={colors.text} />
+        </Pressable>
+        <View style={styles.headerText}>
+          <Text style={styles.title}>Accounts</Text>
+          <Text style={styles.subtitle}>
+            {isLoading
+              ? "Loading…"
+              : `${practices.length} practice${practices.length === 1 ? "" : "s"}`}
+          </Text>
+        </View>
       </View>
 
       <View style={styles.searchWrap}>
@@ -313,10 +324,15 @@ function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: c.backgroundSolid },
     header: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
       paddingHorizontal: Spacing.lg,
       paddingBottom: Spacing.xs,
       paddingTop: Spacing.md,
     },
+    backBtn: { padding: 2 },
+    headerText: { flex: 1 },
     title: { ...Typography.h2, color: c.text },
     subtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
     searchWrap: {
