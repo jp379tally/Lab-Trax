@@ -89,7 +89,15 @@ function formatEventTitle(eventType: string | null | undefined): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function eventMetaLine(event: CaseEvent): string {
+// Mirror the on-screen invoice timeline wording: invoice statuses are shown
+// with underscores replaced by spaces and each word capitalized.
+function formatInvoiceStatus(value: unknown): string {
+  return String(value)
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+export function eventMetaLine(event: CaseEvent): string {
   const meta =
     event.metadataJson && typeof event.metadataJson === "object"
       ? (event.metadataJson as Record<string, unknown>)
@@ -114,8 +122,19 @@ function eventMetaLine(event: CaseEvent): string {
     ].filter(Boolean);
     if (parts.length) return parts.join(" · ");
   }
-  if (t.includes("invoice") && meta.invoiceNumber) {
-    return `Invoice ${meta.invoiceNumber}`;
+  if (t.includes("invoice")) {
+    const parts: string[] = [];
+    if (meta.invoiceNumber) parts.push(`Invoice ${meta.invoiceNumber}`);
+    if (
+      meta.previousStatus != null &&
+      meta.newStatus != null &&
+      String(meta.previousStatus) !== String(meta.newStatus)
+    ) {
+      parts.push(
+        `${formatInvoiceStatus(meta.previousStatus)} → ${formatInvoiceStatus(meta.newStatus)}`,
+      );
+    }
+    if (parts.length) return parts.join(" · ");
   }
   if (t === "location_changed" && meta.toLocation) {
     return `Location: ${meta.toLocation}`;
