@@ -1,14 +1,4 @@
-export type ShareIntentState = {
-  hasShareIntent: boolean;
-  shareIntent: { files?: Array<{ path?: string | null } | null> } | null;
-  error: string | null;
-  resetShareIntent: () => void;
-};
-
-type UseShareIntentOptions = {
-  debug?: boolean;
-  resetOnBackground?: boolean;
-};
+import type { ShareIntentState, UseShareIntentOptions } from "@/lib/share-intent.types";
 
 const DEFAULT_STATE: ShareIntentState = {
   hasShareIntent: false,
@@ -17,6 +7,7 @@ const DEFAULT_STATE: ShareIntentState = {
   resetShareIntent: () => {},
 };
 
-export function useShareIntent(_options?: UseShareIntentOptions): ShareIntentState {
+export function useShareIntent(options?: UseShareIntentOptions): ShareIntentState {
+  void options;
   return DEFAULT_STATE;
 }
