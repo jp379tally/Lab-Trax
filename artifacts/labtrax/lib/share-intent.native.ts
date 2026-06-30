@@ -1,7 +1,6 @@
 import {
   useShareIntent as useNativeShareIntent,
   type ShareIntent,
-  type UseShareIntentOptions,
 } from "expo-share-intent";
 
 export type ShareIntentState = {
@@ -10,6 +9,8 @@ export type ShareIntentState = {
   error: string | null;
   resetShareIntent: () => void;
 };
+
+type UseShareIntentOptions = Parameters<typeof useNativeShareIntent>[0];
 
 export function useShareIntent(options?: UseShareIntentOptions): ShareIntentState {
   return useNativeShareIntent(options);

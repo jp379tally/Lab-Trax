@@ -222,10 +222,11 @@ export default function RootLayout() {
       resetShareIntent();
       return;
     }
+    const sharedPaths = files
+      .map((f) => f?.path)
+      .filter((path): path is string => typeof path === "string" && path.length > 0);
     Promise.all(
-      files
-        .filter((f) => !!f?.path)
-        .map((f) => pushSharedFile(f.path).catch(() => {})),
+      sharedPaths.map((path) => pushSharedFile(path).catch(() => {})),
     )
       .catch(() => {})
       .finally(() => {
