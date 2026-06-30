@@ -72,6 +72,14 @@ vi.mock("./lib/desktop-installer-storage.js", () => ({
     if (url.endsWith(".zip")) return "zip";
     return null;
   },
+  getDesktopInstallerDownloadInfo: (kind: "zip" | "exe" | "dmg") => {
+    const fileName = {
+      zip: "LabTrax-Windows-Portable.zip",
+      exe: "LabTrax-Setup.exe",
+      dmg: "LabTrax.dmg",
+    }[kind];
+    return { kind, downloadUrl: `/downloads/${fileName}`, fileName };
+  },
   validateInstallerUrl: (url: string) => {
     if (!url || typeof url !== "string") return "URL is required.";
     return null;
@@ -229,5 +237,111 @@ describe("GET /admin/settings/desktop-installer — installerStatus", () => {
       .get("/api/admin/settings/desktop-installer");
 
     expect(res.status).toBe(403);
+  });
+});
+
+/**
+ * Regression guard for the "dead Windows download link" failure mode.
+ *
+ * The public GET /desktop-installer endpoint must be server-side authoritative
+ * about which installer it hands the client: it picks the best *available* slot
+ * (configured/active kind first, then the portable ZIP, then the macOS DMG)
+ * rather than blindly echoing the configured URL — so the download link is
+ * never dead. When nothing is available it must report fileFound:false so the
+ * client shows "not uploaded yet". External https:// URLs are returned as-is
+ * and reported available.
+ */
+describe("GET /desktop-installer — server-side slot resolution", () => {
+  let server: Server;
+  const origInstallerUrl = process.env.DESKTOP_INSTALLER_URL;
+  const origInstallerVersion = process.env.DESKTOP_INSTALLER_VERSION;
+
+  // Make App Storage availability controllable per kind.
+  function setSlotAvailability(present: { zip?: boolean; exe?: boolean; dmg?: boolean }) {
+    getMetadataMock.mockImplementation(async (key: string) => {
+      const ok = present[key as "zip" | "exe" | "dmg"] === true;
+      return ok ? { size: 5_000_000, uploadedAt: new Date().toISOString(), etag: key } : null;
+    });
+  }
+
+  beforeAll(async () => {
+    // Active configured installer is the EXE — the most common configuration.
+    process.env.DESKTOP_INSTALLER_URL = "/downloads/LabTrax-Setup.exe";
+    process.env.DESKTOP_INSTALLER_VERSION = "1.0.0";
+    const { default: app } = await import("./app.js");
+    server = app.listen(0);
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (origInstallerUrl === undefined) delete process.env.DESKTOP_INSTALLER_URL;
+    else process.env.DESKTOP_INSTALLER_URL = origInstallerUrl;
+    if (origInstallerVersion === undefined) delete process.env.DESKTOP_INSTALLER_VERSION;
+    else process.env.DESKTOP_INSTALLER_VERSION = origInstallerVersion;
+  });
+
+  it("falls back to the ZIP when the configured EXE is missing but the ZIP exists", async () => {
+    process.env.DESKTOP_INSTALLER_URL = "/downloads/LabTrax-Setup.exe";
+    setSlotAvailability({ zip: true, exe: false, dmg: false });
+
+    const res = await request(server).get("/api/desktop-installer");
+
+    expect(res.status).toBe(200);
+    expect(res.body.fileFound).toBe(true);
+    expect(res.body.available).toBe(true);
+    expect(res.body.downloadUrl).toBe("/downloads/LabTrax-Windows-Portable.zip");
+    expect(res.body.fileName).toBe("LabTrax-Windows-Portable.zip");
+  });
+
+  it("returns the configured EXE unchanged when the EXE slot is present", async () => {
+    process.env.DESKTOP_INSTALLER_URL = "/downloads/LabTrax-Setup.exe";
+    setSlotAvailability({ zip: true, exe: true, dmg: false });
+
+    const res = await request(server).get("/api/desktop-installer");
+
+    expect(res.status).toBe(200);
+    expect(res.body.fileFound).toBe(true);
+    expect(res.body.downloadUrl).toBe("/downloads/LabTrax-Setup.exe");
+    expect(res.body.fileName).toBe("LabTrax-Setup.exe");
+  });
+
+  it("falls back to the DMG when only the DMG is available", async () => {
+    process.env.DESKTOP_INSTALLER_URL = "/downloads/LabTrax-Setup.exe";
+    setSlotAvailability({ zip: false, exe: false, dmg: true });
+
+    const res = await request(server).get("/api/desktop-installer");
+
+    expect(res.status).toBe(200);
+    expect(res.body.fileFound).toBe(true);
+    expect(res.body.downloadUrl).toBe("/downloads/LabTrax.dmg");
+    expect(res.body.fileName).toBe("LabTrax.dmg");
+  });
+
+  it("reports fileFound:false with no usable installer when nothing is uploaded", async () => {
+    process.env.DESKTOP_INSTALLER_URL = "/downloads/LabTrax-Setup.exe";
+    setSlotAvailability({ zip: false, exe: false, dmg: false });
+
+    const res = await request(server).get("/api/desktop-installer");
+
+    expect(res.status).toBe(200);
+    expect(res.body.fileFound).toBe(false);
+    expect(res.body.available).toBe(false);
+    expect(res.body.installerObject).toBeNull();
+    // No usable URL must be returned so the client cannot link to a dead path.
+    expect(res.body.downloadUrl).toBeNull();
+    expect(res.body.fileName).toBeNull();
+  });
+
+  it("returns an external https:// URL as-is and reports it available", async () => {
+    process.env.DESKTOP_INSTALLER_URL = "https://cdn.example.com/LabTrax-Setup.exe";
+    // Even with every App Storage slot empty, an external URL stays available.
+    setSlotAvailability({ zip: false, exe: false, dmg: false });
+
+    const res = await request(server).get("/api/desktop-installer");
+
+    expect(res.status).toBe(200);
+    expect(res.body.fileFound).toBe(true);
+    expect(res.body.available).toBe(true);
+    expect(res.body.downloadUrl).toBe("https://cdn.example.com/LabTrax-Setup.exe");
   });
 });

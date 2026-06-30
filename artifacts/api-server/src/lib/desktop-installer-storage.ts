@@ -360,6 +360,26 @@ export function installerKindFromUrl(url: string): DesktopInstallerKind | null {
   return null;
 }
 
+export interface DesktopInstallerDownloadInfo {
+  kind: DesktopInstallerKind;
+  /** Locally-served download path, e.g. `/downloads/LabTrax-Setup.exe`. */
+  downloadUrl: string;
+  fileName: string;
+}
+
+/**
+ * Returns the locally-served download path + filename for an installer kind.
+ * This is the inverse of {@link installerKindFromUrl} and the single source of
+ * truth the public installer endpoint uses when it falls back from a missing
+ * active installer to another available one.
+ */
+export function getDesktopInstallerDownloadInfo(
+  kind: DesktopInstallerKind,
+): DesktopInstallerDownloadInfo {
+  const cfg = INSTALLER_KIND_CONFIG[kind];
+  return { kind, downloadUrl: `/downloads/${cfg.fileName}`, fileName: cfg.fileName };
+}
+
 export interface DesktopInstallerSlotStatus {
   available: boolean;
   size: number | null;

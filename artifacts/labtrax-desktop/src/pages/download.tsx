@@ -40,8 +40,10 @@ interface InstallerSlotStatus {
 
 interface DesktopInstallerPublicInfo {
   version: string;
-  downloadUrl: string;
-  fileName: string;
+  // null when no installer is available — the server reports fileFound:false
+  // and the client renders the "not uploaded yet" state instead of a link.
+  downloadUrl: string | null;
+  fileName: string | null;
   releaseNotes: string | null;
   available?: boolean;
   fileFound?: boolean;

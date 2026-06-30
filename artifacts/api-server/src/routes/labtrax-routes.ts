@@ -19,6 +19,7 @@ import archiver from "archiver";
 import {
   getDesktopInstallerMetadata,
   getDesktopInstallerSlots,
+  getDesktopInstallerDownloadInfo,
   uploadDesktopInstaller,
   installerKindFromUrl,
   DesktopInstallerNotConfiguredError,
@@ -4624,39 +4625,83 @@ Important rules:
     if (urlError) {
       return res.status(503).json({ error: "Desktop installer is not configured." });
     }
-    const fileName = rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip";
-    const activeKind = installerKindFromUrl(rawUrl);
+    const configuredKind = installerKindFromUrl(rawUrl);
     const isLocalDownload = rawUrl.startsWith("/downloads/");
-    const installerObject = activeKind
-      ? await getDesktopInstallerMetadata(activeKind).catch((err) => {
-          req.log.error({ err }, "Failed to read desktop installer metadata from App Storage");
-          return null;
-        })
-      : null;
-    // `fileFound` narrows availability: for locally-served /downloads/ paths we
-    // check whether the file actually exists in App Storage. For external
-    // https:// URLs we can't check without a round-trip, so report true and
-    // let the browser handle a 404.
-    // `available` mirrors `fileFound` so UI clients have a single field to gate
-    // on — do NOT hardcode true here when the installer file is absent.
-    const fileFound = isLocalDownload ? installerObject !== null : true;
-    const available = fileFound;
-    // Per-kind availability so clients can fall back to another Windows
-    // installer (e.g. the portable ZIP) when the active one is missing. Reuses
-    // the same slot-availability logic as the admin settings + health
-    // endpoints. Never throws — a storage failure is captured per slot.
+    // Per-kind availability so the server can resolve the active download to a
+    // slot that actually exists. Reuses the same slot-availability logic as the
+    // admin settings + health endpoints. Never throws — a storage failure is
+    // captured per slot (and collapses to `null` here only on a catastrophic
+    // failure).
     const installerSlots = await getDesktopInstallerSlots().catch((err) => {
       req.log.error({ err }, "Failed to compute desktop installer slot availability");
       return null;
     });
+
+    // External https:// URLs are served by a third party — we can't introspect
+    // their existence without a round-trip, so report them as available and let
+    // the browser handle any 404. They are returned exactly as configured.
+    if (!isLocalDownload) {
+      const installerObject = configuredKind
+        ? await getDesktopInstallerMetadata(configuredKind).catch((err) => {
+            req.log.error({ err }, "Failed to read desktop installer metadata from App Storage");
+            return null;
+          })
+        : null;
+      return res.json({
+        version,
+        downloadUrl: rawUrl,
+        fileName: rawUrl.split("/").pop() ?? "LabTrax-Setup.exe",
+        releaseNotes,
+        installerObject,
+        available: true,
+        fileFound: true,
+        installerSlots,
+      });
+    }
+
+    // Locally-served /downloads/ path: make the server authoritative about
+    // which installer the client downloads. Pick the best *available* slot so
+    // the link is never dead. Preference: the configured/active kind first,
+    // then the portable ZIP, then the macOS DMG.
+    const preference: DesktopInstallerKind[] = [];
+    for (const k of [configuredKind, "zip", "dmg"] as (DesktopInstallerKind | null)[]) {
+      if (k && !preference.includes(k)) preference.push(k);
+    }
+    const chosenKind =
+      installerSlots !== null
+        ? preference.find((k) => installerSlots[k]?.available === true) ?? null
+        : null;
+
+    if (!chosenKind) {
+      // Nothing is uploaded (or storage is unreachable). Return fileFound:false
+      // with NO usable URL so the client shows the "not uploaded yet" state
+      // instead of sending the browser to a dead /downloads/* link.
+      return res.json({
+        version,
+        downloadUrl: null,
+        fileName: null,
+        releaseNotes,
+        installerObject: null,
+        available: false,
+        fileFound: false,
+        installerSlots,
+      });
+    }
+
+    const chosen = getDesktopInstallerDownloadInfo(chosenKind);
+    const chosenSlot = installerSlots?.[chosenKind] ?? null;
+    const installerObject =
+      chosenSlot && chosenSlot.available && chosenSlot.uploadedAt
+        ? { size: chosenSlot.size ?? 0, uploadedAt: chosenSlot.uploadedAt }
+        : null;
     return res.json({
       version,
-      downloadUrl: rawUrl,
-      fileName,
+      downloadUrl: chosen.downloadUrl,
+      fileName: chosen.fileName,
       releaseNotes,
       installerObject,
-      available,
-      fileFound,
+      available: true,
+      fileFound: true,
       installerSlots,
     });
   });
