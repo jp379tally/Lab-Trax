@@ -1197,8 +1197,8 @@ export async function registerRoutes(): Promise<IRouter> {
       const needle = q.toLowerCase();
       const matches = allLabs
         .filter((lab) => {
-          const haystack = `${lab.name} ${lab.displayName ?? ""} ${lab.city ?? ""}`
-            .toLowerCase();
+          const haystack =
+            `${lab.name} ${lab.displayName ?? ""} ${lab.addressLine1 ?? ""} ${lab.city ?? ""} ${lab.state ?? ""} ${lab.zip ?? ""}`.toLowerCase();
           return haystack.includes(needle);
         })
         .slice(0, 20)
@@ -1206,8 +1206,11 @@ export async function registerRoutes(): Promise<IRouter> {
           id: lab.id,
           name: lab.name,
           displayName: lab.displayName || lab.name,
+          addressLine1: lab.addressLine1 || null,
           city: lab.city || null,
           state: lab.state || null,
+          zip: lab.zip || null,
+          phone: lab.phone || null,
         }));
       return res.json({ labs: matches });
     } catch (error: any) {

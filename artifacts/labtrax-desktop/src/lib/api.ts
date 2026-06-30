@@ -1156,6 +1156,7 @@ export interface LabGroup {
   practiceName: string;
   username: string;
   practiceAddress: string;
+  phone?: string | null;
   memberCount: number;
 }
 
@@ -1170,8 +1171,11 @@ export interface LabLookupResult {
   id: string;
   name: string;
   displayName: string;
+  addressLine1: string | null;
   city: string | null;
   state: string | null;
+  zip: string | null;
+  phone: string | null;
 }
 
 export async function lookupLabs(query: string): Promise<LabLookupResult[]> {

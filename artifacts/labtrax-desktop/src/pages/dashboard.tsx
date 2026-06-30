@@ -63,8 +63,11 @@ interface LabLookupResult {
   id: string;
   name: string;
   displayName: string;
+  addressLine1: string | null;
   city: string | null;
   state: string | null;
+  zip: string | null;
+  phone: string | null;
 }
 
 interface MyJoinRequest {
@@ -282,7 +285,9 @@ export function JoinLabCard() {
               </li>
             )}
             {labs.map((lab) => {
-              const location = [lab.city, lab.state].filter(Boolean).join(", ");
+              const location = [lab.addressLine1, lab.city, lab.state, lab.zip]
+                .filter(Boolean)
+                .join(", ");
               const sending =
                 sendRequestMutation.isPending && selectedLabId === lab.id;
               return (
@@ -297,6 +302,11 @@ export function JoinLabCard() {
                     {location && (
                       <div className="text-xs text-muted-foreground truncate">
                         {location}
+                      </div>
+                    )}
+                    {lab.phone && (
+                      <div className="text-xs text-muted-foreground truncate">
+                        {lab.phone}
                       </div>
                     )}
                   </div>

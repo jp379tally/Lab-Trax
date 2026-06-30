@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 /**
- * Component tests for the SignupWizard "lab_path" fork (Task #2595).
+ * Component tests for the SignupWizard lab account-category flow.
  *
  * Background: the API server has a backend unit test asserting a lab employee
  * can register with no organization/membership (account-only signup). But that
@@ -9,15 +9,18 @@
  * accidentally sending `practiceName` or `createOrganization: true` on the
  * "Join" path, which would silently re-create placeholder labs).
  *
- * Invariants protected here:
+ * The signup wizard now asks ONE account-category question with three intents
+ * (Join an existing lab / Create a new lab / Dental provider). Invariants
+ * protected here:
  *  - Choosing "Join an existing lab" sends `createOrganization: false` and omits
  *    `practiceName` / `licenseNumber` / `practiceAddress` / `practicePhone`.
  *  - Choosing "Create a new lab" sends the full lab payload
  *    (`createOrganization: true`, lab name as `practiceName`, license, address,
  *    phone).
- *  - The two forks drive different step sequences: the JOIN path skips the
- *    "Lab details" step (LAB_STEPS_JOIN, 10 steps) while the CREATE path
- *    includes it (LAB_STEPS_CREATE, 11 steps).
+ *  - The two intents drive different step sequences: the JOIN path is the
+ *    collapsed lab-search → email-verify → finish flow (LAB_STEPS_JOIN, 6 steps,
+ *    no role/plan/lab-details steps) while the CREATE path keeps the full lab
+ *    onboarding (LAB_STEPS_CREATE, 10 steps) including the "Lab details" step.
  */
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -78,8 +81,11 @@ function setValue(input: HTMLInputElement, value: string) {
   fireEvent.change(input, { target: { value } });
 }
 
-/** Step 1–3 are identical for both forks: welcome → credentials → user_type → lab_path. */
-async function advanceToLabPath() {
+/**
+ * Steps 1–3 are identical for every intent: welcome → credentials →
+ * user_type (the single 3-choice account-category question).
+ */
+async function advanceToAccountCategory() {
   clickButton("Get Started →");
 
   setValue(inputForLabel("Username"), "labuser");
@@ -89,41 +95,7 @@ async function advanceToLabPath() {
   clickButton("Continue");
 
   // Username availability check resolves → user_type step.
-  await screen.findByText("I am a…");
-  fireEvent.click(screen.getByText("Dental Laboratory"));
-
-  await screen.findByText("Set up your lab access");
-}
-
-/** email_verify → updates_opt_in → role_select → join_group → plan_select → hipaa → submit. */
-async function finishAfterEmailVerify() {
-  await screen.findByText("Verify your email");
-  const codeInput = document.querySelector(
-    'input[inputmode="numeric"]',
-  ) as HTMLInputElement;
-  setValue(codeInput, "123456");
-  clickButton("Verify");
-
-  // updates_opt_in
-  await screen.findByText("Case updates");
-  clickButton("No thanks");
-
-  // role_select
-  await screen.findByText("Account role");
-  fireEvent.click(screen.getByText("User"));
-
-  // join_group → skip
-  await screen.findByText("Join an existing lab");
-  clickButton("Skip for now");
-
-  // plan_select (plans load resolves to empty list) → continue
-  await screen.findByText("Choose your plan");
-  await waitFor(() => clickButton("Continue"));
-
-  // hipaa_disclaimer
-  await screen.findByText("HIPAA notice");
-  fireEvent.click(screen.getByRole("checkbox"));
-  clickButton("Accept & Create Account");
+  await screen.findByText("Let's get you set up");
 }
 
 // ─── Setup ───────────────────────────────────────────────────────────────────
@@ -154,21 +126,39 @@ function renderWizard() {
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe("SignupWizard — lab_path fork", () => {
-  it("JOIN path: account-only payload (createOrganization:false, no lab/practice fields) and LAB_STEPS_JOIN sequence", async () => {
+describe("SignupWizard — lab account-category flow", () => {
+  it("JOIN path: collapsed lab-search → verify → finish, account-only payload (createOrganization:false, no lab/practice fields)", async () => {
     const { registerMock } = renderWizard();
 
-    await advanceToLabPath();
+    await advanceToAccountCategory();
 
-    // Choosing "Join" must skip the "Lab details" step entirely and go straight
-    // to email verification — this pins the LAB_STEPS_JOIN sequence.
-    fireEvent.click(screen.getByText("Join an existing lab / I've been invited"));
-    await screen.findByText("Verify your email");
+    // Choosing "Join an existing lab" goes straight to the lab-search step and
+    // pins LAB_STEPS_JOIN (6 steps; join_group is step 4 of 6).
+    fireEvent.click(screen.getByText("Join an existing lab"));
+    await screen.findByText("Find your lab");
     expect(screen.queryByText("Lab details")).not.toBeInTheDocument();
-    // LAB_STEPS_JOIN has 10 steps; email_verify is step 5 of 10.
-    expect(screen.getByLabelText("Step 5 of 10")).toBeInTheDocument();
+    expect(screen.getByLabelText("Step 4 of 6")).toBeInTheDocument();
 
-    await finishAfterEmailVerify();
+    // Continue without selecting a lab → email verification.
+    clickButton("Continue without selecting");
+    await screen.findByText("Verify your email");
+    // email_verify is step 5 of 6.
+    expect(screen.getByLabelText("Step 5 of 6")).toBeInTheDocument();
+
+    const codeInput = document.querySelector(
+      'input[inputmode="numeric"]',
+    ) as HTMLInputElement;
+    setValue(codeInput, "123456");
+    clickButton("Verify");
+
+    // The JOIN path skips updates_opt_in / role_select / plan_select and goes
+    // straight to the HIPAA finish step.
+    await screen.findByText("HIPAA notice");
+    expect(screen.queryByText("Case updates")).not.toBeInTheDocument();
+    expect(screen.queryByText("Account role")).not.toBeInTheDocument();
+    expect(screen.queryByText("Choose your plan")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox"));
+    clickButton("Accept & Create Account");
 
     await waitFor(() => expect(registerMock).toHaveBeenCalledTimes(1));
     const payload = registerMock.mock.calls[0][0];
@@ -183,14 +173,13 @@ describe("SignupWizard — lab_path fork", () => {
   it("CREATE path: full lab payload (createOrganization:true, lab name/license/address/phone) and LAB_STEPS_CREATE sequence", async () => {
     const { registerMock } = renderWizard();
 
-    await advanceToLabPath();
+    await advanceToAccountCategory();
 
-    // Choosing "Create" must show the "Lab details" step — this pins the
-    // LAB_STEPS_CREATE sequence (one step longer than JOIN).
+    // Choosing "Create a new lab" must show the "Lab details" step — this pins
+    // the LAB_STEPS_CREATE sequence (10 steps; lab_info is step 4 of 10).
     fireEvent.click(screen.getByText("Create a new lab"));
     await screen.findByText("Lab details");
-    // LAB_STEPS_CREATE has 11 steps; lab_info is step 5 of 11.
-    expect(screen.getByLabelText("Step 5 of 11")).toBeInTheDocument();
+    expect(screen.getByLabelText("Step 4 of 10")).toBeInTheDocument();
 
     setValue(inputForLabel("Lab Name"), "Acme Dental Lab");
     setValue(inputForLabel("Street Address"), "123 Main St");
@@ -202,7 +191,30 @@ describe("SignupWizard — lab_path fork", () => {
     setValue(inputForLabel("Lab License Number"), "LAB123");
     clickButton("Continue");
 
-    await finishAfterEmailVerify();
+    // email_verify → updates_opt_in → role_select → join_group → plan_select →
+    // hipaa → submit.
+    await screen.findByText("Verify your email");
+    const codeInput = document.querySelector(
+      'input[inputmode="numeric"]',
+    ) as HTMLInputElement;
+    setValue(codeInput, "123456");
+    clickButton("Verify");
+
+    await screen.findByText("Case updates");
+    clickButton("No thanks");
+
+    await screen.findByText("Account role");
+    fireEvent.click(screen.getByText("User"));
+
+    await screen.findByText("Join an existing lab");
+    clickButton("Skip for now");
+
+    await screen.findByText("Choose your plan");
+    await waitFor(() => clickButton("Continue"));
+
+    await screen.findByText("HIPAA notice");
+    fireEvent.click(screen.getByRole("checkbox"));
+    clickButton("Accept & Create Account");
 
     await waitFor(() => expect(registerMock).toHaveBeenCalledTimes(1));
     const payload = registerMock.mock.calls[0][0];

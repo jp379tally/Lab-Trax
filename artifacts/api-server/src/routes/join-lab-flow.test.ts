@@ -266,7 +266,7 @@ maybe("Join-a-lab flow (db integration)", () => {
 
   // ── create → reject removes the pending request ───────────────────────────
 
-  it("an admin can reject a pending request → it disappears from lab-team and mine/pending; a non-admin cannot reject (403)", async () => {
+  it("an admin can reject a pending request → it disappears from lab-team's pending list and surfaces to the requester as a recent decline; a non-admin cannot reject (403)", async () => {
     const { access: ownerAccess } = await makeSession(ownerId);
     const labId = await createOwnedLab(ownerAccess);
     const { access: requesterAccess } = await makeSession(requesterId);
@@ -327,14 +327,22 @@ maybe("Join-a-lab flow (db integration)", () => {
       "a rejected request must not linger in the admin's pending list"
     ).toBe(false);
 
-    // It no longer appears in the requester's own pending list.
+    // The requester still sees it in their own list, now marked "rejected", so
+    // the waiting card can show an explicit "your request was declined" message
+    // instead of silently resetting to search. Recently-resolved decisions are
+    // surfaced for RECENT_REJECTED_WINDOW_MS by the mine/pending endpoint.
     const mine = await request(appMod.default)
       .get("/api/organizations/join-requests/mine/pending")
       .set("Authorization", `Bearer ${requesterAccess}`);
     expect(mine.status).toBe(200);
+    const mineEntry = (mine.body.data ?? []).find(
+      (r: any) => r.id === joinRequestId
+    );
     expect(
-      (mine.body.data ?? []).some((r: any) => r.id === joinRequestId)
-    ).toBe(false);
+      mineEntry,
+      "a recently rejected request must surface so the requester sees the decline"
+    ).toBeTruthy();
+    expect(mineEntry.status).toBe("rejected");
   });
 
   // ── lab-team: pendingJoinRequests visibility ──────────────────────────────

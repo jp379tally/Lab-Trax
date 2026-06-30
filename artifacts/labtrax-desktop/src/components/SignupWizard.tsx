@@ -45,7 +45,6 @@ type Step =
   | "welcome"
   | "credentials"
   | "user_type"
-  | "lab_path"
   | "lab_info"
   | "license"
   | "practice_info"
@@ -60,10 +59,11 @@ type Step =
   | "plan_select"
   | "hipaa_disclaimer";
 
-// Explicit lab intent chosen on the `lab_path` step:
+// Explicit lab intent chosen on the single `user_type` account-category step:
 //  - "create" → create a brand-new lab organization (lab details required).
-//  - "join"   → account-only signup that waits for an invite/approval to an
-//               existing lab; no organization is created.
+//  - "join"   → join an existing lab: search for the lab, file a join request,
+//               then verify email and finish. No organization is created and no
+//               role/plan/lab-details steps are shown.
 type LabMode = "create" | "join";
 
 // Lab owner creating a new lab — collects lab details before verification.
@@ -71,7 +71,6 @@ const LAB_STEPS_CREATE: Step[] = [
   "welcome",
   "credentials",
   "user_type",
-  "lab_path",
   "lab_info",
   "email_verify",
   "updates_opt_in",
@@ -81,17 +80,14 @@ const LAB_STEPS_CREATE: Step[] = [
   "hipaa_disclaimer",
 ];
 
-// Lab employee joining an existing lab — skips lab details entirely.
+// Lab employee joining an existing lab — find-your-lab search → email verify →
+// finish. No role, plan, or lab-details steps.
 const LAB_STEPS_JOIN: Step[] = [
   "welcome",
   "credentials",
   "user_type",
-  "lab_path",
-  "email_verify",
-  "updates_opt_in",
-  "role_select",
   "join_group",
-  "plan_select",
+  "email_verify",
   "hipaa_disclaimer",
 ];
 
@@ -129,8 +125,7 @@ const PROVIDER_STEPS_WITH_UPDATES: Step[] = [
 const STEP_HEADINGS: Record<Step, { title: string; sub: string }> = {
   welcome: { title: "Welcome to LabTrax", sub: "Your dental laboratory management platform." },
   credentials: { title: "Create your account", sub: "Pick a username, email, and password." },
-  user_type: { title: "I am a…", sub: "This sets up your workspace correctly." },
-  lab_path: { title: "Set up your lab access", sub: "Create a new lab or join one that already exists." },
+  user_type: { title: "Let's get you set up", sub: "Pick the option that describes you." },
   lab_info: { title: "Lab details", sub: "Tell us about your lab." },
   license: { title: "License number", sub: "Required for verification." },
   practice_info: { title: "Practice details", sub: "Tell us about your practice." },
@@ -297,7 +292,10 @@ export default function SignupWizard({ onCancel }: Props) {
               organizationId: r.id,
               practiceName: r.displayName || r.name,
               username: "",
-              practiceAddress: [r.city, r.state].filter(Boolean).join(", "),
+              practiceAddress: [r.addressLine1, r.city, r.state, r.zip]
+                .filter(Boolean)
+                .join(", "),
+              phone: r.phone,
               memberCount: 0,
             })),
           );
@@ -417,31 +415,22 @@ export default function SignupWizard({ onCancel }: Props) {
     }
   }
 
-  function selectUserType(t: "lab" | "provider") {
-    setUserType(t);
+  // Single account-category question. One choice picks both the user type and
+  // (for labs) the create-vs-join intent, then routes to the first real step:
+  //  - join     → find-your-lab search (join_group)
+  //  - create   → lab details (lab_info)
+  //  - provider → license
+  function selectAccountCategory(cat: "join" | "create" | "provider") {
     setError(null);
-    if (t === "lab") {
-      // Defer the create-vs-join decision to the dedicated fork step.
+    if (cat === "provider") {
+      setUserType("provider");
       setLabMode(null);
-      setStep("lab_path");
-    } else {
       setStep("license");
+      return;
     }
-  }
-
-  // Lab fork: create a brand-new lab → collect lab details.
-  function selectLabCreate() {
-    setError(null);
-    setLabMode("create");
-    setStep("lab_info");
-  }
-
-  // Lab fork: join an existing lab / invited → account-only, skip lab details
-  // and go straight to email verification.
-  function selectLabJoin() {
-    setError(null);
-    setLabMode("join");
-    void sendEmail();
+    setUserType("lab");
+    setLabMode(cat);
+    setStep(cat === "create" ? "lab_info" : "join_group");
   }
 
   async function sendEmail() {
@@ -524,7 +513,8 @@ export default function SignupWizard({ onCancel }: Props) {
     try {
       await verifyEmailCode(email.trim(), emailCode);
       setBusy(false);
-      setStep("updates_opt_in");
+      // Lab joiners finish right after verification — no SMS/role/plan steps.
+      setStep(isLabJoinFlow ? "hipaa_disclaimer" : "updates_opt_in");
     } catch (err) {
       fail((err as Error)?.message || "Verification failed.");
     }
@@ -684,7 +674,14 @@ export default function SignupWizard({ onCancel }: Props) {
   }
 
   const pwReq = validatePassword(password);
-  const heading = STEP_HEADINGS[step];
+  // Lab employees joining an existing lab reuse the join_group step as their
+  // first real step (find-your-lab), so it gets a clearer heading than the
+  // optional "also join a lab" variant shown to creators/providers.
+  const isLabJoinFlow = userType === "lab" && labMode === "join";
+  const heading =
+    step === "join_group" && isLabJoinFlow
+      ? { title: "Find your lab", sub: "Search for your lab and send a request to join." }
+      : STEP_HEADINGS[step];
 
   return (
     <div className="w-full max-w-[460px]">
@@ -883,34 +880,19 @@ export default function SignupWizard({ onCancel }: Props) {
           <div className="space-y-3">
             <button
               type="button"
-              onClick={() => selectUserType("lab")}
+              onClick={() => selectAccountCategory("join")}
               className="w-full text-left p-4 rounded-md border border-input hover:border-primary hover:bg-muted/50 transition-colors"
             >
-              <div className="text-sm font-semibold">Dental Laboratory</div>
+              <div className="text-sm font-semibold">Join an existing lab</div>
               <div className="text-xs text-muted-foreground mt-1">
-                I manage cases from dental providers.
+                I work at a lab that already uses LabTrax. Find it and request to
+                join.
               </div>
             </button>
             <button
               type="button"
-              onClick={() => selectUserType("provider")}
+              onClick={() => selectAccountCategory("create")}
               className="w-full text-left p-4 rounded-md border border-input hover:border-primary hover:bg-muted/50 transition-colors"
-            >
-              <div className="text-sm font-semibold">Dental Provider</div>
-              <div className="text-xs text-muted-foreground mt-1">
-                I'm a dentist sending cases to a lab.
-              </div>
-            </button>
-          </div>
-        )}
-
-        {step === "lab_path" && (
-          <div className="space-y-3">
-            <button
-              type="button"
-              onClick={selectLabCreate}
-              disabled={busy}
-              className="w-full text-left p-4 rounded-md border border-input hover:border-primary hover:bg-muted/50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
               <div className="text-sm font-semibold">Create a new lab</div>
               <div className="text-xs text-muted-foreground mt-1">
@@ -919,16 +901,12 @@ export default function SignupWizard({ onCancel }: Props) {
             </button>
             <button
               type="button"
-              onClick={selectLabJoin}
-              disabled={busy}
-              className="w-full text-left p-4 rounded-md border border-input hover:border-primary hover:bg-muted/50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              onClick={() => selectAccountCategory("provider")}
+              className="w-full text-left p-4 rounded-md border border-input hover:border-primary hover:bg-muted/50 transition-colors"
             >
-              <div className="text-sm font-semibold">
-                Join an existing lab / I've been invited
-              </div>
+              <div className="text-sm font-semibold">Dental provider</div>
               <div className="text-xs text-muted-foreground mt-1">
-                Create your account now. A lab admin invites or approves you to
-                see the lab dashboard.
+                I'm a dentist sending cases to a lab.
               </div>
             </button>
           </div>
@@ -1393,9 +1371,11 @@ export default function SignupWizard({ onCancel }: Props) {
         {step === "join_group" && (
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              {userType === "lab"
-                ? "Optional. Browse registered labs you'd like to join as a member."
-                : "Optional. Browse registered labs and request to join one. The lab admin will need to approve."}
+              {isLabJoinFlow
+                ? "Search for your lab below. A lab admin approves your request before you can see the dashboard."
+                : userType === "lab"
+                  ? "Optional. Browse registered labs you'd like to join as a member."
+                  : "Optional. Browse registered labs and request to join one. The lab admin will need to approve."}
             </p>
             <div>
               <input
@@ -1429,6 +1409,11 @@ export default function SignupWizard({ onCancel }: Props) {
                           {g.practiceAddress}
                         </div>
                       )}
+                      {g.phone && (
+                        <div className="text-xs text-muted-foreground truncate">
+                          {g.phone}
+                        </div>
+                      )}
                     </button>
                   );
                 })}
@@ -1450,13 +1435,26 @@ export default function SignupWizard({ onCancel }: Props) {
             )}
             <button
               type="button"
+              disabled={busy}
               onClick={() => {
                 setError(null);
-                setStep("plan_select");
+                // Lab joiners advance to email verification (then finish). For
+                // creators/providers this stays the optional "also join" step.
+                if (isLabJoinFlow) {
+                  void sendEmail();
+                } else {
+                  setStep("plan_select");
+                }
               }}
               className={primaryBtnClass}
             >
-              {joinTargetOrgId ? "Continue with join request" : "Skip for now"}
+              {isLabJoinFlow
+                ? joinTargetOrgId
+                  ? "Continue with join request"
+                  : "Continue without selecting"
+                : joinTargetOrgId
+                  ? "Continue with join request"
+                  : "Skip for now"}
             </button>
           </div>
         )}
