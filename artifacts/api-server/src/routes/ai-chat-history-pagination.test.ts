@@ -24,7 +24,7 @@
  * afterAll so the suite is safe against a shared dev DB. Gated on DATABASE_URL,
  * same as the other route integration suites.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -128,6 +128,14 @@ maybe("AI chat-history cursor pagination (db integration)", () => {
 
     labToken = await makeSession(labUserId);
     await seedHistory();
+  });
+
+  // Re-mint the shared session token before every test so a backup-restore
+  // TRUNCATE (or any session-clearing path) that fires between beforeAll and a
+  // test body cannot silently invalidate it and cascade 401s across the suite.
+  beforeEach(async () => {
+    if (!SHOULD_RUN) return;
+    labToken = await makeSession(labUserId);
   });
 
   afterAll(async () => {

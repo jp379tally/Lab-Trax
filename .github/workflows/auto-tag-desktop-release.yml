@@ -1,24 +1,21 @@
 name: Auto-tag Desktop release on merge to main
 
-# Runs on every push to main that touches code which can affect the LabTrax
-# Desktop build. Bumps the patch version in artifacts/labtrax-desktop/package.json,
-# commits the bump back to main, and pushes a new `vX.Y.Z` tag. That tag push
-# triggers the existing `Release` workflow (.github/workflows/release.yml),
-# which builds + signs + publishes the installer.
+# Manually-triggered helper that bumps the patch version in
+# artifacts/labtrax-desktop/package.json, commits the bump back to main, and
+# pushes a new `vX.Y.Z` tag marking the release point. Building + signing +
+# publishing the installer is done by the `Release` workflow
+# (.github/workflows/release.yml), which is now workflow_dispatch-only and must
+# be started manually — the tag this workflow pushes no longer auto-triggers it.
 #
 # Why a separate workflow (vs. modifying release.yml directly)?
 #  - release.yml is already complex (build-number allocation, signing,
-#    notarization, atomic publish). Keeping the tag-only path out of band
-#    lets us reason about each concern in isolation, and lets release.yml
-#    keep being usable by hand-pushed tags during incident response.
+#    notarization, atomic publish). Keeping the tag/version bump out of band
+#    lets us reason about each concern in isolation.
 #
 # Why pushes need BUILD_BOT_TOKEN:
-#  - GitHub Actions deliberately does NOT trigger workflows from refs
-#    created using the default GITHUB_TOKEN. If the tag is pushed with
-#    GITHUB_TOKEN, release.yml will NOT fire and nothing gets built.
-#    BUILD_BOT_TOKEN is a fine-grained PAT (Contents: Read & Write +
-#    bypass branch protection) already configured in the repo and reused
-#    here for that side-effect.
+#  - The bump commit + tag must be pushed to a branch that may have protection
+#    rules. BUILD_BOT_TOKEN is a fine-grained PAT (Contents: Read & Write +
+#    bypass branch protection) already configured in the repo and reused here.
 
 on:
   # Manual trigger only. Auto-tagging on every push was disabled because:
@@ -27,8 +24,9 @@ on:
   #     resync after every activation.
   #  2. release.yml fired automatically and failed loudly (no signing secrets
   #     configured), flooding the inbox with GitHub Actions failure emails.
-  # To cut a new desktop release: run this workflow manually from the
-  # GitHub Actions tab, OR push a `v*` tag directly.
+  # To stamp a new desktop release point: run this workflow manually from the
+  # GitHub Actions tab. It bumps the version and pushes the `v*` tag; then run
+  # the `Release` workflow manually to actually build, sign, and publish.
   workflow_dispatch:
 
 permissions:
@@ -154,17 +152,16 @@ jobs:
           "
 
           git add artifacts/labtrax-desktop/package.json
-          # [skip ci] on the bump commit prevents this workflow from
-          # re-triggering itself; the tag push will still trigger release.yml.
+          # [skip ci] keeps the bump commit from re-triggering any push-based CI.
           git commit -m "chore(desktop): release ${TAG} [skip ci]"
           git tag -a "${TAG}" -m "LabTrax Desktop ${TAG}"
 
-          # Push the bump first, then the tag. Order matters: release.yml
-          # checks out the tag's tree and reads package.json from it, so
-          # the tag must point at a commit whose package.json carries the
-          # new version.
+          # Push the bump first, then the tag. Order matters: when the Release
+          # workflow is later run against this tag, it checks out the tag's tree
+          # and reads package.json from it, so the tag must point at a commit
+          # whose package.json carries the new version.
           git push origin "HEAD:${GITHUB_REF_NAME}"
           git push origin "${TAG}"
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "::notice::Created and pushed ${TAG} — release.yml will now build and publish."
+          echo "::notice::Created and pushed ${TAG} — run the Release workflow manually to build and publish."

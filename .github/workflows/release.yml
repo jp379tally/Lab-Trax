@@ -48,8 +48,9 @@ jobs:
           echo "macos=${MACOS_NUM}"    >> "$GITHUB_OUTPUT"
           echo "Allocated: Windows=${WINDOWS_NUM}, macOS=${MACOS_NUM} (was ${CURRENT})"
 
-          # The workflow is triggered by a tag push, so HEAD is detached.
-          # Switch to main to commit the updated counter.
+          # This workflow runs via manual workflow_dispatch. Switch to main so
+          # the updated counter is committed to the branch (the dispatch ref may
+          # be a tag or detached HEAD depending on how it was launched).
           git fetch origin main
           git checkout -B main origin/main
 
