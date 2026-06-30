@@ -106,15 +106,83 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
   // unread/last-message state without taking a reactive dependency on it.
   const conversationsRef = useRef<ConversationSummary[]>([]);
   conversationsRef.current = conversations;
+  // Tracks the id of the latest message the user has actually viewed in each
+  // conversation *this session*. Used by refreshConversations to reconcile a
+  // server row that is still unread for a conversation the user already read
+  // (a previous mark-read that failed to persist) — but only when the latest
+  // message still matches what the user saw, so a genuinely new message that
+  // arrived after the last view is left as unread.
+  const viewedLastMessageRef = useRef<Map<string, string>>(new Map());
+  // Per-conversation guard so concurrent open + post-fetch markRead don't fire
+  // duplicate read POSTs while one is still retrying.
+  const readInflightRef = useRef<Set<string>>(new Set());
+
+  // Durably persist the server read state for a conversation. apiFetch already
+  // refreshes the access token and retries once on a 401, so an expired token
+  // at this moment self-corrects. For other transient failures we retry with
+  // backoff instead of swallowing the error — previously a dropped failure left
+  // the server unread while the local badge optimistically cleared, so the
+  // count reappeared on the next login. A final failure is surfaced (logged);
+  // the next refreshConversations reconcile retries it if still needed.
+  const persistRead = useCallback(
+    async (conversationId: string, attempt = 0): Promise<void> => {
+      if (attempt === 0) {
+        if (readInflightRef.current.has(conversationId)) return;
+        readInflightRef.current.add(conversationId);
+      }
+      const MAX_ATTEMPTS = 4;
+      try {
+        await apiFetch(`/messenger/conversations/${conversationId}/read`, {
+          method: "POST",
+        });
+        readInflightRef.current.delete(conversationId);
+      } catch (err) {
+        if (attempt < MAX_ATTEMPTS) {
+          const delay = Math.min(1000 * 2 ** attempt, 8000);
+          setTimeout(() => {
+            void persistRead(conversationId, attempt + 1);
+          }, delay);
+        } else {
+          readInflightRef.current.delete(conversationId);
+          console.warn(
+            `[messenger] failed to persist read state for conversation ${conversationId} after ${MAX_ATTEMPTS + 1} attempts`,
+            err
+          );
+        }
+      }
+    },
+    []
+  );
 
   const refreshConversations = useCallback(async () => {
     try {
       const data = await apiFetch<ConversationSummary[]>("/messenger/conversations");
       setConversations(data);
+      // Reconcile: a conversation the user already viewed this session that
+      // the server still reports as unread means an earlier mark-read never
+      // persisted. Re-fire the read call (and optimistically clear the badge)
+      // — but only when the latest message is the one the user actually saw,
+      // so a new message that arrived after the last view stays unread.
+      const toReconcile = data
+        .filter((c) => {
+          if ((c.unreadCount ?? 0) <= 0) return false;
+          const viewedId = viewedLastMessageRef.current.get(c.id);
+          return !!viewedId && !!c.lastMessage && c.lastMessage.id === viewedId;
+        })
+        .map((c) => c.id);
+      if (toReconcile.length > 0) {
+        const reconcileSet = new Set(toReconcile);
+        setConversations((prev) =>
+          prev.map((c) =>
+            reconcileSet.has(c.id) ? { ...c, unreadCount: 0 } : c
+          )
+        );
+        for (const id of toReconcile) void persistRead(id);
+      }
     } catch {
       // ignore
     }
-  }, []);
+  }, [persistRead]);
 
   useEffect(() => {
     if (!user) return;
@@ -305,27 +373,26 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
     // is opened, decoupled from the chat panel's later post-fetch markRead. The
     // panel's fetch can be skipped (MAX_OPEN_PANELS cap, opened minimized) or
     // fail, which previously left the server unread and made the badge/
-    // notification reappear on the next login. Guard against redundant calls
-    // when we already know the conversation has no unread messages.
+    // notification reappear on the next login. We always fire the read call
+    // (no "already read" skip): local unreadCount may have been optimistically
+    // zeroed by an *earlier failed* attempt, in which case skipping here would
+    // permanently strand the server as unread. persistRead is idempotent and
+    // de-duped, so re-firing on an already-read conversation is cheap.
     const conv = conversationsRef.current.find((c) => c.id === conversationId);
-    const alreadyRead = conv ? (conv.unreadCount ?? 0) === 0 : false;
-    if (!alreadyRead) {
-      apiFetch(`/messenger/conversations/${conversationId}/read`, {
-        method: "POST",
-      }).catch(() => {
-        /* ignore network errors */
+    if (conv?.lastMessage) {
+      viewedLastMessageRef.current.set(conversationId, conv.lastMessage.id);
+    }
+    void persistRead(conversationId);
+    // Also drive the other user's "Seen" indicator over the socket if we know
+    // the last message; the REST call above is the durable source of truth.
+    if (conv?.lastMessage) {
+      socketSend({
+        type: "mark_read",
+        payload: {
+          conversationId,
+          lastMessageId: conv.lastMessage.id,
+        },
       });
-      // Also drive the other user's "Seen" indicator over the socket if we know
-      // the last message; the REST call above is the durable source of truth.
-      if (conv?.lastMessage) {
-        socketSend({
-          type: "mark_read",
-          payload: {
-            conversationId,
-            lastMessageId: conv.lastMessage.id,
-          },
-        });
-      }
     }
     setConversations((prev) =>
       prev.map((c) =>
@@ -333,7 +400,7 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
       )
     );
     setInboxOpen(false);
-  }, [socketSend]);
+  }, [socketSend, persistRead]);
   // Keep the ref current on every render so the notification-click handler
   // (registered once on mount) always delegates to the latest callback.
   openConversationRef.current = openConversation;
@@ -371,26 +438,27 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
 
   const markRead = useCallback(
     (conversationId: string, lastMessageId: string) => {
+      // Record what the user has actually seen so a later refresh can reconcile
+      // a server row that wrongly stays unread (failed persist) without ever
+      // marking a newer, unseen message as read.
+      viewedLastMessageRef.current.set(conversationId, lastMessageId);
       // Send WS mark_read for real-time notification to the other user
       socketSend({
         type: "mark_read",
         payload: { conversationId, lastMessageId },
       });
-      // Also call the REST endpoint so the read state is persisted even if
-      // the WebSocket is not connected (prevents the badge from reappearing
-      // on the next login / refresh).
-      apiFetch(`/messenger/conversations/${conversationId}/read`, {
-        method: "POST",
-      }).catch(() => {
-        /* ignore network errors */
-      });
+      // Also persist the read state over REST so it survives even if the
+      // WebSocket is not connected. persistRead retries on transient failure
+      // and surfaces (rather than swallows) a final error, so the badge no
+      // longer reappears on the next login because a single attempt was lost.
+      void persistRead(conversationId);
       setConversations((prev) =>
         prev.map((c) =>
           c.id === conversationId ? { ...c, unreadCount: 0 } : c
         )
       );
     },
-    [socketSend]
+    [socketSend, persistRead]
   );
 
   const sendTypingStart = useCallback(
