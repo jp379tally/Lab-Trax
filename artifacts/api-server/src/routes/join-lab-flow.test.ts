@@ -251,6 +251,79 @@ maybe("Join-a-lab flow (db integration)", () => {
     ).toBe(false);
   });
 
+  // ── create → reject removes the pending request ───────────────────────────
+
+  it("an admin can reject a pending request → it disappears from lab-team and mine/pending; a non-admin cannot reject (403)", async () => {
+    const { access: ownerAccess } = await makeSession(ownerId);
+    const labId = await createOwnedLab(ownerAccess);
+    const { access: requesterAccess } = await makeSession(requesterId);
+
+    const create = await request(appMod.default)
+      .post(`/api/organizations/${labId}/join-requests`)
+      .set("Authorization", `Bearer ${requesterAccess}`)
+      .send({ requestedRole: "user", message: "Let me in." });
+    expect(create.status).toBe(201);
+    const joinRequestId: string = create.body.data.id;
+    expect(create.body.data.status).toBe("pending");
+
+    // A non-admin member of THIS lab cannot reject (role check, not membership).
+    const { db, organizationMemberships } = dbMod as any;
+    await db.insert(organizationMemberships).values({
+      labId,
+      userId: plainMemberId,
+      role: "user",
+      status: "active",
+      joinedAt: new Date(),
+    });
+    const memberSession = await makeSession(plainMemberId);
+    const rejectAsMember = await request(appMod.default)
+      .post(`/api/organizations/join-requests/${joinRequestId}/reject`)
+      .set("Authorization", `Bearer ${memberSession.access}`)
+      .send({});
+    expect(rejectAsMember.status).toBe(403);
+
+    // The request is still pending and still visible to the admin.
+    const labTeamBefore = await request(appMod.default)
+      .get("/api/auth/lab-team")
+      .set("Authorization", `Bearer ${ownerAccess}`);
+    expect(labTeamBefore.status).toBe(200);
+    expect(
+      (labTeamBefore.body.pendingJoinRequests ?? []).some(
+        (p: any) => p.id === joinRequestId
+      ),
+      "a still-pending request must be visible to the admin"
+    ).toBe(true);
+
+    // The admin rejects it.
+    const reject = await request(appMod.default)
+      .post(`/api/organizations/join-requests/${joinRequestId}/reject`)
+      .set("Authorization", `Bearer ${ownerAccess}`)
+      .send({});
+    expect(reject.status).toBe(200);
+    expect(reject.body.data.status).toBe("rejected");
+
+    // It no longer lingers in the admin's pending list.
+    const labTeamAfter = await request(appMod.default)
+      .get("/api/auth/lab-team")
+      .set("Authorization", `Bearer ${ownerAccess}`);
+    expect(labTeamAfter.status).toBe(200);
+    expect(
+      (labTeamAfter.body.pendingJoinRequests ?? []).some(
+        (p: any) => p.id === joinRequestId
+      ),
+      "a rejected request must not linger in the admin's pending list"
+    ).toBe(false);
+
+    // It no longer appears in the requester's own pending list.
+    const mine = await request(appMod.default)
+      .get("/api/organizations/join-requests/mine/pending")
+      .set("Authorization", `Bearer ${requesterAccess}`);
+    expect(mine.status).toBe(200);
+    expect(
+      (mine.body.data ?? []).some((r: any) => r.id === joinRequestId)
+    ).toBe(false);
+  });
+
   // ── lab-team: pendingJoinRequests visibility ──────────────────────────────
 
   it("GET /auth/lab-team returns pendingJoinRequests with requester identity + labName to the lab owner", async () => {
