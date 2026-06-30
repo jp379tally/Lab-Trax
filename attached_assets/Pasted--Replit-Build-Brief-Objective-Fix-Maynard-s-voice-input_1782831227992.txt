@@ -1,0 +1,162 @@
+### Replit Build Brief
+
+**Objective**
+Fix Maynard’s voice input and voice conversation features so the mic can successfully transcribe speech and the headset/conversation flow can speak responses again.
+
+**User-visible problem**
+Maynard opens normally, but voice fails. The screenshot shows the Maynard panel with the error: `Speech transcription failed. Please try again.` This means the UI is reaching the speech-to-text path, but the backend transcription call is failing.
+
+**Likely root cause**
+The backend audio routes are still using older hardcoded OpenAI audio models:
+
+* `artifacts/api-server/src/routes/ai-stt.ts` uses `model: "whisper-1"`
+* `artifacts/api-server/src/routes/ai-tts.ts` uses `model: "tts-1"`
+
+The repo already has comments elsewhere noting that older OpenAI model families have caused repeated Replit AI proxy breakages. The STT route catches the provider error and returns the exact screenshot message, so this is most likely an audio model/proxy compatibility failure, not a broken Maynard UI.
+
+OpenAI’s current speech-to-text docs list newer transcription models such as `gpt-4o-mini-transcribe` and `gpt-4o-transcribe`. The text-to-speech docs point to the newer GPT-4o mini TTS speech endpoint.
+
+**Exact areas to inspect/change**
+
+* `artifacts/api-server/src/routes/ai-stt.ts`
+* `artifacts/api-server/src/routes/ai-tts.ts`
+* `artifacts/api-server/src/lib/ai-openai-client.ts`
+* Maynard desktop client code that calls `/api/ai-stt` and `/api/ai-tts`
+* Existing tests:
+
+  * `artifacts/api-server/src/routes/ai-stt.test.ts`
+  * `artifacts/api-server/src/routes/ai-tts.test.ts`
+
+**Implementation plan**
+
+1. Update STT to use an env-configurable transcription model with a safe fallback chain:
+
+   * preferred: `AI_STT_MODEL` or `gpt-4o-mini-transcribe`
+   * fallback: `gpt-4o-transcribe`
+   * final fallback only if supported: `whisper-1`
+
+2. Update TTS similarly:
+
+   * preferred: `AI_TTS_MODEL` or the current supported Replit/OpenAI TTS model
+   * fallback to the legacy model only if the provider supports it
+
+3. Log provider errors with model name, MIME type, file size, and request ID, but do not expose secrets or raw provider errors to users.
+
+4. Preserve the existing multipart upload contract:
+
+   * `POST /api/ai-stt`
+   * field name: `audio`
+   * response: `{ ok: true, transcript }`
+
+5. Add tests proving fallback behavior:
+
+   * first model fails, second succeeds
+   * all models fail returns a useful structured error
+   * missing AI config still returns 503
+   * unsupported/empty audio still handled cleanly
+
+**Guardrails**
+
+* Do not change Maynard’s action-taking logic while fixing voice.
+* Do not remove auth or rate limits.
+* Do not expose API keys, raw provider payloads, or full stack traces to the browser.
+* Keep typing/text input working even if voice fails.
+* Keep the existing `/api/ai-agent` Maynard chat route untouched unless testing proves it is also failing.
+
+**Acceptance criteria**
+
+* Clicking the mic records audio and fills the input with a transcript.
+* Sending the transcribed prompt to Maynard works.
+* Headset/conversation mode can synthesize a spoken response.
+* If transcription fails, the app shows a more specific message such as “Voice transcription is temporarily unavailable. You can still type your message.”
+* Server logs identify which audio model failed.
+* `pnpm --filter @workspace/api-server run test -- src/routes/ai-stt.test.ts src/routes/ai-tts.test.ts` passes.
+* Run the broader protected workflow checks from `REGRESSION_GUARDRAILS.md` before release.
+
+### Copy-Ready Replit Prompt
+
+Please debug and fix Maynard voice input/conversation in LabTrax.
+
+Observed issue: Maynard loads, but using the mic fails with the UI error `Speech transcription failed. Please try again.` The screenshot shows the Maynard assistant panel working, but speech transcription fails. The user also reports Maynard still does not work for talk-to-text / conversation features.
+
+Likely root cause: the backend audio routes are hardcoded to older OpenAI audio models. Inspect:
+
+* `artifacts/api-server/src/routes/ai-stt.ts`
+* `artifacts/api-server/src/routes/ai-tts.ts`
+* `artifacts/api-server/src/lib/ai-openai-client.ts`
+* the desktop Maynard client code that calls `/api/ai-stt` and `/api/ai-tts`
+* tests in `artifacts/api-server/src/routes/ai-stt.test.ts` and `artifacts/api-server/src/routes/ai-tts.test.ts`
+
+The STT route currently uses `whisper-1` and returns the exact screenshot error from its catch block. Update STT to use an env-configurable supported transcription model with fallback, preferably `AI_STT_MODEL`, then `gpt-4o-mini-transcribe`, then `gpt-4o-transcribe`, and only use `whisper-1` as a final fallback if the provider supports it. Do the same for TTS with `AI_TTS_MODEL` and the currently supported Replit/OpenAI TTS model, falling back safely.
+
+Keep the existing API contracts intact:
+
+* `POST /api/ai-stt`
+* multipart field name `audio`
+* response `{ ok: true, transcript }`
+* `POST /api/ai-tts`
+* authenticated routes and rate limits stay in place
+
+Add structured logging that includes attempted model, audio MIME type, audio size, and safe error category. Do not expose secrets, raw provider payloads, or stack traces to the browser.
+
+Add or update tests so they cover:
+
+* happy-path transcription
+* first transcription model fails and fallback succeeds
+* all transcription models fail with a structured user-safe error
+* missing AI config returns 503
+* TTS happy path
+* TTS provider failure
+* TTS fallback if applicable
+
+Before finishing, run the relevant API tests and confirm Maynard still works with typed prompts even if voice is temporarily unavailable. Explain any tradeoffs or assumptions, especially if Replit AI Integrations supports a different audio model list than expected.
+
+### Debug Analysis
+
+**Primary root-cause hypothesis**
+Maynard’s voice layer is failing at the backend OpenAI audio route, not at the visible assistant panel. The screenshot error matches the catch block in `ai-stt.ts`, where any Whisper/provider exception becomes `Speech transcription failed. Please try again.`
+
+**Supporting evidence**
+
+* Maynard UI loads and shows suggestions, so the assistant shell is not completely broken.
+* The error appears after mic/transcription use, pointing to `/api/ai-stt`.
+* `ai-stt.ts` uses `whisper-1` directly.
+* `ai-tts.ts` uses `tts-1` directly.
+* The shared OpenAI client supports Replit’s `AI_INTEGRATIONS_OPENAI_BASE_URL`, so the problem is more likely model/proxy support than missing base URL.
+* OpenAI docs now list newer transcription models including `gpt-4o-mini-transcribe` and `gpt-4o-transcribe`.
+
+**Alternate hypotheses worth checking**
+
+* Browser recorded an unsupported audio MIME type, such as `audio/webm;codecs=opus`, though the server already strips codec params.
+* Replit secrets are missing or stale: `AI_INTEGRATIONS_OPENAI_API_KEY` or `AI_INTEGRATIONS_OPENAI_BASE_URL`.
+* CSRF/auth/session failure on the multipart request.
+* The desktop client is sending the wrong form field name instead of `audio`.
+* The user’s browser/device microphone permission is blocked, though the screenshot suggests a server-side transcription attempt completed and failed.
+
+**Why this fix is best**
+Changing the backend audio model selection and adding fallbacks addresses the failure where it occurs, keeps Maynard’s UI and agent behavior stable, and reduces future breakage when Replit/OpenAI model support changes again.
+
+Confidence: medium-high. The exact provider error is not visible in the screenshot, but the code path and error text line up closely.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce with browser dev tools open and confirm the failing request is `POST /api/ai-stt`.
+
+2. Check the response status/body and server logs for `[AI STT] Whisper transcription error`.
+
+3. Confirm Replit secrets exist:
+
+   * `AI_INTEGRATIONS_OPENAI_API_KEY`
+   * `AI_INTEGRATIONS_OPENAI_BASE_URL`
+
+4. Update `ai-stt.ts` to use a model fallback chain and log each failed model safely.
+
+5. Update `ai-tts.ts` the same way for spoken conversation output.
+
+6. Keep the frontend contract unchanged unless it is sending the wrong field name or MIME type.
+
+7. Update tests for fallback and failure behavior.
+
+8. Run the focused API tests, then run broader regression checks before release.
+
+Sources used: LabTrax GitHub repo files via the connected GitHub app; OpenAI speech-to-text docs at [https://developers.openai.com/api/docs/guides/speech-to-text](https://developers.openai.com/api/docs/guides/speech-to-text) and text-to-speech docs at [https://developers.openai.com/api/docs/guides/text-to-speech](https://developers.openai.com/api/docs/guides/text-to-speech).

@@ -1,0 +1,83 @@
+The new screenshot still points to the same failure: Chrome is trying to fetch `LabTrax-Setup.exe`, and the site is responding as if that file is not available. This is almost certainly not a user/browser problem. The live app is still offering a Windows EXE link whose backing file is missing or not reachable.
+
+### Replit Build Brief
+
+**Objective**
+Prevent users from hitting a dead Windows desktop download link.
+
+**User-visible problem**
+Clicking the desktop download starts `LabTrax-Setup.exe`, then Chrome says the file was not available on the site.
+
+**Likely root cause**
+`/downloads/LabTrax-Setup.exe` is still configured as the Windows download URL, but the actual `desktop-installer/LabTrax-Setup.exe` object is missing from App Storage or failed to publish.
+
+**Best fix**
+Add fallback logic so the app downloads `LabTrax-Windows-Portable.zip` whenever the EXE is missing. Separately, publish the real EXE when available.
+
+**Code areas**
+
+* `artifacts/api-server/src/app.ts`
+* `artifacts/api-server/src/lib/desktop-installer-storage.ts`
+* Admin/Desktop App settings UI
+* Any code referencing `/downloads/LabTrax-Setup.exe`
+* Any code referencing `desktop-installer`, `downloadUrl`, or `LabTrax-Windows-Portable.zip`
+
+**Implementation plan**
+
+1. Add a server-side availability/status check for desktop installers: EXE, ZIP, DMG.
+2. Update the Windows download UI to prefer EXE only if the EXE exists.
+3. If EXE is missing and ZIP exists, automatically use `/downloads/LabTrax-Windows-Portable.zip`.
+4. If neither exists, show a clear “Desktop installer not uploaded yet” message.
+5. Keep the existing `/downloads/LabTrax-Setup.exe` route unchanged for when the EXE is properly published.
+6. Add a regression check so the Windows download button never points at a missing file.
+
+**Acceptance criteria**
+
+* If `LabTrax-Setup.exe` exists, Windows download uses the EXE.
+* If EXE is missing but ZIP exists, Windows download uses the ZIP.
+* If both are missing, users see a clear message instead of Chrome’s failed download bubble.
+* Existing macOS and auto-update routes still work.
+
+### Copy-Ready Replit Prompt
+
+Fix the LabTrax desktop download so users never hit a dead Windows installer link.
+
+Current symptom: the app tries to download `LabTrax-Setup.exe`, but Chrome reports “File wasn’t available on site.” The likely cause is that `/downloads/LabTrax-Setup.exe` is being offered while the backing App Storage object `desktop-installer/LabTrax-Setup.exe` is missing or unpublished.
+
+Please implement availability-aware Windows desktop download behavior.
+
+Inspect:
+
+* `artifacts/api-server/src/app.ts`
+* `artifacts/api-server/src/lib/desktop-installer-storage.ts`
+* Admin/Desktop App settings UI
+* Any references to `/downloads/LabTrax-Setup.exe`
+* Any references to `/downloads/LabTrax-Windows-Portable.zip`
+* Any `downloadUrl` or `desktop-installer` settings code
+
+Desired behavior:
+
+1. Prefer `/downloads/LabTrax-Setup.exe` only when the EXE object exists.
+2. If the EXE is missing but `/downloads/LabTrax-Windows-Portable.zip` exists, automatically use the ZIP instead.
+3. If neither exists, do not trigger a browser download. Show a clear message that the desktop installer has not been uploaded.
+4. Keep the existing EXE route intact so the real installer works once published.
+5. Add or update tests/regression checks so the UI cannot render a dead Windows download link.
+
+Also verify the publish path:
+
+* Confirm whether `desktop-installer/LabTrax-Setup.exe` exists in App Storage.
+* Confirm whether `desktop-installer/LabTrax-Windows-Portable.zip` exists.
+* Confirm the GitHub Actions publish step has `PLATFORM_ADMIN_SECRET` and `PUBLISH_API_BASE_URL`.
+
+Before finishing, test:
+
+* EXE present → Windows button downloads EXE.
+* EXE missing, ZIP present → Windows button downloads ZIP.
+* Both missing → clear message, no dead download.
+* macOS download and `/downloads/latest.yml` still work.
+
+### Debug Analysis
+
+This is still the same failure mode as before. The user is not being blocked by permissions or browser settings; the browser is being sent to a file the site cannot provide.
+
+The fastest immediate operational fix is to publish `LabTrax-Setup.exe` again. The safer code fix is the ZIP fallback, because it prevents this from recurring any time the EXE publish step fails.
