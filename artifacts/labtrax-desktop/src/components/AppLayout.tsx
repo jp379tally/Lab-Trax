@@ -274,6 +274,17 @@ export function AppLayout({ children }: Props) {
       ),
     [meQuery.data],
   );
+  const hasActiveLabMembership = useMemo(
+    () =>
+      (meQuery.data?.memberships ?? []).some(
+        (m) => m.status === "active" && m.organization?.type === "lab",
+      ),
+    [meQuery.data],
+  );
+  // Hide lab-only navigation (case lists) for users who have signed up but are
+  // not yet a member of any active lab. Only once /auth/me has loaded, so
+  // members never see the nav flicker during the initial fetch.
+  const noActiveLabMembership = meQuery.isSuccess && !hasActiveLabMembership;
 
   const dupClustersQuery = useGetDoctorDuplicateClusters({
     query: {
@@ -397,6 +408,8 @@ export function AppLayout({ children }: Props) {
   function renderNavItem(item: NavItem, depth = 0) {
     if (item.billingOnly && !hasBillingLab) return null;
     if (item.adminOnly && user?.role !== "admin") return null;
+    // Case lists require an active lab membership.
+    if (item.path === "/cases" && noActiveLabMembership) return null;
     const active = navPathActive(item.path, location);
     const Icon = item.icon;
     const indent = depth > 0;

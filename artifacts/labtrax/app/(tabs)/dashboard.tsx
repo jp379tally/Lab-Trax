@@ -23,7 +23,7 @@ import { Card } from "@/components/ui/Card";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { LocateCaseSheet } from "@/components/LocateCaseSheet";
 import { useAuth } from "@/lib/auth-context";
-import { useMe } from "@/lib/auth-me";
+import { useMe, activeMemberships } from "@/lib/auth-me";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -389,6 +389,34 @@ export default function DashboardScreen() {
     "due-soon": renderDueSoon,
     "recent": renderRecentCases,
   };
+
+  // A signed-up user with no active membership of any kind (e.g. a lab employee
+  // waiting for an invite/approval) has no lab data and none of the lab-only
+  // actions below apply. Show a friendly waiting state instead. Gated on
+  // me.isSuccess so members never see it flash during the initial fetch.
+  const noActiveMembership = me.isSuccess && activeMemberships(me.data).length === 0;
+  if (noActiveMembership) {
+    return (
+      <View style={[styles.screen, { paddingTop: insets.top }]}>
+        <View style={styles.center}>
+          <Ionicons name="time-outline" size={48} color={colors.tint} />
+          <Text
+            style={[Typography.h2, { color: colors.text, marginTop: Spacing.md, textAlign: "center" }]}
+          >
+            Your account is ready
+          </Text>
+          <Text
+            style={[
+              Typography.body,
+              { color: colors.textSecondary, marginTop: Spacing.sm, textAlign: "center" },
+            ]}
+          >
+            You'll see your lab dashboard after a lab admin invites or approves you.
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>

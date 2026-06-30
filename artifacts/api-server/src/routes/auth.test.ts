@@ -160,6 +160,41 @@ maybe("Auth registration and password reset (db integration)", () => {
     if (r.body.user?.id) createdUserIds.push(r.body.user.id);
   });
 
+  it("register as a lab employee without createOrganization succeeds and creates no org/membership", async () => {
+    const username = uname("labjoin");
+    const r = await request(appMod.default)
+      .post("/api/auth/register")
+      .send({
+        username,
+        password: "TestPassword1!",
+        email: `${username}@example.com`,
+        userType: "lab",
+        clientType: "mobile",
+        // No createOrganization, no practiceName, no lab fields — the account
+        // should be created on its own with no organization/membership.
+      });
+
+    expect(r.status).toBe(200);
+    expect(r.body.success).toBe(true);
+    expect(typeof r.body.accessToken).toBe("string");
+    expect(r.body.user.username).toBe(username);
+    // No org is created for an account-only lab signup.
+    expect(r.body.organization ?? null).toBeNull();
+    expect(r.body.pendingJoinRequest).toBeFalsy();
+
+    const userId = r.body.user?.id as string | undefined;
+    expect(userId).toBeTruthy();
+    if (userId) createdUserIds.push(userId);
+
+    // Assert at the DB level that no membership row was created.
+    const { db, organizationMemberships } = dbMod as any;
+    const memberships = await db
+      .select()
+      .from(organizationMemberships)
+      .where(eq(organizationMemberships.userId, userId));
+    expect(memberships).toHaveLength(0);
+  });
+
   // ── POST /api/forgot-password (no-enumeration) ────────────────────────────
 
   it("forgot-password returns 200 for a non-existent email (no enumeration)", async () => {

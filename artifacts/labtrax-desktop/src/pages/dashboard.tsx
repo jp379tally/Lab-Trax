@@ -25,7 +25,7 @@ import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { TriggeredByBadge } from "@/components/TriggeredByBadge";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { LabCase } from "@/lib/types";
+import type { LabCase, MeResponse } from "@/lib/types";
 import { formatDate, formatDateTime, formatDueDate, isDueToday, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { DashboardDropZone } from "@/components/DashboardDropZone";
@@ -878,6 +878,26 @@ export default function DashboardPage() {
     queryFn: () => apiFetch<LabCase[]>("/cases"),
   });
 
+  // Shares the ["auth","me"] cache with AppLayout. Used to detect users who
+  // have signed up but are not yet a member of any active lab (e.g. a lab
+  // employee waiting for an invite/approval) so we can show a waiting state
+  // instead of the lab-only dashboard actions.
+  const meQuery = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+    enabled: !!user,
+  });
+  const hasActiveLabMembership = useMemo(
+    () =>
+      (meQuery.data?.memberships ?? []).some(
+        (m) => m.status === "active" && m.organization?.type === "lab",
+      ),
+    [meQuery.data],
+  );
+  // Only treat as "no lab" once /auth/me has loaded, to avoid flashing the
+  // waiting state for members during the initial fetch.
+  const noActiveLabMembership = meQuery.isSuccess && !hasActiveLabMembership;
+
   const cases = casesQuery.data ?? [];
   const loading = casesQuery.isLoading;
 
@@ -911,6 +931,27 @@ export default function DashboardPage() {
         ),
     [cases],
   );
+
+  if (noActiveLabMembership) {
+    return (
+      <div className="px-8 py-7 max-w-[1400px] mx-auto">
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <div className="max-w-md w-full text-center bg-card border border-border rounded-xl shadow-sm p-8">
+            <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
+              <Clock className="text-primary" size={24} />
+            </div>
+            <h1 className="text-xl font-semibold tracking-tight">
+              Your account is ready
+            </h1>
+            <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+              You'll see your lab dashboard after a lab admin invites or
+              approves you.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="px-8 py-7 max-w-[1400px] mx-auto">

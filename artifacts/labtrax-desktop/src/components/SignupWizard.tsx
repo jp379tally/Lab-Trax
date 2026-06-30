@@ -45,6 +45,7 @@ type Step =
   | "welcome"
   | "credentials"
   | "user_type"
+  | "lab_path"
   | "lab_info"
   | "license"
   | "practice_info"
@@ -59,11 +60,33 @@ type Step =
   | "plan_select"
   | "hipaa_disclaimer";
 
-const LAB_STEPS: Step[] = [
+// Explicit lab intent chosen on the `lab_path` step:
+//  - "create" → create a brand-new lab organization (lab details required).
+//  - "join"   → account-only signup that waits for an invite/approval to an
+//               existing lab; no organization is created.
+type LabMode = "create" | "join";
+
+// Lab owner creating a new lab — collects lab details before verification.
+const LAB_STEPS_CREATE: Step[] = [
   "welcome",
   "credentials",
   "user_type",
+  "lab_path",
   "lab_info",
+  "email_verify",
+  "updates_opt_in",
+  "role_select",
+  "join_group",
+  "plan_select",
+  "hipaa_disclaimer",
+];
+
+// Lab employee joining an existing lab — skips lab details entirely.
+const LAB_STEPS_JOIN: Step[] = [
+  "welcome",
+  "credentials",
+  "user_type",
+  "lab_path",
   "email_verify",
   "updates_opt_in",
   "role_select",
@@ -107,6 +130,7 @@ const STEP_HEADINGS: Record<Step, { title: string; sub: string }> = {
   welcome: { title: "Welcome to LabTrax", sub: "Your dental laboratory management platform." },
   credentials: { title: "Create your account", sub: "Pick a username, email, and password." },
   user_type: { title: "I am a…", sub: "This sets up your workspace correctly." },
+  lab_path: { title: "Set up your lab access", sub: "Create a new lab or join one that already exists." },
   lab_info: { title: "Lab details", sub: "Tell us about your lab." },
   license: { title: "License number", sub: "Required for verification." },
   practice_info: { title: "Practice details", sub: "Tell us about your practice." },
@@ -167,6 +191,8 @@ export default function SignupWizard({ onCancel }: Props) {
 
   // User type
   const [userType, setUserType] = useState<"lab" | "provider" | null>(null);
+  // Lab intent: create a new lab vs. join an existing one (account-only).
+  const [labMode, setLabMode] = useState<LabMode | null>(null);
 
   // Lab info
   const [labName, setLabName] = useState("");
@@ -290,7 +316,9 @@ export default function SignupWizard({ onCancel }: Props) {
   }, [labSearchFilter, step]);
 
   const stepSequence = useMemo<Step[]>(() => {
-    if (userType === "lab") return LAB_STEPS;
+    if (userType === "lab") {
+      return labMode === "join" ? LAB_STEPS_JOIN : LAB_STEPS_CREATE;
+    }
     if (userType === "provider") {
       const hasMatches = providerMatches.length > 0;
       const isMatched = !!selectedMatchOrgId;
@@ -309,7 +337,7 @@ export default function SignupWizard({ onCancel }: Props) {
       return base;
     }
     return ["welcome", "credentials", "user_type"];
-  }, [userType, wantsUpdates, providerMatches.length, selectedMatchOrgId]);
+  }, [userType, labMode, wantsUpdates, providerMatches.length, selectedMatchOrgId]);
 
   const currentIdx = Math.max(0, stepSequence.indexOf(step));
   const totalSteps = stepSequence.length;
@@ -392,7 +420,28 @@ export default function SignupWizard({ onCancel }: Props) {
   function selectUserType(t: "lab" | "provider") {
     setUserType(t);
     setError(null);
-    setStep(t === "lab" ? "lab_info" : "license");
+    if (t === "lab") {
+      // Defer the create-vs-join decision to the dedicated fork step.
+      setLabMode(null);
+      setStep("lab_path");
+    } else {
+      setStep("license");
+    }
+  }
+
+  // Lab fork: create a brand-new lab → collect lab details.
+  function selectLabCreate() {
+    setError(null);
+    setLabMode("create");
+    setStep("lab_info");
+  }
+
+  // Lab fork: join an existing lab / invited → account-only, skip lab details
+  // and go straight to email verification.
+  function selectLabJoin() {
+    setError(null);
+    setLabMode("join");
+    void sendEmail();
   }
 
   async function sendEmail() {
@@ -551,6 +600,11 @@ export default function SignupWizard({ onCancel }: Props) {
     setError(null);
     try {
       const isLab = userType === "lab";
+      // Lab employee joining an existing lab: account-only, no org created and
+      // no lab details collected. createOrganization must be false so the
+      // server (which already gates on createOrganization + practiceName)
+      // creates a bare user with no membership.
+      const isLabJoin = isLab && labMode === "join";
       const isMatchedJoin = !isLab && !!selectedMatchOrgId;
       const resolvedAddress = isLab
         ? [labStreet.trim(), labCity.trim(), labState.trim(), labZip.trim()].filter(Boolean).join(", ")
@@ -571,16 +625,24 @@ export default function SignupWizard({ onCancel }: Props) {
         phone: wantsUpdates && userType === "provider" ? phoneNumber.trim() : undefined,
         wantsUpdates: !!wantsUpdates,
         userType,
-        licenseNumber: licenseNumber.trim() || undefined,
-        practiceName: isLab ? labName.trim() : isMatchedJoin ? undefined : practiceName.trim(),
+        licenseNumber: isLabJoin ? undefined : licenseNumber.trim() || undefined,
+        practiceName: isLabJoin
+          ? undefined
+          : isLab
+            ? labName.trim()
+            : isMatchedJoin
+              ? undefined
+              : practiceName.trim(),
         doctorName: isLab ? undefined : doctorName.trim() || undefined,
-        practiceAddress: isMatchedJoin ? undefined : resolvedAddress,
-        practicePhone: isMatchedJoin ? undefined : resolvedPhone,
+        practiceAddress: isLabJoin || isMatchedJoin ? undefined : resolvedAddress,
+        practicePhone: isLabJoin || isMatchedJoin ? undefined : resolvedPhone,
         phoneContactName:
           wantsUpdates && userType === "provider" ? phoneContactName.trim() || undefined : undefined,
         role: selectedRole || "user",
         accountNumber: acctNum,
-        createOrganization: !isMatchedJoin && !joinTargetOrgId,
+        createOrganization: isLab
+          ? labMode === "create"
+          : !isMatchedJoin && !joinTargetOrgId,
         joinOrganizationId: isMatchedJoin ? selectedMatchOrgId : (joinTargetOrgId || undefined),
         claimProvider: undefined,
       });
@@ -837,6 +899,36 @@ export default function SignupWizard({ onCancel }: Props) {
               <div className="text-sm font-semibold">Dental Provider</div>
               <div className="text-xs text-muted-foreground mt-1">
                 I'm a dentist sending cases to a lab.
+              </div>
+            </button>
+          </div>
+        )}
+
+        {step === "lab_path" && (
+          <div className="space-y-3">
+            <button
+              type="button"
+              onClick={selectLabCreate}
+              disabled={busy}
+              className="w-full text-left p-4 rounded-md border border-input hover:border-primary hover:bg-muted/50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <div className="text-sm font-semibold">Create a new lab</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Set up a brand-new lab workspace. You'll be the lab owner.
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={selectLabJoin}
+              disabled={busy}
+              className="w-full text-left p-4 rounded-md border border-input hover:border-primary hover:bg-muted/50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <div className="text-sm font-semibold">
+                Join an existing lab / I've been invited
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Create your account now. A lab admin invites or approves you to
+                see the lab dashboard.
               </div>
             </button>
           </div>
