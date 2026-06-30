@@ -1,0 +1,109 @@
+### Replit Build Brief
+
+**Objective**
+Make the new per-doctor discount pricing rule apply to older provider/doctor records, including Dr. Chihara Garraway at Blissful Dental Spa.
+
+**User-visible problem**
+In the practice editor, Dr. Garraway’s row shows `1 item discount` but also `14 custom prices`. When the `% Discount` value is adjusted, the displayed discounted price does not behave like it does for newer accounts.
+
+**Likely root cause**
+This is not really a “legacy case” issue. It is a **legacy doctor pricing override** issue.
+
+Dr. Garaway’s older pricing override appears to have exact dollar prices saved for most or all items. The current server pricing logic intentionally gives exact dollar overrides priority:
+
+`exact $ override -> percentage discount -> tier/default pricing`
+
+So if an older doctor has `pricesJson` filled with exact prices, the newer discount fields are present but cannot win. Newer accounts work because they do not have old exact-price rows blocking the discount rule.
+
+Relevant areas:
+
+* `artifacts/labtrax-desktop/src/pages/practices.tsx`
+
+  * `PracticeDoctorsSection`
+  * `DoctorPricingRow`
+  * `pricesToStrings`
+  * `discountMapToStrings`
+* `artifacts/api-server/src/routes/pricing.ts`
+
+  * `GET/POST/PATCH /pricing/overrides`
+* `artifacts/api-server/src/lib/pricing.ts`
+
+  * `resolveServerPriceWithSource`
+  * `resolveAllPricesForContext`
+  * `effectiveDiscountPercent`
+* `artifacts/api-server/src/routes/pricing.test.ts`
+
+**Safest fix**
+Do not globally remove exact-price precedence, because some exact overrides may be intentional. Instead, treat legacy exact prices that merely mirror the practice default tier as non-blocking when a discount is present.
+
+In practice:
+
+* If a doctor has an exact price equal to the practice default tier price, and a default/per-item discount is configured, discount should win.
+* If a doctor has an exact price different from the practice default tier price, exact price should still win.
+* Add UI handling so the “Discounted Price” column recalculates live using the same rule.
+* Add regression tests for a legacy override with full exact prices equal to the default tier.
+
+**Acceptance criteria**
+
+* Dr. Garaway can enter or increase a discount and see the discounted price recalculate immediately.
+* Existing legacy doctor overrides that mirror standard/default tier prices no longer block discounts.
+* Truly custom exact prices remain protected.
+* New cases/invoice item resolution uses the same discounted amount shown in the UI.
+* Tests cover both legacy-mirror prices and intentionally custom exact prices.
+
+### Copy-Ready Replit Prompt
+
+Please inspect and fix the LabTrax desktop pricing issue for legacy doctor pricing overrides.
+
+Problem: In Practices -> provider practice -> doctor row -> Adjust pricing, Dr. Chihara Garaway at Blissful Dental Spa has older saved custom prices. The UI shows a per-item discount field and discounted price, but changing the discount does not behave like it does for newer accounts. The row shows `14 custom prices`, which suggests the older override has exact dollar values saved in `pricing_overrides.prices_json`.
+
+Relevant files to inspect:
+
+* `artifacts/labtrax-desktop/src/pages/practices.tsx`
+* `artifacts/api-server/src/lib/pricing.ts`
+* `artifacts/api-server/src/routes/pricing.ts`
+* `artifacts/api-server/src/routes/pricing.test.ts`
+
+Likely root cause: server pricing resolution gives exact dollar overrides priority over discounts. That is correct for truly custom prices, but legacy rows may have exact prices that simply mirror the practice default tier. Those mirror prices should not block the newer discount rule.
+
+Please implement the safest fix:
+
+1. In pricing resolution, when a discount is configured for a key, compare any exact override price against the practice default tier price for that key.
+2. If the exact override equals the practice default tier price, treat it as a legacy mirror value and allow the discount to win.
+3. If the exact override differs from the practice default tier price, preserve current behavior: exact override wins.
+4. Apply the same rule in both `resolveServerPriceWithSource` and `resolveAllPricesForContext`.
+5. Update the desktop `DoctorPricingRow` live discounted-price display so it follows the same logic.
+6. Add regression tests proving:
+
+   * legacy exact prices equal to default tier no longer block discounts
+   * intentional exact custom prices still override discounts
+   * per-item discount beats default discount
+   * missing practice default tier still falls back safely
+
+Do not run a broad destructive migration. If you add any data cleanup, make it conservative and only remove exact prices that exactly match the practice default tier and only when a discount is configured. Explain any tradeoffs before finishing.
+
+Run the relevant API pricing tests and desktop pricing/practice tests before marking complete.
+
+### Debug Analysis
+
+The involved app surface is the **desktop Practices page**, specifically per-doctor pricing inside a provider practice. The backend surface is the **pricing override resolver**.
+
+The strongest evidence is the screenshot showing Dr. Garaway with `1 item discount` and `14 custom prices`. The current repository logic also confirms exact prices beat discounts. That combination explains why newer accounts work while older accounts do not: newer records are using the discount path, while older records have exact-price data blocking that path.
+
+Alternate hypotheses worth checking:
+
+* The practice default tier is missing or not connected. Less likely here, because the screenshot shows `Standard` and item base prices.
+* The deployed UI is ahead of `main`, because the screenshot has a “Discounted Price” column while the inspected repo version uses a smaller effective-price hint.
+* The discount formula could be inverted in the newest UI branch. Still worth checking, but the “14 custom prices” clue is the more likely root cause.
+
+Confidence: **high** that legacy `pricesJson` exact overrides are blocking the new discount behavior.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce with a test doctor override that has `pricesJson` filled for all standard items and a practice default tier set to `Standard`.
+2. Add a discount for one item.
+3. Confirm current resolver returns `source: "override"` instead of `source: "discount"`.
+4. Update pricing resolution to let discount win only when the exact override equals the practice default tier price.
+5. Mirror that logic in the desktop live discounted-price display.
+6. Add regression tests for legacy mirror prices and true custom exact prices.
+7. Verify Dr. Garaway-style records now update in real time without breaking intentional custom pricing.
