@@ -13,7 +13,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { inArray, eq, sql } from "drizzle-orm";
+import { and, inArray, eq, isNull, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import request from "supertest";
 import * as path from "node:path";
@@ -587,6 +587,254 @@ maybe("Organizations CRUD (db integration)", () => {
       await db.delete(organizationMemberships).where(
         eq(organizationMemberships.userId, inviteeId)
       );
+      await db.delete(users).where(eq(users.id, inviteeId));
+    }
+  });
+
+  // ── Join-request approval (partial-unique-index upsert) ──────────────────
+  // Regression guard: the membership upsert must use an ON CONFLICT arbiter
+  // that matches the PARTIAL unique index `memberships_org_user_unique`
+  // (lab_id, user_id) WHERE deleted_at IS NULL. A mismatched target made
+  // Postgres reject the upsert, surfacing as the generic approve error.
+
+  async function activeMembershipRows(orgId: string, userId: string) {
+    const { db, organizationMemberships } = dbMod as any;
+    return db
+      .select()
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.labId, orgId),
+          eq(organizationMemberships.userId, userId),
+          isNull(organizationMemberships.deletedAt)
+        )
+      );
+  }
+
+  it("approving a pending join request creates an active membership and removes the pending row", async () => {
+    const { access } = await makeSession(ownerId);
+    const { db, users, userSessions, organizationMemberships, organizationJoinRequests } =
+      dbMod as any;
+
+    const orgName = rid("JoinApproveOrg");
+    const create = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(orgName));
+    expect(create.status).toBe(201);
+    const orgId = create.body.data.id;
+    createdOrgIds.push(orgId);
+
+    const joinerId = rid("joiner");
+    await db.insert(users).values({
+      id: joinerId,
+      username: `joiner_${joinerId}`,
+      password: "x",
+    });
+    const reqId = rid("jr");
+    await db.insert(organizationJoinRequests).values({
+      id: reqId,
+      labId: orgId,
+      userId: joinerId,
+      requestedRole: "user",
+      status: "pending",
+    });
+
+    try {
+      const approve = await request(appMod.default)
+        .post(`/api/organizations/join-requests/${reqId}/approve`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(approve.status).toBe(200);
+
+      const active = await activeMembershipRows(orgId, joinerId);
+      expect(active).toHaveLength(1);
+      expect(active[0].status).toBe("active");
+      expect(active[0].role).toBe("user");
+
+      const pending = await db
+        .select()
+        .from(organizationJoinRequests)
+        .where(
+          and(
+            eq(organizationJoinRequests.labId, orgId),
+            eq(organizationJoinRequests.userId, joinerId),
+            eq(organizationJoinRequests.status, "pending")
+          )
+        );
+      expect(pending).toHaveLength(0);
+    } finally {
+      await db.delete(organizationJoinRequests).where(eq(organizationJoinRequests.userId, joinerId));
+      await db.delete(organizationMemberships).where(eq(organizationMemberships.userId, joinerId));
+      await db.delete(userSessions).where(eq(userSessions.userId, joinerId));
+      await db.delete(users).where(eq(users.id, joinerId));
+    }
+  });
+
+  it("approving when an active membership already exists reactivates without creating a duplicate", async () => {
+    const { access } = await makeSession(ownerId);
+    const { db, users, userSessions, organizationMemberships, organizationJoinRequests } =
+      dbMod as any;
+
+    const orgName = rid("JoinDupOrg");
+    const create = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(orgName));
+    expect(create.status).toBe(201);
+    const orgId = create.body.data.id;
+    createdOrgIds.push(orgId);
+
+    const joinerId = rid("joiner");
+    await db.insert(users).values({
+      id: joinerId,
+      username: `joiner_${joinerId}`,
+      password: "x",
+    });
+    // Pre-existing active membership.
+    await db.insert(organizationMemberships).values({
+      id: rid("memrow"),
+      labId: orgId,
+      userId: joinerId,
+      role: "user",
+      status: "active",
+      joinedAt: new Date(),
+    });
+    const reqId = rid("jr");
+    await db.insert(organizationJoinRequests).values({
+      id: reqId,
+      labId: orgId,
+      userId: joinerId,
+      requestedRole: "admin",
+      status: "pending",
+    });
+
+    try {
+      const approve = await request(appMod.default)
+        .post(`/api/organizations/join-requests/${reqId}/approve`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(approve.status).toBe(200);
+
+      const active = await activeMembershipRows(orgId, joinerId);
+      expect(active).toHaveLength(1);
+      expect(active[0].role).toBe("admin");
+    } finally {
+      await db.delete(organizationJoinRequests).where(eq(organizationJoinRequests.userId, joinerId));
+      await db.delete(organizationMemberships).where(eq(organizationMemberships.userId, joinerId));
+      await db.delete(userSessions).where(eq(userSessions.userId, joinerId));
+      await db.delete(users).where(eq(users.id, joinerId));
+    }
+  });
+
+  it("approving a user with a soft-deleted historical membership yields a single active membership", async () => {
+    const { access } = await makeSession(ownerId);
+    const { db, users, userSessions, organizationMemberships, organizationJoinRequests } =
+      dbMod as any;
+
+    const orgName = rid("JoinSoftDelOrg");
+    const create = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(orgName));
+    expect(create.status).toBe(201);
+    const orgId = create.body.data.id;
+    createdOrgIds.push(orgId);
+
+    const joinerId = rid("joiner");
+    await db.insert(users).values({
+      id: joinerId,
+      username: `joiner_${joinerId}`,
+      password: "x",
+    });
+    // A historical soft-deleted membership for the same (lab, user).
+    await db.insert(organizationMemberships).values({
+      id: rid("memrow"),
+      labId: orgId,
+      userId: joinerId,
+      role: "user",
+      status: "active",
+      joinedAt: new Date(),
+      deletedAt: new Date(),
+      deletedByUserId: ownerId,
+    });
+    const reqId = rid("jr");
+    await db.insert(organizationJoinRequests).values({
+      id: reqId,
+      labId: orgId,
+      userId: joinerId,
+      requestedRole: "user",
+      status: "pending",
+    });
+
+    try {
+      const approve = await request(appMod.default)
+        .post(`/api/organizations/join-requests/${reqId}/approve`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(approve.status).toBe(200);
+
+      const active = await activeMembershipRows(orgId, joinerId);
+      expect(active).toHaveLength(1);
+      expect(active[0].status).toBe("active");
+    } finally {
+      await db.delete(organizationJoinRequests).where(eq(organizationJoinRequests.userId, joinerId));
+      await db.delete(organizationMemberships).where(eq(organizationMemberships.userId, joinerId));
+      await db.delete(userSessions).where(eq(userSessions.userId, joinerId));
+      await db.delete(users).where(eq(users.id, joinerId));
+    }
+  });
+
+  it("invite acceptance succeeds when a soft-deleted membership already exists (partial unique index)", async () => {
+    const { access: adminAccess } = await makeSession(ownerId);
+    const { db, users, userSessions, organizationMemberships } = dbMod as any;
+
+    const orgName = rid("AcceptSoftDelOrg");
+    const create = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${adminAccess}`)
+      .send(labBody(orgName));
+    expect(create.status).toBe(201);
+    const orgId = create.body.data.id;
+    createdOrgIds.push(orgId);
+
+    const inviteeId = rid("invitee");
+    const inviteeEmail = `${inviteeId}@test.local`;
+    await db.insert(users).values({
+      id: inviteeId,
+      username: `invitee_${inviteeId}`,
+      password: "x",
+      email: inviteeEmail,
+    });
+    // Historical soft-deleted membership must not block re-acceptance.
+    await db.insert(organizationMemberships).values({
+      id: rid("memrow"),
+      labId: orgId,
+      userId: inviteeId,
+      role: "user",
+      status: "active",
+      joinedAt: new Date(),
+      deletedAt: new Date(),
+      deletedByUserId: ownerId,
+    });
+    const { access: inviteeAccess } = await makeSession(inviteeId);
+
+    try {
+      const inviteRes = await request(appMod.default)
+        .post(`/api/organizations/${orgId}/invites`)
+        .set("Authorization", `Bearer ${adminAccess}`)
+        .send({ email: inviteeEmail, roleToAssign: "user", expiresInDays: 1 });
+      expect(inviteRes.status).toBe(201);
+      const token: string = inviteRes.body.data?.token ?? inviteRes.body.token;
+
+      const acceptRes = await request(appMod.default)
+        .post(`/api/organizations/invites/${token}/accept`)
+        .set("Authorization", `Bearer ${inviteeAccess}`);
+      expect(acceptRes.status).toBe(200);
+
+      const active = await activeMembershipRows(orgId, inviteeId);
+      expect(active).toHaveLength(1);
+      expect(active[0].status).toBe("active");
+    } finally {
+      await db.delete(organizationMemberships).where(eq(organizationMemberships.userId, inviteeId));
+      await db.delete(userSessions).where(eq(userSessions.userId, inviteeId));
       await db.delete(users).where(eq(users.id, inviteeId));
     }
   });

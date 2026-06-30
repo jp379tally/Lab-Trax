@@ -296,6 +296,85 @@ async function repairLabCaseAffiliations(labId: string): Promise<void> {
   }
 }
 
+const VALID_MEMBERSHIP_ROLES: MembershipRole[] = [
+  "owner",
+  "admin",
+  "user",
+  "billing",
+  "read_only",
+];
+
+/**
+ * Validate an optional client-supplied membership role override. Unknown or
+ * non-string values are ignored and the trusted fallback is used instead, so a
+ * crafted request body can never assign an invalid/privileged role.
+ */
+function coerceMembershipRole(
+  value: unknown,
+  fallback: MembershipRole
+): MembershipRole {
+  return typeof value === "string" &&
+    VALID_MEMBERSHIP_ROLES.includes(value as MembershipRole)
+    ? (value as MembershipRole)
+    : fallback;
+}
+
+/**
+ * Upsert an active membership for (labId, userId).
+ *
+ * The unique index `memberships_org_user_unique` is PARTIAL — it only covers
+ * rows WHERE deleted_at IS NULL. An `ON CONFLICT` arbiter must match a real
+ * index, so the conflict target carries the same `WHERE deleted_at IS NULL`
+ * predicate via `targetWhere`. Without it, Postgres rejects the upsert and the
+ * caller sees a generic failure (the join-request approve / invite-accept bug).
+ *
+ * The `set` clause also clears `deletedAt` / `deletedByUserId` so a colliding
+ * row is reactivated cleanly rather than left in an inconsistent state. A
+ * historical soft-deleted row (deleted_at IS NOT NULL) is outside the partial
+ * index, so it never collides — a fresh active row is inserted and the user
+ * still ends up with exactly one active membership.
+ *
+ * Shared by both the invite-accept and join-request-approve routes so the two
+ * upserts cannot drift apart.
+ */
+async function upsertActiveMembership(opts: {
+  labId: string;
+  userId: string;
+  role: MembershipRole;
+  invitedByUserId?: string | null;
+  approvedByUserId?: string | null;
+}) {
+  const now = new Date();
+  const invitedByUserId = opts.invitedByUserId ?? null;
+  const approvedByUserId = opts.approvedByUserId ?? null;
+  const [membership] = await db
+    .insert(organizationMemberships)
+    .values({
+      labId: opts.labId,
+      userId: opts.userId,
+      role: opts.role,
+      status: "active",
+      invitedByUserId,
+      approvedByUserId,
+      joinedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [organizationMemberships.labId, organizationMemberships.userId],
+      targetWhere: isNull(organizationMemberships.deletedAt),
+      set: {
+        role: opts.role,
+        status: "active",
+        invitedByUserId,
+        approvedByUserId,
+        joinedAt: now,
+        deletedAt: null,
+        deletedByUserId: null,
+      },
+    })
+    .returning();
+  return membership;
+}
+
 async function syncUserToOrganization(
   userId: string,
   organizationId: string,
@@ -2803,31 +2882,15 @@ router.post(
       );
     }
 
-    const assignedRole = invite.roleToAssign;
+    const assignedRole = coerceMembershipRole(invite.roleToAssign, "user");
 
-    await db
-      .insert(organizationMemberships)
-      .values({
-        labId: invite.labId,
-        userId,
-        role: assignedRole,
-        status: "active",
-        invitedByUserId: invite.invitedByUserId,
-        approvedByUserId: invite.invitedByUserId,
-        joinedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [
-          organizationMemberships.labId,
-          organizationMemberships.userId,
-        ],
-        set: {
-          role: assignedRole,
-          status: "active",
-          invitedByUserId: invite.invitedByUserId,
-          joinedAt: new Date(),
-        },
-      });
+    await upsertActiveMembership({
+      labId: invite.labId,
+      userId,
+      role: assignedRole,
+      invitedByUserId: invite.invitedByUserId,
+      approvedByUserId: invite.invitedByUserId,
+    });
 
     await db
       .update(organizationInvites)
@@ -3043,31 +3106,17 @@ router.post(
       );
     }
 
-    const roleToAssign = req.body.role || request.requestedRole;
+    const roleToAssign = coerceMembershipRole(
+      req.body?.role,
+      (request.requestedRole as MembershipRole) ?? "user"
+    );
 
-    const [membership] = await db
-      .insert(organizationMemberships)
-      .values({
-        labId: request.labId,
-        userId: request.userId,
-        role: roleToAssign,
-        status: "active",
-        approvedByUserId: (req as any).auth.userId,
-        joinedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [
-          organizationMemberships.labId,
-          organizationMemberships.userId,
-        ],
-        set: {
-          role: roleToAssign,
-          status: "active",
-          approvedByUserId: (req as any).auth.userId,
-          joinedAt: new Date(),
-        },
-      })
-      .returning();
+    const membership = await upsertActiveMembership({
+      labId: request.labId,
+      userId: request.userId,
+      role: roleToAssign,
+      approvedByUserId: (req as any).auth.userId,
+    });
 
     await db
       .delete(organizationJoinRequests)
