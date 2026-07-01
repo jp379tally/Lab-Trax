@@ -10,6 +10,8 @@ import {
   CheckSquare,
   ChevronDown,
   ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
   Eye,
   GitMerge,
   KeyRound,
@@ -148,6 +150,7 @@ export default function AccountsPage() {
     } catch {}
     return new Set();
   });
+  const [suppressAutoExpand, setSuppressAutoExpand] = useState(false);
   const [editing, setEditing] = useState<Organization | null>(null);
   const [adding, setAdding] = useState(false);
   const [selectedDoctor, setSelectedDoctor] = useState<DoctorRow | null>(null);
@@ -272,6 +275,10 @@ export default function AccountsPage() {
     try {
       sessionStorage.setItem(SEARCH_STORAGE_KEY, search);
     } catch {}
+  }, [search]);
+
+  useEffect(() => {
+    setSuppressAutoExpand(false);
   }, [search]);
 
   useEffect(() => {
@@ -574,22 +581,38 @@ export default function AccountsPage() {
   }, [orgs, search, showArchived, openCasesOnly, doctorsByPractice]);
 
   const effectiveExpanded = useMemo(() => {
+    if (suppressAutoExpand) return expanded;
     const combined = new Set(expanded);
     for (const id of autoExpandedIds) combined.add(id);
     return combined;
-  }, [expanded, autoExpandedIds]);
+  }, [expanded, autoExpandedIds, suppressAutoExpand]);
 
   function toggleExpanded(id: string) {
+    setSuppressAutoExpand(false);
     setExpanded((prev) => {
       const next = new Set(prev);
       if (effectiveExpanded.has(id)) {
         next.delete(id);
-        autoExpandedIds.delete(id);
       } else {
         next.add(id);
       }
       return next;
     });
+  }
+
+  function expandAll() {
+    setSuppressAutoExpand(false);
+    const all = new Set<string>();
+    for (const p of filteredPractices) {
+      const docs = doctorsByPractice.get(p.id) ?? [];
+      if (docs.length > 0) all.add(p.id);
+    }
+    setExpanded(all);
+  }
+
+  function collapseAll() {
+    setSuppressAutoExpand(true);
+    setExpanded(new Set());
   }
 
   function togglePractice(id: string) {
@@ -1038,7 +1061,28 @@ export default function AccountsPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
-                <th className="w-8"></th>
+                <th className="w-14 pl-3 py-2.5">
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={expandAll}
+                      title="Expand all practices"
+                      aria-label="Expand all practices"
+                      className="h-6 w-6 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <ChevronsDown size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={collapseAll}
+                      title="Collapse all practices"
+                      aria-label="Collapse all practices"
+                      className="h-6 w-6 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <ChevronsUp size={13} />
+                    </button>
+                  </div>
+                </th>
                 <th className="text-left font-medium px-4 py-2.5">Practice / Doctor</th>
                 <th className="text-left font-medium py-2.5">Account #</th>
                 <th className="text-left font-medium py-2.5">Contact</th>
