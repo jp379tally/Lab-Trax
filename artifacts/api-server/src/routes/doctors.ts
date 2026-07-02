@@ -172,11 +172,15 @@ async function loadAndAuthorizeMerge(
     }
   }
 
-  // Dedupe sources using exact-cased identity (trim only).
+  // Dedupe sources case-insensitively (same provider + same name after
+  // lowercasing). This prevents double-counting when two capitalization
+  // variants are sent as separate sources, because the database WHERE clause
+  // matches case-insensitively. The self-merge guard above already rejects
+  // exact same source/target; dedupe here is only about redundant sources.
   const seen = new Set<string>();
   const dedupedSources: typeof input.sources = [];
   for (const s of input.sources) {
-    const key = `${s.doctorName.trim()}|${s.providerOrganizationId ?? ""}`;
+    const key = `${s.doctorName.trim().toLowerCase()}|${s.providerOrganizationId ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
     dedupedSources.push(s);

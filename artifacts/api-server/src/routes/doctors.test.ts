@@ -332,6 +332,38 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     expect(r.body.message).toMatch(/same \u2014 nothing to merge/i);
   });
 
+  it("dedupes redundant capitalization variants in a multi-source payload (no double-count)", async () => {
+    const c1 = await insertCase({
+      caseNumber: rid("CN"),
+      doctorName: "Dr. Smith",
+      practiceId: practiceAId,
+    });
+
+    // Sending two capitalization variants of the SAME name + practice must
+    // dedupe to a single source, so only one case moves and only one audit
+    // entry is written.
+    const r = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: "Dr. Smythe",
+        targetProviderOrganizationId: practiceAId,
+        sources: [
+          { doctorName: "Dr. Smith", providerOrganizationId: practiceAId },
+          { doctorName: "dr. smith", providerOrganizationId: practiceAId },
+        ],
+      });
+    expect(r.status).toBe(200);
+    expect(r.body.data.casesMoved).toBe(1);
+    expect(r.body.data.entries).toHaveLength(1);
+
+    const { db, cases } = dbMod as any;
+    const [row] = await db.select().from(cases).where(eq(cases.id, c1));
+    expect(row.doctorName).toBe("Dr. Smythe");
+    await db.delete(cases).where(eq(cases.id, c1));
+  });
+
   it("merges multi-source: cases + pricing overrides, with collapse", async () => {
     const ids: string[] = [];
     ids.push(
