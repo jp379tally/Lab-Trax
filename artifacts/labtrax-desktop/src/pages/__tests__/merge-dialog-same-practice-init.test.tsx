@@ -196,6 +196,55 @@ describe("MergeDialog — same-practice duplicate initialization", () => {
     );
     expect(screen.getByRole("button", { name: "Merge" })).toBeDisabled();
   });
+
+  it("allows capitalization-only duplicate merge (Dr. Ray Montalvo → Dr. Ray montalvo)", async () => {
+    renderDialog([
+      {
+        doctorName: "Dr. Ray Montalvo",
+        providerOrganizationId: PROVIDER_ID,
+        practiceName: "Russell Bartow Rainey DMD",
+      },
+      {
+        doctorName: "Dr. Ray montalvo",
+        providerOrganizationId: PROVIDER_ID,
+        practiceName: "Russell Bartow Rainey DMD",
+      },
+    ]);
+
+    // The auto-target is the first doctor; the lowercase variant must remain a
+    // source because the exact-cased keys are distinct.
+    expect(screen.getByText("Sources (1)")).toBeInTheDocument();
+
+    const sourcesList = screen.getByRole("list");
+    expect(
+      within(sourcesList).getByText("Dr. Ray montalvo"),
+    ).toBeInTheDocument();
+    expect(
+      within(sourcesList).queryByText("Dr. Ray Montalvo"),
+    ).not.toBeInTheDocument();
+
+    // No self-merge warning: target and source differ by casing.
+    expect(screen.queryByText(/Same as a source/i)).not.toBeInTheDocument();
+
+    // Merge button is enabled.
+    const mergeBtn = screen.getByRole("button", { name: "Merge" });
+    expect(mergeBtn).toBeEnabled();
+
+    // Fire the merge and assert the body targets the exact-cased spelling.
+    fireEvent.click(mergeBtn);
+    expect(mergeMutate).toHaveBeenCalledTimes(1);
+    expect(mergeMutate).toHaveBeenCalledWith({
+      data: {
+        labOrganizationId: LAB_ID,
+        sources: [
+          { doctorName: "Dr. Ray montalvo", providerOrganizationId: PROVIDER_ID },
+        ],
+        targetDoctorName: "Dr. Ray Montalvo",
+        targetProviderOrganizationId: PROVIDER_ID,
+        includeSoftDeleted: false,
+      },
+    });
+  });
 });
 
 describe("MergeDialog — submitting an enabled merge", () => {

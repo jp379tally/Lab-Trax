@@ -288,6 +288,50 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     expect(r.status).toBe(400);
   });
 
+  it("allows capitalization-only canonicalization merge (Dr. Ray montalvo → Dr. Ray Montalvo)", async () => {
+    const c1 = await insertCase({
+      caseNumber: rid("CN"),
+      doctorName: "Dr. Ray montalvo",
+      practiceId: practiceAId,
+    });
+
+    const r = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: "Dr. Ray Montalvo",
+        targetProviderOrganizationId: practiceAId,
+        sources: [
+          { doctorName: "Dr. Ray montalvo", providerOrganizationId: practiceAId },
+        ],
+      });
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(true);
+    expect(r.body.data.casesMoved).toBe(1);
+
+    const { db, cases } = dbMod as any;
+    const [row] = await db.select().from(cases).where(eq(cases.id, c1));
+    expect(row.doctorName).toBe("Dr. Ray Montalvo");
+    await db.delete(cases).where(eq(cases.id, c1));
+  });
+
+  it("still rejects exact same source/target", async () => {
+    const r = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: "Dr. Same",
+        targetProviderOrganizationId: practiceAId,
+        sources: [
+          { doctorName: "Dr. Same", providerOrganizationId: practiceAId },
+        ],
+      });
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/same \u2014 nothing to merge/i);
+  });
+
   it("merges multi-source: cases + pricing overrides, with collapse", async () => {
     const ids: string[] = [];
     ids.push(

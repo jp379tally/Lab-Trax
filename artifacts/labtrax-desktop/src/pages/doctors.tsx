@@ -1536,8 +1536,7 @@ export function MergeDialog({
     : initialSources.filter(
         (s) =>
           !(
-            s.doctorName.trim().toLowerCase() ===
-              (_autoTarget?.doctorName ?? "").trim().toLowerCase() &&
+            s.doctorName.trim() === (_autoTarget?.doctorName ?? "").trim() &&
             (s.providerOrganizationId ?? null) ===
               (_autoTarget?.providerOrganizationId ?? null)
           ),
@@ -1648,13 +1647,13 @@ export function MergeDialog({
         const seen = new Set(
           prev.map(
             (e) =>
-              `${(e.doctorName ?? "").toLowerCase()}|${e.providerOrganizationId ?? ""}`,
+              `${e.doctorName ?? ""}|${e.providerOrganizationId ?? ""}`,
           ),
         );
         const fresh = data.entries.filter(
           (e) =>
             !seen.has(
-              `${(e.doctorName ?? "").toLowerCase()}|${e.providerOrganizationId ?? ""}`,
+              `${e.doctorName ?? ""}|${e.providerOrganizationId ?? ""}`,
             ),
         );
         return [...prev, ...fresh];
@@ -1666,7 +1665,7 @@ export function MergeDialog({
     return new Set(
       sources.map(
         (s) =>
-          `${s.doctorName.toLowerCase()}|${s.providerOrganizationId ?? ""}`,
+          `${s.doctorName}|${s.providerOrganizationId ?? ""}`,
       ),
     );
   }, [sources]);
@@ -1731,7 +1730,7 @@ export function MergeDialog({
   function addSource(entry: DoctorSearchEntry) {
     const name = entry.doctorName ?? "";
     if (!name) return;
-    const key = `${name.toLowerCase()}|${entry.providerOrganizationId ?? ""}`;
+    const key = `${name}|${entry.providerOrganizationId ?? ""}`;
     if (sourceKeys.has(key)) return;
     setSources((prev) => [
       ...prev,
@@ -1761,7 +1760,7 @@ export function MergeDialog({
 
   const targetSelfMerge = sources.some(
     (s) =>
-      s.doctorName.trim().toLowerCase() === targetName.trim().toLowerCase() &&
+      s.doctorName.trim() === targetName.trim() &&
       (s.providerOrganizationId ?? null) === (targetProviderId ?? null),
   );
 
@@ -1771,12 +1770,12 @@ export function MergeDialog({
   // wrong doctor) so a stray pick can't create or cross-link records.
   const visibleEntries = useMemo(() => {
     if (!singleReassign) return searchAccumulated;
-    const curName = (initialSources[0]?.doctorName ?? "").trim().toLowerCase();
+    const curName = (initialSources[0]?.doctorName ?? "").trim();
     const practiceId = targetProviderId ?? null;
     return searchAccumulated.filter(
       (e) =>
         (e.providerOrganizationId ?? null) === practiceId &&
-        (e.doctorName ?? "").trim().toLowerCase() !== curName,
+        (e.doctorName ?? "").trim() !== curName,
     );
   }, [singleReassign, searchAccumulated, targetProviderId, initialSources]);
 
@@ -1999,11 +1998,10 @@ export function MergeDialog({
                 </div>
               )}
               {visibleEntries.map((e, i) => {
-                const k = `${(e.doctorName ?? "").toLowerCase()}|${e.providerOrganizationId ?? ""}`;
+                const k = `${e.doctorName ?? ""}|${e.providerOrganizationId ?? ""}`;
                 const inSources = sourceKeys.has(k);
                 const isTarget =
-                  (e.doctorName ?? "").toLowerCase() ===
-                    targetName.trim().toLowerCase() &&
+                  (e.doctorName ?? "").trim() === targetName.trim() &&
                   (e.providerOrganizationId ?? null) === targetProviderId;
                 return (
                   <div

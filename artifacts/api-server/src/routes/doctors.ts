@@ -95,10 +95,6 @@ const mergeSchema = z.object({
 
 type ParsedMerge = z.infer<typeof mergeSchema>;
 
-function normalizeKey(name: string, providerId: string | null) {
-  return `${name.trim().toLowerCase()}|${providerId ?? ""}`;
-}
-
 // Doctor-name fuzzy-matching helpers now live in a shared module so the
 // pre-create duplicate check, the duplicate-clusters panel, and the cases
 // route all use identical normalization, scoring, and thresholds.
@@ -164,8 +160,7 @@ async function loadAndAuthorizeMerge(
   // Reject self-merge: every source must differ from the target.
   for (const s of input.sources) {
     const sameName =
-      s.doctorName.trim().toLowerCase() ===
-      input.targetDoctorName.trim().toLowerCase();
+      s.doctorName.trim() === input.targetDoctorName.trim();
     const samePractice =
       (s.providerOrganizationId ?? null) ===
       (input.targetProviderOrganizationId ?? null);
@@ -177,11 +172,11 @@ async function loadAndAuthorizeMerge(
     }
   }
 
-  // Dedupe sources.
+  // Dedupe sources using exact-cased identity (trim only).
   const seen = new Set<string>();
   const dedupedSources: typeof input.sources = [];
   for (const s of input.sources) {
-    const key = normalizeKey(s.doctorName, s.providerOrganizationId);
+    const key = `${s.doctorName.trim()}|${s.providerOrganizationId ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
     dedupedSources.push(s);

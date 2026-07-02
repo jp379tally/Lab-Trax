@@ -1,0 +1,122 @@
+### Replit Build Brief
+
+**Objective**
+Fix doctor merging so case-only / capitalization-only duplicates like `Dr. Ray montalvo` and `Dr. Ray Montalvo` can be merged/canonicalized from Customer Center.
+
+**User-visible problem**
+In the merge modal, both Ray Montalvo rows show as `Target ✓`, `SOURCES (0)` remains empty, and the `Merge` button stays disabled. The user cannot add either spelling as a source.
+
+**Likely root cause**
+The frontend merge dialog collapses doctor row identity with `doctorName.toLowerCase() + providerOrganizationId`. That makes `Dr. Ray montalvo` and `Dr. Ray Montalvo` look like the same row. Separately, the backend rejects source/target pairs as “same” using case-insensitive name comparison, so even if the UI allowed selection, the API likely blocks pure casing merges.
+
+**Exact code areas to inspect/change**
+
+* `artifacts/labtrax-desktop/src/pages/accounts.tsx`
+
+  * Customer Center imports and uses `MergeDialog` from `@/pages/doctors`.
+* `artifacts/labtrax-desktop/src/pages/doctors.tsx`
+
+  * `MergeDialog`
+  * source/target key generation
+  * `sourceKeys`
+  * `isTarget`
+  * `targetSelfMerge`
+  * initial source/target auto-pick logic
+* `artifacts/api-server/src/routes/doctors.ts`
+
+  * `loadAndAuthorizeMerge`
+  * `normalizeKey`
+  * self-merge rejection
+  * source dedupe logic
+  * `/merge/preview` and `/merge`
+
+**Implementation plan**
+
+1. Add a frontend helper for exact merge row identity, preserving visible doctor-name casing:
+
+   * `doctorRowKey(name, providerId) => `${name.trim()}|${providerId ?? ""}``
+2. Use that exact key in `MergeDialog` for:
+
+   * `sourceKeys`
+   * `addSource`
+   * search-result `inSources`
+   * search-result `isTarget`
+3. Change `targetSelfMerge` to reject only exact same trimmed doctor name plus same provider, not case-insensitive same name.
+4. Ensure the dialog can represent this valid intent:
+
+   * source: `Dr. Ray montalvo`
+   * target: `Dr. Ray Montalvo`
+   * same provider organization
+5. Update backend doctor merge validation:
+
+   * continue rejecting exact same source and target
+   * allow same provider + same name after lowercasing when the raw trimmed casing differs
+6. Keep the actual case update case-insensitive so all casing variants under that provider are normalized to the chosen target spelling.
+7. Add tests for capitalization-only duplicates.
+
+**Guardrails**
+
+* Do not loosen cross-practice or cross-lab validation.
+* Do not allow a true no-op merge where source and target are exactly the same string and same provider.
+* Keep undo behavior intact.
+* Do not change practice merge behavior.
+* Confirm pricing overrides and legacy `lab_cases` behavior still work.
+
+**Acceptance criteria**
+
+* In Customer Center, searching `Ray Montalvo` shows both rows separately.
+* Selecting `Dr. Ray Montalvo` as target does not mark `Dr. Ray montalvo` as target.
+* `+ Source` remains enabled for the casing variant.
+* After adding one source, `SOURCES (1)` appears and `Merge` enables.
+* Merge normalizes all matching Ray Montalvo cases to the selected target casing.
+* Undo still works within the 10-minute window.
+
+**Regression checks**
+
+* Merge two truly different spellings, like `Dr. John Smith` into `Dr John Smith`.
+* Merge same doctor name across different practices.
+* Try exact same source and target; it should still be rejected.
+* Verify Customer Center and standalone Doctors page both behave correctly.
+
+### Copy-Ready Replit Prompt
+
+Please debug and fix the LabTrax doctor merge flow for capitalization-only duplicate doctors.
+
+In Customer Center > Practices & Doctors, the merge dialog is not allowing me to merge `Dr. Ray montalvo` into `Dr. Ray Montalvo`. The screenshot shows both rows marked as `Target ✓`, `SOURCES (0)` stays empty, and the Merge button remains disabled.
+
+Likely cause: `artifacts/labtrax-desktop/src/pages/doctors.tsx` uses lowercase doctor-name keys in `MergeDialog`, so `Dr. Ray montalvo` and `Dr. Ray Montalvo` collapse into the same row identity when they share the same `providerOrganizationId`. Customer Center uses this same dialog from `artifacts/labtrax-desktop/src/pages/accounts.tsx`. Also inspect `artifacts/api-server/src/routes/doctors.ts`, because backend self-merge validation appears to reject source/target pairs case-insensitively.
+
+Please implement the safest fix:
+
+1. In `MergeDialog`, preserve exact trimmed doctor-name casing for row identity when deciding whether an entry is already a source or is the current target.
+2. Do not use `doctorName.toLowerCase()` for source/target identity in the UI when the user needs to merge capitalization-only variants.
+3. Allow `Dr. Ray montalvo` as a source while `Dr. Ray Montalvo` is the target if the raw trimmed strings differ, even with the same provider organization.
+4. Keep rejecting true no-op merges where source and target are exactly the same trimmed name and same provider.
+5. In `artifacts/api-server/src/routes/doctors.ts`, update validation/dedupe only as needed so a case-only canonicalization merge is accepted, but cross-lab/practice safety remains unchanged.
+6. Keep the actual update case-insensitive so all matching case variants under that provider can be normalized to the chosen target spelling.
+7. Add or update tests covering:
+
+   * capitalization-only duplicate merge
+   * exact same source/target still rejected
+   * different spellings still merge
+   * same doctor name across different practices still behaves correctly
+
+Before finishing, verify the Customer Center merge modal allows one Ray Montalvo spelling to be selected as source and the other as target, previews correctly, merges successfully, and undo still works.
+
+### Debug Analysis
+
+The strongest evidence is the screenshot: both `Dr. Ray montalvo` and `Dr. Ray Montalvo` are shown as target rows, and neither can be added as a source. The code supports that: `MergeDialog` computes keys with lowercased doctor names, so capitalization-only variants collapse.
+
+The backend has a matching problem: `loadAndAuthorizeMerge` treats source and target as the same if their lowercase names and provider IDs match. That is correct for true duplicate clicks, but too strict for a casing cleanup where the target spelling is intentionally different.
+
+Best fix is to treat UI row identity as exact-cased, while keeping backend data matching case-insensitive for the actual normalization. Confidence is high.
+
+### Step-by-Step Fix Plan
+
+1. Patch `MergeDialog` in `artifacts/labtrax-desktop/src/pages/doctors.tsx`.
+2. Add helper functions for exact source/target keys and exact same-row checks.
+3. Replace lowercased source/target identity checks in `sourceKeys`, `addSource`, `isTarget`, and `targetSelfMerge`.
+4. Patch `artifacts/api-server/src/routes/doctors.ts` so only exact same source/target is rejected.
+5. Preserve case-insensitive database matching for the actual merge update.
+6. Add regression tests.
+7. Test the Ray Montalvo flow in Customer Center.
