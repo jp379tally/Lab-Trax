@@ -25,7 +25,7 @@ import { FormSheet } from "@/components/ui/FormSheet";
 type ClusterDoctor = NonNullable<DoctorDuplicateCluster["doctors"]>[number];
 
 function doctorKey(d: { doctorName?: string | null; providerOrganizationId?: string | null }) {
-  return `${(d.doctorName ?? "").toLowerCase()}|${d.providerOrganizationId ?? ""}`;
+  return `${d.doctorName ?? ""}|${d.providerOrganizationId ?? ""}`;
 }
 
 interface LabPractice {
