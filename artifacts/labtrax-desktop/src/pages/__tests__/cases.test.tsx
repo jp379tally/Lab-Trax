@@ -558,6 +558,35 @@ describe("CasesPage persisted-filter lifecycle", () => {
     ).not.toBeDisabled();
   });
 
+  it("restores the persisted scroll position to the list container on mount", async () => {
+    // Task #2683: the Cases page persists the scroll container's scrollTop in
+    // sessionStorage under `cases_scroll_v1` and restores it on mount so
+    // returning from a case drops you back where you left off. Seed a non-zero
+    // value, mount the page inside a scroll container (a <main>, which is what
+    // the restore effect walks up to via pageRef.closest("main")), and assert
+    // the container's scrollTop is restored. Removing/breaking the restore
+    // effect makes this fail.
+    const CASES_SCROLL_STORAGE_KEY = "cases_scroll_v1";
+    sessionStorage.setItem(CASES_SCROLL_STORAGE_KEY, "420");
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        <main data-testid="cases-scroll-container">
+          {withAiPanel(<CasesPage />)}
+        </main>
+      </Wrapper>,
+    );
+
+    const container = screen.getByTestId(
+      "cases-scroll-container",
+    ) as HTMLElement;
+
+    await waitFor(() => {
+      expect(container.scrollTop).toBe(420);
+    });
+  });
+
   it("Reset filters clears every in-scope filter but leaves sort order untouched", async () => {
     // Seed an active filter plus a non-default sort. The persist effect keeps
     // sessionStorage in sync with state, so after reset we can read it back to
