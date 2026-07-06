@@ -409,6 +409,54 @@ describe("CasesListScreen (read-only canonical list)", () => {
     });
   });
 
+  // Task #2678: the other half of the preserve-on-workflow promise — when the
+  // user comes BACK from an in-Cases workflow (case detail / new-case), the
+  // filters they had applied are still reflected in the list. Because the tab
+  // screen stays mounted across the round-trip, "restore" means the in-memory
+  // filter state survives the blur-into-workflow and is re-rendered on return.
+  // Covers a non-search filter (Conflicts) alongside the text search — prior
+  // coverage only exercised the text search on preservation.
+  describe("returning from a case workflow keeps the applied filters", () => {
+    beforeEach(() => {
+      setMockAppState({ cases: [inProgressCase, completedCaseWithInvoice] });
+    });
+
+    it("re-shows the search box and active-filter chip after a case round-trip", async () => {
+      const { getByTestId, queryByTestId, queryByText } = render(<CasesListScreen />);
+      // Consume any stale leavingIntoCasesWorkflow flag from a prior test.
+      await flushFocusEffect();
+      blur();
+
+      // Apply a text search AND a non-search filter (Conflicts).
+      fireEvent.changeText(getByTestId("cases-search"), "Jane");
+      fireEvent.press(getByTestId("cases-conflict-filter-chip"));
+
+      // Both are active: search populated, reset chip visible, and the header
+      // subtitle shows the "(filtered)" marker driven by the non-search filter.
+      expect(getByTestId("cases-search").props.value).toBe("Jane");
+      expect(queryByTestId("cases-reset-filters-chip")).toBeTruthy();
+      expect(queryByText(/\(filtered\)/)).toBeTruthy();
+      await flushFocusEffect();
+
+      // Leave into an in-Cases workflow — the New button sets
+      // leavingIntoCasesWorkflow so the blur PRESERVES filters instead of
+      // resetting them. (The list rows are hidden by the Conflicts filter, so
+      // this always-visible affordance is what drives the navigation.)
+      fireEvent.press(getByTestId("new-case-button"));
+      expect(router.push).toHaveBeenCalledWith("/new-case");
+
+      // Blur into that workflow, then re-focus as if returning to Cases.
+      blur();
+      await flushFocusEffect();
+
+      // On return, every applied filter is still reflected in the UI — the list
+      // did NOT silently drop back to an unfiltered state.
+      expect(getByTestId("cases-search").props.value).toBe("Jane");
+      expect(queryByTestId("cases-reset-filters-chip")).toBeTruthy();
+      expect(queryByText(/\(filtered\)/)).toBeTruthy();
+    });
+  });
+
   // Task #2668: the "Reset filters" chip surfaces only when a record-hiding
   // filter (or the text search) is active, and pressing it clears everything.
   describe("Reset filters chip", () => {

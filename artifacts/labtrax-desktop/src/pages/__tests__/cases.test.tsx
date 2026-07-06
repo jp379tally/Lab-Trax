@@ -512,6 +512,52 @@ describe("CasesPage persisted-filter lifecycle", () => {
     expect(sessionStorage.getItem(CASES_FILTER_STORAGE_KEY)).not.toBeNull();
   });
 
+  it("restores the persisted filters to the toolbar on mount (not just the search)", () => {
+    // Seed a full round-trip's worth of filters as if the user applied them,
+    // opened a case detail, and is now coming BACK to Cases. The page must
+    // re-hydrate every control from `cases_filters_v2`, not just the search.
+    seedCasesFilters({
+      search: "Jane",
+      statusFilter: "in_porcelain",
+      priorityFilter: "rush",
+      dateRangeFilter: "30",
+    });
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+
+    // Text search is restored into the toolbar input.
+    const searchInput = screen.getByPlaceholderText(
+      "Search case #, doctor, patient…",
+    ) as HTMLInputElement;
+    expect(searchInput.value).toBe("Jane");
+
+    // Each filter <select> reflects its persisted value. Identify them by the
+    // option set they own so the assertion doesn't depend on DOM order.
+    const selects = Array.from(
+      document.querySelectorAll("select"),
+    ) as HTMLSelectElement[];
+
+    const statusSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "in_porcelain"),
+    );
+    const prioritySelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "rush"),
+    );
+    const dateSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "30"),
+    );
+
+    expect(statusSelect?.value).toBe("in_porcelain");
+    expect(prioritySelect?.value).toBe("rush");
+    expect(dateSelect?.value).toBe("30");
+
+    // A restored non-default filter also enables the Reset filters affordance.
+    expect(
+      screen.getByRole("button", { name: /Reset filters/i }),
+    ).not.toBeDisabled();
+  });
+
   it("Reset filters clears every in-scope filter but leaves sort order untouched", async () => {
     // Seed an active filter plus a non-default sort. The persist effect keeps
     // sessionStorage in sync with state, so after reset we can read it back to
