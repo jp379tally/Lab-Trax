@@ -74,6 +74,7 @@ export interface UseTableColumnsResult<T> {
   resetWidth: (id: string) => void;
   resetAll: () => void;
   moveColumn: (id: string, direction: "left" | "right") => void;
+  reorderColumn: (dragId: string, targetId: string) => void;
   setColumnOrder: (order: string[]) => void;
   toggleColumn: (id: string) => void;
   setColumnHidden: (id: string, hidden: boolean) => void;
@@ -186,6 +187,25 @@ export function useTableColumns<T>(
     [schedulePersist],
   );
 
+  const reorderColumn = useCallback(
+    (dragId: string, targetId: string) => {
+      if (dragId === targetId) return;
+      setState((prev) => {
+        const from = prev.order.indexOf(dragId);
+        const to = prev.order.indexOf(targetId);
+        if (from === -1 || to === -1 || from === to) return prev;
+        const next = [...prev.order];
+        next.splice(from, 1);
+        const insertAt = from < to ? next.indexOf(targetId) + 1 : next.indexOf(targetId);
+        next.splice(insertAt, 0, dragId);
+        const updated = { ...prev, order: next };
+        schedulePersist(updated);
+        return updated;
+      });
+    },
+    [schedulePersist],
+  );
+
   const setColumnOrder = useCallback(
     (order: string[]) => {
       setState((prev) => {
@@ -268,6 +288,7 @@ export function useTableColumns<T>(
     resetWidth,
     resetAll,
     moveColumn,
+    reorderColumn,
     setColumnOrder,
     toggleColumn,
     setColumnHidden,

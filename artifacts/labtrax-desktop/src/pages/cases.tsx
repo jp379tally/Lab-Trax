@@ -2118,6 +2118,8 @@ export default function CasesPage() {
   const [selected, setSelected] = useState<LabCase | null>(null);
   const [showNewCase, setShowNewCase] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [dragColId, setDragColId] = useState<string | null>(null);
+  const [dragOverColId, setDragOverColId] = useState<string | null>(null);
   const [showReassignModal, setShowReassignModal] = useState(false);
   const [reassignTargetId, setReassignTargetId] = useState<string>("");
   const [showBulkStatusModal, setShowBulkStatusModal] = useState(false);
@@ -3018,13 +3020,55 @@ export default function CasesPage() {
                     className="rounded border-border"
                   />
                 </th>
-                {caseCols.visible.map((col) => (
+                {caseCols.visible.map((col) => {
+                  const isDragging = dragColId === col.id;
+                  const isDropTarget = dragOverColId === col.id && dragColId !== null && dragColId !== col.id;
+                  const dragIdx = dragColId ? caseCols.visible.findIndex((c) => c.id === dragColId) : -1;
+                  const overIdx = caseCols.visible.findIndex((c) => c.id === col.id);
+                  const indicatorSide = dragIdx !== -1 && dragIdx < overIdx ? "right" : "left";
+                  return (
                   <th
                     key={col.id}
                     className={`${col.align === "right" ? "text-right" : "text-left"} py-2.5 relative`}
                     style={{ overflow: "hidden" }}
+                    onDragOver={(e) => {
+                      if (!dragColId || dragColId === col.id) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      if (dragOverColId !== col.id) setDragOverColId(col.id);
+                    }}
+                    onDrop={(e) => {
+                      if (!dragColId || dragColId === col.id) return;
+                      e.preventDefault();
+                      caseCols.reorderColumn(dragColId, col.id);
+                      setDragColId(null);
+                      setDragOverColId(null);
+                    }}
                   >
-                    {col.label}
+                    {isDropTarget && (
+                      <span
+                        aria-hidden="true"
+                        className="absolute top-0 bottom-0 w-0.5 bg-primary z-10 pointer-events-none"
+                        style={{ [indicatorSide]: 0 }}
+                      />
+                    )}
+                    <span
+                      draggable
+                      onDragStart={(e) => {
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", col.id);
+                        setDragColId(col.id);
+                      }}
+                      onDragEnd={() => {
+                        setDragColId(null);
+                        setDragOverColId(null);
+                      }}
+                      title="Drag to reorder column"
+                      className={`inline-flex items-center align-middle ${isDragging ? "opacity-40" : ""}`}
+                      style={{ cursor: isDragging ? "grabbing" : "grab" }}
+                    >
+                      {col.label}
+                    </span>
                     <div
                       onMouseDown={(e) => caseCols.startResize(col.id, e)}
                       onDoubleClick={() => caseCols.resetWidth(col.id)}
@@ -3048,7 +3092,8 @@ export default function CasesPage() {
                       />
                     </div>
                   </th>
-                ))}
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
