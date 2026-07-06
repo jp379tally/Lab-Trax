@@ -680,4 +680,21 @@ describe("CasesPage iTero import-batch restore-then-clear", () => {
     ).not.toBeInTheDocument();
     expect(sessionStorage.getItem(CASES_ITERO_BATCH_KEY)).toBeNull();
   });
+
+  it("clears a lingering batch key when the page unmounts (leaving Cases)", () => {
+    // Mirrors the persisted-filter "clears on unmount" test. The mount effect
+    // consumes any pre-existing batch key, so seed it AFTER mount to simulate a
+    // batch key that lingers while the page is open. Navigating away from /cases
+    // entirely (unmount) must remove it so it can't re-surface the banner later.
+    const Wrapper = makeAuthWrapper("/cases");
+    const { unmount } = render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+
+    // Simulate a batch key present while the page is mounted.
+    seedIteroActiveBatch();
+    expect(sessionStorage.getItem(CASES_ITERO_BATCH_KEY)).not.toBeNull();
+
+    // Unmounting the page (route change to another section) clears it.
+    unmount();
+    expect(sessionStorage.getItem(CASES_ITERO_BATCH_KEY)).toBeNull();
+  });
 });
