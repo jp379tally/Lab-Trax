@@ -20,6 +20,7 @@ import {
   EyeOff,
   FileUp,
   Filter,
+  FilterX,
   GitBranch,
   Image as ImageIcon,
   ImageOff,
@@ -2141,6 +2142,50 @@ export default function CasesPage() {
     }
   };
 
+  // Whether any record-hiding filter is currently active. Sort order and column
+  // settings are display preferences and intentionally excluded.
+  const hasActiveFilters =
+    search.trim().length > 0 ||
+    statusFilter !== "all" ||
+    priorityFilter !== "all" ||
+    dateRangeFilter !== "all" ||
+    customStartDate !== "" ||
+    customEndDate !== "" ||
+    barcodeFilter.trim().length > 0 ||
+    conflictsOnly ||
+    iteroActiveBatch !== null;
+
+  // Reset every in-scope Cases filter to its default and drop the persisted
+  // entries so the list reloads unfiltered in place. Sort order is left as-is.
+  const resetFilters = useCallback(() => {
+    setSearch("");
+    setStatusFilter("all");
+    setPriorityFilter("all");
+    setDateRangeFilter("all");
+    setCustomStartDate("");
+    setCustomEndDate("");
+    setBarcodeFilter("");
+    setConflictsOnly(false);
+    setIteroActiveBatch(null);
+    try {
+      sessionStorage.removeItem(CASES_FILTER_STORAGE_KEY);
+      sessionStorage.removeItem(CASES_ITERO_BATCH_KEY);
+    } catch {}
+  }, []);
+
+  // Clear persisted Cases filters when leaving the /cases route entirely
+  // (component unmount). Opening/closing the case-detail drawer stays on /cases
+  // and keeps this component mounted, so filters survive that workflow per the
+  // persist-filters behavior; only navigating to another section clears them.
+  useEffect(() => {
+    return () => {
+      try {
+        sessionStorage.removeItem(CASES_FILTER_STORAGE_KEY);
+        sessionStorage.removeItem(CASES_ITERO_BATCH_KEY);
+      } catch {}
+    };
+  }, []);
+
   const orgsQuery = useQuery({
     queryKey: ["organizations", { includeLabPractices: true }],
     queryFn: () =>
@@ -2776,6 +2821,17 @@ export default function CasesPage() {
                 {conflictCount}
               </span>
             )}
+          </button>
+
+          <button
+            type="button"
+            onClick={resetFilters}
+            disabled={!hasActiveFilters}
+            title="Clear all Cases filters"
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium border border-transparent bg-secondary text-foreground hover:bg-secondary/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <FilterX size={14} />
+            Reset filters
           </button>
 
           <ColumnSettingsPopover

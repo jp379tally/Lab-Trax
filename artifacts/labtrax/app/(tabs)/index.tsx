@@ -298,6 +298,13 @@ function statusVariant(status: string | null | undefined): BadgeVariant {
   return "progress";
 }
 
+// Set to true right before navigating into an in-Cases-workflow screen
+// (case detail or new-case). The list's focus-effect cleanup reads this on blur
+// to decide whether to preserve filters (in-workflow) or reset them (left the
+// Cases section entirely). Module-level so it survives the blur that unmounts
+// nothing but re-runs the focus effect.
+let leavingIntoCasesWorkflow = false;
+
 // ── Main screen ──────────────────────────────────────────────────────────────
 export default function CasesListScreen() {
   const insets = useSafeAreaInsets();
@@ -446,6 +453,7 @@ export default function CasesListScreen() {
 
       setTimeout(() => {
         closeScanModal();
+        leavingIntoCasesWorkflow = true;
         router.push(`/case/${caseId}` as never);
       }, 900);
     } catch {
@@ -540,6 +548,42 @@ export default function CasesListScreen() {
   const [showLocationModal, setShowLocationModal] = useState(false);
   // Draft selections while the modal is open
   const [locationDraft, setLocationDraft] = useState<string[]>([]);
+
+  // Reset every record-hiding Cases filter to its default. Sort/display prefs
+  // are untouched. Stable identity (only stable setters referenced) so the
+  // reset-on-leave focus effect below never re-fires mid-session.
+  const resetFilters = useCallback(() => {
+    setQuery("");
+    setCreatedFilter("all");
+    setDueFilter("all");
+    setCreatedCustomFrom(null);
+    setCreatedCustomTo(null);
+    setDueCustomFrom(null);
+    setDueCustomTo(null);
+    setDraftFrom("");
+    setDraftTo("");
+    setCustomError("");
+    setLocationFilter([]);
+    setBarcodeFilter("");
+    setShowBarcodeFilter(false);
+    setConflictFilter(false);
+  }, []);
+
+  // Reset Cases filters when leaving the Cases section entirely, but preserve
+  // them when the exit was into an in-Cases workflow (case detail / new-case),
+  // so returning from a case keeps the user's place. The flag is set right
+  // before those in-workflow navigations and consumed here on blur.
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        if (leavingIntoCasesWorkflow) {
+          leavingIntoCasesWorkflow = false;
+        } else {
+          resetFilters();
+        }
+      };
+    }, [resetFilters]),
+  );
 
   // ── Long-press locate (single) + multi-select mode
   // Guard: after a long-press fires, the subsequent pressOut→onPress (on that
@@ -856,6 +900,9 @@ export default function CasesListScreen() {
   const activeFilters =
     createdFilter !== "all" || dueFilter !== "all" || locationFilter.length > 0 || barcodeFilter.trim().length > 0 || conflictFilter;
 
+  // Includes the text search too — drives the visible Reset filters control.
+  const anyFilterActive = activeFilters || query.trim().length > 0;
+
   // Derived: the CanonicalCase objects for the currently selected IDs
   const selectedCases = useMemo(
     () => filtered.filter((c) => selectedIds.has(c.id)),
@@ -887,7 +934,10 @@ export default function CasesListScreen() {
           </View>
           <Pressable
             style={styles.newBtn}
-            onPress={() => router.push("/new-case" as never)}
+            onPress={() => {
+              leavingIntoCasesWorkflow = true;
+              router.push("/new-case" as never);
+            }}
             testID="new-case-button"
           >
             <Ionicons name="add" size={18} color={colors.textInverse} />
@@ -1159,6 +1209,28 @@ export default function CasesListScreen() {
               </Pressable>
             )}
           </Pressable>
+
+          {/* Reset filters — clears every record-hiding filter at once */}
+          {anyFilterActive && (
+            <>
+              <View style={styles.chipDivider} />
+              <Pressable
+                style={[styles.chip, { borderColor: colors.error }]}
+                onPress={resetFilters}
+                testID="cases-reset-filters-chip"
+              >
+                <Ionicons
+                  name="close-circle-outline"
+                  size={14}
+                  color={colors.error}
+                  style={{ marginRight: 4 }}
+                />
+                <Text style={[styles.chipText, { color: colors.error }]}>
+                  Reset filters
+                </Text>
+              </Pressable>
+            </>
+          )}
         </ScrollView>
       </View>
 
@@ -1223,6 +1295,7 @@ export default function CasesListScreen() {
                     toggleSelection(item.id);
                     return;
                   }
+                  leavingIntoCasesWorkflow = true;
                   router.push(`/case/${item.id}` as never);
                 }}
                 onLongPress={() => {
