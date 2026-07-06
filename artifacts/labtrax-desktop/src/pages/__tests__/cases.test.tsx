@@ -597,3 +597,58 @@ describe("CasesPage persisted-filter lifecycle", () => {
     });
   });
 });
+
+// Task #2684: after an iTero import, the Cases page stashes the active batch in
+// `cases_itero_batch_v1`, restores it on mount (so the just-imported batch view
+// shows), and then removes the key so the batch banner surfaces exactly once —
+// it must not re-appear on every subsequent visit. Neither half had coverage.
+const CASES_ITERO_BATCH_KEY = "cases_itero_batch_v1";
+
+function seedIteroActiveBatch(overrides: Record<string, unknown> = {}) {
+  sessionStorage.setItem(
+    CASES_ITERO_BATCH_KEY,
+    JSON.stringify({
+      batchId: "batch-1",
+      caseIds: ["case-1", "case-2"],
+      importedAt: "2026-01-15T10:00:00.000Z",
+      label: "Dr. Smith",
+      ...overrides,
+    }),
+  );
+}
+
+describe("CasesPage iTero import-batch restore-then-clear", () => {
+  afterEach(() => {
+    sessionStorage.clear();
+  });
+
+  it("restores the stashed batch on mount and removes the key so it shows once", async () => {
+    seedIteroActiveBatch();
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+
+    // The restored batch state renders its dedicated banner, confirming the
+    // imported-batch view was applied on mount.
+    expect(
+      await screen.findByText(/Filtered to iTero import session/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Dr\. Smith/)).toBeInTheDocument();
+
+    // The mount effect clears the storage key immediately so returning to
+    // Cases later won't re-surface the same batch banner.
+    expect(sessionStorage.getItem(CASES_ITERO_BATCH_KEY)).toBeNull();
+  });
+
+  it("does not show the batch banner on a fresh mount when no batch is stashed", () => {
+    const Wrapper = makeAuthWrapper("/cases");
+    render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+
+    // With nothing stashed the banner must not appear — this is the "second
+    // visit" state after the key was already consumed and cleared.
+    expect(
+      screen.queryByText(/Filtered to iTero import session/i),
+    ).not.toBeInTheDocument();
+    expect(sessionStorage.getItem(CASES_ITERO_BATCH_KEY)).toBeNull();
+  });
+});
