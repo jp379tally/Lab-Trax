@@ -1,0 +1,184 @@
+### Replit Build Brief
+
+**Objective**
+Fix the mobile case Files section regression where tapping **Add photo or file** does not open the photo/file picker and instead shows a clipped “photo” button fragment in the top-left of the screen.
+
+**User-visible problem**
+On case **26-168**, patient **Midge Asher**, in the mobile case overview Files section, tapping **Add photo or file** produces a broken partial picker UI at the top-left. The user cannot tap it and cannot add a photo or file.
+
+**Likely root cause**
+The issue is most likely in the mobile picker launcher, not the backend upload pipeline. In `artifacts/labtrax/app/case/[id].tsx`, `FilesSection.openAddSheet()` uses `Alert.alert("Add to case", ..., buttons)` to show picker choices:
+
+* `Take Photo`
+* `Choose from Library`
+* `Attach File`
+
+That is fragile on mobile web / Expo / React Native surfaces. The symptom of a partial “photo” control appearing at the top-left strongly suggests the native/web picker UI or alert action UI is being mounted or positioned incorrectly. The actual upload function, `artifacts/labtrax/lib/uploadCaseAttachment.ts`, looks like the second-stage pipeline and should not be the first suspect because the user never reaches file selection.
+
+**Exact areas to inspect/change**
+
+* `artifacts/labtrax/app/case/[id].tsx`
+
+  * `FilesSection`
+  * `openAddSheet`
+  * `pickFromCamera`
+  * `pickFromLibrary`
+  * `pickDocument`
+  * note modal after file selection
+* `artifacts/labtrax/lib/uploadCaseAttachment.ts`
+
+  * verify only; avoid changing unless upload fails after picker opens
+* `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx`
+
+  * add regression tests for the Add Photo/File chooser flow
+* `REGRESSION_GUARDRAILS.md`
+
+  * mobile Files / photos / documents is already protected; update notes if a new regression test is added
+
+**Implementation plan**
+
+Replace the `Alert.alert` picker chooser with a real in-app bottom-sheet `Modal` in `FilesSection`.
+
+The Add button should set something like `setAddSheetVisible(true)`. The sheet should render three full-width `Pressable` rows:
+
+* Take Photo
+* Choose from Library
+* Attach File
+* Cancel
+
+Each row should close the sheet and then call the matching picker function. Keep the existing picker functions and upload pipeline, but make sure they are called from the user’s tap path, not from a fragile alert callback.
+
+Add `testID`s such as:
+
+* `files-add-button`
+* `files-add-sheet`
+* `files-add-camera`
+* `files-add-library`
+* `files-add-document`
+* `files-add-cancel`
+
+**Guardrails**
+
+* Do not change attachment API routes or database schema.
+* Do not bypass `uploadCaseAttachment`.
+* Do not remove auth-aware attachment opening behavior.
+* Do not regress existing image/PDF/STL open behavior.
+* Do not rely on `Alert.alert` for the file source chooser.
+* Keep editor gating: Add Photo/File should show only when `canEdit === true`.
+
+**Acceptance criteria**
+
+* On mobile, tapping **Add photo or file** opens a visible, centered/bottom-sheet chooser.
+* No clipped “photo” fragment appears in the top-left.
+* Tapping **Take Photo** opens the camera permission/camera flow.
+* Tapping **Choose from Library** opens the image library.
+* Tapping **Attach File** opens the document picker.
+* After selecting a photo/file, the existing note modal still appears.
+* Upload progress still appears.
+* The new attachment appears in the Files section after upload.
+* Existing attachments still open correctly.
+
+**Regression checks**
+
+Run:
+
+```bash
+pnpm --filter @workspace/labtrax run test
+pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
+```
+
+Then real-device smoke test:
+
+1. Open case `26-168`.
+2. Go to Files.
+3. Tap **Add photo or file**.
+4. Verify the chooser is fully visible and tappable.
+5. Add a camera photo.
+6. Add a library photo.
+7. Add a document.
+8. Confirm each attachment appears and can be opened.
+
+### Copy-Ready Replit Prompt
+
+Please fix a LabTrax mobile regression in the case Files section.
+
+Issue: On mobile, in case `26-168` for patient `Midge Asher`, tapping **Add photo or file** in the case detail Files section no longer opens a usable picker. Instead, a clipped/shadowed fragment of a “photo” button appears at the very top-left of the screen. The user cannot tap it and cannot add photos/files. This worked last week and is a protected workflow.
+
+Please inspect `artifacts/labtrax/app/case/[id].tsx`, especially `FilesSection`, `openAddSheet`, `pickFromCamera`, `pickFromLibrary`, and `pickDocument`.
+
+Likely root cause: `FilesSection.openAddSheet()` currently uses `Alert.alert(...)` to present the picker choices. That alert/action-sheet path appears to be rendering or triggering the native/web picker UI incorrectly on mobile. Replace it with a proper in-app bottom-sheet `Modal` rendered by React Native, with full-width tappable rows for:
+
+* Take Photo
+* Choose from Library
+* Attach File
+* Cancel
+
+Keep the existing upload pipeline through `uploadCaseAttachment`; do not change the backend attachment API unless you prove upload fails after picker selection. The current symptom happens before selection/upload, so focus on the chooser/picker launcher.
+
+Requirements:
+
+* The existing **Add photo or file** button should open the new bottom sheet.
+* The sheet must be fully visible, not clipped, and dismissible.
+* Each option should close the sheet and then invoke the existing picker function.
+* Preserve `canEdit` gating.
+* Preserve the note modal after file selection.
+* Preserve upload progress and refresh behavior.
+* Add regression coverage in `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx` for the Add Photo/File flow.
+* Add test IDs for the chooser controls, for example `files-add-sheet`, `files-add-camera`, `files-add-library`, `files-add-document`, and `files-add-cancel`.
+* Do not remove or weaken existing attachment open/delete tests.
+
+Before finishing, run:
+
+```bash
+pnpm --filter @workspace/labtrax run test
+pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
+```
+
+Also document any assumptions or tradeoffs if you find evidence contradicting this diagnosis.
+
+### Debug Analysis
+
+**Probable root cause**
+The file-source chooser is implemented with `Alert.alert` inside `FilesSection.openAddSheet()`. That is the likely regression point. The reported “only the last four letters of photo show in the top-left” sounds like a native/web picker or action control being injected in the wrong place, not like an upload API failure.
+
+**Supporting evidence**
+
+* The broken behavior occurs immediately after tapping **Add photo or file**.
+* The user cannot even select a photo, so upload/registration likely has not started.
+* The repo shows picker launcher code in `artifacts/labtrax/app/case/[id].tsx`.
+* The upload pipeline in `uploadCaseAttachment.ts` is separate and only runs after a file URI is selected.
+* Existing tests cover opening/deleting attachments, but I did not see coverage for pressing **Add photo or file** and choosing camera/library/document.
+* Regression guardrails explicitly protect mobile Files / photos / documents.
+
+**Alternate hypotheses worth checking**
+
+* An Expo `expo-image-picker` behavior changed after dependency/build changes.
+* The app is being used through a mobile web/PWA surface where browser file-input behavior differs from native TestFlight.
+* A global style/layout change is affecting modals, alerts, or picker overlays.
+* Camera/photo permissions are denied, but that would normally show a permission alert, not a clipped top-left “photo” fragment.
+
+**Why this fix is best**
+Replacing the fragile alert chooser with an app-owned modal fixes the visible broken UI without touching storage, auth, or attachment APIs. It is low blast-radius, testable, and directly targets the point where the user gets stuck.
+
+**Confidence level**
+Medium-high. I could inspect the relevant mobile screen and upload pipeline, but I did not have a screenshot or live device reproduction. The symptom and code path line up strongly.
+
+### Step-by-Step Fix Plan
+
+1. In `FilesSection`, add `const [addSheetVisible, setAddSheetVisible] = useState(false)`.
+2. Change `openAddSheet()` so it only calls `setAddSheetVisible(true)`.
+3. Add a `Modal` near the existing note modal with a bottom-sheet layout.
+4. Add rows for camera, library, document, and cancel.
+5. On each picker row press:
+
+   * close the sheet
+   * call `pickFromCamera`, `pickFromLibrary`, or `pickDocument`
+6. Keep `queueWithNoteSheet()` unchanged so the note modal still appears after file selection.
+7. Add regression tests that:
+
+   * open the Files tab
+   * press `files-add-button`
+   * assert the sheet appears
+   * press each option and assert the matching picker mock is called
+8. Run the mobile test suite and legacy-path lint.
+9. Manually verify on a physical mobile device before shipping.

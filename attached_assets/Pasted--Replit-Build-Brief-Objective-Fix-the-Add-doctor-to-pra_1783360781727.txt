@@ -1,0 +1,177 @@
+### Replit Build Brief
+
+**Objective**
+Fix the “Add doctor to practice / pick existing doctor” flow so adding Dr. Brittney/Brittany Craig to Craig Dental Associates actually persists and remains visible after save, refresh, logout/login.
+
+**User-visible problem**
+The modal shows success: “Brittney K. Craig added to Craig Dental Associates.” But after saving, closing, refreshing, and logging back in, Craig Dental Associates still shows only Blake Garfinkel. Dr. Craig remains outside the practice roster.
+
+**Likely root cause**
+The current flow is only creating/linking a doctor account or membership. It is not fully updating the source of truth used by the UI to display doctors under a practice.
+
+From the repo context:
+
+* UI: `artifacts/labtrax-desktop/src/pages/practices.tsx`
+
+  * `AddDoctorToPracticeDialog`
+  * `PracticeDoctorsSection`
+* API: `artifacts/api-server/src/routes/organizations.ts`
+
+  * `POST /organizations/:organizationId/doctors`
+  * `POST /organizations/:organizationId/doctors/link`
+  * `GET /organizations/:organizationId/eligible-doctors`
+  * `GET /organizations/:organizationId/members`
+  * doctor remove/reassign helpers already include `moveDoctorCasesAndInvoices`
+
+The screenshot shows Dr. Craig is a “From case history — will create account” virtual doctor, not an existing account-backed doctor. The virtual-doctor path creates a new provider user at Craig Dental Associates, but does not move Dr. Craig’s existing cases/invoices from the old provider org into Craig Dental Associates. The Accounts page also derives practice doctor rows heavily from cases, so after reload she still does not appear under Craig Dental Associates.
+
+There is a second likely issue: `GET /organizations/:organizationId/members` currently uses direct `requireMembership`, which may block a lab admin from reading members of provider practices managed through `parentLabOrganizationId`. Other org routes already use parent-lab access helpers. If this members query fails or returns no usable active members, newly linked account-backed doctors will not show in `PracticeDoctorsSection`.
+
+**Implementation plan**
+
+1. Update the backend doctor-add/link flow so choosing a case-history doctor can adopt or move that doctor into the target practice, not just create a user account.
+2. Extend `GET /organizations/:organizationId/eligible-doctors` virtual doctor rows to include enough source context:
+
+   * `doctorName`
+   * source `providerOrganizationId`
+   * source practice name
+   * case count, if useful
+3. When the selected doctor is a virtual/case-history doctor, call a backend route that:
+
+   * creates or reuses the provider user
+   * creates/restores active membership at the destination practice
+   * moves matching cases from the source practice to the destination practice, using existing `moveDoctorCasesAndInvoices`
+   * moves invoices tied to those moved cases
+   * clears any matching `labUnassignedDoctors` exclusion record
+   * writes an audit log
+4. Fix membership visibility:
+
+   * Change `GET /organizations/:organizationId/members` authorization to allow parent-lab admins to read provider-practice members, likely via `resolveOrgReadAccess` or equivalent parent-lab logic.
+   * Return only active, non-deleted memberships unless another caller explicitly needs removed memberships.
+   * In `PracticeDoctorsSection`, filter registered doctors to `status === "active"` and not soft-deleted if the response includes status.
+5. Invalidate all affected queries after success:
+
+   * `organizations`
+   * `organization`, target practice id
+   * `organization`, target practice id, `members`
+   * `organization`, target practice id, `eligible-doctors`
+   * `cases`
+   * `invoices`
+   * `unassigned-doctors`
+6. Add regression tests in `artifacts/api-server/src/routes/organizations.test.ts` or a focused organizations-doctors test:
+
+   * lab admin can list members of a provider practice under their lab
+   * adding/reassigning a virtual case-history doctor to a destination practice persists after reload
+   * moved cases/invoices now point to the destination provider org
+   * the old practice no longer contributes that doctor row if all matching cases moved
+
+**Constraints / guardrails**
+
+* Do not hard-delete doctors, practices, cases, invoices, or memberships.
+* Keep changes scoped to provider practice doctor assignment.
+* Preserve tenant boundaries: only allow moves within the same parent lab.
+* Do not move cases across labs.
+* Do not create duplicate provider users when an existing provider user matches the selected doctor.
+* If there are multiple source practices for the same doctor name, require the UI/API to pick the exact source or return a clear conflict.
+
+**Acceptance criteria**
+
+* In Craig Dental Associates, selecting Dr. Brittney/Brittany Craig from existing/case-history doctors makes her appear in the practice’s Doctors list immediately.
+* After Save changes, close, refresh, logout/login, she still appears under Craig Dental Associates.
+* The Accounts page doctor count for Craig Dental Associates increases from 1 to 2.
+* Dr. Craig’s existing cases/invoices are either moved to Craig Dental Associates or the UI clearly states they were only linked, depending on the intended product behavior. For this reported issue, use move/adopt behavior.
+* No duplicate “Dr. Craig” account is created if a matching provider account already exists.
+* Blake Garfinkel remains attached to Craig Dental Associates.
+
+**Regression risks to check**
+
+* Removing/reassigning doctors still works.
+* Unassigned doctors still stay hidden from practice doctor lists.
+* Practice merge still moves cases/invoices correctly.
+* Pricing overrides by doctor/practice still resolve after the doctor is moved.
+* Provider portal/member visibility does not leak data across labs.
+
+### Copy-Ready Replit Prompt
+
+Please debug and fix the LabTrax desktop bug where adding an existing/case-history doctor to a practice shows a success message but does not persist visibly after refresh/login.
+
+Observed case: In `/desktop/accounts?view=duplicates`, open Craig Dental Associates, click “Add doctor to practice,” choose “Pick existing doctor,” select “Dr. Brittney K. Craig” / “Brittney K. Craig” from case history, and submit. The modal says she was added to Craig Dental Associates, but after saving, closing, refreshing, signing out/in, Craig Dental Associates still only shows Blake Garfinkel.
+
+Please inspect and update these areas:
+
+* `artifacts/labtrax-desktop/src/pages/practices.tsx`
+
+  * `AddDoctorToPracticeDialog`
+  * `PracticeDoctorsSection`
+* `artifacts/labtrax-desktop/src/pages/accounts.tsx`
+
+  * practice/doctor grouping logic
+* `artifacts/api-server/src/routes/organizations.ts`
+
+  * `GET /:organizationId/eligible-doctors`
+  * `POST /:organizationId/doctors`
+  * `POST /:organizationId/doctors/link`
+  * `GET /:organizationId/members`
+  * existing helper `moveDoctorCasesAndInvoices`
+  * existing remove/reassign doctor logic
+
+Likely root cause: the virtual/case-history doctor path creates or links a provider user/membership, but does not move the doctor’s existing cases/invoices into the target practice. The UI derives doctor rows from cases and active practice members, so after reload the doctor does not appear under the target practice. Also verify whether `GET /organizations/:organizationId/members` incorrectly requires direct membership in the provider practice instead of allowing parent-lab admins to read provider-practice members.
+
+Implement the safest fix:
+
+1. Make case-history doctor picker entries include source practice context, especially source `providerOrganizationId`, source practice name, and `doctorName`.
+2. When a virtual/case-history doctor is added to a target practice, create or reuse the provider user, ensure active membership at the target practice, and move matching cases/invoices from the source practice to the target practice using the existing `moveDoctorCasesAndInvoices` helper.
+3. Clear any matching unassigned-doctor exclusion record for that lab/user.
+4. Update `GET /organizations/:organizationId/members` so parent-lab admins can read active provider-practice members. Avoid leaking cross-lab data.
+5. Ensure `PracticeDoctorsSection` only treats active, non-deleted memberships as registered doctors.
+6. Invalidate `organizations`, target organization details, members, eligible doctors, cases, invoices, pricing/overrides if needed, and unassigned-doctors queries after success.
+7. Add backend regression coverage proving:
+
+   * lab admins can read provider-practice members under their lab
+   * adding/reassigning a case-history doctor to a target practice persists
+   * matching cases and invoices move to the destination practice
+   * the doctor remains visible after refetch/reload
+   * no duplicate doctor account is created when an existing provider user can be reused
+
+Please explain any tradeoffs if the existing product behavior is intended to “link only” instead of “move/adopt cases.” For this bug, the expected user outcome is that Dr. Craig is actually part of Craig Dental Associates after refresh/login, not merely that a success toast appears.
+
+Run the relevant API tests and any focused desktop tests/typecheck before finishing.
+
+### Debug Analysis
+
+**Primary hypothesis**
+The success message is coming from the account/membership creation path, but the persistent roster shown in the practice and Accounts page is built from active members plus case-history doctor rows. Dr. Craig’s case-history rows are still attached to the old provider organization, so Craig Dental Associates reloads with only Blake Garfinkel.
+
+**Supporting evidence**
+
+* Screenshot shows Dr. Craig listed as “From case history — will create account.”
+* `AddDoctorToPracticeDialog` virtual path calls `POST /organizations/:orgId/doctors`, which creates a provider user and membership but does not move existing case rows.
+* `AccountsPage` builds `doctorRows` from `cases`, grouped by `providerOrganizationId`.
+* `PracticeDoctorsSection` merges registered members, case history, and pricing overrides. If members are not readable by the lab admin, the new account path will also be invisible.
+* `organizations.ts` already has `moveDoctorCasesAndInvoices` for remove/reassign, but the add/link flow does not use it.
+
+**Alternate hypotheses worth checking**
+
+* `GET /organizations/:organizationId/members` is returning 403 for lab admins because it uses direct `requireMembership` instead of parent-lab read access.
+* The new membership is created but filtered out because it is inactive, soft-deleted, or the client does not filter status correctly.
+* Dr. Craig exists under a slightly different spelling, causing exact name matching to miss cases.
+
+**Confidence level**
+Medium-high. The screenshots and code path line up strongly. The one thing Replit should verify in live/dev data is whether the new membership row is actually created and whether the members endpoint is returning it to the current lab admin.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce with Craig Dental Associates and Dr. Brittney/Brittany Craig.
+2. Watch the network/API responses for:
+
+   * `GET /eligible-doctors`
+   * `POST /doctors` or `POST /doctors/link`
+   * `GET /members`
+   * `GET /cases`
+3. Confirm whether Dr. Craig’s cases still have the old `providerOrganizationId`.
+4. Update `eligible-doctors` virtual rows to carry source practice id/name.
+5. Add or update a backend route so adding a case-history doctor to a practice can move cases/invoices into the destination practice.
+6. Fix provider-practice members read access for parent-lab admins.
+7. Filter practice doctors to active, non-deleted memberships.
+8. Add regression tests around the exact workflow.
+9. Verify manually: add Dr. Craig, save, refresh, logout/login, confirm Craig Dental Associates shows both Blake Garfinkel and Dr. Craig.

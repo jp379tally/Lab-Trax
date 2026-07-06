@@ -32,6 +32,38 @@ args = "installer-download-test"
 task = "workflow.run"
 args = "EAS iOS Build + Submit"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "rel-typecheck"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "rel-api-tests"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "rel-desktop-tests"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "rel-mobile-tests"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "rel-scripts-tests"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "rel-backup-restore"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "rel-mobile-legacy-fence"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "rel-protected-tables"
+
 [[workflows.workflow]]
 name = "typecheck-all"
 author = "agent"
@@ -75,6 +107,94 @@ args = "bash scripts/eas-ios-build.sh"
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow]]
+name = "rel-typecheck"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm run typecheck"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-api-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/api-server run test"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-desktop-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/labtrax-desktop run test"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-mobile-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/labtrax run test"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-scripts-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/scripts run test"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-backup-restore"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/api-server run test -- --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-mobile-legacy-fence"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/scripts run lint-mobile-legacy-paths"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-protected-tables"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/scripts run lint-protected-tables"
+
+[workflows.workflow.metadata]
+isValidation = true
 
 [agent]
 stack = "PNPM_WORKSPACE"
