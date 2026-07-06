@@ -21,6 +21,7 @@ import {
   FileUp,
   Filter,
   GitBranch,
+  Image as ImageIcon,
   ImageOff,
   Loader2,
   Lock,
@@ -37,6 +38,7 @@ import {
   Settings2,
   Sparkles,
   Trash2,
+  Video,
   X,
   Zap,
 } from "lucide-react";
@@ -3813,6 +3815,12 @@ export function CaseDrawer({
 
   const [uploadingFile, setUploadingFile] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Files awaiting per-file notes before upload. Each entry pairs a picked/dropped
+  // file with its own optional note draft so a note can never land on the wrong
+  // file when several are added at once. `null` means the prompt is closed.
+  const [pendingUploads, setPendingUploads] = useState<
+    { file: File; note: string }[] | null
+  >(null);
 
   const [generatingInvoice, setGeneratingInvoice] = useState(false);
   const [invError, setInvError] = useState<string | null>(null);
@@ -5086,22 +5094,26 @@ export function CaseDrawer({
     }
   }
 
-  async function uploadFiles(files: File[]) {
-    if (files.length === 0) return;
+  // Each entry carries its own optional note (already trimmed) so a note is
+  // always bound to the exact file the user typed it for.
+  async function uploadFiles(items: { file: File; note?: string }[]) {
+    if (items.length === 0) return;
     setUploadingFile(true);
     setUploadError(null);
     const errors: string[] = [];
-    for (const file of files) {
+    for (const { file, note } of items) {
       try {
         // Files >~20 MB are routed through the resumable chunked pipeline so
         // the Replit reverse proxy never silently drops them.
         const { url } = await uploadMediaFile(file);
+        const trimmedNote = note?.trim();
         await apiFetch(`/cases/${labCase.id}/attachments`, {
           method: "POST",
           body: JSON.stringify({
             storageKey: url,
             fileName: file.name,
             fileType: file.type || "application/octet-stream",
+            ...(trimmedNote ? { note: trimmedNote } : {}),
           }),
         });
       } catch (err: any) {
@@ -5113,10 +5125,24 @@ export function CaseDrawer({
     setUploadingFile(false);
   }
 
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  // Open the optional per-file note prompt for the given files. The user can
+  // add a note per file or skip; upload begins when they confirm the prompt.
+  function promptFileNotes(files: File[]) {
+    if (files.length === 0) return;
+    setUploadError(null);
+    setPendingUploads(files.map((file) => ({ file, note: "" })));
+  }
+
+  function confirmPendingUploads() {
+    const items = pendingUploads;
+    setPendingUploads(null);
+    if (items && items.length > 0) void uploadFiles(items);
+  }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
     e.target.value = "";
-    await uploadFiles(files);
+    promptFileNotes(files);
   }
 
   function handleFileDragEnter(e: React.DragEvent) {
@@ -5144,7 +5170,7 @@ export function CaseDrawer({
     fileDragCounterRef.current = 0;
     setFileDragOver(false);
     const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) void uploadFiles(files);
+    if (files.length > 0) promptFileNotes(files);
   }
 
   async function handleGenerateInvoice() {
@@ -7848,6 +7874,11 @@ export function CaseDrawer({
                                   </div>
                                 );
                               })()}
+                              {isAttachment && typeof metadata.note === "string" && metadata.note.trim() && (
+                                <div className="mt-1.5 text-sm bg-secondary/50 border border-border rounded-md px-3 py-2 whitespace-pre-wrap break-words">
+                                  {metadata.note.trim()}
+                                </div>
+                              )}
                               {isInvoice &&
                                 invoiceEventSummary(e.eventType, metadata) == null &&
                                 (metadata.invoiceNumber != null ||
@@ -7956,6 +7987,87 @@ export function CaseDrawer({
               onClick={(e) => e.stopPropagation()}
             />
           )}
+        </div>
+      )}
+
+      {/* Per-file note prompt — shown after files are picked or dropped, before
+          the attachments are registered. Each file gets its own optional note;
+          skipping simply uploads with no note. */}
+      {pendingUploads && pendingUploads.length > 0 && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div
+            className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[85vh]"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Add notes to files"
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+              <h2 className="text-base font-semibold">
+                Add a note{pendingUploads.length !== 1 ? " to each file" : ""} (optional)
+              </h2>
+              <button
+                type="button"
+                onClick={() => setPendingUploads(null)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4 overflow-y-auto">
+              <p className="text-xs text-muted-foreground">
+                Notes are optional. Leave any blank to upload without a note.
+              </p>
+              {pendingUploads.map((item, idx) => {
+                const isImg = (item.file.type || "").startsWith("image/");
+                const isVid = (item.file.type || "").startsWith("video/");
+                return (
+                  <div key={idx} className="space-y-1.5">
+                    <div className="flex items-center gap-2 text-sm min-w-0">
+                      <span className="shrink-0 text-muted-foreground">
+                        {isImg ? <ImageIcon size={14} /> : isVid ? <Video size={14} /> : <Paperclip size={14} />}
+                      </span>
+                      <span className="font-medium truncate" title={item.file.name}>
+                        {item.file.name}
+                      </span>
+                    </div>
+                    <textarea
+                      value={item.note}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setPendingUploads((prev) =>
+                          prev
+                            ? prev.map((p, i) => (i === idx ? { ...p, note: value } : p))
+                            : prev,
+                        );
+                      }}
+                      rows={2}
+                      maxLength={1000}
+                      placeholder="Add a note for this file…"
+                      className="w-full px-2.5 py-2 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none resize-none"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex gap-3 px-6 pb-5 pt-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => setPendingUploads(null)}
+                className="flex-1 h-9 rounded-lg bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmPendingUploads}
+                className="flex-1 h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 inline-flex items-center justify-center gap-1.5"
+              >
+                <FileUp size={13} />
+                Upload {pendingUploads.length} file{pendingUploads.length !== 1 ? "s" : ""}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
