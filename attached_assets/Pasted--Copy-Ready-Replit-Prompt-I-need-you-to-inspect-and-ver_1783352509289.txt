@@ -1,0 +1,106 @@
+### Copy-Ready Replit Prompt
+
+I need you to inspect and verify the pricing tier behavior in LabTracks, then fix it if needed.
+
+**Goal**
+
+When an admin edits a pricing tier, the updated prices must automatically apply to every account, doctor, or customer that is assigned to that pricing tier.
+
+Example:
+
+* Dr. Smith is assigned to the `Standard` pricing tier.
+* The `Standard` tier currently has crowns priced at `$100`.
+* Two weeks later, an admin edits the `Standard` tier and changes crowns to `$120`.
+* Dr. Smith should now inherit the updated `$120` crown price because he is still assigned to the `Standard` tier.
+
+The system should not leave Dr. Smith on the old `$100` price unless he has an intentional account-specific override.
+
+**User-Visible Problem**
+
+I am worried that assigned accounts may be storing a copied snapshot of pricing tier values instead of referencing the tier dynamically. If that is happening, editing a pricing tier would only affect future assignments, while existing doctors/accounts would keep stale prices.
+
+**Likely Root Cause To Investigate**
+
+Check whether the app stores pricing tier data in one of these ways:
+
+1. **Correct behavior:** Accounts store only a `pricingTierId`, `tierId`, or similar reference, and prices are resolved from the current pricing tier whenever pricing is displayed, quoted, ordered, or invoiced.
+2. **Risky behavior:** When a tier is assigned to an account, the tier’s prices are copied into the account record or account pricing table. If so, later edits to the tier may not propagate.
+3. **Mixed behavior:** Accounts reference a tier but also have copied prices or overrides, which may be causing stale values depending on which source the app reads from.
+
+**Implementation Steps**
+
+Please inspect the pricing tier model, account/customer/doctor model, assignment flow, and any code that calculates prices for orders, quotes, invoices, or product/lab service pricing.
+
+Specifically look for:
+
+* Pricing tier schema/table/model
+* Account, doctor, customer, or client schema/table/model
+* Fields like `pricingTierId`, `tierId`, `priceListId`, `customPricing`, `overridePricing`, `assignedPricing`, or copied price objects
+* Pricing tier edit/update route or API
+* Pricing calculation utilities or services
+* UI components that display assigned account pricing
+* Any order/invoice creation logic that reads prices
+
+Then ensure this behavior:
+
+1. Editing a pricing tier updates the canonical tier prices.
+2. Any account assigned to that tier sees the updated prices automatically.
+3. Existing assigned accounts should not need to be manually re-assigned.
+4. Account-specific overrides, if they exist, should remain intact and should not be overwritten by tier edits.
+5. Historical finalized invoices/orders should not be retroactively changed unless the current app already treats them as live/recalculating records. Preserve historical financial records unless there is an explicit business rule saying otherwise.
+6. New quotes/orders/invoices created after the tier edit should use the updated tier pricing.
+
+**Preferred Fix**
+
+Prefer a reference-based model:
+
+* Accounts should store the assigned `pricingTierId`.
+* Pricing should be resolved from the current pricing tier record at the time pricing is needed.
+* Do not duplicate tier prices into each account unless there is a clear reason.
+* If duplicated account pricing already exists, add a safe migration or update path so assigned accounts without custom overrides are brought back into sync with their tier.
+
+If the current architecture requires denormalized copied prices, then update the pricing tier edit flow so that when a tier is changed:
+
+* Find all accounts assigned to that tier.
+* Update only inherited pricing values.
+* Do not overwrite account-specific custom overrides.
+* Make the update transactional if the database supports it.
+* Add clear handling for failures so the tier and assigned accounts do not become partially inconsistent.
+
+**Constraints / Guardrails**
+
+* Do not overwrite custom account pricing overrides.
+* Do not modify unrelated pricing tiers.
+* Do not change historical finalized invoices/orders unless the existing business logic intentionally recalculates them.
+* Avoid broad refactors unless necessary.
+* Keep the fix scoped to pricing tier assignment, propagation, and price resolution.
+* Add or update tests where possible.
+* If there is ambiguity between inherited tier pricing and account-specific custom pricing, make that distinction explicit in the code and UI/data model.
+
+**Regression Checks**
+
+Before finishing, please verify:
+
+1. Create or identify a pricing tier named `Standard`.
+2. Set crowns to `$100`.
+3. Assign Dr. Smith or a test doctor/account to the `Standard` tier.
+4. Confirm Dr. Smith’s crown price shows `$100`.
+5. Edit the `Standard` tier and change crowns to `$120`.
+6. Confirm Dr. Smith’s crown price now shows `$120` without reassigning the tier.
+7. Confirm another account assigned to `Standard` also sees `$120`.
+8. Confirm an account assigned to a different tier is unchanged.
+9. Confirm an account with a custom crown price override, if supported, keeps its override.
+10. Confirm new orders/quotes/invoices use the updated `$120` tier price.
+11. Confirm finalized historical invoices/orders are not unexpectedly changed.
+12. Confirm the pricing tier edit UI still saves correctly and shows success/error states properly.
+
+**Deliverable**
+
+Please summarize:
+
+* Whether the app already behaved correctly or needed a fix
+* The files/routes/models/components inspected
+* The root cause if a fix was needed
+* The exact implementation changes made
+* Any assumptions about overrides or historical invoices
+* The regression checks performed and their results
