@@ -1,0 +1,135 @@
+**Replit Build Brief**
+
+**Objective**
+Fix the desktop/web duplicate-doctor merge flow so a user can choose one target doctor and one or more source doctors, causing the `Merge` button to activate and the merge to complete.
+
+**User-visible problem**
+From the Customer Center duplicate-doctor notification, the user opens `Review & merge`, selects a target, but the merge cannot proceed. The `Merge` button remains inactive/blocked.
+
+**Likely root cause**
+The merge dialog state is treating both duplicate doctor rows as the target, leaving `sources` empty. In the screenshot, the modal shows `SOURCES (0)` and both candidate rows display `Target ✓`. Since the merge action probably requires `targetDoctorId && sourceDoctorIds.length > 0`, the button correctly stays disabled, but the selection UI is incorrectly preventing any doctor from becoming a source.
+
+This is likely a desktop/web-specific regression in the duplicate notification entry path, not the backend merge operation itself.
+
+**Exact areas to inspect/change**
+
+Inspect the LabTrax repo `jp379tally/Lab-Trax`, especially:
+
+* `artifacts/labtrax`: Customer Center / Practices & Doctors screen
+* The component/modal containing visible text:
+
+  * `Merge doctors`
+  * `Possible duplicate doctors`
+  * `Review & merge`
+  * `SOURCES`
+  * `TARGET`
+  * `Pick existing`
+  * `+ Source`
+* Any shared duplicate-doctor merge hook/state helper used by mobile and web
+* API client mutation for doctor merge
+* Backend route in `artifacts/api-server` only if the UI sends bad payloads after the button activates
+
+**Implementation plan**
+
+1. Find the doctor merge modal/component and the duplicate-notification click handler.
+2. Reproduce the exact state shown in the screenshot: two possible duplicate doctor records, modal opens, source count stays `0`, both rows appear selected as target.
+3. Fix the modal state contract so exactly one doctor can be `targetDoctorId` and every other selected duplicate becomes a source candidate/source selection.
+4. If the modal opens from a duplicate notification, initialize it with:
+
+   * one default target, ideally the canonical/highest-confidence record
+   * the remaining duplicate doctor IDs as sources, or at least selectable as `+ Source`
+5. Prevent the same doctor ID from appearing in both target and source sets.
+6. Make the `Merge` button enabled only when:
+
+   * one target doctor is selected
+   * at least one source doctor is selected
+   * no source ID equals the target ID
+7. Add a regression test for opening the merge modal from the duplicate-doctor notification on web/desktop.
+8. Verify mobile still works, because the user says a similar mobile issue was fixed earlier.
+
+**Guardrails**
+
+* Do not loosen backend validation just to make the button clickable.
+* Do not allow target/source overlap.
+* Do not merge doctors automatically when opening the notification.
+* Preserve the 10-minute undo behavior.
+* Keep soft-deleted case remapping optional and unchanged.
+* If duplicate candidates have different casing, punctuation, or spacing, compare by stable doctor ID, not display name.
+
+**Acceptance criteria**
+
+* Opening `Review & merge` from a possible duplicate doctor notification shows one target and at least one available source.
+* Selecting a different target moves/removes that doctor from sources and makes the previous target available as a source.
+* After a valid target/source selection, the `Merge` button activates.
+* Clicking `Merge` sends a payload with one `targetDoctorId` and one or more distinct `sourceDoctorIds`.
+* The merge succeeds and refreshes the Customer Center list/duplicate notification count.
+* Mobile duplicate-doctor merge still works.
+
+**Regression checks**
+
+* Duplicate doctor merge from desktop/web notification.
+* Duplicate doctor merge from normal Customer Center doctor search/list flow.
+* Mobile duplicate doctor merge.
+* Duplicate practice merge, if it shares the same merge modal/state helper.
+* Case where two doctors have the same display name but different IDs.
+* Case where only one candidate is available: merge should stay disabled with a clear source requirement.
+
+**Copy-Ready Replit Prompt**
+
+Please debug and fix the LabTrax duplicate-doctor merge flow on desktop/web.
+
+Issue: In Customer Center, a “Possible duplicate doctors” notification appears. When I click `Review & merge`, the `Merge doctors` modal opens. I select a target doctor, but the `Merge` button never activates and I cannot merge. The screenshot shows `SOURCES (0)` while both duplicate doctor rows display `Target ✓`, so the UI appears to be marking both records as the target and never adding a source.
+
+Please inspect the LabTrax repo, especially `artifacts/labtrax`, the Customer Center / Practices & Doctors screen, and the component or modal containing text like `Merge doctors`, `Possible duplicate doctors`, `Review & merge`, `SOURCES`, `TARGET`, `+ Source`, and `Target ✓`.
+
+Likely root cause: the desktop/web duplicate notification path initializes or updates merge selection state incorrectly. The modal should maintain exactly one `targetDoctorId` and one or more distinct `sourceDoctorIds`. The same doctor ID must never be both target and source. The `Merge` button should enable only when there is one target and at least one source.
+
+Implement the safest fix:
+
+* Fix the state logic for target/source selection.
+* When opening from a duplicate-doctor notification, preselect one target and make the other duplicate candidate(s) sources or source-selectable.
+* If the user changes the target, remove the new target from sources and make the old target source-selectable.
+* Keep backend validation strict; do not bypass validation just to enable the button.
+* Preserve existing mobile behavior, because a similar mobile issue was reportedly fixed earlier.
+* Add or update a regression test for the web/desktop notification path.
+
+Before finishing, verify:
+
+* Desktop/web notification path: valid target + source activates `Merge`.
+* Payload contains one target doctor ID and one or more source doctor IDs.
+* No source ID equals the target ID.
+* Mobile duplicate-doctor merge still works.
+* Normal Customer Center merge flow still works.
+
+If you find different evidence in the code, explain the actual root cause and the tradeoff behind your fix.
+
+**Debug Analysis**
+
+Primary hypothesis: the modal selection state is broken when launched from the duplicate-doctor notification. The strongest evidence is visible in the screenshot: the modal says `SOURCES (0)`, yet both duplicate rows show `Target ✓`. A valid merge needs at least one source, so the disabled merge button is a downstream symptom of invalid UI state.
+
+Alternate hypotheses worth checking:
+
+* The UI is comparing doctors by normalized name instead of stable ID, so both “Dr. Ray montalvo” and “Dr. Ray Montalvo” are considered the selected target.
+* The notification path passes duplicate candidates into the modal with the wrong shape, such as setting every candidate as `target` and none as `source`.
+* The mobile fix was applied only to a mobile-specific component, while desktop/web uses a separate modal or wrapper.
+* The backend requires source IDs, but the frontend never reaches the mutation because the disabled condition remains true.
+
+Recommended approach: fix the frontend state contract first. Do not weaken merge validation. The screenshot shows the app is correctly refusing a merge with zero sources; the real bug is that the UI cannot produce a valid target/source selection.
+
+Confidence: medium-high from screenshot evidence. Exact file names could not be confirmed from repo search in this environment, but the repo structure confirms the relevant app package is `artifacts/labtrax`.
+
+**Step-by-Step Fix Plan**
+
+1. Search the repo for the modal text: `Merge doctors`, `SOURCES`, `Possible duplicate doctors`, and `Review & merge`.
+2. Identify the modal’s state fields for target and sources.
+3. Reproduce the notification launch path and log/inspect state after opening the modal.
+4. Replace any display-name-based target/source comparison with doctor ID comparison.
+5. Enforce a single source of truth:
+
+   * `targetDoctorId: string | null`
+   * `sourceDoctorIds: Set<string>` or array with dedupe
+6. On target selection, remove that ID from sources.
+7. On source selection, reject the current target ID.
+8. On notification open, initialize one target and at least one source candidate.
+9. Confirm the merge button condition checks the corrected state.
+10. Add a regression test for the notification path and run typecheck/tests.

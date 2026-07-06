@@ -20,7 +20,7 @@ How a row is gated:
 
 All test paths below are relative to the repo root unless already prefixed. Server tests live under `artifacts/api-server/src/`, desktop tests under `artifacts/labtrax-desktop/src/`, mobile tests under `artifacts/labtrax/`.
 
-### Protected Workflow Matrix — Desktop (22)
+### Protected Workflow Matrix — Desktop (25)
 
 | # | Workflow | Platform | Test file(s) / checklist | Release gate |
 |---|----------|----------|--------------------------|--------------|
@@ -48,6 +48,7 @@ All test paths below are relative to the repo root unless already prefixed. Serv
 | 22 | Signed desktop build verification | desktop | `bash scripts/test-signing-verification.sh` | Yes — **blocks desktop release** |
 | 23 | latest.yml auto-update feed guard | desktop | `scripts/src/__tests__/latest-yml-guard.test.ts` (`pnpm --filter @workspace/scripts run test`) | Yes — **blocks desktop release** |
 | 24 | Remake case creation — case appears in Case Center, correct suffixed number (B/C), draft invoice, original cross-linked | desktop | `routes/cases-remake.test.ts` (server: suffix letter, invoice, cross-link, 409 on collision, legacy-original support) ; `src/components/__tests__/DashboardDropZone.remake-zip.test.tsx` (desktop UI: ZIP-import duplicate-prompt remake forwards remakeOfCaseId/Reason/Charged + skips next-case-number) | Yes — API + desktop tests |
+| 25 | Duplicate-doctor merge — "Review" from the Customer Center "Possible duplicate doctors" notification opens the Merge dialog with exactly one target + one or more selectable sources (Merge enabled, no target/source overlap); same-name/different-casing or different-practice candidates stay distinct by exact-cased name + practice identity, never lowercased name | desktop | `routes/doctors.test.ts` (server merge: self-merge guard, source dedupe, undo window) ; `src/pages/__tests__/merge-dialog-same-practice-init.test.tsx` (MergeDialog init incl. capitalization-only pair) ; `src/pages/__tests__/merge-dialog-notification-path.test.tsx` (full notification launch path: buildDuplicateClusters → "Review" click → dialog target/source split + payload non-overlap; same-name different-practice distinct-identity case) | Yes — API + desktop tests |
 
 ### Protected Workflow Matrix — Mobile (21)
 
