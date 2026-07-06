@@ -125,22 +125,36 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
   // count reappeared on the next login. A final failure is surfaced (logged);
   // the next refreshConversations reconcile retries it if still needed.
   const persistRead = useCallback(
-    async (conversationId: string, attempt = 0): Promise<void> => {
+    async (
+      conversationId: string,
+      lastMessageId?: string,
+      attempt = 0
+    ): Promise<void> => {
       if (attempt === 0) {
         if (readInflightRef.current.has(conversationId)) return;
         readInflightRef.current.add(conversationId);
       }
+      // Bind the durable read to the message the user actually saw so the
+      // server never advances last_read_at past a newer message that arrived
+      // after the last view. Fall back to the latest tracked viewed id when a
+      // caller does not pass one explicitly. When neither is known, the server
+      // defaults to the latest message for backward compatibility.
+      const viewedId =
+        lastMessageId ?? viewedLastMessageRef.current.get(conversationId);
       const MAX_ATTEMPTS = 4;
       try {
         await apiFetch(`/messenger/conversations/${conversationId}/read`, {
           method: "POST",
+          ...(viewedId
+            ? { body: JSON.stringify({ lastMessageId: viewedId }) }
+            : {}),
         });
         readInflightRef.current.delete(conversationId);
       } catch (err) {
         if (attempt < MAX_ATTEMPTS) {
           const delay = Math.min(1000 * 2 ** attempt, 8000);
           setTimeout(() => {
-            void persistRead(conversationId, attempt + 1);
+            void persistRead(conversationId, lastMessageId, attempt + 1);
           }, delay);
         } else {
           readInflightRef.current.delete(conversationId);
@@ -382,7 +396,7 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
     if (conv?.lastMessage) {
       viewedLastMessageRef.current.set(conversationId, conv.lastMessage.id);
     }
-    void persistRead(conversationId);
+    void persistRead(conversationId, conv?.lastMessage?.id);
     // Also drive the other user's "Seen" indicator over the socket if we know
     // the last message; the REST call above is the durable source of truth.
     if (conv?.lastMessage) {
@@ -451,7 +465,7 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
       // WebSocket is not connected. persistRead retries on transient failure
       // and surfaces (rather than swallows) a final error, so the badge no
       // longer reappears on the next login because a single attempt was lost.
-      void persistRead(conversationId);
+      void persistRead(conversationId, lastMessageId);
       setConversations((prev) =>
         prev.map((c) =>
           c.id === conversationId ? { ...c, unreadCount: 0 } : c

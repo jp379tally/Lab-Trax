@@ -51,6 +51,7 @@ type Conv = {
 
 let convData: Conv[] = [];
 let readCalls: string[] = [];
+let readBodies: Array<{ conversationId: string; lastMessageId?: string }> = [];
 let failReadOnce = false;
 
 function makeConv(overrides: Partial<Conv> = {}): Conv {
@@ -77,6 +78,15 @@ function installApiMock() {
     const m = endpoint.match(/^\/messenger\/conversations\/(.+)\/read$/);
     if (m && method === "POST") {
       readCalls.push(m[1]!);
+      let lastMessageId: string | undefined;
+      if (typeof options?.body === "string") {
+        try {
+          lastMessageId = JSON.parse(options.body).lastMessageId;
+        } catch {
+          // ignore malformed body
+        }
+      }
+      readBodies.push({ conversationId: m[1]!, lastMessageId });
       if (failReadOnce) {
         failReadOnce = false;
         throw new Error("transient read failure");
@@ -127,8 +137,25 @@ describe("Messenger read-persist (badge does not re-appear)", () => {
     mockSocketSend.mockReset();
     convData = [makeConv()];
     readCalls = [];
+    readBodies = [];
     failReadOnce = false;
     installApiMock();
+  });
+
+  it("sends the viewed lastMessageId in the read POST body on open", async () => {
+    convData = [makeConv({ unreadCount: 1 })];
+    const { getByTestId } = renderHarness();
+    await waitFor(() => expect(getByTestId("count").textContent).toBe("1"));
+
+    fireEvent.click(getByTestId("open"));
+
+    // The durable read must carry the message the user actually saw (m1) so the
+    // server never advances last_read_at past a newer, unseen message.
+    await waitFor(() =>
+      expect(
+        readBodies.some((b) => b.conversationId === "c1" && b.lastMessageId === "m1")
+      ).toBe(true)
+    );
   });
 
   it("fires the read POST on open even when local unreadCount is already 0", async () => {

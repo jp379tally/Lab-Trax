@@ -393,11 +393,16 @@ router.get(
   })
 );
 
+const markReadSchema = z.object({
+  lastMessageId: z.string().min(1).optional(),
+});
+
 router.post(
   "/conversations/:id/read",
   asyncHandler(async (req, res) => {
     const myUserId = (req as any).auth.userId as string;
     const convId = req.params.id;
+    const { lastMessageId } = markReadSchema.parse(req.body ?? {});
 
     const participation = await db
       .select({ userId: conversationParticipants.userId })
@@ -411,19 +416,41 @@ router.post(
       .limit(1);
     if (!participation[0]) throw new HttpError(403, "Not a participant.");
 
-    const [lastMsg] = await db
-      .select({ id: messages.id, createdAt: messages.createdAt })
-      .from(messages)
-      .where(
-        and(eq(messages.conversationId, convId), isNull(messages.deletedAt))
-      )
-      .orderBy(desc(messages.createdAt))
-      .limit(1);
+    // Bound the read watermark to the message the user actually saw. When the
+    // client supplies lastMessageId, validate it belongs to this conversation
+    // (and is not deleted) and advance last_read_at only to that message's
+    // created_at — never to a newer message that may have arrived after the
+    // user's last view. This mirrors the WebSocket mark_read semantics. When no
+    // id is supplied we fall back to the latest message for backward compat.
+    let readMsg: { id: string; createdAt: Date } | undefined;
+    if (lastMessageId) {
+      [readMsg] = await db
+        .select({ id: messages.id, createdAt: messages.createdAt })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.id, lastMessageId),
+            eq(messages.conversationId, convId),
+            isNull(messages.deletedAt)
+          )
+        )
+        .limit(1);
+      if (!readMsg) throw new HttpError(404, "Message not found.");
+    } else {
+      [readMsg] = await db
+        .select({ id: messages.id, createdAt: messages.createdAt })
+        .from(messages)
+        .where(
+          and(eq(messages.conversationId, convId), isNull(messages.deletedAt))
+        )
+        .orderBy(desc(messages.createdAt))
+        .limit(1);
+    }
 
-    if (lastMsg) {
+    if (readMsg) {
       await db
         .update(conversationParticipants)
-        .set({ lastReadAt: lastMsg.createdAt })
+        .set({ lastReadAt: readMsg.createdAt })
         .where(
           and(
             eq(conversationParticipants.conversationId, convId),
