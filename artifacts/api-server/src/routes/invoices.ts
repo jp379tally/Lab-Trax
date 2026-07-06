@@ -1302,15 +1302,142 @@ async function resolveBulkInvoiceTargets(
   throw new HttpError(400, "Specify invoiceIds, practiceIds, or all:true.");
 }
 
+/**
+ * A legacy mobile-origin invoice that a bulk delete should remove. These have
+ * no row in the relational `invoices` table — they are synthesized from a
+ * `lab_cases.case_data` JSON blob that carries an `invoiceId` (see
+ * `toMobileInvoice` / the `mobile:<localInvoiceId>` synthetic id). Deleting one
+ * means stripping the invoice reference out of the blob so it stops surfacing
+ * in GET /api/invoices, while keeping the underlying case intact.
+ */
+type LegacyMobileInvoiceTarget = {
+  labCaseId: string;
+  labOrganizationId: string;
+  localInvoiceId: string;
+  caseNumber: string;
+  parsedBlob: Record<string, unknown>;
+};
+
+/**
+ * Resolve and authorize the legacy mobile invoices referenced by a set of
+ * `mobile:<localInvoiceId>` ids. Mirrors the scoping of GET /api/invoices (the
+ * caller's active lab memberships plus, for provider users, their linked
+ * provider orgs) and fails closed with 403 if the caller lacks a billing role
+ * for any lab org the selection touches. Performs no mutation — the caller
+ * applies the deletion inside its own transaction so real + legacy deletes are
+ * atomic together.
+ */
+async function resolveLegacyMobileInvoiceTargets(
+  mobileInvoiceIds: string[],
+  actorUserId: string,
+): Promise<LegacyMobileInvoiceTarget[]> {
+  const wantedLocalIds = new Set(
+    mobileInvoiceIds
+      .map((id) => id.slice(MOBILE_INVOICE_ID_PREFIX.length).trim())
+      .filter((id) => id.length > 0),
+  );
+  if (wantedLocalIds.size === 0) return [];
+
+  const memberships = await db.query.organizationMemberships.findMany({
+    where: eq(organizationMemberships.userId, actorUserId),
+  });
+  let orgIds = memberships
+    .filter((m: any) => m.status === "active")
+    .map((m: any) => m.labId)
+    .filter((id: any): id is string => !!id);
+  const callerUser = await db.query.users.findFirst({
+    where: eq(users.id, actorUserId),
+  });
+  if (callerUser?.userType === "provider") {
+    const { providerOrgIds } =
+      await getProviderOrgIdsForUserAndLinks(actorUserId);
+    orgIds = Array.from(new Set([...orgIds, ...providerOrgIds]));
+  }
+  if (orgIds.length === 0) return [];
+
+  const caseRows = await db
+    .select()
+    .from(labCases)
+    .where(
+      and(isNull(labCases.deletedAt), inArray(labCases.organizationId, orgIds)),
+    );
+
+  const targets: LegacyMobileInvoiceTarget[] = [];
+  for (const lc of caseRows as any[]) {
+    if (!lc.organizationId) continue;
+    let parsed: any;
+    try {
+      parsed =
+        typeof lc.caseData === "string" ? JSON.parse(lc.caseData) : lc.caseData;
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    const localInvoiceId =
+      typeof parsed.invoiceId === "string" ? parsed.invoiceId : "";
+    if (!localInvoiceId || !wantedLocalIds.has(localInvoiceId)) continue;
+    targets.push({
+      labCaseId: lc.id,
+      labOrganizationId: lc.organizationId,
+      localInvoiceId,
+      caseNumber: typeof parsed.caseNumber === "string" ? parsed.caseNumber : "",
+      parsedBlob: parsed as Record<string, unknown>,
+    });
+  }
+  if (targets.length === 0) return [];
+
+  // Authorize the caller for every distinct lab org the selection touches —
+  // fail closed exactly like the canonical bulk path.
+  const touchedOrgIds = [...new Set(targets.map((t) => t.labOrganizationId))];
+  for (const orgId of touchedOrgIds) {
+    await requireAnyRole(actorUserId, orgId, BILLING_ROLES);
+  }
+
+  return targets;
+}
+
 router.delete(
   "/bulk",
   asyncHandler(async (req, res) => {
     const input = bulkInvoiceTargetSchema.parse(req.body);
     const actorUserId: string = (req as any).auth.userId;
 
-    const toDelete = await resolveBulkInvoiceTargets(input, actorUserId);
+    // Legacy mobile-origin invoices surface in the list with a synthetic
+    // `mobile:<localInvoiceId>` id and have no row in the relational invoices
+    // table. Split them out so a selection that mixes real + legacy invoices
+    // deletes ALL of them, instead of the legacy ids silently resolving to zero
+    // rows and the whole request reporting deletedCount: 0.
+    const mobileInvoiceIds = (input.invoiceIds ?? []).filter((id) =>
+      id.startsWith(MOBILE_INVOICE_ID_PREFIX),
+    );
+    const realInput: BulkInvoiceTargetInput = {
+      ...input,
+      invoiceIds: input.invoiceIds
+        ? input.invoiceIds.filter(
+            (id) => !id.startsWith(MOBILE_INVOICE_ID_PREFIX),
+          )
+        : undefined,
+    };
+    // Only run the relational resolver when there is a real selection. If the
+    // caller sent ONLY mobile ids, realInput.invoiceIds is an empty array and
+    // resolveBulkInvoiceTargets would fall through to the practiceIds/all/400
+    // branches — skip it entirely.
+    const hasRealSelection =
+      (realInput.invoiceIds && realInput.invoiceIds.length > 0) ||
+      (realInput.practiceIds && realInput.practiceIds.length > 0) ||
+      realInput.all === true;
 
-    if (toDelete.length === 0) {
+    // Authorize + resolve BOTH sets before any mutation so the request fails
+    // closed (403) without partially deleting.
+    const toDelete = hasRealSelection
+      ? await resolveBulkInvoiceTargets(realInput, actorUserId)
+      : [];
+    const legacyTargets = await resolveLegacyMobileInvoiceTargets(
+      mobileInvoiceIds,
+      actorUserId,
+    );
+
+    if (toDelete.length === 0 && legacyTargets.length === 0) {
       return ok(res, { deletedCount: 0 });
     }
 
@@ -1318,49 +1445,92 @@ router.delete(
     const now = new Date();
     const actorIp: string | null = req.ip ?? null;
     const actorUserAgent: string | null = req.get("user-agent") ?? null;
+    const totalAffected = toDelete.length + legacyTargets.length;
 
     await db.transaction(async (tx) => {
-      // 1. Mark invoices as void first
-      await tx
-        .update(invoices)
-        .set({ status: "void", voidedAt: now, voidedByUserId: actorUserId, voidReason: "bulk_delete", updatedByUserId: actorUserId })
-        .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
+      if (toDelete.length > 0) {
+        // 1. Mark invoices as void first
+        await tx
+          .update(invoices)
+          .set({ status: "void", voidedAt: now, voidedByUserId: actorUserId, voidReason: "bulk_delete", updatedByUserId: actorUserId })
+          .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
 
-      // 2. Soft-delete the invoice rows
-      await tx
-        .update(invoices)
-        .set({ deletedAt: now, deletedByUserId: actorUserId })
-        .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
+        // 2. Soft-delete the invoice rows
+        await tx
+          .update(invoices)
+          .set({ deletedAt: now, deletedByUserId: actorUserId })
+          .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
 
-      // 3. Hard-delete all line items (not a protected table)
-      await tx.delete(invoiceLineItems).where(inArray(invoiceLineItems.invoiceId, ids));
+        // 3. Hard-delete all line items (not a protected table)
+        await tx.delete(invoiceLineItems).where(inArray(invoiceLineItems.invoiceId, ids));
 
-      // 4. Audit log — one row per invoice, scoped to its OWN lab org
-      await tx.insert(auditLogs).values(
-        toDelete.map((inv) => ({
-          userId: actorUserId,
-          organizationId: inv.labOrganizationId,
-          action: "bulk_invoice_delete",
-          entityType: "invoice",
-          entityId: inv.id,
-          ipAddress: actorIp,
-          userAgent: actorUserAgent,
-          metadataJson: {
-            invoiceNumber: inv.invoiceNumber,
-            providerOrganizationId: inv.providerOrganizationId,
-            totalAffected: toDelete.length,
-          },
-          createdAt: now,
-        })),
-      );
+        // 4. Audit log — one row per invoice, scoped to its OWN lab org
+        await tx.insert(auditLogs).values(
+          toDelete.map((inv) => ({
+            userId: actorUserId,
+            organizationId: inv.labOrganizationId,
+            action: "bulk_invoice_delete",
+            entityType: "invoice",
+            entityId: inv.id,
+            ipAddress: actorIp,
+            userAgent: actorUserAgent,
+            metadataJson: {
+              invoiceNumber: inv.invoiceNumber,
+              providerOrganizationId: inv.providerOrganizationId,
+              totalAffected,
+            },
+            createdAt: now,
+          })),
+        );
+      }
+
+      if (legacyTargets.length > 0) {
+        // Strip the invoice reference out of each legacy case blob so the
+        // synthesized invoice stops surfacing in GET /api/invoices, while
+        // keeping the underlying case intact. The prior invoiceId is preserved
+        // as `deletedInvoiceId` for auditability / potential restore.
+        for (const t of legacyTargets) {
+          const nextBlob = {
+            ...t.parsedBlob,
+            invoiceId: null,
+            deletedInvoiceId: t.localInvoiceId,
+            invoiceDeletedAt: now.toISOString(),
+            invoiceDeletedByUserId: actorUserId,
+          };
+          await tx
+            .update(labCases)
+            .set({ caseData: JSON.stringify(nextBlob) })
+            .where(eq(labCases.id, t.labCaseId));
+        }
+
+        // Audit log — one row per legacy invoice, scoped to its OWN lab org.
+        await tx.insert(auditLogs).values(
+          legacyTargets.map((t) => ({
+            userId: actorUserId,
+            organizationId: t.labOrganizationId,
+            action: "bulk_invoice_delete",
+            entityType: "invoice",
+            entityId: `${MOBILE_INVOICE_ID_PREFIX}${t.localInvoiceId}`,
+            ipAddress: actorIp,
+            userAgent: actorUserAgent,
+            metadataJson: {
+              legacyMobileInvoice: true,
+              labCaseId: t.labCaseId,
+              caseNumber: t.caseNumber,
+              totalAffected,
+            },
+            createdAt: now,
+          })),
+        );
+      }
     });
 
     req.log?.info?.(
-      { count: toDelete.length },
+      { count: toDelete.length, legacyCount: legacyTargets.length },
       "[INVOICE BULK DELETE] completed",
     );
 
-    return ok(res, { deletedCount: toDelete.length });
+    return ok(res, { deletedCount: totalAffected });
   }),
 );
 

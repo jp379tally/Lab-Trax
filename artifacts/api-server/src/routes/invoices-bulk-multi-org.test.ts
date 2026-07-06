@@ -100,6 +100,32 @@ maybe("Bulk invoice delete/reset across lab orgs (db integration)", () => {
     return id;
   }
 
+  // Insert a legacy mobile-origin case (a lab_cases blob row) carrying an
+  // `invoiceId` so it surfaces in GET /api/invoices as `mobile:<invoiceId>`.
+  async function insertLegacyMobileCase(opts: {
+    organizationId: string;
+    localInvoiceId: string;
+    caseNumber?: string;
+    price?: number;
+  }): Promise<string> {
+    const { db, labCases } = dbMod as any;
+    const id = rid("lc");
+    const blob = {
+      invoiceId: opts.localInvoiceId,
+      caseNumber: opts.caseNumber ?? rid("C"),
+      patientName: "Legacy Patient",
+      doctorName: "Dr. Legacy",
+      price: opts.price ?? 250,
+    };
+    await db.insert(labCases).values({
+      id,
+      ownerId: billingUserId,
+      organizationId: opts.organizationId,
+      caseData: JSON.stringify(blob),
+    });
+    return id;
+  }
+
   beforeAll(async () => {
     process.env["JWT_SECRET"] =
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-bulk-multi-org";
@@ -160,10 +186,14 @@ maybe("Bulk invoice delete/reset across lab orgs (db integration)", () => {
       organizationMemberships,
       userSessions,
       auditLogs,
+      labCases,
     } = dbMod as any;
     await db
       .delete(auditLogs)
       .where(inArray(auditLogs.organizationId, [labAOrgId, labBOrgId]));
+    await db
+      .delete(labCases)
+      .where(inArray(labCases.organizationId, [labAOrgId, labBOrgId]));
     await db
       .delete(invoices)
       .where(inArray(invoices.labOrganizationId, [labAOrgId, labBOrgId]));
@@ -287,5 +317,115 @@ maybe("Bulk invoice delete/reset across lab orgs (db integration)", () => {
       columns: { deletedAt: true },
     });
     expect(row.deletedAt).not.toBeNull();
+  });
+
+  it("DELETE /bulk deletes a legacy mobile invoice (mobile:<id>) by stripping the case blob", async () => {
+    const localInvoiceId = rid("localInv");
+    const lcId = await insertLegacyMobileCase({
+      organizationId: labAOrgId,
+      localInvoiceId,
+    });
+
+    const r = await request(appMod.default)
+      .delete("/api/invoices/bulk")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({
+        labOrganizationId: labAOrgId,
+        invoiceIds: [`mobile:${localInvoiceId}`],
+      });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.deletedCount).toBe(1);
+
+    // The synthesized invoice no longer surfaces: the blob's invoiceId is
+    // cleared and the prior value is preserved as deletedInvoiceId.
+    const { db, labCases } = dbMod as any;
+    const row = await db.query.labCases.findFirst({
+      where: eq(labCases.id, lcId),
+      columns: { caseData: true, deletedAt: true },
+    });
+    const blob = JSON.parse(row.caseData);
+    expect(blob.invoiceId).toBeNull();
+    expect(blob.deletedInvoiceId).toBe(localInvoiceId);
+    // The underlying case row is kept (not soft-deleted).
+    expect(row.deletedAt).toBeNull();
+  });
+
+  it("DELETE /bulk deletes a mixed selection of real + legacy mobile invoices", async () => {
+    const real = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId });
+    const localInvoiceId = rid("localInv");
+    const lcId = await insertLegacyMobileCase({
+      organizationId: labAOrgId,
+      localInvoiceId,
+    });
+
+    const r = await request(appMod.default)
+      .delete("/api/invoices/bulk")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({
+        labOrganizationId: labAOrgId,
+        invoiceIds: [real, `mobile:${localInvoiceId}`],
+      });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.deletedCount).toBe(2);
+
+    const { db, invoices, labCases } = dbMod as any;
+    const realRow = await db.query.invoices.findFirst({
+      where: eq(invoices.id, real),
+      columns: { deletedAt: true, status: true },
+    });
+    expect(realRow.deletedAt).not.toBeNull();
+    expect(realRow.status).toBe("void");
+
+    const lcRow = await db.query.labCases.findFirst({
+      where: eq(labCases.id, lcId),
+      columns: { caseData: true },
+    });
+    expect(JSON.parse(lcRow.caseData).invoiceId).toBeNull();
+  });
+
+  it("DELETE /bulk returns 0 for a mobile:<id> with no matching case blob", async () => {
+    const r = await request(appMod.default)
+      .delete("/api/invoices/bulk")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({
+        labOrganizationId: labAOrgId,
+        invoiceIds: [`mobile:${rid("nope")}`],
+      });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.deletedCount).toBe(0);
+  });
+
+  it("DELETE /bulk cannot delete a legacy mobile invoice outside the caller's org scope", async () => {
+    const localInvoiceId = rid("localInv");
+    const lcId = await insertLegacyMobileCase({
+      organizationId: labBOrgId,
+      localInvoiceId,
+    });
+
+    // labAOnly user has no membership in lab B. The legacy resolver scopes its
+    // reads to the caller's own orgs, so the lab B case is invisible: it fails
+    // closed as "nothing to delete" (200, deletedCount 0) and the blob is left
+    // untouched — no cross-tenant deletion is possible.
+    const r = await request(appMod.default)
+      .delete("/api/invoices/bulk")
+      .set("Authorization", `Bearer ${tokens.labAOnly}`)
+      .send({
+        labOrganizationId: labAOrgId,
+        invoiceIds: [`mobile:${localInvoiceId}`],
+      });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.deletedCount).toBe(0);
+
+    // The blob is untouched — no partial deletion.
+    const { db, labCases } = dbMod as any;
+    const row = await db.query.labCases.findFirst({
+      where: eq(labCases.id, lcId),
+      columns: { caseData: true },
+    });
+    expect(JSON.parse(row.caseData).invoiceId).toBe(localInvoiceId);
   });
 });
