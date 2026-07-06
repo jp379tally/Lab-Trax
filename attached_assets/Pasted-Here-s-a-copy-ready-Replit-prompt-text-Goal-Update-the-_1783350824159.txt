@@ -1,0 +1,77 @@
+Here’s a copy-ready Replit prompt:
+
+```text
+Goal:
+Update the LabTrax mobile app case list UI so dashboard case cards and Cases tab list items show relative timing instead of specific calendar dates.
+
+User-visible issue:
+On the mobile app dashboard and Cases tab, each case currently shows text like “Added July 6th” or otherwise displays the exact created/due dates inside the case list card/window. I do not want specific dates shown in those list views.
+
+Desired behavior:
+1. In the mobile Dashboard case list and mobile Cases tab list:
+   - Do NOT show “Added July 6th” or any exact created date.
+   - Show how many days ago the case was created.
+   - Show how many days remain until the case is due.
+   - Example labels:
+     - “Created today”
+     - “Created 1 day ago”
+     - “Created 6 days ago”
+     - “Due today”
+     - “Due tomorrow”
+     - “Due in 5 days”
+     - “Overdue by 2 days”
+
+2. In the individual case detail screen:
+   - Keep showing the specific created date.
+   - Keep showing the specific due date.
+   - The detail page should still use exact calendar dates because that is where precise case metadata belongs.
+
+Important date context:
+The current user-local date for this issue is July 6, 2026, America/New_York. Date calculations should be based on the user’s local timezone, not UTC midnight, so cases do not show the wrong relative day near timezone boundaries.
+
+Likely root cause:
+The same date display formatting is probably being reused across both the mobile list/card views and the case detail view. The list views are using exact date formatting such as “Added July 6th,” when they should instead use relative date labels. The detail screen should continue using exact date formatting.
+
+Implementation steps:
+1. Find the mobile Dashboard case card/list component and the mobile Cases tab list component.
+2. Identify where the created date and due date are rendered in those list views.
+3. Replace exact date labels in those list views with relative labels:
+   - Created date should render as “Created today,” “Created yesterday,” or “Created X days ago.”
+   - Due date should render as “Due today,” “Due tomorrow,” “Due in X days,” or “Overdue by X days.”
+4. Keep exact date formatting in the individual case detail screen.
+5. If there is a shared case date formatter, split it into two clear helpers:
+   - one helper for relative list labels
+   - one helper for exact detail-page dates
+6. Make sure relative day calculations normalize dates to the user’s local day before comparing, so the app compares calendar days rather than raw millisecond differences.
+7. Handle missing dates safely:
+   - If created date is missing, hide the created-relative label or show a safe fallback consistent with existing UI.
+   - If due date is missing, hide the due-relative label or show “No due date” only if that matches existing product language.
+
+Constraints:
+- Do not change the case detail page behavior except to preserve exact created and due dates.
+- Do not introduce broad refactors or change unrelated case data logic.
+- Do not change backend schemas or database fields.
+- Do not remove due date or created date data from the app; only change how it is displayed in mobile list views.
+- Keep desktop behavior unchanged unless the same mobile component is shared and the change is explicitly scoped/responsive.
+- Match the existing LabTrax mobile UI style.
+
+Regression checks:
+1. On the mobile Dashboard, confirm case cards no longer show “Added July 6th” or exact created/due dates.
+2. On the mobile Cases tab, confirm case list items no longer show exact created/due dates.
+3. Confirm dashboard and Cases tab show relative created timing and relative due timing.
+4. Tap into an individual case and confirm the exact created date and exact due date are still visible.
+5. Test these date states:
+   - created today
+   - created yesterday
+   - created several days ago
+   - due today
+   - due tomorrow
+   - due in several days
+   - overdue
+   - missing due date
+6. Verify calculations around the current date of July 6, 2026 in America/New_York.
+7. Confirm no unrelated desktop case displays were unintentionally changed.
+
+Before finishing:
+Explain which components/files were changed, how the relative date calculation works, and any assumptions made about timezone handling or missing dates.
+```

@@ -1,0 +1,163 @@
+### Replit Build Brief
+
+**Objective**
+Fix the Messenger unread badge so the red dot stays cleared after the user opens/reads the conversation, logs out, and logs back in on both LabTrax web and desktop.
+
+**User-visible problem**
+The Messenger red unread badge disappears during the current session, but after logout/login it comes back even though there is no new message.
+
+**Likely root cause**
+The desktop/web Messenger clears unread state locally before confirming the read state was persisted to the server. In current code, `openConversation()` in `artifacts/labtrax-desktop/src/context/MessengerContext.tsx` sets `unreadCount: 0` immediately, but does not persist read state. Persistence only happens later through `markRead()`, which is called from `ChatPanel` after messages load, and its REST call silently ignores failures.
+
+Evidence: a prior commit already tried to fix this by adding `POST /messenger/conversations/:id/read`, but the current flow can still show a false success locally while the server still thinks the conversation is unread. On the next login, `/messenger/conversations` reloads from the database and the red badge returns.
+
+**Exact areas to inspect/change**
+
+* `artifacts/labtrax-desktop/src/context/MessengerContext.tsx`
+
+  * `openConversation`
+  * `markRead`
+  * `refreshConversations`
+  * unread count updates
+* `artifacts/labtrax-desktop/src/components/messenger/ChatPanel.tsx`
+
+  * `loadMessages`
+  * incoming message handler
+  * dependency handling around `minimized`
+* `artifacts/labtrax-desktop/src/components/messenger/MessengerInbox.tsx`
+
+  * conversation row click path
+* `artifacts/api-server/src/routes/messenger.ts`
+
+  * `GET /messenger/conversations`
+  * `POST /messenger/conversations/:id/read`
+* `artifacts/api-server/src/lib/messenger-ws.ts`
+
+  * `mark_read` WebSocket handler
+
+**Implementation plan**
+
+1. Create one shared client helper in `MessengerContext.tsx`, such as `persistConversationRead(conversationId, lastMessageId?)`.
+2. Call it whenever the user actually opens/views a conversation, not only after `ChatPanel` message loading succeeds.
+3. Do not rely on local unread clearing alone. Either:
+
+   * update local unread state only after the REST read call succeeds, or
+   * optimistically clear it but roll back / refresh conversations if the REST call fails.
+4. Send `{ lastMessageId }` in the REST body when available. The server should validate that the message belongs to the conversation and set `conversation_participants.last_read_at` to that message’s `created_at`.
+5. Keep the WebSocket `mark_read` event for live “seen” behavior, but treat REST as the durable source of truth.
+6. After a successful read write, call or schedule `refreshConversations()` so the UI matches server state.
+7. Add regression coverage proving that after marking a conversation read, a fresh conversation fetch returns `unreadCount: 0`.
+
+**Constraints and guardrails**
+
+* Fix this once in the shared desktop/web React package; the desktop app uses the same UI bundle, so do not patch only Electron-specific code.
+* Do not make the red dot disappear purely through local state.
+* Do not mark messages read while a chat is minimized.
+* Do not break push/OS notifications for genuinely new incoming messages.
+* Do not delete messenger data or reset conversations.
+* Preserve attachment message previews and existing WebSocket behavior.
+
+**Acceptance criteria**
+
+* Open Messenger with one unread conversation.
+* Click/read the conversation.
+* Red badge disappears.
+* Log out.
+* Log back in.
+* Red badge remains gone.
+* Send a genuinely new message from another user.
+* Red badge appears again.
+* Open/read that new message.
+* Red badge clears and stays cleared after refresh/logout/login on both web and desktop.
+
+**Regression checks**
+
+* `pnpm --filter @workspace/api-server run test`
+* `pnpm --filter @workspace/labtrax-desktop run test`
+* Manual web smoke: read message, refresh, logout/login.
+* Manual desktop smoke: read message, quit/reopen or logout/login.
+* Confirm minimized chat panels do not auto-mark messages read.
+
+### Copy-Ready Replit Prompt
+
+Please fix the LabTrax Messenger unread badge persistence bug on both web and desktop.
+
+Symptom: in the Messenger feature, the red unread badge/dot disappears after I open/read the message, but after I log out and log back in, the badge comes back even though there is no new message. This happens in both the web version and the desktop version.
+
+Likely root cause: the shared desktop/web Messenger UI clears unread state locally, but the durable server read state is not reliably persisted. In `artifacts/labtrax-desktop/src/context/MessengerContext.tsx`, `openConversation()` currently sets `unreadCount: 0` locally. `markRead()` does call `POST /messenger/conversations/:id/read`, but only from later chat-panel flows and it silently ignores failures. That means the UI can look read during the current session while the database still has `conversation_participants.last_read_at` unset or stale. On the next login, `GET /messenger/conversations` reloads unread counts from the server and the red badge returns.
+
+Please inspect and update these files:
+
+* `artifacts/labtrax-desktop/src/context/MessengerContext.tsx`
+* `artifacts/labtrax-desktop/src/components/messenger/ChatPanel.tsx`
+* `artifacts/labtrax-desktop/src/components/messenger/MessengerInbox.tsx`
+* `artifacts/api-server/src/routes/messenger.ts`
+* `artifacts/api-server/src/lib/messenger-ws.ts`
+
+Implement the safest durable fix:
+
+1. Make REST persistence the source of truth for read state.
+2. Add or refactor a shared client helper that marks a conversation read via `POST /messenger/conversations/:id/read`.
+3. Call that helper when the user opens/views a conversation, not only after message loading happens.
+4. Pass the known last message id when available, and have the server validate it belongs to the conversation before updating `conversation_participants.last_read_at`.
+5. Keep the WebSocket `mark_read` event for live seen indicators, but do not depend on WebSocket alone for persistence.
+6. Do not silently hide failed persistence. If the REST call fails, refresh conversations or avoid permanently clearing the local badge so the UI does not lie.
+7. Preserve the rule that minimized panels do not auto-mark messages read.
+8. Add a regression test proving that after marking a conversation read, a fresh `GET /messenger/conversations` returns `unreadCount: 0` for that user.
+9. Add a desktop/web test or focused mocked test proving opening a conversation triggers durable mark-read behavior, not just local unread clearing.
+
+Acceptance criteria:
+
+* With an unread Messenger conversation, opening/reading it clears the red badge.
+* After refresh, logout/login, and desktop app restart, the badge stays cleared.
+* A truly new incoming message still creates a red badge.
+* Opening/reading that new message clears it permanently.
+* Web and desktop both behave the same because they share the fixed Messenger code.
+* Existing Messenger send/receive, attachment, typing, presence, and desktop notification behavior still works.
+
+Before finishing, explain what you changed, what assumptions you made, and what tests/manual checks passed.
+
+### Debug Analysis
+
+**Primary root-cause hypothesis**
+This is a read-state persistence bug, not a visual badge bug. The client clears the unread badge locally, but the server-side `last_read_at` value is not reliably updated, so login reloads the old unread count.
+
+**Supporting evidence**
+
+* Screenshot shows the Messenger launcher badge and an unread marker in the chat list.
+* The bug survives across logout/login, which means local UI state resets and server/database state is reloaded.
+* Current `MessengerContext.tsx` clears unread count in `openConversation()` without a server write.
+* Current `markRead()` calls the REST endpoint but catches and ignores errors.
+* Prior commit `f434f505` was titled “Fix persistent unread message badge,” but only added a client REST call inside `markRead`, leaving the open-conversation local-clear path weak.
+
+Relevant source/commit links:
+
+* `MessengerContext.tsx`: [https://github.com/jp379tally/Lab-Trax/blob/main/artifacts/labtrax-desktop/src/context/MessengerContext.tsx](https://github.com/jp379tally/Lab-Trax/blob/main/artifacts/labtrax-desktop/src/context/MessengerContext.tsx)
+* `messenger.ts`: [https://github.com/jp379tally/Lab-Trax/blob/main/artifacts/api-server/src/routes/messenger.ts](https://github.com/jp379tally/Lab-Trax/blob/main/artifacts/api-server/src/routes/messenger.ts)
+* Prior attempted fix: [https://github.com/jp379tally/Lab-Trax/commit/f434f505ef4f52eb96e856f14649b9db74ec543f](https://github.com/jp379tally/Lab-Trax/commit/f434f505ef4f52eb96e856f14649b9db74ec543f)
+
+**Alternate hypotheses worth checking**
+
+* The REST read endpoint is returning an error in production, but the client hides it.
+* `last_read_at` is being updated for the wrong participant row or not committed.
+* The WebSocket `mark_read` path works sometimes, but desktop/web reconnect/login relies on REST/DB state.
+* `ChatPanel` may not call `markRead()` in all real viewing paths, especially around minimized/open state or failed message fetches.
+
+**Why this approach is best**
+A cosmetic badge patch would only hide the symptom. The correct fix is to make the read contract durable: when the user views the conversation, update `conversation_participants.last_read_at`, then let `/messenger/conversations` return zero unread after a fresh session.
+
+Confidence: high on the persistence diagnosis, medium-high on the exact missed path until Replit runs the live app logs/tests.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce with two users: send message to John, observe unread badge, open/read chat, logout/login, confirm badge returns.
+2. In dev tools/server logs, check whether `POST /api/messenger/conversations/:id/read` fires when the conversation is opened.
+3. Check whether that request succeeds or fails.
+4. Add a shared durable read helper in `MessengerContext.tsx`.
+5. Call it from `openConversation()` using `conversation.lastMessage?.id` when available.
+6. Keep `ChatPanel` read marking for loaded/incoming visible messages, but route it through the same helper.
+7. Update `POST /messenger/conversations/:id/read` to accept optional `lastMessageId`, validate participation and message ownership, then update `lastReadAt`.
+8. After success, refresh or reconcile `conversations` from the server.
+9. Add API regression test: unread before read, zero unread after read, still zero after fresh fetch.
+10. Add desktop/web regression test: opening an unread conversation calls durable mark-read and does not only clear local state.
+11. Run focused tests, then manual web and desktop smoke checks.

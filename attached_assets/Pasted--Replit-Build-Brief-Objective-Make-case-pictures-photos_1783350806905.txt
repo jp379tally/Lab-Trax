@@ -1,0 +1,154 @@
+### Replit Build Brief
+
+**Objective**
+Make case pictures/photos viewable in the LabTrax desktop app with the same behavior as the website and mobile app, with no regression to web or mobile media loading.
+
+**User-visible problem**
+Pictures are visible on the website and mobile app, but blank or unavailable in the desktop app.
+
+**Likely root cause**
+The media itself is probably fine because web and mobile can display it. The desktop app is the outlier. In the current repo, desktop image rendering is supposed to use authenticated media loading through:
+
+* `artifacts/labtrax-desktop/src/components/AuthedMedia.tsx`
+* `artifacts/labtrax-desktop/src/pages/cases.tsx`
+* desktop attachment route format: `/api/cases/:caseId/attachments/:attachmentId/file`
+
+That means the most likely failure is one of these:
+
+1. The installed desktop build is stale and does not include the current authenticated image rendering code.
+2. One desktop-only attachment/photo surface still uses a plain `<img src>` or raw storage URL instead of `AuthedImage`.
+3. Electron is opening a protected image URL without the bearer token, so the API returns `401` and the picture renders blank.
+
+**Exact areas to inspect/change**
+
+* `artifacts/labtrax-desktop/src/components/AuthedMedia.tsx`
+* `artifacts/labtrax-desktop/src/pages/cases.tsx`
+* `AttachmentRow`
+* case drawer Files tab
+* image/video lightbox
+* history attachment thumbnail rendering
+* `artifacts/labtrax-desktop/electron/main.cjs`
+* desktop build/publish scripts:
+
+  * `scripts/desktop-build-publish.sh`
+  * `scripts/post-merge.sh`
+  * `REGRESSION_GUARDRAILS.md`
+
+**Implementation plan**
+
+1. Reproduce in desktop on a case with a known working photo that also displays on web/mobile.
+2. Check the desktop DevTools/network logs for image requests returning `401`, `403`, `404`, or blocked `blob:`/`app:` URLs.
+3. Confirm every desktop image display path uses `AuthedImage` or `AuthedVideo`, not raw `<img src={attachment.storageKey}>`.
+4. Ensure attachment display uses the canonical authenticated endpoint:
+   `/api/cases/${caseId}/attachments/${attachment.id}/file`
+5. If any path uses raw `storageKey`, replace it with the canonical endpoint and render through `AuthedImage`.
+6. Add or update a desktop regression test proving case attachment images render through `AuthedImage` and never through a plain unauthenticated `<img>` against protected API URLs.
+7. Rebuild and publish the desktop app so installed desktop users receive the same code already working on web.
+8. Do not change mobile attachment behavior unless a shared API contract bug is proven.
+
+**Constraints and guardrails**
+
+* Do not alter the mobile media path unless necessary.
+* Do not change upload/storage schema.
+* Do not make protected attachment endpoints public.
+* Do not bypass auth to “fix” desktop images.
+* Preserve bearer-token behavior and token refresh.
+* Desktop, website, and mobile media must all still work after the fix.
+
+**Acceptance criteria**
+
+* A photo visible on website is also visible in the desktop Files tab.
+* Clicking the desktop photo opens a full-size preview/lightbox.
+* History thumbnails for uploaded/assigned image attachments still render.
+* Non-image files still open/preview as before.
+* Mobile app still opens photos/files/documents.
+* Website still opens photos/files/documents.
+* No new unauthenticated media exposure is introduced.
+
+**Regression checks**
+
+Run the relevant protected checks:
+
+```bash
+pnpm run typecheck
+pnpm --filter @workspace/labtrax-desktop run test
+pnpm --filter @workspace/labtrax run test
+pnpm --filter @workspace/api-server run test -- routes/cases-attachments.test.ts routes/cases-prescription-photo.test.ts
+```
+
+Before shipping desktop, also complete the desktop manual smoke check: open a case, go to Files, view photos, open preview, check history thumbnails, then confirm web/mobile still show the same media.
+
+### Copy-Ready Replit Prompt
+
+Please debug and fix this LabTrax desktop issue: pictures/photos are visible on the website and mobile app, but not visible in the desktop app. The goal is desktop/web/mobile media parity with no regression.
+
+Start by inspecting these files and flows:
+
+* `artifacts/labtrax-desktop/src/components/AuthedMedia.tsx`
+* `artifacts/labtrax-desktop/src/pages/cases.tsx`
+* `AttachmentRow`
+* the case drawer Files tab
+* image/video lightbox
+* history attachment thumbnail rendering
+* `artifacts/labtrax-desktop/electron/main.cjs`
+* desktop build/publish scripts
+
+Likely root cause: desktop is either running a stale build, or one desktop media surface still uses a raw storage URL/plain `<img>` that cannot send the bearer token. Protected attachment file URLs must be fetched with auth and rendered via object/blob URLs, using `AuthedImage` or equivalent. Do not make media public and do not weaken auth.
+
+Please implement the safest fix:
+
+1. Reproduce with a case photo that works on web/mobile but fails in desktop.
+2. Check whether desktop gets `401`, `403`, `404`, or blocked image/blob errors.
+3. Ensure all desktop image/photo render paths use the canonical authenticated route:
+   `/api/cases/:caseId/attachments/:attachmentId/file`
+4. Ensure images render through `AuthedImage`, not plain unauthenticated image tags.
+5. Preserve existing web and mobile behavior.
+6. Add or update a regression test proving desktop attachment photos use authenticated media loading.
+7. Rebuild/publish the desktop app if the current source is already correct but the installed desktop app is stale.
+
+Before finishing, run typecheck and the desktop/media regression tests, then report exactly what changed, what was verified, and any assumptions.
+
+### Debug Analysis
+
+**Probable root cause**
+This is most likely a desktop-only authenticated media rendering or stale desktop build issue. Since the same pictures show on the website and mobile app, the uploaded files and backend storage are probably valid.
+
+The current source already has the right general pattern: `AuthedMedia.tsx` waits for token hydration, fetches protected media with bearer auth, converts it to a blob URL, and renders it. `cases.tsx` also uses `AuthedImage` in the Files tab, history thumbnails, and lightbox.
+
+That points strongly to either:
+
+* the installed desktop app has not been rebuilt/published with the current media fix, or
+* there is still a desktop-only image surface not covered by `AuthedImage`.
+
+**Supporting evidence**
+
+* Desktop runs from an Electron `app://labtrax` origin, so cookie auth cannot be relied on.
+* The desktop app uses bearer tokens for API requests.
+* Plain image tags cannot attach bearer tokens to protected `/api/cases/.../file` routes.
+* The repo already has explicit comments saying protected media must be fetched with auth and rendered as object URLs.
+
+**Alternate hypotheses worth checking**
+
+* The desktop installer was built without the correct API origin.
+* Electron is blocking a `blob:` preview URL.
+* The affected “pictures” are not normal case attachments but prescription photos, history event images, lab logos, or another media surface.
+* The desktop app is older than the website deployment.
+
+**Why this approach is best**
+
+It fixes the desktop-specific failure at the rendering/auth boundary without touching storage, upload, mobile, or backend data contracts. That gives the lowest regression risk.
+
+**Confidence level**
+Medium-high. The symptom pattern strongly points away from storage/upload and toward desktop media rendering or desktop build freshness. A desktop network log showing `401` on image file requests would make this nearly certain.
+
+### Step-by-Step Fix Plan
+
+1. Pick one photo that works on web/mobile and fails on desktop.
+2. In desktop DevTools, inspect the failed image request.
+3. If it is `401/403`, route that display path through `AuthedImage`.
+4. If it is `404`, confirm the desktop app is using `/attachments/:id/file`, not a stale `storageKey`.
+5. If current source already works in dev, rebuild and publish the desktop installer.
+6. Add a regression test for desktop attachment image rendering.
+7. Verify Files tab thumbnails, full-size preview, and history thumbnails.
+8. Verify website and mobile still show the same pictures.
+9. Only then ship the desktop update.

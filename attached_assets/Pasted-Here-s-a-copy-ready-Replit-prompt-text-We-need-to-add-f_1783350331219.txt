@@ -1,0 +1,126 @@
+Here’s a copy-ready Replit prompt:
+
+```text
+We need to add file-level notes for case file uploads on the website and desktop versions of LabTracks. This already works on mobile, so do not change or regress the mobile implementation.
+
+Goal:
+When a user adds any file to a case on the website or desktop app, they should be prompted to optionally add a note for that specific file. If they choose yes, they can enter a note. That note should be attached to the uploaded file and should appear anywhere that file is shown, including:
+1. the case Files section
+2. the case history / activity timeline
+3. all three platforms: web, desktop, and mobile
+
+User-visible behavior:
+- A user opens an existing case or creates a new case.
+- The user adds a file, such as a screenshot, screen recording, document, or other attachment.
+- Before or during upload, the app asks whether they want to add a note to this file.
+- If the user selects “No,” the file uploads normally with no note.
+- If the user selects “Yes,” show a note input.
+- The note is saved as metadata associated with that specific file, not just the case generally.
+- The note displays with the file in the Files section.
+- The note also appears in the case history entry for that uploaded file.
+- Existing mobile behavior should continue working exactly as it does now.
+
+Likely root cause / current gap:
+The mobile app already supports file notes, which means the backend data model or API probably already has some support for attachment-level notes. The website and desktop upload flows likely do not expose the note prompt, do not pass the note field during upload, or do not render the note in the web/desktop Files section and case history. The fix should reuse the existing mobile-compatible backend/API behavior rather than creating a separate note system.
+
+Implementation steps:
+1. Inspect the mobile file upload flow first.
+   - Find how mobile prompts for a file note.
+   - Identify the API payload field used for the note.
+   - Identify how the note is stored and later rendered.
+   - Reuse the same field names, API behavior, validation, and display conventions.
+
+2. Inspect the website and desktop file upload flows.
+   - Find the components/routes/screens used when adding files to a case.
+   - Look for drag-and-drop upload handlers, file picker handlers, upload modals, attachment APIs, and case history creation logic.
+   - Determine whether website and desktop share code or have separate upload components.
+
+3. Add the optional note prompt to website and desktop only.
+   - Do not alter the mobile upload flow unless absolutely required for shared types or shared rendering.
+   - The prompt should appear whenever files are added to a case.
+   - The user must be able to decline adding a note.
+   - If multiple files are uploaded at once, support either:
+     - a separate optional note per file, preferred if mobile already behaves that way, or
+     - a clearly labeled note flow that does not accidentally apply the wrong note to the wrong file.
+   - Do not block uploading when the user chooses not to add a note.
+
+4. Persist the note with the uploaded file.
+   - Use the same backend/API field that mobile uses.
+   - Do not create a separate case-level note unless the current mobile implementation does that intentionally.
+   - Ensure the note remains attached to the correct file after refresh, reload, logout/login, and cross-platform viewing.
+
+5. Render the note in the Files section.
+   - Show the note alongside or beneath the corresponding file.
+   - Make sure files without notes still display cleanly.
+   - Avoid layout regressions for long file names, long notes, images, videos, and existing attachments.
+
+6. Render the note in case history.
+   - When a file upload creates a case history/activity entry, include the note if one exists.
+   - The note should be visibly associated with the uploaded file.
+   - Existing history entries without file notes should remain unchanged.
+
+7. Preserve cross-platform compatibility.
+   - Files and notes added on web should be visible on desktop and mobile.
+   - Files and notes added on desktop should be visible on web and mobile.
+   - Files and notes added on mobile should remain visible on web and desktop.
+   - Do not introduce a platform-specific field or duplicate note storage.
+
+Important constraints:
+- Do not change or regress the mobile implementation.
+- Reuse the existing mobile-compatible API/data model if available.
+- Do not create a new unrelated note feature; this must be attachment/file-level metadata.
+- Do not make notes required.
+- Do not break existing file uploads without notes.
+- Do not lose existing files, notes, case history, or attachment metadata.
+- Avoid broad refactors unless necessary.
+- If schema or API changes are required, explain why and keep them backward compatible.
+- If the backend already supports this field, prefer a frontend-only implementation for web/desktop plus rendering fixes.
+
+Acceptance criteria:
+- On website, uploading a file to a case prompts the user to optionally add a note.
+- On desktop, uploading a file to a case prompts the user to optionally add a note.
+- Selecting “No” uploads the file normally with no note.
+- Selecting “Yes” allows a note to be entered and saved with that file.
+- The note appears with that file in the Files section.
+- The note appears in the case history/activity entry for that file upload.
+- Notes are visible across website, desktop, and mobile.
+- Existing mobile file-note behavior still works.
+- Existing file uploads without notes still work.
+- Existing cases and existing files continue to render correctly.
+
+Regression checks:
+1. Mobile:
+   - Add a file with a note on mobile.
+   - Confirm the note still saves and displays on mobile.
+   - Confirm the same file and note display on website and desktop.
+
+2. Website:
+   - Add a file with no note.
+   - Add a file with a note.
+   - Add multiple files, with different note choices if supported.
+   - Refresh the case and confirm files and notes persist.
+   - Confirm case history shows the file upload and note correctly.
+
+3. Desktop:
+   - Repeat the same checks as website.
+   - Confirm drag-and-drop upload and file picker upload both behave correctly if both are supported.
+
+4. Cross-platform:
+   - Add a noted file on web, verify on desktop and mobile.
+   - Add a noted file on desktop, verify on web and mobile.
+   - Add a noted file on mobile, verify on web and desktop.
+
+5. Edge cases:
+   - Upload a file with a very long note.
+   - Upload a file with special characters in the note.
+   - Upload a large video/screen recording.
+   - Upload multiple files at once.
+   - Cancel the note prompt and confirm the upload behavior is correct.
+   - Confirm case history does not show empty note labels for files without notes.
+
+Before finishing:
+- Identify the exact files/components/API handlers changed.
+- Explain whether the backend already supported attachment notes or whether any backend/schema change was needed.
+- Summarize how mobile regression was avoided.
+- Run the relevant tests or manual checks for web, desktop, and mobile-facing data compatibility.
+```
