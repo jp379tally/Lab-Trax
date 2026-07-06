@@ -98,7 +98,11 @@ function Field({
   );
 }
 
-function AttachmentThumb({
+// Exported for the regression guard in
+// components/__tests__/AuthedMedia.attachment.test.tsx, which mounts this real
+// Files-tab thumbnail surface to prove image attachments render through
+// AuthedImage (never a plain <img src> at the protected /file endpoint).
+export function AttachmentThumb({
   caseId,
   attachment,
   onLightbox,

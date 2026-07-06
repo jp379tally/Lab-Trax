@@ -32,13 +32,18 @@ const authedFetch = vi.fn();
 const getApiOrigin = vi.fn(() => "https://api.labtrax.example");
 const waitForTokenHydration = vi.fn(async () => {});
 
+const apiFetch = vi.fn();
+
 vi.mock("@/lib/api", () => ({
   authedFetch: (...args: unknown[]) => authedFetch(...args),
   getApiOrigin: () => getApiOrigin(),
   waitForTokenHydration: () => waitForTokenHydration(),
+  apiFetch: (...args: unknown[]) => apiFetch(...args),
 }));
 
 import { AuthedImage } from "../AuthedMedia";
+import { AttachmentThumb } from "../PrescriptionPreview";
+import type { CaseAttachment } from "@/lib/types";
 
 const CASE_ID = "case_abc123";
 const ATTACHMENT_ID = "att_photo_9";
@@ -111,5 +116,76 @@ describe("AuthedImage — desktop case attachment photo", () => {
 
     await screen.findByTestId("photo-unavailable");
     expect(screen.queryByAltText("prescription-photo.jpg")).toBeNull();
+  });
+});
+
+// Proving AuthedImage itself is safe (above) is not enough: a refactor could
+// swap AuthedImage for a plain <img src={fileUrl}> inside the REAL attachment
+// surface and the AuthedImage-only guard would not catch it. This block mounts
+// the actual Files-tab / prescription-preview thumbnail component that ships to
+// users and asserts it wires the canonical /file endpoint through AuthedImage.
+describe("AttachmentThumb — real desktop Files-tab attachment surface", () => {
+  const imageAttachment: CaseAttachment = {
+    id: ATTACHMENT_ID,
+    caseId: CASE_ID,
+    uploadedByUserId: "user_1",
+    uploadedByOrganizationId: "org_1",
+    fileName: "prescription-photo.jpg",
+    storageKey: "case-media/prescription-photo.jpg",
+    fileType: "image/jpeg",
+  };
+
+  it("renders an image attachment through AuthedImage against the canonical /file endpoint", async () => {
+    render(
+      <AttachmentThumb
+        caseId={CASE_ID}
+        attachment={imageAttachment}
+        onLightbox={() => {}}
+      />,
+    );
+
+    // The real surface builds the canonical /file URL and hands it to
+    // AuthedImage, which performs the bearer-authed fetch.
+    await waitFor(() => expect(authedFetch).toHaveBeenCalledTimes(1));
+    expect(authedFetch.mock.calls[0]?.[0]).toBe(FILE_URL);
+
+    // The visible <img> src is the blob object URL, not the protected /file URL.
+    const img = await screen.findByAltText("prescription-photo.jpg");
+    expect(img.tagName).toBe("IMG");
+    expect(img).toHaveAttribute("src", BLOB_URL);
+    expect(img.getAttribute("src")).not.toBe(FILE_URL);
+  });
+
+  it("never renders a plain <img> pointed at the protected /file URL", async () => {
+    const { container } = render(
+      <AttachmentThumb
+        caseId={CASE_ID}
+        attachment={imageAttachment}
+        onLightbox={() => {}}
+      />,
+    );
+
+    await screen.findByAltText("prescription-photo.jpg");
+
+    // A plain <img src="…/file"> here would 401 and render blank on desktop —
+    // exactly the regression this guard exists to prevent.
+    const rawSrc = container.querySelector(`img[src="${FILE_URL}"]`);
+    expect(rawSrc).toBeNull();
+  });
+
+  it("shows the Unavailable fallback (no <img>) when the authenticated fetch fails", async () => {
+    authedFetch.mockResolvedValueOnce(new Response("", { status: 401 }));
+
+    render(
+      <AttachmentThumb
+        caseId={CASE_ID}
+        attachment={imageAttachment}
+        onLightbox={() => {}}
+      />,
+    );
+
+    await screen.findByText("Unavailable");
+    expect(screen.queryByAltText("prescription-photo.jpg")).toBeNull();
+    expect(document.querySelector(`img[src="${FILE_URL}"]`)).toBeNull();
   });
 });
