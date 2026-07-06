@@ -1,0 +1,89 @@
+### Copy-Ready Replit Prompt
+
+I want to improve the LabTrax Cases table column reordering UX.
+
+**Goal:**
+Keep the existing “Columns” customization dropdown with arrow buttons for moving columns left/right, but also allow users to manually reorder visible columns by dragging the table column header itself. A user should be able to grab the top header area where the column title appears, drag it left or right, and drop it into a new position.
+
+**Current behavior:**
+On the Cases page, users can click the `Columns` button to open a “Customize columns” menu. In that menu, each column has left/right arrow controls for reordering. This works and should remain available.
+
+**Desired behavior:**
+Users should also be able to reorder columns directly from the table header row. For example, dragging the `Patient`, `Doctor`, `Type`, `Material`, `Teeth`, `Priority`, `Status`, `Price`, or `Notes` header should move that column to the dropped position, updating the same column order used by the existing Columns menu.
+
+**Likely root cause / missing feature:**
+Column order is currently controlled only through the column customization menu state and arrow-button handlers. The table header cells likely render from the same ordered column config but do not expose drag-and-drop behavior or call the same reorder logic.
+
+**Implementation steps:**
+
+1. Locate the Cases table implementation and column customization logic.
+
+   * Inspect the Cases page route/component.
+   * Find the column definition/config array.
+   * Find the `Columns` button/dropdown component.
+   * Find the reorder handler currently used by the left/right arrows.
+
+2. Reuse the existing column order state.
+
+   * Do not create a second independent column ordering system.
+   * Header drag-and-drop should update the same ordered column array or persisted user preference that the Columns menu uses.
+   * After dragging a header, the Columns menu order should reflect the new order.
+
+3. Add drag-and-drop to table headers.
+
+   * Make reorderable header cells draggable.
+   * On drag start, store the dragged column key/id.
+   * On drag over another header, allow dropping and show a clear visual insertion target.
+   * On drop, move the dragged column to the target position.
+   * Prevent dragging from interfering with existing header actions like sorting, resizing, checkboxes, filters, or horizontal scrolling.
+
+4. Preserve non-reorderable columns.
+
+   * If the row selection checkbox column is fixed, keep it fixed at the far left.
+   * If any actions column or system column is fixed, do not allow it to be dragged into the regular column order.
+   * Only make normal data columns reorderable.
+
+5. Preserve existing behavior.
+
+   * The `Columns` dropdown must still open and work.
+   * The arrow controls inside the dropdown must still move columns.
+   * Hidden/visible column toggles must still work.
+   * Any saved column preferences should continue to persist.
+
+6. Add UX affordances.
+
+   * Show a grab/drag cursor on draggable header cells.
+   * Add a subtle visual style while dragging.
+   * Add a drop indicator or highlighted target header.
+   * Keep header text readable and avoid layout shift.
+
+7. Handle edge cases.
+
+   * Dragging a column onto itself should do nothing.
+   * Dragging outside the table should cancel safely.
+   * Hidden columns should not appear as drag targets.
+   * Reordering should work when the table is horizontally scrolled.
+   * Reordering should not break mobile/tablet layouts.
+   * Reordering should not reset filters, search, pagination, or selected rows.
+
+**Constraints / guardrails:**
+
+* Do not remove the existing Columns dropdown or arrow-based reorder controls.
+* Do not change column names, data rendering, sorting behavior, filters, or row selection behavior.
+* Avoid broad refactors unless necessary.
+* Prefer the app’s existing drag-and-drop library if one is already installed. If no drag-and-drop library exists, use a lightweight native HTML5 drag/drop implementation scoped only to table headers.
+* Keep the implementation accessible where reasonable, including keyboard/screen-reader-safe fallback through the existing arrow controls.
+* Use stable column ids/keys, not display labels, when reordering.
+
+**Regression checks before finishing:**
+
+1. On `/desktop/cases`, verify columns can still be reordered using the existing `Columns` dropdown arrows.
+2. Verify visible column headers can be dragged and dropped to reorder columns directly.
+3. Verify the reordered layout updates both the table and the Columns dropdown order.
+4. Verify hiding/showing columns still works after a drag reorder.
+5. Verify search, filters, refresh, pagination/count display, and row selection still work.
+6. Verify fixed columns such as the checkbox column stay fixed if they were fixed before.
+7. Verify horizontal scrolling still works and drag-reordering does not break the wide table layout.
+8. Verify the preference persists if column order was already persisted before.
+9. Check for console errors or React warnings.
+10. Briefly explain what files were changed, what tradeoffs were made, and whether any follow-up cleanup is recommended.
