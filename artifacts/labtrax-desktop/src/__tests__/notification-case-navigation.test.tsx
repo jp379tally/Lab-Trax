@@ -118,6 +118,7 @@ vi.mock("@/components/DoctorNamePicker", () => ({
 vi.mock("@/components/AuthedMedia", () => ({
   AuthedImage: () => null,
   AuthedVideo: () => null,
+  MediaLightbox: () => null,
   isSameApiOrigin: () => true,
 }));
 

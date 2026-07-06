@@ -11,7 +11,12 @@ import {
 } from "lucide-react";
 import { apiFetch, getApiOrigin, authedFetch, waitForTokenHydration } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
-import { AuthedImage, AuthedVideo, isSameApiOrigin } from "@/components/AuthedMedia";
+import {
+  AuthedImage,
+  AuthedVideo,
+  MediaLightbox,
+  isSameApiOrigin,
+} from "@/components/AuthedMedia";
 import { StatusBadge } from "@/components/StatusBadge";
 import { formatDateTime, statusLabel } from "@/lib/format";
 import {
@@ -179,7 +184,11 @@ export function AttachmentThumb({
 }
 
 // Renders an attachment referenced inline from a history event's metadata.
-function HistoryEventMedia({
+// Exported for the regression guard in
+// components/__tests__/AuthedMedia.attachment.test.tsx, which mounts this real
+// history-timeline thumbnail surface to prove image attachments render through
+// AuthedImage (never a plain <img src> at the protected /file endpoint).
+export function HistoryEventMedia({
   caseId,
   metadata,
   onLightbox,
@@ -676,37 +685,7 @@ export function PrescriptionPreview({
       </div>
 
       {/* Image / Video lightbox */}
-      {lightbox && (
-        <div
-          className="fixed inset-0 z-[70] bg-black/90 flex items-center justify-center"
-          onClick={() => setLightbox(null)}
-        >
-          <button
-            type="button"
-            onClick={() => setLightbox(null)}
-            className="absolute top-4 right-4 h-10 w-10 rounded-full bg-white/10 text-white flex items-center justify-center hover:bg-white/20 transition-colors"
-          >
-            <X size={20} />
-          </button>
-          {lightbox.kind === "video" ? (
-            <AuthedVideo
-              url={lightbox.url}
-              controls
-              autoPlay
-              mimeType={lightbox.mimeType}
-              className="max-w-[90vw] max-h-[90vh] rounded-lg bg-black"
-              onClick={(e) => e.stopPropagation()}
-            />
-          ) : (
-            <AuthedImage
-              url={lightbox.url}
-              alt="Preview"
-              className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
-              onClick={(e) => e.stopPropagation()}
-            />
-          )}
-        </div>
-      )}
+      <MediaLightbox lightbox={lightbox} onClose={() => setLightbox(null)} />
     </div>
   );
 }

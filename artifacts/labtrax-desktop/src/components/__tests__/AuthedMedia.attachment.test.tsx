@@ -41,8 +41,8 @@ vi.mock("@/lib/api", () => ({
   apiFetch: (...args: unknown[]) => apiFetch(...args),
 }));
 
-import { AuthedImage } from "../AuthedMedia";
-import { AttachmentThumb } from "../PrescriptionPreview";
+import { AuthedImage, MediaLightbox } from "../AuthedMedia";
+import { AttachmentThumb, HistoryEventMedia } from "../PrescriptionPreview";
 import type { CaseAttachment } from "@/lib/types";
 
 const CASE_ID = "case_abc123";
@@ -187,5 +187,114 @@ describe("AttachmentThumb — real desktop Files-tab attachment surface", () => 
     await screen.findByText("Unavailable");
     expect(screen.queryByAltText("prescription-photo.jpg")).toBeNull();
     expect(document.querySelector(`img[src="${FILE_URL}"]`)).toBeNull();
+  });
+});
+
+// The history timeline renders inline thumbnails for attachments referenced
+// from a case event's metadata. This is a REAL user-facing surface: a refactor
+// swapping AuthedImage for a plain <img src={apiSrc}> here would render every
+// history-event photo blank for authenticated desktop users, and nothing else
+// would catch it.
+describe("HistoryEventMedia — real desktop history-timeline thumbnail surface", () => {
+  const imageMetadata: Record<string, unknown> = {
+    attachmentId: ATTACHMENT_ID,
+    fileType: "image/jpeg",
+    fileName: "prescription-photo.jpg",
+  };
+
+  it("renders an image attachment through AuthedImage against the canonical /file endpoint", async () => {
+    render(
+      <HistoryEventMedia
+        caseId={CASE_ID}
+        metadata={imageMetadata}
+        onLightbox={() => {}}
+      />,
+    );
+
+    // The real surface derives the canonical /file URL from the event metadata
+    // and hands it to AuthedImage, which performs the bearer-authed fetch.
+    await waitFor(() => expect(authedFetch).toHaveBeenCalledTimes(1));
+    expect(authedFetch.mock.calls[0]?.[0]).toBe(FILE_URL);
+
+    const img = await screen.findByAltText("prescription-photo.jpg");
+    expect(img.tagName).toBe("IMG");
+    expect(img).toHaveAttribute("src", BLOB_URL);
+    expect(img.getAttribute("src")).not.toBe(FILE_URL);
+  });
+
+  it("never renders a plain <img> pointed at the protected /file URL", async () => {
+    const { container } = render(
+      <HistoryEventMedia
+        caseId={CASE_ID}
+        metadata={imageMetadata}
+        onLightbox={() => {}}
+      />,
+    );
+
+    await screen.findByAltText("prescription-photo.jpg");
+
+    const rawSrc = container.querySelector(`img[src="${FILE_URL}"]`);
+    expect(rawSrc).toBeNull();
+  });
+
+  it("shows the Unavailable fallback (no <img>) when the authenticated fetch fails", async () => {
+    authedFetch.mockResolvedValueOnce(new Response("", { status: 401 }));
+
+    render(
+      <HistoryEventMedia
+        caseId={CASE_ID}
+        metadata={imageMetadata}
+        onLightbox={() => {}}
+      />,
+    );
+
+    await screen.findByText("Unavailable");
+    expect(screen.queryByAltText("prescription-photo.jpg")).toBeNull();
+    expect(document.querySelector(`img[src="${FILE_URL}"]`)).toBeNull();
+  });
+});
+
+// The full-size lightbox (shared by cases.tsx and PrescriptionPreview.tsx) is
+// the surface where a blank photo is most obvious to the user: they clicked a
+// thumbnail expecting the full image. It must render the protected /file bytes
+// through AuthedImage, never a plain <img src="…/file"> that would 401.
+describe("MediaLightbox — real desktop full-size image lightbox surface", () => {
+  it("renders the full-size image through AuthedImage against the canonical /file endpoint", async () => {
+    render(
+      <MediaLightbox
+        lightbox={{ url: FILE_URL, kind: "image" }}
+        onClose={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(authedFetch).toHaveBeenCalledTimes(1));
+    expect(authedFetch.mock.calls[0]?.[0]).toBe(FILE_URL);
+
+    const img = await screen.findByAltText("Preview");
+    expect(img.tagName).toBe("IMG");
+    expect(img).toHaveAttribute("src", BLOB_URL);
+    expect(img.getAttribute("src")).not.toBe(FILE_URL);
+  });
+
+  it("never renders a plain <img> pointed at the protected /file URL", async () => {
+    const { container } = render(
+      <MediaLightbox
+        lightbox={{ url: FILE_URL, kind: "image" }}
+        onClose={() => {}}
+      />,
+    );
+
+    await screen.findByAltText("Preview");
+
+    const rawSrc = container.querySelector(`img[src="${FILE_URL}"]`);
+    expect(rawSrc).toBeNull();
+  });
+
+  it("renders nothing when there is no active lightbox", () => {
+    const { container } = render(
+      <MediaLightbox lightbox={null} onClose={() => {}} />,
+    );
+    expect(container.firstChild).toBeNull();
+    expect(authedFetch).not.toHaveBeenCalled();
   });
 });
