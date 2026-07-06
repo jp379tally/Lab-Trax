@@ -26,6 +26,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useMe, activeMemberships } from "@/lib/auth-me";
 import { JoinLabCard } from "@/components/JoinLabCard";
 import { formatRelativeCreated, formatRelativeDue, getLocalDayDiff } from "@/lib/format";
+import { useDayChange } from "@/hooks/useDayChange";
 import { UnassignedDocumentsCard } from "@/components/UnassignedDocumentsCard";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -187,6 +188,10 @@ export default function DashboardScreen() {
   const casesQuery = useCases();
   const cases = casesQuery.data ?? [];
 
+  // Recompute relative date labels ("Due today", "Overdue", ...) whenever the
+  // local calendar day rolls over or the app resumes on a later day.
+  const dayKey = useDayChange();
+
   const dueSoon = useMemo(() => {
     return cases
       .filter((c) => {
@@ -199,7 +204,8 @@ export default function DashboardScreen() {
         const dbv = getLocalDayDiff(b.dueDate) ?? 9999;
         return da - dbv;
       });
-  }, [cases]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cases, dayKey]);
 
   const recentCases = useMemo(() => {
     return [...cases]

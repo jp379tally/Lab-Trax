@@ -39,6 +39,7 @@ import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { CASE_STATIONS } from "@/lib/case-stations";
 import { resilientFetch } from "@/lib/query-client";
 import { formatRelativeCreated, formatRelativeDue } from "@/lib/format";
+import { useDayChange } from "@/hooks/useDayChange";
 import { extractLookupCase } from "@/lib/barcode-lookup";
 import { pickBestBarcode, guideBoxFromLayout } from "@/lib/barcode-guide-box";
 import { useMe, primaryLabOrgId } from "@/lib/auth-me";
@@ -652,6 +653,11 @@ export default function CasesListScreen() {
   const casesQuery = useCases();
   const cases = casesQuery.data ?? [];
 
+  // Recompute relative date labels and date-preset filters ("Today",
+  // "Yesterday", "Due today", "Overdue", ...) whenever the local calendar day
+  // rolls over or the app resumes on a later day.
+  const dayKey = useDayChange();
+
   // ── Conflict detection ────────────────────────────────────────────────────
   // A case is "conflicting" when two or more active (non-terminal) cases in the
   // same lab share the same casePanBarcode — mirrors the desktop Conflict badge
@@ -768,7 +774,8 @@ export default function CasesListScreen() {
     }
 
     return result;
-  }, [cases, query, createdFilter, dueFilter, createdCustomFrom, createdCustomTo, dueCustomFrom, dueCustomTo, locationFilter, barcodeFilter, conflictFilter, conflictIds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cases, query, createdFilter, dueFilter, createdCustomFrom, createdCustomTo, dueCustomFrom, dueCustomTo, locationFilter, barcodeFilter, conflictFilter, conflictIds, dayKey]);
 
   // ── Date preset matching helper ─────────────────────────────────────────
   function dateMatchesPreset(
