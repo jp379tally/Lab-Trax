@@ -27,6 +27,7 @@ import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { LabCase, MeResponse } from "@/lib/types";
 import { formatDate, formatDateTime, formatDueDate, isDueToday, relativeTime } from "@/lib/format";
+import { useDayChange } from "@/hooks/useDayChange";
 import { StatusBadge } from "@/components/StatusBadge";
 import { DashboardDropZone } from "@/components/DashboardDropZone";
 import { UnassignedDocumentsCard } from "@/components/UnassignedDocumentsCard";
@@ -1174,7 +1175,17 @@ export default function DashboardPage() {
   const cases = casesQuery.data ?? [];
   const loading = casesQuery.isLoading;
 
-  const todayCases = cases.filter((c) => isToday(c.createdAt));
+  // Recomputes relative/due date labels when the local calendar day rolls over
+  // (midnight timer) or the window wakes on a later day, so "Due today" and
+  // "today" counts stay accurate on a long-running desktop session without a
+  // manual refresh. Referenced in the date-derived memos below.
+  const dayKey = useDayChange();
+
+  const todayCases = useMemo(
+    () => cases.filter((c) => isToday(c.createdAt)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cases, dayKey],
+  );
   const inProgressCount = cases.filter((c) =>
     IN_PROGRESS_STATUSES.has(c.status),
   ).length;
@@ -1202,7 +1213,8 @@ export default function DashboardPage() {
             b.updatedAt || b.createdAt || "",
           ),
         ),
-    [cases],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cases, dayKey],
   );
 
   if (noActiveLabMembership) {
