@@ -39,7 +39,7 @@ All test paths below are relative to the repo root unless already prefixed. Serv
 | 13 | Case pan barcode leading-zero preservation | desktop | `routes/cases-core.test.ts`, `routes/cases-search.test.ts`, `routes/cases-ai-intake-carry-through.test.ts` | Yes — API tests |
 | 14 | Locate case | desktop | `routes/cases-location-sync.test.ts` (server bridge), `routes/locations.test.ts` (custom-station create/validate + move via bulk-status) ; locate UI _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
 | 15 | Case history | desktop | `routes/cases-canonical-mobile.test.ts` (event history), `src/__tests__/notification-case-navigation.test.tsx` (View → case drawer), `src/pages/__tests__/case-history-invoice-events.test.tsx` (History tab renders `invoice_updated`/`invoice_voided` bulk-status events as a plain-language one-line summary surfacing invoiceNumber + new status, e.g. "Invoice INV-9001 marked Open" / "Invoice INV-9002 voided") ; history-panel UI _(pending)_ | Yes — API + desktop tests |
-| 16 | Attachments / files / photos | desktop | `routes/cases-attachments.test.ts`, `routes/cases-prescription-photo.test.ts` | Yes — API tests |
+| 16 | Attachments / files / photos | desktop | `routes/cases-attachments.test.ts`, `routes/cases-prescription-photo.test.ts` (server) ; `src/components/__tests__/AuthedMedia.attachment.test.tsx` (desktop — image attachments render via authenticated media against canonical `/attachments/:id/file`, never a plain `<img src>` at the protected URL) | Yes — API + desktop tests |
 | 17 | Invoice editor | desktop | `routes/invoices.test.ts` (server) ; editor UI _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
 | 18 | Pricing tiers + standard default pricing | desktop | `src/pages/__tests__/bulk-price-tools.test.tsx`, `src/lib/__tests__/pricing-keys.test.ts`, `src/pages/__tests__/pricing-fields.test.tsx` ; standard-default-pricing resolution _(pending)_ | Yes — desktop tests |
 | 19 | Provider / practice records | desktop | `routes/organizations.test.ts`, `routes/cases-provider-portal.test.ts` | Yes — API tests |
@@ -731,6 +731,17 @@ pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-core
 Run command:
 ```
 pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-attachments cases-prescription-photo
+```
+
+### Desktop Case Photo Authenticated-Media Rendering (desktop renderer)
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Desktop unit | `artifacts/labtrax-desktop/src/components/__tests__/AuthedMedia.attachment.test.tsx` | Case-attachment photos render through `AuthedImage` — the shared component behind every desktop attachment surface (AttachmentRow, Files tab, image lightbox, history-event thumbnails, PrescriptionPreview). Guards: (1) `AuthedImage` fetches the canonical bearer-auth-gated `GET /api/cases/:caseId/attachments/:attachmentId/file` via `authedFetch` and renders the resulting object URL; (2) the rendered `<img src>` is the blob object URL, **never** the raw protected `/file` URL (a plain `<img src="…/file">` would 401 and render blank — the stale-desktop-build bug this locks against); (3) the fallback (not an `<img>`) renders when the authenticated fetch fails. |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax-desktop exec vitest run src/components/__tests__/AuthedMedia.attachment.test.tsx
 ```
 
 ### Case Location Cross-Platform Sync (server bridge)
