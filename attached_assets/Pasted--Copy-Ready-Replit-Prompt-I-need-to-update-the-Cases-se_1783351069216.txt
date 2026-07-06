@@ -1,0 +1,88 @@
+**Copy-Ready Replit Prompt**
+
+I need to update the Cases search/filter behavior across all three versions of LabTrax.
+
+**Goal**
+
+In the Cases section, any search filters or search parameters should reset automatically when the user leaves the Cases page/menu and later returns. I also need a visible **Reset Filters** button on the Cases page so the user can manually clear filters without leaving the page.
+
+**User-visible problem**
+
+Right now, when I go to the Cases section and search using filters such as:
+
+* person/patient name
+* date range
+* case status
+* any other search/filter parameters
+
+those filters stay active after I navigate away from Cases and then come back. This makes the Cases page look like records are missing, because the old filters are still applied.
+
+Expected behavior:
+
+* User enters filters on the Cases page.
+* User finds a case or navigates elsewhere.
+* As soon as the user leaves the Cases page/menu, the Cases filters should be cleared.
+* When the user returns to Cases, the list should load with default/unfiltered parameters.
+* If the user stays on the Cases page, they should be able to click **Reset Filters** to clear all active filters immediately.
+
+**Likely root cause**
+
+The Cases page filter/search state is probably being persisted in component state, route state, URL query params, local storage, session storage, global store, or a shared state object that survives navigation. The current logic does not clear this state when the Cases page unmounts or when the user navigates away from the Cases route/menu.
+
+**Implementation steps**
+
+1. Inspect all three LabTrax versions and locate the Cases page/search components.
+2. Identify where the Cases filters are stored:
+
+   * React component state
+   * global state/store
+   * URL query parameters
+   * localStorage/sessionStorage
+   * API request params
+   * table/grid state
+3. Add a shared or consistent reset function for Cases filters.
+
+   * It should clear name/search text.
+   * It should clear date range.
+   * It should clear dropdown filters/status filters.
+   * It should clear any hidden filter params used by the API/table.
+   * It should reload or refresh the Cases list using default parameters.
+4. Add a **Reset Filters** button to the Cases page UI.
+
+   * The button should only affect Cases filters.
+   * It should reset all filters to the same default state used on initial page load.
+   * After clicking it, the Cases list should show the default unfiltered results.
+5. Add navigation cleanup.
+
+   * When the user leaves the Cases page or Cases menu, automatically call the same filter reset logic.
+   * If using React, this may belong in a route cleanup/unmount effect or navigation listener.
+   * If filters are in URL query params, remove those params when leaving Cases.
+   * If filters are in local/session storage, clear only the Cases-specific keys.
+6. Apply the same behavior consistently across all three LabTrax versions.
+7. Avoid changing unrelated search behavior in other sections of the app.
+
+**Important constraints**
+
+* Do not reset filters while the user is actively working within the Cases page.
+* Do not clear filters just because the Cases list refreshes or a case detail opens if that detail is considered part of the Cases workflow. Only reset when the user leaves the Cases section/menu.
+* Do not clear unrelated filters from other modules.
+* Do not remove existing search functionality.
+* Do not introduce broad refactors unless necessary.
+* Keep the behavior consistent across all three LabTrax versions.
+* If the three versions have different code structures, implement equivalent behavior in each one rather than forcing a risky shared abstraction.
+
+**Regression checks**
+
+Before finishing, verify:
+
+1. Go to Cases, type part of a person’s name, confirm filtered results appear.
+2. Navigate away from Cases to another main menu/page.
+3. Return to Cases and confirm the search field is empty and the default unfiltered list loads.
+4. Apply a date range filter, navigate away, return, and confirm the date range is cleared.
+5. Apply multiple filters together, navigate away, return, and confirm all filters are cleared.
+6. Apply filters and click **Reset Filters** without leaving the page; confirm all filters clear and default results reload.
+7. Confirm other app sections do not lose their own filters or state unexpectedly.
+8. Confirm the behavior works in all three LabTrax versions.
+9. Confirm no stale URL query params, localStorage values, sessionStorage values, or API params continue applying old Cases filters.
+
+Please implement the smallest safe change that makes this behavior reliable, explain which files/components were changed in each LabTrax version, and call out any assumptions about what counts as “leaving the Cases section.”
