@@ -5306,12 +5306,18 @@ router.get(
       evList.map((ev: any) => {
         if (ev.eventType !== "case_attachment_added") return ev;
         const meta = (ev.metadataJson ?? {}) as Record<string, unknown>;
-        if (meta.note) return ev; // already has note
         const attachmentId = typeof meta.attachmentId === "string" ? meta.attachmentId : null;
         if (!attachmentId) return ev;
-        const note = attachmentNoteById.get(attachmentId);
-        if (!note) return ev;
-        return { ...ev, metadataJson: { ...meta, note } };
+        // Always reflect the attachment's current note so edits and clears
+        // made after upload show up in history without a stored-metadata
+        // rewrite. `attachmentNoteById` only holds attachments that still
+        // have a note, so a cleared note resolves to null and is removed.
+        const liveNote = attachmentNoteById.get(attachmentId) ?? null;
+        if ((meta.note ?? null) === liveNote) return ev;
+        const nextMeta: Record<string, unknown> = { ...meta };
+        if (liveNote) nextMeta.note = liveNote;
+        else delete nextMeta.note;
+        return { ...ev, metadataJson: nextMeta };
       });
 
     // Surface restorations whose material couldn't be mapped to a standard
@@ -5530,9 +5536,16 @@ router.get(
   })
 );
 
-const updateAttachmentSchema = z.object({
-  visibility: z.enum(ATTACHMENT_VISIBILITIES),
-});
+const updateAttachmentSchema = z
+  .object({
+    visibility: z.enum(ATTACHMENT_VISIBILITIES).optional(),
+    // `note` accepts a string to set/replace, an empty string or `null` to
+    // clear. It is normalized below (trimmed; blank → null).
+    note: z.string().max(1000).nullable().optional(),
+  })
+  .refine((v) => v.visibility !== undefined || v.note !== undefined, {
+    message: "No attachment fields to update.",
+  });
 
 router.patch(
   "/:caseId/attachments/:attachmentId",
@@ -5554,24 +5567,60 @@ router.patch(
       ),
     });
     if (!attachment) throw new HttpError(404, "Attachment not found.");
-    if (attachment.visibility === input.visibility) {
+
+    const updates: Partial<typeof caseAttachments.$inferInsert> = {};
+
+    if (
+      input.visibility !== undefined &&
+      input.visibility !== attachment.visibility
+    ) {
+      updates.visibility = input.visibility;
+    }
+
+    let noteChanged = false;
+    if (input.note !== undefined) {
+      const normalizedNote =
+        input.note != null && input.note.trim() ? input.note.trim() : null;
+      if (normalizedNote !== (attachment.note ?? null)) {
+        updates.note = normalizedNote;
+        noteChanged = true;
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
       return ok(res, attachment);
     }
+
     const [updated] = await db
       .update(caseAttachments)
-      .set({ visibility: input.visibility })
+      .set(updates)
       .where(eq(caseAttachments.id, attachment.id))
       .returning();
 
-    await writeAuditLog({
-      req,
-      organizationId: found.labOrganizationId,
-      action: "case_attachment_visibility_changed",
-      entityType: "case_attachment",
-      entityId: attachment.id,
-      beforeJson: attachment,
-      afterJson: updated,
-    });
+    if (updates.visibility !== undefined) {
+      await writeAuditLog({
+        req,
+        organizationId: found.labOrganizationId,
+        action: "case_attachment_visibility_changed",
+        entityType: "case_attachment",
+        entityId: attachment.id,
+        beforeJson: attachment,
+        afterJson: updated,
+      });
+    }
+
+    if (noteChanged) {
+      await writeAuditLog({
+        req,
+        organizationId: found.labOrganizationId,
+        action: "case_attachment_note_changed",
+        entityType: "case_attachment",
+        entityId: attachment.id,
+        beforeJson: attachment,
+        afterJson: updated,
+      });
+    }
+
     return ok(res, updated);
   })
 );

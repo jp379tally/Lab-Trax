@@ -8978,6 +8978,8 @@ function AttachmentRow({
 }) {
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [scanViewerOpen, setScanViewerOpen] = useState(false);
+  const [isEditingNote, setIsEditingNote] = useState(false);
+  const [noteDraft, setNoteDraft] = useState(attachment.note ?? "");
   const queryClient = useQueryClient();
   const deleteMutation = useMutation({
     mutationFn: () =>
@@ -9009,6 +9011,42 @@ function AttachmentRow({
       window.alert(err.message || "Couldn't update attachment visibility.");
     },
   });
+
+  const noteMutation = useMutation({
+    mutationFn: (nextNote: string | null) =>
+      apiFetch(`/cases/${caseId}/attachments/${attachment.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ note: nextNote }),
+      }),
+    onSuccess: () => {
+      setIsEditingNote(false);
+      queryClient.invalidateQueries({ queryKey: ["case", caseId] });
+    },
+    onError: (err: Error) => {
+      window.alert(err.message || "Couldn't update the note.");
+    },
+  });
+
+  function startEditingNote() {
+    setNoteDraft(attachment.note ?? "");
+    setIsEditingNote(true);
+  }
+
+  function cancelEditingNote() {
+    setNoteDraft(attachment.note ?? "");
+    setIsEditingNote(false);
+  }
+
+  function saveNote() {
+    if (noteMutation.isPending) return;
+    const trimmed = noteDraft.trim();
+    noteMutation.mutate(trimmed ? trimmed : null);
+  }
+
+  function clearNote() {
+    if (noteMutation.isPending) return;
+    noteMutation.mutate(null);
+  }
 
   const isImage = (attachment.fileType || "").startsWith("image/");
   const isVideo = (attachment.fileType || "").startsWith("video/");
@@ -9148,15 +9186,87 @@ function AttachmentRow({
           {attachment.uploaderName ? ` · ${attachment.uploaderName}` : ""}
           {attachment.createdAt ? ` · ${relativeTime(attachment.createdAt)}` : ""}
         </div>
-        {attachment.note ? (
-          <div className="text-xs text-muted-foreground mt-1 italic">{attachment.note}</div>
-        ) : null}
       </div>
     </>
   );
 
+  const noteSection = isEditingNote ? (
+    <div className="mt-2 space-y-1.5">
+      <textarea
+        value={noteDraft}
+        onChange={(e) => setNoteDraft(e.target.value)}
+        maxLength={1000}
+        rows={2}
+        autoFocus
+        placeholder="Add a note about this file…"
+        className="w-full resize-y rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+      />
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={saveNote}
+          disabled={noteMutation.isPending}
+          className="inline-flex items-center gap-1 rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+        >
+          {noteMutation.isPending ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <Check size={12} />
+          )}
+          Save
+        </button>
+        <button
+          type="button"
+          onClick={cancelEditingNote}
+          disabled={noteMutation.isPending}
+          className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-secondary disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        {attachment.note ? (
+          <button
+            type="button"
+            onClick={clearNote}
+            disabled={noteMutation.isPending}
+            className="ml-auto inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+          >
+            <Trash2 size={12} />
+            Clear
+          </button>
+        ) : null}
+      </div>
+    </div>
+  ) : attachment.note ? (
+    <div className="mt-2 flex items-start gap-2">
+      <div className="flex-1 whitespace-pre-wrap break-words text-xs italic text-muted-foreground">
+        {attachment.note}
+      </div>
+      {canManage && (
+        <button
+          type="button"
+          onClick={startEditingNote}
+          className="shrink-0 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+          title="Edit note"
+        >
+          <Pencil size={11} />
+          Edit
+        </button>
+      )}
+    </div>
+  ) : canManage ? (
+    <button
+      type="button"
+      onClick={startEditingNote}
+      className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+    >
+      <Plus size={11} />
+      Add note
+    </button>
+  ) : null;
+
   return (
-    <div className="border border-border rounded-md px-3 py-2 text-sm flex items-start gap-3">
+    <div className="border border-border rounded-md px-3 py-2 text-sm">
+      <div className="flex items-start gap-3">
       {href ? (
         inAppFormat ? (
           <button
@@ -9280,6 +9390,8 @@ function AttachmentRow({
           )}
         </button>
       </div>
+      </div>
+      {noteSection}
       {inAppFormat && href && (
         <ScanViewerModal
           open={scanViewerOpen}
