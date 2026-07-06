@@ -25,6 +25,7 @@ import { LocateCaseSheet } from "@/components/LocateCaseSheet";
 import { useAuth } from "@/lib/auth-context";
 import { useMe, activeMemberships } from "@/lib/auth-me";
 import { JoinLabCard } from "@/components/JoinLabCard";
+import { formatRelativeCreated, formatRelativeDue, getLocalDayDiff } from "@/lib/format";
 import { UnassignedDocumentsCard } from "@/components/UnassignedDocumentsCard";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -87,21 +88,6 @@ function caseStatusVariant(status: string | null | undefined): BadgeVariant {
   if (s.includes("hold") || s.includes("cancel") || s.includes("void")) return "draft";
   if (s.includes("intake") || s.includes("new") || s.includes("received") || s.includes("pending")) return "intake";
   return "progress";
-}
-
-function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function daysUntil(iso: string | null | undefined): number | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  const ms = d.getTime() - Date.now();
-  return Math.ceil(ms / (1000 * 60 * 60 * 24));
 }
 
 export default function DashboardScreen() {
@@ -205,12 +191,12 @@ export default function DashboardScreen() {
     return cases
       .filter((c) => {
         if (isClosedCase(c.status)) return false;
-        const d = daysUntil(c.dueDate);
+        const d = getLocalDayDiff(c.dueDate);
         return d != null && d <= 7;
       })
       .sort((a, b) => {
-        const da = daysUntil(a.dueDate) ?? 9999;
-        const dbv = daysUntil(b.dueDate) ?? 9999;
+        const da = getLocalDayDiff(a.dueDate) ?? 9999;
+        const dbv = getLocalDayDiff(b.dueDate) ?? 9999;
         return da - dbv;
       });
   }, [cases]);
@@ -246,8 +232,8 @@ export default function DashboardScreen() {
   }
 
   // ── Case row renderer ────────────────────────────────────────────────────
-  function renderCaseRow(c: CanonicalCase, showDue = false) {
-    const d = daysUntil(c.dueDate);
+  function renderCaseRow(c: CanonicalCase) {
+    const d = getLocalDayDiff(c.dueDate);
     const overdue = d != null && d < 0;
     const locatedSuccess = locateSuccessId === c.id;
     return (
@@ -272,18 +258,14 @@ export default function DashboardScreen() {
             {c.caseNumber ? `#${c.caseNumber}` : "No case #"}
             {c.doctorName ? `  ·  ${c.doctorName}` : ""}
           </Text>
-          {showDue && c.dueDate ? (
+          {formatRelativeCreated(c.createdAt) ? (
+            <Text style={styles.rowDue}>{formatRelativeCreated(c.createdAt)}</Text>
+          ) : null}
+          {formatRelativeDue(c.dueDate) ? (
             <Text style={[styles.rowDue, overdue && { color: colors.error }]}>
-              Due {formatDate(c.dueDate)}
-              {d != null
-                ? `  ·  ${overdue ? `${Math.abs(d)}d overdue` : d === 0 ? "today" : `in ${d}d`}`
-                : ""}
+              {formatRelativeDue(c.dueDate)}
             </Text>
-          ) : (
-            <Text style={styles.rowDue}>
-              {c.createdAt ? `Added ${formatDate(c.createdAt)}` : ""}
-            </Text>
-          )}
+          ) : null}
         </View>
         <View style={styles.rowRight}>
           <StatusBadge
@@ -337,7 +319,7 @@ export default function DashboardScreen() {
             </Card>
           ) : (
             <View style={styles.list}>
-              {dueSoon.slice(0, 6).map((c) => renderCaseRow(c, true))}
+              {dueSoon.slice(0, 6).map((c) => renderCaseRow(c))}
             </View>
           )
         )}
@@ -379,7 +361,7 @@ export default function DashboardScreen() {
             </Card>
           ) : (
             <View style={styles.list}>
-              {recentCases.map((c) => renderCaseRow(c, false))}
+              {recentCases.map((c) => renderCaseRow(c))}
             </View>
           )
         )}

@@ -38,6 +38,7 @@ import {
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { CASE_STATIONS } from "@/lib/case-stations";
 import { resilientFetch } from "@/lib/query-client";
+import { formatRelativeCreated, formatRelativeDue } from "@/lib/format";
 import { extractLookupCase } from "@/lib/barcode-lookup";
 import { pickBestBarcode, guideBoxFromLayout } from "@/lib/barcode-guide-box";
 import { useMe, primaryLabOrgId } from "@/lib/auth-me";
@@ -216,12 +217,6 @@ function titleCase(s: string): string {
     .trim();
 }
 
-function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-}
 
 function formatShort(d: Date): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -1281,10 +1276,12 @@ export default function CasesListScreen() {
                         ) : null}
                       </View>
                     ) : null}
-                    {item.createdAt ? (
-                      <Text style={styles.rowDue}>Created {formatDate(item.createdAt)}</Text>
+                    {formatRelativeCreated(item.createdAt) ? (
+                      <Text style={styles.rowDue}>{formatRelativeCreated(item.createdAt)}</Text>
                     ) : null}
-                    <Text style={styles.rowDue}>Due {formatDate(item.dueDate)}</Text>
+                    {formatRelativeDue(item.dueDate) ? (
+                      <Text style={styles.rowDue}>{formatRelativeDue(item.dueDate)}</Text>
+                    ) : null}
                   </View>
                   <View style={styles.rowRight}>
                     <StatusBadge label={titleCase(item.status ?? "—")} variant={statusVariant(item.status)} />
