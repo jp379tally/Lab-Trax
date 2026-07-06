@@ -1,15 +1,31 @@
 import React from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Alert } from "react-native";
-import { render, fireEvent, waitFor } from "@testing-library/react-native";
+import { render, fireEvent, waitFor, act } from "@testing-library/react-native";
 import { router } from "expo-router";
 import {
   resetMockAppState,
   setMockAppState,
   setMockFetchHandler,
   resetMockFetchHandler,
+  runFocusEffectCleanup,
 } from "../../../vitest.setup";
 import { resilientFetch } from "@/lib/query-client";
+
+// The mocked useFocusEffect registers its cleanup in a microtask; awaiting a
+// resolved promise lets that microtask run so a cleanup is available.
+async function flushFocusEffect(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+// Simulate a single blur: run one registered focus-effect cleanup. The cleanup
+// calls setState (resetFilters), so wrap it in act.
+function blur(): void {
+  act(() => {
+    runFocusEffectCleanup();
+  });
+}
 
 import CasesListScreen from "@/app/(tabs)/index";
 import { completedCaseWithInvoice, inProgressCase } from "./__fixtures__/cases";
@@ -340,6 +356,83 @@ describe("CasesListScreen (read-only canonical list)", () => {
       const { getByTestId, getByText } = render(<CasesListScreen />);
       fireEvent.changeText(getByTestId("cases-search"), "zzz-nothing-matches");
       expect(getByText("No matching cases")).toBeTruthy();
+    });
+  });
+
+  // Task #2668: the Cases list resets its filters when the user leaves the
+  // Cases section entirely (blur where the exit was NOT into a case-detail /
+  // new-case screen), but preserves them when the exit is into one of those
+  // in-Cases workflows so returning from a case keeps the user's place.
+  describe("reset-on-blur focus effect", () => {
+    beforeEach(() => {
+      setMockAppState({ cases: [inProgressCase, completedCaseWithInvoice] });
+    });
+
+    it("resets filters on blur when not leaving into a case workflow", async () => {
+      const { getByTestId, queryByText } = render(<CasesListScreen />);
+
+      // Consume any stale leavingIntoCasesWorkflow flag left true by a prior
+      // test's row-press navigation, so this blur is a genuine "left Cases".
+      await flushFocusEffect();
+      blur();
+
+      // Apply a search filter -> the Reset filters chip becomes visible.
+      fireEvent.changeText(getByTestId("cases-search"), "Jane");
+      expect(queryByText("Reset filters")).toBeTruthy();
+
+      // Blur without an in-workflow navigation -> filters reset.
+      await flushFocusEffect();
+      blur();
+
+      expect(getByTestId("cases-search").props.value).toBe("");
+      expect(queryByText("Reset filters")).toBeNull();
+    });
+
+    it("preserves filters on blur when leaving into a case detail workflow", async () => {
+      const { getByTestId, queryByText } = render(<CasesListScreen />);
+      await flushFocusEffect();
+
+      // Apply a search filter.
+      fireEvent.changeText(getByTestId("cases-search"), "Jane");
+      expect(queryByText("Reset filters")).toBeTruthy();
+      await flushFocusEffect();
+
+      // Opening a case detail sets leavingIntoCasesWorkflow = true.
+      fireEvent.press(getByTestId(`case-card-${inProgressCase.id}`));
+      expect(router.push).toHaveBeenCalledWith(`/case/${inProgressCase.id}`);
+
+      // Blur into that workflow -> filters preserved.
+      blur();
+
+      expect(getByTestId("cases-search").props.value).toBe("Jane");
+      expect(queryByText("Reset filters")).toBeTruthy();
+    });
+  });
+
+  // Task #2668: the "Reset filters" chip surfaces only when a record-hiding
+  // filter (or the text search) is active, and pressing it clears everything.
+  describe("Reset filters chip", () => {
+    beforeEach(() => {
+      setMockAppState({ cases: [inProgressCase, completedCaseWithInvoice] });
+    });
+
+    it("is hidden until a filter (including search) is active", () => {
+      const { getByTestId, queryByTestId } = render(<CasesListScreen />);
+      expect(queryByTestId("cases-reset-filters-chip")).toBeNull();
+
+      fireEvent.changeText(getByTestId("cases-search"), "Jane");
+      expect(queryByTestId("cases-reset-filters-chip")).toBeTruthy();
+    });
+
+    it("clears the active search when pressed", () => {
+      const { getByTestId, queryByTestId } = render(<CasesListScreen />);
+      fireEvent.changeText(getByTestId("cases-search"), "Jane");
+
+      const chip = getByTestId("cases-reset-filters-chip");
+      fireEvent.press(chip);
+
+      expect(getByTestId("cases-search").props.value).toBe("");
+      expect(queryByTestId("cases-reset-filters-chip")).toBeNull();
     });
   });
 });

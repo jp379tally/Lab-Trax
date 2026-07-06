@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import CasesPage, { CaseDrawer, NewCaseModal } from "@/pages/cases";
 import type { LabCase } from "@/lib/types";
@@ -426,5 +426,128 @@ describe("NewCaseModal server-side duplicate-doctor fallback", () => {
     expect(await screen.findByText("Which doctor do you mean?")).toBeInTheDocument();
     expect(screen.getByText("Dr. Kanesha Cole")).toBeInTheDocument();
     expect(postAttempts).toBe(1);
+  });
+});
+
+// Task #2668: the Cases page persists its filters in sessionStorage under
+// `cases_filters_v2` so they survive opening/closing the case-detail drawer
+// (which keeps the page mounted on /cases), but an unmount — i.e. navigating
+// to another section entirely — must clear the persisted entry so the list
+// reloads unfiltered next time. This dual behavior has no other coverage.
+const CASES_FILTER_STORAGE_KEY = "cases_filters_v2";
+
+function seedCasesFilters(overrides: Record<string, unknown> = {}) {
+  sessionStorage.setItem(
+    CASES_FILTER_STORAGE_KEY,
+    JSON.stringify({
+      search: "",
+      statusFilter: "all",
+      priorityFilter: "all",
+      dateRangeFilter: "all",
+      customStartDate: "",
+      customEndDate: "",
+      sortKey: "createdAt",
+      sortDir: "desc",
+      ...overrides,
+    }),
+  );
+}
+
+describe("CasesPage persisted-filter lifecycle", () => {
+  afterEach(() => {
+    sessionStorage.clear();
+  });
+
+  it("clears the persisted filters when the page unmounts (leaving Cases)", () => {
+    seedCasesFilters({ search: "Jane", statusFilter: "received" });
+
+    const Wrapper = makeAuthWrapper("/cases");
+    const { unmount } = render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+
+    // While mounted the entry exists (the page re-persists it on mount).
+    expect(sessionStorage.getItem(CASES_FILTER_STORAGE_KEY)).not.toBeNull();
+
+    // Unmounting the page (route change to another section) clears it.
+    unmount();
+    expect(sessionStorage.getItem(CASES_FILTER_STORAGE_KEY)).toBeNull();
+  });
+
+  it("keeps the persisted filters when a case drawer opens (page stays mounted)", () => {
+    seedCasesFilters({ search: "Jane", statusFilter: "received" });
+
+    const fakeCase = {
+      id: "case-1",
+      caseNumber: "26-1",
+      patientFirstName: "Jane",
+      patientLastName: "Doe",
+      doctorName: "Dr. Smith",
+      status: "received",
+      priority: "normal",
+      dueDate: null,
+      createdAt: "2026-01-15T10:00:00.000Z",
+      updatedAt: "2026-01-15T10:00:00.000Z",
+      totalPrice: "0",
+    } as unknown as LabCase;
+
+    const Wrapper = makeAuthWrapper("/cases");
+    const { rerender } = render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+    expect(sessionStorage.getItem(CASES_FILTER_STORAGE_KEY)).not.toBeNull();
+
+    // Opening a case detail keeps CasesPage mounted (same /cases route) and
+    // renders the drawer alongside it, so the persisted entry must survive.
+    rerender(
+      <Wrapper>
+        {withAiPanel(
+          <>
+            <CasesPage />
+            <CaseDrawer labCase={fakeCase} onClose={() => {}} />
+          </>,
+        )}
+      </Wrapper>,
+    );
+    expect(sessionStorage.getItem(CASES_FILTER_STORAGE_KEY)).not.toBeNull();
+
+    // Closing the drawer (still on /cases) also preserves it.
+    rerender(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+    expect(sessionStorage.getItem(CASES_FILTER_STORAGE_KEY)).not.toBeNull();
+  });
+
+  it("Reset filters clears every in-scope filter but leaves sort order untouched", async () => {
+    // Seed an active filter plus a non-default sort. The persist effect keeps
+    // sessionStorage in sync with state, so after reset we can read it back to
+    // assert the filters cleared while the sort was preserved.
+    seedCasesFilters({ search: "Jane", sortKey: "doctorName", sortDir: "asc" });
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+
+    // The seeded search populates the toolbar input and enables the button.
+    const searchInput = screen.getByPlaceholderText(
+      "Search case #, doctor, patient…",
+    ) as HTMLInputElement;
+    expect(searchInput.value).toBe("Jane");
+
+    const resetBtn = screen.getByRole("button", { name: /Reset filters/i });
+    expect(resetBtn).not.toBeDisabled();
+    fireEvent.click(resetBtn);
+
+    // Filters clear immediately in the UI.
+    expect(searchInput.value).toBe("");
+    expect(resetBtn).toBeDisabled();
+
+    // The persist effect re-writes the entry with cleared filters and the
+    // original (untouched) sort order.
+    await waitFor(() => {
+      const raw = sessionStorage.getItem(CASES_FILTER_STORAGE_KEY);
+      expect(raw).not.toBeNull();
+      const persisted = JSON.parse(raw!);
+      expect(persisted.search).toBe("");
+      expect(persisted.statusFilter).toBe("all");
+      expect(persisted.priorityFilter).toBe("all");
+      expect(persisted.dateRangeFilter).toBe("all");
+      // Sort order is a display preference and must be preserved.
+      expect(persisted.sortKey).toBe("doctorName");
+      expect(persisted.sortDir).toBe("asc");
+    });
   });
 });

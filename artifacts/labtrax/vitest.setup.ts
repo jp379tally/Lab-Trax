@@ -159,12 +159,28 @@ let focusEffectEnabled = true;
 export function setFocusEffectEnabled(enabled: boolean): void {
   focusEffectEnabled = enabled;
 }
+
+// Cleanups returned by focus-effect callbacks are the "on blur" side of
+// useFocusEffect. The real navigator runs them when the screen loses focus;
+// this mock never does. Tests that need to assert blur behavior (e.g. the
+// Cases reset-on-leave effect) drive it explicitly via runFocusEffectCleanup().
+const focusEffectCleanups: Array<() => void> = [];
 const deferredFocusEffect = (cb: FocusEffectCallback): void => {
   if (!focusEffectEnabled) return;
   queueMicrotask(() => {
-    cb();
+    const cleanup = cb();
+    if (typeof cleanup === "function") focusEffectCleanups.push(cleanup);
   });
 };
+
+// Run exactly one focus-effect cleanup (a single simulated blur) and discard
+// any others queued by intermediate re-renders. Cleanups read live module
+// state, so running the most recent one is equivalent to a single blur.
+export function runFocusEffectCleanup(): void {
+  const cleanup = focusEffectCleanups.pop();
+  focusEffectCleanups.length = 0;
+  if (cleanup) cleanup();
+}
 
 vi.mock("expo-router", () => {
   const router = {
