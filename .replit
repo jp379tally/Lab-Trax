@@ -145,12 +145,12 @@ isValidation = true
 name = "rel-mobile-tests"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/labtrax run test"
-
 [workflows.workflow.metadata]
 isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/labtrax exec vitest run"
 
 [[workflows.workflow]]
 name = "rel-scripts-tests"
