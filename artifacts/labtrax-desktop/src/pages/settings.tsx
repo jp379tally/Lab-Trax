@@ -1045,6 +1045,58 @@ function ProfilePanel() {
         </button>
       </div>
 
+      {/* ── Security status summary ─────────────────────────────────────
+          Shows the account's phone-verification state in plain language.
+          There is no authenticator-app / TOTP two-factor feature — LabTrax
+          uses phone (SMS) verification only. This card is the canonical
+          reference that keeps the desktop settings consistent with the web
+          app's representation of security state.
+      ────────────────────────────────────────────────────────────────── */}
+      <div
+        className="rounded-lg border border-border bg-secondary/20 p-4 mt-4"
+        data-testid="security-status-card"
+      >
+        <div className="text-sm font-semibold mb-2">Security</div>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Phone verification</span>
+            {isPhoneVerified ? (
+              <span
+                className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600"
+                data-testid="phone-verified-badge"
+              >
+                <Check size={12} />
+                Verified
+              </span>
+            ) : (
+              <span
+                className="inline-flex items-center gap-1 text-xs font-medium text-amber-600"
+                data-testid="phone-not-verified-badge"
+              >
+                <AlertTriangle size={12} />
+                {user?.phone ? "Not verified" : "No phone on file"}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Active sign-ins</span>
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  const event = new CustomEvent("labtrax:settings:nav", { detail: "sessions" });
+                  window.dispatchEvent(event);
+                } catch { /* ignore */ }
+              }}
+              className="text-xs text-primary hover:text-primary/80 transition-colors"
+              data-testid="view-sessions-link"
+            >
+              View sessions →
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* Current lab / environment name — sourced from the signed-in member's
           lab from the lab-team data, falling back to the profile practice name,
           then a neutral label. */}
@@ -3118,6 +3170,9 @@ export function AppVersionCard() {
   const lastChecked = state?.lastCheckedAt
     ? new Date(state.lastCheckedAt).toLocaleString()
     : "never";
+  // autoUpdaterEnabled is false in dev builds and when LABTRAX_SKIP_AUTOUPDATER=1.
+  // When false, "Check for updates" still calls the IPC but will return an error state.
+  const updaterEnabled = state?.autoUpdaterEnabled !== false;
 
   async function handleCheck() {
     const check = api?.checkForUpdates;
@@ -3191,6 +3246,14 @@ export function AppVersionCard() {
           </div>
           <div className="text-xs text-muted-foreground mt-0.5">
             Installed v{currentVersion} · last checked {lastChecked}
+            {!updaterEnabled && (
+              <span
+                className="ml-1.5 text-amber-600 dark:text-amber-400"
+                data-testid="updater-disabled-note"
+              >
+                · auto-update disabled (dev build)
+              </span>
+            )}
             {state?.feedUrl ? <> · feed <code className="font-mono text-[10px]">{state.feedUrl}</code></> : null}
           </div>
         </div>

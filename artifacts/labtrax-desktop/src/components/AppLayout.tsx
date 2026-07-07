@@ -83,7 +83,7 @@ interface NavGroup {
   billingOnly?: boolean;
 }
 
-const NAV: (NavItem | NavGroup)[] = [
+export const NAV: (NavItem | NavGroup)[] = [
   { label: "Dashboard", path: "/", icon: LayoutDashboard },
   { label: "Cases", path: "/cases", icon: FileText },
 ];
@@ -131,7 +131,7 @@ function DuplicateCountBadge({ count }: { count: number }) {
 
 const BILLING_ROLES = new Set(["owner", "admin", "billing"]);
 
-const SECONDARY: (NavItem | NavGroup)[] = [
+export const SECONDARY: (NavItem | NavGroup)[] = [
   { label: "Subscription", path: "/billing", icon: Zap },
   {
     label: "Admin Settings",
