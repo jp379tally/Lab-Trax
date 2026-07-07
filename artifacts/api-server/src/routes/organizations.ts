@@ -1052,6 +1052,9 @@ router.get(
         currentPractices: userToPractices.get(u.id) ?? [],
         virtual: false as const,
         doctorName: null as string | null,
+        sourceOrganizationId: null as string | null,
+        sourcePracticeName: null as string | null,
+        caseCount: 0,
       }))
       .sort((a, b) => {
         const an = `${a.lastName ?? ""} ${a.firstName ?? ""}`.trim().toLowerCase();
@@ -1059,11 +1062,20 @@ router.get(
         return an.localeCompare(bn);
       });
 
-    // Virtual doctors: unique doctorName values from this lab's cases that
-    // don't already have a formal provider account. Shown in the picker so
-    // the lab admin can formally create an account without leaving the dialog.
+    // Virtual doctors: doctorName values from this lab's cases that don't
+    // already have a formal provider account, grouped by the source practice
+    // that currently holds those cases. Shown in the picker so the lab admin
+    // can formally create an account AND move the doctor's existing cases into
+    // the target practice without leaving the dialog. Each source practice
+    // yields its own row (carrying that practice's id, name, and case count)
+    // so the add call knows exactly which cases to move. All source practices
+    // live under this same lab, so naming them here leaks nothing cross-lab.
     const caseDoctorRows = await db
-      .selectDistinct({ doctorName: cases.doctorName })
+      .select({
+        doctorName: cases.doctorName,
+        providerOrganizationId: cases.providerOrganizationId,
+        caseCount: sql<number>`count(*)::int`,
+      })
       .from(cases)
       .where(
         and(
@@ -1071,13 +1083,37 @@ router.get(
           isNotNull(cases.doctorName),
           notDeleted(cases)
         )
-      );
+      )
+      .groupBy(cases.doctorName, cases.providerOrganizationId);
 
     const existingProviderNames = new Set(
       allProviderUsers.map((u) =>
         `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim().toLowerCase()
       )
     );
+
+    // Resolve source practice display names for the case-history rows.
+    const virtualSourceIds = Array.from(
+      new Set(
+        caseDoctorRows
+          .map((c) => c.providerOrganizationId)
+          .filter((id): id is string => !!id)
+      )
+    );
+    const virtualSourceOrgs = virtualSourceIds.length
+      ? await db
+          .select({
+            id: organizations.id,
+            name: organizations.name,
+            displayName: organizations.displayName,
+          })
+          .from(organizations)
+          .where(inArray(organizations.id, virtualSourceIds))
+      : [];
+    const virtualSourceNameMap = new Map(
+      virtualSourceOrgs.map((o) => [o.id, o.displayName || o.name])
+    );
+
     const virtualDoctors = caseDoctorRows
       .filter(
         (c) =>
@@ -1085,20 +1121,33 @@ router.get(
           c.doctorName.trim() &&
           !existingProviderNames.has(c.doctorName.trim().toLowerCase())
       )
-      .map((c) => ({
-        id: `virtual:${c.doctorName}`,
-        username: c.doctorName as string,
-        email: null as string | null,
-        phone: null as string | null,
-        firstName: null as string | null,
-        lastName: null as string | null,
-        userType: "provider" as const,
-        platformAccountNumber: null as string | null,
-        currentPractices: [] as string[],
-        virtual: true as const,
-        doctorName: c.doctorName as string,
-      }))
-      .sort((a, b) => a.doctorName.localeCompare(b.doctorName));
+      .map((c) => {
+        const nm = c.doctorName as string;
+        const srcId = c.providerOrganizationId ?? null;
+        return {
+          id: srcId ? `virtual:${srcId}:${nm}` : `virtual::${nm}`,
+          username: nm,
+          email: null as string | null,
+          phone: null as string | null,
+          firstName: null as string | null,
+          lastName: null as string | null,
+          userType: "provider" as const,
+          platformAccountNumber: null as string | null,
+          currentPractices: [] as string[],
+          virtual: true as const,
+          doctorName: nm,
+          sourceOrganizationId: srcId,
+          sourcePracticeName: srcId
+            ? virtualSourceNameMap.get(srcId) ?? null
+            : null,
+          caseCount: Number(c.caseCount ?? 0),
+        };
+      })
+      .sort(
+        (a, b) =>
+          a.doctorName.localeCompare(b.doctorName) ||
+          (a.sourcePracticeName ?? "").localeCompare(b.sourcePracticeName ?? "")
+      );
 
     return ok(res, [...realDoctors, ...virtualDoctors]);
   })
@@ -1422,6 +1471,214 @@ async function ensureMembership(
     .returning();
   return m.id;
 }
+
+// Find an existing, non-deleted provider account whose name matches the given
+// case-history doctor name (either the free-text `doctorName` field or the
+// firstName+lastName pair). Used so adopting a case-history doctor reuses the
+// matching provider rather than spawning a duplicate account.
+async function findExistingProviderByName(
+  tx: any,
+  name: string
+): Promise<{
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  email: string | null;
+  platformAccountNumber: string | null;
+} | null> {
+  const norm = name.trim().toLowerCase();
+  if (!norm) return null;
+  const candidates = await tx
+    .select()
+    .from(users)
+    .where(and(eq(users.userType, "provider"), notDeleted(users)));
+  const match = candidates.find((u: any) => {
+    const full = `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim().toLowerCase();
+    const dn = (u.doctorName ?? "").trim().toLowerCase();
+    return full === norm || dn === norm;
+  });
+  return match ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Adopt a case-history (virtual, name-only) doctor into a provider practice.
+// (Task #2688.)
+//
+// When a lab admin picks a case-history doctor in the "Add doctor" dialog, this
+// must make the addition actually stick: create or reuse the provider account,
+// create/restore an active membership at the destination practice, MOVE that
+// doctor's existing cases + invoices from the source practice into the
+// destination (mirroring the remove/reassign "move" behaviour), clear any
+// per-lab "Unassigned doctors" exclusion, and write an audit entry — all in one
+// transaction. A matching provider account is reused rather than duplicated.
+//
+// If the doctor's cases span more than one source practice and the caller did
+// not name one explicitly, we 409 so the caller can disambiguate. Lab-admin
+// only.
+// ---------------------------------------------------------------------------
+const adoptCaseHistoryDoctorSchema = z.object({
+  doctorName: z.string().trim().min(1),
+  sourceOrganizationId: z.string().min(1).nullable().optional(),
+});
+
+router.post(
+  "/:organizationId/doctors/adopt",
+  asyncHandler(async (req, res) => {
+    const organizationId = req.params.organizationId;
+    const callerId = (req as any).auth.userId as string;
+
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!practice || practice.deletedAt) {
+      throw new HttpError(404, "Practice not found.");
+    }
+    if (practice.type !== "provider") {
+      throw new HttpError(400, "Doctors only attach to provider practices.");
+    }
+    if (!practice.parentLabOrganizationId) {
+      throw new HttpError(400, "Practice has no parent lab.");
+    }
+    const labId = practice.parentLabOrganizationId;
+    await requireAnyRole(callerId, labId, ADMIN_ROLES);
+
+    const input = adoptCaseHistoryDoctorSchema.parse(req.body);
+    const name = input.doctorName.trim();
+
+    // Discover which source practice(s) currently hold this doctor's cases in
+    // this lab so we know where to move them from.
+    const sourceRows = await db
+      .select({
+        providerOrganizationId: cases.providerOrganizationId,
+        caseCount: sql<number>`count(*)::int`,
+      })
+      .from(cases)
+      .where(
+        and(
+          eq(cases.labOrganizationId, labId),
+          sql`lower(${cases.doctorName}) = lower(${name})`,
+          isNotNull(cases.providerOrganizationId),
+          notDeleted(cases)
+        )
+      )
+      .groupBy(cases.providerOrganizationId);
+
+    const sourceIds = sourceRows
+      .map((r) => r.providerOrganizationId)
+      .filter((id): id is string => !!id);
+
+    let sourceOrganizationId: string | null = null;
+    if (input.sourceOrganizationId) {
+      // Caller named a source practice. If this doctor actually has cases
+      // somewhere, the named source must be one of those practices — otherwise
+      // the move would silently no-op (casesMoved=0) and the doctor's history
+      // would fail to "stick". Reject a stale/incorrect source loudly.
+      if (sourceIds.length > 0 && !sourceIds.includes(input.sourceOrganizationId)) {
+        throw new HttpError(
+          409,
+          "This doctor has no cases at the chosen practice. Choose a practice that holds their case history.",
+          { code: "INVALID_SOURCE_PRACTICE", sources: sourceIds }
+        );
+      }
+      sourceOrganizationId = input.sourceOrganizationId;
+    } else if (sourceIds.length === 1) {
+      sourceOrganizationId = sourceIds[0];
+    } else if (sourceIds.length > 1) {
+      throw new HttpError(
+        409,
+        "This doctor has cases at more than one practice. Choose which practice to move them from.",
+        { code: "MULTIPLE_SOURCE_PRACTICES", sources: sourceIds }
+      );
+    }
+    // sourceIds.length === 0 → no cases to move; still create the account +
+    // membership so the doctor formally belongs to the destination practice.
+
+    const result = await db.transaction(async (tx) => {
+      // Reuse a matching provider account when one exists; otherwise promote
+      // the name-only doctor into a fresh provider account.
+      let user = await findExistingProviderByName(tx, name);
+      let createdNewAccount = false;
+      if (!user) {
+        user = await promoteVirtualDoctor(tx, name, {
+          name: practice.name,
+          displayName: practice.displayName,
+        });
+        createdNewAccount = true;
+      }
+
+      const membershipId = await ensureMembership(
+        tx,
+        organizationId,
+        user.id,
+        callerId
+      );
+
+      let casesMoved = 0;
+      let invoicesMoved = 0;
+      if (sourceOrganizationId && sourceOrganizationId !== organizationId) {
+        const moved = await moveDoctorCasesAndInvoices(
+          tx,
+          labId,
+          name,
+          sourceOrganizationId,
+          organizationId
+        );
+        casesMoved = moved.casesMoved;
+        invoicesMoved = moved.invoicesMoved;
+      }
+
+      // Clear any per-lab "Unassigned doctors" exclusion for this user so the
+      // doctor is no longer held out of the lab's active roster.
+      await tx
+        .update(labUnassignedDoctors)
+        .set({ deletedAt: new Date() })
+        .where(
+          and(
+            eq(labUnassignedDoctors.labOrganizationId, labId),
+            eq(labUnassignedDoctors.userId, user.id),
+            isNull(labUnassignedDoctors.deletedAt)
+          )
+        );
+
+      return { user, membershipId, createdNewAccount, casesMoved, invoicesMoved };
+    });
+
+    await writeAuditLog({
+      req,
+      organizationId,
+      action: "practice_doctor_adopted_from_history",
+      entityType: "user",
+      entityId: result.user.id,
+      afterJson: {
+        userId: result.user.id,
+        doctorName: name,
+        sourcePracticeId: sourceOrganizationId,
+        destinationPracticeId: organizationId,
+        membershipId: result.membershipId,
+        createdNewAccount: result.createdNewAccount,
+        casesMoved: result.casesMoved,
+        invoicesMoved: result.invoicesMoved,
+      },
+    });
+
+    return ok(
+      res,
+      {
+        userId: result.user.id,
+        membershipId: result.membershipId,
+        firstName: result.user.firstName,
+        lastName: result.user.lastName,
+        email: result.user.email,
+        platformAccountNumber: result.user.platformAccountNumber,
+        createdNewAccount: result.createdNewAccount,
+        sourcePracticeId: sourceOrganizationId,
+        casesMoved: result.casesMoved,
+        invoicesMoved: result.invoicesMoved,
+      },
+      201
+    );
+  })
+);
 
 router.post(
   "/:organizationId/doctors/remove",
@@ -2274,16 +2531,17 @@ router.get(
   "/:organizationId/members",
   asyncHandler(async (req, res) => {
     const organizationId = req.params.organizationId;
-    await requireMembership(
-      (req as any).auth.userId,
-      organizationId
-    );
+    // Allow the org's own members AND a parent-lab admin to read a provider
+    // practice's roster (resolveOrgReadAccess handles both, 404s an unknown
+    // org, and 403s a caller with no access).
+    await resolveOrgReadAccess((req as any).auth.userId, organizationId);
 
     const memberships =
       await db.query.organizationMemberships.findMany({
-        where: eq(
-          organizationMemberships.labId,
-          organizationId
+        where: and(
+          eq(organizationMemberships.labId, organizationId),
+          eq(organizationMemberships.status, "active"),
+          notDeleted(organizationMemberships)
         ),
       });
     const userIds = memberships.map((m: any) => m.userId);

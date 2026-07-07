@@ -1937,6 +1937,11 @@ interface EligibleDoctor {
   platformAccountNumber?: string | null;
   currentPractices: string[];
   virtual?: boolean;
+  // For virtual/case-history rows: the practice that currently holds this
+  // doctor's cases, its display name, and how many cases would move.
+  sourceOrganizationId?: string | null;
+  sourcePracticeName?: string | null;
+  caseCount?: number;
 }
 
 function AddDoctorToPracticeDialog({
@@ -1971,8 +1976,18 @@ function AddDoctorToPracticeDialog({
   function invalidateAll() {
     queryClient.invalidateQueries({ queryKey: ["organization", org.id, "members"] });
     queryClient.invalidateQueries({ queryKey: ["organization", org.id, "eligible-doctors"] });
+    queryClient.invalidateQueries({ queryKey: ["organization", org.id] });
     queryClient.invalidateQueries({ queryKey: ["organizations"] });
     queryClient.invalidateQueries({ queryKey: ["cases"] });
+    queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    queryClient.invalidateQueries({ queryKey: ["pricing-overrides"] });
+    // Adopting a case-history doctor can clear a per-lab "Unassigned doctors"
+    // exclusion — refresh that lab's holding area too.
+    if (org.parentLabOrganizationId) {
+      queryClient.invalidateQueries({
+        queryKey: getListUnassignedDoctorsQueryKey(org.parentLabOrganizationId),
+      });
+    }
   }
 
   const createMutation = useMutation({
@@ -2032,39 +2047,35 @@ function AddDoctorToPracticeDialog({
   });
 
   // Used when the user picks a "virtual" case-history doctor who has no
-  // account yet — creates the account and links them in one step.
+  // account yet — creates/reuses the account, attaches it here, and MOVES the
+  // doctor's existing cases + invoices from their source practice into this
+  // one, all in one server-side transaction (so the addition actually sticks).
   const createFromCaseMutation = useMutation({
-    mutationFn: (doc: EligibleDoctor) => {
-      const raw = (doc.doctorName || doc.username || "").trim();
-      // Strip common "Dr." prefix so the name fields aren't polluted.
-      const stripped = raw.replace(/^dr\.?\s+/i, "").trim();
-      const parts = stripped.split(/\s+/);
-      const fName = parts[0] || "Doctor";
-      const lName = parts.slice(1).join(" ") || undefined;
-      return apiFetch<{
-        created: Array<{ firstName?: string | null; lastName?: string | null }>;
-        skipped: Array<{ index: number; reason: string }>;
-      }>(`/organizations/${org.id}/doctors`, {
+    mutationFn: (doc: EligibleDoctor) =>
+      apiFetch<{
+        firstName?: string | null;
+        lastName?: string | null;
+        casesMoved: number;
+        invoicesMoved: number;
+      }>(`/organizations/${org.id}/doctors/adopt`, {
         method: "POST",
         body: JSON.stringify({
-          doctors: [{ firstName: fName, lastName: lName }],
+          doctorName: (doc.doctorName || doc.username || "").trim(),
+          sourceOrganizationId: doc.sourceOrganizationId ?? null,
         }),
-      });
-    },
+      }),
     onSuccess: (res) => {
-      const skipped = res.skipped?.[0];
-      if (skipped) {
-        setError(skipped.reason || "Could not create doctor account.");
-        return;
-      }
-      const d = res.created?.[0];
-      const name = [d?.firstName, d?.lastName].filter(Boolean).join(" ") || "Doctor";
-      setSuccess(`${name} added to ${org.displayName || org.name}.`);
+      const name = [res.firstName, res.lastName].filter(Boolean).join(" ") || "Doctor";
+      const movedNote =
+        res.casesMoved > 0
+          ? ` · ${res.casesMoved} case${res.casesMoved === 1 ? "" : "s"} moved`
+          : "";
+      setSuccess(`${name} added to ${org.displayName || org.name}.${movedNote}`);
       setError(null);
       setSelectedUserId("");
       invalidateAll();
     },
-    onError: (err: Error) => setError(err.message || "Could not create doctor."),
+    onError: (err: Error) => setError(err.message || "Could not add doctor."),
   });
 
   const eligible = eligibleQuery.data ?? [];
@@ -2297,7 +2308,13 @@ function AddDoctorToPracticeDialog({
                         </div>
                         <div className="text-xs text-muted-foreground truncate">
                           {u.virtual
-                            ? "From case history — will create account"
+                            ? u.sourcePracticeName
+                              ? `From ${u.sourcePracticeName}${
+                                  u.caseCount
+                                    ? ` · ${u.caseCount} case${u.caseCount === 1 ? "" : "s"} will move here`
+                                    : ""
+                                }`
+                              : "From case history — will create account"
                             : (u.email || u.phone || u.username)}
                         </div>
                         {!u.virtual && u.currentPractices.length > 0 && (
@@ -3190,13 +3207,15 @@ export function PracticeDoctorsSection({
       ),
     enabled: !!currentUserId,
   });
-  const registeredDoctors = (membersQuery.data ?? []).map((m) => ({
-    id: m.userId,
-    username: m.user?.username ?? "",
-    firstName: m.user?.firstName ?? null,
-    lastName: m.user?.lastName ?? null,
-    platformAccountNumber: m.user?.platformAccountNumber ?? null,
-  }));
+  const registeredDoctors = (membersQuery.data ?? [])
+    .filter((m) => !m.status || m.status === "active")
+    .map((m) => ({
+      id: m.userId,
+      username: m.user?.username ?? "",
+      firstName: m.user?.firstName ?? null,
+      lastName: m.user?.lastName ?? null,
+      platformAccountNumber: m.user?.platformAccountNumber ?? null,
+    }));
 
   // Doctors moved to the per-lab "Unassigned" holding area must disappear from
   // every practice's Doctors list — even though their cases/invoices stay

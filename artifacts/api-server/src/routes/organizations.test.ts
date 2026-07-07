@@ -11,7 +11,7 @@
  *  - GET /api/organizations/:id/members — lists members including owner
  *  - Unauthenticated requests return 401
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { and, inArray, eq, isNull, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
@@ -2219,6 +2219,263 @@ maybe("Organizations CRUD (db integration)", () => {
       expect(list.status).toBe(200);
       const orgs: any[] = list.body.data ?? [];
       expect(orgs.some((o: any) => o.id === practiceId)).toBe(true);
+    });
+  });
+
+  // ── Case-history doctor adoption (Task #2688) ─────────────────────────────
+  // Adding a case-history (virtual) doctor to a practice must actually stick:
+  // create/reuse a provider account + active membership, MOVE the doctor's
+  // cases + invoices from the source practice into the destination, clear any
+  // "Unassigned doctors" exclusion, and never duplicate an existing provider.
+  // Also: a parent-lab admin must be able to read a provider practice's members.
+  describe("case-history doctor adoption", () => {
+    // Provider accounts created by the adopt flow aren't tracked by the
+    // suite-level cleanup (which only knows about ownerId/providerUserId), so
+    // remove them (and their memberships / holding-area rows) here.
+    const createdDoctorUserIds: string[] = [];
+
+    async function cleanupDoctorUsers() {
+      if (!createdDoctorUserIds.length) return;
+      const {
+        db,
+        organizationMemberships,
+        userSessions,
+        users,
+        labUnassignedDoctors,
+      } = dbMod as any;
+      for (const uid of createdDoctorUserIds) {
+        await db
+          .delete(organizationMemberships)
+          .where(eq(organizationMemberships.userId, uid));
+        await db.delete(userSessions).where(eq(userSessions.userId, uid));
+        await db
+          .delete(labUnassignedDoctors)
+          .where(eq(labUnassignedDoctors.userId, uid));
+        await db.delete(users).where(eq(users.id, uid));
+      }
+      createdDoctorUserIds.length = 0;
+    }
+
+    afterEach(async () => {
+      if (!SHOULD_RUN) return;
+      await cleanupDoctorUsers();
+    });
+
+    async function makePractice(
+      access: string,
+      labId: string,
+      name: string
+    ): Promise<string> {
+      const create = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send(practiceBody(name, labId));
+      expect(create.status).toBe(201);
+      const id = create.body.data.id;
+      createdOrgIds.push(id);
+      return id;
+    }
+
+    async function makeCase(
+      access: string,
+      labId: string,
+      providerId: string,
+      doctorName: string
+    ): Promise<string> {
+      const r = await request(appMod.default)
+        .post("/api/cases")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          caseNumber: rid("ADOPT"),
+          labOrganizationId: labId,
+          providerOrganizationId: providerId,
+          patientFirstName: "Adopt",
+          patientLastName: "Patient",
+          doctorName,
+          status: "received",
+          confirmNewDoctor: true,
+        });
+      expect(r.status, "case creation should succeed").toBe(201);
+      return r.body.data.id;
+    }
+
+    it("eligible-doctors surfaces a case-history doctor with its source practice + case count", async () => {
+      const { access, labId } = await makeOwnerLab();
+      const sourceId = await makePractice(access, labId, rid("AdoptSrcA"));
+      const destId = await makePractice(access, labId, rid("AdoptDstA"));
+      const doctorName = `Dr. ${rid("Elig")}`;
+      await makeCase(access, labId, sourceId, doctorName);
+      await makeCase(access, labId, sourceId, doctorName);
+
+      const elig = await request(appMod.default)
+        .get(`/api/organizations/${destId}/eligible-doctors`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(elig.status).toBe(200);
+      const row = (elig.body.data ?? []).find(
+        (d: any) => d.virtual && d.doctorName === doctorName
+      );
+      expect(row, "case-history doctor should be listed").toBeDefined();
+      expect(row.sourceOrganizationId).toBe(sourceId);
+      expect(row.caseCount).toBe(2);
+    });
+
+    it("adopting a case-history doctor persists: creates a member and moves cases + invoices", async () => {
+      const { access, labId } = await makeOwnerLab();
+      const sourceId = await makePractice(access, labId, rid("AdoptSrcB"));
+      const destId = await makePractice(access, labId, rid("AdoptDstB"));
+      const doctorName = `Dr. ${rid("Move")}`;
+      const caseA = await makeCase(access, labId, sourceId, doctorName);
+      const caseB = await makeCase(access, labId, sourceId, doctorName);
+
+      const adopt = await request(appMod.default)
+        .post(`/api/organizations/${destId}/doctors/adopt`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ doctorName, sourceOrganizationId: sourceId });
+      expect(adopt.status).toBe(201);
+      expect(adopt.body.data.casesMoved).toBe(2);
+      expect(adopt.body.data.invoicesMoved).toBeGreaterThanOrEqual(1);
+      const doctorUserId = adopt.body.data.userId;
+      createdDoctorUserIds.push(doctorUserId);
+
+      // Membership persists on refetch (as the lab admin — see authz test).
+      const members = await request(appMod.default)
+        .get(`/api/organizations/${destId}/members`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(members.status).toBe(200);
+      expect(
+        (members.body.data ?? []).some((m: any) => m.userId === doctorUserId)
+      ).toBe(true);
+
+      // Cases + invoices now point at the destination practice.
+      const { db, cases: casesTable, invoices } = dbMod as any;
+      const movedCases = await db
+        .select()
+        .from(casesTable)
+        .where(inArray(casesTable.id, [caseA, caseB]));
+      for (const c of movedCases) {
+        expect(c.providerOrganizationId).toBe(destId);
+      }
+      const movedInvoices = await db
+        .select()
+        .from(invoices)
+        .where(inArray(invoices.caseId, [caseA, caseB]));
+      for (const inv of movedInvoices) {
+        expect(inv.providerOrganizationId).toBe(destId);
+      }
+
+      // Source no longer contributes the doctor to its case-history list.
+      const srcElig = await request(appMod.default)
+        .get(`/api/organizations/${sourceId}/eligible-doctors`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(srcElig.status).toBe(200);
+      expect(
+        (srcElig.body.data ?? []).some(
+          (d: any) => d.virtual && d.doctorName === doctorName
+        )
+      ).toBe(false);
+    });
+
+    it("reuses an existing matching provider account instead of duplicating it", async () => {
+      const { access, labId } = await makeOwnerLab();
+      const sourceId = await makePractice(access, labId, rid("AdoptSrcC"));
+      const destId = await makePractice(access, labId, rid("AdoptDstC"));
+
+      // Pre-existing provider account whose name matches the case-history name.
+      const existingId = rid("existingdoc");
+      const { db, users } = dbMod as any;
+      const firstName = rid("First");
+      const lastName = rid("Last");
+      await db.insert(users).values({
+        id: existingId,
+        username: `doc_${existingId}`,
+        password: "x",
+        firstName,
+        lastName,
+        userType: "provider",
+      });
+      createdDoctorUserIds.push(existingId);
+      const doctorName = `${firstName} ${lastName}`;
+      await makeCase(access, labId, sourceId, doctorName);
+
+      const adopt = await request(appMod.default)
+        .post(`/api/organizations/${destId}/doctors/adopt`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ doctorName, sourceOrganizationId: sourceId });
+      expect(adopt.status).toBe(201);
+      expect(adopt.body.data.userId).toBe(existingId);
+      expect(adopt.body.data.createdNewAccount).toBe(false);
+
+      // No duplicate provider account was created for that name.
+      const matches = await db
+        .select()
+        .from(users)
+        .where(
+          and(
+            eq(users.userType, "provider"),
+            eq(users.firstName, firstName),
+            eq(users.lastName, lastName)
+          )
+        );
+      expect(matches.length).toBe(1);
+    });
+
+    it("rejects a source practice that holds none of the doctor's cases (no silent no-op)", async () => {
+      const { access, labId } = await makeOwnerLab();
+      const sourceId = await makePractice(access, labId, rid("AdoptSrcE"));
+      const wrongId = await makePractice(access, labId, rid("AdoptWrongE"));
+      const destId = await makePractice(access, labId, rid("AdoptDstE"));
+      const doctorName = `Dr. ${rid("Wrong")}`;
+      // Doctor's history lives at sourceId only.
+      await makeCase(access, labId, sourceId, doctorName);
+
+      const adopt = await request(appMod.default)
+        .post(`/api/organizations/${destId}/doctors/adopt`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ doctorName, sourceOrganizationId: wrongId });
+      expect(adopt.status).toBe(409);
+      expect(adopt.body.details?.code).toBe("INVALID_SOURCE_PRACTICE");
+
+      // No account/membership should have been created by the rejected call.
+      const members = await request(appMod.default)
+        .get(`/api/organizations/${destId}/members`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(members.status).toBe(200);
+      expect((members.body.data ?? []).length).toBe(0);
+    });
+
+    it("a parent-lab admin can read a provider practice's members (authz fix)", async () => {
+      const { access, labId } = await makeOwnerLab();
+      const destId = await makePractice(access, labId, rid("AdoptSrcD"));
+      const doctorName = `Dr. ${rid("Authz")}`;
+      await makeCase(access, labId, destId, doctorName);
+
+      const adopt = await request(appMod.default)
+        .post(`/api/organizations/${destId}/doctors/adopt`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ doctorName, sourceOrganizationId: destId });
+      expect(adopt.status).toBe(201);
+      createdDoctorUserIds.push(adopt.body.data.userId);
+
+      // The lab owner is NOT a member of the provider practice, yet must be
+      // able to read its member roster (parent-lab admin access).
+      const members = await request(appMod.default)
+        .get(`/api/organizations/${destId}/members`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(members.status).toBe(200);
+      const { db, organizationMemberships } = dbMod as any;
+      const ownIn = await db
+        .select()
+        .from(organizationMemberships)
+        .where(
+          and(
+            eq(organizationMemberships.labId, destId),
+            eq(organizationMemberships.userId, ownerId),
+            eq(organizationMemberships.status, "active")
+          )
+        );
+      expect(ownIn.length, "lab admin must not be a member of the practice").toBe(
+        0
+      );
     });
   });
 });
