@@ -27,6 +27,7 @@ import {
   apiFetch,
   apiUrl,
   authedFetch,
+  authedMediaFetch,
   createUploadSession,
   sendUploadChunk,
 } from "@/lib/api";
@@ -188,7 +189,7 @@ function InboxFileRow({
     if (viewLoading) return;
     setViewLoading(true);
     try {
-      const resp = await authedFetch(apiUrl(`/lab-inbox/${file.id}/file`));
+      const resp = await authedMediaFetch(apiUrl(`/lab-inbox/${file.id}/file`));
       if (!resp.ok) throw new Error(`status ${resp.status}`);
       const blob = await resp.blob();
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);

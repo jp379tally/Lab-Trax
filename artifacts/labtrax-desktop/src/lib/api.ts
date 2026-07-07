@@ -558,6 +558,86 @@ export async function authedFetch(
   return resp;
 }
 
+type ElectronMediaBridge = {
+  fetchAuthenticated: (url: string) => Promise<{
+    ok: boolean;
+    status: number;
+    mimeType?: string;
+    buffer?: ArrayBuffer | Uint8Array | number[];
+    error?: string;
+  }>;
+};
+
+function getMediaBridge(): ElectronMediaBridge | null {
+  if (typeof window === "undefined") return null;
+  const electronAPI = (window as { electronAPI?: { media?: ElectronMediaBridge } })
+    .electronAPI;
+  const media = electronAPI?.media ?? null;
+  if (media && typeof media.fetchAuthenticated === "function") return media;
+  return null;
+}
+
+/**
+ * Fetch protected media bytes, preferring the Electron main-process bridge
+ * when it is available.
+ *
+ * On the desktop client the renderer runs from the custom `app://labtrax`
+ * protocol, so every protected media request to the hosted API is cross-origin
+ * and browser-like — it can fail on CORS, redirects, dropped Authorization
+ * headers, or blob/object-URL creation. When the desktop bridge is present we
+ * route the fetch through the main process (Electron `net.fetch`, not subject
+ * to renderer CORS) with the stored bearer token, and hand the bytes back as a
+ * `Response` so callers can `.blob()` them exactly like the browser path.
+ *
+ * On the web (no bridge) this falls back to {@link authedFetch}, keeping the
+ * browser and mobile paths untouched. The main process only attaches the token
+ * to the LabTrax API origin, so third-party URLs never receive it.
+ */
+export async function authedMediaFetch(
+  url: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const bridge = getMediaBridge();
+  if (bridge) {
+    const fetchViaBridge = () => bridge.fetchAuthenticated(url);
+    let result = await fetchViaBridge();
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    // The bridge reads the persisted token; if it has expired, refresh once in
+    // the renderer (which re-persists to the main-process store) and retry.
+    if (result && result.status === 401 && _tokens?.refreshToken) {
+      const refreshed = await refreshAccessToken();
+      if (refreshed) {
+        result = await fetchViaBridge();
+        if (signal?.aborted) {
+          throw new DOMException("Aborted", "AbortError");
+        }
+      }
+    }
+    if (!result || !result.ok) {
+      // Surface a Response so the caller's `!resp.ok` branch handles it.
+      return new Response(null, { status: result?.status || 502 });
+    }
+    const bytes =
+      result.buffer instanceof Uint8Array
+        ? result.buffer
+        : new Uint8Array(
+            (result.buffer as ArrayBuffer | number[] | undefined) ?? [],
+          );
+    // Copy into a standalone ArrayBuffer so the body is a plain BodyInit the
+    // renderer can .blob()/.arrayBuffer() reliably, and carry the MIME type on
+    // the response headers.
+    const body = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(body).set(bytes);
+    const headers = result.mimeType
+      ? { "Content-Type": result.mimeType }
+      : undefined;
+    return new Response(body, { status: result.status, headers });
+  }
+  return authedFetch(url, signal);
+}
+
 // Network-level fetch can throw TypeError("Failed to fetch") on transient
 // connectivity blips, captive-portal redirects, sleep/wake, or the
 // renderer briefly losing its proxy. We retry GET/HEAD once after 800 ms

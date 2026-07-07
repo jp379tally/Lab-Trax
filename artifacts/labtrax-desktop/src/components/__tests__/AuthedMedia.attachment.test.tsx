@@ -15,7 +15,7 @@
  *   1. AuthedImage (used by every desktop attachment surface — AttachmentRow,
  *      the Files tab, the image lightbox, history-event thumbnails, and
  *      PrescriptionPreview) fetches the canonical /file URL WITH a bearer
- *      token via authedFetch, turns the bytes into an object URL, and renders
+ *      token via authedMediaFetch, turns the bytes into an object URL, and renders
  *      that object URL.
  *   2. The rendered <img> src is the blob object URL — NEVER the raw protected
  *      /api/…/file URL. A protected attachment image must not be rendered
@@ -28,14 +28,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the api layer AuthedMedia depends on so we can observe exactly which
 // URL is fetched and with what auth, without a real network or token store.
-const authedFetch = vi.fn();
+const authedMediaFetch = vi.fn();
 const getApiOrigin = vi.fn(() => "https://api.labtrax.example");
 const waitForTokenHydration = vi.fn(async () => {});
 
 const apiFetch = vi.fn();
 
 vi.mock("@/lib/api", () => ({
-  authedFetch: (...args: unknown[]) => authedFetch(...args),
+  authedMediaFetch: (...args: unknown[]) => authedMediaFetch(...args),
   getApiOrigin: () => getApiOrigin(),
   waitForTokenHydration: () => waitForTokenHydration(),
   apiFetch: (...args: unknown[]) => apiFetch(...args),
@@ -54,8 +54,8 @@ let origCreate: typeof URL.createObjectURL | undefined;
 let origRevoke: typeof URL.revokeObjectURL | undefined;
 
 beforeEach(() => {
-  authedFetch.mockReset();
-  authedFetch.mockResolvedValue(
+  authedMediaFetch.mockReset();
+  authedMediaFetch.mockResolvedValue(
     new Response(new Blob([new Uint8Array([1, 2, 3])], { type: "image/jpeg" }), {
       status: 200,
     }),
@@ -79,8 +79,8 @@ describe("AuthedImage — desktop case attachment photo", () => {
     render(<AuthedImage url={FILE_URL} alt="prescription-photo.jpg" />);
 
     // The canonical, bearer-authed fetch must run against the /file endpoint.
-    await waitFor(() => expect(authedFetch).toHaveBeenCalledTimes(1));
-    expect(authedFetch.mock.calls[0]?.[0]).toBe(FILE_URL);
+    await waitFor(() => expect(authedMediaFetch).toHaveBeenCalledTimes(1));
+    expect(authedMediaFetch.mock.calls[0]?.[0]).toBe(FILE_URL);
 
     // Once the bytes resolve, an <img> appears whose src is the blob object
     // URL produced from the authenticated response — never the raw /file URL.
@@ -104,7 +104,7 @@ describe("AuthedImage — desktop case attachment photo", () => {
   });
 
   it("shows the fallback (no <img>) when the authenticated fetch fails", async () => {
-    authedFetch.mockResolvedValueOnce(new Response("", { status: 401 }));
+    authedMediaFetch.mockResolvedValueOnce(new Response("", { status: 401 }));
 
     render(
       <AuthedImage
@@ -146,8 +146,8 @@ describe("AttachmentThumb — real desktop Files-tab attachment surface", () => 
 
     // The real surface builds the canonical /file URL and hands it to
     // AuthedImage, which performs the bearer-authed fetch.
-    await waitFor(() => expect(authedFetch).toHaveBeenCalledTimes(1));
-    expect(authedFetch.mock.calls[0]?.[0]).toBe(FILE_URL);
+    await waitFor(() => expect(authedMediaFetch).toHaveBeenCalledTimes(1));
+    expect(authedMediaFetch.mock.calls[0]?.[0]).toBe(FILE_URL);
 
     // The visible <img> src is the blob object URL, not the protected /file URL.
     const img = await screen.findByAltText("prescription-photo.jpg");
@@ -174,7 +174,7 @@ describe("AttachmentThumb — real desktop Files-tab attachment surface", () => 
   });
 
   it("shows the Unavailable fallback (no <img>) when the authenticated fetch fails", async () => {
-    authedFetch.mockResolvedValueOnce(new Response("", { status: 401 }));
+    authedMediaFetch.mockResolvedValueOnce(new Response("", { status: 401 }));
 
     render(
       <AttachmentThumb
@@ -213,8 +213,8 @@ describe("HistoryEventMedia — real desktop history-timeline thumbnail surface"
 
     // The real surface derives the canonical /file URL from the event metadata
     // and hands it to AuthedImage, which performs the bearer-authed fetch.
-    await waitFor(() => expect(authedFetch).toHaveBeenCalledTimes(1));
-    expect(authedFetch.mock.calls[0]?.[0]).toBe(FILE_URL);
+    await waitFor(() => expect(authedMediaFetch).toHaveBeenCalledTimes(1));
+    expect(authedMediaFetch.mock.calls[0]?.[0]).toBe(FILE_URL);
 
     const img = await screen.findByAltText("prescription-photo.jpg");
     expect(img.tagName).toBe("IMG");
@@ -238,7 +238,7 @@ describe("HistoryEventMedia — real desktop history-timeline thumbnail surface"
   });
 
   it("shows the Unavailable fallback (no <img>) when the authenticated fetch fails", async () => {
-    authedFetch.mockResolvedValueOnce(new Response("", { status: 401 }));
+    authedMediaFetch.mockResolvedValueOnce(new Response("", { status: 401 }));
 
     render(
       <HistoryEventMedia
@@ -267,8 +267,8 @@ describe("MediaLightbox — real desktop full-size image lightbox surface", () =
       />,
     );
 
-    await waitFor(() => expect(authedFetch).toHaveBeenCalledTimes(1));
-    expect(authedFetch.mock.calls[0]?.[0]).toBe(FILE_URL);
+    await waitFor(() => expect(authedMediaFetch).toHaveBeenCalledTimes(1));
+    expect(authedMediaFetch.mock.calls[0]?.[0]).toBe(FILE_URL);
 
     const img = await screen.findByAltText("Preview");
     expect(img.tagName).toBe("IMG");
@@ -295,6 +295,6 @@ describe("MediaLightbox — real desktop full-size image lightbox surface", () =
       <MediaLightbox lightbox={null} onClose={() => {}} />,
     );
     expect(container.firstChild).toBeNull();
-    expect(authedFetch).not.toHaveBeenCalled();
+    expect(authedMediaFetch).not.toHaveBeenCalled();
   });
 });

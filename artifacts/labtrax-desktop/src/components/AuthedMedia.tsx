@@ -1,6 +1,6 @@
 import { useEffect, useState, type MouseEventHandler, type ReactNode } from "react";
 import { X } from "lucide-react";
-import { authedFetch, getApiOrigin, waitForTokenHydration } from "@/lib/api";
+import { authedMediaFetch, getApiOrigin, waitForTokenHydration } from "@/lib/api";
 
 // True only when `url` is a relative path (always same-origin) or an absolute
 // URL whose origin matches our API origin. The bearer token must NEVER be sent
@@ -72,7 +72,7 @@ function useAuthedObjectUrl(url: string | null | undefined): {
         // due to a startup race between hydration and the first render.
         await waitForTokenHydration();
         if (cancelled) return;
-        const resp = await authedFetch(url, controller.signal);
+        const resp = await authedMediaFetch(url, controller.signal);
         if (!resp.ok) throw new Error(`status ${resp.status}`);
         const blob = await resp.blob();
         if (cancelled) return;

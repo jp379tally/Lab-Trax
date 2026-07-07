@@ -40,6 +40,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
     clearTokens: () => ipcRenderer.invoke("auth:clear-tokens"),
     isAvailable: () => ipcRenderer.invoke("auth:is-available"),
   },
+  media: {
+    // Fetch protected case-media bytes from the main process (Electron
+    // net.fetch, not subject to renderer CORS) using the stored desktop
+    // bearer token. The main process only attaches the token to the LabTrax
+    // API origin, so third-party URLs are rejected. Returns
+    // { ok, status, mimeType, buffer } or { ok:false, status, error }.
+    fetchAuthenticated: (url) =>
+      ipcRenderer.invoke("media:fetch-authenticated", url),
+  },
   previewFile: (buffer, mimeType, fileKey, filename) =>
     ipcRenderer.invoke("preview:open-file", buffer, mimeType, fileKey, filename),
   relaunch: () => ipcRenderer.send("app:relaunch"),

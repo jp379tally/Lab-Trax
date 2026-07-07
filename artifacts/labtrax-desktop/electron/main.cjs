@@ -9,6 +9,89 @@ const authStore = require("./auth-store.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
 
+// --------------------------------------------------------------------------
+// Authenticated media bridge origin allowlist
+//
+// The renderer runs from the custom `app://labtrax` protocol in production,
+// so every protected media fetch to the hosted API is cross-origin and
+// browser-like — it can fail on CORS, redirects, blob/object-URL creation,
+// or dropped Authorization headers. The `media:fetch-authenticated` IPC
+// handler below fetches those bytes from the main process instead (Electron
+// `net.fetch`, which is not subject to renderer CORS) with the stored desktop
+// bearer token.
+//
+// To make sure the bearer token can NEVER leak to a third-party host (a case
+// note or attachment could carry an arbitrary URL), the main process only
+// attaches the token to URLs whose origin matches the LabTrax API origin.
+// We derive that origin the same way the renderer does (src/lib/api.ts):
+// the build-time VITE_API_BASE_URL when present, otherwise the production
+// fallback. In dev, localhost origins are also allowed.
+const _MEDIA_PROD_API_FALLBACK = "https://lab-trax.replit.app";
+const _MEDIA_CONFIGURED_ORIGIN = (process.env.VITE_API_BASE_URL || "").replace(
+  /\/$/,
+  "",
+);
+const _MEDIA_API_ORIGIN = _MEDIA_CONFIGURED_ORIGIN || _MEDIA_PROD_API_FALLBACK;
+
+function isAllowedMediaUrl(urlStr) {
+  let parsed;
+  try {
+    parsed = new URL(urlStr);
+  } catch {
+    return false;
+  }
+  // Only http/https are ever fetched with the token. Reject file:, data:,
+  // blob:, app:, etc. outright.
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  try {
+    if (parsed.origin === new URL(_MEDIA_API_ORIGIN).origin) return true;
+  } catch {
+    /* malformed configured origin — fall through */
+  }
+  if (isDev && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1")) {
+    return true;
+  }
+  return false;
+}
+
+function registerMediaIpc() {
+  ipcMain.handle("media:fetch-authenticated", async (_e, url) => {
+    if (typeof url !== "string" || !url) {
+      return { ok: false, status: 0, error: "Invalid media URL." };
+    }
+    if (!isAllowedMediaUrl(url)) {
+      // Refuse third-party / non-API origins so the bearer token stays private.
+      return { ok: false, status: 0, error: "Refused: URL is not the LabTrax API origin." };
+    }
+    let tokens = null;
+    try {
+      tokens = authStore.getTokens();
+    } catch {
+      tokens = null;
+    }
+    const headers = {};
+    if (tokens && tokens.accessToken) {
+      headers["Authorization"] = `Bearer ${tokens.accessToken}`;
+    }
+    try {
+      const res = await net.fetch(url, { headers });
+      const arrayBuffer = await res.arrayBuffer();
+      return {
+        ok: res.ok,
+        status: res.status,
+        mimeType: res.headers.get("content-type") || "",
+        buffer: Buffer.from(arrayBuffer),
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        status: 0,
+        error: err && err.message ? String(err.message) : "Media fetch failed.",
+      };
+    }
+  });
+}
+
 // Force the app's display name and dock icon as early as possible, before
 // any window is created. macOS reads CFBundleName from Info.plist only for
 // packaged .app bundles — when run unpackaged (dev, or our manually-staged
@@ -299,6 +382,7 @@ app.whenReady().then(() => {
   registerIteroIpc();
   registerPlatformAdminIpc();
   registerAuthIpc();
+  registerMediaIpc();
   createWindow();
 
   if (!isDev && process.env.LABTRAX_SKIP_AUTOUPDATER !== "1") {

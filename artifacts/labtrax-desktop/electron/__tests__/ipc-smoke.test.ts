@@ -40,6 +40,8 @@ const EXPECTED_CHANNELS = [
   "auth:set-tokens",
   "auth:clear-tokens",
   "auth:is-available",
+  // authenticated media bridge
+  "media:fetch-authenticated",
   // app-level
   "get-app-version",
   "install-update",

@@ -9,7 +9,7 @@ import {
   ScrollText,
   X,
 } from "lucide-react";
-import { apiFetch, getApiOrigin, authedFetch, waitForTokenHydration } from "@/lib/api";
+import { apiFetch, getApiOrigin, authedMediaFetch, waitForTokenHydration } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import {
   AuthedImage,
@@ -68,7 +68,7 @@ async function openFileInNewTab(url: string) {
   try {
     await waitForTokenHydration();
     const resp = isSameApiOrigin(url)
-      ? await authedFetch(url)
+      ? await authedMediaFetch(url)
       : await fetch(url);
     if (!resp.ok) throw new Error(String(resp.status));
     const blob = await resp.blob();
