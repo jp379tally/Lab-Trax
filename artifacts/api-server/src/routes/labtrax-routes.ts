@@ -6526,6 +6526,27 @@ Important rules:
     }
   });
 
+  // ── Admin: send authorization form by email ───────────────────────────────
+  router.post("/admin/auth-form-email", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string;
+      const org = await getAdminLabOrg(userId);
+      if (!org) return res.status(403).json({ error: "Admin access required." });
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const to = typeof body.to === "string" ? body.to.trim() : "";
+      const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+      const text = typeof body.body === "string" ? body.body.trim() : "";
+      if (!to) return res.status(400).json({ error: "Recipient email is required." });
+      if (!subject) return res.status(400).json({ error: "Subject is required." });
+      if (!text) return res.status(400).json({ error: "Form body is required." });
+      const html = `<pre style="font-family:monospace;white-space:pre-wrap;font-size:13px">${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>`;
+      await sendMail({ to, subject, html, text });
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to send email." });
+    }
+  });
+
   // ── Admin Backup: run now ─────────────────────────────────────────────────
   router.post("/admin/backup/run", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {

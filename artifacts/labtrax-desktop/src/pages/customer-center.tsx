@@ -8,18 +8,25 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  CreditCard,
   FileDown,
+  FileText,
   Loader2,
   Mail,
+  PenLine,
   Phone,
+  Plus,
   Search,
+  Send,
+  Trash2,
+  X,
 } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import type { Invoice, Organization } from "@/lib/types";
+import type { Invoice, Organization, PracticeStatement } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
-import { InvoiceEditor } from "./invoices";
+import { InvoiceEditor, StatementBuilderDialog } from "./invoices";
 import { downloadStatementPdf } from "@/lib/export";
 import { useTableColumns } from "@/hooks/useTableColumns";
 import { ColumnSettingsPopover } from "@/components/ColumnSettingsPopover";
@@ -98,6 +105,596 @@ const LEFT_MIN = 220;
 const LEFT_MAX = 500;
 const LEFT_DEFAULT = 300;
 
+type DetailTab = "basic" | "invoices" | "statements" | "card";
+
+const DETAIL_TABS: { id: DetailTab; label: string }[] = [
+  { id: "basic", label: "Basic Info" },
+  { id: "invoices", label: "Invoices" },
+  { id: "statements", label: "Statements" },
+  { id: "card", label: "Card on File" },
+];
+
+// ── Authorization form modal ───────────────────────────────────────────────
+
+const SIGNATURE_FIELDS = [
+  { label: "Signature", placeholder: "[SIGNATURE]" },
+  { label: "Date", placeholder: "[DATE]" },
+  { label: "Initials", placeholder: "[INITIALS]" },
+  { label: "Printed Name", placeholder: "[PRINTED_NAME]" },
+];
+
+const CARD_AUTH_DEFAULT = `CARD ON FILE AUTHORIZATION
+
+Practice Name: ___________________________
+Authorized Signatory: ___________________________
+
+I, the undersigned, hereby authorize [LAB NAME] to charge the credit/debit card on file for:
+- Outstanding invoices as they become due
+- Amounts agreed upon in advance
+
+This authorization will remain in effect until cancelled in writing.
+
+Doctor(s) covered by this authorization:
+[DOCTOR_LIST]
+
+
+[SIGNATURE]                    [DATE]
+Authorized Signature           Date
+
+[PRINTED_NAME]
+Print Name`;
+
+const AUTOPAY_AUTH_DEFAULT = `AUTO-PAY AUTHORIZATION
+
+Practice Name: ___________________________
+Account Number: ___________________________
+
+I authorize [LAB NAME] to automatically charge the credit/debit card on file on or after each invoice due date.
+
+I understand that:
+- Charges will appear on my statement as [LAB NAME]
+- I will receive invoices by email prior to each charge
+- I may cancel this authorization with 7 days written notice
+
+Doctor(s) included:
+[DOCTOR_LIST]
+
+
+[SIGNATURE]                    [DATE]
+Authorized Signature           Date
+
+[INITIALS] ______    I confirm I have read and agree to the above terms.`;
+
+function AuthFormModal({
+  title,
+  defaultContent,
+  practiceName,
+  practiceEmail,
+  labOrgId,
+  onClose,
+}: {
+  title: string;
+  defaultContent: string;
+  practiceName: string;
+  practiceEmail?: string | null;
+  labOrgId: string;
+  onClose: () => void;
+}) {
+  const [content, setContent] = useState(defaultContent);
+  const [emailTo, setEmailTo] = useState(practiceEmail || "");
+  const [sendStatus, setSendStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [sendError, setSendError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  function insertAtCursor(text: string) {
+    const el = textareaRef.current;
+    if (!el) {
+      setContent((c) => c + "\n" + text);
+      return;
+    }
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const next = content.slice(0, start) + text + content.slice(end);
+    setContent(next);
+    requestAnimationFrame(() => {
+      el.selectionStart = el.selectionEnd = start + text.length;
+      el.focus();
+    });
+  }
+
+  async function handleSendEmail() {
+    const to = emailTo.trim();
+    if (!to) return;
+    setSendStatus("sending");
+    setSendError(null);
+    try {
+      await apiFetch("/admin/auth-form-email", {
+        method: "POST",
+        body: JSON.stringify({
+          to,
+          subject: `${title} — ${practiceName}`,
+          body: content,
+        }),
+      });
+      setSendStatus("sent");
+    } catch (err) {
+      setSendStatus("error");
+      setSendError(err instanceof ApiError ? err.message : "Failed to send email.");
+    }
+    /* TODO: Replace with a true e-signature flow (DocuSign or similar) that
+       captures a timestamped, IP-bound signature, handles field-placement in
+       the PDF, and routes the completed signed document back to the lab record.
+       The current implementation sends the form text as a plain email. */
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+      <div className="bg-card border border-border rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col shadow-xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
+          <h3 className="text-base font-semibold">{title}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-7 w-7 inline-flex items-center justify-center rounded hover:bg-secondary"
+            aria-label="Close"
+          >
+            <X size={15} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-md px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+            <strong>Foundation only:</strong> This form can be edited and sent by email. True drag-and-drop
+            e-signature field placement and signed-document return routing are not yet implemented.{" "}
+            {/* TODO: Integrate DocuSign or similar for production e-signature workflows. */}
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Form content — {practiceName}
+              </label>
+              <div className="flex gap-1">
+                {SIGNATURE_FIELDS.map((f) => (
+                  <button
+                    key={f.placeholder}
+                    type="button"
+                    onClick={() => insertAtCursor(f.placeholder)}
+                    className="h-6 px-2 rounded text-[10px] font-medium bg-secondary hover:bg-secondary/70 text-muted-foreground hover:text-foreground border border-border transition-colors"
+                    title={`Insert ${f.label} placeholder`}
+                  >
+                    + {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <textarea
+              ref={textareaRef}
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              rows={18}
+              className="w-full rounded-md bg-secondary border border-border text-xs font-mono p-3 focus:outline-none focus:ring-1 focus:ring-primary resize-y"
+              spellCheck={false}
+            />
+          </div>
+
+          <div className="border-t border-border pt-4">
+            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+              Send by email
+            </div>
+            {sendStatus === "sent" ? (
+              <div className="rounded-md bg-green-500/10 border border-green-500/20 px-3 py-2 text-sm text-green-600 dark:text-green-400">
+                Form sent to {emailTo}. Note: this delivers the form text only — not a completed signed document.
+              </div>
+            ) : (
+              <>
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    value={emailTo}
+                    onChange={(e) => setEmailTo(e.target.value)}
+                    placeholder="recipient@example.com"
+                    className="flex-1 h-8 px-2.5 rounded-md bg-secondary border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSendEmail}
+                    disabled={!emailTo.trim() || sendStatus === "sending"}
+                    className="h-8 px-3 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1.5"
+                  >
+                    {sendStatus === "sending" ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <Send size={13} />
+                    )}
+                    Send
+                  </button>
+                </div>
+                {sendStatus === "error" && sendError && (
+                  <p className="mt-1.5 text-xs text-destructive flex items-center gap-1">
+                    <AlertCircle size={11} /> {sendError}
+                  </p>
+                )}
+              </>
+            )}
+            <p className="mt-1.5 text-[10px] text-muted-foreground">
+              {/* TODO: Replace with a proper e-signature workflow that tracks
+                  signing status and routes completed documents back to the lab. */}
+              Sends the form text as the email body. For a completed e-signature flow, connect a
+              DocuSign-compatible integration.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 px-5 py-3 border-t border-border shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              const blob = new Blob([content], { type: "text/plain;charset=utf-8;" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `${title.replace(/\s+/g, "-")}-${practiceName.replace(/\s+/g, "-")}.txt`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }}
+            className="h-8 px-3 rounded text-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors inline-flex items-center gap-1.5"
+          >
+            <FileDown size={13} /> Download
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 px-3 rounded text-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Statements tab sub-component ───────────────────────────────────────────
+
+type StmtFilter = "all" | "open" | "paid";
+
+function StatementsTab({
+  selected,
+  labOrgId,
+}: {
+  selected: Organization;
+  labOrgId: string;
+}) {
+  const queryClient = useQueryClient();
+  const [filter, setFilter] = useState<StmtFilter>("all");
+  const [sendOpen, setSendOpen] = useState(false);
+
+  const statementsQuery = useQuery({
+    queryKey: ["practice-statements", { practiceId: selected.id }],
+    queryFn: () =>
+      apiFetch<PracticeStatement[]>(
+        `/invoices/practice-statements?providerOrganizationId=${encodeURIComponent(selected.id)}&labOrganizationId=${encodeURIComponent(labOrgId)}`
+      ),
+    enabled: !!selected.id && !!labOrgId,
+  });
+
+  const statements = useMemo(() => {
+    const rows = statementsQuery.data ?? [];
+    return rows.filter((s) => {
+      if (filter === "open") return Number(s.balanceDue) > 0;
+      if (filter === "paid") return Number(s.balanceDue) <= 0;
+      return true;
+    });
+  }, [statementsQuery.data, filter]);
+
+  function handleFilterChange(val: string) {
+    if (val === "send") {
+      setSendOpen(true);
+    } else {
+      setFilter(val as StmtFilter);
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="px-5 py-2.5 border-b border-border bg-card/50 flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="font-medium">Filter:</span>
+          <select
+            value={filter}
+            onChange={(e) => handleFilterChange(e.target.value)}
+            className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
+          >
+            <option value="all">All</option>
+            <option value="open">Open</option>
+            <option value="paid">Paid</option>
+            <option value="send">Send Statements…</option>
+          </select>
+        </div>
+        <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
+          {statements.length} statement{statements.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      <div className="flex-1 overflow-y-auto scrollbar-thin">
+        {statementsQuery.isLoading && (
+          <div className="py-12 text-center text-muted-foreground text-xs">
+            <Loader2 size={14} className="inline animate-spin mr-1.5" />
+            Loading statements…
+          </div>
+        )}
+        {statementsQuery.isError && (
+          <div className="py-12 text-center text-xs">
+            <AlertCircle size={14} className="inline mr-1.5 text-destructive" />
+            <span className="text-destructive">
+              {(statementsQuery.error as Error)?.message ?? "Failed to load statements."}
+            </span>
+          </div>
+        )}
+        {!statementsQuery.isLoading && !statementsQuery.isError && statements.length === 0 && (
+          <div className="py-12 text-center text-muted-foreground text-xs">
+            <FileText size={24} className="mx-auto mb-3 opacity-20" />
+            <p>No statements found{filter !== "all" ? " for this filter" : ""}.</p>
+            <p className="mt-1">
+              Select{" "}
+              <button
+                type="button"
+                onClick={() => setSendOpen(true)}
+                className="underline underline-offset-2 hover:text-foreground"
+              >
+                Send Statements
+              </button>{" "}
+              from the filter to generate one.
+            </p>
+          </div>
+        )}
+        {statements.length > 0 && (
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 z-10 bg-secondary/80 backdrop-blur-sm">
+              <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                <th className="text-left px-5 py-2.5 font-medium">Period</th>
+                <th className="text-left px-3 py-2.5 font-medium">Invoices</th>
+                <th className="text-right px-3 py-2.5 font-medium">Billed</th>
+                <th className="text-right px-3 py-2.5 font-medium">Paid</th>
+                <th className="text-right px-3 py-2.5 font-medium">Balance Due</th>
+                <th className="text-left px-3 py-2.5 font-medium">Generated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {statements.map((s) => (
+                <tr
+                  key={s.id}
+                  className="border-t border-border hover:bg-secondary/30 transition-colors"
+                >
+                  <td className="px-5 py-3 text-left font-medium text-foreground">
+                    {s.periodStart
+                      ? new Date(s.periodStart).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })
+                      : "—"}{" "}
+                    <span className="text-muted-foreground">–</span>{" "}
+                    {s.periodEnd
+                      ? new Date(s.periodEnd).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })
+                      : "—"}
+                  </td>
+                  <td className="px-3 py-3 text-left text-muted-foreground">
+                    {s.invoiceCount}
+                  </td>
+                  <td className="px-3 py-3 text-right tabular-nums">
+                    {formatMoney(Number(s.totalBilled ?? 0))}
+                  </td>
+                  <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                    {formatMoney(Number(s.totalPaid ?? 0))}
+                  </td>
+                  <td className="px-3 py-3 text-right tabular-nums font-medium">
+                    {Number(s.balanceDue ?? 0) > 0 ? (
+                      <span className="text-warning">{formatMoney(Number(s.balanceDue))}</span>
+                    ) : (
+                      <span className="text-muted-foreground">{formatMoney(0)}</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-3 text-left text-muted-foreground">
+                    {s.createdAt
+                      ? new Date(s.createdAt).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })
+                      : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {sendOpen && (
+        <StatementBuilderDialog
+          knownLabOrgId={labOrgId}
+          knownPracticeId={selected.id}
+          onClose={() => {
+            setSendOpen(false);
+            queryClient.invalidateQueries({ queryKey: ["practice-statements"] });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Card on File tab ───────────────────────────────────────────────────────
+
+function CardOnFileTab({ practice, labOrgId }: { practice: Organization; labOrgId: string }) {
+  const [cardAuthOpen, setCardAuthOpen] = useState(false);
+  const [autoPayAuthOpen, setAutoPayAuthOpen] = useState(false);
+
+  /* TODO: Replace this placeholder with a real Stripe card-vaulting integration.
+     Steps:
+     1. Create a Stripe Customer for the practice on first card add.
+     2. Use Stripe Elements (SetupIntent) so raw card numbers never touch our servers.
+     3. Store only the Stripe PaymentMethod ID + last4 + brand in the DB.
+     4. Charge via Stripe PaymentIntent, not direct card data.
+     Never store or render raw card numbers — PCI DSS prohibits it. */
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        <div className="bg-amber-500/10 border border-amber-500/20 rounded-md px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          <strong>Safe scaffold:</strong> Card on File is a placeholder for a future PCI-compliant
+          Stripe integration. No raw card numbers are stored or displayed.{" "}
+          {/* TODO: Implement Stripe card vaulting via SetupIntent + PaymentMethod API. */}
+        </div>
+
+        <div className="bg-card border border-border rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <CreditCard size={16} className="text-muted-foreground" />
+              <span className="text-sm font-medium">Saved Card</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  /* TODO: Open Stripe Elements SetupIntent flow for card collection. */
+                  alert("Add Card: Connect a PCI-compliant Stripe SetupIntent flow here.");
+                }}
+                className="h-7 px-2.5 rounded text-xs font-medium bg-secondary hover:bg-secondary/70 border border-border transition-colors inline-flex items-center gap-1"
+              >
+                <Plus size={11} /> Add
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  /* TODO: Open Stripe Elements update flow to replace the saved PaymentMethod. */
+                  alert("Edit Card: Connect a Stripe PaymentMethod update flow here.");
+                }}
+                className="h-7 px-2.5 rounded text-xs font-medium bg-secondary hover:bg-secondary/70 border border-border transition-colors inline-flex items-center gap-1"
+              >
+                <PenLine size={11} /> Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  /* TODO: Call Stripe API to detach PaymentMethod + soft-delete the local record. */
+                  alert("Delete Card: Call Stripe PaymentMethods.detach() + remove local reference.");
+                }}
+                className="h-7 px-2.5 rounded text-xs font-medium text-destructive hover:bg-destructive/10 border border-border transition-colors inline-flex items-center gap-1"
+              >
+                <Trash2 size={11} /> Delete
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-gradient-to-br from-slate-700 to-slate-900 text-white p-5 w-72 shadow-md select-none">
+            <div className="flex items-center justify-between mb-6">
+              <span className="text-xs text-white/60 uppercase tracking-widest font-medium">
+                Card on File
+              </span>
+              <CreditCard size={18} className="text-white/40" />
+            </div>
+            <div className="font-mono text-base tracking-widest mb-4 text-white/80">
+              •••• •••• •••• ——
+            </div>
+            <div className="flex items-end justify-between">
+              <div>
+                <div className="text-[9px] text-white/40 uppercase tracking-widest mb-0.5">
+                  Cardholder
+                </div>
+                <div className="text-sm font-medium truncate max-w-[160px]">
+                  {practice.displayName || practice.name}
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-[9px] text-white/40 uppercase tracking-widest mb-0.5">
+                  Expires
+                </div>
+                <div className="text-sm font-medium text-white/60">——/——</div>
+              </div>
+            </div>
+          </div>
+
+          <p className="mt-3 text-[11px] text-muted-foreground">
+            No card on file.{" "}
+            <button
+              type="button"
+              className="underline underline-offset-2 hover:text-foreground"
+              onClick={() => {
+                alert("Add Card: Connect a PCI-compliant Stripe SetupIntent flow here.");
+              }}
+            >
+              Add a card
+            </button>{" "}
+            to enable auto-pay and quick checkout.
+          </p>
+        </div>
+
+        <div className="bg-card border border-border rounded-xl p-5 space-y-3">
+          <div className="flex items-center gap-2 mb-1">
+            <PenLine size={14} className="text-muted-foreground" />
+            <span className="text-sm font-medium">Authorization Forms</span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Open, edit, and send authorization forms to collect written consent for card-on-file and
+            auto-pay billing. Forms include editable body text and signature / date / initials field
+            placeholders.
+          </p>
+          <div className="flex gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setCardAuthOpen(true)}
+              className="h-8 px-3 rounded-md text-sm font-medium bg-secondary hover:bg-secondary/70 border border-border transition-colors inline-flex items-center gap-1.5"
+            >
+              <FileText size={13} />
+              Card on File Authorization
+            </button>
+            <button
+              type="button"
+              onClick={() => setAutoPayAuthOpen(true)}
+              className="h-8 px-3 rounded-md text-sm font-medium bg-secondary hover:bg-secondary/70 border border-border transition-colors inline-flex items-center gap-1.5"
+            >
+              <FileText size={13} />
+              Auto-Pay Authorization
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {cardAuthOpen && (
+        <AuthFormModal
+          title="Card on File Authorization"
+          defaultContent={CARD_AUTH_DEFAULT}
+          practiceName={practice.displayName || practice.name}
+          practiceEmail={practice.billingEmail}
+          labOrgId={labOrgId}
+          onClose={() => setCardAuthOpen(false)}
+        />
+      )}
+      {autoPayAuthOpen && (
+        <AuthFormModal
+          title="Auto-Pay Authorization"
+          defaultContent={AUTOPAY_AUTH_DEFAULT}
+          practiceName={practice.displayName || practice.name}
+          practiceEmail={practice.billingEmail}
+          labOrgId={labOrgId}
+          onClose={() => setAutoPayAuthOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Main page ──────────────────────────────────────────────────────────────
+
 export default function CustomerCenterPage() {
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
@@ -120,6 +717,7 @@ export default function CustomerCenterPage() {
 
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detailTab, setDetailTab] = useState<DetailTab>("basic");
 
   const practiceInvoicesQuery = useQuery({
     queryKey: ["invoices", { practiceId: selectedId }],
@@ -139,7 +737,6 @@ export default function CustomerCenterPage() {
   const startX = useRef(0);
   const startW = useRef(LEFT_DEFAULT);
 
-  // Bulk reassign dialog state
   const [reassignOpen, setReassignOpen] = useState(false);
   const [reassignTargetId, setReassignTargetId] = useState<string>("");
   const [reassignError, setReassignError] = useState<string | null>(null);
@@ -213,7 +810,6 @@ export default function CustomerCenterPage() {
     [selectedPracticeInvoices],
   );
 
-  // All practices other than the selected one — target options for reassignment
   const otherPractices = useMemo(
     () =>
       orgs
@@ -369,9 +965,6 @@ export default function CustomerCenterPage() {
   function handleExportStatementPdf() {
     if (!selected) return;
 
-    // Summary totals come from the full unfiltered invoice list so the account
-    // summary on the PDF always reflects the practice's true account position,
-    // regardless of which date range or status filter is active in the UI.
     const allInvoices = selectedPracticeInvoices;
     const billed = allInvoices.reduce((s, i) => s + Number(i.total ?? 0), 0);
     const paid = allInvoices.reduce(
@@ -434,6 +1027,11 @@ export default function CustomerCenterPage() {
     });
   }
 
+  function handleSelectPractice(id: string) {
+    setSelectedId(id);
+    setDetailTab("basic");
+  }
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* Left pane */}
@@ -479,7 +1077,7 @@ export default function CustomerCenterPage() {
               <button
                 key={p.id}
                 type="button"
-                onClick={() => setSelectedId(p.id)}
+                onClick={() => handleSelectPractice(p.id)}
                 className={`w-full text-left px-4 py-2.5 border-b border-border text-sm transition-colors ${
                   active
                     ? "bg-primary text-primary-foreground"
@@ -487,9 +1085,7 @@ export default function CustomerCenterPage() {
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span
-                    className={`font-medium truncate ${active ? "" : ""}`}
-                  >
+                  <span className="font-medium truncate">
                     {p.displayName || p.name}
                   </span>
                   {balance > 0 && (
@@ -526,12 +1122,12 @@ export default function CustomerCenterPage() {
           <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
             <div className="text-center">
               <Building2 size={32} className="mx-auto mb-3 opacity-30" />
-              <p>Select a practice to view their transactions</p>
+              <p>Select a practice to view their details</p>
             </div>
           </div>
         ) : (
           <>
-            {/* Practice header */}
+            {/* Practice header — always visible */}
             <div className="px-6 py-4 border-b border-border bg-card shrink-0">
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -549,227 +1145,307 @@ export default function CustomerCenterPage() {
                     </p>
                   )}
                 </div>
-                <div className="flex items-start gap-4 shrink-0">
-                  <div className="text-right">
-                    <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium">
-                      Open balance
+                <div className="shrink-0 text-right">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium">
+                    Open balance
+                  </div>
+                  <div
+                    className={`text-xl font-semibold tabular-nums ${
+                      (practiceOpenBalance.get(selected.id) ?? 0) > 0
+                        ? "text-warning"
+                        : "text-muted-foreground"
+                    }`}
+                  >
+                    {formatMoney(practiceOpenBalance.get(selected.id) ?? 0)}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Tab bar */}
+            <div className="shrink-0 flex border-b border-border bg-card px-6">
+              {DETAIL_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setDetailTab(tab.id)}
+                  className={`px-4 py-2.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+                    detailTab === tab.id
+                      ? "border-primary text-primary"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab content */}
+            <div className="flex-1 min-h-0 overflow-hidden">
+              {/* Basic Info tab */}
+              {detailTab === "basic" && (
+                <div className="h-full overflow-y-auto p-6 space-y-5">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+                      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Contact
+                      </div>
+                      {selected.phone && (
+                        <div className="flex items-center gap-2 text-sm">
+                          <Phone size={13} className="text-muted-foreground shrink-0" />
+                          <span>{selected.phone}</span>
+                        </div>
+                      )}
+                      {selected.billingEmail && (
+                        <div className="flex items-center gap-2 text-sm">
+                          <Mail size={13} className="text-muted-foreground shrink-0" />
+                          <span className="truncate">{selected.billingEmail}</span>
+                        </div>
+                      )}
+                      {!selected.phone && !selected.billingEmail && (
+                        <p className="text-xs text-muted-foreground italic">No contact info on file.</p>
+                      )}
                     </div>
-                    <div
-                      className={`text-xl font-semibold tabular-nums ${
-                        (practiceOpenBalance.get(selected.id) ?? 0) > 0
-                          ? "text-warning"
-                          : "text-muted-foreground"
-                      }`}
-                    >
-                      {formatMoney(practiceOpenBalance.get(selected.id) ?? 0)}
+
+                    <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+                      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Address
+                      </div>
+                      {selected.addressLine1 ? (
+                        <div className="text-sm space-y-0.5">
+                          <p>{selected.addressLine1}</p>
+                          {selected.addressLine2 && <p>{selected.addressLine2}</p>}
+                          <p>
+                            {[selected.city, selected.state].filter(Boolean).join(", ")}
+                            {selected.zip ? ` ${selected.zip}` : ""}
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground italic">No address on file.</p>
+                      )}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleExportStatementPdf}
-                    disabled={practiceInvoicesQuery.isLoading}
-                    title={practiceInvoicesQuery.isLoading ? "Loading transactions…" : "Export statement as PDF"}
-                    className="mt-0.5 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {practiceInvoicesQuery.isLoading ? (
-                      <Loader2 size={13} className="animate-spin" />
-                    ) : (
-                      <FileDown size={13} />
-                    )}
-                    Export PDF
-                  </button>
-                </div>
-              </div>
 
-              <div className="flex flex-wrap gap-x-6 gap-y-1 mt-3 ml-9 text-xs text-muted-foreground">
-                {selected.phone && (
-                  <span className="flex items-center gap-1">
-                    <Phone size={11} />
-                    {selected.phone}
-                  </span>
-                )}
-                {selected.billingEmail && (
-                  <span className="flex items-center gap-1">
-                    <Mail size={11} />
-                    {selected.billingEmail}
-                  </span>
-                )}
-                {(selected.city || selected.state) && (
-                  <span>
-                    {[selected.city, selected.state].filter(Boolean).join(", ")}
-                    {selected.zip ? ` ${selected.zip}` : ""}
-                  </span>
-                )}
-                {selected.addressLine1 && (
-                  <span>
-                    {[selected.addressLine1, selected.addressLine2]
-                      .filter(Boolean)
-                      .join(", ")}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Toolbar */}
-            <div className="px-6 py-2.5 border-b border-border bg-card/50 flex flex-wrap items-center gap-3 shrink-0">
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <span className="font-medium">Filter by:</span>
-                <select
-                  value={filterBy}
-                  onChange={(e) => setFilterBy(e.target.value as any)}
-                  className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
-                >
-                  <option value="all">All</option>
-                  <option value="open">Open Invoices</option>
-                  <option value="overdue">Overdue</option>
-                  <option value="paid">Paid</option>
-                </select>
-              </div>
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <CalendarDays size={12} />
-                <select
-                  value={dateRange}
-                  onChange={(e) => setDateRange(e.target.value as DateRangeKey)}
-                  className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
-                >
-                  <option value="all">All Dates</option>
-                  <option value="this_month">This Month</option>
-                  <option value="last_month">Last Month</option>
-                  <option value="this_quarter">This Quarter</option>
-                  <option value="last_quarter">Last Quarter</option>
-                  <option value="this_year">This Year</option>
-                  <option value="custom">Custom…</option>
-                </select>
-              </div>
-              {dateRange === "custom" && (
-                <div className="flex items-center gap-1.5 text-xs">
-                  <input
-                    type="date"
-                    value={customFrom}
-                    onChange={(e) => setCustomFrom(e.target.value)}
-                    className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
-                  />
-                  <span className="text-muted-foreground">–</span>
-                  <input
-                    type="date"
-                    value={customTo}
-                    onChange={(e) => setCustomTo(e.target.value)}
-                    className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
-                  />
-                </div>
-              )}
-              <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
-                {practiceInvoices.length} row
-                {practiceInvoices.length !== 1 ? "s" : ""}
-              </span>
-              <ColumnSettingsPopover
-                columns={invColumnOptions}
-                onToggle={invCols.toggleColumn}
-                onMove={invCols.moveColumn}
-                onReset={invCols.resetAll}
-              />
-              {isAdmin && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setReassignTargetId("");
-                    setReassignError(null);
-                    setReassignSuccess(null);
-                    reassignMutation.reset();
-                    setReassignOpen(true);
-                  }}
-                  className="flex items-center gap-1.5 h-7 px-2.5 rounded bg-secondary text-xs text-muted-foreground hover:bg-secondary/80 hover:text-foreground transition-colors border border-border"
-                >
-                  <ArrowRightLeft size={11} />
-                  Reassign all invoices…
-                </button>
-              )}
-            </div>
-
-            {/* Transaction table */}
-            <div className="flex-1 overflow-auto scrollbar-thin">
-              <table className="text-sm" style={{ tableLayout: "fixed", width: invCols.visible.reduce((sum, c) => sum + invCols.getWidth(c.id), 0) }}>
-                <colgroup>
-                  {invCols.visible.map((col) => (
-                    <col key={col.id} style={{ width: invCols.getWidth(col.id) }} />
-                  ))}
-                </colgroup>
-                <thead className="sticky top-0 z-10 bg-secondary/80 backdrop-blur-sm">
-                  <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                    {invCols.visible.map((col) => (
-                      <th
-                        key={col.id}
-                        className={`${col.align === "right" ? "text-right" : "text-left"} px-3 py-2.5 relative font-medium`}
-                        style={{ overflow: "hidden" }}
-                      >
-                        {col.label}
-                        <div
-                          onMouseDown={(e) => invCols.startResize(col.id, e)}
-                          onDoubleClick={() => invCols.resetWidth(col.id)}
-                          className="group/resize"
-                          style={{
-                            position: "absolute",
-                            top: 0,
-                            right: 0,
-                            width: 6,
-                            height: "100%",
-                            cursor: "col-resize",
-                            userSelect: "none",
-                            display: "flex",
-                            alignItems: "stretch",
-                            justifyContent: "flex-end",
-                          }}
-                        >
-                          <span
-                            className={`w-0.5 transition-colors duration-100 ${invCols.resizingId === col.id ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
-                            style={{ display: "block", height: "100%" }}
-                          />
+                  <div className="bg-card border border-border rounded-xl p-4">
+                    <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">
+                      Billing Details
+                    </div>
+                    <div className="grid grid-cols-3 gap-4">
+                      <div>
+                        <div className="text-[11px] text-muted-foreground mb-1">Account Number</div>
+                        <div className="text-sm font-mono">
+                          {selected.accountNumber ?? <span className="text-muted-foreground italic">—</span>}
                         </div>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {practiceInvoicesQuery.isLoading && (
-                    <tr>
-                      <td
-                        colSpan={Math.max(1, invCols.visible.length)}
-                        className="px-5 py-12 text-center text-muted-foreground"
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-muted-foreground mb-1">Open Balance</div>
+                        <div className={`text-sm font-semibold tabular-nums ${(practiceOpenBalance.get(selected.id) ?? 0) > 0 ? "text-warning" : "text-muted-foreground"}`}>
+                          {formatMoney(practiceOpenBalance.get(selected.id) ?? 0)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-muted-foreground mb-1">Statement Email Opt-out</div>
+                        <div className="text-sm">
+                          {selected.statementEmailOptOut ? (
+                            <span className="text-destructive font-medium">Opted out</span>
+                          ) : (
+                            <span className="text-muted-foreground">Receives statements</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {selected.licenseNumber && (
+                    <div className="bg-card border border-border rounded-xl p-4">
+                      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                        License
+                      </div>
+                      <div className="text-sm font-mono">{selected.licenseNumber}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Invoices tab */}
+              {detailTab === "invoices" && (
+                <div className="flex flex-col h-full overflow-hidden">
+                  <div className="px-5 py-2.5 border-b border-border bg-card/50 flex flex-wrap items-center gap-3 shrink-0">
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <span className="font-medium">Filter:</span>
+                      <select
+                        value={filterBy}
+                        onChange={(e) => setFilterBy(e.target.value as any)}
+                        className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
                       >
-                        <Loader2
-                          size={16}
-                          className="inline animate-spin mr-2"
+                        <option value="all">All</option>
+                        <option value="open">Open</option>
+                        <option value="overdue">Overdue</option>
+                        <option value="paid">Paid</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <CalendarDays size={12} />
+                      <select
+                        value={dateRange}
+                        onChange={(e) => setDateRange(e.target.value as DateRangeKey)}
+                        className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
+                      >
+                        <option value="all">All Dates</option>
+                        <option value="this_month">This Month</option>
+                        <option value="last_month">Last Month</option>
+                        <option value="this_quarter">This Quarter</option>
+                        <option value="last_quarter">Last Quarter</option>
+                        <option value="this_year">This Year</option>
+                        <option value="custom">Custom…</option>
+                      </select>
+                    </div>
+                    {dateRange === "custom" && (
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <input
+                          type="date"
+                          value={customFrom}
+                          onChange={(e) => setCustomFrom(e.target.value)}
+                          className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
                         />
-                        Loading transactions…
-                      </td>
-                    </tr>
-                  )}
-                  {!practiceInvoicesQuery.isLoading && practiceInvoices.length === 0 && (
-                    <tr>
-                      <td
-                        colSpan={Math.max(1, invCols.visible.length)}
-                        className="px-5 py-12 text-center text-muted-foreground"
-                      >
-                        No transactions match the current filters.
-                      </td>
-                    </tr>
-                  )}
-                  {practiceInvoices.map((inv) => (
-                    <tr
-                      key={inv.id}
-                      onClick={() => setEditingInvoice(inv)}
-                      onDoubleClick={() => setEditingInvoice(inv)}
-                      className="border-t border-border cursor-pointer hover:bg-secondary/40"
+                        <span className="text-muted-foreground">–</span>
+                        <input
+                          type="date"
+                          value={customTo}
+                          onChange={(e) => setCustomTo(e.target.value)}
+                          className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
+                        />
+                      </div>
+                    )}
+                    <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
+                      {practiceInvoices.length} row
+                      {practiceInvoices.length !== 1 ? "s" : ""}
+                    </span>
+                    <ColumnSettingsPopover
+                      columns={invColumnOptions}
+                      onToggle={invCols.toggleColumn}
+                      onMove={invCols.moveColumn}
+                      onReset={invCols.resetAll}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleExportStatementPdf}
+                      disabled={practiceInvoicesQuery.isLoading}
+                      title={practiceInvoicesQuery.isLoading ? "Loading invoices…" : "Export statement as PDF"}
+                      className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {invCols.visible.map((col) => (
-                        <td key={col.id} className={`px-3 py-2.5 ${col.align === "right" ? "text-right" : "text-left"}`}>
-                          {col.render(inv)}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      {practiceInvoicesQuery.isLoading ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <FileDown size={12} />
+                      )}
+                      Export PDF
+                    </button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReassignTargetId("");
+                          setReassignError(null);
+                          setReassignSuccess(null);
+                          reassignMutation.reset();
+                          setReassignOpen(true);
+                        }}
+                        className="flex items-center gap-1.5 h-7 px-2.5 rounded bg-secondary text-xs text-muted-foreground hover:bg-secondary/80 hover:text-foreground transition-colors border border-border"
+                      >
+                        <ArrowRightLeft size={11} />
+                        Reassign all…
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex-1 overflow-auto scrollbar-thin">
+                    <table className="text-sm" style={{ tableLayout: "fixed", width: invCols.visible.reduce((sum, c) => sum + invCols.getWidth(c.id), 0) }}>
+                      <colgroup>
+                        {invCols.visible.map((col) => (
+                          <col key={col.id} style={{ width: invCols.getWidth(col.id) }} />
+                        ))}
+                      </colgroup>
+                      <thead className="sticky top-0 z-10 bg-secondary/80 backdrop-blur-sm">
+                        <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                          {invCols.visible.map((col) => (
+                            <th
+                              key={col.id}
+                              className={`${col.align === "right" ? "text-right" : "text-left"} px-3 py-2.5 relative font-medium`}
+                              style={{ overflow: "hidden" }}
+                            >
+                              {col.label}
+                              <div
+                                onMouseDown={(e) => invCols.startResize(col.id, e)}
+                                onDoubleClick={() => invCols.resetWidth(col.id)}
+                                className="group/resize"
+                                style={{
+                                  position: "absolute",
+                                  top: 0,
+                                  right: 0,
+                                  width: 6,
+                                  height: "100%",
+                                  cursor: "col-resize",
+                                  userSelect: "none",
+                                  display: "flex",
+                                  alignItems: "stretch",
+                                  justifyContent: "flex-end",
+                                }}
+                              >
+                                <span
+                                  className={`w-0.5 transition-colors duration-100 ${invCols.resizingId === col.id ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
+                                  style={{ display: "block", height: "100%" }}
+                                />
+                              </div>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {practiceInvoicesQuery.isLoading && (
+                          <tr>
+                            <td colSpan={Math.max(1, invCols.visible.length)} className="px-5 py-12 text-center text-muted-foreground">
+                              <Loader2 size={16} className="inline animate-spin mr-2" />
+                              Loading invoices…
+                            </td>
+                          </tr>
+                        )}
+                        {!practiceInvoicesQuery.isLoading && practiceInvoices.length === 0 && (
+                          <tr>
+                            <td colSpan={Math.max(1, invCols.visible.length)} className="px-5 py-12 text-center text-muted-foreground">
+                              No invoices match the current filters.
+                            </td>
+                          </tr>
+                        )}
+                        {practiceInvoices.map((inv) => (
+                          <tr
+                            key={inv.id}
+                            onClick={() => setEditingInvoice(inv)}
+                            onDoubleClick={() => setEditingInvoice(inv)}
+                            className="border-t border-border cursor-pointer hover:bg-secondary/40"
+                          >
+                            {invCols.visible.map((col) => (
+                              <td key={col.id} className={`px-3 py-2.5 ${col.align === "right" ? "text-right" : "text-left"}`}>
+                                {col.render(inv)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Statements tab */}
+              {detailTab === "statements" && selected && (
+                <StatementsTab selected={selected} labOrgId={labOrgId} />
+              )}
+
+              {/* Card on File tab */}
+              {detailTab === "card" && selected && (
+                <CardOnFileTab practice={selected} labOrgId={labOrgId} />
+              )}
             </div>
           </>
         )}

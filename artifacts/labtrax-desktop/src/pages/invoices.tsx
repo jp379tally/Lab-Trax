@@ -3707,9 +3707,12 @@ function VoidConfirmDialog({
 
 export function StatementBuilderDialog({
   knownLabOrgId,
+  knownPracticeId,
   onClose,
 }: {
   knownLabOrgId?: string;
+  /** When provided the practice selector is pre-populated and locked. */
+  knownPracticeId?: string;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -3719,7 +3722,7 @@ export function StatementBuilderDialog({
   });
   const today = new Date();
   const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-  const [providerOrgId, setProviderOrgId] = useState("");
+  const [providerOrgId, setProviderOrgId] = useState(knownPracticeId ?? "");
   const [periodStart, setPeriodStart] = useState(
     firstOfMonth.toISOString().slice(0, 10),
   );
@@ -3737,8 +3740,9 @@ export function StatementBuilderDialog({
 
   // Any user-entered selection or recipient counts as unsaved input. A
   // generated statement is already persisted server-side, so it doesn't count.
+  // When the practice was pre-populated via knownPracticeId it is not dirty.
   const isDirty =
-    providerOrgId !== "" ||
+    (knownPracticeId ? false : providerOrgId !== "") ||
     periodStart !== initialPeriodStartRef.current ||
     periodEnd !== initialPeriodEndRef.current ||
     !openOnly ||
@@ -3881,7 +3885,8 @@ export function StatementBuilderDialog({
             <select
               value={providerOrgId}
               onChange={(e) => setProviderOrgId(e.target.value)}
-              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+              disabled={!!knownPracticeId}
+              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm disabled:opacity-60 disabled:cursor-default"
             >
               <option value="">Select practice…</option>
               {practiceOrgs.map((o) => (
