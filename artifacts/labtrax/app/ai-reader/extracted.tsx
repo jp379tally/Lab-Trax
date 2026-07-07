@@ -24,6 +24,7 @@ import {
   getListLabProvidersQueryKey,
   type CreateCaseInput,
   type CreateCaseInputRestorationsItem,
+  type DoctorMatchCandidate,
   type LabProvider,
   type PreviewDraftInvoiceInput,
   type PreviewDraftInvoiceResultData,
@@ -35,6 +36,7 @@ import { useMe, editableLabMemberships } from "@/lib/auth-me";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { DateField } from "@/components/DateField";
+import { FormSheet } from "@/components/ui/FormSheet";
 import {
   getAiReaderSession,
   setAiReaderSession,
@@ -201,6 +203,13 @@ export default function AiReaderExtractedScreen() {
   // ── Submission ──
   const [submitting, setSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  // Doctor-confirmation sheet — populated when the server returns
+  // 409 DOCTOR_CONFIRMATION_REQUIRED because the typed name closely matches an
+  // existing doctor in this practice. Mirrors the New Case screen's flow.
+  const [doctorConfirm, setDoctorConfirm] = useState<{
+    candidates: DoctorMatchCandidate[];
+    typedName: string;
+  } | null>(null);
 
   // ── Case number ──
   const [caseNumber, setCaseNumber] = useState("");
@@ -657,7 +666,16 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
   }
 
   // ── Submit ──
-  async function handleSubmit(skipDupeCheck = false) {
+  async function handleSubmit(opts?: {
+    skipDupeCheck?: boolean;
+    confirmNewDoctor?: boolean;
+    doctorNameOverride?: string;
+    providerOrgIdOverride?: string;
+  }) {
+    const skipDupeCheck = opts?.skipDupeCheck ?? false;
+    const confirmNewDoctor = opts?.confirmNewDoctor ?? false;
+    const effectiveDoctorName = (opts?.doctorNameOverride ?? doctorName).trim();
+    const effectiveProviderOrgId = opts?.providerOrgIdOverride ?? providerOrgId;
     if (!selectedLabId) {
       Alert.alert("No lab selected", "Select a lab to create the case in.");
       return;
@@ -674,7 +692,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
     // A practice (provider organization) is mandatory — every case must be
     // linked to one (DB-enforced). Prompt the user to pick or add a practice
     // instead of letting the create fail server-side.
-    if (!providerOrgId) {
+    if (!effectiveProviderOrgId) {
       Alert.alert(
         "Practice required",
         "Link this case to a practice before creating it. Select an existing practice or add a new one.",
@@ -688,7 +706,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
 
     // The server requires a non-empty doctor name (doctorName.min(1)). Guard here
     // so an empty field surfaces a clear prompt instead of a server-side 400.
-    if (!doctorName.trim()) {
+    if (!effectiveDoctorName) {
       Alert.alert(
         "Doctor name required",
         "Enter the doctor's name on this Rx before creating the case.",
@@ -727,22 +745,26 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
     const payload: CreateCaseInput = {
       caseNumber: caseNumber.trim(),
       labOrganizationId: selectedLabId,
-      providerOrganizationId: providerOrgId,
+      providerOrganizationId: effectiveProviderOrgId,
       patientFirstName: patientFirst.trim(),
       patientLastName: patientLast.trim(),
-      doctorName: doctorName.trim(),
+      doctorName: effectiveDoctorName,
       priority,
       ...(dueDate.trim() ? { dueDate: dueDate.trim() } : {}),
       ...(notes.trim() ? { notes: notes.trim() } : {}),
       ...(shade?.trim() ? { shade: shade.trim() } : {}),
       ...(cleanRests.length ? { restorations: cleanRests } : {}),
       ...(remakeOfCaseId ? { remakeOfCaseId } : {}),
+      ...(confirmNewDoctor ? { confirmNewDoctor: true } : {}),
     };
 
     try {
       setUploadProgress(0.1);
       const result = await createCase.mutateAsync({ data: payload });
       const newId = result?.data?.id;
+
+      // Case created — close the doctor-confirmation sheet if it was open.
+      setDoctorConfirm(null);
 
       if (!newId) {
         Alert.alert("Case created", "The case was created but could not be opened. Check your cases list.");
@@ -751,8 +773,8 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
       }
 
       // Save alias for future practice auto-resolve
-      if (extracted?.practiceName && providerOrgId) {
-        await saveAlias(selectedLabId, providerOrgId, extracted.practiceName);
+      if (extracted?.practiceName && effectiveProviderOrgId) {
+        await saveAlias(selectedLabId, effectiveProviderOrgId, extracted.practiceName);
       }
 
       // Save submission data into the session for label printing
@@ -762,7 +784,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
         restorations,
         labOrgId: selectedLabId,
         labName,
-        doctorName: doctorName.trim() || null,
+        doctorName: effectiveDoctorName || null,
         patientName: `${patientFirst.trim()} ${patientLast.trim()}`.trim() || null,
         dueDate: dueDate.trim() || null,
       });
@@ -791,10 +813,46 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
       // Navigate to barcode screen
       router.push("/ai-reader/barcode" as never);
     } catch (e) {
+      // The typed doctor name closely matches an existing doctor in this
+      // practice — surface the confirmation sheet instead of a dead-end alert so
+      // the user can pick the existing doctor or confirm the new one.
+      const err = e as { status?: number; data?: { details?: unknown } };
+      const details = err?.data?.details as
+        | { code?: string; candidates?: DoctorMatchCandidate[] }
+        | undefined;
+      if (err?.status === 409 && details?.code === "DOCTOR_CONFIRMATION_REQUIRED") {
+        setDoctorConfirm({
+          candidates: Array.isArray(details.candidates) ? details.candidates : [],
+          typedName: effectiveDoctorName,
+        });
+        return;
+      }
       Alert.alert("Couldn't create case", errorMessage(e));
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function handleUseExistingDoctor(candidate: DoctorMatchCandidate) {
+    // Adopt the existing doctor's exact spelling (and their practice, if the
+    // candidate carries one) and re-submit with confirmation. Pass overrides
+    // directly so we don't race the async state updates.
+    setDoctorName(candidate.doctorName);
+    if (candidate.providerOrganizationId) {
+      setProviderOrgId(candidate.providerOrganizationId);
+    }
+    void handleSubmit({
+      skipDupeCheck: true,
+      confirmNewDoctor: true,
+      doctorNameOverride: candidate.doctorName,
+      ...(candidate.providerOrganizationId
+        ? { providerOrgIdOverride: candidate.providerOrganizationId }
+        : {}),
+    });
+  }
+
+  function handleKeepNewDoctor() {
+    void handleSubmit({ skipDupeCheck: true, confirmNewDoctor: true });
   }
 
   function goBack() {
@@ -819,7 +877,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
     } else {
       setRemakeOfCaseId(null);
     }
-    handleSubmit(true);
+    handleSubmit({ skipDupeCheck: true });
   }
 
   // ─── Loading state ─────────────────────────────────────────────────────────
@@ -1304,7 +1362,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
         )}
         <Pressable
           style={[styles.createBtn, submitting && styles.createBtnDisabled]}
-          onPress={() => handleSubmit(false)}
+          onPress={() => handleSubmit()}
           disabled={submitting}
           testID="ai-reader-create-btn"
         >
@@ -1638,6 +1696,41 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Doctor-confirmation sheet — shown when the server flags the typed
+          doctor name as a close match to an existing doctor in this practice. */}
+      <FormSheet
+        visible={!!doctorConfirm}
+        title="Is this the same doctor?"
+        onClose={() => setDoctorConfirm(null)}
+        onSubmit={handleKeepNewDoctor}
+        submitting={submitting}
+        submitLabel="Create as new doctor"
+      >
+        <Text style={styles.confirmIntro}>
+          {`"${doctorConfirm?.typedName ?? ""}" looks similar to ${
+            (doctorConfirm?.candidates.length ?? 0) === 1 ? "a doctor" : "doctors"
+          } already on file in this practice. Tap one to use it, or create a new doctor.`}
+        </Text>
+        {(doctorConfirm?.candidates ?? []).map((c) => (
+          <Pressable
+            key={`${c.doctorName}::${c.providerOrganizationId ?? ""}`}
+            style={styles.confirmRow}
+            onPress={() => handleUseExistingDoctor(c)}
+            disabled={submitting}
+            testID="doctor-confirm-candidate"
+          >
+            <Ionicons name="person-circle-outline" size={22} color={colors.tint} />
+            <View style={styles.confirmRowMain}>
+              <Text style={styles.confirmRowName}>{c.doctorName}</Text>
+              <Text style={styles.confirmRowMeta} numberOfLines={1}>
+                {`${c.totalCases} ${c.totalCases === 1 ? "case" : "cases"}`}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+          </Pressable>
+        ))}
+      </FormSheet>
     </KeyboardAvoidingView>
   );
 }
@@ -2146,5 +2239,22 @@ function makeStyles(c: ThemeColors) {
       color: c.textSecondary,
       flex: 1,
     },
+
+    // ── Doctor-confirmation sheet ─────────────────────────────────────────────
+    confirmIntro: { ...Typography.body, color: c.textSecondary },
+    confirmRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.sm,
+      borderRadius: Radius.lg,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      backgroundColor: c.surfaceAlt,
+    },
+    confirmRowMain: { flex: 1 },
+    confirmRowName: { ...Typography.bodySemibold, color: c.text },
+    confirmRowMeta: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
   });
 }
