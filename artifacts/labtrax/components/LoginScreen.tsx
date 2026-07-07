@@ -129,11 +129,11 @@ export default function LoginScreen() {
   const [labZip, setLabZip] = useState("");
   const [labPhone, setLabPhone] = useState("");
   const [labEmail, setLabEmail] = useState("");
-  const [matchingLabGroup, setMatchingLabGroup] = useState<{ organizationId: string; practiceName: string; username: string; practiceAddress?: string } | null>(null);
+  const [matchingLabGroup, setMatchingLabGroup] = useState<{ organizationId: string; practiceName: string; username: string; practiceAddress?: string; phone?: string | null } | null>(null);
   const [labJoinRequestSent, setLabJoinRequestSent] = useState(false);
   const [checkingLabName, setCheckingLabName] = useState(false);
   const [browseExistingLabs, setBrowseExistingLabs] = useState(false);
-  const [allLabGroups, setAllLabGroups] = useState<{ organizationId: string; practiceName: string; username: string; practiceAddress?: string; memberCount?: number }[]>([]);
+  const [allLabGroups, setAllLabGroups] = useState<{ organizationId: string; practiceName: string; username: string; practiceAddress?: string; phone?: string | null; memberCount?: number }[]>([]);
   const [labSearchFilter, setLabSearchFilter] = useState("");
   const [selectedMatchOrgId, setSelectedMatchOrgId] = useState<string | null>(null);
   const [providerMatches, setProviderMatches] = useState<ProviderMatchItem[]>([]);
@@ -1007,7 +1007,7 @@ export default function LoginScreen() {
         (g: any) => g.practiceName.toLowerCase().trim() === labName.toLowerCase().trim()
       );
       if (match) {
-        setMatchingLabGroup({ organizationId: match.organizationId, practiceName: match.practiceName, username: match.username, practiceAddress: match.practiceAddress });
+        setMatchingLabGroup({ organizationId: match.organizationId, practiceName: match.practiceName, username: match.username, practiceAddress: match.practiceAddress, phone: match.phone });
         setCheckingLabName(false);
       } else {
         setMatchingLabGroup(null);
@@ -1147,6 +1147,7 @@ export default function LoginScreen() {
                       <View style={{ flex: 1 }}>
                         <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>{g.practiceName}</Text>
                         {g.practiceAddress && <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>{g.practiceAddress}</Text>}
+                        {g.phone && <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>{g.phone}</Text>}
                       </View>
                       <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.3)" />
                     </Pressable>
@@ -1951,6 +1952,11 @@ export default function LoginScreen() {
                       {result.practiceAddress ? (
                         <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>
                           {result.practiceAddress}
+                        </Text>
+                      ) : null}
+                      {result.practicePhone ? (
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>
+                          {result.practicePhone}
                         </Text>
                       ) : null}
                       {isLabUser && result.practiceName && result.doctorName ? (

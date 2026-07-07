@@ -1,0 +1,40 @@
+You’re right. I checked the GitHub repo context directly. The strongest repo-level finding is a real mobile auth wiring problem, not just a process issue.
+
+**Highest-Risk Finding**
+`artifacts/labtrax/app/_layout.tsx` re-registers the generated API client auth getter with synchronous `getAccessToken`:
+
+`setAuthTokenGetter(getAccessToken);`
+
+But `artifacts/labtrax/lib/query-client.ts` already wires the generated client with an async getter that waits for SecureStore hydration before returning the token. Because `_layout.tsx` imports `query-client` and then overrides that setup, generated hooks can fire on cold launch before tokens finish hydrating. That can cause mobile screens using `@workspace/api-client-react` hooks to load unauthenticated, 401, show empty/broken state, or behave differently than raw `resilientFetch`.
+
+Safest fix: remove the duplicate `setAuthTokenGetter` / `setAuthRefresher` wiring from `_layout.tsx` and let `query-client.ts` be the single source of truth. If `_layout.tsx` must wire it, it should use the same async hydration-safe getter from `query-client.ts`, not `getAccessToken`.
+
+**Other Weak Areas Found**
+Mobile case workflows are involved: `artifacts/labtrax/app/new-case.tsx`, `artifacts/labtrax/app/case/[id].tsx`, `artifacts/labtrax/lib/query-client.ts`, `artifacts/labtrax/lib/read-api.ts`.
+
+The code has improved envelope handling in several places, especially `read-api.ts` and mobile direct fetches that use `body.data?.x`. That said, this remains a fragile app-wide contract because desktop `apiFetch` unwraps `{ ok, data }`, mobile raw `resilientFetch` does not, and generated hooks return yet another shape. Any new direct mobile fetch is easy to get wrong.
+
+Recent commits also confirm weak zones:
+
+* Desktop invoice editor recently had a wrong-practice dropdown bug from an incomplete `/organizations` query.
+* Desktop new-case numbering was fixed separately from mobile.
+* CI/build/dependency changes dominate recent history, so app behavior changes may not be getting full workflow QA every time.
+
+**Most Likely Broken/Fragile App Parts**
+
+1. Mobile cold-start authenticated screens using generated hooks.
+2. Mobile case detail and new-case flows.
+3. Practice/provider selection and invoice/practice dropdowns.
+4. Case mutation cache refresh after edit/delete/create.
+5. Mobile lab slip/print parity with desktop.
+6. iPhone layout wrappers if tablet/desktop constraints leak into mobile screens.
+
+**Safest Fix Order**
+
+1. Fix the duplicate generated-client auth wiring in `_layout.tsx`.
+2. Add a regression test proving generated hooks wait for SecureStore hydration before first authenticated request.
+3. Grep all mobile direct `resilientFetch(...).json()` callers and route them through `getJson` / `sendJson` where possible.
+4. Audit case create/edit/delete invalidation so `cases`, individual `case`, invoices, attachments, and finance summaries refresh consistently.
+5. Compare mobile lab slip HTML/PDF helpers against desktop print helpers and consolidate shared formatting where practical.
+
+I could inspect the repo through the GitHub connector, but I could not run the test suite because there is no local checkout in this workspace and direct clone was blocked.

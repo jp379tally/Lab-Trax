@@ -1162,6 +1162,7 @@ export async function registerRoutes(): Promise<IRouter> {
             ]
               .filter(Boolean)
               .join(", "),
+            phone: organization.phone || null,
             memberCount: organizationMembershipsForGroup.length,
           };
         })
