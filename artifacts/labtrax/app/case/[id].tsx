@@ -3385,6 +3385,7 @@ function FilesSection({
   const [pendingFiles, setPendingFiles] = useState<{ uri: string; name: string; mimeType: string }[]>([]);
   const [noteText, setNoteText] = useState("");
   const [noteModalVisible, setNoteModalVisible] = useState(false);
+  const [addSheetVisible, setAddSheetVisible] = useState(false);
 
   function updateJob(key: string, patch: Partial<UploadJob>) {
     setUploads((prev) => prev.map((j) => (j.key === key ? { ...j, ...patch } : j)));
@@ -3518,12 +3519,12 @@ function FilesSection({
   }
 
   function openAddSheet() {
-    Alert.alert("Add to case", undefined, [
-      { text: "Take Photo", onPress: () => void pickFromCamera() },
-      { text: "Choose from Library", onPress: () => void pickFromLibrary() },
-      { text: "Attach File", onPress: () => void pickDocument() },
-      { text: "Cancel", style: "cancel" },
-    ]);
+    setAddSheetVisible(true);
+  }
+
+  function handleAddSheetPick(picker: () => void) {
+    setAddSheetVisible(false);
+    picker();
   }
 
   // Consume files handed over by the share-intent prompt (parent peeks the inbox
@@ -3694,6 +3695,55 @@ function FilesSection({
         </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {addSheetVisible ? (
+      <Modal
+        visible
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAddSheetVisible(false)}
+      >
+        <Pressable
+          style={styles.sheetBackdrop}
+          onPress={() => setAddSheetVisible(false)}
+        >
+          <Pressable style={styles.sheet} onPress={() => undefined} testID="files-add-sheet">
+            <Text style={styles.sheetTitle}>Add to case</Text>
+            <Pressable
+              style={styles.optionRow}
+              onPress={() => handleAddSheetPick(() => void pickFromCamera())}
+              testID="files-add-camera"
+            >
+              <Text style={styles.optionText}>Take Photo</Text>
+              <Ionicons name="camera-outline" size={20} color={colors.textSecondary} />
+            </Pressable>
+            <Pressable
+              style={styles.optionRow}
+              onPress={() => handleAddSheetPick(() => void pickFromLibrary())}
+              testID="files-add-library"
+            >
+              <Text style={styles.optionText}>Choose from Library</Text>
+              <Ionicons name="images-outline" size={20} color={colors.textSecondary} />
+            </Pressable>
+            <Pressable
+              style={styles.optionRow}
+              onPress={() => handleAddSheetPick(() => void pickDocument())}
+              testID="files-add-document"
+            >
+              <Text style={styles.optionText}>Attach File</Text>
+              <Ionicons name="document-outline" size={20} color={colors.textSecondary} />
+            </Pressable>
+            <Pressable
+              style={styles.sheetCancel}
+              onPress={() => setAddSheetVisible(false)}
+              testID="files-add-cancel"
+            >
+              <Text style={styles.sheetCancelText}>Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+      ) : null}
 
       {canUpload ? (
         <Pressable

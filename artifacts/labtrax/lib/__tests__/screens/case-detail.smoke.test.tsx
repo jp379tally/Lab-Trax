@@ -13,6 +13,8 @@ import {
 
 import { Alert } from "react-native";
 import * as Sharing from "expo-sharing";
+import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
 import { router } from "expo-router";
 import { getAuthedMediaUri } from "@/lib/authed-media-cache";
 
@@ -462,6 +464,101 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       } finally {
         alertSpy.mockRestore();
       }
+    });
+  });
+
+  // The "Add photo or file" source chooser used to be an `Alert.alert` action
+  // sheet, which rendered as a clipped, un-tappable fragment on the app's
+  // surfaces (Task #2689). It is now an in-app bottom-sheet Modal so the chooser
+  // is always visible and each row still runs the existing picker.
+  describe("files (add-photo source chooser) — bottom-sheet regression", () => {
+    const editableCase = { ...inProgressCase, organizationId: "org-1" };
+
+    beforeEach(() => {
+      setMockSearchParams({ id: editableCase.id });
+      setMockAppState({
+        cases: [editableCase],
+        invoices: [],
+        attachments: [],
+        // Active membership on the case's org → canUpload === true, so the
+        // "Add photo or file" button is present.
+        meMemberships: [{ organizationId: "org-1", role: "owner", status: "active" }],
+      });
+    });
+
+    it("opens a fully visible in-app bottom sheet when the Add button is pressed", () => {
+      const { getByTestId, queryByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+
+      // The sheet is closed until the Add button is pressed.
+      expect(queryByTestId("files-add-sheet")).toBeNull();
+
+      fireEvent.press(getByTestId("files-add-button"));
+
+      // The chooser renders as an in-app sheet with all four rows visible.
+      expect(getByTestId("files-add-sheet")).toBeTruthy();
+      expect(getByTestId("files-add-camera")).toBeTruthy();
+      expect(getByTestId("files-add-library")).toBeTruthy();
+      expect(getByTestId("files-add-document")).toBeTruthy();
+      expect(getByTestId("files-add-cancel")).toBeTruthy();
+    });
+
+    it("closes the sheet and launches the camera when Take Photo is pressed", async () => {
+      const { getByTestId, queryByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+      fireEvent.press(getByTestId("files-add-button"));
+      fireEvent.press(getByTestId("files-add-camera"));
+
+      await waitFor(() =>
+        expect(vi.mocked(ImagePicker.launchCameraAsync)).toHaveBeenCalled(),
+      );
+      // The sheet dismisses before the picker runs.
+      expect(queryByTestId("files-add-sheet")).toBeNull();
+    });
+
+    it("closes the sheet and launches the photo library when Choose from Library is pressed", async () => {
+      const { getByTestId, queryByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+      fireEvent.press(getByTestId("files-add-button"));
+      fireEvent.press(getByTestId("files-add-library"));
+
+      await waitFor(() =>
+        expect(vi.mocked(ImagePicker.launchImageLibraryAsync)).toHaveBeenCalled(),
+      );
+      expect(queryByTestId("files-add-sheet")).toBeNull();
+    });
+
+    it("closes the sheet and launches the document picker when Attach File is pressed", async () => {
+      const { getByTestId, queryByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+      fireEvent.press(getByTestId("files-add-button"));
+      fireEvent.press(getByTestId("files-add-document"));
+
+      await waitFor(() =>
+        expect(vi.mocked(DocumentPicker.getDocumentAsync)).toHaveBeenCalled(),
+      );
+      expect(queryByTestId("files-add-sheet")).toBeNull();
+    });
+
+    it("dismisses the sheet without launching any picker when Cancel is pressed", () => {
+      const { getByTestId, queryByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+      fireEvent.press(getByTestId("files-add-button"));
+      fireEvent.press(getByTestId("files-add-cancel"));
+
+      expect(queryByTestId("files-add-sheet")).toBeNull();
+      expect(vi.mocked(ImagePicker.launchCameraAsync)).not.toHaveBeenCalled();
+      expect(vi.mocked(ImagePicker.launchImageLibraryAsync)).not.toHaveBeenCalled();
+      expect(vi.mocked(DocumentPicker.getDocumentAsync)).not.toHaveBeenCalled();
+    });
+
+    it("does not render the Add button when the user cannot upload", () => {
+      // Default membership stub → canUpload === false: the Add button is absent.
+      setMockAppState({ cases: [inProgressCase], invoices: [], attachments: [] });
+      setMockSearchParams({ id: inProgressCase.id });
+      const { getByTestId, queryByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+      expect(queryByTestId("files-add-button")).toBeNull();
     });
   });
 

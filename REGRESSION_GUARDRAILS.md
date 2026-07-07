@@ -64,7 +64,7 @@ Mobile rows marked **real-device** cannot be fully verified by unit tests; the T
 | 6 | Locate case (desktop-matching stations) | mobile | `lib/__tests__/terminology-parity.test.ts`, `lib/__tests__/screens/case-detail.smoke.test.tsx` | Yes — mobile tests + real-device |
 | 7 | Case history | mobile | `lib/__tests__/screens/case-detail.smoke.test.tsx` | Yes — mobile tests + real-device |
 | 8 | Invoice section | mobile | `lib/__tests__/screens/invoice-editor.smoke.test.tsx`, `routes/invoices.test.ts` | Yes — mobile + API tests + real-device |
-| 9 | Files / photos / documents open | mobile | `lib/__tests__/open-attachment.test.ts`, `lib/__tests__/screens/pdf-viewer.smoke.test.tsx` | Yes — mobile tests + real-device |
+| 9 | Files / photos / documents open + add | mobile | `lib/__tests__/open-attachment.test.ts`, `lib/__tests__/screens/pdf-viewer.smoke.test.tsx`, `lib/__tests__/screens/case-detail.smoke.test.tsx` (add-photo source chooser renders as an in-app bottom-sheet Modal — not an `Alert.alert` action sheet — with Take Photo / Choose from Library / Attach File / Cancel rows; each row dismisses the sheet and runs the matching camera / library / document picker; Add button gated on `canUpload`) | Yes — mobile tests + real-device |
 | 10 | Tooth chart approved layout | mobile | _(pending)_ — Mobile TestFlight checklist (row 12) | Manual — real-device |
 | 11 | Lab slip / case label display + print | mobile | `lib/__tests__/case-pdf.test.ts` _(HTML structure only)_ ; native print real-device | Yes — mobile tests (HTML) + real-device |
 | 12 | Desktop / mobile sync | mobile | `routes/cases-canonical-mobile.test.ts`, `routes/mobile-sync-invoice.test.ts` | Yes — API tests + real-device |
