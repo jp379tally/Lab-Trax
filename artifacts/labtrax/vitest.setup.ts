@@ -93,6 +93,14 @@ export function resetMockAppState(): void {
 // Stable mutation spies so tests can assert calls (a fresh vi.fn() per render
 // would be unobservable). `mock`-prefixed so Vitest allows them in the factory.
 export const mockUpdateCaseMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
+// Stable create-case spy so doctor-confirmation tests can (a) assert the exact
+// payload re-submitted after "use existing doctor" / "create as new doctor" and
+// (b) inject a 409 DOCTOR_CONFIRMATION_REQUIRED via `.mockImplementationOnce()`.
+// Default is a successful create returning a stub id.
+export const mockCreateCaseMutateAsync = vi.fn(async (_vars?: unknown) => ({
+  ok: true,
+  data: { id: "test-mock-case-id" },
+}));
 export const mockAddCaseNoteMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 export const mockDeleteAttachmentMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 export const mockEmailInvoiceMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
@@ -554,7 +562,7 @@ vi.mock("@workspace/api-client-react", () => ({
     refetch: vi.fn(async () => undefined),
   }),
   useCreateCase: () => ({
-    mutateAsync: vi.fn(async () => ({ ok: true, data: { id: "test-mock-case-id" } })),
+    mutateAsync: mockCreateCaseMutateAsync,
     mutate: vi.fn(),
     isPending: false,
     isError: false,
@@ -658,12 +666,33 @@ vi.mock("@workspace/api-client-react", () => ({
     isPending: false,
   }),
   useSearchDoctors: () => ({
-    data: { ok: true, data: { entries: [] } },
+    data: {
+      ok: true,
+      data: {
+        entries:
+          (mockAppOverrides.current.doctorSearchEntries as unknown[]) ?? [],
+      },
+    },
     isLoading: false,
+    isFetching: false,
     isError: false,
     refetch: vi.fn(async () => undefined),
   }),
   getSearchDoctorsQueryKey: (params?: unknown) => ["/api/doctors/search", params],
+  useListLabProviders: () => ({
+    data: {
+      ok: true,
+      data: {
+        providers:
+          (mockAppOverrides.current.labProviders as unknown[]) ?? [],
+      },
+    },
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  getListLabProvidersQueryKey: (labId?: string) => ["/api/lab-providers", labId],
   resolveItemPrice: vi.fn(async () => ({ ok: true, data: { price: null } })),
   useGetAiMemory: () => ({
     data: { ok: true, data: (mockAppOverrides.current.aiMemory as unknown[]) ?? [] },
