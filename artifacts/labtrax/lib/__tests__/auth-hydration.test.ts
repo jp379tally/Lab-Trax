@@ -444,6 +444,88 @@ describe("module-init wiring: setAuthRefresher and setAuthTokenGetter registrati
   });
 });
 
+// ── Scenario 10: registered token getter awaits hydration on cold start ──────
+//
+// This is the key regression guard for the cold-start 401 bug:
+// _layout.tsx previously overrode the hydration-safe getter registered in
+// query-client.ts with a synchronous getAccessToken() that reads the
+// in-memory _accessToken directly. On a cold launch that in-memory value is
+// null until SecureStore finishes loading, causing generated hooks to send
+// unauthenticated requests and receive 401s.
+//
+// The fix makes query-client.ts the single source of truth: it registers an
+// async getter that awaits ensureHydrated() before returning _accessToken.
+// This test proves the contract holds: the registered getter returns the
+// persisted token even when called before loadTokens() completes.
+describe("registered token getter awaits SecureStore hydration on cold start", () => {
+  it("returns the persisted access token even when called before loadTokens() completes", async () => {
+    const { setAuthTokenGetter } = await import("@workspace/api-client-react");
+    const mock = vi.mocked(setAuthTokenGetter);
+
+    // Retrieve the most-recently registered token getter (set at module init).
+    const registeredGetter = mock.mock.calls[mock.mock.calls.length - 1]?.[0];
+    expect(typeof registeredGetter).toBe("function");
+
+    // Simulate cold start: reset hydration state so _accessToken is null
+    // and the singleton has not yet read from SecureStore.
+    await clearTokens();
+
+    // Prime SecureStore with a valid persisted session — as if the user was
+    // previously logged in and the app was freshly launched.
+    vi.mocked(SecureStore.getItemAsync).mockResolvedValue(
+      tokenBlob("cold-start-token", "cold-start-refresh"),
+    );
+
+    // Synchronous getAccessToken() would return null here (not yet hydrated).
+    expect(getAccessToken()).toBeNull();
+
+    // The registered getter must await hydration and return the persisted token.
+    const result = await registeredGetter!();
+
+    expect(result).toBe("cold-start-token");
+    // Hydration must be complete after the getter returns.
+    expect(getIsHydrated()).toBe(true);
+  });
+
+  it("does not return a stale null when a generated hook fires concurrently with hydration", async () => {
+    const { setAuthTokenGetter } = await import("@workspace/api-client-react");
+    const mock = vi.mocked(setAuthTokenGetter);
+    const registeredGetter = mock.mock.calls[mock.mock.calls.length - 1]?.[0];
+    expect(typeof registeredGetter).toBe("function");
+
+    await clearTokens();
+
+    // Delay the SecureStore read to simulate a slow device.
+    let resolveStore!: (v: string | null) => void;
+    const storePromise = new Promise<string | null>((res) => {
+      resolveStore = res;
+    });
+    vi.mocked(SecureStore.getItemAsync).mockReturnValue(storePromise);
+
+    // Fire three concurrent getter calls before SecureStore responds.
+    const pending = [
+      registeredGetter!(),
+      registeredGetter!(),
+      registeredGetter!(),
+    ];
+
+    // Token is still null — store hasn't resolved yet.
+    expect(getAccessToken()).toBeNull();
+
+    // Unblock the store with a valid token.
+    resolveStore(tokenBlob("concurrent-cold-token", "concurrent-refresh"));
+
+    const results = await Promise.all(pending);
+
+    // All three concurrent callers must receive the hydrated token.
+    expect(results).toEqual([
+      "concurrent-cold-token",
+      "concurrent-cold-token",
+      "concurrent-cold-token",
+    ]);
+  });
+});
+
 // ── Scenario 9: no legacy /api/legacy routing ────────────────────────────────
 //
 // All case mutations must route to the canonical /api/cases endpoint.

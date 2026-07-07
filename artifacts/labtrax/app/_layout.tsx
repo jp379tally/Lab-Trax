@@ -6,7 +6,9 @@ import * as Linking from "expo-linking";
 import React, { useEffect, useMemo } from "react";
 import { View, ActivityIndicator, StyleSheet, PanResponder, Platform } from "react-native";
 import { pushSharedFile } from "@/lib/shared-file-inbox";
-import { resilientFetch, queryClient, getAccessToken, refreshAndGetAccessToken } from "@/lib/query-client";
+// query-client side-effect: registers the hydration-safe token getter + refresher
+// with @workspace/api-client-react before any hook mounts (single source of truth).
+import { resilientFetch, queryClient } from "@/lib/query-client";
 import { useShareIntent } from "expo-share-intent";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -19,19 +21,12 @@ import {
   Inter_700Bold,
 } from "@expo-google-fonts/inter";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { setAuthTokenGetter, setAuthRefresher } from "@workspace/api-client-react";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { ThemeProvider } from "@/lib/theme-context";
 import { ReconnectingBanner } from "@/components/ReconnectingBanner";
 import LoginScreen from "@/components/LoginScreen";
 import LockScreen from "@/components/LockScreen";
 import Colors from "@/constants/colors";
-
-// Wire the mobile token store into customFetch once, at module load time.
-// Every generated/mobile hook (useCases, useCase, …) uses customFetch, so this
-// must run before any QueryClientProvider renders.
-setAuthTokenGetter(getAccessToken);
-setAuthRefresher(refreshAndGetAccessToken);
 
 const TransparentNavTheme = {
   dark: false,
