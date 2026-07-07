@@ -39,6 +39,7 @@ import { db } from "@workspace/db";
 import {
   auditLogs,
   cases,
+  doctorDupDismissals,
   labCases,
   organizations,
   organizationMemberships,
@@ -1169,6 +1170,8 @@ router.get(
 
 // ---------------------------------------------------------------------------
 // GET /doctors/duplicate-clusters
+// POST /doctors/duplicate-clusters/dismiss
+// POST /doctors/duplicate-clusters/restore
 //
 // Centralized possible-duplicate detection that powers the navigation
 // duplicate-count badge on both desktop and mobile. Computes likely-duplicate
@@ -1178,6 +1181,8 @@ router.get(
 // tooling, so the badge count matches what the merge UI would surface.
 //
 // `totalGroups` is the badge count and decreases as merges collapse clusters.
+// Dismissed clusters are excluded from `clusters` and `totalGroups`, and are
+// returned separately in `dismissedClusters`.
 // ---------------------------------------------------------------------------
 
 interface DupDoctorNode {
@@ -1194,8 +1199,24 @@ interface DupClusterResult {
     labOrganizationId: string;
     labName: string | null;
     topScore: number;
+    clusterKey: string;
     doctors: DupDoctorNode[];
   }>;
+  dismissedClusters: Array<{
+    labOrganizationId: string;
+    clusterKey: string;
+    doctors: DupDoctorNode[];
+    dismissedAt: string;
+  }>;
+}
+
+// Stable cluster key that mirrors duplicateClusterKey() on the desktop client.
+// Row id format: `${doctorName.toLowerCase()}|${providerOrganizationId ?? ""}`
+// Key format: `${labId}::${sorted_row_ids.join("||")}`
+function computeClusterKey(labId: string, nodes: DupDoctorNode[]): string {
+  const ids = nodes.map((n) => `${n.doctorName.toLowerCase()}|${n.providerOrganizationId ?? ""}`);
+  ids.sort();
+  return `${labId}::${ids.join("||")}`;
 }
 
 // Short-TTL response cache for /duplicate-clusters.
@@ -1274,10 +1295,11 @@ function invalidateDuplicateClusterCache(): void {
 // Union-find clustering over pairs whose similarity(a, b) >= threshold.
 // Mirrors buildDuplicateClusters on the desktop, scoped to a single lab.
 function buildDoctorClusters(
+  labId: string,
   nodes: DupDoctorNode[],
   threshold: number
-): Array<{ topScore: number; doctors: DupDoctorNode[] }> {
-  const out: Array<{ topScore: number; doctors: DupDoctorNode[] }> = [];
+): Array<{ topScore: number; clusterKey: string; doctors: DupDoctorNode[] }> {
+  const out: Array<{ topScore: number; clusterKey: string; doctors: DupDoctorNode[] }> = [];
   if (nodes.length < 2) return out;
   const parent = nodes.map((_, i) => i);
   const find = (i: number): number => {
@@ -1329,11 +1351,94 @@ function buildDoctorClusters(
         if (sc > topScore) topScore = sc;
       }
     }
-    out.push({ topScore, doctors: idxs.map((i) => nodes[i]) });
+    const clusterDoctors = idxs.map((i) => nodes[i]);
+    out.push({
+      topScore,
+      clusterKey: computeClusterKey(labId, clusterDoctors),
+      doctors: clusterDoctors,
+    });
   }
   out.sort((a, b) => b.topScore - a.topScore);
   return out;
 }
+
+// POST /doctors/duplicate-clusters/dismiss
+// Permanently dismisses a suggested duplicate cluster on the server so it
+// stops showing up across all devices for this lab. Lab-admin only.
+const dismissClusterSchema = z.object({
+  labOrganizationId: z.string().min(1),
+  clusterKey: z.string().min(1),
+  doctors: z
+    .array(
+      z.object({
+        doctorName: z.string(),
+        providerOrganizationId: z.string().nullable().optional(),
+        practiceName: z.string().nullable().optional(),
+        totalCases: z.number().optional().default(0),
+      })
+    )
+    .min(1),
+});
+
+router.post(
+  "/duplicate-clusters/dismiss",
+  asyncHandler(async (req, res) => {
+    const input = dismissClusterSchema.parse(req.body);
+    const userId = (req as any).auth.userId as string;
+    await requireAnyRole(userId, input.labOrganizationId, ADMIN_ROLES);
+
+    await db
+      .insert(doctorDupDismissals)
+      .values({
+        labOrganizationId: input.labOrganizationId,
+        clusterKey: input.clusterKey,
+        doctorsJson: input.doctors as any,
+        dismissedByUserId: userId,
+      })
+      .onConflictDoUpdate({
+        target: [
+          doctorDupDismissals.labOrganizationId,
+          doctorDupDismissals.clusterKey,
+        ],
+        set: {
+          doctorsJson: input.doctors as any,
+          dismissedByUserId: userId,
+          dismissedAt: new Date(),
+        },
+      });
+
+    invalidateDuplicateClusterCache();
+    return ok(res, { dismissed: true });
+  })
+);
+
+// POST /doctors/duplicate-clusters/restore
+// Restores (un-dismisses) a previously dismissed duplicate cluster. Lab-admin only.
+const restoreClusterSchema = z.object({
+  labOrganizationId: z.string().min(1),
+  clusterKey: z.string().min(1),
+});
+
+router.post(
+  "/duplicate-clusters/restore",
+  asyncHandler(async (req, res) => {
+    const input = restoreClusterSchema.parse(req.body);
+    const userId = (req as any).auth.userId as string;
+    await requireAnyRole(userId, input.labOrganizationId, ADMIN_ROLES);
+
+    await db
+      .delete(doctorDupDismissals)
+      .where(
+        and(
+          eq(doctorDupDismissals.labOrganizationId, input.labOrganizationId),
+          eq(doctorDupDismissals.clusterKey, input.clusterKey)
+        )
+      );
+
+    invalidateDuplicateClusterCache();
+    return ok(res, { restored: true });
+  })
+);
 
 router.get(
   "/duplicate-clusters",
@@ -1380,10 +1485,26 @@ router.get(
         totalGroups: 0,
         totalDoctors: 0,
         clusters: [],
+        dismissedClusters: [],
       };
       writeDupClusterCache(userId, empty);
       return ok(res, empty);
     }
+
+    // Load dismissed cluster keys for these labs so we can filter them out.
+    const dismissedRows = await db
+      .select({
+        labOrganizationId: doctorDupDismissals.labOrganizationId,
+        clusterKey: doctorDupDismissals.clusterKey,
+        doctorsJson: doctorDupDismissals.doctorsJson,
+        dismissedAt: doctorDupDismissals.dismissedAt,
+      })
+      .from(doctorDupDismissals)
+      .where(inArray(doctorDupDismissals.labOrganizationId, labIds));
+
+    const dismissedKeySet = new Set(
+      dismissedRows.map((r) => `${r.labOrganizationId}::${r.clusterKey}`)
+    );
 
     // Distinct (doctor, practice) groups per lab, mirroring the desktop's
     // DoctorRow keying. Only non-deleted canonical cases with a real name.
@@ -1461,22 +1582,38 @@ router.get(
     for (const [labId, nodes] of byLab) {
       const meta = labMeta.get(labId);
       if (!meta) continue;
-      for (const c of buildDoctorClusters(nodes, meta.threshold)) {
+      for (const c of buildDoctorClusters(labId, nodes, meta.threshold)) {
+        const dismissed = dismissedKeySet.has(`${labId}::${c.clusterKey}`);
+        if (dismissed) continue;
         clusters.push({
           labOrganizationId: labId,
           labName: meta.name,
           topScore: c.topScore,
+          clusterKey: c.clusterKey,
           doctors: c.doctors,
         });
       }
     }
     clusters.sort((a, b) => b.topScore - a.topScore);
 
+    // Build dismissed clusters list from the stored dismissal rows.
+    const dismissedClusters: DupClusterResult["dismissedClusters"] =
+      dismissedRows.map((r) => ({
+        labOrganizationId: r.labOrganizationId,
+        clusterKey: r.clusterKey,
+        doctors: Array.isArray(r.doctorsJson) ? (r.doctorsJson as DupDoctorNode[]) : [],
+        dismissedAt:
+          r.dismissedAt instanceof Date
+            ? r.dismissedAt.toISOString()
+            : String(r.dismissedAt),
+      }));
+
     const totalDoctors = clusters.reduce((n, c) => n + c.doctors.length, 0);
     const payload: DupClusterResult = {
       totalGroups: clusters.length,
       totalDoctors,
       clusters,
+      dismissedClusters,
     };
     writeDupClusterCache(userId, payload);
     return ok(res, payload);

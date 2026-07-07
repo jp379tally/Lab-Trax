@@ -21,9 +21,13 @@ import {
   usePreviewDoctorMerge,
   useUndoDoctorMerge,
   useListUnassignedDoctors,
+  useGetDoctorDuplicateClusters,
+  useDismissDoctorDuplicateCluster,
+  useRestoreDoctorDuplicateCluster,
   type DoctorMergeRequest,
   type DoctorSearchEntry,
   type UnassignedDoctorEntry,
+  type DoctorDismissedCluster,
   searchDoctors,
 } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
@@ -113,7 +117,6 @@ const ADMIN_ROLES = new Set(["owner", "admin"]);
 // flag likely duplicates in the "Suggested merges" banner. Each lab can
 // override this from Settings → Organizations → "Duplicate detection".
 export const DEFAULT_DUP_SIMILARITY_THRESHOLD = 0.7;
-const DOCTOR_DUP_DISMISS_KEY = "labtrax_doctor_dup_dismissed_v1";
 
 // Clamp + parse a per-lab override from Organization.duplicateSuggestionThreshold.
 export function resolveLabDupThreshold(
@@ -127,17 +130,6 @@ export function resolveLabDupThreshold(
   return Math.min(0.95, Math.max(0.5, n));
 }
 
-function loadDismissedDupClusters(storageKey: string): Set<string> {
-  if (typeof window === "undefined") return new Set();
-  try {
-    const raw = window.localStorage.getItem(storageKey);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    return new Set(Array.isArray(parsed) ? (parsed as string[]) : []);
-  } catch {
-    return new Set();
-  }
-}
 
 // Stable cluster key keyed by lab + sorted row identifiers, so the same
 // cluster of duplicates gets the same dismissal id across reloads.
@@ -274,26 +266,36 @@ export default function DoctorsPage() {
   const [mergeDialog, setMergeDialog] = useState<{
     sources: MergeSourceInput[];
     labOrganizationId: string;
+    clusterKey?: string;
   } | null>(null);
   const [undoToast, setUndoToast] = useState<UndoToast | null>(null);
-  const [dismissedDupClusters, setDismissedDupClusters] = useState<Set<string>>(
-    () => loadDismissedDupClusters(DOCTOR_DUP_DISMISS_KEY),
-  );
   const [showAllSuggestedMerges, setShowAllSuggestedMerges] = useState(false);
   const [showDismissedDupClusters, setShowDismissedDupClusters] = useState(false);
   const queryClientPage = useQueryClient();
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(
-        DOCTOR_DUP_DISMISS_KEY,
-        JSON.stringify(Array.from(dismissedDupClusters)),
-      );
-    } catch {
-      // localStorage may be unavailable (private mode, quota); ignore.
-    }
-  }, [dismissedDupClusters]);
+  const dupClustersQuery = useGetDoctorDuplicateClusters();
+  const serverDismissedClusters: DoctorDismissedCluster[] =
+    dupClustersQuery.data?.data?.dismissedClusters ?? [];
+  const dismissedKeySet = useMemo(
+    () => new Set(serverDismissedClusters.map((c) => c.clusterKey ?? "")),
+    [serverDismissedClusters],
+  );
+
+  const dismissMutation = useDismissDoctorDuplicateCluster({
+    mutation: {
+      onSuccess: () => {
+        queryClientPage.invalidateQueries({ queryKey: ["getDoctorDuplicateClusters"] });
+      },
+    },
+  });
+  const restoreMutation = useRestoreDoctorDuplicateCluster({
+    mutation: {
+      onSuccess: () => {
+        queryClientPage.invalidateQueries({ queryKey: ["getDoctorDuplicateClusters"] });
+      },
+    },
+  });
+
 
   const undoMutation = useUndoDoctorMerge({
     mutation: {
@@ -470,23 +472,12 @@ export default function DoctorsPage() {
   }, [rows, adminLabIds, labThresholdById]);
 
   const visibleDuplicateClusters = useMemo(
-    () => suggestedDuplicateClusters.filter((c) => !dismissedDupClusters.has(c.key)),
-    [suggestedDuplicateClusters, dismissedDupClusters],
+    () => suggestedDuplicateClusters.filter((c) => !dismissedKeySet.has(c.key)),
+    [suggestedDuplicateClusters, dismissedKeySet],
   );
 
-  // Dismissed clusters that still match a current cluster, so we can render
-  // their names in the "Show dismissed" panel and let admins restore them.
-  const dismissedClustersForDisplay = useMemo(
-    () => suggestedDuplicateClusters.filter((c) => dismissedDupClusters.has(c.key)),
-    [suggestedDuplicateClusters, dismissedDupClusters],
-  );
-  const restoreDismissedCluster = (key: string) => {
-    setDismissedDupClusters((prev) => {
-      if (!prev.has(key)) return prev;
-      const next = new Set(prev);
-      next.delete(key);
-      return next;
-    });
+  const restoreDismissedCluster = (clusterKey: string, labOrganizationId: string) => {
+    restoreMutation.mutate({ data: { labOrganizationId, clusterKey } });
   };
 
   const isLoading = casesQuery.isLoading || invoicesQuery.isLoading;
@@ -533,7 +524,7 @@ export default function DoctorsPage() {
         </div>
       )}
 
-      {(visibleDuplicateClusters.length > 0 || dismissedDupClusters.size > 0) && (
+      {(visibleDuplicateClusters.length > 0 || serverDismissedClusters.length > 0) && (
         <div className="mb-5 rounded-lg border border-sky-300 bg-sky-50 dark:bg-sky-950/30 dark:border-sky-700 px-4 py-3.5">
           <div className="flex items-center gap-2 mb-2">
             <GitMerge size={14} className="text-sky-700 dark:text-sky-300" />
@@ -581,6 +572,7 @@ export default function DoctorsPage() {
                   onClick={() => {
                     setMergeDialog({
                       labOrganizationId: cluster.labId,
+                      clusterKey: cluster.key,
                       sources: cluster.rows.map((r) => ({
                         doctorName: r.doctorName,
                         providerOrganizationId: r.practiceId || null,
@@ -595,10 +587,16 @@ export default function DoctorsPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    setDismissedDupClusters((prev) => {
-                      const next = new Set(prev);
-                      next.add(cluster.key);
-                      return next;
+                    dismissMutation.mutate({
+                      data: {
+                        labOrganizationId: cluster.labId,
+                        clusterKey: cluster.key,
+                        doctors: cluster.rows.map((r) => ({
+                          doctorName: r.doctorName,
+                          providerOrganizationId: r.practiceId || null,
+                          practiceName: r.practiceName,
+                        })),
+                      },
                     });
                   }}
                   className="shrink-0 h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
@@ -623,7 +621,7 @@ export default function DoctorsPage() {
           )}
           </>
           )}
-          {dismissedDupClusters.size > 0 && (
+          {serverDismissedClusters.length > 0 && (
             <div className={visibleDuplicateClusters.length > 0 ? "mt-3 pt-3 border-t border-sky-200/60 dark:border-sky-800/50" : ""}>
               <button
                 type="button"
@@ -632,64 +630,47 @@ export default function DoctorsPage() {
               >
                 {showDismissedDupClusters
                   ? "Hide dismissed"
-                  : `Show dismissed (${dismissedDupClusters.size})`}
+                  : `Show dismissed (${serverDismissedClusters.length})`}
               </button>
               {showDismissedDupClusters && (
                 <ul className="mt-2 space-y-1.5">
-                  {dismissedClustersForDisplay.map((cluster) => (
+                  {serverDismissedClusters.map((cluster) => (
                     <li
-                      key={cluster.key}
+                      key={cluster.clusterKey}
                       className="flex items-center gap-3 rounded-md bg-card/70 dark:bg-card/40 border border-sky-200/60 dark:border-sky-800/50 px-3 py-2"
                     >
                       <div className="flex-1 min-w-0 text-sm">
                         <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                          {cluster.rows.map((r, i) => (
-                            <span key={r.key} className="inline-flex items-center gap-1">
-                              <span className="font-medium">{r.doctorName}</span>
-                              <span className="text-xs text-muted-foreground">
-                                ({r.practiceName})
-                              </span>
-                              {i < cluster.rows.length - 1 && (
+                          {(cluster.doctors ?? []).map((d, i) => (
+                            <span key={`${d.doctorName}|${d.providerOrganizationId ?? ""}`} className="inline-flex items-center gap-1">
+                              <span className="font-medium">{d.doctorName}</span>
+                              {d.practiceName && (
+                                <span className="text-xs text-muted-foreground">
+                                  ({d.practiceName})
+                                </span>
+                              )}
+                              {i < (cluster.doctors ?? []).length - 1 && (
                                 <span className="text-muted-foreground">·</span>
                               )}
                             </span>
                           ))}
                         </div>
-                        <div className="text-[11px] text-muted-foreground mt-0.5">
-                          {Math.round(cluster.topScore * 100)}% name match
-                          {cluster.rows.length > 2 && ` · ${cluster.rows.length} doctors`}
-                        </div>
+                        {cluster.dismissedAt && (
+                          <div className="text-[11px] text-muted-foreground mt-0.5">
+                            Dismissed {relativeTime(cluster.dismissedAt)}
+                          </div>
+                        )}
                       </div>
                       <button
                         type="button"
-                        onClick={() => restoreDismissedCluster(cluster.key)}
-                        className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-secondary-foreground text-xs font-semibold hover:bg-secondary/80"
+                        disabled={restoreMutation.isPending}
+                        onClick={() => restoreDismissedCluster(cluster.clusterKey ?? "", cluster.labOrganizationId ?? "")}
+                        className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-secondary-foreground text-xs font-semibold hover:bg-secondary/80 disabled:opacity-50"
                       >
                         Restore
                       </button>
                     </li>
                   ))}
-                  {dismissedDupClusters.size > dismissedClustersForDisplay.length && (
-                    <li className="text-[11px] text-muted-foreground px-1 flex items-center justify-between gap-3">
-                      <span>
-                        {dismissedDupClusters.size - dismissedClustersForDisplay.length} dismissed{" "}
-                        {dismissedDupClusters.size - dismissedClustersForDisplay.length === 1
-                          ? "cluster no longer matches"
-                          : "clusters no longer match"}{" "}
-                        any current rows.
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const stillValid = new Set(dismissedClustersForDisplay.map((c) => c.key));
-                          setDismissedDupClusters(stillValid);
-                        }}
-                        className="text-xs font-medium text-sky-800 dark:text-sky-300 hover:underline"
-                      >
-                        Clear stale
-                      </button>
-                    </li>
-                  )}
                 </ul>
               )}
             </div>
@@ -995,6 +976,24 @@ export default function DoctorsPage() {
               expiresAt: Date.now() + result.undoWindowMs,
             });
           }}
+          onDoNotMerge={
+            mergeDialog.clusterKey
+              ? () => {
+                  dismissMutation.mutate({
+                    data: {
+                      labOrganizationId: mergeDialog.labOrganizationId,
+                      clusterKey: mergeDialog.clusterKey!,
+                      doctors: mergeDialog.sources.map((s) => ({
+                        doctorName: s.doctorName,
+                        providerOrganizationId: s.providerOrganizationId,
+                        practiceName: s.practiceName,
+                      })),
+                    },
+                  });
+                  setMergeDialog(null);
+                }
+              : undefined
+          }
         />
       )}
 
@@ -1495,12 +1494,17 @@ export function MergeDialog({
   initialSources,
   onClose,
   onMerged,
+  onDoNotMerge,
   singleReassign = false,
 }: {
   labOrganizationId: string;
   initialSources: MergeSourceInput[];
   onClose: () => void;
   onMerged: (r: MergeDialogResult) => void;
+  // When provided, a "Do not merge" button is shown in the dialog footer.
+  // Clicking it permanently dismisses this cluster server-side and closes the
+  // dialog. Only present when the dialog was opened from a suggestion cluster.
+  onDoNotMerge?: () => void;
   // When true the dialog runs in "reassign one case's doctor" mode: the
   // current (wrong) doctor is locked in as the only source, the target
   // practice is pinned to that source's practice, and the user only picks
@@ -2142,11 +2146,21 @@ export function MergeDialog({
           )}
         </div>
 
-        <footer className="px-6 py-4 border-t border-border flex items-center justify-end gap-2">
+        <footer className="px-6 py-4 border-t border-border flex items-center gap-2">
+          {!singleReassign && onDoNotMerge && (
+            <button
+              type="button"
+              onClick={onDoNotMerge}
+              className="h-9 px-3 rounded-md text-sm text-muted-foreground hover:bg-secondary mr-auto"
+              title="Permanently dismiss this suggestion — these doctors are intentionally separate"
+            >
+              Do not merge
+            </button>
+          )}
           <button
             type="button"
             onClick={onClose}
-            className="h-9 px-3 rounded-md text-sm hover:bg-secondary"
+            className="h-9 px-3 rounded-md text-sm hover:bg-secondary ml-auto"
           >
             Cancel
           </button>

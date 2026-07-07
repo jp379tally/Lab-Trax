@@ -32,6 +32,9 @@ vi.mock("@workspace/api-client-react", () => ({
   usePreviewDoctorMerge: () => ({ mutate: previewMutate, data: undefined }),
   useUndoDoctorMerge: () => ({ mutate: vi.fn(), isPending: false }),
   useListUnassignedDoctors: () => ({ data: { ok: true, data: [] } }),
+  useGetDoctorDuplicateClusters: () => ({ data: undefined, isLoading: false }),
+  useDismissDoctorDuplicateCluster: () => ({ mutate: vi.fn(), isPending: false }),
+  useRestoreDoctorDuplicateCluster: () => ({ mutate: vi.fn(), isPending: false }),
   // The dialog's picker searches for names similar to the first source; return
   // both cluster doctors so the search list renders realistically.
   searchDoctors: async () => ({

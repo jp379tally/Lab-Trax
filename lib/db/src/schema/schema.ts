@@ -2376,7 +2376,42 @@ export const labInboxFiles = pgTable(
   })
 );
 
-// Auto-learned candidate memory entries extracted from AI chats. These are
+// Server-persisted dismissals for the "Do not merge" action on the
+// possible-duplicate-doctors panel. Scoped per lab so all admins of a lab
+// share the decision across all of their devices. The clusterKey is the same
+// stable key computed by the client (labId::sorted_row_ids) so dismiss,
+// filter, and restore all stay in sync. doctorsJson stores a snapshot of the
+// cluster members at dismiss time so the "Show dismissed" panel can render
+// them even if the underlying case data later changes. Not a protected table:
+// dismissals are lightweight advisory records, not clinical data.
+export const doctorDupDismissals = pgTable(
+  "doctor_dup_dismissals",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    clusterKey: text("cluster_key").notNull(),
+    // JSON array of { doctorName, providerOrganizationId, practiceName }
+    doctorsJson: jsonb("doctors_json").notNull(),
+    dismissedByUserId: varchar("dismissed_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    labClusterUnique: uniqueIndex("doctor_dup_dismissals_lab_cluster_unique").on(
+      table.labOrganizationId,
+      table.clusterKey
+    ),
+    labIdx: index("doctor_dup_dismissals_lab_idx").on(table.labOrganizationId),
+  })
+);
+
 // proposals only — they never feed the AI prompt and never become real
 // `ai_memory` until a lab admin approves them. Approving copies the candidate
 // into `ai_memory`; rejecting marks it 'rejected'. Not a protected table:

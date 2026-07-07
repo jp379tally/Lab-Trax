@@ -76,6 +76,9 @@ import type {
   DeleteVocabularyItem200,
   DeletedResult,
   DisableBackupSchedule200,
+  DismissDoctorDuplicateCluster200,
+  DoctorDuplicateClusterDismissInput,
+  DoctorDuplicateClusterRestoreInput,
   DoctorDuplicateClustersResult,
   DoctorMergePreview,
   DoctorMergeRequest,
@@ -159,6 +162,7 @@ import type {
   ResolveItemPriceParams,
   RestoreBackupBody,
   RestoreCase200,
+  RestoreDoctorDuplicateCluster200,
   RestoreStartResult,
   RestoreStatusResult,
   RxPracticeAliasInput,
@@ -5261,6 +5265,8 @@ the same normalized-name + bigram-similarity logic as the merge tooling
 so the count matches what the merge UI would flag. Powers the
 navigation duplicate-count badge on desktop and mobile. `totalGroups`
 is the badge count; it decreases as merges collapse clusters.
+Dismissed clusters are excluded from `clusters` and `totalGroups`, and
+are returned separately in `dismissedClusters`.
 
  * @summary Possible-duplicate doctor clusters across the caller's admin labs
  */
@@ -5339,6 +5345,196 @@ export function useGetDoctorDuplicateClusters<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * Records a server-side "Do not merge" dismissal for the given cluster key,
+scoped to the lab. Dismissed clusters are excluded from the active
+suggestions returned by `getDoctorDuplicateClusters` and from the
+navigation badge count. All admins of the lab see the effect
+immediately across all devices. Idempotent — dismissing an already-
+dismissed cluster just refreshes the snapshot. Lab-admin only.
+
+ * @summary Permanently dismiss a suggested duplicate cluster for a lab
+ */
+export const getDismissDoctorDuplicateClusterUrl = () => {
+  return `/api/doctors/duplicate-clusters/dismiss`;
+};
+
+export const dismissDoctorDuplicateCluster = async (
+  doctorDuplicateClusterDismissInput: DoctorDuplicateClusterDismissInput,
+  options?: RequestInit,
+): Promise<DismissDoctorDuplicateCluster200> => {
+  return customFetch<DismissDoctorDuplicateCluster200>(
+    getDismissDoctorDuplicateClusterUrl(),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(doctorDuplicateClusterDismissInput),
+    },
+  );
+};
+
+export const getDismissDoctorDuplicateClusterMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof dismissDoctorDuplicateCluster>>,
+    TError,
+    { data: BodyType<DoctorDuplicateClusterDismissInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof dismissDoctorDuplicateCluster>>,
+  TError,
+  { data: BodyType<DoctorDuplicateClusterDismissInput> },
+  TContext
+> => {
+  const mutationKey = ["dismissDoctorDuplicateCluster"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof dismissDoctorDuplicateCluster>>,
+    { data: BodyType<DoctorDuplicateClusterDismissInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return dismissDoctorDuplicateCluster(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DismissDoctorDuplicateClusterMutationResult = NonNullable<
+  Awaited<ReturnType<typeof dismissDoctorDuplicateCluster>>
+>;
+export type DismissDoctorDuplicateClusterMutationBody =
+  BodyType<DoctorDuplicateClusterDismissInput>;
+export type DismissDoctorDuplicateClusterMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Permanently dismiss a suggested duplicate cluster for a lab
+ */
+export const useDismissDoctorDuplicateCluster = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof dismissDoctorDuplicateCluster>>,
+    TError,
+    { data: BodyType<DoctorDuplicateClusterDismissInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof dismissDoctorDuplicateCluster>>,
+  TError,
+  { data: BodyType<DoctorDuplicateClusterDismissInput> },
+  TContext
+> => {
+  return useMutation(getDismissDoctorDuplicateClusterMutationOptions(options));
+};
+
+/**
+ * Removes the server-side dismissal for the given cluster key so the
+cluster can be suggested again. Lab-admin only.
+
+ * @summary Restore (un-dismiss) a previously dismissed duplicate cluster
+ */
+export const getRestoreDoctorDuplicateClusterUrl = () => {
+  return `/api/doctors/duplicate-clusters/restore`;
+};
+
+export const restoreDoctorDuplicateCluster = async (
+  doctorDuplicateClusterRestoreInput: DoctorDuplicateClusterRestoreInput,
+  options?: RequestInit,
+): Promise<RestoreDoctorDuplicateCluster200> => {
+  return customFetch<RestoreDoctorDuplicateCluster200>(
+    getRestoreDoctorDuplicateClusterUrl(),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(doctorDuplicateClusterRestoreInput),
+    },
+  );
+};
+
+export const getRestoreDoctorDuplicateClusterMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreDoctorDuplicateCluster>>,
+    TError,
+    { data: BodyType<DoctorDuplicateClusterRestoreInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof restoreDoctorDuplicateCluster>>,
+  TError,
+  { data: BodyType<DoctorDuplicateClusterRestoreInput> },
+  TContext
+> => {
+  const mutationKey = ["restoreDoctorDuplicateCluster"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof restoreDoctorDuplicateCluster>>,
+    { data: BodyType<DoctorDuplicateClusterRestoreInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return restoreDoctorDuplicateCluster(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RestoreDoctorDuplicateClusterMutationResult = NonNullable<
+  Awaited<ReturnType<typeof restoreDoctorDuplicateCluster>>
+>;
+export type RestoreDoctorDuplicateClusterMutationBody =
+  BodyType<DoctorDuplicateClusterRestoreInput>;
+export type RestoreDoctorDuplicateClusterMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Restore (un-dismiss) a previously dismissed duplicate cluster
+ */
+export const useRestoreDoctorDuplicateCluster = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreDoctorDuplicateCluster>>,
+    TError,
+    { data: BodyType<DoctorDuplicateClusterRestoreInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof restoreDoctorDuplicateCluster>>,
+  TError,
+  { data: BodyType<DoctorDuplicateClusterRestoreInput> },
+  TContext
+> => {
+  return useMutation(getRestoreDoctorDuplicateClusterMutationOptions(options));
+};
 
 /**
  * Returns aggregate counts for what a merge would move: per-source

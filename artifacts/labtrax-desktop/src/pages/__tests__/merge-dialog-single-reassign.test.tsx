@@ -64,6 +64,9 @@ vi.mock("@workspace/api-client-react", () => ({
   usePreviewDoctorMerge: () => ({ mutate: previewMutate, data: previewData }),
   useUndoDoctorMerge: () => ({ mutate: vi.fn(), isPending: false }),
   useListUnassignedDoctors: () => ({ data: { ok: true, data: [] } }),
+  useGetDoctorDuplicateClusters: () => ({ data: undefined, isLoading: false }),
+  useDismissDoctorDuplicateCluster: () => ({ mutate: vi.fn(), isPending: false }),
+  useRestoreDoctorDuplicateCluster: () => ({ mutate: vi.fn(), isPending: false }),
   searchDoctors: async () => ({
     data: { entries: SEARCH_ENTRIES, total: SEARCH_ENTRIES.length },
   }),

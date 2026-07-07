@@ -1934,6 +1934,8 @@ the same normalized-name + bigram-similarity logic as the merge tooling
 so the count matches what the merge UI would flag. Powers the
 navigation duplicate-count badge on desktop and mobile. `totalGroups`
 is the badge count; it decreases as merges collapse clusters.
+Dismissed clusters are excluded from `clusters` and `totalGroups`, and
+are returned separately in `dismissedClusters`.
 
  * @summary Possible-duplicate doctor clusters across the caller's admin labs
  */
@@ -1960,6 +1962,12 @@ export const GetDoctorDuplicateClustersResponse = zod.object({
               .describe(
                 "Highest pairwise similarity within the cluster (0..1).",
               ),
+            clusterKey: zod
+              .string()
+              .optional()
+              .describe(
+                "Stable key for this cluster, used for dismiss\/restore.",
+              ),
             doctors: zod
               .array(
                 zod.object({
@@ -1973,6 +1981,80 @@ export const GetDoctorDuplicateClustersResponse = zod.object({
           }),
         )
         .optional(),
+      dismissedClusters: zod
+        .array(
+          zod.object({
+            labOrganizationId: zod.string().optional(),
+            clusterKey: zod.string().optional(),
+            doctors: zod
+              .array(
+                zod.object({
+                  doctorName: zod.string().optional(),
+                  providerOrganizationId: zod.string().nullish(),
+                  practiceName: zod.string().nullish(),
+                  totalCases: zod.number().optional(),
+                }),
+              )
+              .optional(),
+            dismissedAt: zod.string().optional(),
+          }),
+        )
+        .optional()
+        .describe(
+          'Server-persisted \"Do not merge\" dismissals for this caller\'s labs.',
+        ),
+    })
+    .optional(),
+});
+
+/**
+ * Records a server-side "Do not merge" dismissal for the given cluster key,
+scoped to the lab. Dismissed clusters are excluded from the active
+suggestions returned by `getDoctorDuplicateClusters` and from the
+navigation badge count. All admins of the lab see the effect
+immediately across all devices. Idempotent — dismissing an already-
+dismissed cluster just refreshes the snapshot. Lab-admin only.
+
+ * @summary Permanently dismiss a suggested duplicate cluster for a lab
+ */
+export const DismissDoctorDuplicateClusterBody = zod.object({
+  labOrganizationId: zod.string(),
+  clusterKey: zod.string(),
+  doctors: zod.array(
+    zod.object({
+      doctorName: zod.string().optional(),
+      providerOrganizationId: zod.string().nullish(),
+      practiceName: zod.string().nullish(),
+      totalCases: zod.number().optional(),
+    }),
+  ),
+});
+
+export const DismissDoctorDuplicateClusterResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      dismissed: zod.boolean().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * Removes the server-side dismissal for the given cluster key so the
+cluster can be suggested again. Lab-admin only.
+
+ * @summary Restore (un-dismiss) a previously dismissed duplicate cluster
+ */
+export const RestoreDoctorDuplicateClusterBody = zod.object({
+  labOrganizationId: zod.string(),
+  clusterKey: zod.string(),
+});
+
+export const RestoreDoctorDuplicateClusterResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      restored: zod.boolean().optional(),
     })
     .optional(),
 });

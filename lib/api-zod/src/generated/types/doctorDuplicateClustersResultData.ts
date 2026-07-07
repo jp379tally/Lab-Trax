@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { DoctorDismissedCluster } from "./doctorDismissedCluster";
 import type { DoctorDuplicateCluster } from "./doctorDuplicateCluster";
 
 export type DoctorDuplicateClustersResultData = {
@@ -13,4 +14,6 @@ export type DoctorDuplicateClustersResultData = {
   /** Total doctor entries across all clusters. */
   totalDoctors?: number;
   clusters?: DoctorDuplicateCluster[];
+  /** Server-persisted "Do not merge" dismissals for this caller's labs. */
+  dismissedClusters?: DoctorDismissedCluster[];
 };

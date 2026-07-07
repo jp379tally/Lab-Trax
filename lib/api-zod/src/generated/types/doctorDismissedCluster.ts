@@ -7,12 +7,9 @@
  */
 import type { DoctorDuplicateEntry } from "./doctorDuplicateEntry";
 
-export interface DoctorDuplicateCluster {
+export interface DoctorDismissedCluster {
   labOrganizationId?: string;
-  labName?: string | null;
-  /** Highest pairwise similarity within the cluster (0..1). */
-  topScore?: number;
-  /** Stable key for this cluster, used for dismiss/restore. */
   clusterKey?: string;
   doctors?: DoctorDuplicateEntry[];
+  dismissedAt?: string;
 }

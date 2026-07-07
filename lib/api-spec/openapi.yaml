@@ -1442,6 +1442,8 @@ paths:
         so the count matches what the merge UI would flag. Powers the
         navigation duplicate-count badge on desktop and mobile. `totalGroups`
         is the badge count; it decreases as merges collapse clusters.
+        Dismissed clusters are excluded from `clusters` and `totalGroups`, and
+        are returned separately in `dismissedClusters`.
       responses:
         "200":
           description: Duplicate clusters (may be empty)
@@ -1449,6 +1451,64 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DoctorDuplicateClustersResult"
+  /doctors/duplicate-clusters/dismiss:
+    post:
+      operationId: dismissDoctorDuplicateCluster
+      tags: [doctors]
+      summary: Permanently dismiss a suggested duplicate cluster for a lab
+      description: |
+        Records a server-side "Do not merge" dismissal for the given cluster key,
+        scoped to the lab. Dismissed clusters are excluded from the active
+        suggestions returned by `getDoctorDuplicateClusters` and from the
+        navigation badge count. All admins of the lab see the effect
+        immediately across all devices. Idempotent — dismissing an already-
+        dismissed cluster just refreshes the snapshot. Lab-admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DoctorDuplicateClusterDismissInput"
+      responses:
+        "200":
+          description: Cluster dismissed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      dismissed: { type: boolean }
+  /doctors/duplicate-clusters/restore:
+    post:
+      operationId: restoreDoctorDuplicateCluster
+      tags: [doctors]
+      summary: Restore (un-dismiss) a previously dismissed duplicate cluster
+      description: |
+        Removes the server-side dismissal for the given cluster key so the
+        cluster can be suggested again. Lab-admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DoctorDuplicateClusterRestoreInput"
+      responses:
+        "200":
+          description: Cluster restored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      restored: { type: boolean }
   /doctors/merge/preview:
     post:
       operationId: previewDoctorMerge
@@ -4870,10 +4930,39 @@ components:
         topScore:
           type: number
           description: Highest pairwise similarity within the cluster (0..1).
+        clusterKey:
+          type: string
+          description: Stable key for this cluster, used for dismiss/restore.
         doctors:
           type: array
           items:
             $ref: "#/components/schemas/DoctorDuplicateEntry"
+    DoctorDismissedCluster:
+      type: object
+      properties:
+        labOrganizationId: { type: string }
+        clusterKey: { type: string }
+        doctors:
+          type: array
+          items:
+            $ref: "#/components/schemas/DoctorDuplicateEntry"
+        dismissedAt: { type: string }
+    DoctorDuplicateClusterDismissInput:
+      type: object
+      required: [labOrganizationId, clusterKey, doctors]
+      properties:
+        labOrganizationId: { type: string }
+        clusterKey: { type: string }
+        doctors:
+          type: array
+          items:
+            $ref: "#/components/schemas/DoctorDuplicateEntry"
+    DoctorDuplicateClusterRestoreInput:
+      type: object
+      required: [labOrganizationId, clusterKey]
+      properties:
+        labOrganizationId: { type: string }
+        clusterKey: { type: string }
     DoctorDuplicateClustersResult:
       type: object
       properties:
@@ -4891,6 +4980,11 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/DoctorDuplicateCluster"
+            dismissedClusters:
+              type: array
+              description: Server-persisted "Do not merge" dismissals for this caller's labs.
+              items:
+                $ref: "#/components/schemas/DoctorDismissedCluster"
     RemoveDoctorFromPracticeInput:
       type: object
       required: [existingCases]

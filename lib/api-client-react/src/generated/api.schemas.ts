@@ -1166,7 +1166,27 @@ export interface DoctorDuplicateCluster {
   labName?: string | null;
   /** Highest pairwise similarity within the cluster (0..1). */
   topScore?: number;
+  /** Stable key for this cluster, used for dismiss/restore. */
+  clusterKey?: string;
   doctors?: DoctorDuplicateEntry[];
+}
+
+export interface DoctorDismissedCluster {
+  labOrganizationId?: string;
+  clusterKey?: string;
+  doctors?: DoctorDuplicateEntry[];
+  dismissedAt?: string;
+}
+
+export interface DoctorDuplicateClusterDismissInput {
+  labOrganizationId: string;
+  clusterKey: string;
+  doctors: DoctorDuplicateEntry[];
+}
+
+export interface DoctorDuplicateClusterRestoreInput {
+  labOrganizationId: string;
+  clusterKey: string;
 }
 
 export type DoctorDuplicateClustersResultData = {
@@ -1175,6 +1195,8 @@ export type DoctorDuplicateClustersResultData = {
   /** Total doctor entries across all clusters. */
   totalDoctors?: number;
   clusters?: DoctorDuplicateCluster[];
+  /** Server-persisted "Do not merge" dismissals for this caller's labs. */
+  dismissedClusters?: DoctorDismissedCluster[];
 };
 
 export interface DoctorDuplicateClustersResult {
@@ -2736,6 +2758,24 @@ to the top.
  * @minimum 0
  */
   offset?: number;
+};
+
+export type DismissDoctorDuplicateCluster200Data = {
+  dismissed?: boolean;
+};
+
+export type DismissDoctorDuplicateCluster200 = {
+  ok?: boolean;
+  data?: DismissDoctorDuplicateCluster200Data;
+};
+
+export type RestoreDoctorDuplicateCluster200Data = {
+  restored?: boolean;
+};
+
+export type RestoreDoctorDuplicateCluster200 = {
+  ok?: boolean;
+  data?: RestoreDoctorDuplicateCluster200Data;
 };
 
 export type NotifyCaseNoteBodyMethod =
