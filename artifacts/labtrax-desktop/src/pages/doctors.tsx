@@ -302,6 +302,16 @@ export default function DoctorsPage() {
       onSuccess: () => {
         queryClientPage.invalidateQueries({ queryKey: ["cases"] });
         queryClientPage.invalidateQueries({ queryKey: ["invoices"] });
+        queryClientPage.invalidateQueries({
+          queryKey: ["cases", "legacy-doctor-directory"],
+        });
+        queryClientPage.invalidateQueries({ queryKey: ["case-doctor-names"] });
+        queryClientPage.invalidateQueries({
+          queryKey: ["case-doctor-directory"],
+        });
+        queryClientPage.invalidateQueries({
+          queryKey: ["legacy-cases-for-dropzone"],
+        });
         setUndoToast(null);
       },
     },
@@ -967,6 +977,17 @@ export default function DoctorsPage() {
             queryClientPage.invalidateQueries({ queryKey: ["cases"] });
             queryClientPage.invalidateQueries({ queryKey: ["invoices"] });
             queryClientPage.invalidateQueries({ queryKey: ["organizations"] });
+            // Keep the dashboard drop-zone picker + legacy bucket in sync.
+            queryClientPage.invalidateQueries({
+              queryKey: ["cases", "legacy-doctor-directory"],
+            });
+            queryClientPage.invalidateQueries({ queryKey: ["case-doctor-names"] });
+            queryClientPage.invalidateQueries({
+              queryKey: ["case-doctor-directory"],
+            });
+            queryClientPage.invalidateQueries({
+              queryKey: ["legacy-cases-for-dropzone"],
+            });
             setPicked(new Set());
             setSelected(null);
             setMergeDialog(null);

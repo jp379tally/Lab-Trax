@@ -207,6 +207,7 @@ export * from "./labLocationStatus";
 export * from "./labProvider";
 export * from "./labProviderList";
 export * from "./labProviderListData";
+export * from "./legacyDoctorDirectoryEntry";
 export * from "./listAuditLogsParams";
 export * from "./listCasesParams";
 export * from "./listCategoriesParams";

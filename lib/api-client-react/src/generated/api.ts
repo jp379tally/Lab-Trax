@@ -124,6 +124,7 @@ import type {
   LabLocationListResult,
   LabLocationResult,
   LabProviderList,
+  LegacyDoctorDirectoryEntry,
   ListAuditLogsParams,
   ListCasesParams,
   ListCategoriesParams,
@@ -5149,6 +5150,95 @@ export function useGetCaseDoctorNames<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getGetCaseDoctorNamesQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Returns doctor names that exist only as legacy or providerless data —
+legacy `lab_cases` blobs (which carry no providerOrganizationId) and
+canonical `cases` whose providerOrganizationId is NULL — grouped per
+lab with a case count. Customer Center uses this to surface an
+"Unassigned / legacy doctor names" bucket so orphan/typo names can be
+merged into a real canonical doctor. Scoped to the caller's authorized
+organizations (mirrors /cases/doctor-names). Unlike /cases/doctor-directory
+this is specifically the providerless set and must never be used for the
+picker's practice auto-fill.
+
+ * @summary List legacy / providerless doctor names grouped per lab
+ */
+export const getGetLegacyDoctorDirectoryUrl = () => {
+  return `/api/cases/legacy-doctor-directory`;
+};
+
+export const getLegacyDoctorDirectory = async (
+  options?: RequestInit,
+): Promise<LegacyDoctorDirectoryEntry[]> => {
+  return customFetch<LegacyDoctorDirectoryEntry[]>(
+    getGetLegacyDoctorDirectoryUrl(),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetLegacyDoctorDirectoryQueryKey = () => {
+  return [`/api/cases/legacy-doctor-directory`] as const;
+};
+
+export const getGetLegacyDoctorDirectoryQueryOptions = <
+  TData = Awaited<ReturnType<typeof getLegacyDoctorDirectory>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getLegacyDoctorDirectory>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetLegacyDoctorDirectoryQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getLegacyDoctorDirectory>>
+  > = ({ signal }) => getLegacyDoctorDirectory({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getLegacyDoctorDirectory>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetLegacyDoctorDirectoryQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getLegacyDoctorDirectory>>
+>;
+export type GetLegacyDoctorDirectoryQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List legacy / providerless doctor names grouped per lab
+ */
+
+export function useGetLegacyDoctorDirectory<
+  TData = Awaited<ReturnType<typeof getLegacyDoctorDirectory>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getLegacyDoctorDirectory>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetLegacyDoctorDirectoryQueryOptions(options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

@@ -1859,6 +1859,28 @@ export const GetCaseDoctorNamesResponse = zod.array(
 );
 
 /**
+ * Returns doctor names that exist only as legacy or providerless data —
+legacy `lab_cases` blobs (which carry no providerOrganizationId) and
+canonical `cases` whose providerOrganizationId is NULL — grouped per
+lab with a case count. Customer Center uses this to surface an
+"Unassigned / legacy doctor names" bucket so orphan/typo names can be
+merged into a real canonical doctor. Scoped to the caller's authorized
+organizations (mirrors /cases/doctor-names). Unlike /cases/doctor-directory
+this is specifically the providerless set and must never be used for the
+picker's practice auto-fill.
+
+ * @summary List legacy / providerless doctor names grouped per lab
+ */
+export const GetLegacyDoctorDirectoryResponseItem = zod.object({
+  doctorName: zod.string().optional(),
+  labOrganizationId: zod.string().optional(),
+  totalCases: zod.number().optional(),
+});
+export const GetLegacyDoctorDirectoryResponse = zod.array(
+  GetLegacyDoctorDirectoryResponseItem,
+);
+
+/**
  * Lists distinct (doctorName, providerOrganizationId) groups in the
 given lab, ranked by similarity to the optional `q` / `like`
 parameters using normalized name comparison (trim, lowercase,

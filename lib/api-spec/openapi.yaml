@@ -1383,6 +1383,30 @@ paths:
                 type: array
                 items:
                   type: string
+  /cases/legacy-doctor-directory:
+    get:
+      operationId: getLegacyDoctorDirectory
+      tags: [cases]
+      summary: List legacy / providerless doctor names grouped per lab
+      description: |
+        Returns doctor names that exist only as legacy or providerless data —
+        legacy `lab_cases` blobs (which carry no providerOrganizationId) and
+        canonical `cases` whose providerOrganizationId is NULL — grouped per
+        lab with a case count. Customer Center uses this to surface an
+        "Unassigned / legacy doctor names" bucket so orphan/typo names can be
+        merged into a real canonical doctor. Scoped to the caller's authorized
+        organizations (mirrors /cases/doctor-names). Unlike /cases/doctor-directory
+        this is specifically the providerless set and must never be used for the
+        picker's practice auto-fill.
+      responses:
+        "200":
+          description: Legacy / providerless doctor entries (may be empty)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LegacyDoctorDirectoryEntry"
   /doctors/search:
     get:
       operationId: searchDoctors
@@ -4879,6 +4903,12 @@ components:
             sourceProviderOrganizationId:
               type: string
               nullable: true
+    LegacyDoctorDirectoryEntry:
+      type: object
+      properties:
+        doctorName: { type: string }
+        labOrganizationId: { type: string }
+        totalCases: { type: integer }
     DoctorSearchEntry:
       type: object
       properties:

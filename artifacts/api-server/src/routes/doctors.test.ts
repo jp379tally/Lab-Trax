@@ -973,6 +973,112 @@ maybe("Task #382 doctor merge route (db integration)", () => {
   }, 30000);
 
   // -------------------------------------------------------------------------
+  // GET /cases/legacy-doctor-directory — the Customer Center "Unassigned /
+  // legacy doctor names" bucket source (Task #2694). Surfaces names that live
+  // only in legacy lab_cases blobs or providerless canonical cases so they can
+  // be merged into a real doctor.
+  // -------------------------------------------------------------------------
+  describe("GET /cases/legacy-doctor-directory", () => {
+    it("lists legacy/providerless names with counts, scoped per lab", async () => {
+      const { db, labCases, cases } = dbMod as any;
+      // Legacy lab_cases blobs carry no providerOrganizationId, so their doctor
+      // names never surface in Customer Center's provider-attached rows.
+      const legName = `Dr. Lauren Petral ${rid("x")}`;
+      const leg1 = await insertLegacyCase({ caseData: { doctorName: legName } });
+      const leg2 = await insertLegacyCase({ caseData: { doctorName: legName } });
+      const soloName = `Dr. Orphan Solo ${rid("x")}`;
+      const leg3 = await insertLegacyCase({ caseData: { doctorName: soloName } });
+      // A provider-attached canonical case must NOT appear in the legacy bucket.
+      const attachedName = `Dr. Attached ${rid("x")}`;
+      const canonAttached = await insertCase({
+        caseNumber: rid("CN"),
+        doctorName: attachedName,
+        practiceId: practiceAId,
+      });
+
+      const r = await request(appMod.default)
+        .get("/api/cases/legacy-doctor-directory")
+        .set("Authorization", `Bearer ${tokens.admin}`);
+      expect(r.status).toBe(200);
+      const entries = r.body.data as Array<{
+        doctorName: string;
+        labOrganizationId: string;
+        totalCases: number;
+      }>;
+
+      const leg = entries.find((e) => e.doctorName === legName);
+      expect(leg).toBeTruthy();
+      expect(leg!.labOrganizationId).toBe(labOrgId);
+      expect(leg!.totalCases).toBe(2);
+
+      const solo = entries.find((e) => e.doctorName === soloName);
+      expect(solo?.totalCases).toBe(1);
+
+      // Provider-attached canonical names are NOT part of the legacy bucket.
+      expect(entries.find((e) => e.doctorName === attachedName)).toBeUndefined();
+
+      // A different lab's admin must not see this lab's providerless names.
+      const other = await request(appMod.default)
+        .get("/api/cases/legacy-doctor-directory")
+        .set("Authorization", `Bearer ${tokens.otherLabAdmin}`);
+      expect(other.status).toBe(200);
+      expect(
+        (other.body.data as Array<{ doctorName: string }>).find(
+          (e) => e.doctorName === legName
+        )
+      ).toBeUndefined();
+
+      await db.delete(labCases).where(inArray(labCases.id, [leg1, leg2, leg3]));
+      await db.delete(cases).where(eq(cases.id, canonAttached));
+    }, 30000);
+
+    it("drops a legacy name from the directory after it is merged away", async () => {
+      const { db, labCases, cases } = dbMod as any;
+      const legName = `Dr. Petral ${rid("x")}`;
+      const targetName = `Dr. Pettis ${rid("x")}`;
+      const leg = await insertLegacyCase({ caseData: { doctorName: legName } });
+      const canonTarget = await insertCase({
+        caseNumber: rid("CN"),
+        doctorName: targetName,
+        practiceId: practiceAId,
+      });
+
+      const before = await request(appMod.default)
+        .get("/api/cases/legacy-doctor-directory")
+        .set("Authorization", `Bearer ${tokens.admin}`);
+      expect(
+        (before.body.data as Array<{ doctorName: string }>).some(
+          (e) => e.doctorName === legName
+        )
+      ).toBe(true);
+
+      const m = await request(appMod.default)
+        .post("/api/doctors/merge")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .send({
+          labOrganizationId: labOrgId,
+          targetDoctorName: targetName,
+          targetProviderOrganizationId: practiceAId,
+          sources: [{ doctorName: legName, providerOrganizationId: null }],
+        });
+      expect(m.status).toBe(200);
+      expect(m.body.data.legacyCasesMoved).toBe(1);
+
+      const after = await request(appMod.default)
+        .get("/api/cases/legacy-doctor-directory")
+        .set("Authorization", `Bearer ${tokens.admin}`);
+      expect(
+        (after.body.data as Array<{ doctorName: string }>).some(
+          (e) => e.doctorName === legName
+        )
+      ).toBe(false);
+
+      await db.delete(labCases).where(eq(labCases.id, leg));
+      await db.delete(cases).where(eq(cases.id, canonTarget));
+    }, 30000);
+  });
+
+  // -------------------------------------------------------------------------
   // GET /doctors/duplicate-clusters — the nav duplicate-count badge source.
   // -------------------------------------------------------------------------
   describe("GET /doctors/duplicate-clusters", () => {

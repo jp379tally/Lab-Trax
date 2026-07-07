@@ -4251,6 +4251,134 @@ router.get(
   })
 );
 
+// ---------------------------------------------------------------------------
+// GET /cases/legacy-doctor-directory
+// Returns doctor names that exist ONLY as legacy / providerless data — i.e.
+// legacy `lab_cases` blobs (which carry no providerOrganizationId) and
+// canonical `cases` with a NULL providerOrganizationId. These names surface in
+// the dashboard doctor-name picker (via /doctor-names) but never in Customer
+// Center, which builds its rows from provider-attached canonical cases only.
+// Grouping them per lab lets Customer Center show an "Unassigned / legacy
+// doctor names" bucket and merge each typo/orphan into a real canonical doctor.
+//
+// Scoped to the caller's authorized orgs (mirrors /doctor-names). Unlike
+// /doctor-directory, this endpoint is *specifically* the providerless set, so
+// it must never be used for the picker's practice auto-fill.
+// ---------------------------------------------------------------------------
+router.get(
+  "/legacy-doctor-directory",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+
+    const directMembershipOrgIds = (
+      await db.query.organizationMemberships.findMany({
+        where: and(
+          eq(organizationMemberships.userId, callerId),
+          eq(organizationMemberships.status, "active"),
+          isNull(organizationMemberships.deletedAt)
+        ),
+      })
+    ).map((m: any) => m.labId as string);
+    const authorizedOrgIds = new Set<string>(directMembershipOrgIds);
+    const callerUser = await db.query.users.findFirst({
+      where: eq(users.id, callerId),
+    });
+    if (callerUser?.userType === "provider") {
+      const { providerOrgIds } =
+        await getProviderOrgIdsForUserAndLinks(callerId);
+      for (const id of providerOrgIds) authorizedOrgIds.add(id);
+    }
+
+    const membershipOrgIds = Array.from(authorizedOrgIds);
+    if (!membershipOrgIds.length) return ok(res, []);
+
+    const [canonicalRows, mobileRows] = await Promise.all([
+      // Canonical cases that were never attached to a practice.
+      db
+        .select({
+          doctorName: cases.doctorName,
+          labOrganizationId: cases.labOrganizationId,
+          caseCount: sql<number>`count(*)::int`,
+        })
+        .from(cases)
+        .where(
+          and(
+            inArray(cases.labOrganizationId, membershipOrgIds),
+            notDeleted(cases),
+            isNotNull(cases.doctorName),
+            ne(cases.doctorName, ""),
+            isNull(cases.providerOrganizationId)
+          )
+        )
+        .groupBy(cases.doctorName, cases.labOrganizationId),
+      // Legacy mobile cases store the doctor name inside a JSON blob and never
+      // carry a providerOrganizationId, so every one of them is providerless.
+      db
+        .select({
+          caseData: labCases.caseData,
+          labOrganizationId: labCases.organizationId,
+        })
+        .from(labCases)
+        .where(
+          and(
+            isNull(labCases.deletedAt),
+            inArray(labCases.organizationId, membershipOrgIds)
+          )
+        ),
+    ]);
+
+    // Aggregate per (labOrganizationId, doctorName). Group case-insensitively
+    // but keep the first-seen display spelling so the merge dialog sends a name
+    // the case-insensitive merge WHERE clause still matches.
+    const agg = new Map<
+      string,
+      { doctorName: string; labOrganizationId: string; totalCases: number }
+    >();
+    const add = (name: string, labId: string, count: number) => {
+      const trimmed = name.trim();
+      if (!trimmed || !labId) return;
+      const key = `${labId}|${trimmed.toLowerCase()}`;
+      const existing = agg.get(key);
+      if (existing) {
+        existing.totalCases += count;
+      } else {
+        agg.set(key, {
+          doctorName: trimmed,
+          labOrganizationId: labId,
+          totalCases: count,
+        });
+      }
+    };
+
+    for (const row of canonicalRows) {
+      add(
+        String(row.doctorName ?? ""),
+        String(row.labOrganizationId ?? ""),
+        Number(row.caseCount ?? 0)
+      );
+    }
+    for (const mr of mobileRows) {
+      try {
+        const parsed =
+          typeof mr.caseData === "string"
+            ? JSON.parse(mr.caseData)
+            : mr.caseData;
+        const n = String(parsed?.doctorName ?? "").trim();
+        if (n) add(n, String(mr.labOrganizationId ?? ""), 1);
+      } catch {
+        // skip malformed rows
+      }
+    }
+
+    const out = Array.from(agg.values()).sort((a, b) => {
+      if (b.totalCases !== a.totalCases) return b.totalCases - a.totalCases;
+      return a.doctorName.localeCompare(b.doctorName);
+    });
+
+    return ok(res, out);
+  })
+);
+
 router.get(
   "/",
   asyncHandler(async (req, res) => {

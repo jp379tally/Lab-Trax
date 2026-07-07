@@ -1131,6 +1131,12 @@ export interface DoctorMergeUndoResult {
   data?: DoctorMergeUndoResultData;
 }
 
+export interface LegacyDoctorDirectoryEntry {
+  doctorName?: string;
+  labOrganizationId?: string;
+  totalCases?: number;
+}
+
 export interface DoctorSearchEntry {
   doctorName?: string;
   providerOrganizationId?: string | null;

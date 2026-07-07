@@ -7,6 +7,7 @@ import {
   ArrowUp,
   ArrowUpDown,
   Building2,
+  AlertTriangle,
   CheckSquare,
   ChevronDown,
   ChevronRight,
@@ -38,6 +39,7 @@ import {
   useUndoDoctorMerge,
   useGetDoctorDuplicateClusters,
   getGetDoctorDuplicateClustersQueryKey,
+  type LegacyDoctorDirectoryEntry,
 } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -450,6 +452,49 @@ export default function AccountsPage() {
     return map;
   }, [cases, invoices]);
 
+  // Legacy / providerless doctor names — these live only in legacy `lab_cases`
+  // blobs or in canonical cases with a NULL providerOrganizationId, so the
+  // provider-attached practice table below never surfaces them. We pull them
+  // separately so admins can merge orphan/typo names into a real canonical
+  // doctor. Admin-only + only on the practices view (Customer Center).
+  const legacyDirectoryQuery = useQuery({
+    queryKey: ["cases", "legacy-doctor-directory"],
+    queryFn: () =>
+      apiFetch<LegacyDoctorDirectoryEntry[]>("/cases/legacy-doctor-directory"),
+    enabled: isAdmin && pageView === "practices",
+  });
+
+  const legacyDoctorRows = useMemo<DoctorRow[]>(() => {
+    const entries = legacyDirectoryQuery.data ?? [];
+    const rows: DoctorRow[] = [];
+    for (const e of entries) {
+      const labId = e.labOrganizationId || "";
+      // Only surface names in labs the caller administers — merging is
+      // admin-only and selection gates on adminLabIds below.
+      if (!labId || !adminLabIds.has(labId)) continue;
+      const name = (e.doctorName || "").trim();
+      if (!name) continue;
+      rows.push({
+        key: `legacy|${labId}|${normalizeDoctorName(name)}`,
+        doctorName: name,
+        practiceName: "Unassigned / legacy doctor names",
+        // Empty practiceId → the merge loop sends providerOrganizationId: null.
+        practiceId: "",
+        labOrganizationId: labId,
+        totalCases: Number(e.totalCases ?? 0),
+        openCases: 0,
+        rushCases: 0,
+        totalBilled: 0,
+        lastCaseAt: null,
+        hasAiImportedCase: false,
+      });
+    }
+    return rows.sort((a, b) => {
+      if (b.totalCases !== a.totalCases) return b.totalCases - a.totalCases;
+      return a.doctorName.localeCompare(b.doctorName);
+    });
+  }, [legacyDirectoryQuery.data, adminLabIds]);
+
   const doctorRows = useMemo<DoctorRow[]>(() => {
     const billedByCase = new Map<string, number>();
     for (const inv of invoices) {
@@ -529,6 +574,15 @@ export default function AccountsPage() {
     }
     return map;
   }, [doctorRows]);
+
+  // Canonical practice-attached doctors plus the legacy/providerless bucket.
+  // Used by the merge flow so a legacy name selected in the bucket resolves to
+  // a real source (with providerOrganizationId: null) and the cross-lab guard
+  // sees both kinds of picked rows.
+  const allDoctorRows = useMemo<DoctorRow[]>(
+    () => [...doctorRows, ...legacyDoctorRows],
+    [doctorRows, legacyDoctorRows]
+  );
 
   const archivedCount = useMemo(() => orgs.filter((o) => !!o.deletedAt).length, [orgs]);
 
@@ -1036,7 +1090,7 @@ export default function AccountsPage() {
                 onClick={() => {
                   const sources: MergeSourceInput[] = [];
                   let labId = "";
-                  for (const r of doctorRows) {
+                  for (const r of allDoctorRows) {
                     if (!picked.has(r.key)) continue;
                     if (!labId) labId = r.labOrganizationId;
                     sources.push({
@@ -1307,7 +1361,7 @@ export default function AccountsPage() {
                                   next.delete(doctor.key);
                                   return next;
                                 }
-                                const firstPickedLab = doctorRows.find((x) => prev.has(x.key))?.labOrganizationId;
+                                const firstPickedLab = allDoctorRows.find((x) => prev.has(x.key))?.labOrganizationId;
                                 if (firstPickedLab && firstPickedLab !== doctor.labOrganizationId) next.clear();
                                 next.add(doctor.key);
                                 return next;
@@ -1377,6 +1431,78 @@ export default function AccountsPage() {
             </tbody>
           </table>
         </div>
+
+        {isAdmin && legacyDoctorRows.length > 0 && (
+          <div className="mt-4 rounded-lg border border-border bg-card">
+            <div className="flex items-start gap-3 px-4 py-3 border-b border-border">
+              <div className="h-7 w-7 rounded-md bg-warning/10 text-warning flex items-center justify-center shrink-0">
+                <AlertTriangle size={14} />
+              </div>
+              <div>
+                <div className="font-medium text-sm">
+                  Unassigned / legacy doctor names
+                  <span className="ml-2 text-[10px] font-normal bg-warning/10 text-warning rounded-full px-2 py-0.5 tabular-nums">
+                    {legacyDoctorRows.length}
+                  </span>
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5 max-w-2xl">
+                  These doctor names appear on legacy or unlinked cases and are
+                  not attached to any practice. Select one or more and click
+                  “Merge doctors” above to fold them into a real doctor.
+                </div>
+              </div>
+            </div>
+            <div className="divide-y divide-border/60">
+              {legacyDoctorRows.map((row) => {
+                const isPicked = picked.has(row.key);
+                const lab = orgs.find((o) => o.id === row.labOrganizationId);
+                const labName = lab?.displayName || lab?.name || "";
+                return (
+                  <div
+                    key={row.key}
+                    onClick={() => {
+                      setPicked((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(row.key)) {
+                          next.delete(row.key);
+                          return next;
+                        }
+                        const firstPickedLab = allDoctorRows.find((x) =>
+                          prev.has(x.key)
+                        )?.labOrganizationId;
+                        if (
+                          firstPickedLab &&
+                          firstPickedLab !== row.labOrganizationId
+                        )
+                          next.clear();
+                        next.add(row.key);
+                        return next;
+                      });
+                    }}
+                    className="flex items-center gap-2.5 px-4 py-2.5 cursor-pointer hover:bg-secondary/30"
+                  >
+                    <div className="shrink-0">
+                      {isPicked ? (
+                        <CheckSquare size={14} className="text-primary" />
+                      ) : (
+                        <Square size={14} className="text-muted-foreground" />
+                      )}
+                    </div>
+                    <span className="text-sm font-medium">{row.doctorName}</span>
+                    {labName && (
+                      <span className="text-xs text-muted-foreground">
+                        · {labName}
+                      </span>
+                    )}
+                    <span className="ml-auto inline-flex items-center justify-center min-w-[2rem] px-1.5 py-0.5 rounded-full bg-secondary text-muted-foreground text-xs font-semibold tabular-nums">
+                      {row.totalCases}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>}
 
       {editing && <PracticeEditor org={editing} onClose={() => setEditing(null)} />}
@@ -1453,6 +1579,17 @@ export default function AccountsPage() {
             queryClient.invalidateQueries({ queryKey: ["invoices"] });
             queryClient.invalidateQueries({
               queryKey: getGetDoctorDuplicateClustersQueryKey(),
+            });
+            // The merge rewrote canonical + legacy doctor names, so refresh the
+            // legacy/providerless bucket here and the dashboard drop-zone's
+            // doctor-name picker + directory + legacy-cases caches.
+            queryClient.invalidateQueries({
+              queryKey: ["cases", "legacy-doctor-directory"],
+            });
+            queryClient.invalidateQueries({ queryKey: ["case-doctor-names"] });
+            queryClient.invalidateQueries({ queryKey: ["case-doctor-directory"] });
+            queryClient.invalidateQueries({
+              queryKey: ["legacy-cases-for-dropzone"],
             });
             setPicked(new Set());
             setSelectedDoctor(null);
