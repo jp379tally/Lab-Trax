@@ -18,8 +18,11 @@ interface LabLookupResult {
   id: string;
   name: string;
   displayName: string;
+  addressLine1: string | null;
   city: string | null;
   state: string | null;
+  zip: string | null;
+  phone: string | null;
 }
 
 interface MyJoinRequest {
@@ -333,7 +336,12 @@ export function JoinLabCard() {
             </Text>
           )}
           {labs.map((lab, idx) => {
-            const location = [lab.city, lab.state].filter(Boolean).join(", ");
+            const cityStateZip = [
+              [lab.city, lab.state].filter(Boolean).join(", "),
+              lab.zip,
+            ]
+              .filter(Boolean)
+              .join(" ");
             const sending =
               sendRequestMutation.isPending && selectedLabId === lab.id;
             return (
@@ -348,12 +356,28 @@ export function JoinLabCard() {
                   <Text style={[Typography.bodyMedium, { color: colors.text }]} numberOfLines={1}>
                     {lab.displayName || lab.name}
                   </Text>
-                  {location ? (
+                  {lab.addressLine1 ? (
                     <Text
                       style={[Typography.caption, { color: colors.textSecondary }]}
                       numberOfLines={1}
                     >
-                      {location}
+                      {lab.addressLine1}
+                    </Text>
+                  ) : null}
+                  {cityStateZip ? (
+                    <Text
+                      style={[Typography.caption, { color: colors.textSecondary }]}
+                      numberOfLines={1}
+                    >
+                      {cityStateZip}
+                    </Text>
+                  ) : null}
+                  {lab.phone ? (
+                    <Text
+                      style={[Typography.caption, { color: colors.textSecondary }]}
+                      numberOfLines={1}
+                    >
+                      {lab.phone}
                     </Text>
                   ) : null}
                 </View>

@@ -1,0 +1,126 @@
+Here’s a copy-ready Replit prompt:
+
+```text
+I want to update the LabTrax Customer Center customer detail window.
+
+Goal:
+When I click a customer in the Customer Center, the customer detail window should open with tabs across the top. The tabs should organize customer-related information and actions more clearly.
+
+Create these top-level tabs:
+
+1. Basic Info
+2. Invoices
+3. Statements
+4. Card on File
+
+Likely root cause / current limitation:
+The customer detail view currently appears to show customer information without a tabbed structure, so invoices, statements, payment-card actions, and customer forms are not organized into separate workflows. This should be implemented as a UI/UX restructuring of the customer detail window, not as a broad rewrite of the customer center.
+
+Implementation steps:
+
+1. Find the Customer Center customer detail component or route.
+   - Look for the component that renders the customer window after a customer is clicked.
+   - Preserve existing customer lookup, selection, and basic customer data loading behavior.
+
+2. Add a tabbed interface at the top of the customer detail window.
+   - Default selected tab should be `Basic Info`.
+   - Tabs should be visually clear and easy to switch between.
+   - Do not remove existing customer data. Move the existing name, address, phone number, email, and other customer profile fields into `Basic Info`.
+
+3. Build the `Basic Info` tab.
+   - Show customer name, address, phone number, email, billing details, and any existing customer profile fields already available in the app.
+   - Keep existing edit/save behavior if it already exists.
+   - If editing customer info is not currently supported, do not invent a risky new save flow unless the app already has a pattern for it.
+
+4. Build the `Invoices` tab.
+   - Add a dropdown filter with:
+     - All Invoices
+     - Open Invoices
+     - Paid Invoices
+   - Display the customer’s invoices according to the selected filter.
+   - If invoice data already exists elsewhere in the app, reuse that existing data source/API.
+   - If invoice data does not yet exist, create a clear placeholder state and mark the TODO in code without breaking the UI.
+
+5. Build the `Statements` tab.
+   - Add a dropdown filter with:
+     - All Statements
+     - Open Statements
+     - Paid Statements
+     - Send Statements
+   - Display customer statements according to the selected filter.
+   - For `Send Statements`, provide a button or action area to send a statement to the customer/doctor.
+   - Reuse existing email/send-statement logic if it exists. If not, create a safe placeholder action and explain what backend/API support is still needed.
+
+6. Build the `Card on File` tab.
+   - Include actions for:
+     - Add card on file
+     - Edit card on file
+     - Delete card on file
+     - Send Card on File authorization form
+     - Send Auto-Pay authorization form
+   - Do not expose or store raw credit card numbers unless the app already uses a secure payment processor/tokenization flow.
+   - If payment storage is not already implemented securely, show masked card information only and structure the UI for future integration with a PCI-compliant processor.
+
+7. Add Card on File and Auto-Pay form workflows.
+   - There should be two sendable forms:
+     - Card on File Authorization Form
+     - Auto-Pay Authorization Form
+   - Each form should be editable before sending.
+   - The user should be able to add or remove doctor-specific text before sending.
+   - The user should be able to place signing fields similar to DocuSign, including:
+     - Doctor signature
+     - Internal/user signature
+     - Date
+     - Initials
+     - Custom text fields if feasible
+   - After fields are placed, the user should be able to send the form by email.
+
+8. Keep the first version practical.
+   - If full DocuSign-style drag-and-drop signing fields are too large for one implementation, build the foundation cleanly:
+     - Form template preview
+     - Editable form content
+     - Add/remove signing field placeholders
+     - Send button
+     - Clear TODOs for true drag-and-drop field placement
+   - Do not hard-code this in a way that makes future DocuSign/PandaDoc/HelloSign-style integration difficult.
+
+9. Email/signature return behavior.
+   - The intended behavior is:
+     - The form is emailed to the doctor/customer.
+     - The doctor signs and returns it.
+     - The completed signed form is sent back to my email.
+   - If the app already has email sending configured, reuse it.
+   - If not, add the UI hooks and explain what backend email/signature service integration is required.
+   - Do not pretend completed e-signature routing works unless it is actually implemented.
+
+Constraints:
+- Keep the change scoped to the Customer Center customer detail window.
+- Do not break existing customer selection, customer search, or customer profile display.
+- Reuse existing UI components, styling, modals, dropdowns, buttons, and API patterns where possible.
+- Do not create duplicate invoice, statement, or customer data models if existing ones already exist.
+- Do not store raw credit card data directly in the database.
+- Use masked card display and tokenized/payment-processor-safe assumptions for card-on-file behavior.
+- Keep the layout clean and usable on desktop and smaller screens.
+- Add loading, empty, and error states for invoices, statements, card info, and forms.
+
+Regression checks:
+- Clicking a customer still opens the correct customer detail window.
+- The `Basic Info` tab shows the same customer information that was previously available.
+- Switching tabs does not lose the selected customer.
+- Invoice filter works for all/open/paid invoices.
+- Statement filter works for all/open/paid/send statements.
+- Empty invoice and statement states display cleanly.
+- Card-on-file actions do not expose raw card numbers.
+- Add/edit/delete card actions either work with the existing secure payment flow or clearly show safe placeholder behavior.
+- Card on File form and Auto-Pay form can be opened from the Card on File tab.
+- Form content can be reviewed and edited before sending.
+- Signature/date/initial placeholder fields can be added or configured, or the limitations are clearly documented.
+- Existing customer center search, list, and navigation still work after the change.
+- No unrelated customer, invoice, statement, or payment workflows are broken.
+
+Before finishing:
+- Explain which files/components were changed.
+- Explain whether invoice, statement, card storage, email, and e-signature sending were fully implemented or only scaffolded.
+- Call out any backend/API/payment/email service work still needed.
+- Run the app and verify the customer detail tabs render correctly.
+```

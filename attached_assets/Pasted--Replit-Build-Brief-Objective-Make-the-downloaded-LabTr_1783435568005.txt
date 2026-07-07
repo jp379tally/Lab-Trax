@@ -1,0 +1,148 @@
+### Replit Build Brief
+
+**Objective**
+Make the downloaded LabTrax Desktop app match the live web app in navigation order, settings behavior, logo/image rendering, auth/security state, database-backed data, and update behavior.
+
+**User-visible problem**
+The installed desktop version appears stale or divergent from the web version:
+
+* Sidebar tabs/order do not match the web version.
+* Lab logo thumbnail is broken in Admin Settings.
+* Two-factor authentication shows “Not enabled” on desktop even though the web version should reflect the current account state.
+* Republishing the web app does not appear to update the already-downloaded desktop app.
+* The desktop app needs an update notification/install flow so users do not have to manually redownload every time.
+
+**Likely root cause**
+The desktop app is a separate Electron/Vite bundle, not a live mirror of the web app. A Replit web republish updates the hosted web app, but an already-installed desktop app only changes when:
+
+1. the desktop bundle is rebuilt,
+2. the desktop app version is bumped,
+3. update artifacts are published,
+4. the installed app can reach the update feed,
+5. the renderer actually installs/relaunches into the new version.
+
+The repo already has an Electron auto-updater path in `artifacts/labtrax-desktop/electron/main.cjs`, plus update IPC in `electron/preload.cjs`, and an `UpdateBanner` mounted in `AppLayout`. That means the intended system exists, but the installed desktop build may be older, pointed at the wrong update feed, missing the latest UI bundle, or not publishing fresh update metadata.
+
+The broken lab logo and 2FA mismatch are likely caused by either a stale desktop bundle or desktop-specific API/auth/media handling. Images often break in Electron when the UI uses a normal `<img src>` against a protected media URL that requires bearer auth/cookies. Desktop requests must use bearer tokens or a signed/public image URL.
+
+**Exact areas to inspect/change**
+
+* `artifacts/labtrax-desktop/src/components/AppLayout.tsx`
+* `artifacts/labtrax-desktop/src/pages/settings.tsx`
+* `artifacts/labtrax-desktop/src/components/UpdateBanner.tsx`
+* `artifacts/labtrax-desktop/src/components/AuthedMedia.tsx`
+* `artifacts/labtrax-desktop/src/lib/api.ts`
+* `artifacts/labtrax-desktop/electron/main.cjs`
+* `artifacts/labtrax-desktop/electron/preload.cjs`
+* desktop build/publish scripts, especially anything like `scripts/desktop-build-publish.sh`
+* API routes for `/api/auth/me`, 2FA status, logo upload/media serving, and `/downloads/latest.yml`
+
+**Implementation plan**
+
+1. Confirm the installed desktop app version and compare it to `artifacts/labtrax-desktop/package.json`.
+2. Confirm the desktop app can fetch update metadata from the production update feed, likely `/downloads/latest.yml`.
+3. Make sure every desktop release increments the desktop version and republishes updater artifacts.
+4. Add or fix a visible update status panel/button in the desktop UI if the banner is not reliably visible.
+5. Make desktop navigation source match the web version exactly, ideally by sharing one nav definition or copying the same ordering contract.
+6. Fix lab logo rendering by using authenticated image loading or server-returned signed/public logo URLs.
+7. Fix 2FA status by making desktop read live account security state from the same API response or endpoint as web.
+8. Add regression checks for desktop login, `/auth/me`, logo thumbnail, 2FA state, sidebar order, and update feed behavior.
+
+**Guardrails**
+
+* Do not fork desktop behavior away from web behavior unless it is truly desktop-only, such as local file backup or iTero polling.
+* Do not rely on cookies for desktop API authentication; Electron uses bearer tokens from the desktop auth flow.
+* Do not “fix” this by telling users to redownload forever. A one-time reinstall may be acceptable only if the currently installed build predates the updater or has a bad feed URL.
+* Avoid database migrations unless the API truly lacks the needed 2FA/logo fields.
+
+**Acceptance criteria**
+
+* Desktop sidebar order exactly matches the current web app.
+* Desktop Admin Settings shows the same available tabs/features as web, except intentional desktop-only additions.
+* Lab logo thumbnail renders after login and after logo replacement.
+* 2FA status matches the live account state after refresh/logout/login.
+* Desktop update UI shows current version, latest version/status, and a clear install/relaunch action when an update is available.
+* After publishing a new desktop build, an already-installed app detects it without downloading a fresh installer manually.
+
+**Regression risks**
+
+* Auth token refresh in desktop.
+* Protected media/image downloads.
+* Admin-only settings visibility.
+* Update feed version mismatch.
+* Service worker/PWA caching if the desktop web build is served under `/desktop/`.
+* Accidentally changing web navigation while fixing desktop navigation.
+
+---
+
+### Copy-Ready Replit Prompt
+
+Debug and fix the LabTrax Desktop app so it stays in parity with the live web app.
+
+Symptoms from desktop screenshots:
+
+* Desktop sidebar tabs/order do not match the web version.
+* Admin Settings shows a broken lab logo thumbnail.
+* Two-factor authentication shows “Not enabled” on desktop even though the web version/account state should be current.
+* Republishing the web app does not update the already-installed desktop app.
+* Desktop needs a visible update notification/install flow so users do not have to redownload the app for every update.
+
+Please inspect these areas first:
+
+* `artifacts/labtrax-desktop/src/components/AppLayout.tsx`
+* `artifacts/labtrax-desktop/src/pages/settings.tsx`
+* `artifacts/labtrax-desktop/src/components/UpdateBanner.tsx`
+* `artifacts/labtrax-desktop/src/components/AuthedMedia.tsx`
+* `artifacts/labtrax-desktop/src/lib/api.ts`
+* `artifacts/labtrax-desktop/electron/main.cjs`
+* `artifacts/labtrax-desktop/electron/preload.cjs`
+* desktop build/publish scripts and update feed generation
+* API routes for `/api/auth/me`, 2FA/security status, logo/media serving, and `/downloads/latest.yml`
+
+Implement the safest fix:
+
+1. Verify whether the desktop app bundle is stale compared with the current source. If so, make sure desktop versioning, build, publish, and update-feed generation are working.
+2. Confirm Electron auto-updater is enabled in production builds, points to the correct production update feed, and updates when `package.json` version increases.
+3. Ensure the desktop UI exposes update state clearly through `UpdateBanner` or the Desktop App settings panel: current version, checking/downloading/downloaded/error, and “Restart to update.”
+4. Make desktop navigation match the web version exactly. Prefer a shared nav config/contract if available, otherwise update the desktop nav order to mirror web.
+5. Fix lab logo rendering in desktop. If the current code uses a raw `<img>` against protected media, switch it to the authenticated media component or return a signed/public URL from the API. Confirm the logo works from `app://labtrax` origin using bearer-token auth.
+6. Fix 2FA status parity. Desktop must fetch the same live 2FA/security state as web, not rely on stale local user state. Add the missing field to `/auth/me` or use the same security endpoint the web version uses.
+7. Add or update tests/checks for sidebar order, logo rendering, 2FA state, `/auth/me` desktop auth, and update-state IPC.
+
+Before finishing, explain:
+
+* whether the user’s currently installed desktop build needs a one-time reinstall to get onto the updater-capable version,
+* what version should be installed after the fix,
+* how to verify that future desktop updates arrive without redownloading,
+* any tradeoffs or assumptions you found.
+
+Run typecheck/tests for the desktop package and any touched API package.
+
+---
+
+### Debug Analysis
+
+Primary hypothesis: this is desktop/web drift caused by a stale or separately packaged Electron bundle, plus at least one desktop-specific auth/media gap.
+
+The screenshots strongly support that: the desktop UI shows old/different navigation and settings state, while the repo already contains a newer-looking desktop architecture with bearer-token API handling, update IPC, and an `UpdateBanner`. A web republish alone cannot update an installed Electron app unless the desktop build/update artifacts are also published and the installed app is capable of applying them.
+
+The broken logo points to protected media being loaded in a desktop renderer. If the image URL requires cookies or auth headers, a plain image tag will fail from `app://labtrax`. The desktop must use authenticated fetch/blob rendering or a server-provided signed/public URL.
+
+The 2FA mismatch could be stale local state, a missing field from `/auth/me`, or an old desktop settings panel that does not call the same security endpoint as web.
+
+Confidence: medium-high. I inspected the screenshots and relevant repo package/code structure, but I did not have the running app, current web screenshot, or live API responses.
+
+---
+
+### Step-by-Step Fix Plan
+
+1. In desktop, open the app version panel or add a temporary display of `window.electronAPI.getAppVersion()`.
+2. Compare that to `artifacts/labtrax-desktop/package.json`.
+3. Check whether `/downloads/latest.yml` exists and reports a newer desktop version.
+4. If the installed app does not detect the newer version, fix the updater feed/publish pipeline first.
+5. Align desktop `AppLayout` navigation with the web navigation contract.
+6. Verify `/auth/me` returns current lab logo URL and 2FA/security status for desktop bearer-token requests.
+7. Replace any raw protected logo image render with `AuthedImage` or signed URL rendering.
+8. Make the 2FA panel fetch fresh state on load and after setup/disable actions.
+9. Build and publish a new desktop version with a bumped version number.
+10. Test from an older installed desktop build: launch, detect update, install/restart, confirm sidebar/logo/2FA now match web.

@@ -84,8 +84,11 @@ describe("JoinLabCard — search results", () => {
         id: "lab-1",
         name: "Acme Dental Lab",
         displayName: "Acme Dental Lab",
+        addressLine1: "123 Main St",
         city: "Austin",
         state: "TX",
+        zip: "78701",
+        phone: "(512) 555-0100",
       },
     ];
     const { getByText, getByPlaceholderText } = renderCard();
@@ -98,7 +101,11 @@ describe("JoinLabCard — search results", () => {
     await waitFor(() => expect(getByText("Acme Dental Lab")).toBeTruthy(), {
       timeout: 3000,
     });
-    expect(getByText("Austin, TX")).toBeTruthy();
+    // Address + phone appear under the lab name so a searcher can tell apart
+    // labs with similar names.
+    expect(getByText("123 Main St")).toBeTruthy();
+    expect(getByText("Austin, TX 78701")).toBeTruthy();
+    expect(getByText("(512) 555-0100")).toBeTruthy();
     expect(getByText("Request to join")).toBeTruthy();
   });
 

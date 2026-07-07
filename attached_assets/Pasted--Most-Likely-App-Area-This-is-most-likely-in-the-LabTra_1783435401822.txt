@@ -1,0 +1,38 @@
+**Most Likely App Area**
+
+This is most likely in the **LabTrax mobile app**, specifically the Expo Router/navigation shell under `artifacts/labtrax`. The strongest repo clue is the current mobile root layout importing React Navigation’s theme provider from `@react-navigation/native`, while the latest commit added that package directly to the mobile app package.
+
+**Most Likely Problem**
+
+The app is probably hitting, or recently hit, a mobile typecheck/build failure like:
+
+```text
+Cannot find module '@react-navigation/native'
+```
+
+or a related missing peer dependency issue.
+
+The important repo detail: the workspace has `autoInstallPeers: false`, so pnpm will not silently install peer dependencies. Even if Expo Router uses React Navigation internally, LabTrax imports `@react-navigation/native` directly, so the mobile app must declare it directly.
+
+**Safest Fix**
+
+The safest fix is **dependency-only**, not a navigation refactor:
+
+1. Keep `@react-navigation/native` declared directly in the mobile app package.
+2. Keep the lockfile updated from the same pnpm install.
+3. Do not rewrite Expo Router screens, tab layout, auth gate, deep-link handling, or QR/case navigation unless tests show a real runtime bug.
+4. Run the mobile and workspace checks after the dependency change:
+
+   * `pnpm run typecheck`
+   * `pnpm --filter @workspace/labtrax run test`
+   * `pnpm --filter @workspace/scripts run lint-mobile-legacy-paths`
+
+**Copy-Ready Replit Prompt**
+
+Investigate the LabTrax mobile build/typecheck issue around `@react-navigation/native`.
+
+The affected app area is the Expo Router mobile app under `artifacts/labtrax`, especially the root layout where the app imports `ThemeProvider` from `@react-navigation/native`. Because the repo disables peer auto-installing with `autoInstallPeers: false`, any package imported directly by the mobile source must be declared directly in the mobile package.
+
+Please verify that `@react-navigation/native` is present in the mobile app package dependencies and that `pnpm-lock.yaml` is consistent. Do not refactor the router, tab layout, auth gate, deep-link handling, or case navigation unless the test output proves a runtime bug. This should be a narrow dependency/build fix.
+
+Before finishing, run `pnpm run typecheck`, `pnpm --filter @workspace/labtrax run test`, and `pnpm --filter @workspace/scripts run lint-mobile-legacy-paths`. If any check fails, explain the failure and fix only the directly related cause.
