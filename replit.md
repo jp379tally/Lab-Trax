@@ -8,7 +8,7 @@ LabTrax is a multi-tenant dental laboratory case-tracking system: an Express 5 A
 
 ## User Preferences
 
-- **Paid/publishing builds stay script-only — never Replit workflows.** EAS iOS Build + Submit and Desktop Build + Publish must be run manually from Shell (`bash scripts/eas-ios-build.sh`, `bash scripts/desktop-build-publish.sh`), never registered as Replit workflows. The reason: the workflow tooling auto-attaches any new workflow to the `Project` run aggregate (the Run button), which would fire these paid/publishing builds accidentally. Only reconsider if Replit adds a way to exclude a workflow from the `Project` aggregate; even then they must remain manual-only and off the Run button.
+- **Paid/publishing builds are gated by a one-shot approval token, not by a "never a workflow" rule.** The EAS iOS Build + Submit script (`scripts/eas-ios-build.sh`) and Desktop Build + Publish script (`scripts/desktop-build-publish.sh`) may be run via a Replit workflow. The real safety mechanism is the one-shot approval sentinel: the script no-ops (spends no credit) on every run unless `.local/.eas-build-approved` exists, and it deletes the token at the start of an approved run. Because of this, the workflow auto-attaching to the `Project` run aggregate (the Run button) does NOT cause accidental paid builds — a stray Run press just no-ops. To fire an approved build: `touch .local/.eas-build-approved`, then start/restart the "EAS iOS Build + Submit" workflow. (Superseded the earlier script-only-never-a-workflow rule at the user's request on 2026-07-07.)
 
 ## Regression Policy
 

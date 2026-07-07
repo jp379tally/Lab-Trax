@@ -101,12 +101,12 @@ args = "pnpm --filter @workspace/api-server exec vitest run --reporter=verbose s
 name = "EAS iOS Build + Submit"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "bash scripts/eas-ios-build.sh"
-
-[workflows.workflow.metadata]
-outputType = "console"
 
 [[workflows.workflow]]
 name = "rel-typecheck"
