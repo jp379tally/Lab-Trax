@@ -117,7 +117,7 @@ describe("MergeDialog — same-practice duplicate initialization", () => {
     ]);
 
     // First doctor is promoted to TARGET and must NOT remain in SOURCES.
-    expect(screen.getByText("Sources (1)")).toBeInTheDocument();
+    expect(screen.getByText("Change from (1)")).toBeInTheDocument();
 
     const sourcesList = screen.getByRole("list");
     expect(
@@ -151,7 +151,7 @@ describe("MergeDialog — same-practice duplicate initialization", () => {
 
     // Known-practice doctor is the target; only the unknown-practice ghost
     // remains as a source.
-    expect(screen.getByText("Sources (1)")).toBeInTheDocument();
+    expect(screen.getByText("Change from (1)")).toBeInTheDocument();
     const sourcesList = screen.getByRole("list");
     expect(within(sourcesList).getByText("Ghost Doctor")).toBeInTheDocument();
     expect(
@@ -213,7 +213,7 @@ describe("MergeDialog — same-practice duplicate initialization", () => {
 
     // The auto-target is the first doctor; the lowercase variant must remain a
     // source because the exact-cased keys are distinct.
-    expect(screen.getByText("Sources (1)")).toBeInTheDocument();
+    expect(screen.getByText("Change from (1)")).toBeInTheDocument();
 
     const sourcesList = screen.getByRole("list");
     expect(

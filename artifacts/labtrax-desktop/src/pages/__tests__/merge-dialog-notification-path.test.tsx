@@ -163,7 +163,7 @@ describe("MergeDialog — opened from the duplicate-doctor notification", () => 
     // excluded from SOURCES so the self-merge guard can't disable Merge.
     // Scope to the Sources <section> — the notification cluster list stays
     // mounted behind the modal, so a bare getByRole("list") is ambiguous.
-    const sourcesSection = screen.getByText("Sources (1)").closest("section")!;
+    const sourcesSection = screen.getByText("Change from (1)").closest("section")!;
     expect(within(sourcesSection).getByText("Kanesha Cole")).toBeInTheDocument();
     expect(
       within(sourcesSection).queryByText("Dr. Kanesha Cole"),
@@ -228,7 +228,7 @@ describe("MergeDialog — opened from the duplicate-doctor notification", () => 
 
     // Exactly one source survives — the other same-named doctor at the other
     // practice — because identity is keyed on name + practice, not name alone.
-    expect(screen.getByText("Sources (1)")).toBeInTheDocument();
+    expect(screen.getByText("Change from (1)")).toBeInTheDocument();
     expect(screen.queryByText(/Same as a source/i)).not.toBeInTheDocument();
     const mergeBtn = screen.getByRole("button", { name: "Merge" });
     await waitFor(() => expect(mergeBtn).toBeEnabled());

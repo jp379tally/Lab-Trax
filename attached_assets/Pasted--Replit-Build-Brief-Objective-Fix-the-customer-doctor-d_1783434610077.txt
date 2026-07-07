@@ -1,0 +1,198 @@
+### Replit Build Brief
+
+**Objective**
+Fix the customer/doctor directory mismatch so any doctor name that appears in the new-case drop-zone doctor selector can also be found, reviewed, merged, or cleaned up from Customer Center.
+
+**User-visible problem**
+`Dr. Lauren Petral` appears in the Dashboard drop-zone doctor dropdown when adding a new case, but searching `petral` in Customer Center returns no practice/doctor rows. The correct doctor, `Dr. Pettis`, does appear. This prevents the lab from merging or deleting the bad spelling.
+
+**Likely root cause**
+The two screens are not using the same doctor source:
+
+* Dashboard drop zone uses `GET /cases/doctor-names` in `artifacts/labtrax-desktop/src/components/DashboardDropZone.tsx`.
+* That endpoint includes doctor names from both canonical `cases` and legacy/mobile `lab_cases` JSON blobs in `artifacts/api-server/src/routes/cases.ts`.
+* Customer Center builds doctor rows from `GET /cases` plus practice/org data in `artifacts/labtrax-desktop/src/pages/accounts.tsx`.
+* Legacy/mobile case rows are projected with `providerOrganizationId: null`, so a doctor name like `Petral` can exist in the autocomplete list but not attach to any visible practice row in Customer Center.
+
+**Exact areas to inspect/change**
+
+* `artifacts/api-server/src/routes/cases.ts`
+
+  * `GET /cases/doctor-names`
+  * `GET /cases/doctor-directory`
+  * `GET /cases`
+  * doctor merge route, especially legacy `lab_cases` rewrite behavior
+* `artifacts/labtrax-desktop/src/components/DashboardDropZone.tsx`
+
+  * `doctorNamesQuery`
+  * `doctorDirectoryQuery`
+  * `DoctorNamePicker`
+* `artifacts/labtrax-desktop/src/pages/accounts.tsx`
+
+  * `doctorRows`
+  * `doctorsByPractice`
+  * Customer Center search/filter logic
+  * merge dialog source construction
+* `artifacts/labtrax-desktop/src/pages/doctors.tsx`
+
+  * existing `MergeDialog` / doctor merge source model
+
+**Implementation plan**
+
+1. Add a shared doctor-directory endpoint or enhance the existing one so it returns every doctor name visible to intake, with metadata:
+
+   * doctor name
+   * normalized name
+   * provider organization ID when known
+   * lab organization ID
+   * source: canonical case, legacy/mobile case, registered doctor, unassigned doctor
+   * case counts
+   * whether it is mergeable/actionable
+
+2. Update Customer Center so search checks this unified doctor directory, not only practice-attached canonical case rows.
+
+3. For legacy-only or providerless names like `Dr. Lauren Petral`, show them under a clear row such as `Unassigned / legacy doctor names` or attach them to the best-known practice when the match is safe.
+
+4. Make the merge flow accept legacy/providerless doctor-name sources, then call the existing doctor merge logic that rewrites both canonical cases and legacy `lab_cases` JSON doctor names.
+
+5. After merging `Petral` into `Pettis`, invalidate/refetch:
+
+   * `["case-doctor-names"]`
+   * `["cases"]`
+   * `["organizations"]`
+   * invoices if doctor-name matching affects invoice selection
+
+6. Optionally tighten the drop-zone picker so it does not show stale legacy-only names without context. If kept, mark them as legacy/unassigned so users know they need cleanup.
+
+**Constraints and guardrails**
+
+* Do not simply hide `Petral` from the dropdown without fixing the underlying data cleanup path.
+* Do not delete historical cases.
+* Do not hard-delete doctor/user records.
+* Preserve tenant scoping by lab organization.
+* Merge must rewrite legacy `lab_cases.caseData.doctorName` as well as canonical `cases.doctorName`.
+* Keep `Dr.` normalization consistent: `Dr. Lauren Petral`, `Lauren Petral`, and `laurenpetral` should compare as the same name.
+
+**Acceptance criteria**
+
+* Searching `petral` in Customer Center shows an actionable doctor entry.
+* The entry can be merged into `Dr. Pettis`.
+* After merge, `Petral` no longer appears in the drop-zone doctor dropdown.
+* Existing cases formerly tied to `Petral` now display `Pettis`.
+* Searching `pettis` in Customer Center shows the correct merged case history.
+* No unrelated doctors disappear from Customer Center.
+* Provider/practice scoping remains correct for SDR1.
+
+**Regression checks**
+
+* Search Customer Center by doctor typo, correct doctor, practice name, and account number.
+* Create a new case from the Dashboard drop zone and verify doctor selection still works.
+* Verify doctor-practice autofill still works for known canonical doctors.
+* Verify legacy/mobile-created cases still appear in case search.
+* Run focused tests around:
+
+  * `/cases/doctor-names`
+  * `/cases/doctor-directory`
+  * Customer Center doctor filtering
+  * doctor merge rewriting legacy `lab_cases`
+
+### Copy-Ready Replit Prompt
+
+Please fix a LabTrax data mismatch between the Dashboard drop-zone doctor picker and Customer Center.
+
+Problem: In the Dashboard drop zone / AI prescription intake, the doctor dropdown shows `Dr. Lauren Petral`. That spelling is wrong. The correct doctor is `Dr. Pettis`, which also appears. However, in Customer Center, searching `petral` returns no rows, so the bad spelling cannot be merged or cleaned up. Searching `pettis` finds the correct doctor. This means the intake doctor source and Customer Center doctor source are out of sync.
+
+Likely cause: `DashboardDropZone.tsx` uses `GET /cases/doctor-names`, and that endpoint includes doctor names from both canonical `cases` and legacy/mobile `lab_cases` JSON blobs. Customer Center in `accounts.tsx` builds its doctor rows from visible practice/case data, and legacy/providerless doctor names can have `providerOrganizationId: null`, so they appear in intake autocomplete but not in any Customer Center practice row.
+
+Please inspect and update these areas:
+
+* `artifacts/api-server/src/routes/cases.ts`
+
+  * `GET /cases/doctor-names`
+  * `GET /cases/doctor-directory`
+  * `GET /cases`
+  * existing doctor merge route, especially whether it rewrites legacy `lab_cases.caseData.doctorName`
+* `artifacts/labtrax-desktop/src/components/DashboardDropZone.tsx`
+
+  * `doctorNamesQuery`
+  * `doctorDirectoryQuery`
+  * `DoctorNamePicker`
+* `artifacts/labtrax-desktop/src/pages/accounts.tsx`
+
+  * Customer Center `doctorRows`
+  * `doctorsByPractice`
+  * search/filter logic
+  * merge dialog source construction
+* `artifacts/labtrax-desktop/src/pages/doctors.tsx`
+
+  * existing doctor merge dialog/source types
+
+Desired fix: Customer Center must be able to find and act on every doctor name that appears in the drop-zone doctor picker. If a name only exists in legacy/mobile cases or has no provider practice, show it as an actionable `Unassigned / legacy doctor` row or similar, and allow it to be merged into the correct doctor. Do not just hide the bad name from the dropdown unless the underlying data can also be cleaned up.
+
+Required behavior:
+
+1. Searching `petral` in Customer Center shows `Dr. Lauren Petral` or `Lauren Petral` as an actionable doctor entry.
+2. The user can merge that entry into `Dr. Pettis`.
+3. The merge rewrites canonical cases and legacy `lab_cases` JSON doctor names.
+4. After merge and cache invalidation, `Petral` no longer appears in the Dashboard drop-zone doctor dropdown.
+5. `Pettis` remains available and shows the merged case history.
+6. Tenant/lab scoping remains safe.
+
+Please add focused regression tests for the mismatch: seed or mock a legacy-only doctor typo returned by `/cases/doctor-names`, verify it appears in Customer Center search, merge it into the canonical/correct spelling, and verify `/cases/doctor-names` no longer returns the typo. Explain any tradeoffs if the existing merge API cannot handle providerless legacy names yet.
+
+### Debug Analysis
+
+**Primary root-cause hypothesis**
+`Petral` is probably a legacy/mobile or providerless doctor-name string coming from `lab_cases.caseData.doctorName`. The drop-zone doctor picker includes those names through `/cases/doctor-names`, but Customer Center only renders doctors that can be grouped under visible practices from case/provider data. Since the bad name has no usable provider/practice row, Customer Center search cannot find it.
+
+**Supporting evidence**
+
+* Screenshot 1 shows `Dr. Lauren Petral` in the Dashboard drop-zone doctor dropdown.
+* Screenshot 2 shows Customer Center search for `petral` returns zero matches.
+* Current `DashboardDropZone.tsx` uses `/cases/doctor-names`.
+* Current `/cases/doctor-names` reads both canonical `cases.doctorName` and legacy `lab_cases.caseData.doctorName`.
+* Current `accounts.tsx` builds Customer Center doctor rows from `GET /cases`, then groups by `providerOrganizationId`; providerless legacy rows do not naturally land under a practice.
+* `/cases/doctor-directory` explicitly excludes legacy `lab_cases` because they lack `providerOrganizationId`.
+
+**Alternate hypotheses worth checking**
+
+* `Petral` may be in an unassigned-doctors holding table and excluded from Customer Center practice rows.
+* `Petral` may be archived/deleted or linked only to closed/no-open cases, though the screenshot suggests even the Customer Center search finds nothing.
+* There may be a cache invalidation issue after a prior merge, but the persistent dropdown appearance points more strongly to a source mismatch.
+
+**Why this fix is best**
+The correct fix is not only to remove `Petral` from the dropdown. The lab needs an admin-visible cleanup path for every doctor string that can affect intake, pricing, search, or case history. A unified doctor directory/cleanup surface fixes both the symptom and the data governance problem.
+
+**Confidence level**
+High on the source mismatch. Medium-high on `Petral` specifically being legacy/providerless until Replit checks the live database row.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce with live data:
+
+   * Search `petral` in `/cases/doctor-names`.
+   * Search `petral` in `/cases?search=petral`.
+   * Inspect whether matching rows are canonical `cases`, legacy `lab_cases`, unassigned doctors, or archived data.
+
+2. Add or enhance a unified doctor-directory API that includes canonical, legacy, registered, and unassigned doctor names with source metadata.
+
+3. Update Customer Center to use that directory for search and merge sources.
+
+4. Add a visible bucket for providerless names, such as `Unassigned / legacy doctor names`.
+
+5. Extend merge handling if needed so a providerless/legacy source can be merged into `Dr. Pettis`.
+
+6. Ensure merge rewrites:
+
+   * `cases.doctorName`
+   * `lab_cases.caseData.doctorName`
+   * any related doctor-name references used by invoices/search, if present
+
+7. Invalidate relevant React Query caches after merge.
+
+8. Verify manually:
+
+   * `petral` appears in Customer Center before merge.
+   * Merge `Petral` into `Pettis`.
+   * `petral` no longer appears in Customer Center or drop-zone dropdown.
+   * `pettis` remains visible and has the expected history.

@@ -1816,7 +1816,7 @@ export function MergeDialog({
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
           <section>
             <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
-              {singleReassign ? "Current doctor" : `Sources (${sources.length})`}
+              {singleReassign ? "Current doctor" : `Change from (${sources.length})`}
             </div>
             {sources.length === 0 ? (
               <div className="text-sm text-muted-foreground border border-dashed border-border rounded-md px-3 py-3">
@@ -1854,7 +1854,7 @@ export function MergeDialog({
           <section>
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                {singleReassign ? "Reassign to" : "Target"}
+                {singleReassign ? "Reassign to" : "Change to"}
               </div>
               {!singleReassign && (
                 <div className="flex items-center rounded-md border border-border text-xs overflow-hidden">

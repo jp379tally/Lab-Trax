@@ -1,0 +1,147 @@
+### Replit Build Brief
+
+**Objective**
+Fix LabTrax Desktop so case photos are visible and open correctly, specifically including case `26-168` for `Midge Asher`, without regressing website or mobile photo viewing.
+
+**Updated user-visible problem**
+After the last Replit fix and republish, desktop still cannot display photos. Both an old photo from before the republish and a new photo taken after the republish fail in the desktop app. The website and mobile app can still show photos.
+
+**Revised likely root cause**
+This is no longer likely to be only a stale desktop build. The strongest hypothesis is that the Electron desktop renderer still cannot successfully fetch protected image bytes from the API.
+
+The desktop app runs from `app://labtrax`, while the API/media files are served from `https://lab-trax.replit.app`. Unlike the website, that makes desktop media fetches cross-origin. Unlike mobile, Electron renderer fetches are still browser-like and can fail because of CORS, redirects, missing auth headers, or protected file responses.
+
+The current backend tests appear to prove the route is not `401/403` in server-side tests, but they do **not** prove that the Electron renderer can fetch the image, receive valid headers, create a blob URL, and display it.
+
+**Exact areas to inspect/change**
+
+* `artifacts/labtrax-desktop/src/components/AuthedMedia.tsx`
+* `artifacts/labtrax-desktop/src/pages/cases.tsx`
+* `AttachmentRow`
+* image lightbox behavior
+* history attachment thumbnails
+* `artifacts/labtrax-desktop/electron/main.cjs`
+* `artifacts/labtrax-desktop/electron/preload.cjs`
+* backend file route for:
+  `/api/cases/:caseId/attachments/:attachmentId/file`
+
+**Recommended fix**
+Add a desktop-only media fetch bridge through Electron main process, then make `AuthedMedia` use it when running inside desktop.
+
+The Electron main process can fetch protected media using `net.fetch` and the stored desktop bearer token, avoiding renderer CORS/redirect/image-header problems. The renderer should receive bytes plus MIME type, create a Blob/Object URL, and render the photo normally.
+
+Keep the existing browser/web path intact.
+
+**Implementation plan**
+
+1. Reproduce using case `26-168`, patient `Midge Asher`.
+2. Open desktop DevTools and confirm whether the image fetch is failing due to `401`, `403`, `404`, CORS, redirect, or blob load failure.
+3. Add an Electron IPC handler such as `media:fetch-authenticated` in `electron/main.cjs`.
+4. In that handler:
+
+   * accept only `http`/`https` URLs pointing to the configured LabTrax API origin
+   * get the desktop access token from the existing auth store
+   * fetch with `Authorization: Bearer <token>`
+   * return `{ ok, status, mimeType, buffer }`
+   * do not expose arbitrary local file reads or third-party token forwarding
+5. Expose the handler safely in `electron/preload.cjs`.
+6. Update `AuthedMedia.tsx`:
+
+   * if `window.electronAPI.media.fetchAuthenticated` exists and the URL is same API origin, use it
+   * otherwise keep the current `authedFetch` browser path
+   * preserve `data:` and `blob:` handling
+   * show a visible fallback on error
+7. Ensure `AttachmentRow`, lightbox, and history thumbnails all continue to use `AuthedImage`.
+8. Add regression coverage for the desktop media path.
+9. Rebuild and publish desktop.
+10. Verify web and mobile still render the same photos.
+
+**Guardrails**
+
+* Do not make protected media public.
+* Do not remove bearer auth.
+* Do not change mobile upload or photo viewing behavior.
+* Do not change storage schema.
+* Do not rely on raw `storageKey` URLs for desktop display.
+* Do not treat this as fixed until case `26-168` desktop preview works.
+
+**Acceptance criteria**
+
+* Desktop Files tab shows thumbnails for case `26-168`.
+* Clicking the photo opens the full preview/lightbox in desktop.
+* A newly captured photo after the fix also appears in desktop.
+* Website still shows the same old and new photos.
+* Mobile still shows the same old and new photos.
+* No protected media endpoint becomes public.
+
+### Copy-Ready Replit Prompt
+
+We still have a LabTrax Desktop photo-viewing bug. Website and mobile can show photos, but the desktop app cannot. This remained broken after republishing desktop. Both an old photo and a newly taken photo after the republish fail. Use case `26-168` for `Midge Asher` as the reproduction case.
+
+Important: do not treat this as only a stale desktop build problem. The current evidence points to a desktop/Electron media-fetch problem.
+
+Please inspect:
+
+* `artifacts/labtrax-desktop/src/components/AuthedMedia.tsx`
+* `artifacts/labtrax-desktop/src/pages/cases.tsx`
+* `AttachmentRow`
+* image lightbox rendering
+* history attachment thumbnails
+* `artifacts/labtrax-desktop/electron/main.cjs`
+* `artifacts/labtrax-desktop/electron/preload.cjs`
+* `/api/cases/:caseId/attachments/:attachmentId/file`
+
+Likely root cause: desktop runs from `app://labtrax`, so protected media fetches to `https://lab-trax.replit.app` are cross-origin. Website is same-origin and mobile is native, so they work. Desktop likely fails because the renderer cannot fetch protected image bytes due to CORS, redirect, missing auth, or blob/object URL failure.
+
+Please implement the safest fix:
+
+1. Reproduce on desktop with case `26-168`, `Midge Asher`.
+2. Check desktop DevTools/network logs for the failed image request.
+3. Add a desktop-only Electron media fetch bridge:
+
+   * main process handler fetches same-API-origin media using the existing stored desktop bearer token
+   * use Electron `net.fetch` or equivalent from main process
+   * return bytes and MIME type to renderer
+   * reject third-party URLs so tokens cannot leak
+4. Expose the bridge through preload as something like `window.electronAPI.media.fetchAuthenticated`.
+5. Update `AuthedMedia.tsx` so desktop uses this bridge for same-API-origin images/videos, while website keeps the existing browser `authedFetch` path.
+6. Keep `data:` and `blob:` URL handling unchanged.
+7. Make sure Files tab thumbnails, image lightbox, and history thumbnails all use the fixed `AuthedImage`.
+8. Add regression tests proving desktop protected media is fetched through the Electron bridge and rendered as a blob URL.
+9. Rebuild and publish the desktop app.
+
+Do not make media public. Do not weaken auth. Do not change mobile behavior unless you find a proven shared API bug. Before finishing, verify desktop case `26-168` shows old and new photos, then verify website and mobile still show photos.
+
+### Debug Analysis
+
+**Primary root-cause hypothesis**
+Desktop still cannot fetch protected image bytes from the media file endpoint. The screenshot shows the desktop preview opening but not rendering the image, which means the UI path is being reached, but the image source never becomes a usable rendered image.
+
+**Supporting evidence**
+
+* Old and new photos both fail after republish, so it is not just an old attachment format.
+* Website and mobile both work, so the image data is probably present.
+* Desktop is Electron and cross-origin from the API.
+* Existing backend tests check auth status server-side, but not Electron renderer fetch/CORS/blob rendering.
+* The desktop preview/lightbox uses protected media URLs that require bearer auth.
+
+**Alternate hypotheses worth checking**
+
+* The `/attachments/:id/file` route redirects to storage in a way that drops auth or fails CORS.
+* The desktop token is not available when `AuthedImage` fetches the photo.
+* The route returns the wrong MIME type for desktop-created photos.
+* The lightbox has no fallback, so a fetch error appears as a blank black preview.
+
+**Why the Electron bridge is the best fix**
+It is desktop-only, avoids changing web/mobile, preserves protected media auth, and removes the fragile browser-renderer cross-origin fetch from the desktop media path.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce in desktop on case `26-168`.
+2. Capture the failed media request status/error.
+3. Add the Electron authenticated media IPC bridge.
+4. Wire `AuthedMedia` to use that bridge only in desktop.
+5. Keep the existing web/mobile paths unchanged.
+6. Add desktop regression tests.
+7. Rebuild/publish desktop.
+8. Verify old photo, new photo, thumbnail, lightbox, website, and mobile.
