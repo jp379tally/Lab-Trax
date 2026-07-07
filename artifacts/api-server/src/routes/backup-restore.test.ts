@@ -137,30 +137,22 @@ function buildSyntheticBackup(
 }
 
 /**
- * Observe phase transitions during an executeRestore call.
- * Yields to the event loop via setImmediate between observations so
- * intermediate phases (clearing_sessions, post-restore validating) are
- * captured between the real async I/O awaits inside executeRestore.
+ * Return the ordered phase sequence of an executeRestore call.
+ * Reads backupLib.getRestoreHistory() after the restore settles — the history
+ * is appended synchronously as each phase is entered, so every phase (including
+ * brief ones like clearing_sessions) is captured deterministically, unlike a
+ * poll of getRestoreState() which can skip a fast phase under load.
  */
 async function capturePhases(
   restorePromise: Promise<unknown>,
 ): Promise<string[]> {
-  const phases: string[] = [];
-  let settled = false;
-
-  restorePromise
-    .then(() => { settled = true; })
-    .catch(() => { settled = true; });
-
-  while (!settled) {
-    const phase = backupLib.getRestoreState().phase;
-    if (phase !== phases[phases.length - 1]) phases.push(phase);
-    await new Promise<void>((r) => setImmediate(r));
-  }
-
-  const final = backupLib.getRestoreState().phase;
-  if (final !== phases[phases.length - 1]) phases.push(final);
-  return phases;
+  // Wait for the restore to settle, then read the authoritative phase history
+  // recorded synchronously inside setRestorePhase. Polling getRestoreState()
+  // between setImmediate yields can miss a phase whose only await (e.g. the
+  // clearing_sessions orphan DELETE) resolves before the poll runs again —
+  // that race made this flaky under full-suite concurrency.
+  await restorePromise.catch(() => { /* phase=error is recorded in history */ });
+  return backupLib.getRestoreHistory();
 }
 
 // ── module refs (populated in beforeAll) ─────────────────────────────────────

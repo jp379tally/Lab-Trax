@@ -239,9 +239,19 @@ let _restoreState: RestoreState = {
   completedAt: null,
 };
 let _restoreInProgress = false;
+// Ordered record of every phase entered during the current/last restore.
+// Appended synchronously in setRestorePhase so observers can read the full
+// sequence deterministically after the restore settles, without polling
+// getRestoreState() (a poll can miss a phase whose only await resolves fast).
+let _restoreHistory: RestorePhase[] = [];
 
 export function getRestoreState(): RestoreState {
   return { ..._restoreState };
+}
+
+/** Ordered list of phases entered during the current/last restore. */
+export function getRestoreHistory(): RestorePhase[] {
+  return [..._restoreHistory];
 }
 
 function setRestorePhase(phase: RestorePhase, message?: string) {
@@ -250,6 +260,9 @@ function setRestorePhase(phase: RestorePhase, message?: string) {
     phase,
     message: message ?? null,
   };
+  if (_restoreHistory[_restoreHistory.length - 1] !== phase) {
+    _restoreHistory.push(phase);
+  }
 }
 
 /** Query live row counts used to populate the backup manifest. */
@@ -459,6 +472,7 @@ export async function executeRestore(
     startedAt: new Date().toISOString(),
     completedAt: null,
   };
+  _restoreHistory = ["validating"];
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "labtrax-restore-"));
   try {
@@ -778,6 +792,9 @@ export async function executeRestore(
       startedAt: _restoreState.startedAt,
       completedAt: new Date().toISOString(),
     };
+    if (_restoreHistory[_restoreHistory.length - 1] !== "done") {
+      _restoreHistory.push("done");
+    }
 
     return { manifest };
   } catch (err: unknown) {
@@ -788,6 +805,9 @@ export async function executeRestore(
       startedAt: _restoreState.startedAt,
       completedAt: new Date().toISOString(),
     };
+    if (_restoreHistory[_restoreHistory.length - 1] !== "error") {
+      _restoreHistory.push("error");
+    }
     throw err;
   } finally {
     _restoreInProgress = false;

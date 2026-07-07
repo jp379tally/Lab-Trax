@@ -208,11 +208,10 @@ describe("run", () => {
     // Missing = c,d,e (oldest-first). chunk size 2 -> boundaries d, e.
     expect(result.pushedChunks).toBe(2);
     expect(gitMock.push).toHaveBeenCalledTimes(2);
-    expect(gitMock.writeRef).toHaveBeenCalledTimes(2);
 
-    // writeRef stages each boundary before its push.
-    expect(gitMock.writeRef.mock.calls[0][0]).toMatchObject({ value: "d" });
-    expect(gitMock.writeRef.mock.calls[1][0]).toMatchObject({ value: "e" });
+    // Each boundary commit is pushed directly by its OID (no temp ref / writeRef).
+    expect(gitMock.push.mock.calls[0][0]).toMatchObject({ ref: "d" });
+    expect(gitMock.push.mock.calls[1][0]).toMatchObject({ ref: "e" });
 
     // Every push is fast-forward only (force:false) to the real branch ref.
     for (const call of gitMock.push.mock.calls) {
@@ -222,8 +221,10 @@ describe("run", () => {
       });
     }
 
-    // Temp ref is cleaned up after a successful run.
-    expect(gitMock.deleteRef).toHaveBeenCalled();
+    // The boundary-OID push never writes into .git/refs, so there is no temp
+    // ref to stage or clean up.
+    expect(gitMock.writeRef).not.toHaveBeenCalled();
+    expect(gitMock.deleteRef).not.toHaveBeenCalled();
   });
 
   it("refuses to push and exits with code 2 when histories have diverged", async () => {
@@ -253,10 +254,10 @@ describe("run", () => {
     // All three commits, single chunk (boundary = newest "c").
     expect(result.pushedChunks).toBe(1);
     expect(gitMock.push).toHaveBeenCalledTimes(1);
-    expect(gitMock.writeRef.mock.calls[0][0]).toMatchObject({ value: "c" });
+    expect(gitMock.push.mock.calls[0][0]).toMatchObject({ ref: "c" });
   });
 
-  it("exits with code 3 and cleans up the temp ref when a push fails", async () => {
+  it("exits with code 3 when a push fails", async () => {
     const gitMock = makeGitMock({
       localTip: "e",
       remoteTips: ["b"],
@@ -267,8 +268,8 @@ describe("run", () => {
     await expect(run(baseOpts(gitMock, { chunkSize: 2 }))).rejects.toMatchObject(
       { code: 3 },
     );
-    // Temp ref cleanup still runs after the failure.
-    expect(gitMock.deleteRef).toHaveBeenCalled();
+    // The failing push was attempted (no temp ref to clean up on the OID path).
+    expect(gitMock.push).toHaveBeenCalled();
   });
 
   it("stops starting new chunks once the time budget is exceeded", async () => {

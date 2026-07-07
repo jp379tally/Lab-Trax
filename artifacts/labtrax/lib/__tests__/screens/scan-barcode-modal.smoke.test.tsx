@@ -95,7 +95,7 @@ describe("CasesListScreen — barcode scan modal", () => {
       triggerMockBarcodeScan("OUT-OF-BOX-001", null);
 
       // Run the 120 ms debounce synchronously; no async lookup should follow.
-      act(() => { vi.runAllTimers(); });
+      act(() => { vi.advanceTimersByTime(200); });
 
       expect(resilientFetch).not.toHaveBeenCalledWith(
         expect.stringContaining("barcode"),
@@ -117,7 +117,7 @@ describe("CasesListScreen — barcode scan modal", () => {
       triggerMockBarcodeScan("IN-BOX-001", null);
 
       // Fire the debounce timer; the lookup is async so we advance real time too.
-      act(() => { vi.runAllTimers(); });
+      act(() => { vi.advanceTimersByTime(200); });
 
       // Switch back to real timers so waitFor polling works normally.
       vi.useRealTimers();
@@ -154,7 +154,7 @@ describe("CasesListScreen — barcode scan modal", () => {
       simulateCameraLayout(utils);
 
       triggerMockBarcodeScan("FOUND-001", null);
-      act(() => { vi.runAllTimers(); });
+      act(() => { vi.advanceTimersByTime(200); });
 
       // Switch to real timers so the 900 ms post-match nav delay and waitFor work.
       vi.useRealTimers();
