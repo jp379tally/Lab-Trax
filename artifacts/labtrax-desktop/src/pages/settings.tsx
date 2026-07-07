@@ -19,6 +19,7 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 import { apiFetch, apiFetchArrayBuffer, apiUploadWithProgress, ApiError, notifySessionCleared, getApiOrigin, createRestoreUploadSession, sendRestoreUploadChunk } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { AuthedImage } from "@/components/AuthedMedia";
@@ -3119,13 +3120,26 @@ export function AppVersionCard() {
   const api = getDesktopUpdaterApi();
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [state, setState] = useState<DesktopUpdateState | null>(null);
+  // Tracks whether the initial getUpdateState() IPC round-trip has settled
+  // (resolved or rejected). While the bridge is present but this first call is
+  // still in flight — e.g. a cold start on a slow connection — we render a
+  // loading skeleton instead of the empty "Installed v— · never" card so the
+  // panel never looks broken or like the browser-preview fallback.
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!api) return;
     let mounted = true;
     api.getAppVersion?.().then((v) => mounted && setAppVersion(v)).catch(() => {});
-    api.getUpdateState?.().then((s) => mounted && setState(s)).catch(() => {});
+    Promise.resolve(api.getUpdateState?.())
+      .then((s) => {
+        if (mounted && s) setState(s);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (mounted) setInitialLoadDone(true);
+      });
     const off = api.onUpdateState?.((s) => mounted && setState(s));
     return () => {
       mounted = false;
@@ -3158,6 +3172,32 @@ export function AppVersionCard() {
           there and revisit Settings → Desktop app to see the version banner and
           the Check-for-updates button.
         </p>
+      </div>
+    );
+  }
+
+  // The bridge is present but the first getUpdateState() round-trip hasn't
+  // settled yet (e.g. cold start on a slow connection). Show a loading skeleton
+  // so the panel doesn't flash an empty "Installed v— · never" card — and so it
+  // is never mistaken for the browser-preview fallback above.
+  if (!state && !initialLoadDone) {
+    return (
+      <div
+        className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3"
+        data-testid="update-card-loading"
+        aria-busy="true"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="text-sm font-semibold">App version</div>
+              <Skeleton className="h-4 w-20 rounded-full" />
+            </div>
+            <Skeleton className="h-3 w-52" />
+          </div>
+          <Skeleton className="h-8 w-32 rounded-md" />
+        </div>
+        <span className="sr-only">Checking update status…</span>
       </div>
     );
   }

@@ -190,4 +190,58 @@ describe("AppVersionCard — update IPC state transitions", () => {
       screen.queryByRole("button", { name: /Check for updates/i }),
     ).toBeNull();
   });
+
+  it("shows a loading skeleton (not the Browser-preview fallback) while the initial getUpdateState IPC is still in flight on a slow connection", async () => {
+    // Bridge is present, but getUpdateState never resolves — simulating a cold
+    // start on a slow connection. The card must show a loading skeleton, not the
+    // empty version card and not the browser-preview fallback.
+    const api: ElectronAPILike = {
+      getAppVersion: vi.fn(() => new Promise<string>(() => {})),
+      getUpdateState: vi.fn(() => new Promise<UpdateState>(() => {})),
+      checkForUpdates: vi.fn(async () => makeState()),
+      downloadUpdate: vi.fn(async () => makeState()),
+      installUpdate: vi.fn(async () => {}),
+      onUpdateState: vi.fn(() => () => {}),
+    };
+    (window as unknown as { electronAPI: ElectronAPILike }).electronAPI = api;
+
+    render(<AppVersionCard />, { wrapper: Wrapper });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("update-card-loading")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Browser preview/i)).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Check for updates/i }),
+    ).toBeNull();
+  });
+
+  it("replaces the loading skeleton with the version card once the slow IPC resolves", async () => {
+    let resolveState: (s: UpdateState) => void = () => {};
+    const pending = new Promise<UpdateState>((resolve) => {
+      resolveState = resolve;
+    });
+    const api: ElectronAPILike = {
+      getAppVersion: vi.fn(async () => "2.3.4"),
+      getUpdateState: vi.fn(() => pending),
+      checkForUpdates: vi.fn(async () => makeState()),
+      downloadUpdate: vi.fn(async () => makeState()),
+      installUpdate: vi.fn(async () => {}),
+      onUpdateState: vi.fn(() => () => {}),
+    };
+    (window as unknown as { electronAPI: ElectronAPILike }).electronAPI = api;
+
+    render(<AppVersionCard />, { wrapper: Wrapper });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("update-card-loading")).toBeInTheDocument(),
+    );
+
+    resolveState(makeState({ status: "not-available", currentVersion: "2.3.4", latestVersion: "2.3.4" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Up to date")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("update-card-loading")).toBeNull();
+  });
 });
