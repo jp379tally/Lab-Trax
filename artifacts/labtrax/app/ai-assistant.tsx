@@ -19,6 +19,12 @@ import * as Clipboard from "expo-clipboard";
 import { Audio } from "expo-av";
 import * as FileSystem from "expo-file-system/legacy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+// React Native's built-in fetch never exposes a streaming `resp.body`
+// (ReadableStream) on native devices, which the SSE reader below requires.
+// `expo/fetch` is WinterCG-compliant and streams on iOS/Android. Using the
+// bare global fetch here breaks Maynard on-device with "Something went wrong"
+// while working fine in web preview and vitest (both have streaming fetch).
+import { fetch as expoFetch } from "expo/fetch";
 import { getToolCallLabel } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
@@ -1326,9 +1332,9 @@ export default function AiAssistantScreen() {
         const streamBody: Record<string, unknown> = { messages: buildHistory(currentMessages), auto_execute: autoExecute };
         if (activeCaseId) streamBody.caseId = activeCaseId;
 
-        let resp: Response;
+        let resp: Awaited<ReturnType<typeof expoFetch>>;
         try {
-          resp = await fetch(url, {
+          resp = await expoFetch(url, {
             method: "POST",
             headers,
             body: JSON.stringify(streamBody),

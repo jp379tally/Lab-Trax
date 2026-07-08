@@ -22,7 +22,20 @@ import React from "react";
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, fireEvent, waitFor, cleanup, act } from "@testing-library/react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+// dispatchAiStream uses `expo/fetch` (streaming fetch — RN's global fetch has
+// no ReadableStream body on-device). vitest.setup mocks expo/fetch as a vi.fn
+// routed through the shared fetchHandler; stream tests override it directly.
+import { fetch as expoFetch } from "expo/fetch";
 import { resetMockAppState, setMockFetchHandler, resetMockFetchHandler } from "../../vitest.setup";
+
+const expoFetchMock = vi.mocked(expoFetch);
+
+/** Queue a one-shot response for the next expo/fetch stream call. */
+function mockStreamResponseOnce(resp: Response): void {
+  expoFetchMock.mockResolvedValueOnce(
+    resp as unknown as Awaited<ReturnType<typeof expoFetch>>,
+  );
+}
 
 // ─── Hoisted mock factories ───────────────────────────────────────────────────
 // vi.hoisted ensures the mock fns are available inside the vi.mock factories
@@ -207,19 +220,15 @@ function makeSSEStream(events: Record<string, unknown>[]): ReadableStream<Uint8A
 // ─── dispatchAiStream streaming tests ────────────────────────────────────────
 
 describe("AiAssistantScreen — dispatchAiStream streaming", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    fetchSpy = vi.spyOn(globalThis, "fetch");
-  });
-
   afterEach(() => {
-    fetchSpy.mockRestore();
+    // mockReset restores the original implementation given to vi.fn() in
+    // vitest.setup (routing through the shared fetchHandler).
+    expoFetchMock.mockReset();
     resetMockFetchHandler();
   });
 
   it("streams tokens into the assistant message bubble progressively", async () => {
-    fetchSpy.mockResolvedValueOnce(
+    mockStreamResponseOnce(
       new Response(
         makeSSEStream([
           { token: "Hello" },
@@ -245,7 +254,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
   });
 
   it("renders a ConfirmCard with Confirm and Cancel buttons on proposed_action", async () => {
-    fetchSpy.mockResolvedValueOnce(
+    mockStreamResponseOnce(
       new Response(
         makeSSEStream([
           {
@@ -277,7 +286,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
 
   it("calls /api/ai-agent/confirm and transitions the card to Done when Confirm is tapped", async () => {
     // Stream 1: proposed_action that shows the ConfirmCard
-    fetchSpy.mockResolvedValueOnce(
+    mockStreamResponseOnce(
       new Response(
         makeSSEStream([
           {
@@ -293,7 +302,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
     );
 
     // Stream 2: follow-up reply dispatched after confirm succeeds
-    fetchSpy.mockResolvedValueOnce(
+    mockStreamResponseOnce(
       new Response(
         makeSSEStream([{ token: "Case created." }, { done: true }]),
         { status: 200 },
@@ -347,7 +356,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
   });
 
   it("calls /api/ai-agent/reject and shows Action cancelled when Cancel is tapped", async () => {
-    fetchSpy.mockResolvedValueOnce(
+    mockStreamResponseOnce(
       new Response(
         makeSSEStream([
           {
@@ -393,7 +402,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
   });
 
   it("shows the 503 error message when the stream endpoint returns 503", async () => {
-    fetchSpy.mockResolvedValueOnce(
+    mockStreamResponseOnce(
       new Response("Service Unavailable", { status: 503 }),
     );
 
@@ -414,7 +423,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
   });
 
   it("shows the 429 rate-limit message when the stream endpoint returns 429", async () => {
-    fetchSpy.mockResolvedValueOnce(
+    mockStreamResponseOnce(
       new Response("Too Many Requests", { status: 429 }),
     );
 
@@ -433,7 +442,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
   });
 
   it("shows a generic error message for other non-200 responses (e.g. 500)", async () => {
-    fetchSpy.mockResolvedValueOnce(
+    mockStreamResponseOnce(
       new Response("Internal Server Error", { status: 500 }),
     );
 
@@ -454,7 +463,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
   it("shows a generic error message when resp.body is null", async () => {
     // Simulate a Response with body: null (can happen in some environments)
     const bodylessResp = { ok: true, status: 200, body: null } as unknown as Response;
-    fetchSpy.mockResolvedValueOnce(bodylessResp);
+    mockStreamResponseOnce(bodylessResp);
 
     const { getByLabelText, getByPlaceholderText, findByText } = render(
       <AiAssistantScreen />,
@@ -515,6 +524,9 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(globalThis, "fetch");
+    // Clear recorded expo/fetch calls so "no stream dispatched" assertions
+    // don't see calls leaked from earlier tests.
+    expoFetchMock.mockClear();
     realXHR = globalThis.XMLHttpRequest;
     (globalThis as unknown as { XMLHttpRequest: unknown }).XMLHttpRequest = MockXHR;
     // Reset to a successful load with an empty transcript; each test overrides.
@@ -561,7 +573,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
     });
 
     // No stream request was dispatched automatically.
-    const streamCall = fetchSpy.mock.calls.find(([url]: unknown[]) =>
+    const streamCall = expoFetchMock.mock.calls.find(([url]: unknown[]) =>
       String(url).includes("/api/ai-agent/stream"),
     );
     expect(streamCall).toBeUndefined();
@@ -582,7 +594,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
     await waitFor(() => {
       expect(getByLabelText("Dictate message")).toBeTruthy();
     });
-    const streamCall = fetchSpy.mock.calls.find(([url]: unknown[]) =>
+    const streamCall = expoFetchMock.mock.calls.find(([url]: unknown[]) =>
       String(url).includes("/api/ai-agent/stream"),
     );
     expect(streamCall).toBeUndefined();
@@ -606,7 +618,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
     });
 
     // No stream request was dispatched.
-    const streamCall = fetchSpy.mock.calls.find(([url]: unknown[]) =>
+    const streamCall = expoFetchMock.mock.calls.find(([url]: unknown[]) =>
       String(url).includes("/api/ai-agent/stream"),
     );
     expect(streamCall).toBeUndefined();
