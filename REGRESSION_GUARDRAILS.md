@@ -187,21 +187,47 @@ Backup and restore protect every customer's data, so they are a **hard blocking 
 - The only exception is a change explicitly verified to **not touch persistent data** (e.g. a pure UI/style change or a docs change like this one). State that exemption explicitly in the change notes.
 - **A backup or restore failure blocks the release outright** — it is never downgraded to a warning or deferred. See the **Backup Restore Integrity** section below for the full list of protected restore behaviors (empty `user_sessions` after restore, pre-restore snapshot, schema-version gate, post-restore validation, phase ordering).
 
-### Release-Gate DB Serialization (`with-db-lock` — do not remove)
+### DB Serialization Rule (with-db-lock — do not remove)
 
-The `rel-api-tests` and `rel-backup-restore` release-gate workflows both touch the **shared dev database**, and the Run-button "Project" aggregate fires every `rel-*` gate at once. Without serialization, `rel-backup-restore`'s DB-wide `pg_restore` truncates tables out from under `rel-api-tests`' integration suites (spurious 500s/timeouts), and the concurrent writes from `rel-api-tests` skew the restore's post-restore count validation — false failures in **both** gates that never reproduce when the gates run alone.
+The backup/restore suite performs a **DB-wide destructive `pg_restore`** against the shared dev database. Any workflow that runs DB-integration tests must therefore serialize with it by wrapping its command in the advisory-lock wrapper:
 
-The fix is a **PostgreSQL session advisory lock**, held for the duration of each gate's test command via `scripts/src/run-with-db-lock.ts` (`pnpm --filter @workspace/scripts run with-db-lock "<command>"`). Both workflow commands are wrapped:
+```bash
+pnpm --filter @workspace/scripts run with-db-lock "<test command>"
+```
 
-- `rel-api-tests`: `with-db-lock "pnpm --filter @workspace/api-server run test"`
-- `rel-backup-restore`: `with-db-lock "pnpm --filter @workspace/api-server exec vitest run --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts"`
+(`scripts/src/run-with-db-lock.ts` — holds a PG session advisory lock `labtrax-db-test-workflows` for the whole command; PG auto-releases on process death.)
 
-Rules for anyone editing these gates:
+**Audit of all test workflows (2026-07-08):**
 
-- **Any change to the `rel-api-tests` or `rel-backup-restore` command MUST preserve the `with-db-lock` wrapper.** Dropping it reintroduces the aggregate-fire false failures.
+| Workflow | Touches shared dev DB? | Serialization |
+| --- | --- | --- |
+| `rel-api-tests` | Yes — full api-server integration suite | **Wrapped** in `with-db-lock` |
+| `rel-backup-restore` | Yes — destructive DB-wide `pg_restore` | **Wrapped** in `with-db-lock` |
+| `knowledge-test` | No — pure in-memory pack-selection tests (`lib/ai-knowledge/src/select.test.ts`), no `@workspace/db` import | Safe unwrapped |
+| `installer-download-test` | No — `src/installer-download.test.ts` mocks every app dependency (routes, storage, schedulers); zero DB queries | Safe unwrapped |
+| `rel-scripts-tests` | No — lint/feed-guard/push unit tests, no `@workspace/db`/`DATABASE_URL` usage | Safe unwrapped |
+| `rel-desktop-tests` | No — jsdom unit tests with mocked network | Safe unwrapped |
+| `rel-mobile-tests` | No — RN vitest unit/smoke tests with mocked API client | Safe unwrapped |
+| `typecheck-all`, `rel-typecheck`, `rel-mobile-legacy-fence`, `rel-protected-tables` | No — typecheck/lint only | Safe unwrapped |
+| `EAS iOS Build + Submit` | No — build script, no tests | Safe unwrapped |
+
+Rules going forward:
+
+- **Any new workflow (or validation command) that runs DB-integration tests against the shared dev DB must wrap its command in `with-db-lock`.** Otherwise the Run-button "Project" aggregate fires it concurrently with `rel-backup-restore` and the restore truncates tables out from under it (spurious 500s/timeouts), while its writes skew the restore's post-restore count validation.
+- **Do not wrap hermetic (fully mocked / no-DB) suites.** The wrapper needs a live `DATABASE_URL` connection to take the lock and would needlessly serialize the aggregate behind the slow DB gates.
+- **If a "safe unwrapped" suite later gains real DB access, wrap it and update this table.** (e.g. if `installer-download-test` stops mocking storage/DB, or a scripts test starts importing `@workspace/db`.)
+
+Rules for anyone editing the wrapped gates:
+
+- **Any change to the `rel-api-tests` or `rel-backup-restore` command MUST preserve the `with-db-lock` wrapper.** Dropping it reintroduces the aggregate-fire false failures. The current commands:
+  - `rel-api-tests`: `with-db-lock "pnpm --filter @workspace/api-server run test"`
+  - `rel-backup-restore`: `with-db-lock "pnpm --filter @workspace/api-server exec vitest run --config vitest.restore.config.ts --reporter=verbose"`
 - **File-level locking is not sufficient.** The conflict is DB-wide (`pg_restore` truncates shared tables), so only a database-scoped lock serializes the two workflows. The advisory lock is session-scoped, so PostgreSQL releases it automatically if the process dies — no stale-lock cleanup is needed.
-- **Any new release gate that touches the database must also wrap its whole command in `with-db-lock`** so it joins the same serialization queue (lock name `labtrax-db-test-workflows`).
 - The wrapper raises `DB_CONNECT_TIMEOUT_MS` to 120 s (unless already set) because under full aggregate load the TLS handshake can exceed the production 10 s fail-fast, and it runs `SET statement_timeout = 0` on the lock session because the blocking `pg_advisory_lock` wait counts as statement execution and would otherwise be killed by the pool's 30 s statement timeout while waiting for a full suite run to finish.
+
+**Intra-suite serialization (the lock cannot help inside one vitest run):** the two DB-wide restore suites (`backup-restore.test.ts`, `restore-session.test.ts`) are **excluded** from the default api-server suite (`exclude` in `artifacts/api-server/vitest.config.ts`). With `maxWorkers=2`, running them inside the full suite let the destructive `pg_restore` truncate tables under sibling integration files (intermittent 500s, e.g. case-create FK failures) while sibling writes skewed the restore's post-restore count validation. Coverage is **not** reduced: the `rel-backup-restore` blocking gate runs exactly these two files, alone, via `vitest.restore.config.ts`, wrapped in `with-db-lock`. Do not re-add them to the default suite and do not delete `vitest.restore.config.ts` — the gate command depends on it.
+
+Verified 2026-07-08 by firing `knowledge-test`, `installer-download-test`, `rel-scripts-tests`, `rel-desktop-tests`, and `rel-mobile-tests` concurrently with `rel-backup-restore`: all suites passed with the restore in flight. Also verified after the intra-suite exclusion: `rel-api-tests` (110 files, 1332 tests) and `rel-backup-restore` (32 tests) both green when fired together.
 
 Related hermeticity guard — **`routes/account-epic-verification.test.ts` SMS mock**: this suite mocks `../lib/sms.js` (`isConfigured: () => false`, `isDevOrTest: () => true`) because workspaces with real Vonage/Twilio SMS credentials would otherwise flip the send routes onto the live-provider branch, which rejects the fake test phone numbers and 500s — a false failure that never happens in CI (no creds there). **Do not remove that mock**, and any new test that exercises SMS send routes and asserts success must include the same mock.
 

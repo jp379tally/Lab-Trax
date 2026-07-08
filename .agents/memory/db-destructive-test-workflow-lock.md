@@ -32,3 +32,23 @@ scope means PG auto-releases on process death.
 **How to apply:** any new validation workflow that runs DB-integration tests
 against the shared dev DB should wrap its command with `with-db-lock`, or the
 Run-button aggregate will reintroduce cross-workflow corruption.
+
+**Intra-suite corruption (the lock can't help inside ONE vitest run):** with
+maxWorkers=2, running backup-restore.test.ts inside the full api-server suite
+let its pg_restore truncate tables under sibling integration files
+(intermittent 500s, e.g. case-create FK failures) while sibling writes skewed
+its post-restore count validation — both directions of the same corruption
+class, invisible to the cross-workflow advisory lock. Fix: the two restore
+files are excluded in api-server vitest.config.ts and run ONLY via the
+dedicated rel-backup-restore gate using vitest.restore.config.ts (a config
+`exclude` also blocks explicit CLI file args — "No test files found" — so the
+gate needs its own config, not file args against the default config).
+
+**Full-audit outcome (2026-07-08):** all other test workflows (knowledge-test,
+installer-download-test, rel-scripts/desktop/mobile-tests) are hermetic — no
+`@workspace/db`/`DATABASE_URL` usage — and were empirically verified passing
+concurrently with an in-flight destructive restore. Do NOT wrap hermetic
+suites: the wrapper needs a live DB connection just to take the lock and would
+needlessly serialize the aggregate. The authoritative wrapped/safe-unwrapped
+table lives in REGRESSION_GUARDRAILS.md → "DB Serialization Rule
+(with-db-lock)"; update it if a suite gains real DB access.

@@ -172,7 +172,7 @@ isValidation = true
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "pnpm --filter @workspace/scripts run with-db-lock \"pnpm --filter @workspace/api-server exec vitest run --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts\""
+args = "pnpm --filter @workspace/scripts run with-db-lock \"pnpm --filter @workspace/api-server exec vitest run --config vitest.restore.config.ts --reporter=verbose\""
 
 [[workflows.workflow]]
 name = "rel-mobile-legacy-fence"

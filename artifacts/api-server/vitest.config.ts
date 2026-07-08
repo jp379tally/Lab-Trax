@@ -5,6 +5,21 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // The backup/restore integrity suites perform DB-WIDE destructive
+    // pg_restore runs. Inside the full suite (maxWorkers=2) they run
+    // concurrently with sibling DB-integration files, so the restore truncates
+    // tables out from under siblings (intermittent 500s, e.g. case-create FK
+    // failures) and the siblings' writes skew the restore's post-restore count
+    // validation — the cross-workflow with-db-lock wrapper cannot help inside
+    // one vitest run. These two files therefore run ONLY via their dedicated
+    // blocking gate (the rel-backup-restore workflow / Pre-Release Checklist
+    // step 6), which invokes them explicitly and IS wrapped in with-db-lock.
+    // See REGRESSION_GUARDRAILS.md → "DB Serialization Rule (with-db-lock)".
+    exclude: [
+      "**/node_modules/**",
+      "src/routes/backup-restore.test.ts",
+      "src/routes/restore-session.test.ts",
+    ],
     // Keep the suite hermetic regardless of the host environment. Demo seeding
     // is a dev-only convenience; when LABTRAX_ENABLE_DEMO_SEEDS is "true" in the
     // workspace it makes seedDefaultUsers() run during app init, which throws in
