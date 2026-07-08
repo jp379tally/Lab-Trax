@@ -17,6 +17,7 @@ import {
   GitMerge,
   KeyRound,
   Loader2,
+  Mail,
   Plus,
   Receipt,
   Search,
@@ -66,6 +67,7 @@ interface AdminUser {
   practiceName?: string | null;
   lastLoginAt?: string | null;
   createdAt?: string | null;
+  emailVerifiedAt?: string | null;
   platformAccountNumber?: string | null;
 }
 
@@ -1816,6 +1818,8 @@ function UserDetailDrawer({
   const [toggleLoading, setToggleLoading] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifySent, setVerifySent] = useState(false);
   const [roleLoading, setRoleLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -1869,6 +1873,27 @@ function UserDetailDrawer({
       setErrorMsg(e?.message || "Failed to send password reset.");
     } finally {
       setResetLoading(false);
+    }
+  }
+
+  async function handleSendVerification() {
+    if (!user.email) {
+      setErrorMsg("This user has no email address on file.");
+      return;
+    }
+    if (user.emailVerifiedAt) {
+      setErrorMsg("Email is already verified.");
+      return;
+    }
+    setVerifyLoading(true);
+    setErrorMsg(null);
+    try {
+      await apiFetch(`/admin/users/${user.id}/send-verification-email`, { method: "POST" });
+      setVerifySent(true);
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Failed to send verification email.");
+    } finally {
+      setVerifyLoading(false);
     }
   }
 
@@ -2000,6 +2025,28 @@ function UserDetailDrawer({
                 )}
                 {resetSent ? "Reset email sent ✓" : "Send password reset email"}
               </button>
+
+              <button
+                type="button"
+                onClick={handleSendVerification}
+                disabled={verifyLoading || verifySent || !user.email || !!user.emailVerifiedAt}
+                title={
+                  !user.email
+                    ? "No email address on file"
+                    : user.emailVerifiedAt
+                      ? "Email is already verified"
+                      : undefined
+                }
+                className="w-full inline-flex items-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium border border-border hover:bg-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {verifyLoading ? (
+                  <Loader2 size={14} className="animate-spin shrink-0" />
+                ) : (
+                  <Mail size={14} className="shrink-0" />
+                )}
+                {verifySent ? "Verification email sent ✓" : user.emailVerifiedAt ? "Email verified" : "Resend verification email"}
+              </button>
+
               {!user.email && (
                 <p className="text-xs text-muted-foreground px-1">
                   Password reset requires an email address on the account.

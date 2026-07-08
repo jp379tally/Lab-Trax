@@ -31,6 +31,7 @@ interface AdminUser {
   isActive?: boolean;
   practiceName?: string | null;
   lastLoginAt?: string | null;
+  emailVerifiedAt?: string | null;
 }
 
 const ROLE_OPTIONS = ["user", "admin", "billing", "owner"] as const;
@@ -100,6 +101,26 @@ export default function UsersScreen() {
     onError: (err: Error) => Alert.alert("Could not update user", err.message),
   });
 
+  const verifyMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const adminHeaders = await getPlatformAdminSessionHeaders();
+      const res = await resilientFetch(`/api/admin/users/${id}/send-verification-email`, {
+        method: "POST",
+        headers: adminHeaders,
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Failed (${res.status})`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      Alert.alert("Verification email sent", "The user will receive a new verification code.");
+    },
+    onError: (err: Error) => Alert.alert("Could not send verification email", err.message),
+  });
+
   function toggleActive(user: AdminUser) {
     const action = user.isActive ? "Deactivate" : "Reactivate";
     Alert.alert(`${action} user`, `${action} ${user.username}?`, [
@@ -158,6 +179,11 @@ export default function UsersScreen() {
               </Text>
             </View>
             <View style={styles.rowRight}>
+              {!user.emailVerifiedAt && (
+                <View style={[styles.badge, { backgroundColor: colors.warning + "20" }]}>
+                  <Text style={[styles.badgeText, { color: colors.warning }]}>unverified</Text>
+                </View>
+              )}
               <View style={[styles.badge, { backgroundColor: user.isActive !== false ? "#10B98120" : colors.error + "20" }]}>
                 <Text style={[styles.badgeText, { color: user.isActive !== false ? "#10B981" : colors.error }]}>
                   {user.isActive !== false ? "active" : "inactive"}
@@ -224,6 +250,18 @@ export default function UsersScreen() {
                   {selected.isActive !== false ? "Deactivate account" : "Reactivate account"}
                 </Text>
               </Pressable>
+
+              {selected.email && !selected.emailVerifiedAt && (
+                <Pressable
+                  style={[styles.actionBtn, { borderColor: colors.tint + "60" }]}
+                  onPress={() => verifyMutation.mutate(selected.id)}
+                  disabled={verifyMutation.isPending}
+                >
+                  <Text style={[styles.actionBtnText, { color: colors.tint }]}>
+                    {verifyMutation.isPending ? "Sending…" : "Resend verification email"}
+                  </Text>
+                </Pressable>
+              )}
             </ScrollView>
           </View>
         )}
@@ -303,5 +341,12 @@ function makeStyles(c: ThemeColors) {
       alignItems: "center",
     },
     toggleBtnText: { ...Typography.bodySemibold },
+    actionBtn: {
+      borderWidth: 1,
+      borderRadius: Radius.md,
+      padding: Spacing.md,
+      alignItems: "center",
+    },
+    actionBtnText: { ...Typography.bodySemibold },
   });
 }

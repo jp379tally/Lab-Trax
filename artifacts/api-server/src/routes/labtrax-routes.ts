@@ -52,7 +52,7 @@ import {
   normalizeEmailTarget,
   normalizePhoneTarget,
 } from "../lib/verification";
-import { createRateLimit, createSendCodeThrottle } from "../lib/rate-limit";
+import { createRateLimit, createSendCodeThrottle, checkSendCodeAllowed, recordSendCodeSuccess, getClientIp } from "../lib/rate-limit";
 import { parseOrganizationIdFromAffiliationKey } from "../lib/case-visibility";
 import { getUncachableStripeClient, isStripeConfigured } from "../lib/stripeClient";
 
@@ -5980,6 +5980,7 @@ Important rules:
           practiceName: users.practiceName,
           lastLoginAt: users.lastLoginAt,
           createdAt: users.createdAt,
+          emailVerifiedAt: users.emailVerifiedAt,
           platformAccountNumber: users.platformAccountNumber,
         })
         .from(users)
@@ -6027,6 +6028,86 @@ Important rules:
       return res.json({ ok: true, message: "Password reset email sent." });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to send password reset." });
+    }
+  });
+
+  // Resend a verification email to an unverified user (admin-secret gated).
+  router.post("/admin/users/:id/send-verification-email", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const userId = String(req.params.id);
+      const [user] = await db
+        .select({ id: users.id, username: users.username, email: users.email, emailVerifiedAt: users.emailVerifiedAt })
+        .from(users)
+        .where(and(eq(users.id, userId), isNull(users.deletedAt)));
+      if (!user) return res.status(404).json({ error: "User not found." });
+      if (!user.email) return res.status(400).json({ error: "User has no email address on file." });
+      if (user.emailVerifiedAt) return res.status(400).json({ error: "Email is already verified." });
+
+      // Imperative throttle check (resolved email, not req.body) so cooldown + per-target + per-IP limits are enforced.
+      const throttleResult = checkSendCodeAllowed({
+        channel: "email",
+        identifier: normalizeEmailTarget(user.email),
+        ip: getClientIp(req),
+        cooldownMs: 30_000,
+        windowMs: SEND_CODE_WINDOW_MS,
+        maxPerIdentifier: 5,
+        maxPerIp: 10,
+      });
+      if (throttleResult) {
+        res.setHeader("Retry-After", String(throttleResult.retryAfter));
+        return res.status(throttleResult.status).json({ error: throttleResult.error });
+      }
+
+      const code = generateCode();
+      await createVerificationCode({
+        channel: "email",
+        target: normalizeEmailTarget(user.email),
+        code,
+        userId: user.id,
+      });
+
+      const result = await sendMail({
+        to: user.email.trim(),
+        subject: "LabTrax - Email Verification Code",
+        html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+              <h2 style="margin: 0;">LabTrax</h2>
+              <p style="margin: 4px 0 0; opacity: 0.85;">Email Verification</p>
+            </div>
+            <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+              <p>Hi ${user.username},</p>
+              <p>Your administrator has requested a new email verification code for your account.</p>
+              <p style="text-align: center; margin: 24px 0;">
+                <span style="display: inline-block; background: #F0F4FF; padding: 16px 40px; border-radius: 8px; font-size: 28px; font-weight: bold; color: #4A6CF7; letter-spacing: 6px;">${code}</span>
+              </p>
+              <p style="color: #666; font-size: 13px;">This code expires in 10 minutes.</p>
+            </div>
+          </div>`,
+      });
+
+      if (!result.sent) {
+        req.log?.error?.({ reason: result.reason }, "[ADMIN EMAIL VERIFICATION] send failed");
+        return res.status(500).json({ error: result.reason ? `Email delivery failed: ${result.reason}.` : "Failed to send verification email." });
+      }
+
+      // Only record the success after a confirmed 2xx delivery so the cooldown
+      // window is not consumed on transient failures (admins can retry immediately).
+      recordSendCodeSuccess({ channel: "email", identifier: normalizeEmailTarget(user.email) });
+
+      await writeAuditLog({
+        req,
+        userId: user.id,
+        action: "verification_email_resent",
+        entityType: "user",
+        entityId: user.id,
+      });
+
+      return res.json({ ok: true, message: "Verification email sent." });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to send verification email." });
     }
   });
 

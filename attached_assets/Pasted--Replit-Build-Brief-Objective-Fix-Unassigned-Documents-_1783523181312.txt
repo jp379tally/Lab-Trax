@@ -1,0 +1,166 @@
+### Replit Build Brief
+
+**Objective**
+Fix Unassigned Documents so files uploaded from mobile can be opened on desktop/web, and files opened from desktop/web preview in a separate window instead of downloading.
+
+**User-visible problem**
+
+1. A file uploaded to Unassigned Documents from the mobile app appears in desktop/web, but clicking view shows a red “Could not open file” error.
+2. A file uploaded from desktop/web can be opened, but clicking it often triggers a browser/download behavior instead of showing an inline preview.
+
+**Likely root cause**
+Mobile and desktop/web are finalizing chunked uploads differently.
+
+The server’s `/api/media/upload-session/:id` completion response returns both:
+
+* `url`: public/authenticated media URL like `/api/cases/attachment-file/<filename>`
+* `filename`: actual stored object key / disk filename
+
+The desktop Unassigned Documents uploader correctly sends `storagePath: result.filename` to `/api/lab-inbox/finalize-session`.
+
+The mobile Unassigned Documents uploader currently sends `storagePath: uploadResult.url`. That means some inbox rows may store a URL where the inbox file-serving route expects a storage filename/object key. Later, `/api/lab-inbox/:fileId/file` cannot find the object and desktop shows the red error.
+
+The download behavior is likely in `artifacts/labtrax-desktop/src/components/UnassignedDocumentsCard.tsx`: `handleView()` fetches the file as a blob and calls `window.open(blobUrl)`. Browsers/Electron may download instead of previewing when the blob type is missing, generic, or unsupported, or when opening a raw blob URL without a preview wrapper.
+
+**Exact code areas to inspect/change**
+
+* `artifacts/labtrax/components/UnassignedDocumentsCard.tsx`
+
+  * Mobile Unassigned Documents upload finalization.
+* `artifacts/labtrax/lib/query-client.ts`
+
+  * `chunkedUploadCaseMedia()` return shape; it currently returns only `url`.
+* `artifacts/api-server/src/routes/lab-inbox.ts`
+
+  * `/finalize-session`
+  * `/:fileId/file`
+* `artifacts/labtrax-desktop/src/components/UnassignedDocumentsCard.tsx`
+
+  * `handleView()` preview behavior.
+* Optional supporting check:
+
+  * `artifacts/api-server/src/lib/case-media-object-storage.ts`
+  * It currently writes object metadata with `contentDisposition: attachment`; prefer inline metadata for previewable media if any direct object-storage path is ever used.
+
+**Implementation plan**
+
+1. Update `chunkedUploadCaseMedia()` so successful results include both `url` and `filename` when the server returns them.
+2. In mobile `UnassignedDocumentsCard`, call `/api/lab-inbox/finalize-session` with `storagePath: uploadResult.filename`, not `uploadResult.url`.
+3. Add a server-side normalization helper in `lab-inbox.ts` that converts legacy full media URLs into their final stored filename. Use it in:
+
+   * `/finalize-session`, before validating object storage.
+   * `/:fileId/file`, before resolving disk path or object storage key.
+4. This server normalization should also repair already-created bad inbox rows at read time, without requiring an immediate database migration.
+5. In desktop `handleView()`, replace raw `window.open(blobUrl)` with a dedicated preview window:
+
+   * Fetch the file with auth.
+   * Build a blob with an explicit type from `file.mimeType` or response `Content-Type`.
+   * For PDFs, open a new window containing an `<iframe>` or `<object>` pointing at the blob URL.
+   * For images, open a new window containing an `<img>`.
+   * For unsupported Office files, show a simple preview window explaining that browser preview is not supported and provide an explicit “Download” button instead of auto-downloading.
+6. Ensure the API route keeps returning `Content-Disposition: inline`.
+
+**Constraints and guardrails**
+
+* Do not change assignment behavior.
+* Do not make Unassigned Documents public; keep auth checks intact.
+* Do not bypass `/api/lab-inbox/:fileId/file`.
+* Do not store full URLs as `storagePath` for new inbox rows.
+* Preserve support for existing bad rows that may already contain full URLs.
+* Avoid revoking the blob URL immediately after opening the preview window.
+
+**Acceptance criteria**
+
+* Upload a PDF from mobile to Unassigned Documents, then open it from desktop/web: it previews successfully.
+* Upload an image from mobile to Unassigned Documents, then open it from desktop/web: it previews successfully.
+* Upload a PDF from desktop/web, then click view: it opens in a separate preview window, not an automatic download.
+* Upload an image from desktop/web, then click view: it opens in a separate preview window.
+* Unsupported document types do not silently auto-download; they show a preview-window fallback with an explicit download action.
+* Assignment from Unassigned Documents still works after viewing.
+* Existing mobile-created inbox rows with URL-shaped `storagePath` or `objectStorageKey` can still be opened if the underlying object exists.
+
+**Regression checks**
+
+* Check mobile camera/photo upload to Unassigned Documents.
+* Check mobile document picker upload to Unassigned Documents.
+* Check desktop drag/drop upload to Unassigned Documents.
+* Check desktop file picker upload to Unassigned Documents.
+* Check `/api/lab-inbox/:fileId/file` returns `200`, correct `Content-Type`, and `Content-Disposition: inline`.
+* Check a missing object still returns a clean 404/error instead of crashing.
+
+### Copy-Ready Replit Prompt
+
+Please fix two Unassigned Documents issues in LabTrax.
+
+Symptoms:
+
+1. When a document is uploaded to Unassigned Documents from the mobile app, it appears on desktop/web, but clicking view on desktop/web shows a red “Could not open file” error.
+2. When a document is uploaded from desktop/web and then viewed from desktop/web, it often opens as a download instead of previewing in a separate window.
+
+Relevant files to inspect:
+
+* `artifacts/labtrax/components/UnassignedDocumentsCard.tsx`
+* `artifacts/labtrax/lib/query-client.ts`
+* `artifacts/api-server/src/routes/lab-inbox.ts`
+* `artifacts/labtrax-desktop/src/components/UnassignedDocumentsCard.tsx`
+* optionally `artifacts/api-server/src/lib/case-media-object-storage.ts`
+
+Likely root cause:
+The upload-session completion endpoint returns both `url` and `filename`. Desktop finalizes inbox uploads with `storagePath: result.filename`, but mobile currently finalizes with `storagePath: uploadResult.url`. The inbox serving route expects a stored filename/object key, not the public media URL, so mobile-created rows can point to the wrong storage key and later fail on desktop/web.
+
+Please implement the safest fix:
+
+1. Update `chunkedUploadCaseMedia()` in `artifacts/labtrax/lib/query-client.ts` so successful results include `filename?: string` from the upload-session completion response.
+2. Update mobile `UnassignedDocumentsCard` so `/api/lab-inbox/finalize-session` sends `storagePath: uploadResult.filename` when available, not `uploadResult.url`.
+3. Add server-side protection in `artifacts/api-server/src/routes/lab-inbox.ts`:
+
+   * Create a helper that normalizes a storage path/object key. If it receives a full URL such as `/api/cases/attachment-file/<filename>` or `https://.../api/cases/attachment-file/<filename>`, extract the final stored filename.
+   * Use that helper in `/finalize-session` before object-storage existence validation and DB insert.
+   * Use that helper in `/:fileId/file` before resolving the disk path or opening object storage, so existing bad rows can still open.
+   * Reject unsafe normalized paths containing slashes, `..`, or empty values.
+4. Fix desktop/web preview behavior in `artifacts/labtrax-desktop/src/components/UnassignedDocumentsCard.tsx`:
+
+   * Do not just `window.open(blobUrl)` raw.
+   * Fetch the file through the authenticated API as today.
+   * Build a blob with an explicit type from `file.mimeType` or response `Content-Type`.
+   * Open a separate preview window containing an iframe/object for PDFs and an img tag for images.
+   * For unsupported files such as Word/Excel docs, show a clear fallback page with an explicit Download button instead of auto-starting a download.
+5. Keep auth and lab membership checks intact. Do not make inbox files public.
+6. Keep `Content-Disposition: inline` on `/api/lab-inbox/:fileId/file`. If object-storage metadata is relevant, prefer inline disposition for case media objects, but do not rely on direct public object URLs for inbox previews.
+
+Before finishing, run or add focused regression checks for:
+
+* mobile document picker upload -> desktop/web preview
+* mobile camera/photo upload -> desktop/web preview
+* desktop/web upload -> desktop/web preview
+* assignment still works after previewing
+* existing URL-shaped inbox storage paths still resolve if the object exists
+
+If you find contradictory evidence, explain it and choose the smallest safe fix.
+
+### Debug Analysis
+
+**Probable root cause**
+The mobile unassigned-document flow is saving the wrong storage identifier. The server expects the generated filename/object key, but mobile sends the upload URL. Desktop/web later asks `/api/lab-inbox/:fileId/file` for the bytes, and that route cannot resolve the file, producing the red open error.
+
+**Supporting evidence**
+In the repo, desktop Unassigned Documents uses `storagePath: result.filename` when finalizing. Mobile Unassigned Documents uses `storagePath: uploadResult.url`. The upload-session server completion returns both `url` and `filename`, and the inbox serving route resolves files from `storagePath` / `objectStorageKey`.
+
+**Alternate hypotheses worth checking**
+The object-storage metadata currently uses `contentDisposition: attachment`, which could contribute to download behavior if a direct storage URL is ever opened. Also, some uploaded files may have weak MIME types like `application/octet-stream`, which makes browser preview unreliable.
+
+**Why this approach is best**
+Fixing only the mobile client would help new uploads, but existing bad inbox rows could still fail. Fixing only the server would protect old rows, but mobile would keep writing bad data. The best fix is both: write the correct key going forward, and normalize legacy URL-shaped values on the server.
+
+**Confidence level**
+High for the mobile-to-desktop open failure. Medium-high for the download/preview issue because the desktop code currently opens a raw blob URL and leaves preview behavior to the browser/Electron runtime.
+
+### Step-by-Step Fix Plan
+
+1. Change `ChunkedUploadResult` to include `filename?: string`.
+2. In `chunkedUploadCaseMedia()`, when `patchBody.complete && patchBody.url`, return `{ ok: true, url: patchBody.url, filename: patchBody.filename }`.
+3. In mobile `UnassignedDocumentsCard`, finalize inbox uploads with `storagePath: uploadResult.filename ?? extractedFilenameFromUrl(uploadResult.url)`.
+4. Add a safe server helper in `lab-inbox.ts` to normalize URL-shaped storage paths to a basename.
+5. Use that helper in `/finalize-session` and `/:fileId/file`.
+6. Update desktop `handleView()` to open a real preview window with PDF/image rendering instead of opening the raw blob URL.
+7. Verify with one mobile PDF, one mobile image, one desktop PDF, and one desktop image.

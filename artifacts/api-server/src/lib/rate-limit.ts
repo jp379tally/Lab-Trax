@@ -22,7 +22,7 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000).unref();
 
-function getClientIp(req: Request): string {
+export function getClientIp(req: Request): string {
   const forwarded = req.headers["x-forwarded-for"];
   if (typeof forwarded === "string") return forwarded.split(",")[0].trim();
   return req.socket.remoteAddress ?? "unknown";
@@ -308,4 +308,89 @@ export function createSendCodeThrottle(opts: {
     });
     next();
   };
+}
+
+/**
+ * Imperative rate-limit check (no middleware wrapper) for code-send
+ * endpoints that resolve the target identifier inside the handler rather
+ * than from the request body. Use with {@link recordSendCodeSuccess}.
+ *
+ * Returns `null` when allowed, or a `{status,error,retryAfter}` object
+ * when throttled. Passes through (allows) under Vitest so tests can
+ * deterministically exercise the rest of the handler.
+ */
+export function checkSendCodeAllowed(opts: {
+  channel: string;
+  identifier: string;
+  ip: string;
+  cooldownMs: number;
+  windowMs: number;
+  maxPerIdentifier: number;
+  maxPerIp: number;
+}):
+  | null
+  | { status: 429; error: string; retryAfter: number } {
+  if (process.env["VITEST"]) return null;
+
+  const now = Date.now();
+
+  // 1. Resend cooldown.
+  const cooldownKey = `${opts.channel}:${opts.identifier}`;
+  const last = cooldownStore.get(cooldownKey);
+  if (last !== undefined && now - last < opts.cooldownMs) {
+    const retryAfter = Math.max(1, Math.ceil((opts.cooldownMs - (now - last)) / 1000));
+    return {
+      status: 429,
+      error: "Please wait before requesting another verification code.",
+      retryAfter,
+    };
+  }
+
+  // 2. Per-identifier rolling window.
+  const idKey = `sendcode:id:${opts.channel}:${opts.identifier}`;
+  let idEntry = store.get(idKey);
+  if (!idEntry || idEntry.resetAt < now) {
+    idEntry = { count: 0, resetAt: now + opts.windowMs };
+    store.set(idKey, idEntry);
+  }
+  idEntry.count++;
+  if (idEntry.count > opts.maxPerIdentifier) {
+    const retryAfter = Math.max(1, Math.ceil((idEntry.resetAt - now) / 1000));
+    return {
+      status: 429,
+      error: "Too many verification codes requested for this contact. Please try again later.",
+      retryAfter,
+    };
+  }
+
+  // 3. Per-IP rolling window.
+  const ipKey = `sendcode:ip:${opts.channel}:${opts.ip}`;
+  let ipEntry = store.get(ipKey);
+  if (!ipEntry || ipEntry.resetAt < now) {
+    ipEntry = { count: 0, resetAt: now + opts.windowMs };
+    store.set(ipKey, ipEntry);
+  }
+  ipEntry.count++;
+  if (ipEntry.count > opts.maxPerIp) {
+    const retryAfter = Math.max(1, Math.ceil((ipEntry.resetAt - now) / 1000));
+    return {
+      status: 429,
+      error: "Too many verification code requests. Please try again later.",
+      retryAfter,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Record a successful code-send in the cooldown store so future calls are
+ * gated by the resend cooldown. Should be called only after the handler
+ * successfully sends/delivers the code (2xx response).
+ */
+export function recordSendCodeSuccess(opts: {
+  channel: string;
+  identifier: string;
+}): void {
+  cooldownStore.set(`${opts.channel}:${opts.identifier}`, Date.now());
 }

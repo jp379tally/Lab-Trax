@@ -1,0 +1,66 @@
+```text
+Goal:
+Add a reliable “resend invitation / verification email” workflow in LabTracks so admins can resend an account invitation when a newly created user does not receive or cannot find the original verification email.
+
+Issue:
+We tried to create accounts for Ben and Alex. The app said the email was sent, but the verification email could not be found in their inboxes. Right now there does not appear to be an obvious way to resend the invitation email.
+
+Likely root cause:
+The account creation flow likely records the user as created or invited after the first email send attempt, but the UI does not expose a resend action for users who are still unverified / pending invitation. The system may also be treating “email send requested” as equivalent to “email successfully received,” which leaves admins stuck when delivery fails, lands in spam, or the invite expires.
+
+Desired behavior:
+Admins should be able to resend an invitation or verification email for any user whose account is not yet verified / activated. The resend action should reuse the existing invitation or verification-email mechanism safely, update any relevant timestamp or token if needed, and show a clear success or failure message.
+
+Implementation steps:
+1. Inspect the existing user creation, invitation, and email verification flow.
+   - Find the code that creates a user account.
+   - Find the email-sending function used for verification or invitation emails.
+   - Find the user status fields, such as verified, emailVerified, invited, pending, inviteToken, verificationToken, inviteExpiresAt, or similar.
+
+2. Add backend support for resending invitations.
+   - Create or update an endpoint/action that allows an authorized admin to resend an invite for a pending or unverified user.
+   - The endpoint should only work for existing users who have not completed verification.
+   - It should generate a fresh token if tokens expire or are single-use.
+   - It should update resend-related metadata, such as lastInviteSentAt or invitationSentAt, if the schema already supports it.
+   - It should call the existing email utility rather than duplicating email logic.
+
+3. Add UI support.
+   - In the admin/user management area, show a “Resend invite” action for users who are pending/unverified.
+   - Do not show the action for users who are already verified/active.
+   - After clicking resend, show a clear loading state and then either:
+     - “Invitation email resent”
+     - or a specific failure message if sending failed.
+
+4. Preserve existing account creation behavior.
+   - Do not break the current create-user flow.
+   - If account creation says an email was sent, that should still happen.
+   - The new resend flow should be an additional recovery path.
+
+5. Add guardrails.
+   - Require admin authorization for resending invitations.
+   - Prevent resending invites for verified users.
+   - Avoid creating duplicate user records.
+   - Avoid exposing invite or verification tokens in logs, UI, or API responses.
+   - Consider basic rate limiting or a short cooldown so the resend button cannot spam a recipient repeatedly.
+
+Constraints:
+- Reuse the existing email provider and verification/invitation email template if one exists.
+- Do not introduce a separate parallel invitation system unless absolutely necessary.
+- Do not mark a user as verified just because the email was resent.
+- Do not silently swallow email-provider failures; surface a useful error to the admin.
+- Keep the implementation scoped to pending/unverified user invitations.
+
+Regression checks:
+1. Create a new user and confirm the original invitation email flow still runs.
+2. Confirm a pending/unverified user shows a “Resend invite” action.
+3. Click “Resend invite” and verify the app calls the backend, sends the email, and shows a success message.
+4. Confirm the resent email contains a valid verification/invitation link.
+5. Confirm the newest link works for account verification.
+6. Confirm verified users do not show the resend action.
+7. Confirm non-admin users cannot trigger resend.
+8. Confirm resending does not create duplicate users.
+9. Confirm email send failures show an error message instead of a false success.
+10. Check that Ben and Alex’s accounts can receive resent invitations without recreating their accounts.
+
+Please inspect the relevant files before changing code, then implement the smallest safe fix. At the end, summarize which files changed, how the resend flow works, and any assumptions or tradeoffs you found.
+```
