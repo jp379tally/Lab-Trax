@@ -270,6 +270,8 @@ jobs:
       - name: Clean up CI staging bucket (on failure)
         if: failure()
         shell: bash
+        env:
+          DEFAULT_OBJECT_STORAGE_BUCKET_ID: ${{ secrets.CI_DEFAULT_OBJECT_STORAGE_BUCKET_ID }}
         run: |
           if [[ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
             echo "::notice::Skipping bucket cleanup — GCS credentials not configured."
@@ -280,7 +282,12 @@ jobs:
             echo "::warning::Could not extract project_id from GCS credentials — skipping bucket cleanup."
             exit 0
           fi
-          bash .github/scripts/cleanup-ci-staging-bucket.sh --project "$PROJECT"
+          gcloud auth activate-service-account --key-file="$GOOGLE_APPLICATION_CREDENTIALS" --project="$PROJECT"
+          EXTRA_ARGS=()
+          if [[ -n "${DEFAULT_OBJECT_STORAGE_BUCKET_ID:-}" ]]; then
+            EXTRA_ARGS+=(--bucket "$DEFAULT_OBJECT_STORAGE_BUCKET_ID")
+          fi
+          bash .github/scripts/cleanup-ci-staging-bucket.sh --project "$PROJECT" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 
   test-labtrax-desktop:
     name: Desktop client tests
