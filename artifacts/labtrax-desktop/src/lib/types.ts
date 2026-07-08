@@ -200,6 +200,8 @@ export interface CaseAttachment {
   storageKey: string;
   fileType: string;
   visibility?: string | null;
+  /** Semantic category; "outgoing" = photo of the completed case as it left the lab. */
+  category?: string | null;
   note?: string | null;
   createdAt?: string | null;
   uploaderName?: string | null;

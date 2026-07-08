@@ -90,6 +90,7 @@ export * from "./conversationSummary";
 export * from "./createAiMemoryInput";
 export * from "./createAiMemoryInputKind";
 export * from "./createCaseAttachmentInput";
+export * from "./createCaseAttachmentInputCategory";
 export * from "./createCaseAttachmentInputVisibility";
 export * from "./createCaseInput";
 export * from "./createCaseInputPriority";

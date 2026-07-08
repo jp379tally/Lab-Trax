@@ -4044,6 +4044,7 @@ components:
         fileType: { type: string, nullable: true }
         storageKey: { type: string, nullable: true }
         visibility: { type: string, nullable: true }
+        category: { type: string, nullable: true }
         createdAt: { type: string, nullable: true }
         uploaderName: { type: string, nullable: true }
       additionalProperties: true
@@ -4401,6 +4402,13 @@ components:
           type: string
           enum: [internal_lab_only, shared_with_provider]
           default: internal_lab_only
+        note: { type: string, maxLength: 1000 }
+        category:
+          type: string
+          enum: [outgoing]
+          description: >-
+            Optional semantic category. "outgoing" marks a photo of the
+            completed case as it left the lab (mobile scan-to-complete flow).
     InvoiceListResult:
       type: object
       properties:

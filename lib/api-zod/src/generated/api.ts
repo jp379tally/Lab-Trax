@@ -1180,6 +1180,7 @@ export const ListCasesResponse = zod.object({
               fileType: zod.string().nullish(),
               storageKey: zod.string().nullish(),
               visibility: zod.string().nullish(),
+              category: zod.string().nullish(),
               createdAt: zod.string().nullish(),
               uploaderName: zod.string().nullish(),
             }),
@@ -1383,6 +1384,7 @@ export const ListProviderCasesResponse = zod.object({
               fileType: zod.string().nullish(),
               storageKey: zod.string().nullish(),
               visibility: zod.string().nullish(),
+              category: zod.string().nullish(),
               createdAt: zod.string().nullish(),
               uploaderName: zod.string().nullish(),
             }),
@@ -2364,6 +2366,7 @@ export const GetCaseResponse = zod.object({
             fileType: zod.string().nullish(),
             storageKey: zod.string().nullish(),
             visibility: zod.string().nullish(),
+            category: zod.string().nullish(),
             createdAt: zod.string().nullish(),
             uploaderName: zod.string().nullish(),
           }),
@@ -2757,6 +2760,7 @@ export const UploadCaseAttachmentParams = zod.object({
 
 export const uploadCaseAttachmentBodyFileTypeDefault = `application/octet-stream`;
 export const uploadCaseAttachmentBodyVisibilityDefault = `internal_lab_only`;
+export const uploadCaseAttachmentBodyNoteMax = 1000;
 
 export const UploadCaseAttachmentBody = zod.object({
   storageKey: zod.string().min(1),
@@ -2765,6 +2769,13 @@ export const UploadCaseAttachmentBody = zod.object({
   visibility: zod
     .enum(["internal_lab_only", "shared_with_provider"])
     .default(uploadCaseAttachmentBodyVisibilityDefault),
+  note: zod.string().max(uploadCaseAttachmentBodyNoteMax).optional(),
+  category: zod
+    .enum(["outgoing"])
+    .optional()
+    .describe(
+      'Optional semantic category. \"outgoing\" marks a photo of the completed case as it left the lab (mobile scan-to-complete flow).',
+    ),
 });
 
 /**

@@ -11,6 +11,13 @@ import { chunkedUploadCaseMedia, resilientFetch } from "@/lib/query-client";
 
 export type AttachmentVisibility = "internal_lab_only" | "shared_with_provider";
 
+/**
+ * Semantic attachment category. "outgoing" marks a photo of the completed
+ * case as it left the lab (captured by the scan-to-complete flow); it drives
+ * the "Outgoing photo" label in Files + History on both clients.
+ */
+export type AttachmentCategory = "outgoing";
+
 export interface UploadCaseAttachmentParams {
   caseId: string;
   fileUri: string;
@@ -19,6 +26,8 @@ export interface UploadCaseAttachmentParams {
   visibility?: AttachmentVisibility;
   /** Optional note saved alongside the attachment record. */
   note?: string;
+  /** Optional semantic category persisted on the attachment row + history event. */
+  category?: AttachmentCategory;
   /** Reports overall progress (0..1) across both upload + register steps. */
   onProgress?: (fraction: number) => void;
 }
@@ -39,7 +48,7 @@ export type UploadCaseAttachmentResult =
 export async function uploadCaseAttachment(
   params: UploadCaseAttachmentParams,
 ): Promise<UploadCaseAttachmentResult> {
-  const { caseId, fileUri, fileName, mimeType, visibility, note, onProgress } = params;
+  const { caseId, fileUri, fileName, mimeType, visibility, note, category, onProgress } = params;
 
   // Step 1 — binary upload. Reserve the final 5% of the bar for the register
   // call so a row never reads 100% before the case actually references it.
@@ -77,6 +86,7 @@ export async function uploadCaseAttachment(
           fileType: mimeType,
           ...(visibility ? { visibility } : {}),
           ...(note ? { note } : {}),
+          ...(category ? { category } : {}),
         }),
       },
     );

@@ -432,6 +432,7 @@ export interface CanonicalAttachment {
   fileType?: string | null;
   storageKey?: string | null;
   visibility?: string | null;
+  category?: string | null;
   createdAt?: string | null;
   uploaderName?: string | null;
   [key: string]: unknown;
@@ -704,6 +705,16 @@ export const CreateCaseAttachmentInputVisibility = {
   shared_with_provider: "shared_with_provider",
 } as const;
 
+/**
+ * Optional semantic category. "outgoing" marks a photo of the completed case as it left the lab (mobile scan-to-complete flow).
+ */
+export type CreateCaseAttachmentInputCategory =
+  (typeof CreateCaseAttachmentInputCategory)[keyof typeof CreateCaseAttachmentInputCategory];
+
+export const CreateCaseAttachmentInputCategory = {
+  outgoing: "outgoing",
+} as const;
+
 export interface CreateCaseAttachmentInput {
   /** @minLength 1 */
   storageKey: string;
@@ -711,6 +722,10 @@ export interface CreateCaseAttachmentInput {
   fileName: string;
   fileType?: string;
   visibility?: CreateCaseAttachmentInputVisibility;
+  /** @maxLength 1000 */
+  note?: string;
+  /** Optional semantic category. "outgoing" marks a photo of the completed case as it left the lab (mobile scan-to-complete flow). */
+  category?: CreateCaseAttachmentInputCategory;
 }
 
 /**

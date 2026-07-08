@@ -26,6 +26,10 @@ import { pickBestBarcode, guideBoxFromLayout } from "@/lib/barcode-guide-box";
 import { CASE_STATIONS } from "@/lib/case-stations";
 import { useMe, primaryLabOrgId, editableLabMemberships } from "@/lib/auth-me";
 import { getJson } from "@/lib/read-api";
+import {
+  OutgoingPhotosModal,
+  type OutgoingPhotoCase,
+} from "@/components/OutgoingPhotosModal";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -110,6 +114,30 @@ export async function runBatchMove(
   return splitBatchResults(results, cases.map((c) => c.caseId));
 }
 
+/**
+ * Cases eligible for the outgoing-photo flow after a batch move to the
+ * "Complete" station, in scan order (scannedCases is stored newest-first via
+ * prepend, so reverse it) and restricted to cases the move actually updated.
+ * The photo flow carries this list itself — the server clears casePanBarcode
+ * on completion, so barcodes can NOT be re-looked-up afterwards.
+ */
+export function outgoingPhotoCasesForBatch(
+  scannedNewestFirst: ScannedCase[],
+  succeededIds: string[],
+  stationValue: string,
+): OutgoingPhotoCase[] {
+  if (stationValue !== "complete") return [];
+  const succeeded = new Set(succeededIds);
+  return [...scannedNewestFirst]
+    .reverse()
+    .filter((c) => succeeded.has(c.caseId))
+    .map((c) => ({
+      caseId: c.caseId,
+      patientName: c.patientName,
+      caseNumber: c.caseNumber,
+    }));
+}
+
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 export default function BatchLocateScreen() {
@@ -146,6 +174,9 @@ export default function BatchLocateScreen() {
   // Result state
   const [result, setResult] = useState<BatchResult | null>(null);
   const [failedCases, setFailedCases] = useState<ScannedCase[]>([]);
+  // Outgoing-photo prompt shown over the result screen after a successful
+  // batch move to "Complete". Empty = hidden.
+  const [outgoingPhotoCases, setOutgoingPhotoCases] = useState<OutgoingPhotoCase[]>([]);
 
   const updateCase = useUpdateCase();
   const queryClient = useQueryClient();
@@ -310,6 +341,11 @@ export default function BatchLocateScreen() {
 
     setResult({ succeededIds, failedIds, targetName: station.label });
     setFailedCases(cases.filter((c) => failedIds.includes(c.caseId)));
+    // Moving to "Complete"? Offer the optional guided photo flow on top of
+    // the result screen. Declining/skipping never blocks — the moves are done.
+    setOutgoingPhotoCases(
+      outgoingPhotoCasesForBatch(scannedCases, succeededIds, station.value),
+    );
     setStep("result");
   }
 
@@ -362,6 +398,7 @@ export default function BatchLocateScreen() {
     setSelectedStation(null);
     setResult(null);
     setFailedCases([]);
+    setOutgoingPhotoCases([]);
     setStep("scanning");
   }
 
@@ -698,6 +735,10 @@ export default function BatchLocateScreen() {
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
+      <OutgoingPhotosModal
+        cases={outgoingPhotoCases}
+        onDone={() => setOutgoingPhotoCases([])}
+      />
       <View style={styles.header}>
         <View style={{ width: 36 }} />
         <View style={styles.headerCenter}>

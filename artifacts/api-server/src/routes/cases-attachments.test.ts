@@ -384,6 +384,101 @@ maybe(
       }
     );
 
+    it(
+      "persists category 'outgoing' and stamps it on the legacy activityLog photo entry",
+      async () => {
+        const app = appMod.default;
+        const { db, labCases, caseAttachments } = dbMod as any;
+
+        const fileName = "outgoing-case-C100.jpg";
+        const storageKey = `/uploads/case-media/${fileName}`;
+
+        const res = await request(app)
+          .post(`/api/cases/${legacyCaseId}/attachments`)
+          .set("Authorization", `Bearer ${tokens.member}`)
+          .send({
+            storageKey,
+            fileName,
+            fileType: "image/jpeg",
+            category: "outgoing",
+          });
+
+        expect(res.status).toBe(201);
+        const attachmentId = res.body.data?.id;
+        expect(attachmentId).toBeTruthy();
+        expect(res.body.data.category).toBe("outgoing");
+
+        const row = await db.query.caseAttachments.findFirst({
+          where: eq(caseAttachments.id, attachmentId),
+        });
+        expect(row).toBeDefined();
+        expect(row.category).toBe("outgoing");
+
+        // Legacy history: the activityLog entry must carry the category and
+        // use type "photo" (outgoing photos are photos, not documents).
+        const caseRow = await db.query.labCases.findFirst({
+          where: eq(labCases.id, legacyCaseId),
+        });
+        const caseData = JSON.parse(caseRow.caseData as string);
+        const entry = (caseData.activityLog as any[]).find(
+          (e: any) => e.attachmentId === attachmentId
+        );
+        expect(entry).toBeDefined();
+        expect(entry.category).toBe("outgoing");
+        expect(entry.type).toBe("photo");
+      }
+    );
+
+    it(
+      "leaves category null and activityLog entries unstamped when no category is sent",
+      async () => {
+        const app = appMod.default;
+        const { db, labCases, caseAttachments } = dbMod as any;
+
+        const fileName = "plain-no-category.jpg";
+        const res = await request(app)
+          .post(`/api/cases/${legacyCaseId}/attachments`)
+          .set("Authorization", `Bearer ${tokens.member}`)
+          .send({
+            storageKey: `/uploads/case-media/${fileName}`,
+            fileName,
+            fileType: "image/jpeg",
+          });
+
+        expect(res.status).toBe(201);
+        const attachmentId = res.body.data?.id;
+        const row = await db.query.caseAttachments.findFirst({
+          where: eq(caseAttachments.id, attachmentId),
+        });
+        expect(row.category).toBeNull();
+
+        const caseRow = await db.query.labCases.findFirst({
+          where: eq(labCases.id, legacyCaseId),
+        });
+        const caseData = JSON.parse(caseRow.caseData as string);
+        const entry = (caseData.activityLog as any[]).find(
+          (e: any) => e.attachmentId === attachmentId
+        );
+        expect(entry).toBeDefined();
+        expect(entry.category).toBeUndefined();
+      }
+    );
+
+    it("rejects an unknown category value", async () => {
+      const app = appMod.default;
+      const res = await request(app)
+        .post(`/api/cases/${legacyCaseId}/attachments`)
+        .set("Authorization", `Bearer ${tokens.member}`)
+        .send({
+          storageKey: "/uploads/case-media/bad-cat.jpg",
+          fileName: "bad-cat.jpg",
+          fileType: "image/jpeg",
+          category: "incoming",
+        });
+
+      expect([400, 422]).toContain(res.status);
+    });
+
     it("returns 404 when the caseId does not exist in lab_cases or cases", async () => {
       const app = appMod.default;
       const res = await request(app)

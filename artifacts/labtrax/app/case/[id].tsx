@@ -245,6 +245,28 @@ function formatEventType(eventType?: string | null): string {
   return titleCase(eventType);
 }
 
+// True when an attachment history event carries the "outgoing" category in its
+// metadata — the photo of the completed case taken as it left the lab. Those
+// events get a dedicated title instead of the generic "Attachment Added".
+export function eventIsOutgoingPhoto(ev: {
+  eventType?: string | null;
+  metadataJson?: unknown;
+}): boolean {
+  if (!ev.eventType || !ev.eventType.includes("attachment")) return false;
+  let meta: Record<string, unknown> | null = null;
+  if (ev.metadataJson && typeof ev.metadataJson === "object") {
+    meta = ev.metadataJson as Record<string, unknown>;
+  } else if (typeof ev.metadataJson === "string" && ev.metadataJson.trim()) {
+    try {
+      const parsed = JSON.parse(ev.metadataJson);
+      if (parsed && typeof parsed === "object") meta = parsed as Record<string, unknown>;
+    } catch {
+      return false;
+    }
+  }
+  return meta?.category === "outgoing";
+}
+
 // Resolve the stable note id an event references, checking the known key
 // variants the server (and legacy paths) have used over time.
 function eventNoteId(meta: Record<string, unknown>): string | null {
@@ -3355,7 +3377,7 @@ function FilesSection({
   colors,
 }: {
   caseId: string;
-  attachments: { id: string; fileName?: string | null; fileType?: string | null; uploaderName?: string | null; createdAt?: string | null; note?: string | null }[];
+  attachments: { id: string; fileName?: string | null; fileType?: string | null; uploaderName?: string | null; createdAt?: string | null; note?: string | null; category?: string | null }[];
   loading: boolean;
   onOpenImage: (url: string) => void;
   canUpload: boolean;
@@ -3853,6 +3875,30 @@ function FilesSection({
                   testID={`img-open-${a.id}`}
                 >
                   <AuthedImage url={url} style={styles.thumbImage} contentFit="cover" />
+                  {a.category === "outgoing" ? (
+                    <View
+                      style={{
+                        position: "absolute",
+                        bottom: 4,
+                        left: 4,
+                        paddingHorizontal: 6,
+                        paddingVertical: 2,
+                        borderRadius: 4,
+                        backgroundColor: "rgba(0,0,0,0.62)",
+                      }}
+                      testID={`img-outgoing-badge-${a.id}`}
+                    >
+                      <Text
+                        style={{
+                          ...Typography.caption,
+                          fontSize: 10,
+                          color: "#fff" /* hex-allow: white label on photo thumbnail overlay */,
+                        }}
+                      >
+                        Outgoing
+                      </Text>
+                    </View>
+                  ) : null}
                   {canEdit ? (
                     <Pressable
                       style={styles.thumbTrashBtn}
@@ -4409,7 +4455,11 @@ function HistorySection({
                 <Text style={styles.eventTitle}>{invoiceSummary}</Text>
               ) : (
                 <>
-                  <Text style={styles.eventTitle}>{formatEventType(ev.eventType)}</Text>
+                  <Text style={styles.eventTitle}>
+                    {eventIsOutgoingPhoto(ev)
+                      ? "Outgoing Case Photo"
+                      : formatEventType(ev.eventType)}
+                  </Text>
                   {invoiceNumber ? (
                     <Text style={styles.eventInvoiceNumber}>{invoiceNumber}</Text>
                   ) : null}

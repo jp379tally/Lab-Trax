@@ -25,6 +25,10 @@ import { useMe, editableLabMemberships, canAdminAnyLab } from "@/lib/auth-me";
 import { getJson } from "@/lib/read-api";
 import { resilientFetch } from "@/lib/query-client";
 import { router } from "expo-router";
+import {
+  OutgoingPhotosModal,
+  type OutgoingPhotoCase,
+} from "@/components/OutgoingPhotosModal";
 
 type SingleProps = {
   locatingCase: CanonicalCase | null;
@@ -72,6 +76,11 @@ export function LocateCaseSheet(props: Props) {
   const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
   const [apiLocations, setApiLocations] = useState<LabLocation[] | null>(null);
+  // Set after a single-case move to "complete" succeeds; drives the optional
+  // outgoing-photo prompt. The prompt renders in a sibling Modal so it
+  // survives the sheet itself being dismissed (this component stays mounted
+  // in every host — only the Modal's visibility toggles).
+  const [outgoingPhotoCases, setOutgoingPhotoCases] = useState<OutgoingPhotoCase[]>([]);
 
   const updateCase = useUpdateCase();
   const queryClient = useQueryClient();
@@ -216,6 +225,17 @@ export function LocateCaseSheet(props: Props) {
         data: { status: selectedStatus as UpdateCaseInputStatus },
       });
       const successId = locatingCase.id;
+      // Completing a case? Offer the optional outgoing-photo capture after
+      // the sheet closes. Declining never blocks — the move already happened.
+      if (selectedStatus === "complete") {
+        setOutgoingPhotoCases([
+          {
+            caseId: successId,
+            patientName: patientDisplayName(locatingCase),
+            caseNumber: locatingCase.caseNumber ?? null,
+          },
+        ]);
+      }
       // Await both the list and the individual case query so the HUD/detail
       // screen show fresh status before the sheet closes.
       await Promise.all([
@@ -272,6 +292,11 @@ export function LocateCaseSheet(props: Props) {
     : null;
 
   return (
+    <>
+    <OutgoingPhotosModal
+      cases={outgoingPhotoCases}
+      onDone={() => setOutgoingPhotoCases([])}
+    />
     <Modal
       visible={isVisible}
       transparent
@@ -415,6 +440,7 @@ export function LocateCaseSheet(props: Props) {
         </View>}
       </View>
     </Modal>
+    </>
   );
 }
 

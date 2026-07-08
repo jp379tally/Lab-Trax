@@ -1169,6 +1169,9 @@ async function tryProjectLegacyCaseForDesktop(
     // about projected legacy attachment ids).
     if (typeof e.imageUri === "string" && e.imageUri) metadata.imageUri = e.imageUri;
     if (typeof e.fileName === "string" && e.fileName) metadata.fileName = e.fileName;
+    // Surface the attachment category ("outgoing" case photos) so both
+    // clients can label the event without a second lookup.
+    if (typeof e.category === "string" && e.category) metadata.category = e.category;
     if (typeof e.fileType === "string" && e.fileType) {
       metadata.fileType = e.fileType;
     } else if (mediaKind === "photo") {
@@ -5827,6 +5830,7 @@ router.post(
             .enum(["internal_lab_only", "shared_with_provider"] as const)
             .default("internal_lab_only"),
           note: z.string().max(1000).optional(),
+          category: z.enum(["outgoing"] as const).optional(),
         })
         .parse(req.body);
 
@@ -5841,6 +5845,7 @@ router.post(
           fileType: legacyInput.fileType,
           visibility: legacyInput.visibility,
           note: legacyInput.note ?? null,
+          category: legacyInput.category ?? null,
         })
         .returning();
 
@@ -5879,13 +5884,16 @@ router.post(
         legacyCaseData.activityLog = [];
       legacyCaseData.activityLog.push({
         id: legacyAttachment.id,
-        type: "document",
+        // Outgoing case photos render as photos (not documents) in the mobile
+        // History tab; keep "document" for every other attachment type.
+        type: legacyInput.category === "outgoing" ? "photo" : "document",
         timestamp: Date.now(),
         user: (req as any).user?.initials || "",
         description: legacyInput.fileName,
         attachmentId: legacyAttachment.id,
         fileType: legacyInput.fileType,
         imageUri: legacyInput.storageKey,
+        ...(legacyInput.category ? { category: legacyInput.category } : {}),
       });
       await db
         .update(labCases)
@@ -5923,6 +5931,7 @@ router.post(
           .enum(["internal_lab_only", "shared_with_provider"] as const)
           .default("internal_lab_only"),
         note: z.string().max(1000).optional(),
+        category: z.enum(["outgoing"] as const).optional(),
       })
       .parse(req.body);
 
@@ -5937,6 +5946,7 @@ router.post(
         fileType: input.fileType,
         visibility: input.visibility,
         note: input.note ?? null,
+        category: input.category ?? null,
       })
       .returning();
 
@@ -5953,6 +5963,7 @@ router.post(
         fileType: attachment.fileType,
         visibility: attachment.visibility,
         ...(attachment.note ? { note: attachment.note } : {}),
+        ...(attachment.category ? { category: attachment.category } : {}),
       },
     }).catch((err: unknown): never => wrapDbError(err, {
       fallback: "Failed to record attachment timeline event.",

@@ -7830,7 +7830,9 @@ export function CaseDrawer({
                                 <div className="text-sm font-medium flex items-center gap-1.5">
                                   <span>
                                     {invoiceEventSummary(e.eventType, metadata) ??
-                                      formatEventType(e.eventType)}
+                                      (isAttachment && metadata.category === "outgoing"
+                                        ? "Outgoing Case Photo"
+                                        : formatEventType(e.eventType))}
                                   </span>
                                   {isBackfilledInvoice && (
                                     <span
@@ -9163,6 +9165,15 @@ export function AttachmentRow({
             {isInternal ? <Lock size={10} /> : <Eye size={10} />}
             {isInternal ? "Lab only" : "Shared"}
           </span>
+          {attachment.category === "outgoing" && (
+            <span
+              className="shrink-0 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide bg-blue-50 text-blue-700 border border-blue-200"
+              title="Photo of the completed case as it left the lab"
+              data-testid={`attachment-outgoing-badge-${attachment.id}`}
+            >
+              Outgoing
+            </span>
+          )}
         </div>
         <div className="text-xs text-muted-foreground mt-0.5">
           {isScan ? "3D Scan" : isImage ? "Image" : attachment.fileType || "File"}

@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { CreateCaseAttachmentInputCategory } from "./createCaseAttachmentInputCategory";
 import type { CreateCaseAttachmentInputVisibility } from "./createCaseAttachmentInputVisibility";
 
 export interface CreateCaseAttachmentInput {
@@ -14,4 +15,8 @@ export interface CreateCaseAttachmentInput {
   fileName: string;
   fileType?: string;
   visibility?: CreateCaseAttachmentInputVisibility;
+  /** @maxLength 1000 */
+  note?: string;
+  /** Optional semantic category. "outgoing" marks a photo of the completed case as it left the lab (mobile scan-to-complete flow). */
+  category?: CreateCaseAttachmentInputCategory;
 }

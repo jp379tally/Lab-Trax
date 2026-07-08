@@ -13,6 +13,7 @@ export interface CanonicalAttachment {
   fileType?: string | null;
   storageKey?: string | null;
   visibility?: string | null;
+  category?: string | null;
   createdAt?: string | null;
   uploaderName?: string | null;
   [key: string]: unknown;

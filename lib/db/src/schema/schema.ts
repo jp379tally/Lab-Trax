@@ -844,6 +844,11 @@ export const caseAttachments = pgTable("case_attachments", {
   fileType: text("file_type").notNull(),
   visibility: text("visibility").default("internal_lab_only").notNull(),
   note: text("note"),
+  // Optional semantic category for the attachment. Currently only
+  // "outgoing" (photo of the completed case as it left the lab, captured by
+  // the mobile scan-to-complete flow). Null = uncategorized (default for all
+  // regular uploads). Additive-only — never repurpose existing values.
+  category: text("category"),
   createdAt: createdAt(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
   deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
