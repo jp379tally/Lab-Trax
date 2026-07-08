@@ -23,12 +23,22 @@ locally and looks like a flaky regression when it is really a hermeticity bug.
 randomize its token; the other session tests can stay deterministic because the
 restore truncates their rows.
 
-**Aborted-run residue variant (2026-07-08):** tests 11/12 (fixed token hashes,
-normally truncated by the restore) can ALSO 23505-collide locally if a prior
-full-suite run was aborted mid-file, leaving their rows in the persistent dev DB.
-Symptom: same fixed token_hash in every failure across reruns; rows in
-user_sessions with old created_at and rid()-style ids. Fix: `DELETE FROM
-user_sessions WHERE token_hash IN (<the fixed hashes>)`, then rerun in isolation
-— not a code regression. Note the `rel-backup-restore` workflow's `test -- --…`
+**Aborted-run residue variant (2026-07-08, FIXED):** tests 11/12 (fixed token
+hashes, normally truncated by the restore) could ALSO 23505-collide locally if a
+prior full-suite run was aborted mid-file, leaving their rows in the persistent
+dev DB. As of 2026-07-08 all session inserts in the file derive token_hash from
+their per-run-random rid() id, and the restore-pipeline beforeAll deletes legacy
+fixed-hash rows plus expired rid()-prefixed residue, so this failure mode should
+no longer occur. If a similar 23505 reappears, some NEW session insert used a
+fixed token — randomize it. Note the `rel-backup-restore` workflow's `test -- --…`
 arg passing runs the WHOLE api suite, not just the two files; use a direct
 `npx vitest run src/routes/backup-restore.test.ts` for true isolation.
+
+**Gate self-concurrency variant:** the validation gate runs `rel-api-tests` AND
+`rel-backup-restore` in parallel — BOTH include backup-restore.test.ts, so the
+file races itself on the shared dev DB. Another instance's login/refresh
+rotation can land the same token under a different id between the snapshot
+SELECT and the safety-net re-insert, so `restoreSnapshotNow` must skip 23505
+(like it skips 23503). Also: a "vitest run <file>" from bash right after a gate
+kicks off is NOT isolated — the gate's rel-* workflows may still be running for
+minutes; check pgrep vitest before trusting an "isolated" result.
