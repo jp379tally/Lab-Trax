@@ -140,6 +140,43 @@ const LITERAL_UPDATE_RE =
 const LITERAL_TOKEN_HASH_VALUE_RE =
   /\b(?:tokenHash|token_hash)\s*:\s*(?:"[^"]*"|'[^']*'|`(?:(?!\$\{)[^`])*`)/;
 
+/**
+ * Literals that are fine to see inside a raw-SQL params array: SQL keywords
+ * and interval-style durations (e.g. "1 hour"). Anything else that survives
+ * the hash-builder stripping below is treated as a fixed token value.
+ */
+const SAFE_PARAM_LITERAL_RE =
+  /^(?:\d+\s*(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)|now\(\)|true|false|null|default)$/i;
+
+/**
+ * Does this fragment of a raw-SQL params array carry a bare fixed string
+ * literal? Hash-builder calls are stripped first so their algorithm /
+ * encoding literals ("sha256", "hex") and `.update(...)` arguments (already
+ * covered by LITERAL_UPDATE_RE) don't count.
+ */
+function paramSegmentHasFixedLiteral(segment: string): boolean {
+  let s = segment;
+  s = s.replace(
+    /createHash\s*\(\s*(?:"[^"]*"|'[^']*'|`[^`]*`)\s*\)/g,
+    "createHash()"
+  );
+  s = s.replace(
+    /\.\s*digest\s*\(\s*(?:"[^"]*"|'[^']*'|`[^`]*`)\s*\)/g,
+    ".digest()"
+  );
+  s = s.replace(/\.\s*update\s*\([^)]*\)/g, ".update()");
+
+  const litRe = /"([^"]*)"|'([^']*)'|`((?:(?!\$\{)[^`])*)`/g;
+  for (const m of s.matchAll(litRe)) {
+    const val = m[1] ?? m[2] ?? m[3];
+    if (val === undefined) continue;
+    if (val.trim() === "") continue;
+    if (SAFE_PARAM_LITERAL_RE.test(val.trim())) continue;
+    return true;
+  }
+  return false;
+}
+
 const FIXED_TOKEN_REASON =
   "Hardcoded session token in a test: user_sessions.token_hash has a UNIQUE " +
   "index, and rows left behind by an aborted run persist in the dev database " +
@@ -205,6 +242,36 @@ export function scanTestContentForFixedSessionTokens(
             reason: FIXED_TOKEN_REASON,
           });
         }
+      }
+
+      // Case 3: the params array carries a bare pre-computed literal in the
+      // token_hash position (e.g. `[sessId, uid, "abc123fixedhash"]`).
+      // Nothing on that line mentions tokenHash or .update(), so the checks
+      // above miss it. Walk the params array (the first `[...]` after the
+      // SQL string) and flag any surviving quoted literal that isn't a SQL
+      // keyword/interval.
+      let inParams = false;
+      for (let j = 0; j < window.length; j++) {
+        let seg = window[j];
+        if (seg.includes(SESSION_TOKEN_ALLOW_MARKER)) continue;
+        if (!inParams) {
+          const open = seg.indexOf("[");
+          if (open === -1) continue;
+          inParams = true;
+          seg = seg.slice(open + 1);
+        }
+        const close = seg.indexOf("]");
+        const done = close !== -1;
+        if (done) seg = seg.slice(0, close);
+        if (paramSegmentHasFixedLiteral(seg)) {
+          violations.push({
+            file,
+            line: i + 1 + j,
+            text: window[j].trim(),
+            reason: FIXED_TOKEN_REASON,
+          });
+        }
+        if (done) break;
       }
     }
   }

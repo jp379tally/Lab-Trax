@@ -64,6 +64,34 @@ await dbPool.query(
       expect(scanTestContentForFixedSessionTokens(content, FAKE_FILE)).toHaveLength(0);
     });
 
+    it("allows raw-SQL INSERT INTO user_sessions with variables-only params", () => {
+      const content = `
+const tokenHashVar = createHash("sha256").update(rid("tok")).digest("hex");
+await dbPool.query(
+  \`INSERT INTO user_sessions (id, user_id, token_hash, expires_at)
+   VALUES ($1, $2, $3, now() + interval '1 hour')\`,
+  [sessId, ownerId, tokenHashVar],
+);
+`;
+      expect(scanTestContentForFixedSessionTokens(content, FAKE_FILE)).toHaveLength(0);
+    });
+
+    it("allows raw-SQL INSERT with row-spread variables across wrapped params lines", () => {
+      const content = `
+await dbPool.query(
+  \`INSERT INTO user_sessions
+     (id, user_id, token_hash, csrf_token_hash, device_name,
+      ip_address, user_agent, expires_at, revoked_at, created_at)
+   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+   ON CONFLICT (id) DO NOTHING\`,
+  [row.id, row.user_id, row.token_hash, row.csrf_token_hash,
+   row.device_name, row.ip_address, row.user_agent,
+   row.expires_at, row.revoked_at, row.created_at],
+);
+`;
+      expect(scanTestContentForFixedSessionTokens(content, FAKE_FILE)).toHaveLength(0);
+    });
+
     it("ignores comment lines", () => {
       const content = `
 // tokenHash: createHash("sha256").update("tok-11-a").digest("hex"),
@@ -127,6 +155,37 @@ await db.insert(userSessions).values({
       const violations = scanTestContentForFixedSessionTokens(content, FAKE_FILE);
       expect(violations).toHaveLength(1);
       expect(violations[0].line).toBe(3);
+    });
+
+    it("flags raw-SQL INSERT INTO user_sessions with a bare literal hash in the params array", () => {
+      const content = `
+await dbPool.query(
+  \`INSERT INTO user_sessions (id, user_id, token_hash, expires_at)
+   VALUES ($1, $2, $3, now())\`,
+  [sessId, ownerId, "abc123fixedhash"],
+);
+`;
+      const violations = scanTestContentForFixedSessionTokens(content, FAKE_FILE);
+      expect(violations).toHaveLength(1);
+      expect(violations[0].line).toBe(5);
+      expect(violations[0].reason).toContain("user_sessions_token_hash_unique");
+    });
+
+    it("flags a bare literal param on a wrapped params line", () => {
+      const content = `
+await dbPool.query(
+  \`INSERT INTO user_sessions (id, user_id, token_hash, expires_at)
+   VALUES ($1, $2, $3, now())\`,
+  [
+    sessId,
+    ownerId,
+    "deadbeefdeadbeefdeadbeef",
+  ],
+);
+`;
+      const violations = scanTestContentForFixedSessionTokens(content, FAKE_FILE);
+      expect(violations).toHaveLength(1);
+      expect(violations[0].line).toBe(8);
     });
 
     it("flags raw-SQL INSERT INTO user_sessions fed by a hashed literal", () => {
