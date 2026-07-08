@@ -1,0 +1,75 @@
+```text
+Goal:
+Update LabTracks so that every newly added case item defaults to “Lab Only” visibility across all three platforms. This should apply to pictures/images, videos, uploaded files/attachments, notes, and any other case-added content that has a visibility/privacy/publication setting.
+
+User-visible problem:
+Right now, when a user adds media, files, or notes to a case, some items may default to public or to a broader visibility than intended. The desired behavior is privacy-first: new case content should be lab-only by default. Users can later choose to make an item public if the product allows that, but the initial default must always be Lab Only.
+
+Likely root cause:
+The default visibility is probably being set inconsistently across item creation flows. Some upload/note/media creation paths may omit the visibility field, rely on backend defaults, or use different frontend defaults per platform. The fix should centralize or consistently enforce the default at the creation boundary, not just in one UI screen.
+
+Implementation steps:
+1. Inspect all case content creation flows on all three platforms:
+   - picture/image upload
+   - video upload
+   - file/attachment upload
+   - note creation
+   - any shared reusable “add to case” component, mutation, endpoint, or serializer
+
+2. Identify the visibility/privacy field used for case items.
+   Look for names like:
+   - visibility
+   - privacy
+   - accessLevel
+   - isPublic
+   - labOnly
+   - audience
+   - shareStatus
+   - public/private flag
+
+3. Set the default for new case content to Lab Only in the safest shared location.
+   Prefer this order:
+   - backend/API creation default, so every platform gets the correct behavior
+   - shared schema/model/default helper, if one exists
+   - platform-specific frontend defaults only as an additional safety layer
+
+4. Ensure every create request explicitly sends or resolves to Lab Only unless the user intentionally selects a different visibility.
+   Do not change existing items retroactively unless there is already a migration requirement. This request is about defaults for newly added content.
+
+5. Update all three platforms so the initial UI state matches the backend behavior.
+   When a user opens an add-picture, add-video, add-file, or add-note flow, the selected/default visibility should display as Lab Only.
+
+6. Preserve the ability to make content public later where that feature already exists.
+   Do not remove public visibility controls. Only change the initial default.
+
+7. Add or update tests around the creation defaults:
+   - creating a new picture defaults to Lab Only
+   - creating a new video defaults to Lab Only
+   - uploading a new file defaults to Lab Only
+   - creating a new note defaults to Lab Only
+   - omitted visibility values still resolve to Lab Only on the backend
+   - explicitly selected public visibility still works when the user chooses it
+
+Constraints and guardrails:
+- Apply this across all three platforms, not just one client.
+- Do not rely only on frontend defaults. The backend should protect the default if a client omits the field.
+- Do not change visibility for existing case content unless explicitly requested.
+- Do not break the later “make public” flow.
+- Keep terminology consistent with the existing product language, preferably “Lab Only.”
+- Avoid broad refactors unless required to centralize the default safely.
+- If there are conflicting visibility systems for notes vs media vs files, document the difference and normalize the default behavior without collapsing unrelated models unnecessarily.
+
+Regression checks:
+Before finishing, verify:
+1. New picture added to a case starts as Lab Only.
+2. New video added to a case starts as Lab Only.
+3. New uploaded file/attachment starts as Lab Only.
+4. New note starts as Lab Only.
+5. The same behavior works on all three platforms.
+6. Existing public/private/lab-only toggles still allow a user to make content public later.
+7. Existing case content is not accidentally modified.
+8. API requests that omit visibility still create Lab Only content.
+9. Any shared case timeline, gallery, attachments list, or notes list displays the correct visibility after creation.
+
+Please implement the safest fix you find after inspecting the code. If the codebase has a shared visibility enum, schema, API handler, or creation helper, prefer updating that shared layer and then align each platform’s UI default with it. If platform behavior differs, explain the tradeoff and the exact files changed.
+```

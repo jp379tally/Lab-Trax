@@ -1,0 +1,83 @@
+```text
+Goal:
+Fix mobile screenshot upload into the LabTracks “Unassigned Documents” area.
+
+User-visible problem:
+On mobile, when I take a screenshot and then open the LabTracks app, I expect to be able to add that screenshot to Unassigned Documents by tapping the Unassigned Documents section and selecting/dropping the screenshot there. Right now, tapping the Unassigned Documents area does not let me upload the screenshot, so the document never appears in the unassigned document list.
+
+Likely root cause:
+The Unassigned Documents area probably supports desktop drag-and-drop or an existing upload flow, but the mobile interaction is incomplete. Mobile browsers do not support desktop-style drag/drop in the same way, so the section likely needs an explicit tap-to-upload handler backed by a hidden file input or native file picker. It may also be missing support for image MIME types such as image/png, image/jpeg, image/heic, or mobile screenshot formats.
+
+Please inspect:
+- The Unassigned Documents page/component
+- Any document upload/dropzone component
+- Existing file upload services or API routes
+- Any accepted file type validation
+- Any mobile-specific event handling around tap/click/drop
+- The code path that creates an “unassigned” document record after upload
+
+Desired behavior:
+1. On mobile, tapping the Unassigned Documents upload/drop area should open the native file picker.
+2. The user should be able to select a recent screenshot/photo from their phone.
+3. The app should upload the selected screenshot as an unassigned document.
+4. After upload, the screenshot should appear in the Unassigned Documents list without requiring a full page refresh if the existing app supports live refresh.
+5. The same component should continue to work for desktop drag-and-drop and desktop file picker upload.
+
+Implementation steps:
+1. Find the Unassigned Documents upload/dropzone component.
+2. Add or verify a mobile-friendly tap/click upload path using an `<input type="file">`.
+3. Make the visible Unassigned Documents drop area trigger the hidden file input when tapped or clicked.
+4. Accept image screenshot formats in addition to any existing document formats:
+   - image/png
+   - image/jpeg
+   - image/jpg
+   - image/heic / image/heif if the backend supports them
+   - existing PDF/document formats should remain supported
+5. Reuse the existing upload API/service rather than creating a separate upload path.
+6. Ensure uploaded screenshots are saved with the same “unassigned document” status/category as desktop uploads.
+7. Preserve existing validations for file size, auth, organization/account scope, and allowed file types.
+8. Add loading, success, and error handling if the component does not already have it.
+9. Make sure the upload area remains accessible:
+   - keyboard-triggerable on desktop
+   - clear button or label for screen readers
+   - no reliance on hover-only behavior
+
+Constraints:
+- Do not break existing desktop drag-and-drop upload behavior.
+- Do not create duplicate document records if the user taps more than once or the upload retries.
+- Do not bypass existing backend validation, authentication, or storage rules.
+- Do not introduce a new upload endpoint unless the existing upload endpoint cannot support this flow.
+- Avoid broad refactors; keep the fix focused on the Unassigned Documents upload experience.
+- If HEIC/HEIF screenshots cannot be supported by the current backend/storage pipeline, explain that clearly and at least support PNG and JPEG screenshots.
+
+Regression checks:
+1. Mobile Safari or mobile Chrome:
+   - Take a screenshot.
+   - Open LabTracks.
+   - Go to Unassigned Documents.
+   - Tap the upload/drop area.
+   - Select the screenshot.
+   - Confirm it uploads and appears in Unassigned Documents.
+
+2. Desktop browser:
+   - Drag and drop a supported file into Unassigned Documents.
+   - Confirm the existing drag/drop behavior still works.
+
+3. Desktop browser:
+   - Click/tap the upload area.
+   - Confirm the file picker opens and upload still works.
+
+4. Validation:
+   - Try an unsupported file type and confirm the app shows a useful error.
+   - Try an oversized file and confirm existing size validation still works.
+
+5. Data correctness:
+   - Confirm the uploaded screenshot is marked as unassigned.
+   - Confirm it is visible in the same list as other unassigned documents.
+   - Confirm no duplicate records are created from one upload.
+
+Before finishing:
+- Summarize the exact files changed.
+- Explain whether the issue was missing mobile tap-to-upload handling, missing screenshot MIME type support, backend validation, or something else.
+- Confirm which regression checks were run.
+```

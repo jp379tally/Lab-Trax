@@ -1,0 +1,159 @@
+**Copy-Ready Replit Prompt**
+
+Implement an outbound completed-case photo capture workflow in LabTracks.
+
+**Goal**
+
+When a case is scanned to complete, LabTracks should prompt the user to optionally capture one or more photos of the completed outgoing case. These photos must be attached to the correct case, saved in the case file section, and recorded in case history as outgoing/completed-case photos.
+
+This needs to work for both:
+
+1. A single case scan-to-complete workflow
+2. A batch scan-to-complete workflow with multiple cases
+
+**User-Visible Problem**
+
+Right now, users can complete cases by scanning them out, but there is no required workflow moment that asks whether they want to document the completed outgoing case with photos. The lab wants to capture photos as cases leave, so each completed case can have visual proof attached to the case record and visible in history.
+
+**Likely Root Cause**
+
+The existing scan-to-complete flow probably finalizes the case status immediately after a successful barcode scan or batch scan without routing through an optional outbound photo capture step. The app may already support file/photo attachments and case history entries, but the completion workflow is not invoking those systems at the right time.
+
+**Desired Behavior**
+
+For a single scan-to-complete:
+
+* After the case is scanned and recognized as ready to complete, prompt the user:
+  “Do you want to take a picture of the outgoing case?”
+* Options: `Yes` and `No`.
+* If `No`, complete the case normally.
+* If `Yes`, open the camera/photo upload flow for that case.
+* After the user captures or uploads the photo, attach it to the case.
+* Add a case history entry identifying it as an outgoing completed-case photo.
+* Allow the user to add more photos using a `+` button.
+* Allow the user to finish photo capture and complete the case.
+
+For a batch scan-to-complete:
+
+* Let the user scan all case pans/barcodes first.
+* Do not interrupt the batch scanning process case-by-case.
+* After the batch scan list is complete and before or immediately after finalizing completion, prompt:
+  “Do you want to take pictures of the outgoing cases?”
+* Options: `Yes` and `No`.
+* If `No`, complete all cases normally.
+* If `Yes`, start a guided outbound photo flow through each scanned case in the batch.
+* For each case:
+
+  * Show the case/patient identifier clearly so the user knows which case they are photographing.
+  * Prompt the user to take a photo of the outgoing case.
+  * Save the photo to that specific case.
+  * Add the photo to the case file section.
+  * Add a case history entry labeled as an outgoing case photo.
+  * Provide a `+` button to add additional photos for that same case.
+  * Provide a `Complete` / `Next Case` action to finish that case and automatically move to the next case in the batch.
+* After the final case is completed, return the user to the normal completed batch confirmation screen.
+
+**Implementation Steps**
+
+1. Locate the single scan-to-complete workflow.
+
+   * Find where a scanned case barcode changes the case status to completed/outgoing.
+   * Insert an optional outbound photo prompt after the scan is validated but before the user leaves the completion flow.
+
+2. Locate the batch scan-to-complete workflow.
+
+   * Find where scanned cases are collected into a batch and then marked complete.
+   * Preserve the existing scanning behavior so the user can scan all cases without interruption.
+   * Add the outbound photo prompt after the batch list is finalized.
+
+3. Reuse existing photo/file attachment infrastructure if available.
+
+   * Search for existing case file upload, camera capture, image attachment, and case history logic.
+   * Do not create a second file system or duplicate attachment model if one already exists.
+   * Use the same storage path, metadata, permissions, and display conventions already used for case files.
+
+4. Add an outbound photo type or metadata flag.
+
+   * Each uploaded photo should be identifiable as an outgoing/completed-case photo.
+   * Suggested metadata fields if compatible with the existing schema:
+
+     * `caseId`
+     * `fileType` or `category`: `outgoing_case_photo`
+     * `source`: `scan_to_complete`
+     * `createdBy`
+     * `createdAt`
+     * optional `batchId` if the photo was captured during a batch completion flow
+
+5. Add case history entries.
+
+   * When each outgoing photo is saved, create a case history event.
+   * The history entry should clearly say that an outgoing case photo was added.
+   * Include the user and timestamp if the existing case history supports that.
+
+6. Build the guided batch photo flow.
+
+   * Maintain an ordered list of completed/scanned cases.
+   * Track the active case index.
+   * Allow multiple photos per case.
+   * After the user taps `Complete` or `Next Case`, advance to the next case.
+   * When all cases are processed, show the normal batch completion result.
+
+7. Handle cancel/skip behavior safely.
+
+   * Users should be able to skip photos entirely by choosing `No`.
+   * In the batch photo flow, consider whether the user can skip an individual case. If supported, record no photo and move to the next case.
+   * Do not block case completion if the user declines outbound photos unless the product already has a required-photo setting.
+
+8. Update UI labels clearly.
+
+   * Use language like:
+
+     * “Take outgoing case photo?”
+     * “Add another photo”
+     * “Complete this case”
+     * “Next case”
+     * “Finish batch photos”
+   * Make sure the current case/patient is visible during each photo capture step.
+
+**Important Constraints**
+
+* Do not break the existing scan-to-complete behavior.
+* Do not interrupt batch scanning after every scan; prompt only after the batch scan list is complete.
+* Attach photos to the correct case, especially in batch mode.
+* Multiple photos per case must be supported.
+* Photos must appear both in:
+
+  * the case file section
+  * the case history
+* Reuse existing file upload/camera/case history systems where possible.
+* Respect existing permissions and storage rules.
+* Avoid broad schema changes unless absolutely necessary.
+* If schema changes are needed, explain them clearly and include a safe migration.
+* Make the feature work on mobile/tablet workflows where camera capture is likely used.
+
+**Regression Checks**
+
+Before finishing, verify:
+
+1. Single scan-to-complete still works when the user selects `No`.
+2. Single scan-to-complete works when the user selects `Yes` and adds one photo.
+3. Single scan-to-complete works when the user adds multiple photos.
+4. The uploaded photo appears in the correct case file section.
+5. The uploaded photo creates a visible case history entry.
+6. Batch scan-to-complete still allows all barcodes/case pans to be scanned before any photo prompt appears.
+7. Batch photo flow walks through each scanned case in order.
+8. Multiple photos can be added to one case during batch photo capture.
+9. Photos from batch case 1 do not attach to batch case 2 or any other case.
+10. Skipping outbound photos does not prevent completion.
+11. Existing file uploads and case history behavior elsewhere in the app still work.
+12. The workflow works on the device/browser used for scanning and camera capture.
+
+**Ask Replit to Report Back**
+
+After implementing, explain:
+
+* Which files/components/routes were changed
+* Whether existing attachment and case history systems were reused
+* Whether any database/schema changes were required
+* How single-case and batch-case photo capture were tested
+* Any assumptions made about skip/cancel behavior or required-photo rules
