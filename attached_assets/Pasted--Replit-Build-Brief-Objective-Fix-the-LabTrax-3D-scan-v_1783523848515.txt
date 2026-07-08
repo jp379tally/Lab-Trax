@@ -1,0 +1,124 @@
+### Replit Build Brief
+
+**Objective**
+Fix the LabTrax 3D scan viewer so PLY files render in color on web and desktop, and improve scan navigation on web, desktop, and mobile with fuller rotation plus cursor/pinch-targeted zoom.
+
+**User-visible problem**
+PLY scans show color correctly in the mobile app, but web and desktop show them as neutral/gray. Across all platforms, scan movement is mostly working, but zooming does not stay focused on the area under the mouse cursor or pinch center, and rotation/navigation feels short of full range.
+
+**Likely root cause**
+The shared viewer is in `lib/scan-viewer/src/index.ts`. The current viewer uses custom Three.js camera controls with a fixed target at the model center. Wheel and pinch zoom only change camera radius, so zoom always moves toward the center instead of the point the user is targeting.
+
+For color, the repo’s shared parser already contains some PLY vertex color support, so the likely cause is one of these:
+
+1. Web/desktop are running an older built bundle or stale PWA/Electron build that does not include the shared color-aware viewer.
+2. Desktop/web are loading a different viewer path than mobile in some flow.
+3. The affected PLY files use color property names or color layouts not covered by the parser, such as `diffuse_red`, `ambient_red`, `RGBA`, `alpha`, face colors, or packed color fields.
+
+**Code areas to inspect/change**
+
+* `lib/scan-viewer/src/index.ts`
+* `artifacts/labtrax/app/scan-viewer.tsx`
+* `artifacts/labtrax-desktop/src/components/ScanViewerModal.tsx`
+* `artifacts/labtrax-desktop/src/components/ScanThumbnail.tsx`
+* Any web/PWA service worker or build cache config in `artifacts/labtrax-desktop`
+* Any tests under `lib/scan-viewer` or add new tests there
+
+**Implementation plan**
+
+1. Confirm that web and desktop both import `buildViewerHtml` from `@workspace/scan-viewer`, not a copied/older viewer.
+2. Add parser instrumentation or tests that confirm color PLYs produce `parsed.colors` and that `geo.setAttribute("color", ...)` is used.
+3. Expand PLY color parsing to support common dental scan aliases and fail visibly in development if a PLY has color-like properties that are ignored.
+4. Make color rendering explicit: use `vertexColors: true`, white base material, and no fallback material when `parsed.colors` exists.
+5. Replace fixed-center zoom with targeted zoom:
+
+   * On mouse wheel, raycast from pointer into the mesh and use that intersection point as the zoom target.
+   * If raycast misses, use a point on the view plane under the cursor.
+   * Move both camera position and orbit target toward/away from that point.
+   * On pinch zoom, use the midpoint between the two fingers as the target.
+6. Improve range of motion:
+
+   * Keep yaw unlimited.
+   * Loosen polar limits as much as practical without camera flipping bugs.
+   * Preserve pan and reset behavior.
+   * Ensure zoom min/max are based on the scan bounding box.
+7. Rebuild/redeploy web and desktop artifacts and clear/bust stale service worker or Electron bundle cache if needed.
+
+**Constraints and guardrails**
+
+* Keep the fix centralized in `lib/scan-viewer/src/index.ts` where possible so mobile, web, desktop, and thumbnails stay consistent.
+* Do not break STL/OBJ rendering.
+* Do not remove the existing fallback/open-externally behavior.
+* Keep scan files local/private; do not upload sample patient scans to external services.
+* Avoid broad UI refactors around the viewer modal.
+
+**Acceptance criteria**
+
+* A known color PLY renders in color on mobile, web, and desktop.
+* The same PLY thumbnail renders in color where thumbnails are used.
+* Mouse wheel zoom on desktop/web zooms toward the point under the cursor.
+* Pinch zoom on mobile zooms toward the midpoint of the pinch gesture.
+* Users can rotate around the model with near-full range and still reset view cleanly.
+* STL/OBJ files still render in neutral material and still support rotate, pan, zoom, reset.
+* `pnpm run typecheck` passes, plus any relevant viewer tests.
+
+**Regression checks**
+
+* Open a PLY with vertex colors, a PLY without colors, STL, and OBJ.
+* Test web browser, installed desktop app, and mobile app.
+* Test zoom over center, edge, and small targeted tooth area.
+* Test pan after zooming in deeply.
+* Test reset view after rotate, pan, and targeted zoom.
+* Confirm production web is not serving an old service worker/bundle.
+
+### Copy-Ready Replit Prompt
+
+Please debug and fix the LabTrax 3D scan viewer.
+
+Issue: PLY files render in color on the mobile app, but on web and desktop they appear gray/neutral instead of color. Also, navigation is about 85% there, but zooming is not targeted: when the mouse cursor is over a specific area and the user scrolls, zoom should move into that area. On mobile, pinch zoom should zoom toward the pinch midpoint. Rotation/pan/zoom should feel closer to full range of motion.
+
+Start with these files:
+
+* `lib/scan-viewer/src/index.ts`
+* `artifacts/labtrax/app/scan-viewer.tsx`
+* `artifacts/labtrax-desktop/src/components/ScanViewerModal.tsx`
+* `artifacts/labtrax-desktop/src/components/ScanThumbnail.tsx`
+
+Please inspect whether web and desktop are actually using the shared `@workspace/scan-viewer` implementation and whether they are receiving the latest color-aware viewer code. If the current source already supports vertex colors, check for stale web/PWA/desktop bundles, alternate viewer paths, or PLY color property names that the parser does not support.
+
+Implement the safest fix:
+
+1. Keep viewer logic centralized in `lib/scan-viewer/src/index.ts`.
+2. Ensure PLY vertex colors are parsed and rendered on all platforms. Support common PLY color property names such as `red/green/blue`, `r/g/b`, `diffuse_red/diffuse_green/diffuse_blue`, and any obvious dental scan aliases found in the sample file headers. Preserve STL/OBJ neutral rendering.
+3. Ensure the Three.js material uses vertex colors when `parsed.colors` exists.
+4. Improve navigation:
+
+   * Wheel zoom should zoom toward the object point under the mouse cursor.
+   * If the cursor ray misses the mesh, use the view-plane point under the cursor as fallback.
+   * Mobile pinch zoom should target the midpoint between the fingers.
+   * Keep pan, reset view, and existing drag rotation behavior.
+   * Loosen rotation limits enough for near-full object inspection without unstable camera flips.
+5. Add or update focused tests for PLY color parsing and viewer behavior where practical.
+6. Run typecheck/tests for the affected workspace packages.
+7. Explain any tradeoffs or assumptions before finishing, especially if the issue turns out to be stale deployment/cache rather than parser logic.
+
+Acceptance criteria: a known color PLY renders in color on web, desktop, and mobile; thumbnails remain correct; targeted zoom works with mouse wheel and pinch; STL/OBJ still render and navigate correctly; reset view still works.
+
+### Debug Analysis
+
+The strongest clue is that the repo already has a shared scan viewer library: `lib/scan-viewer/src/index.ts`. Both mobile and desktop import `buildViewerHtml` from `@workspace/scan-viewer`, so the best fix should happen there, not separately in each app.
+
+The navigation problem is clear from the current control model: the camera orbits a fixed target at the model center, and zoom only changes `spherical.radius`. That means zoom naturally drifts toward the center of the object, not toward the cursor or pinch target. The fix is to make zoom target-aware by raycasting into the mesh and moving the camera/target around that focal point.
+
+For PLY color, the current shared parser already has vertex color handling, which makes this less likely to be a simple “forgot `vertexColors`” bug in the latest source. The most likely explanation is stale deployed web/desktop code, a different code path in production, or a PLY color format the parser does not recognize. Confidence: medium-high on the navigation root cause, medium on the color root cause until the actual failing PLY header and deployed build version are checked.
+
+### Step-by-Step Fix Plan
+
+1. In Replit, open `lib/scan-viewer/src/index.ts` and confirm the deployed web/desktop builds use this exact file.
+2. Add temporary logging or tests to confirm failing PLY files produce `parsed.colors`.
+3. If `parsed.colors` is missing, expand the PLY parser’s supported color property names based on the failing PLY header.
+4. If `parsed.colors` exists locally but production is gray, rebuild/redeploy web and desktop and clear/bust stale PWA/Electron cache.
+5. Refactor viewer camera state from fixed center-only zoom to target-aware zoom.
+6. Implement pointer raycasting for mouse wheel zoom and pinch-midpoint targeting for mobile.
+7. Preserve existing orbit, pan, reset, and display mode controls.
+8. Test color PLY, no-color PLY, STL, and OBJ across mobile, web, and desktop.
