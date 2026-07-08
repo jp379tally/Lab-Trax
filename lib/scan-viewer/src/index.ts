@@ -276,9 +276,61 @@ function parsePLY(buf){
   // iTero color scans store per-vertex color as red/green/blue (sometimes with
   // alpha). Accept the common aliases too.
   var color={
-    r:findColorProp(['red','r','diffuse_red']),
-    g:findColorProp(['green','g','diffuse_green']),
-    b:findColorProp(['blue','b','diffuse_blue'])
+    r:findColorProp(['red','r','diffuse_red','ambient_red']),
+    g:findColorProp(['green','g','diffuse_green','ambient_green']),
+    b:findColorProp(['blue','b','diffuse_blue','ambient_blue'])
+  };
+  var hasSeparateColor=color.r>=0&&color.g>=0&&color.b>=0;
+  // Packed single-property color (MeshLab-style "rgb"/"rgba" stored in one
+  // 4-byte value: 0xRRGGBB in the low 24 bits).
+  var packedIdx=-1;
+  if(!hasSeparateColor){
+    packedIdx=vertexProps.findIndex(function(p){return p.name==='rgb'||p.name==='rgba';});
+  }
+  // Per-face color scalars (red/green/blue on the face element) — used only
+  // when there is no per-vertex color.
+  function findFaceColorProp(names){
+    for(var n=0;n<names.length;n++){
+      for(var p=0;p<facePropList.length;p++){
+        if(facePropList[p].k==='scalar'&&facePropList[p].n===names[n]) return p;
+      }
+    }
+    return -1;
+  }
+  var faceColor={
+    r:findFaceColorProp(['red','r','diffuse_red']),
+    g:findFaceColorProp(['green','g','diffuse_green']),
+    b:findFaceColorProp(['blue','b','diffuse_blue'])
+  };
+  var hasFaceColor=!hasSeparateColor&&packedIdx<0&&faceColor.r>=0&&faceColor.g>=0&&faceColor.b>=0;
+  // Detect color-like properties the parser is about to ignore. Rendering gray
+  // when the file plainly declares color data should be loud, not silent.
+  function colorLike(n){
+    return n==='red'||n==='green'||n==='blue'||n==='r'||n==='g'||n==='b'||
+      n==='rgb'||n==='rgba'||n==='alpha'||
+      n.indexOf('color')>=0||n.indexOf('colour')>=0||
+      n.indexOf('_red')>=0||n.indexOf('_green')>=0||n.indexOf('_blue')>=0;
+  }
+  var colorWarning=null;
+  if(!hasSeparateColor&&packedIdx<0&&!hasFaceColor){
+    var unusedColorProps=[];
+    for(var p=0;p<vertexProps.length;p++){
+      if(colorLike(vertexProps[p].name)) unusedColorProps.push('vertex '+vertexProps[p].name);
+    }
+    for(var p=0;p<facePropList.length;p++){
+      if(facePropList[p].k==='scalar'&&colorLike(facePropList[p].n)) unusedColorProps.push('face '+facePropList[p].n);
+    }
+    if(unusedColorProps.length>0){
+      colorWarning='PLY declares color-like properties the viewer did not use: '+unusedColorProps.join(', ')+'. The model may render without its original colors.';
+    }
+  }
+  var copt={
+    color:color,
+    hasColor:hasSeparateColor,
+    packedIdx:packedIdx,
+    faceColor:faceColor,
+    hasFaceColor:hasFaceColor,
+    warning:colorWarning
   };
   // Ensure at least one entry so the binary reader doesn't skip all faces when
   // the header declares a face element without an explicit property line.
@@ -287,25 +339,34 @@ function parsePLY(buf){
   }
   if(format==='ascii'){
     var fullText=new TextDecoder().decode(buf);
-    return parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps,color,nxIdx,nyIdx,nzIdx);
+    return parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps,copt,nxIdx,nyIdx,nzIdx,facePropList);
   } else {
     var le=format==='binary_le';
-    return parsePLYBinary(buf,headerEnd,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,facePropList,color,nxIdx,nyIdx,nzIdx);
+    return parsePLYBinary(buf,headerEnd,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,facePropList,copt,nxIdx,nyIdx,nzIdx);
   }
 }
-function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps,color,nxIdx,nyIdx,nzIdx){
+// Decode a packed 0xRRGGBB value into normalized [r,g,b].
+function decodePackedColor(v){
+  v=v>>>0;
+  return [((v>>16)&255)/255,((v>>8)&255)/255,(v&255)/255];
+}
+function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps,copt,nxIdx,nyIdx,nzIdx,facePropList){
   var lines=fullText.split(/\\r?\\n/);
   var dataStart=0;
   for(var i=0;i<lines.length;i++){
     if(lines[i].trim()==='end_header'){dataStart=i+1;break;}
   }
-  var hasColor=color&&color.r>=0&&color.g>=0&&color.b>=0;
+  var color=copt.color;
+  var hasColor=copt.hasColor;
+  var hasPacked=copt.packedIdx>=0;
+  var hasVColor=hasColor||hasPacked;
+  var hasFaceColor=copt.hasFaceColor;
   var rType=hasColor?vertexProps[color.r].type:null;
   var gType=hasColor?vertexProps[color.g].type:null;
   var bType=hasColor?vertexProps[color.b].type:null;
   var hasVNorm=nxIdx>=0&&nyIdx>=0&&nzIdx>=0;
   var positions=[];
-  var colors=hasColor?[]:null;
+  var colors=hasVColor?[]:null;
   var vnorms=hasVNorm?[]:null;
   for(var i=0;i<vertexCount;i++){
     var lineIdx=dataStart+i;
@@ -318,13 +379,16 @@ function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps
         normColorChannel(parseFloat(parts[color.g]),gType),
         normColorChannel(parseFloat(parts[color.b]),bType)
       );
+    } else if(hasPacked){
+      var packed=decodePackedColor(parseFloat(parts[copt.packedIdx]));
+      colors.push(packed[0],packed[1],packed[2]);
     }
     if(hasVNorm){
       vnorms.push(parseFloat(parts[nxIdx]),parseFloat(parts[nyIdx]),parseFloat(parts[nzIdx]));
     }
   }
   var vertArr=[];
-  var colArr=hasColor?[]:null;
+  var colArr=(hasVColor||hasFaceColor)?[]:null;
   var normArr=hasVNorm?[]:null;
   var pc=positions.length;
   var faceStart=dataStart+vertexCount;
@@ -334,10 +398,32 @@ function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps
     var line=lines[lineIdx].trim();
     if(line.length===0) continue;
     var parts=line.split(/\\s+/);
-    var count=parseInt(parts[0],10);
-    if(isNaN(count)||count<3) continue;
-    var idxs=[];
-    for(var k=1;k<=count&&k<parts.length;k++) idxs.push(parseInt(parts[k],10));
+    // Walk the face properties in declaration order so extra scalars (e.g.
+    // per-face color) after the index list are read from the right columns.
+    var pptr=0;
+    var idxs=null;
+    var fr=0,fg=0,fb=0;
+    for(var fp=0;fp<facePropList.length&&pptr<parts.length;fp++){
+      var fpp=facePropList[fp];
+      if(fpp.k==='list'){
+        var count=parseInt(parts[pptr],10); pptr++;
+        if(isNaN(count)||count<0) count=0;
+        if(fpp.n==='vertex_indices'||fpp.n==='vertex_index'){
+          idxs=[];
+          for(var k=0;k<count&&pptr<parts.length;k++){ idxs.push(parseInt(parts[pptr],10)); pptr++; }
+        } else {
+          pptr+=count;
+        }
+      } else {
+        var sval=parseFloat(parts[pptr]); pptr++;
+        if(hasFaceColor){
+          if(fp===copt.faceColor.r) fr=normColorChannel(sval,fpp.t);
+          else if(fp===copt.faceColor.g) fg=normColorChannel(sval,fpp.t);
+          else if(fp===copt.faceColor.b) fb=normColorChannel(sval,fpp.t);
+        }
+      }
+    }
+    if(!idxs||idxs.length<3) continue;
     for(var j=1;j<idxs.length-1;j++){
       var i0=idxs[0],i1=idxs[j],i2=idxs[j+1];
       if(i0<0||i1<0||i2<0||i0*3+2>=pc||i1*3+2>=pc||i2*3+2>=pc) continue;
@@ -346,12 +432,14 @@ function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps
         positions[i1*3],positions[i1*3+1],positions[i1*3+2],
         positions[i2*3],positions[i2*3+1],positions[i2*3+2]
       );
-      if(hasColor){
+      if(hasVColor){
         colArr.push(
           colors[i0*3],colors[i0*3+1],colors[i0*3+2],
           colors[i1*3],colors[i1*3+1],colors[i1*3+2],
           colors[i2*3],colors[i2*3+1],colors[i2*3+2]
         );
+      } else if(hasFaceColor){
+        colArr.push(fr,fg,fb,fr,fg,fb,fr,fg,fb);
       }
       if(hasVNorm){
         normArr.push(
@@ -366,20 +454,22 @@ function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps
     var verts=new Float32Array(positions);
     var norms=hasVNorm?new Float32Array(vnorms):computeFlatNormals(verts);
     var res={vertices:verts,normals:norms};
-    if(hasColor) res.colors=new Float32Array(colors);
+    if(hasVColor) res.colors=new Float32Array(colors);
+    if(copt.warning) res.colorWarning=copt.warning;
     return res;
   }
   var verts=new Float32Array(vertArr);
   var norms=hasVNorm?new Float32Array(normArr):computeFlatNormals(verts);
   var res={vertices:verts,normals:norms};
-  if(hasColor) res.colors=new Float32Array(colArr);
+  if(colArr&&colArr.length===vertArr.length) res.colors=new Float32Array(colArr);
+  if(copt.warning) res.colorWarning=copt.warning;
   return res;
 }
 // parsePLYBinary: facePropList replaces the old flat faceListCountType/faceListIndexType
 // pair. Every property in the face element is iterated in declaration order so
 // that extra scalar attributes (quality, face-color, etc.) advance the byte
 // offset correctly and don't corrupt subsequent face reads.
-function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,facePropList,color,nxIdx,nyIdx,nzIdx){
+function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,facePropList,copt,nxIdx,nyIdx,nzIdx){
   var dv=new DataView(buf);
   var vertexStride=0;
   var propOffsets=[];
@@ -387,10 +477,14 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
     propOffsets.push(vertexStride);
     vertexStride+=propByteSize(vertexProps[i].type);
   }
-  var hasColor=color&&color.r>=0&&color.g>=0&&color.b>=0;
+  var color=copt.color;
+  var hasColor=copt.hasColor;
+  var hasPacked=copt.packedIdx>=0;
+  var hasVColor=hasColor||hasPacked;
+  var hasFaceColor=copt.hasFaceColor;
   var hasVNorm=nxIdx>=0&&nyIdx>=0&&nzIdx>=0;
   var positions=[];
-  var colors=hasColor?[]:null;
+  var colors=hasVColor?[]:null;
   var vnorms=hasVNorm?[]:null;
   var off=dataOffset;
   for(var i=0;i<vertexCount;i++){
@@ -405,6 +499,14 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
         normColorChannel(readPropVal(dv,off+propOffsets[color.g],vertexProps[color.g].type,le),vertexProps[color.g].type),
         normColorChannel(readPropVal(dv,off+propOffsets[color.b],vertexProps[color.b].type,le),vertexProps[color.b].type)
       );
+    } else if(hasPacked){
+      // Packed color is bit-level data: read the raw 4 bytes as uint32 even
+      // when the header declares the property as float (MeshLab quirk).
+      var pOff=off+propOffsets[copt.packedIdx];
+      var pSize=propByteSize(vertexProps[copt.packedIdx].type);
+      var rawPacked=pSize===4?dv.getUint32(pOff,le):readUintBySize(dv,pOff,pSize,le);
+      var packed=decodePackedColor(rawPacked);
+      colors.push(packed[0],packed[1],packed[2]);
     }
     if(hasVNorm){
       vnorms.push(
@@ -416,7 +518,7 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
     off+=vertexStride;
   }
   var vertArr=[];
-  var colArr=hasColor?[]:null;
+  var colArr=(hasVColor||hasFaceColor)?[]:null;
   var normArr=hasVNorm?[]:null;
   var pc=positions.length;
   if(faceCount>0){
@@ -424,6 +526,7 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
       // Iterate ALL face properties in declaration order to keep the byte
       // offset correct even when extra attributes follow the index list.
       var faceidxs=null;
+      var fr=0,fg=0,fb=0;
       for(var fp=0;fp<facePropList.length;fp++){
         var fpp=facePropList[fp];
         if(fpp.k==='list'){
@@ -437,6 +540,12 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
             off+=cnt*propByteSize(fpp.vt);
           }
         } else {
+          if(hasFaceColor&&(fp===copt.faceColor.r||fp===copt.faceColor.g||fp===copt.faceColor.b)){
+            var sval=normColorChannel(readPropVal(dv,off,fpp.t,le),fpp.t);
+            if(fp===copt.faceColor.r) fr=sval;
+            else if(fp===copt.faceColor.g) fg=sval;
+            else fb=sval;
+          }
           off+=propByteSize(fpp.t);
         }
       }
@@ -449,12 +558,14 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
           positions[i1*3],positions[i1*3+1],positions[i1*3+2],
           positions[i2*3],positions[i2*3+1],positions[i2*3+2]
         );
-        if(hasColor){
+        if(hasVColor){
           colArr.push(
             colors[i0*3],colors[i0*3+1],colors[i0*3+2],
             colors[i1*3],colors[i1*3+1],colors[i1*3+2],
             colors[i2*3],colors[i2*3+1],colors[i2*3+2]
           );
+        } else if(hasFaceColor){
+          colArr.push(fr,fg,fb,fr,fg,fb,fr,fg,fb);
         }
         if(hasVNorm){
           normArr.push(
@@ -470,13 +581,15 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
     var verts=new Float32Array(positions);
     var norms=hasVNorm?new Float32Array(vnorms):computeFlatNormals(verts);
     var res={vertices:verts,normals:norms};
-    if(hasColor) res.colors=new Float32Array(colors);
+    if(hasVColor) res.colors=new Float32Array(colors);
+    if(copt.warning) res.colorWarning=copt.warning;
     return res;
   }
   var verts=new Float32Array(vertArr);
   var norms=hasVNorm?new Float32Array(normArr):computeFlatNormals(verts);
   var res={vertices:verts,normals:norms};
-  if(hasColor) res.colors=new Float32Array(colArr);
+  if(colArr&&colArr.length===vertArr.length) res.colors=new Float32Array(colArr);
+  if(copt.warning) res.colorWarning=copt.warning;
   return res;
 }
 
@@ -558,6 +671,10 @@ if(!parsed){
   document.getElementById('overlay').textContent='Could not parse scan file.';
   postError('parse_failed');
 } else {
+  if(parsed.colorWarning){
+    try{ console.warn('[scan-viewer] '+parsed.colorWarning); }catch(_){}
+    postMsg({type:'warning',message:parsed.colorWarning});
+  }
   document.getElementById('overlay').style.display='none';
 
   var geo=new THREE.BufferGeometry();
@@ -601,33 +718,78 @@ if(!parsed){
   camera.far=dist*10;
   camera.updateProjectionMatrix();
 
+  // Loosened polar clamp: near-full vertical range without hitting the poles
+  // (which would flip the camera because the up vector is fixed at +Y).
+  var PHI_MIN=0.02, PHI_MAX=Math.PI-0.02;
   var INIT_THETA=0, INIT_PHI=Math.PI/3, INIT_RADIUS=dist;
   var spherical={theta:INIT_THETA,phi:INIT_PHI,radius:INIT_RADIUS};
-  var pan={x:0,y:0};
-  var INIT_PAN={x:0,y:0};
+  // Orbit target: pan moves it, targeted zoom pulls it toward the focal point,
+  // reset view tweens it back to the model center (origin — the mesh is
+  // recentered on load).
+  var target=new THREE.Vector3(0,0,0);
+  var INIT_TARGET=new THREE.Vector3(0,0,0);
   var tween=null;
 
   function updateCamera(){
-    var x=spherical.radius*Math.sin(spherical.phi)*Math.sin(spherical.theta);
-    var y=spherical.radius*Math.cos(spherical.phi);
-    var z=spherical.radius*Math.sin(spherical.phi)*Math.cos(spherical.theta);
-    // Apply pan in camera-local axes
-    var target=new THREE.Vector3(0,0,0);
-    var camPos=new THREE.Vector3(x,y,z);
-    var forward=target.clone().sub(camPos).normalize();
-    var right=new THREE.Vector3().crossVectors(forward,new THREE.Vector3(0,1,0)).normalize();
-    var up=new THREE.Vector3().crossVectors(right,forward).normalize();
-    var offset=right.multiplyScalar(pan.x).add(up.multiplyScalar(pan.y));
-    camera.position.copy(camPos.add(offset));
-    camera.lookAt(target.add(offset));
+    camera.position.set(
+      target.x+spherical.radius*Math.sin(spherical.phi)*Math.sin(spherical.theta),
+      target.y+spherical.radius*Math.cos(spherical.phi),
+      target.z+spherical.radius*Math.sin(spherical.phi)*Math.cos(spherical.theta)
+    );
+    camera.lookAt(target);
   }
   updateCamera();
+
+  // ── Targeted zoom ─────────────────────────────────────────────────────────
+  // Zoom moves the camera toward/away from the 3D point under the pointer
+  // (raycast into the mesh; view-plane point through the orbit target on a
+  // miss) instead of always drifting toward the model center.
+  var raycaster=new THREE.Raycaster();
+  var lastFocal={x:0,y:0,t:0,point:null};
+  function focalAt(clientX,clientY){
+    var now=Date.now();
+    // Continuous wheel at the same pointer position reuses the last hit so a
+    // zoom gesture keeps a stable focal point (and skips per-tick raycasts on
+    // large meshes).
+    if(lastFocal.point&&Math.abs(clientX-lastFocal.x)<3&&Math.abs(clientY-lastFocal.y)<3&&now-lastFocal.t<400){
+      lastFocal.t=now;
+      return lastFocal.point;
+    }
+    var ndc=new THREE.Vector2(
+      (clientX/window.innerWidth)*2-1,
+      -(clientY/window.innerHeight)*2+1
+    );
+    raycaster.setFromCamera(ndc,camera);
+    var pt=null;
+    var hits=raycaster.intersectObject(mesh,false);
+    if(hits.length>0){
+      pt=hits[0].point.clone();
+    } else {
+      // Fallback: point under the cursor on the view plane through the target.
+      var fwd=new THREE.Vector3();
+      camera.getWorldDirection(fwd);
+      var plane=new THREE.Plane().setFromNormalAndCoplanarPoint(fwd,target);
+      var planePt=new THREE.Vector3();
+      pt=raycaster.ray.intersectPlane(plane,planePt)?planePt:target.clone();
+    }
+    lastFocal={x:clientX,y:clientY,t:now,point:pt};
+    return pt;
+  }
+  function zoomToward(focal,factor){
+    var newRadius=Math.max(maxDim*0.1,Math.min(maxDim*10,spherical.radius*factor));
+    var applied=newRadius/spherical.radius;
+    spherical.radius=newRadius;
+    // Pull the orbit target toward the focal point in proportion to the zoom
+    // so the focal point stays (approximately) fixed under the pointer.
+    target.lerp(focal,1-applied);
+    updateCamera();
+  }
 
   window.resetView=function(){
     var startTheta=spherical.theta;
     var startPhi=spherical.phi;
     var startRadius=spherical.radius;
-    var startPanX=pan.x, startPanY=pan.y;
+    var startTarget=target.clone();
     var dTheta=INIT_THETA-startTheta;
     while(dTheta>Math.PI) dTheta-=2*Math.PI;
     while(dTheta<-Math.PI) dTheta+=2*Math.PI;
@@ -645,8 +807,7 @@ if(!parsed){
       spherical.theta=startTheta+dTheta*e;
       spherical.phi=startPhi+(INIT_PHI-startPhi)*e;
       spherical.radius=startRadius+(INIT_RADIUS-startRadius)*e;
-      pan.x=startPanX+(INIT_PAN.x-startPanX)*e;
-      pan.y=startPanY+(INIT_PAN.y-startPanY)*e;
+      target.copy(startTarget).lerp(INIT_TARGET,e);
       updateCamera();
       if(t<1) requestAnimationFrame(step);
     }
@@ -655,8 +816,8 @@ if(!parsed){
 
   var canvas=renderer.domElement;
 
-  // ── Touch controls (1-finger orbit, 2-finger pinch) ──────────────────────
-  var touch={startX:0,startY:0,lastTheta:0,lastPhi:Math.PI/3,pinchStart:0,pinchRadius:0};
+  // ── Touch controls (1-finger orbit, 2-finger pinch toward midpoint) ──────
+  var touch={startX:0,startY:0,lastTheta:0,lastPhi:Math.PI/3,pinchDist:0,pinchFocal:null};
   var touchDragging=false;
   canvas.addEventListener('touchstart',function(e){
     e.preventDefault();
@@ -671,8 +832,12 @@ if(!parsed){
       touchDragging=false;
       var dx=e.touches[0].clientX-e.touches[1].clientX;
       var dy=e.touches[0].clientY-e.touches[1].clientY;
-      touch.pinchStart=Math.sqrt(dx*dx+dy*dy);
-      touch.pinchRadius=spherical.radius;
+      touch.pinchDist=Math.sqrt(dx*dx+dy*dy);
+      // Compute the focal point once per gesture (raycasts on big scans are
+      // too slow to run on every touchmove) at the pinch midpoint.
+      var midX=(e.touches[0].clientX+e.touches[1].clientX)/2;
+      var midY=(e.touches[0].clientY+e.touches[1].clientY)/2;
+      touch.pinchFocal=focalAt(midX,midY).clone();
     }
   },{passive:false});
   canvas.addEventListener('touchmove',function(e){
@@ -681,21 +846,25 @@ if(!parsed){
       var dx=e.touches[0].clientX-touch.startX;
       var dy=e.touches[0].clientY-touch.startY;
       spherical.theta=touch.lastTheta-dx*0.01;
-      spherical.phi=Math.max(0.05,Math.min(Math.PI-0.05,touch.lastPhi-dy*0.01));
+      spherical.phi=Math.max(PHI_MIN,Math.min(PHI_MAX,touch.lastPhi-dy*0.01));
       updateCamera();
-    } else if(e.touches.length===2){
+    } else if(e.touches.length===2&&touch.pinchDist>0){
       var dx2=e.touches[0].clientX-e.touches[1].clientX;
       var dy2=e.touches[0].clientY-e.touches[1].clientY;
       var pinchNow=Math.sqrt(dx2*dx2+dy2*dy2);
-      var scale=touch.pinchStart/pinchNow;
-      spherical.radius=Math.max(maxDim*0.1,Math.min(maxDim*10,touch.pinchRadius*scale));
-      updateCamera();
+      if(pinchNow>0){
+        zoomToward(touch.pinchFocal||target,touch.pinchDist/pinchNow);
+        touch.pinchDist=pinchNow;
+      }
     }
   },{passive:false});
-  canvas.addEventListener('touchend',function(){ touchDragging=false; },{passive:false});
+  canvas.addEventListener('touchend',function(e){
+    touchDragging=false;
+    if(e.touches.length<2) touch.pinchFocal=null;
+  },{passive:false});
 
-  // ── Mouse controls (LMB orbit, RMB/Shift+LMB pan, wheel zoom) ────────────
-  var mouseState={dragging:false,panning:false,startX:0,startY:0,lastTheta:0,lastPhi:0,lastPanX:0,lastPanY:0};
+  // ── Mouse controls (LMB orbit, RMB/Shift+LMB pan, wheel zoom to cursor) ──
+  var mouseState={dragging:false,panning:false,startX:0,startY:0,lastTheta:0,lastPhi:0,panStartTarget:null,panRight:null,panUp:null};
   canvas.addEventListener('mousedown',function(e){
     e.preventDefault();
     tween=null;
@@ -703,8 +872,11 @@ if(!parsed){
     mouseState.startY=e.clientY;
     if(e.button===2||e.shiftKey){
       mouseState.panning=true;
-      mouseState.lastPanX=pan.x;
-      mouseState.lastPanY=pan.y;
+      mouseState.panStartTarget=target.clone();
+      // Capture the camera's right/up axes at drag start so the pan plane is
+      // stable for the whole gesture.
+      mouseState.panRight=new THREE.Vector3().setFromMatrixColumn(camera.matrix,0);
+      mouseState.panUp=new THREE.Vector3().setFromMatrixColumn(camera.matrix,1);
     } else {
       mouseState.dragging=true;
       mouseState.lastTheta=spherical.theta;
@@ -716,14 +888,15 @@ if(!parsed){
       var dx=e.clientX-mouseState.startX;
       var dy=e.clientY-mouseState.startY;
       spherical.theta=mouseState.lastTheta-dx*0.01;
-      spherical.phi=Math.max(0.05,Math.min(Math.PI-0.05,mouseState.lastPhi-dy*0.01));
+      spherical.phi=Math.max(PHI_MIN,Math.min(PHI_MAX,mouseState.lastPhi-dy*0.01));
       updateCamera();
-    } else if(mouseState.panning){
+    } else if(mouseState.panning&&mouseState.panStartTarget){
       var dx=e.clientX-mouseState.startX;
       var dy=e.clientY-mouseState.startY;
       var panScale=spherical.radius*0.002;
-      pan.x=mouseState.lastPanX-dx*panScale;
-      pan.y=mouseState.lastPanY+dy*panScale;
+      target.copy(mouseState.panStartTarget)
+        .addScaledVector(mouseState.panRight,-dx*panScale)
+        .addScaledVector(mouseState.panUp,dy*panScale);
       updateCamera();
     }
   });
@@ -734,10 +907,8 @@ if(!parsed){
   canvas.addEventListener('contextmenu',function(e){ e.preventDefault(); });
   canvas.addEventListener('wheel',function(e){
     e.preventDefault();
-    var delta=e.deltaY;
-    var factor=delta>0?1.1:0.9;
-    spherical.radius=Math.max(maxDim*0.1,Math.min(maxDim*10,spherical.radius*factor));
-    updateCamera();
+    tween=null;
+    zoomToward(focalAt(e.clientX,e.clientY),e.deltaY>0?1.1:0.9);
   },{passive:false});
 
   // ── Host message bridge (parent iframe → setDisplayMode / resetView) ─────
@@ -823,6 +994,10 @@ try{
 }catch(e){}
 
 if(!parsed){ postError('parse_failed'); return; }
+if(parsed.colorWarning){
+  try{ console.warn('[scan-viewer] '+parsed.colorWarning); }catch(_){}
+  postMsg({type:'warning',message:parsed.colorWarning});
+}
 
 try {
   var canvas=document.getElementById('c');
