@@ -123,7 +123,9 @@ pnpm --filter @workspace/labtrax run test
 pnpm --filter @workspace/scripts run test
 
 # 6. Backup / restore integrity (REQUIRES DATABASE_URL) — hard blocking gate
-pnpm --filter @workspace/api-server run test -- --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts
+#    (Do NOT use `pnpm run test -- <files>` here — the extra `--` makes vitest ignore the
+#     file filters and run the entire api-server suite instead of just these two files.)
+cd artifacts/api-server && npx vitest run --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts
 
 # 7. Mobile legacy-path fence — zero violations
 pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
@@ -1172,8 +1174,9 @@ All 9+ assertions must pass before any desktop release is approved.
 
 **Test command:**
 ```
-pnpm --filter @workspace/api-server run test -- --reporter=verbose src/routes/backup-restore.test.ts
+cd artifacts/api-server && npx vitest run --reporter=verbose src/routes/backup-restore.test.ts
 ```
+(Do not use `pnpm run test -- <files>` — the extra `--` makes vitest ignore the file filter and run the whole suite.)
 Requires `DATABASE_URL` to be set. All 20 tests must pass.
 
 ### Protected behaviors
