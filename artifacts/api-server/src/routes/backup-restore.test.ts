@@ -161,6 +161,23 @@ let dbMod: typeof import("@workspace/db");
 let appMod: { default: import("express").Express };
 let backupLib: typeof import("../lib/backup.js");
 
+// ── cross-process suite lock ─────────────────────────────────────────────────
+// When the Run-button aggregate fires, rel-backup-restore and rel-api-tests
+// both execute this file against the same shared dev DB at the same time. Two
+// restore pipelines racing produce false failures: "Case count mismatch"
+// (one run's cleanup deletes rows between the other run's backup and its
+// post-restore validation) and user_sessions_token_hash_unique 23505
+// collisions (both runs' restoreSnapshotNow re-inserts race each other).
+// A session-level PG advisory lock serializes the whole suite across
+// processes; the second runner simply waits its turn. The lock is held on a
+// dedicated pooled connection for the lifetime of the suite and is released
+// in afterAll (or automatically by PG if the process dies).
+const SUITE_LOCK_SQL_ACQUIRE =
+  "SELECT pg_advisory_lock(1742068800, hashtext('backup-restore-suite'))";
+const SUITE_LOCK_SQL_RELEASE =
+  "SELECT pg_advisory_unlock(1742068800, hashtext('backup-restore-suite'))";
+let suiteLockClient: import("pg").PoolClient | null = null;
+
 // ── test suite ────────────────────────────────────────────────────────────────
 
 maybe("Backup Restore Integrity", () => {
@@ -179,6 +196,19 @@ maybe("Backup Restore Integrity", () => {
     dbMod      = await import("@workspace/db");
     appMod     = await import("../app.js");
     backupLib  = await import("../lib/backup.js");
+
+    // Serialize the entire suite across concurrent test processes BEFORE any
+    // DB rows are created or swept. pg_advisory_lock blocks until the other
+    // runner (if any) releases in its afterAll, so the generous timeout on
+    // this hook covers a full run of the suite by another workflow.
+    const dbPool = (dbMod as any).pool as import("pg").Pool;
+    suiteLockClient = await dbPool.connect();
+    // The pool sets statement_timeout=30s, but pg_advisory_lock's blocking
+    // wait counts as statement execution — waiting for another workflow's
+    // full suite run would be killed mid-wait. Lift the limit on this one
+    // session (it only ever runs the lock/unlock statements).
+    await suiteLockClient.query("SET statement_timeout = 0");
+    await suiteLockClient.query(SUITE_LOCK_SQL_ACQUIRE);
 
     const dbAny = dbMod as any;
     const { db, users, organizations, organizationMemberships, cases, invoices, userSessions: us } = dbAny;
@@ -246,7 +276,10 @@ maybe("Backup Restore Integrity", () => {
       status: "open",
       caseId,
     });
-  });
+    // Generous timeout: pg_advisory_lock blocks until any concurrent runner
+    // of this suite (rel-api-tests vs rel-backup-restore) finishes and
+    // releases in its afterAll — that can take a few minutes under load.
+  }, 600_000);
 
   afterAll(async () => {
     const db = (dbMod as any).db;
@@ -277,6 +310,17 @@ maybe("Backup Restore Integrity", () => {
         }
       }
     } catch { /* best-effort */ }
+
+    // Release the cross-process suite lock last, after all cleanup, so the
+    // next runner starts from a clean DB state. PG releases session-level
+    // advisory locks automatically if this process dies before reaching here.
+    if (suiteLockClient) {
+      try {
+        await suiteLockClient.query(SUITE_LOCK_SQL_RELEASE);
+      } catch { /* released on disconnect anyway */ }
+      suiteLockClient.release();
+      suiteLockClient = null;
+    }
   });
 
   afterEach(() => {

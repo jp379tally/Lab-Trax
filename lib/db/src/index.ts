@@ -35,7 +35,16 @@ export const pool = new Pool({
   // indefinitely. 10 s is generous enough for normal operations (typical
   // acquire time is <50 ms) while still surfacing pool exhaustion quickly
   // so callers can return a 503 and free the HTTP connection.
-  connectionTimeoutMillis: 10_000,
+  //
+  // DB_CONNECT_TIMEOUT_MS override: when every rel-* release-gate workflow
+  // fires at once (the Run-button "Project" aggregate), CPU saturation can
+  // push the PG TLS connect handshake past 10 s, producing false
+  // "Connection terminated due to connection timeout" failures in test
+  // suites that pass cleanly when run alone. The test vitest configs raise
+  // this via env; production leaves it unset and keeps the 10 s fail-fast.
+  connectionTimeoutMillis: process.env.DB_CONNECT_TIMEOUT_MS
+    ? parseInt(process.env.DB_CONNECT_TIMEOUT_MS, 10)
+    : 10_000,
   // Bound individual statement execution so a slow query releases its
   // connection before it cascades into pool starvation.  30 s is well
   // above p99 for any intentional query in this codebase.

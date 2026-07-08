@@ -309,6 +309,11 @@ describe("applyLatestYmlGate — safety-check: stale ZIP latest.yml during EXE p
 // ---------------------------------------------------------------------------
 
 describe("spawn: upload-desktop-installer exits 1 on stale ZIP latest.yml", () => {
+  // Spawning tsx compiles the whole script from scratch — normally a couple of
+  // seconds, but when the Run-button aggregate fires every rel-* workflow at
+  // once, CPU contention can push it well past the 5 s default test timeout
+  // (a false positive: the test passes cleanly when run alone). Give both the
+  // spawned process and the test itself generous headroom.
   it("exits with code 1 and logs the ZIP filename when stale latest.yml is detected", async () => {
     const dir = await withTempDir();
 
@@ -347,7 +352,7 @@ describe("spawn: upload-desktop-installer exits 1 on stale ZIP latest.yml", () =
           // Suppress sidecar / GCS noise (validation fires before any upload)
         },
         encoding: "utf8",
-        timeout: 30_000,
+        timeout: 120_000,
       },
     );
 
@@ -355,5 +360,5 @@ describe("spawn: upload-desktop-installer exits 1 on stale ZIP latest.yml", () =
     // stderr must mention the ZIP so operators know what went wrong
     const combined = (result.stdout ?? "") + (result.stderr ?? "");
     expect(combined).toContain("LabTrax-Windows-Portable.zip");
-  });
+  }, 150_000);
 });

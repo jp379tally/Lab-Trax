@@ -23,6 +23,12 @@ export default defineConfig({
       // (api-server-tests + regression-tests) stay within the DB's
       // max_connections.  2 workflows × 2 workers × 5 connections = 20 total.
       DB_POOL_MAX: "5",
+      // Raise the PG connect timeout under test. When the Run-button aggregate
+      // fires every rel-* workflow simultaneously, CPU contention can push the
+      // TLS connect handshake past the production 10 s fail-fast, causing
+      // false "Connection terminated due to connection timeout" failures in
+      // suites that pass cleanly alone (see lib/db pool config).
+      DB_CONNECT_TIMEOUT_MS: "60000",
     },
     // Cap parallel forks so the shared PG connection pool is not exhausted when
     // many integration test files run simultaneously.  Each fork imports app.js

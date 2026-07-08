@@ -29,6 +29,7 @@
     "check-expo-deps": "tsx ./src/check-expo-deps.ts",
     "cleanup-bogus-provider-memberships": "tsx ./src/cleanup-bogus-provider-memberships.ts",
     "push-to-github": "tsx ./src/push-to-github.ts",
+    "with-db-lock": "tsx ./src/run-with-db-lock.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

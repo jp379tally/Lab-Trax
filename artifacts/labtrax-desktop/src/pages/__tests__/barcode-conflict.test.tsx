@@ -26,7 +26,17 @@
 
 import React from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, configure } from "@testing-library/react";
+
+// When the Run-button aggregate fires, every rel-* workflow runs at once and
+// jsdom renders in this file slow down dramatically under CPU contention.
+// The testing-library default waitFor timeout (1 s) and the vitest default
+// test timeout (5 s) are then too tight and produce false-positive failures,
+// even though the suite passes cleanly when run alone. Give every waitFor in
+// this file generous headroom; a passing run is unaffected (waitFor resolves
+// as soon as the assertion passes).
+configure({ asyncUtilTimeout: 15_000 });
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 import CasesPage, { CaseDrawer } from "@/pages/cases";
 import type { LabCase } from "@/lib/types";
 import { makeAuthWrapper } from "../../__tests__/test-utils";

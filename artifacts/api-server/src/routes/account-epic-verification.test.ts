@@ -36,6 +36,22 @@ vi.mock("../lib/case-media.js", () => ({
   extractMediaFileName: () => null,
 }));
 
+// Force the "SMS provider not configured" dev/test path regardless of the
+// workspace environment. The Replit workspace has real TWILIO_*/VONAGE_*
+// creds set, which flips send-phone-code onto the live-provider branch; the
+// provider then rejects the fake test number and the route 500s — a false
+// failure that never happens in CI (no creds there). Mocking here makes the
+// suite hermetic: the route returns the demo code and still persists the
+// verification row through the real createVerificationCode.
+vi.mock("../lib/sms.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/sms.js")>();
+  return {
+    ...actual,
+    isConfigured: () => false,
+    isDevOrTest: () => true,
+  };
+});
+
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
 const maybe = SHOULD_RUN ? describe : describe.skip;
 

@@ -123,12 +123,12 @@ isValidation = true
 name = "rel-api-tests"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/api-server run test"
-
 [workflows.workflow.metadata]
 isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/scripts run with-db-lock \"pnpm --filter @workspace/api-server run test\""
 
 [[workflows.workflow]]
 name = "rel-desktop-tests"
@@ -172,7 +172,7 @@ isValidation = true
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "pnpm --filter @workspace/api-server exec vitest run --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts"
+args = "pnpm --filter @workspace/scripts run with-db-lock \"pnpm --filter @workspace/api-server exec vitest run --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts\""
 
 [[workflows.workflow]]
 name = "rel-mobile-legacy-fence"
