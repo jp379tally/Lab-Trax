@@ -2623,7 +2623,7 @@ export const AcknowledgeAiReviewResponse = zod.object({
 /**
  * Creates a case note. Lab members author internal or shared notes;
 provider members author notes attributed to their org. Visibility
-defaults to `shared_with_provider`.
+defaults to `internal_lab_only`.
 
  * @summary Add a note to a case
  */
@@ -2631,7 +2631,7 @@ export const AddCaseNoteParams = zod.object({
   caseId: zod.coerce.string(),
 });
 
-export const addCaseNoteBodyVisibilityDefault = `shared_with_provider`;
+export const addCaseNoteBodyVisibilityDefault = `internal_lab_only`;
 
 export const AddCaseNoteBody = zod.object({
   noteText: zod.string().min(1),
@@ -2747,7 +2747,7 @@ export const DeleteCaseRestorationResponse = zod.object({
 /**
  * Records a case attachment for a file already uploaded to storage
 (referenced by `storageKey`). Only lab members may attach to a
-canonical case. Visibility defaults to `shared_with_provider`.
+canonical case. Visibility defaults to `internal_lab_only`.
 
  * @summary Attach an uploaded file to a case
  */
@@ -2756,7 +2756,7 @@ export const UploadCaseAttachmentParams = zod.object({
 });
 
 export const uploadCaseAttachmentBodyFileTypeDefault = `application/octet-stream`;
-export const uploadCaseAttachmentBodyVisibilityDefault = `shared_with_provider`;
+export const uploadCaseAttachmentBodyVisibilityDefault = `internal_lab_only`;
 
 export const UploadCaseAttachmentBody = zod.object({
   storageKey: zod.string().min(1),

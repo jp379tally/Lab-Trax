@@ -1901,7 +1901,7 @@ paths:
       description: |
         Creates a case note. Lab members author internal or shared notes;
         provider members author notes attributed to their org. Visibility
-        defaults to `shared_with_provider`.
+        defaults to `internal_lab_only`.
       parameters:
         - in: path
           name: caseId
@@ -2065,7 +2065,7 @@ paths:
       description: |
         Records a case attachment for a file already uploaded to storage
         (referenced by `storageKey`). Only lab members may attach to a
-        canonical case. Visibility defaults to `shared_with_provider`.
+        canonical case. Visibility defaults to `internal_lab_only`.
       parameters:
         - in: path
           name: caseId
@@ -4362,7 +4362,7 @@ components:
         visibility:
           type: string
           enum: [internal_lab_only, shared_with_provider]
-          default: shared_with_provider
+          default: internal_lab_only
     ChangeCaseLocationInput:
       type: object
       required: [locationCode, locationName]
@@ -4400,7 +4400,7 @@ components:
         visibility:
           type: string
           enum: [internal_lab_only, shared_with_provider]
-          default: shared_with_provider
+          default: internal_lab_only
     InvoiceListResult:
       type: object
       properties:

@@ -820,7 +820,7 @@ export const caseNotes = pgTable("case_notes", {
     .notNull()
     .references(() => organizations.id, { onDelete: "restrict" }),
   noteText: text("note_text").notNull(),
-  visibility: text("visibility").default("shared_with_provider").notNull(),
+  visibility: text("visibility").default("internal_lab_only").notNull(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -842,7 +842,7 @@ export const caseAttachments = pgTable("case_attachments", {
   fileName: text("file_name").notNull(),
   storageKey: text("storage_key").notNull(),
   fileType: text("file_type").notNull(),
-  visibility: text("visibility").default("shared_with_provider").notNull(),
+  visibility: text("visibility").default("internal_lab_only").notNull(),
   note: text("note"),
   createdAt: createdAt(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),

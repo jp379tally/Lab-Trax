@@ -1982,7 +1982,7 @@ export function DashboardDropZone() {
                 storageKey: rxUpload.url,
                 fileName: zipSource.rxEntryName,
                 fileType: "application/pdf",
-                visibility: "shared_with_provider",
+                visibility: "internal_lab_only",
               }),
             });
             rxAttached = true;
@@ -2156,7 +2156,7 @@ export function DashboardDropZone() {
               storageKey: upload.url,
               fileName: file.name || upload.filename || "Rx.pdf",
               fileType: file.type || "application/pdf",
-              visibility: "shared_with_provider",
+              visibility: "internal_lab_only",
             }),
           });
           rxAttached = true;

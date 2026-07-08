@@ -3805,7 +3805,7 @@ router.post(
         authorUserId: (req as any).auth.userId,
         authorOrganizationId: input.labOrganizationId,
         noteText: input.notes.trim(),
-        visibility: "shared_with_provider",
+        visibility: "internal_lab_only",
       }).catch((err: unknown): never => wrapDbError(err, {
         fallback: "Failed to save case note.",
       }));
@@ -5825,7 +5825,7 @@ router.post(
           fileType: z.string().default("application/octet-stream"),
           visibility: z
             .enum(["internal_lab_only", "shared_with_provider"] as const)
-            .default("shared_with_provider"),
+            .default("internal_lab_only"),
           note: z.string().max(1000).optional(),
         })
         .parse(req.body);
@@ -5921,7 +5921,7 @@ router.post(
         fileType: z.string().default("application/octet-stream"),
         visibility: z
           .enum(["internal_lab_only", "shared_with_provider"] as const)
-          .default("shared_with_provider"),
+          .default("internal_lab_only"),
         note: z.string().max(1000).optional(),
       })
       .parse(req.body);
@@ -6718,7 +6718,7 @@ router.post(
         noteText: z.string().min(1),
         visibility: z
           .enum(["internal_lab_only", "shared_with_provider"])
-          .default("shared_with_provider"),
+          .default("internal_lab_only"),
       })
       .parse(req.body);
 
@@ -8988,7 +8988,7 @@ router.post(
           fileName: req.file!.originalname || "iTero-Rx",
           storageKey,
           fileType: req.file!.mimetype || "application/octet-stream",
-          visibility: "shared_with_provider",
+          visibility: "internal_lab_only",
         })
         .returning();
 
@@ -10083,7 +10083,7 @@ router.post(
           fileName: rxOriginalName,
           storageKey: rxStorageKey,
           fileType: rxMimeType,
-          visibility: "shared_with_provider",
+          visibility: "internal_lab_only",
         })
         .returning();
 
@@ -10306,7 +10306,7 @@ router.post(
           fileName: entry.name,
           storageKey,
           fileType: entry.mimeType,
-          visibility: "shared_with_provider",
+          visibility: "internal_lab_only",
         });
         extraFilesAttached++;
       } catch (attachErr) {
@@ -10776,7 +10776,7 @@ async function processOneIteroZipFile(
 
     const [attachment] = await tx.insert(caseAttachments).values({
       caseId: createdCase.id, uploadedByUserId: userId, uploadedByOrganizationId: body.labOrganizationId,
-      fileName: rxOriginalName, storageKey: rxStorageKey, fileType: rxMimeType, visibility: "shared_with_provider",
+      fileName: rxOriginalName, storageKey: rxStorageKey, fileType: rxMimeType, visibility: "internal_lab_only",
     }).returning();
 
     await tx.update(iteroImportedOrders).set({ createdCaseId: createdCase.id, lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, claim.id));
@@ -10905,7 +10905,7 @@ async function processOneIteroZipFile(
       const storageKey = buildIteroAttachmentUrl(req, diskName);
       await db.insert(caseAttachments).values({
         caseId: createdCase.id, uploadedByUserId: userId, uploadedByOrganizationId: body.labOrganizationId,
-        fileName: entry.name, storageKey, fileType: entry.mimeType, visibility: "shared_with_provider",
+        fileName: entry.name, storageKey, fileType: entry.mimeType, visibility: "internal_lab_only",
       });
       extraFilesAttached++;
     } catch (attachErr) {
@@ -11503,7 +11503,7 @@ router.post(
               fileName: entry.name,
               storageKey,
               fileType: entry.mimeType,
-              visibility: "shared_with_provider",
+              visibility: "internal_lab_only",
             });
             attachedCount++;
           } catch (attachErr) {

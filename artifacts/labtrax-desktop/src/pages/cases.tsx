@@ -8977,7 +8977,7 @@ export function AttachmentRow({
     },
   });
 
-  const visibility = attachment.visibility || "shared_with_provider";
+  const visibility = attachment.visibility || "internal_lab_only";
   const isInternal = visibility === "internal_lab_only";
   const nextVisibility = isInternal ? "shared_with_provider" : "internal_lab_only";
 

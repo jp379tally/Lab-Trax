@@ -6549,7 +6549,7 @@ export const useAcknowledgeAiReview = <
 /**
  * Creates a case note. Lab members author internal or shared notes;
 provider members author notes attributed to their org. Visibility
-defaults to `shared_with_provider`.
+defaults to `internal_lab_only`.
 
  * @summary Add a note to a case
  */
@@ -7034,7 +7034,7 @@ export const useDeleteCaseRestoration = <
 /**
  * Records a case attachment for a file already uploaded to storage
 (referenced by `storageKey`). Only lab members may attach to a
-canonical case. Visibility defaults to `shared_with_provider`.
+canonical case. Visibility defaults to `internal_lab_only`.
 
  * @summary Attach an uploaded file to a case
  */
