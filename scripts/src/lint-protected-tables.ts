@@ -12,6 +12,14 @@
  *      paths. Case-media files must be moved to the `.trash/` folder so
  *      they can be recovered, not unlinked outright.
  *
+ *   3. (Test files only) `user_sessions` inserts whose tokenHash /
+ *      token_hash derives from a hardcoded string literal. Aborted test
+ *      runs leave those rows in the persistent dev database, and every
+ *      later run then fails with a 23505 duplicate-key error on
+ *      user_sessions_token_hash_unique. Token hashes in tests must derive
+ *      from a per-run-random value (e.g. a `rid()` id or a freshly signed
+ *      token), never from a fixed literal.
+ *
  * Exits non-zero on the first violation. Wire this into CI via the
  * `lint:protected-tables` workspace script.
  *
@@ -72,7 +80,7 @@ function assertProtectedListInSync() {
   }
 }
 
-interface Violation {
+export interface Violation {
   file: string;
   line: number;
   text: string;
@@ -80,6 +88,16 @@ interface Violation {
 }
 
 const ALLOW_FILE_MARKER = "// soft-delete-lint:allow";
+
+/**
+ * Per-line escape hatch for the fixed-session-token check. Only use when a
+ * test intentionally needs a deterministic token hash (e.g. asserting
+ * cleanup of a known legacy value) AND the row can never persist past the
+ * run (in-memory/mocked DB, or a DELETE — not an INSERT).
+ */
+export const SESSION_TOKEN_ALLOW_MARKER = "session-token-lint:allow";
+
+const TEST_FILE_RE = /\.(test|spec)\.(ts|tsx|js|mjs|cjs)$/;
 
 function* walk(dir: string): Generator<string> {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -90,12 +108,108 @@ function* walk(dir: string): Generator<string> {
     } else if (
       entry.isFile() &&
       /\.(ts|tsx|js|mjs|cjs)$/.test(entry.name) &&
-      // Test files use hard deletes intentionally for teardown — skip them.
-      !/\.(test|spec)\.(ts|tsx|js|mjs|cjs)$/.test(entry.name)
+      // Test files use hard deletes intentionally for teardown — skip them
+      // here; they get their own fixed-session-token scan instead.
+      !TEST_FILE_RE.test(entry.name)
     ) {
       yield full;
     }
   }
+}
+
+function* walkTestFiles(dir: string): Generator<string> {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      yield* walkTestFiles(full);
+    } else if (entry.isFile() && TEST_FILE_RE.test(entry.name)) {
+      yield full;
+    }
+  }
+}
+
+/**
+ * A string literal argument: "..." or '...' or a template literal with NO
+ * interpolation (`...` without ${). Interpolated templates are treated as
+ * dynamic and allowed.
+ */
+const LITERAL_UPDATE_RE =
+  /\.\s*update\s*\(\s*(?:"[^"]*"|'[^']*'|`(?:(?!\$\{)[^`])*`)\s*[,)]/;
+
+const LITERAL_TOKEN_HASH_VALUE_RE =
+  /\b(?:tokenHash|token_hash)\s*:\s*(?:"[^"]*"|'[^']*'|`(?:(?!\$\{)[^`])*`)/;
+
+const FIXED_TOKEN_REASON =
+  "Hardcoded session token in a test: user_sessions.token_hash has a UNIQUE " +
+  "index, and rows left behind by an aborted run persist in the dev database " +
+  "— every later run then 23505-collides on user_sessions_token_hash_unique. " +
+  "Derive the token hash from a per-run-random value instead (e.g. hash a " +
+  "rid() id or a freshly signed token), never a string literal. " +
+  `If truly intentional, add // ${SESSION_TOKEN_ALLOW_MARKER}.`;
+
+/**
+ * Scan a test file's content for user_sessions inserts whose token hash is
+ * derived from a fixed string literal. Exported for unit tests.
+ */
+export function scanTestContentForFixedSessionTokens(
+  content: string,
+  file: string
+): Violation[] {
+  const violations: Violation[] = [];
+  const lines = content.split(/\r?\n/);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (
+      trimmed.startsWith("//") ||
+      trimmed.startsWith("*") ||
+      trimmed.startsWith("/*")
+    )
+      continue;
+    if (line.includes(SESSION_TOKEN_ALLOW_MARKER)) continue;
+
+    // Case 1: a tokenHash / token_hash object key whose value derives from a
+    // literal — either directly (`tokenHash: "abc"`) or via a hash of a
+    // literal (`tokenHash: createHash("sha256").update("tok-11-a")...`).
+    // The value expression may wrap onto the next few lines.
+    if (/\b(?:tokenHash|token_hash)\s*:/.test(line)) {
+      const window = lines.slice(i, i + 4).join(" ");
+      if (
+        LITERAL_TOKEN_HASH_VALUE_RE.test(window) ||
+        LITERAL_UPDATE_RE.test(window)
+      ) {
+        violations.push({
+          file,
+          line: i + 1,
+          text: trimmed,
+          reason: FIXED_TOKEN_REASON,
+        });
+        continue;
+      }
+    }
+
+    // Case 2: raw SQL INSERT INTO user_sessions where a nearby parameter is
+    // a hash of a string literal. Only INSERTs are dangerous — cleanup
+    // DELETEs of known legacy hashes are fine.
+    if (/insert\s+into\s+user_sessions/i.test(line)) {
+      const window = lines.slice(i, i + 8);
+      for (let j = 0; j < window.length; j++) {
+        if (window[j].includes(SESSION_TOKEN_ALLOW_MARKER)) continue;
+        if (LITERAL_UPDATE_RE.test(window[j])) {
+          violations.push({
+            file,
+            line: i + 1 + j,
+            text: window[j].trim(),
+            reason: FIXED_TOKEN_REASON,
+          });
+        }
+      }
+    }
+  }
+
+  return violations;
 }
 
 function scan(file: string): Violation[] {
@@ -198,6 +312,14 @@ function main() {
   for (const file of walk(API_SRC)) {
     violations.push(...scan(file));
   }
+  for (const file of walkTestFiles(API_SRC)) {
+    violations.push(
+      ...scanTestContentForFixedSessionTokens(
+        fs.readFileSync(file, "utf8"),
+        file
+      )
+    );
+  }
   // storage.ts intentionally implements deleteUser — verified above to be
   // soft-delete; if anyone re-introduces a hard delete it will be caught.
 
@@ -219,4 +341,10 @@ function main() {
   process.exit(1);
 }
 
-main();
+const isDirectRun =
+  process.argv[1] != null &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isDirectRun) {
+  main();
+}

@@ -30,7 +30,10 @@ dev DB. As of 2026-07-08 all session inserts in the file derive token_hash from
 their per-run-random rid() id, and the restore-pipeline beforeAll deletes legacy
 fixed-hash rows plus expired rid()-prefixed residue, so this failure mode should
 no longer occur. If a similar 23505 reappears, some NEW session insert used a
-fixed token — randomize it. Note the `rel-backup-restore` workflow's `test -- --…`
+fixed token — randomize it. A lint guard now blocks the pattern at merge time:
+`lint-protected-tables` (rel-protected-tables gate) scans api-server test files
+for tokenHash/token_hash derived from string literals (drizzle values objects
+and raw-SQL INSERTs); escape hatch is `// session-token-lint:allow`. Note the `rel-backup-restore` workflow's `test -- --…`
 arg passing runs the WHOLE api suite, not just the two files; use a direct
 `npx vitest run src/routes/backup-restore.test.ts` for true isolation.
 
@@ -39,6 +42,12 @@ arg passing runs the WHOLE api suite, not just the two files; use a direct
 file races itself on the shared dev DB. Another instance's login/refresh
 rotation can land the same token under a different id between the snapshot
 SELECT and the safety-net re-insert, so `restoreSnapshotNow` must skip 23505
-(like it skips 23503). Also: a "vitest run <file>" from bash right after a gate
+(like it skips 23503) — ON CONFLICT (id) DO NOTHING does NOT cover the
+token_hash unique index (skip implemented 2026-07-08). A second cross-instance
+race remains: one instance's test deliberately inserting an orphaned
+lab_memberships row (validation-detection test) can poison the OTHER
+instance's in-restore post-validation, making its phase history end in
+error with no "done" — that surfaces as a phase-sequence assertion failure
+under the parallel gate while the isolated run is green. Also: a "vitest run <file>" from bash right after a gate
 kicks off is NOT isolated — the gate's rel-* workflows may still be running for
 minutes; check pgrep vitest before trusting an "isolated" result.

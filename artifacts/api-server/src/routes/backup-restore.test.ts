@@ -393,8 +393,16 @@ maybe("Backup Restore Integrity", () => {
           // A concurrently running test file's afterAll may have deleted the
           // user that this session references (FK: user_sessions → users).
           // Skip foreign_key_violation (PG error code 23503) — those sessions
-          // are no longer needed.  Re-throw anything else.
-          if (e.code !== "23503") throw e;
+          // are no longer needed.
+          // Also skip unique_violation (23505) on user_sessions_token_hash_unique:
+          // the validation gate runs this file in TWO parallel vitest instances
+          // (rel-api-tests + rel-backup-restore) against the shared dev DB, so
+          // another instance's login/refresh rotation can re-insert the same
+          // token under a different session id between our snapshot SELECT and
+          // this safety-net re-insert. ON CONFLICT (id) DO NOTHING only covers
+          // id collisions, not the token_hash unique index. The live row wins;
+          // our stale snapshot copy is not needed.  Re-throw anything else.
+          if (e.code !== "23503" && e.code !== "23505") throw e;
         }
       }
     }
