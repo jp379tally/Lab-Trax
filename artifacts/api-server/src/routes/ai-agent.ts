@@ -563,6 +563,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
 
     const openai = getAiClient();
     if (!openai) {
+      req.log?.warn("[AI AGENT STREAM] rejected: AI_INTEGRATIONS_OPENAI_API_KEY is not configured");
       return res.status(503).json({
         error:
           "AI assistant is not configured on this server. Please ask your administrator to set AI_INTEGRATIONS_OPENAI_API_KEY.",
@@ -926,8 +927,26 @@ export function registerAiAgentRoutes(router: IRouter): void {
       });
       res.end();
     } catch (err: any) {
-      req.log?.error({ err }, "[AI AGENT STREAM] OpenAI error");
-      sendEvent({ error: "AI request failed. Please try again." });
+      // Log diagnostic fields (status/code/type) without prompt content or keys.
+      req.log?.error(
+        {
+          err,
+          errStatus: err?.status ?? err?.response?.status ?? null,
+          errCode: err?.code ?? null,
+          errType: err?.type ?? null,
+        },
+        "[AI AGENT STREAM] OpenAI error",
+      );
+      const status = err?.status ?? err?.response?.status;
+      const message =
+        status === 401 || status === 403
+          ? "The AI provider rejected the server's credentials. Contact your administrator."
+          : status === 429
+            ? "The AI service is receiving too many requests. Please try again in a moment."
+            : status === 408 || err?.code === "ETIMEDOUT" || err?.code === "ECONNABORTED"
+              ? "The AI request timed out. Please try again."
+              : "AI request failed. Please try again.";
+      sendEvent({ error: message });
       res.end();
     }
   });

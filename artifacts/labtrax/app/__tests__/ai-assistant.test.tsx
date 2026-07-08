@@ -418,7 +418,34 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
     fireEvent.press(getByLabelText("Send message"));
 
     await findByText(
-      "AI assistant is not set up on this server. Contact your administrator.",
+      "AI assistant is not configured on this server. Contact your administrator.",
+    );
+  });
+
+  it("shows the server-provided error string on a 503 with a JSON body", async () => {
+    mockStreamResponseOnce(
+      new Response(
+        JSON.stringify({
+          error:
+            "AI assistant is not configured on this server. Please ask your administrator to set AI_INTEGRATIONS_OPENAI_API_KEY.",
+        }),
+        { status: 503 },
+      ),
+    );
+
+    const { getByLabelText, getByPlaceholderText, findByText } = render(
+      <AiAssistantScreen />,
+    );
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    fireEvent.press(getByLabelText("Send message"));
+
+    await findByText(
+      "AI assistant is not configured on this server. Please ask your administrator to set AI_INTEGRATIONS_OPENAI_API_KEY.",
     );
   });
 
@@ -441,7 +468,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
     await findByText("Please slow down — try again in a moment.");
   });
 
-  it("shows a generic error message for other non-200 responses (e.g. 500)", async () => {
+  it("shows the server-error message for a 500 response", async () => {
     mockStreamResponseOnce(
       new Response("Internal Server Error", { status: 500 }),
     );
@@ -457,10 +484,92 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
     fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
     fireEvent.press(getByLabelText("Send message"));
 
-    await findByText("Something went wrong. Please try again.");
+    await findByText(
+      "The server hit an error while processing your request. Please try again.",
+    );
   });
 
-  it("shows a generic error message when resp.body is null", async () => {
+  it("shows the session-expired message when the stream endpoint returns 401", async () => {
+    mockStreamResponseOnce(
+      new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
+    );
+
+    const { getByLabelText, getByPlaceholderText, findByText } = render(
+      <AiAssistantScreen />,
+    );
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    fireEvent.press(getByLabelText("Send message"));
+
+    await findByText(
+      "Your session has expired. Please sign in again to keep using the AI assistant.",
+    );
+  });
+
+  it("shows the no-permission message when the stream endpoint returns 403", async () => {
+    mockStreamResponseOnce(
+      new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 }),
+    );
+
+    const { getByLabelText, getByPlaceholderText, findByText } = render(
+      <AiAssistantScreen />,
+    );
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    fireEvent.press(getByLabelText("Send message"));
+
+    await findByText(
+      "You don't have permission to use the AI assistant on this account.",
+    );
+  });
+
+  it("shows the outdated-deployment message when the stream endpoint returns 404", async () => {
+    mockStreamResponseOnce(new Response("Not Found", { status: 404 }));
+
+    const { getByLabelText, getByPlaceholderText, findByText } = render(
+      <AiAssistantScreen />,
+    );
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    fireEvent.press(getByLabelText("Send message"));
+
+    await findByText(
+      "This server doesn't have the AI assistant available — it may be running an outdated deployment. Please contact your administrator.",
+    );
+  });
+
+  it("shows the network error message when the fetch itself rejects", async () => {
+    expoFetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+
+    const { getByLabelText, getByPlaceholderText, findByText } = render(
+      <AiAssistantScreen />,
+    );
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    fireEvent.press(getByLabelText("Send message"));
+
+    await findByText(
+      "Sorry, I'm having trouble connecting right now. Please check your connection and try again.",
+    );
+  });
+
+  it("shows the interrupted message when resp.body is null", async () => {
     // Simulate a Response with body: null (can happen in some environments)
     const bodylessResp = { ok: true, status: 200, body: null } as unknown as Response;
     mockStreamResponseOnce(bodylessResp);
@@ -476,7 +585,37 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
     fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
     fireEvent.press(getByLabelText("Send message"));
 
-    await findByText("Something went wrong. Please try again.");
+    await findByText(
+      "The AI response was interrupted before it finished. Please try again.",
+    );
+  });
+
+  it("shows the interrupted message when the stream ends without a done event", async () => {
+    // Stream that emits one malformed SSE line then closes with no terminal event.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("data: {not json}\n\n"));
+        controller.close();
+      },
+    });
+    mockStreamResponseOnce(
+      { ok: true, status: 200, body: stream } as unknown as Response,
+    );
+
+    const { getByLabelText, getByPlaceholderText, findByText } = render(
+      <AiAssistantScreen />,
+    );
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    fireEvent.press(getByLabelText("Send message"));
+
+    await findByText(
+      "The AI response was interrupted before it finished. Please try again.",
+    );
   });
 });
 

@@ -887,4 +887,42 @@ describe("POST /api/ai-agent/stream — edge cases", () => {
     expect(errorEvent!.error as string).toMatch(/AI request failed/i);
     expect(events.some((e) => e.done === true)).toBe(false);
   });
+
+  it("categorizes an upstream 401 as a credential problem in the SSE error event", async () => {
+    const authErr = Object.assign(new Error("Incorrect API key provided"), { status: 401 });
+    mockStreamCreate.mockRejectedValueOnce(authErr);
+
+    const app = makeApp("user-edge-auth-error");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({ messages: [{ role: "user", content: "trigger auth failure" }] });
+
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(res.body as string);
+    const errorEvent = events.find((e) => typeof e.error === "string");
+    expect(errorEvent).toBeDefined();
+    expect(errorEvent!.error as string).toMatch(/rejected the server's credentials/i);
+    expect(events.some((e) => e.done === true)).toBe(false);
+  });
+
+  it("categorizes an upstream 429 as rate limiting in the SSE error event", async () => {
+    const rateErr = Object.assign(new Error("Rate limit reached"), { status: 429 });
+    mockStreamCreate.mockRejectedValueOnce(rateErr);
+
+    const app = makeApp("user-edge-rate-error");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({ messages: [{ role: "user", content: "trigger rate failure" }] });
+
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(res.body as string);
+    const errorEvent = events.find((e) => typeof e.error === "string");
+    expect(errorEvent).toBeDefined();
+    expect(errorEvent!.error as string).toMatch(/too many requests/i);
+    expect(events.some((e) => e.done === true)).toBe(false);
+  });
 });

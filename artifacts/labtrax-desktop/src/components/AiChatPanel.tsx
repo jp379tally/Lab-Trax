@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { getToolCallLabel } from "@workspace/api-client-react";
+import {
+  getToolCallLabel,
+  AI_STREAM_NETWORK_ERROR_MESSAGE,
+  AI_STREAM_INTERRUPTED_MESSAGE,
+  AI_STREAM_SERVER_EVENT_FALLBACK_MESSAGE,
+  extractAiStreamHttpError,
+} from "@workspace/api-client-react";
 import { apiFetch, getAccessToken, apiUrl } from "@/lib/api";
 import {
   AlertTriangle,
@@ -1263,16 +1269,23 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         body: JSON.stringify(body),
       });
 
-      if (!resp.ok || !resp.body) {
-        // Non-2xx: parse as JSON error and surface it
-        let msg = "Sorry, I'm having trouble connecting right now. Please try again.";
-        try {
-          const errBody = await resp.json() as { error?: string };
-          if (resp.status === 429) msg = "Please slow down — try again in a moment.";
-          else if (resp.status === 503) msg = errBody.error ?? "AI assistant is not configured on this server.";
-          else if (resp.status === 500) msg = errBody.error ? `AI error: ${errBody.error}` : msg;
-        } catch { /* ignore parse error */ }
-        const errMsg: ChatMsg = { id: streamingId, role: "assistant", content: msg };
+      if (!resp.ok) {
+        // Non-2xx: map through the shared cross-platform error contract.
+        const httpErr = await extractAiStreamHttpError(resp);
+        console.warn("[AI stream] HTTP error", {
+          status: httpErr.status,
+          hadToken: Boolean(token),
+          bodySnippet: httpErr.bodySnippet,
+        });
+        const errMsg: ChatMsg = { id: streamingId, role: "assistant", content: httpErr.message };
+        setMessages((prev) => prev.map((m) => m.id === streamingId ? errMsg : m));
+        persistSession([...currentMessages, errMsg], sessionId, snapshotPinnedCases);
+        return;
+      }
+
+      if (!resp.body) {
+        console.warn("[AI stream] response had no body", { status: resp.status });
+        const errMsg: ChatMsg = { id: streamingId, role: "assistant", content: AI_STREAM_INTERRUPTED_MESSAGE };
         setMessages((prev) => prev.map((m) => m.id === streamingId ? errMsg : m));
         persistSession([...currentMessages, errMsg], sessionId, snapshotPinnedCases);
         return;
@@ -1283,10 +1296,26 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       let buf = "";
       let fullContent = "";
       let handledProposedAction = false;
+      let sawTerminalEvent = false;
+      let streamReadFailed = false;
+      let loggedParseError = false;
       let finalMeta: Pick<ChatMsg, "knowledgeSectionIds" | "retentionDisclaimer" | "privacyDisclaimer" | "disclaimer" | "toolOutputs"> = {};
 
       outer: while (true) {
-        const { done, value } = await reader.read();
+        let done: boolean;
+        let value: Uint8Array | undefined;
+        try {
+          ({ done, value } = await reader.read());
+        } catch (readErr) {
+          // Connection dropped mid-stream — distinguish from a pre-request
+          // network failure so the user sees an accurate message.
+          streamReadFailed = true;
+          console.warn("[AI stream] read failed mid-stream", {
+            receivedChars: fullContent.length,
+            message: readErr instanceof Error ? readErr.message : String(readErr),
+          });
+          break;
+        }
         if (done) break;
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split("\n");
@@ -1294,7 +1323,15 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
           let evt: Record<string, unknown>;
-          try { evt = JSON.parse(line.slice(6)) as Record<string, unknown>; } catch { continue; }
+          try {
+            evt = JSON.parse(line.slice(6)) as Record<string, unknown>;
+          } catch {
+            if (!loggedParseError) {
+              loggedParseError = true;
+              console.warn("[AI stream] malformed SSE line", { lineLength: line.length });
+            }
+            continue;
+          }
 
           if (evt.tool_call && typeof evt.tool_call === "object") {
             const tc = evt.tool_call as { name?: string };
@@ -1310,7 +1347,14 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           }
 
           if (evt.error) {
-            fullContent = typeof evt.error === "string" ? evt.error : "I couldn't generate a response.";
+            sawTerminalEvent = true;
+            console.warn("[AI stream] server error event", {
+              serverMessage: typeof evt.error === "string" ? evt.error : null,
+            });
+            fullContent =
+              typeof evt.error === "string" && evt.error
+                ? evt.error
+                : AI_STREAM_SERVER_EVENT_FALLBACK_MESSAGE;
             setMessages((prev) =>
               prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
             );
@@ -1360,6 +1404,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           }
 
           if (evt.done) {
+            sawTerminalEvent = true;
             finalMeta = {
               ...(Array.isArray(evt.toolOutputs) && (evt.toolOutputs as unknown[]).length > 0
                 ? { toolOutputs: evt.toolOutputs as Array<{ name: string; result: unknown }> }
@@ -1386,6 +1431,18 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         return;
       }
 
+      // Stream ended without a terminal event (done/error/proposed_action) and
+      // without any content: the SSE stream was interrupted or malformed.
+      if ((streamReadFailed || !sawTerminalEvent) && !fullContent) {
+        if (!streamReadFailed) {
+          console.warn("[AI stream] stream ended without a terminal event");
+        }
+        const errMsg: ChatMsg = { id: streamingId, role: "assistant", content: AI_STREAM_INTERRUPTED_MESSAGE };
+        setMessages((prev) => prev.map((m) => m.id === streamingId ? errMsg : m));
+        persistSession([...currentMessages, errMsg], sessionId, snapshotPinnedCases);
+        return;
+      }
+
       if (!fullContent) fullContent = "I couldn't generate a response. Please try again.";
 
       const finalMsg: ChatMsg = { id: streamingId, role: "assistant", content: fullContent, ...finalMeta };
@@ -1398,9 +1455,11 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       if (voiceModeRef.current && fullContent) {
         void speakText(fullContent);
       }
-    } catch (err: any) {
-      const msg = "Sorry, I'm having trouble connecting right now. Please try again.";
-      const errMsg: ChatMsg = { id: streamingId, role: "assistant", content: msg };
+    } catch (err: unknown) {
+      console.warn("[AI stream] request failed", {
+        message: err instanceof Error ? err.message : String(err),
+      });
+      const errMsg: ChatMsg = { id: streamingId, role: "assistant", content: AI_STREAM_NETWORK_ERROR_MESSAGE };
       setMessages((prev) => prev.map((m) => m.id === streamingId ? errMsg : m));
       persistSession([...currentMessages, errMsg], sessionId, snapshotPinnedCases);
     } finally {

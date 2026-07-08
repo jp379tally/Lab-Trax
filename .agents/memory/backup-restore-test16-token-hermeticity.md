@@ -22,3 +22,13 @@ locally and looks like a flaky regression when it is really a hermeticity bug.
 **How to apply:** when a test deliberately skips the user_sessions truncate path,
 randomize its token; the other session tests can stay deterministic because the
 restore truncates their rows.
+
+**Aborted-run residue variant (2026-07-08):** tests 11/12 (fixed token hashes,
+normally truncated by the restore) can ALSO 23505-collide locally if a prior
+full-suite run was aborted mid-file, leaving their rows in the persistent dev DB.
+Symptom: same fixed token_hash in every failure across reruns; rows in
+user_sessions with old created_at and rid()-style ids. Fix: `DELETE FROM
+user_sessions WHERE token_hash IN (<the fixed hashes>)`, then rerun in isolation
+— not a code regression. Note the `rel-backup-restore` workflow's `test -- --…`
+arg passing runs the WHOLE api suite, not just the two files; use a direct
+`npx vitest run src/routes/backup-restore.test.ts` for true isolation.

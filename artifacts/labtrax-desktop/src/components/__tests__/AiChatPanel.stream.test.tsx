@@ -599,4 +599,127 @@ describe("AiChatPanel — stream error handling", () => {
       { timeout: 3000 },
     );
   });
+
+  it("shows the session-expired message on 401", async () => {
+    vi.stubGlobal("fetch", makeErrorFetch(401, "Unauthorized"));
+
+    renderPanel();
+    await submitMessage("Hello");
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText(
+            "Your session has expired. Please sign in again to keep using the AI assistant.",
+          ),
+        ).toBeTruthy();
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it("shows the no-permission message on 403", async () => {
+    vi.stubGlobal("fetch", makeErrorFetch(403, "Forbidden"));
+
+    renderPanel();
+    await submitMessage("Hello");
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText(
+            "You don't have permission to use the AI assistant on this account.",
+          ),
+        ).toBeTruthy();
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it("shows the outdated-deployment message on 404", async () => {
+    // 404 typically comes back as a non-JSON body (proxy/HTML error page)
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("Not Found", { status: 404 })),
+    );
+
+    renderPanel();
+    await submitMessage("Hello");
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText(
+            "This server doesn't have the AI assistant available — it may be running an outdated deployment. Please contact your administrator.",
+          ),
+        ).toBeTruthy();
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it("surfaces the server's error string on a 500", async () => {
+    vi.stubGlobal("fetch", makeErrorFetch(500, "boom"));
+
+    renderPanel();
+    await submitMessage("Hello");
+
+    await waitFor(
+      () => {
+        expect(screen.getByText("AI error: boom")).toBeTruthy();
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it("shows the network error message when the fetch rejects", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+
+    renderPanel();
+    await submitMessage("Hello");
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText(
+            "Sorry, I'm having trouble connecting right now. Please check your connection and try again.",
+          ),
+        ).toBeTruthy();
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it("shows the interrupted message when the stream ends without a terminal event", async () => {
+    // Stream emits one malformed SSE line then closes with no done/error event.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("data: {not json}\n\n"));
+        controller.close();
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, status: 200, body: stream }) as unknown as Response),
+    );
+
+    renderPanel();
+    await submitMessage("Hello");
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText(
+            "The AI response was interrupted before it finished. Please try again.",
+          ),
+        ).toBeTruthy();
+      },
+      { timeout: 3000 },
+    );
+  });
 });

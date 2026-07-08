@@ -522,7 +522,14 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 // ── @workspace/api-client-react: mock React Query hooks so screens that use
 // useCases / useCase / useInvoices / useInvoice don't need a QueryClientProvider.
 // Hook data is driven by the same mockAppOverrides used for the AppContext mock.
-vi.mock("@workspace/api-client-react", () => ({
+vi.mock("@workspace/api-client-react", async () => ({
+  // Re-export the REAL shared AI-stream error contract (constants + mapping
+  // helpers) so component tests exercise the exact production strings instead
+  // of mock duplicates that could drift.
+  ...(await vi.importActual<Record<string, unknown>>(
+    "../../lib/api-client-react/src/ai-stream-errors",
+  )),
+  getToolCallLabel: (name?: string | null) => (name ? `Working: ${name}` : ""),
   useCases: () => ({
     data: (mockAppOverrides.current.cases as unknown[]) ?? [],
     isLoading: false,

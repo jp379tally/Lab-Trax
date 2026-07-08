@@ -19,16 +19,17 @@ import * as Clipboard from "expo-clipboard";
 import { Audio } from "expo-av";
 import * as FileSystem from "expo-file-system/legacy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-// React Native's built-in fetch never exposes a streaming `resp.body`
-// (ReadableStream) on native devices, which the SSE reader below requires.
-// `expo/fetch` is WinterCG-compliant and streams on iOS/Android. Using the
-// bare global fetch here breaks Maynard on-device with "Something went wrong"
-// while working fine in web preview and vitest (both have streaming fetch).
 import { fetch as expoFetch } from "expo/fetch";
-import { getToolCallLabel } from "@workspace/api-client-react";
+import {
+  getToolCallLabel,
+  AI_STREAM_NETWORK_ERROR_MESSAGE,
+  AI_STREAM_INTERRUPTED_MESSAGE,
+  AI_STREAM_SERVER_EVENT_FALLBACK_MESSAGE,
+  extractAiStreamHttpError,
+} from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
-import { resilientFetch, getApiUrl, refreshAndGetAccessToken, getCsrfToken } from "@/lib/query-client";
+import { resilientFetch, getApiUrl, refreshAndGetAccessToken, getCsrfToken, logDebugEvent } from "@/lib/query-client";
 import {
   loadChatSessions,
   saveChatSession,
@@ -1339,11 +1340,16 @@ export default function AiAssistantScreen() {
             headers,
             body: JSON.stringify(streamBody),
           });
-        } catch {
+        } catch (netErr) {
+          logDebugEvent("ai_stream_error", {
+            phase: "network",
+            hadToken: Boolean(token),
+            message: netErr instanceof Error ? netErr.message : String(netErr),
+          });
           setMessages((prev) =>
             prev.map((m) =>
               m.id === streamingId
-                ? { ...m, content: "Sorry, I'm having trouble connecting right now. Please try again.", isError: true }
+                ? { ...m, content: AI_STREAM_NETWORK_ERROR_MESSAGE, isError: true }
                 : m,
             ),
           );
@@ -1351,16 +1357,30 @@ export default function AiAssistantScreen() {
           return;
         }
 
-        if (!resp.ok || !resp.body) {
-          const errText =
-            resp.status === 503
-              ? "AI assistant is not set up on this server. Contact your administrator."
-              : resp.status === 429
-              ? "Please slow down — try again in a moment."
-              : "Something went wrong. Please try again.";
+        if (!resp.ok) {
+          const httpErr = await extractAiStreamHttpError(resp);
+          logDebugEvent("ai_stream_error", {
+            phase: "http",
+            status: httpErr.status,
+            hadToken: Boolean(token),
+            bodySnippet: httpErr.bodySnippet,
+          });
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === streamingId ? { ...m, content: errText, isError: true } : m,
+              m.id === streamingId ? { ...m, content: httpErr.message, isError: true } : m,
+            ),
+          );
+          scrollToBottom();
+          return;
+        }
+
+        if (!resp.body) {
+          logDebugEvent("ai_stream_error", { phase: "no_body", status: resp.status });
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === streamingId
+                ? { ...m, content: AI_STREAM_INTERRUPTED_MESSAGE, isError: true }
+                : m,
             ),
           );
           scrollToBottom();
@@ -1373,9 +1393,27 @@ export default function AiAssistantScreen() {
         let fullContent = "";
         let finalDisclaimer: string | undefined;
         let proposedActionHandled = false;
+        let sawTerminalEvent = false;
+        let streamReadFailed = false;
+        let loggedParseError = false;
 
         outer: while (true) {
-          const { done, value } = await reader.read();
+          let done: boolean;
+          let value: Uint8Array | undefined;
+          try {
+            ({ done, value } = await reader.read());
+          } catch (readErr) {
+            // The connection dropped mid-stream (aborted SSE). Distinguish this
+            // from a pre-request network failure so the user sees an accurate
+            // message and diagnostics identify the failing phase.
+            streamReadFailed = true;
+            logDebugEvent("ai_stream_error", {
+              phase: "stream_read",
+              receivedChars: fullContent.length,
+              message: readErr instanceof Error ? readErr.message : String(readErr),
+            });
+            break;
+          }
           if (done) break;
           buf += decoder.decode(value, { stream: true });
           const lines = buf.split("\n");
@@ -1383,7 +1421,18 @@ export default function AiAssistantScreen() {
           for (const line of lines) {
             if (!line.startsWith("data: ")) continue;
             let evt: Record<string, unknown>;
-            try { evt = JSON.parse(line.slice(6)) as Record<string, unknown>; } catch { continue; }
+            try {
+              evt = JSON.parse(line.slice(6)) as Record<string, unknown>;
+            } catch {
+              if (!loggedParseError) {
+                loggedParseError = true;
+                logDebugEvent("ai_stream_error", {
+                  phase: "sse_parse",
+                  lineLength: line.length,
+                });
+              }
+              continue;
+            }
 
             if (evt.tool_call && typeof evt.tool_call === "object") {
               const tc = evt.tool_call as { name?: string };
@@ -1398,13 +1447,22 @@ export default function AiAssistantScreen() {
               );
               scrollToBottom();
             } else if (evt.error) {
-              const errMsg = typeof evt.error === "string" ? evt.error : "Something went wrong. Please try again.";
+              sawTerminalEvent = true;
+              const errMsg =
+                typeof evt.error === "string" && evt.error
+                  ? evt.error
+                  : AI_STREAM_SERVER_EVENT_FALLBACK_MESSAGE;
+              logDebugEvent("ai_stream_error", {
+                phase: "server_event",
+                serverMessage: typeof evt.error === "string" ? evt.error : null,
+              });
               setMessages((prev) =>
                 prev.map((m) => m.id === streamingId ? { ...m, content: errMsg, isError: true } : m),
               );
               scrollToBottom();
-              break outer;
+              return;
             } else if (evt.done) {
+              sawTerminalEvent = true;
               if (typeof evt.disclaimer === "string") finalDisclaimer = evt.disclaimer;
             } else if (evt.auto_executed && typeof evt.auto_executed === "object") {
               const ae = evt.auto_executed as { toolName?: string; summary?: string; result?: unknown };
@@ -1442,6 +1500,23 @@ export default function AiAssistantScreen() {
 
         if (proposedActionHandled) return;
 
+        // Stream ended without a terminal event (done/error/proposed_action)
+        // and without any content: the SSE stream was interrupted or malformed.
+        if ((streamReadFailed || !sawTerminalEvent) && !fullContent) {
+          if (!streamReadFailed) {
+            logDebugEvent("ai_stream_error", { phase: "no_terminal_event" });
+          }
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === streamingId
+                ? { ...m, content: AI_STREAM_INTERRUPTED_MESSAGE, isError: true }
+                : m,
+            ),
+          );
+          scrollToBottom();
+          return;
+        }
+
         if (!fullContent) fullContent = "I couldn't generate a response. Please try again.";
         const finalMsg: ChatMessage = {
           id: streamingId,
@@ -1455,11 +1530,15 @@ export default function AiAssistantScreen() {
         if (voiceModeRef.current && fullContent && lastSendModeRef.current === "conversation") {
           void speakText(fullContent);
         }
-      } catch {
+      } catch (err) {
+        logDebugEvent("ai_stream_error", {
+          phase: "unexpected",
+          message: err instanceof Error ? err.message : String(err),
+        });
         setMessages((prev) =>
           prev.map((m) =>
             m.id === streamingId
-              ? { ...m, content: "Sorry, I'm having trouble connecting right now. Please try again.", isError: true }
+              ? { ...m, content: AI_STREAM_NETWORK_ERROR_MESSAGE, isError: true }
               : m,
           ),
         );
