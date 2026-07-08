@@ -111,6 +111,8 @@ Run these commands and record the result before **any** release, build, publish,
 pnpm run typecheck
 
 # 2. API server integration + contract tests (set DATABASE_URL for DB-gated suites)
+#    (The rel-api-tests workflow wraps this in the with-db-lock advisory-lock wrapper —
+#     see "Release-Gate DB Serialization" below; never remove that wrapper.)
 pnpm --filter @workspace/api-server run test
 
 # 3. Desktop unit tests
@@ -125,6 +127,8 @@ pnpm --filter @workspace/scripts run test
 # 6. Backup / restore integrity (REQUIRES DATABASE_URL) — hard blocking gate
 #    (Do NOT use `pnpm run test -- <files>` here — the extra `--` makes vitest ignore the
 #     file filters and run the entire api-server suite instead of just these two files.)
+#    (The rel-backup-restore workflow wraps this in the with-db-lock advisory-lock wrapper —
+#     see "Release-Gate DB Serialization" below; never remove that wrapper.)
 cd artifacts/api-server && npx vitest run --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts
 
 # 7. Mobile legacy-path fence — zero violations
@@ -182,6 +186,24 @@ Backup and restore protect every customer's data, so they are a **hard blocking 
 - **No change to schema, auth, organizations, cases, invoices, attachments, or any persistent-data shape may merge unless the backup/restore integrity tests pass** — `routes/backup-restore.test.ts` (all behaviors) and `routes/restore-session.test.ts`, with `DATABASE_URL` set.
 - The only exception is a change explicitly verified to **not touch persistent data** (e.g. a pure UI/style change or a docs change like this one). State that exemption explicitly in the change notes.
 - **A backup or restore failure blocks the release outright** — it is never downgraded to a warning or deferred. See the **Backup Restore Integrity** section below for the full list of protected restore behaviors (empty `user_sessions` after restore, pre-restore snapshot, schema-version gate, post-restore validation, phase ordering).
+
+### Release-Gate DB Serialization (`with-db-lock` — do not remove)
+
+The `rel-api-tests` and `rel-backup-restore` release-gate workflows both touch the **shared dev database**, and the Run-button "Project" aggregate fires every `rel-*` gate at once. Without serialization, `rel-backup-restore`'s DB-wide `pg_restore` truncates tables out from under `rel-api-tests`' integration suites (spurious 500s/timeouts), and the concurrent writes from `rel-api-tests` skew the restore's post-restore count validation — false failures in **both** gates that never reproduce when the gates run alone.
+
+The fix is a **PostgreSQL session advisory lock**, held for the duration of each gate's test command via `scripts/src/run-with-db-lock.ts` (`pnpm --filter @workspace/scripts run with-db-lock "<command>"`). Both workflow commands are wrapped:
+
+- `rel-api-tests`: `with-db-lock "pnpm --filter @workspace/api-server run test"`
+- `rel-backup-restore`: `with-db-lock "pnpm --filter @workspace/api-server exec vitest run --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts"`
+
+Rules for anyone editing these gates:
+
+- **Any change to the `rel-api-tests` or `rel-backup-restore` command MUST preserve the `with-db-lock` wrapper.** Dropping it reintroduces the aggregate-fire false failures.
+- **File-level locking is not sufficient.** The conflict is DB-wide (`pg_restore` truncates shared tables), so only a database-scoped lock serializes the two workflows. The advisory lock is session-scoped, so PostgreSQL releases it automatically if the process dies — no stale-lock cleanup is needed.
+- **Any new release gate that touches the database must also wrap its whole command in `with-db-lock`** so it joins the same serialization queue (lock name `labtrax-db-test-workflows`).
+- The wrapper raises `DB_CONNECT_TIMEOUT_MS` to 120 s (unless already set) because under full aggregate load the TLS handshake can exceed the production 10 s fail-fast, and it runs `SET statement_timeout = 0` on the lock session because the blocking `pg_advisory_lock` wait counts as statement execution and would otherwise be killed by the pool's 30 s statement timeout while waiting for a full suite run to finish.
+
+Related hermeticity guard — **`routes/account-epic-verification.test.ts` SMS mock**: this suite mocks `../lib/sms.js` (`isConfigured: () => false`, `isDevOrTest: () => true`) because workspaces with real Vonage/Twilio SMS credentials would otherwise flip the send routes onto the live-provider branch, which rejects the fake test phone numbers and 500s — a false failure that never happens in CI (no creds there). **Do not remove that mock**, and any new test that exercises SMS send routes and asserts success must include the same mock.
 
 ### Build Policy (Manual-Only, Explicit Approval)
 
