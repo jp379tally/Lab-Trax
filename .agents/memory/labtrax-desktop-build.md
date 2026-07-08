@@ -72,6 +72,31 @@ mv electron-dist/win-unpacked/electron.exe electron-dist/win-unpacked/LabTrax.ex
 
 Resulting zip is ~140 MB (vs ~153 MB from a normal electron-builder run because we omit `default_app.asar`). The portable starts cleanly because `resources/app/package.json` has `"main": "electron/main.cjs"` and electron prefers `resources/app/` over a missing `default_app.asar`.
 
+## desktop-build-publish.sh can "succeed" while shipping a STALE zip (2026-07-08)
+
+`pnpm run electron:build` (electron-build.mjs) passes the publish override as a second
+`--config {"publish":...}` JSON arg when UPDATE_FEED_URL is set; electron-builder 26
+treats it as a file path and dies with ENOENT **before repacking app.asar**. The script's
+`|| zipUnpacked()` fallback then re-zips the old `win-unpacked` and every downstream step
+(upload, HTTP-200 verify, system_settings update, "vX published") reports success.
+Symptom: uploaded zip byte size identical to the previous release.
+
+**How to verify a publish actually shipped new code:** grep the zip's
+`LabTrax/resources/app.asar` bytes for a string unique to the new commit (e.g. a new
+string literal), and compare prod `content-length` + sha256 against the local zip.
+
+**Working repack path:** run `UPDATE_FEED_URL=… pnpm exec electron-builder --win --config
+electron-builder.yml` (no JSON override). It fully repacks app.asar + win-unpacked in
+~100s before failing at wine/NSIS — killing it via `timeout 105` after the repack is fine
+(verify asar integrity: parse the pickle header and check every file extent fits the file
+size exactly). It does NOT write `resources/app-update.yml` (that happens in the publish
+stage) — write it manually: `provider: generic`, `url: <base>/downloads`,
+`channel: latest`, `updaterCacheDirName: '@workspacelabtrax-desktop-updater'`.
+Then zip via the archiver zipUnpacked logic and run upload-desktop-installer.
+
+**Why:** the v1.0.5 scan-viewer publish initially shipped May-28 bytes this way; also means
+post-merge "incremental" publishes may have been re-uploading a stale zip for weeks.
+
 ## post-merge.sh rebuilds + publishes the desktop app on EVERY merge — it is a single point of failure for ALL merges
 
 `scripts/post-merge.sh` runs the full desktop build + App Storage publish (`desktop-build-publish.sh` → `upload-desktop-installer`) on every task merge, not just desktop-related ones. **Why this matters:** any break anywhere in that publish chain fails the *entire* post-merge setup (`exit 1`) for *every* future merge — even merges that never touched desktop code. A single barcode/billing/mobile task will fail post-merge purely because the desktop publish step is broken.
