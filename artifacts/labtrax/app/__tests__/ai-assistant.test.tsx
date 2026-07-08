@@ -41,8 +41,15 @@ function mockStreamResponseOnce(resp: Response): void {
 // vi.hoisted ensures the mock fns are available inside the vi.mock factories
 // below (which are hoisted to the top of the file by Vitest).
 
-const { mockRequestPermissionsAsync, mockSetAudioModeAsync, mockRecordingCreateAsync } =
-  vi.hoisted(() => ({
+const {
+  mockRequestPermissionsAsync,
+  mockSetAudioModeAsync,
+  mockRecordingCreateAsync,
+  mockSoundCreateAsync,
+  mockSoundPlayAsync,
+} = vi.hoisted(() => {
+  const mockSoundPlayAsync = vi.fn(async () => undefined);
+  return {
     mockRequestPermissionsAsync: vi.fn(async () => ({
       status: "granted",
       granted: true,
@@ -54,7 +61,17 @@ const { mockRequestPermissionsAsync, mockSetAudioModeAsync, mockRecordingCreateA
         getURI: vi.fn(() => "file:///tmp/test.m4a"),
       },
     })),
-  }));
+    mockSoundPlayAsync,
+    mockSoundCreateAsync: vi.fn(async () => ({
+      sound: {
+        setOnPlaybackStatusUpdate: vi.fn(),
+        playAsync: mockSoundPlayAsync,
+        stopAsync: vi.fn(async () => undefined),
+        unloadAsync: vi.fn(async () => undefined),
+      },
+    })),
+  };
+});
 
 vi.mock("expo-av", () => ({
   Audio: {
@@ -67,13 +84,7 @@ vi.mock("expo-av", () => ({
       HIGH_QUALITY: {},
     },
     Sound: {
-      createAsync: vi.fn(async () => ({
-        sound: {
-          setOnPlaybackStatusUpdate: vi.fn(),
-          playAsync: vi.fn(async () => undefined),
-          unloadAsync: vi.fn(async () => undefined),
-        },
-      })),
+      createAsync: (...args: unknown[]) => mockSoundCreateAsync(...(args as [])),
     },
   },
 }));
@@ -779,6 +790,119 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
     await waitFor(() => {
       expect(getByLabelText("Microphone error — tap to dismiss")).toBeTruthy();
     });
+  });
+});
+
+// ─── Voice conversation TTS (text-to-speech) tests ───────────────────────────
+//
+// Protects the "Maynard speaks his replies" flow: after a conversation-mode
+// voice exchange, the reply is fetched from /api/ai-tts via expo/fetch (the
+// only fetch path proven to stream/download reliably on physical devices),
+// written to a temp file, and played with expo-av. A TTS failure must surface
+// the visible voice-playback error banner instead of failing silently.
+
+describe("AiAssistantScreen — voice conversation TTS", () => {
+  let realXHR: typeof globalThis.XMLHttpRequest;
+
+  beforeEach(() => {
+    expoFetchMock.mockClear();
+    realXHR = globalThis.XMLHttpRequest;
+    (globalThis as unknown as { XMLHttpRequest: unknown }).XMLHttpRequest = MockXHR;
+    mockXhrState.mode = "load";
+    mockXhrState.status = 200;
+    mockXhrState.responseText = JSON.stringify({ ok: true, transcript: "hello maynard" });
+  });
+
+  afterEach(() => {
+    resetMockFetchHandler();
+    (globalThis as unknown as { XMLHttpRequest: unknown }).XMLHttpRequest = realXHR;
+  });
+
+  /** Routes the SSE stream + TTS endpoints; everything else gets the default body. */
+  function installConversationHandler(opts: { ttsStatus: number }): { ttsCalls: string[] } {
+    const ttsCalls: string[] = [];
+    setMockFetchHandler(async (url: string) => {
+      if (url.includes("/api/ai-agent/stream")) {
+        return new Response(
+          makeSSEStream([{ token: "Hi there!" }, { done: true }]),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/api/ai-tts")) {
+        ttsCalls.push(url);
+        if (opts.ttsStatus !== 200) {
+          return new Response(JSON.stringify({ ok: false }), { status: opts.ttsStatus });
+        }
+        return new Response(new Uint8Array([1, 2, 3, 4]).buffer, {
+          status: 200,
+          headers: { "Content-Type": "audio/mpeg" },
+        });
+      }
+      return new Response(JSON.stringify({ data: null }), { status: 200 });
+    });
+    return { ttsCalls };
+  }
+
+  /** Presses the headset (conversation) button, records, then stops. */
+  async function conversationRecordAndStop(
+    getByLabelText: (label: string) => unknown,
+  ): Promise<void> {
+    fireEvent.press(getByLabelText("Talk with Maynard") as Parameters<typeof fireEvent.press>[0]);
+    await waitFor(() => {
+      expect(getByLabelText("Stop recording")).toBeTruthy();
+    });
+    fireEvent.press(getByLabelText("Talk with Maynard") as Parameters<typeof fireEvent.press>[0]);
+  }
+
+  it("speaks the reply after a conversation-mode voice exchange", async () => {
+    const { ttsCalls } = installConversationHandler({ ttsStatus: 200 });
+
+    const { getByLabelText, findByText } = render(<AiAssistantScreen />);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    await conversationRecordAndStop(getByLabelText);
+
+    // The streamed reply renders…
+    await findByText("Hi there!");
+
+    // …and the TTS pipeline runs: /api/ai-tts fetched, audio written, played.
+    await waitFor(() => {
+      expect(ttsCalls.length).toBe(1);
+    });
+    const FileSystem = await import("expo-file-system/legacy");
+    await waitFor(() => {
+      expect(vi.mocked(FileSystem.writeAsStringAsync)).toHaveBeenCalledWith(
+        expect.stringContaining("tts-"),
+        expect.any(String),
+        expect.objectContaining({ encoding: "base64" }),
+      );
+      expect(mockSoundCreateAsync).toHaveBeenCalled();
+      expect(mockSoundPlayAsync).toHaveBeenCalled();
+    });
+  });
+
+  it("shows the voice playback error banner when the TTS request fails", async () => {
+    const { ttsCalls } = installConversationHandler({ ttsStatus: 500 });
+
+    const { getByLabelText, findByText } = render(<AiAssistantScreen />);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    await conversationRecordAndStop(getByLabelText);
+
+    await findByText("Hi there!");
+    await waitFor(() => {
+      expect(ttsCalls.length).toBe(1);
+    });
+
+    // The failure is surfaced, not swallowed.
+    await findByText(
+      "Maynard couldn't speak that reply. Check your volume, then tap the headset button to try again.",
+    );
+    expect(mockSoundCreateAsync).not.toHaveBeenCalled();
   });
 });
 

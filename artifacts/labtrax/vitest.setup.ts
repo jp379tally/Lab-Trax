@@ -771,7 +771,8 @@ vi.mock("@/lib/authed-media-cache", () => ({
   refreshAuthedMediaUri: vi.fn(async (url: string | null | undefined) => url ?? null),
 }));
 
-// expo-file-system/legacy: stub constants and methods used by authed-media-cache.
+// expo-file-system/legacy: stub constants and methods used by authed-media-cache
+// and the AI assistant TTS playback path (writeAsStringAsync + EncodingType).
 vi.mock("expo-file-system/legacy", () => ({
   cacheDirectory: "file:///cache/",
   getInfoAsync: vi.fn(async () => ({ exists: false })),
@@ -779,7 +780,9 @@ vi.mock("expo-file-system/legacy", () => ({
   downloadAsync: vi.fn(async (_url: string, dest: string) => ({ status: 200, uri: dest })),
   deleteAsync: vi.fn(async () => undefined),
   readAsStringAsync: vi.fn(async () => ""),
+  writeAsStringAsync: vi.fn(async () => undefined),
   copyAsync: vi.fn(async () => undefined),
+  EncodingType: { UTF8: "utf8", Base64: "base64" },
 }));
 
 vi.mock("@/lib/theme-context", () => {

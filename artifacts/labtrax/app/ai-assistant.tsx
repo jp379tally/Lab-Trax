@@ -212,6 +212,28 @@ function stripMarkdownForSpeech(text: string): string {
     .slice(0, 2000);
 }
 
+const B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/**
+ * Pure-JS Uint8Array → base64 encoder. Hermes does not guarantee a global
+ * `btoa`, and React Native's `FileReader.readAsDataURL(blob)` path proved
+ * unreliable on physical devices, so TTS audio bytes are encoded manually
+ * before being written to the cache file for expo-av playback.
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i]!;
+    const b1 = bytes[i + 1];
+    const b2 = bytes[i + 2];
+    out += B64_CHARS[b0 >> 2];
+    out += B64_CHARS[((b0 & 3) << 4) | ((b1 ?? 0) >> 4)];
+    out += b1 === undefined ? "=" : B64_CHARS[((b1 & 15) << 2) | ((b2 ?? 0) >> 6)];
+    out += b2 === undefined ? "=" : B64_CHARS[b2 & 63];
+  }
+  return out;
+}
+
 /** Upload audio blob/URI to /api/ai-stt via XHR (supports native file descriptors). */
 async function uploadAudioForTranscript(fileUri: string, mimeType: string): Promise<string> {
   const token = await refreshAndGetAccessToken();
@@ -880,6 +902,7 @@ export default function AiAssistantScreen() {
   const [micErrorMsg, setMicErrorMsg] = useState<string | null>(null);
   const [micErrorKind, setMicErrorKind] = useState<"permission" | "other">("other");
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [speakErrorMsg, setSpeakErrorMsg] = useState<string | null>(null);
   const recordingRef = useRef<Audio.Recording | null>(null);
   const recordingIntentRef = useRef<"dictation" | "conversation">("dictation");
   const lastSendModeRef = useRef<"conversation" | "text">("text");
@@ -1067,14 +1090,16 @@ export default function AiAssistantScreen() {
   }, [voiceMode]);
 
   // Auto-listen after Maynard finishes speaking (voice mode only, idle mic only).
+  // Skipped when speech playback failed (speakErrorMsg set): silently re-opening
+  // the mic after a failed reply made the flow feel like "voice → text only".
   useEffect(() => {
-    if (prevIsSpeakingRef.current && !isSpeaking && voiceMode && !sending && micState === "idle") {
+    if (prevIsSpeakingRef.current && !isSpeaking && voiceMode && !sending && micState === "idle" && !speakErrorMsg) {
       recordingIntentRef.current = "conversation";
       startRecording();
     }
     prevIsSpeakingRef.current = isSpeaking;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSpeaking, sending, micState, voiceMode]);
+  }, [isSpeaking, sending, micState, voiceMode, speakErrorMsg]);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
@@ -1132,51 +1157,151 @@ export default function AiAssistantScreen() {
     async (text: string) => {
       if (!text.trim()) return;
       stopSpeaking();
+      setSpeakErrorMsg(null);
       const stripped = stripMarkdownForSpeech(text);
+      if (!stripped) return;
+
+      // Every failure is logged with a stage tag (visible via debug events) and
+      // surfaced in the UI. The old implementation swallowed all errors, which
+      // made "Maynard never speaks on my iPhone" undiagnosable.
+      const failSpeech = (stage: string, detail: Record<string, unknown> = {}) => {
+        logDebugEvent("ai_tts_error", { stage, platform: Platform.OS, ...detail });
+        setSpeakErrorMsg(
+          "Maynard couldn't speak that reply. Check your volume, then tap the headset button to try again.",
+        );
+        setIsSpeaking(false);
+      };
+
       try {
         setIsSpeaking(true);
-        const res = await resilientFetch("/api/ai-tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: stripped, voice: "alloy" }),
-        });
-        if (!res.ok) { setIsSpeaking(false); return; }
 
         if (Platform.OS === "web") {
+          const res = await resilientFetch("/api/ai-tts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: stripped, voice: "alloy" }),
+          });
+          if (!res.ok) { failSpeech("http", { status: res.status }); return; }
           const blob = await res.blob();
           const url = URL.createObjectURL(blob);
           const audio = new (globalThis as any).Audio(url) as HTMLAudioElement;
           webAudioRef.current = audio;
           audio.onended = () => { URL.revokeObjectURL(url); webAudioRef.current = null; setIsSpeaking(false); };
-          audio.onerror = () => { URL.revokeObjectURL(url); webAudioRef.current = null; setIsSpeaking(false); };
+          audio.onerror = () => { URL.revokeObjectURL(url); webAudioRef.current = null; failSpeech("web_playback"); };
           await audio.play();
-        } else {
-          const blob = await res.blob();
-          const reader = new FileReader();
-          const base64 = await new Promise<string>((resolve, reject) => {
-            reader.onloadend = () => {
-              const result = reader.result as string;
-              resolve(result.split(",")[1] ?? "");
-            };
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
+          return;
+        }
+
+        // Native (iOS/Android): fetch the MP3 with expo/fetch + an explicit
+        // bearer token — the same pattern the SSE stream uses, which is the
+        // only fetch path proven to work on physical devices. The previous
+        // implementation used React Native's global fetch + blob + FileReader,
+        // which fails silently on-device.
+        const token = await refreshAndGetAccessToken();
+        const url = new URL("api/ai-tts", getApiUrl()).toString();
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+
+        const abort = new AbortController();
+        const timeout = setTimeout(() => abort.abort(), 45_000);
+
+        let res: Awaited<ReturnType<typeof expoFetch>>;
+        try {
+          res = await expoFetch(url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ text: stripped, voice: "alloy" }),
+            signal: abort.signal,
           });
-          const tmpUri = `${FileSystem.cacheDirectory}tts-${Date.now()}.mp3`;
+        } catch (netErr) {
+          clearTimeout(timeout);
+          failSpeech("fetch_network", {
+            hadToken: Boolean(token),
+            message: netErr instanceof Error ? netErr.message : String(netErr),
+          });
+          return;
+        }
+
+        if (!res.ok) {
+          clearTimeout(timeout);
+          let bodySnippet = "";
+          try { bodySnippet = (await res.text()).slice(0, 200); } catch {}
+          failSpeech("http", { status: res.status, hadToken: Boolean(token), bodySnippet });
+          return;
+        }
+
+        let base64: string;
+        try {
+          const buf = await res.arrayBuffer();
+          clearTimeout(timeout);
+          if (!buf.byteLength) { failSpeech("empty_audio"); return; }
+          base64 = bytesToBase64(new Uint8Array(buf));
+        } catch (readErr) {
+          clearTimeout(timeout);
+          failSpeech("read_body", {
+            message: readErr instanceof Error ? readErr.message : String(readErr),
+          });
+          return;
+        }
+
+        const tmpUri = `${FileSystem.cacheDirectory}tts-${Date.now()}.mp3`;
+        try {
           await FileSystem.writeAsStringAsync(tmpUri, base64, { encoding: FileSystem.EncodingType.Base64 });
-          await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, staysActiveInBackground: false });
-          const { sound } = await Audio.Sound.createAsync({ uri: tmpUri });
+        } catch (writeErr) {
+          failSpeech("write_file", {
+            message: writeErr instanceof Error ? writeErr.message : String(writeErr),
+          });
+          return;
+        }
+
+        try {
+          // allowsRecordingIOS must be reset explicitly: setAudioModeAsync
+          // merges with the *current* mode, and a leftover recording session
+          // routes iOS playback to the quiet earpiece receiver.
+          await Audio.setAudioModeAsync({
+            allowsRecordingIOS: false,
+            playsInSilentModeIOS: true,
+            staysActiveInBackground: false,
+          });
+        } catch (modeErr) {
+          // Non-fatal: still attempt playback.
+          logDebugEvent("ai_tts_error", {
+            stage: "audio_mode",
+            platform: Platform.OS,
+            message: modeErr instanceof Error ? modeErr.message : String(modeErr),
+          });
+        }
+
+        try {
+          const { sound } = await Audio.Sound.createAsync({ uri: tmpUri }, { shouldPlay: false, volume: 1.0 });
           soundRef.current = sound;
           sound.setOnPlaybackStatusUpdate((status) => {
-            if (!status.isLoaded) return;
+            if (!status.isLoaded) {
+              if (status.error) {
+                sound.unloadAsync().catch(() => {});
+                if (soundRef.current === sound) {
+                  soundRef.current = null;
+                  failSpeech("playback_status", { message: status.error });
+                }
+              }
+              return;
+            }
             if (status.didJustFinish) {
               sound.unloadAsync().catch(() => {});
               if (soundRef.current === sound) { soundRef.current = null; setIsSpeaking(false); }
             }
           });
           await sound.playAsync();
+          logDebugEvent("ai_tts_played", { audioBytes: base64.length, textLength: stripped.length });
+        } catch (playErr) {
+          failSpeech("playback_start", {
+            message: playErr instanceof Error ? playErr.message : String(playErr),
+          });
         }
-      } catch {
-        setIsSpeaking(false);
+      } catch (err) {
+        failSpeech("unexpected", {
+          message: err instanceof Error ? err.message : String(err),
+        });
       }
     },
     [stopSpeaking],
@@ -1904,6 +2029,15 @@ export default function AiAssistantScreen() {
               <Text style={[s.micErrorText, { color: "#742a2a", flex: 1 }]}>{micErrorMsg}</Text>
               <Pressable onPress={() => { setMicErrorMsg(null); setMicState("idle"); }} hitSlop={6}>
                 <Ionicons name="close" size={13} color="#c53030" />
+              </Pressable>
+            </View>
+          ) : null}
+          {speakErrorMsg ? (
+            <View style={[s.micErrorBanner, { backgroundColor: "#fffaf0", borderColor: "#feebc8" }]}>
+              <Ionicons name="volume-mute-outline" size={13} color="#b7791f" style={{ marginTop: 1 }} />
+              <Text style={[s.micErrorText, { color: "#744210", flex: 1 }]}>{speakErrorMsg}</Text>
+              <Pressable onPress={() => setSpeakErrorMsg(null)} hitSlop={6} accessibilityLabel="Dismiss voice playback error">
+                <Ionicons name="close" size={13} color="#b7791f" />
               </Pressable>
             </View>
           ) : null}
