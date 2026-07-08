@@ -120,3 +120,4 @@
 - [Prod e2e via demo account](prod-e2e-demo-account-verification.md) — verify prod features by logging in with seeded demo users (curl consumes SSE fine); update feed is /downloads/latest.yml; legacy /ai-agent keeps old desktops working.
 - [RN global fetch cannot stream SSE](rn-fetch-no-streaming-sse.md) — on-device resp.body is null even on 200; SSE readers must use expo/fetch; web preview+vitest+server all look healthy so only devices fail.
 - [pnpm run test -- forwards literal --](pnpm-test-double-dash-vitest.md) — `pnpm run test -- <files>` makes vitest ignore the file filter and run the WHOLE suite; use `npx vitest run <files>` for single-file gates.
+- [ASC API direct build-status check](asc-api-direct-status-check.md) — query builds/buildBetaDetails with a self-signed JWT to confirm TestFlight state; ASC_API_KEY_P8 env has spaces-for-newlines and needs re-wrapping.
