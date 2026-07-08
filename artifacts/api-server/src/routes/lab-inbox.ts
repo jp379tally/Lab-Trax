@@ -26,31 +26,15 @@ import {
   openCaseMediaObjectStream,
   writeCaseMediaToObjectStorage,
 } from "../lib/case-media-object-storage";
-import { extractMediaFileName } from "../lib/case-media";
+// Shared with the startup repair pass (lab-inbox-storage-repair.ts), which
+// permanently rewrites legacy URL-shaped rows.  The read-time normalization
+// below remains as defense-in-depth for rows created between deploys.
+import { normalizeInboxStorageName } from "../lib/lab-inbox-storage-repair";
 
 const router = Router();
 router.use(requireAuth);
 
 const caseMediaDir = path.resolve(process.cwd(), "uploads", "case-media");
-
-/**
- * Canonicalizes an inbox storage reference to the bare stored filename.
- * Historically the mobile client sent the full public media URL (e.g.
- * `https://host/api/cases/attachment-file/<file>`) instead of the bare
- * filename, so both new writes and legacy reads must normalize.
- *
- * Returns `null` when the value cannot be reduced to a safe bare filename
- * (external URL, empty result, or a path-traversal shape).
- */
-function normalizeInboxStorageName(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const name = extractMediaFileName(raw);
-  if (!name) return null;
-  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
-    return null;
-  }
-  return name;
-}
 
 const inboxStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {

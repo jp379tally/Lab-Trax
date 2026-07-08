@@ -2,6 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { setupMessengerWebSocket } from "./lib/messenger-ws";
 import { scheduleVendorLinkBackfillIfNeeded } from "./lib/vendor-link-backfill";
+import { scheduleLabInboxStorageRepair } from "./lib/lab-inbox-storage-repair";
 import { ensureDbConstraints } from "./lib/db-constraints";
 import {
   ensureLegacyCaseMediaTable,
@@ -61,6 +62,7 @@ const server = app.listen(port, (err) => {
   process.stderr.write(`[startup] server listening on port ${port}\n`);
   logger.info({ port }, "Server listening");
   scheduleVendorLinkBackfillIfNeeded();
+  scheduleLabInboxStorageRepair();
   startDailyOrphanedMediaCleanup();
 
   // Fire-and-forget DB constraint installation. Logs loudly on failure
