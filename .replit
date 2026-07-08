@@ -172,7 +172,7 @@ isValidation = true
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd artifacts/api-server && npx vitest run --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts"
+args = "pnpm --filter @workspace/api-server exec vitest run --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts"
 
 [[workflows.workflow]]
 name = "rel-mobile-legacy-fence"

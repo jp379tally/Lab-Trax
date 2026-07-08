@@ -393,16 +393,8 @@ maybe("Backup Restore Integrity", () => {
           // A concurrently running test file's afterAll may have deleted the
           // user that this session references (FK: user_sessions → users).
           // Skip foreign_key_violation (PG error code 23503) — those sessions
-          // are no longer needed.
-          // Also skip unique_violation (23505) on user_sessions_token_hash_unique:
-          // when this file runs concurrently with itself (the validation gate
-          // runs rel-api-tests AND rel-backup-restore, both of which include
-          // this file), another instance's login/refresh rotation can land a
-          // row with the same token under a different id between our snapshot
-          // SELECT and this re-insert. The session/token is already present,
-          // so skipping the stale snapshot row loses nothing.
-          // Re-throw anything else.
-          if (e.code !== "23503" && e.code !== "23505") throw e;
+          // are no longer needed.  Re-throw anything else.
+          if (e.code !== "23503") throw e;
         }
       }
     }
@@ -430,27 +422,6 @@ maybe("Backup Restore Integrity", () => {
     }
 
     beforeAll(async () => {
-      // Clean up residue from prior interrupted runs. Earlier versions of
-      // tests 11/12 used FIXED token hashes; if a run was aborted mid-file
-      // those rows survived in the persistent dev DB and every later run
-      // failed with 23505 on user_sessions_token_hash_unique. Tokens are now
-      // per-run-random, but delete any legacy fixed-hash rows plus expired
-      // rid()-style rows this file may have left behind.
-      const dbPool = (dbMod as any).pool as import("pg").Pool;
-      const legacyFixedHashes = ["tok-11-a", "tok-11-b", "tok-test12"].map(
-        (t) => createHash("sha256").update(t).digest("hex"),
-      );
-      await dbPool.query(
-        "DELETE FROM user_sessions WHERE token_hash = ANY($1)",
-        [legacyFixedHashes],
-      );
-      await dbPool.query(
-        `DELETE FROM user_sessions
-         WHERE expires_at < now()
-           AND (id LIKE 'sess11a%' OR id LIKE 'sess11b%' OR id LIKE 'sess12%'
-                OR id LIKE 'sess16%' OR id LIKE 'sentinel9%')`,
-      );
-
       const { buffer } = await backupLib.buildBackupZipBuffer("test-restore-pipeline");
       testBackupBuffer = buffer;
     }, 300_000);
@@ -514,10 +485,12 @@ maybe("Backup Restore Integrity", () => {
 
       const db = (dbMod as any).db;
       const { userSessions } = dbMod as any;
-      // Derive token hashes from per-run-random ids (not fixed strings): if a
-      // test run is aborted mid-file the rows survive in the persistent dev
-      // DB, and a fixed token_hash would 23505-collide on
-      // user_sessions_token_hash_unique in every later run (see test 16).
+      // Derive token hashes from per-run random ids (not fixed strings) so
+      // these rows never collide on a persistent dev DB — the gap-free
+      // restore intentionally never truncates user_sessions, so rows from an
+      // interrupted prior run can survive and a fixed token_hash would
+      // violate user_sessions_token_hash_unique on re-run (same rule as
+      // test 16 below).
       const sess11aId = rid("sess11a");
       const sess11bId = rid("sess11b");
       await expect(
@@ -544,7 +517,7 @@ maybe("Backup Restore Integrity", () => {
       // user no longer exists after restore, rather than a TRUNCATE + re-insert.
       const db = (dbMod as any).db;
       const { userSessions } = dbMod as any;
-      // Per-run-random token hash — see comment in test 11.
+      // Per-run random token hash — see the hermeticity note in test 11.
       const sess12Id = rid("sess12");
       await db.insert(userSessions).values({
         id: sess12Id,
