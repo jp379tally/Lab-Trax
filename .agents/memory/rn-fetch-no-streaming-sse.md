@@ -15,3 +15,5 @@ making it invisible to every non-device test surface. Symptom looks like a backe
 **Testing:** `vitest.setup.ts` mocks `expo/fetch` through the shared fetchHandler, so tests that need to queue a raw streaming Response must mock the `expo/fetch` vi.fn directly (mockResolvedValueOnce + mockReset in afterEach restores the setup implementation), not spy on `globalThis.fetch`.
 
 **How to apply:** whenever adding a streaming/SSE consumer to the mobile app, grep for `getReader()` and confirm the fetch feeding it is expo/fetch, never global fetch.
+
+**Firewall:** `artifacts/labtrax/app/__tests__/streaming-fetch-guard.test.ts` is a source-grep regression firewall that scans `app/`, `lib/`, `components/` for `.body.getReader()` and fails CI if the nearest preceding assignment of the receiver isn't from the expo/fetch import. It requires the simple `<var>.body.getReader()` form (assign the response to a variable first). Documented in REGRESSION_GUARDRAILS.md under "Streaming Fetch Firewall".

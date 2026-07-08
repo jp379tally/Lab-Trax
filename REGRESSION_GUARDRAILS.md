@@ -829,6 +829,19 @@ Run command:
 pnpm --filter @workspace/labtrax run test -- share-intent-config
 ```
 
+### Streaming Fetch Firewall (expo/fetch for SSE)
+
+React Native's global `fetch` has no streaming response body — `resp.body` is `null` on real devices even on a 200 response, while web preview, vitest, and the server all keep working. This broke the AI assistant (Maynard) SSE stream in production once. Streamed responses MUST come from `expo/fetch`.
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Mobile unit (source-grep) | `artifacts/labtrax/app/__tests__/streaming-fetch-guard.test.ts` | Every `.body.getReader()` consumer in the mobile app (`app/`, `lib/`, `components/`) is fed by the `expo/fetch` import, never by global fetch; also pins that the AI assistant SSE stream is still covered (native-only failure; can't be browser-tested) |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax run test -- streaming-fetch-guard
+```
+
 ### Pricing Tier Decimal Consistency
 
 | Layer | File | What it guards |
@@ -897,7 +910,7 @@ pnpm --filter @workspace/api-server run test -- auth two-factor account-epic-ver
 
 ```bash
 pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation cases-remake mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync cases-canonical-mobile
-pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke normalize-case-status auth-hydration reconnecting-indicator share-intent-config invoice-editor.smoke terminology-parity role-parity open-attachment case-pdf pdf-viewer.smoke authed-media-cache
+pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke normalize-case-status auth-hydration reconnecting-indicator share-intent-config streaming-fetch-guard invoice-editor.smoke terminology-parity role-parity open-attachment case-pdf pdf-viewer.smoke authed-media-cache
 pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
 pnpm --filter @workspace/scripts run test
 ```
