@@ -518,6 +518,7 @@ function ProfilePanel() {
   const [inviteRole, setInviteRole] = useState<"user" | "billing" | "admin">("user");
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSuccess, setInviteSuccess] = useState(false);
+  const [existingInviteId, setExistingInviteId] = useState<string | null>(null);
   const [confirmRemoveMemberId, setConfirmRemoveMemberId] = useState<string | null>(null);
   const [confirmRemoveName, setConfirmRemoveName] = useState<string>("");
   const [transferTarget, setTransferTarget] = useState<{ membershipId: string; name: string } | null>(null);
@@ -547,7 +548,44 @@ function ProfilePanel() {
       }, 1800);
     },
     onError: (err: Error) => {
-      setInviteError(err.message || "Could not send invite.");
+      const message = err.message || "Could not send invite.";
+      if (err instanceof ApiError && err.status === 409) {
+        // A pending invite already exists — find it in the current list so we
+        // can offer a one-tap resend instead of a dead-end error.
+        const existing = (teamQuery.data?.pendingInvites ?? []).find(
+          (inv) => inv.email?.toLowerCase() === inviteEmail.toLowerCase().trim()
+        );
+        if (existing) {
+          setExistingInviteId(existing.id);
+          setInviteError("A pending invite already exists for this email address. Resend it instead?");
+          return;
+        }
+      }
+      setInviteError(message);
+      setExistingInviteId(null);
+    },
+  });
+
+  const resendInviteMutation = useMutation({
+    mutationFn: async (inviteId: string) => {
+      return apiFetch<{ id: string; email: string | null }>(`/organizations/invites/${inviteId}/resend`, {
+        method: "POST",
+      });
+    },
+    onSuccess: (invite) => {
+      setInviteSuccess(true);
+      setInviteError(null);
+      setInviteEmail("");
+      setInviteRole("user");
+      void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
+      toast({ title: "Invite resent", description: `An invite was resent to ${invite.email ?? "that address"}.`, duration: 4000 });
+      setTimeout(() => {
+        setInviteSuccess(false);
+        setShowInviteModal(false);
+      }, 1800);
+    },
+    onError: (err: Error) => {
+      setInviteError(err.message || "Could not resend invite.");
     },
   });
 
@@ -1126,6 +1164,7 @@ function ProfilePanel() {
                   setInviteRole("user");
                   setInviteError(null);
                   setInviteSuccess(false);
+                  setExistingInviteId(null);
                   setShowInviteModal(true);
                 }}
                 className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
@@ -1279,8 +1318,17 @@ function ProfilePanel() {
               <div className="inline-flex items-center gap-3 shrink-0">
                 <button
                   type="button"
+                  onClick={() => resendInviteMutation.mutate(inv.id)}
+                  disabled={resendInviteMutation.isPending || revokeInviteMutation.isPending}
+                  title="Resend invite email"
+                  className="text-xs text-muted-foreground hover:text-primary transition-colors disabled:opacity-50"
+                >
+                  <Mail className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
                   onClick={() => revokeInviteMutation.mutate(inv.id)}
-                  disabled={revokeInviteMutation.isPending}
+                  disabled={revokeInviteMutation.isPending || resendInviteMutation.isPending}
                   title="Revoke invite"
                   className="text-xs text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
                 >
@@ -1405,16 +1453,32 @@ function ProfilePanel() {
                     </select>
                   </div>
                   {inviteError && (
-                    <p className="text-xs text-destructive">{inviteError}</p>
+                    <div className="text-xs text-destructive space-y-1">
+                      <p>{inviteError}</p>
+                      {existingInviteId && (
+                        <button
+                          type="button"
+                          onClick={() => resendInviteMutation.mutate(existingInviteId)}
+                          disabled={resendInviteMutation.isPending}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors disabled:opacity-50"
+                        >
+                          <Mail className="w-3.5 h-3.5" />
+                          {resendInviteMutation.isPending ? "Resending…" : "Resend invite"}
+                        </button>
+                      )}
+                    </div>
                   )}
                   <div className="flex justify-end pt-1">
                     <button
                       type="button"
-                      onClick={() => inviteMutation.mutate()}
-                      disabled={!inviteEmail.trim() || inviteMutation.isPending}
+                      onClick={() => {
+                        setExistingInviteId(null);
+                        inviteMutation.mutate();
+                      }}
+                      disabled={!inviteEmail.trim() || inviteMutation.isPending || resendInviteMutation.isPending}
                       className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
                     >
-                      {inviteMutation.isPending ? "Sending…" : "Send invite"}
+                      {inviteMutation.isPending ? "Sending…" : existingInviteId ? "Send invite anyway" : "Send invite"}
                     </button>
                   </div>
                 </>
