@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import { PARSERS_AND_HELPERS_JS } from "./index";
 
@@ -370,6 +373,51 @@ describe("parsePLY additional color layouts", () => {
     expect(Array.from(result!.colors!)).toEqual([
       0, 1, 0, 0, 1, 0, 0, 1, 0,
     ]);
+  });
+});
+
+describe("real iTero-exported PLY fixture", () => {
+  // Trimmed from a real iTero color scan (binary_little_endian): the exact
+  // original header — including the `comment` line, per-vertex red/green/blue
+  // between xyz and nx/ny/nz, and the face element's `property int object`
+  // scalar declared BEFORE the vertex-index list — plus the first 800 vertices
+  // and the faces fully contained in them. This layout combination is the
+  // class that synthetic buffers miss (it previously produced gray scans).
+  const fixturePath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "__fixtures__",
+    "itero-color-scan.ply",
+  );
+  const fixtureBuf = toArrayBuffer(new Uint8Array(readFileSync(fixturePath)));
+
+  it("parses vertex colors with no colorWarning via parseScanBuffer", () => {
+    const result = parseScanBuffer(fixtureBuf, "ply") as {
+      vertices: Float32Array;
+      normals: Float32Array;
+      colors?: Float32Array;
+      colorWarning?: string;
+    } | null;
+    expect(result).not.toBeNull();
+    expect(result!.colorWarning).toBeUndefined();
+
+    // Geometry: 838 triangles from the trimmed face set.
+    expect(result!.vertices.length).toBe(838 * 9);
+    expect(result!.normals.length).toBe(result!.vertices.length);
+
+    // hasColor: per-vertex colors present, one RGB triple per vertex.
+    expect(result!.colors).toBeInstanceOf(Float32Array);
+    expect(result!.colors!.length).toBe(result!.vertices.length);
+
+    // Real scan colors: all normalized to 0–1 and not uniformly gray.
+    let min = Infinity;
+    let max = -Infinity;
+    for (const c of result!.colors!) {
+      if (c < min) min = c;
+      if (c > max) max = c;
+      expect(c).toBeGreaterThanOrEqual(0);
+      expect(c).toBeLessThanOrEqual(1);
+    }
+    expect(max - min).toBeGreaterThan(0.1);
   });
 });
 
