@@ -28,6 +28,7 @@ import { useMe, primaryLabOrgId } from "@/lib/auth-me";
 import {
   resilientFetch,
   chunkedUploadCaseMedia,
+  mediaFileNameFromUrl,
 } from "@/lib/query-client";
 import { openAttachment } from "@/lib/open-attachment";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
@@ -487,7 +488,10 @@ export function UnassignedDocumentsCard() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            storagePath: uploadResult.url,
+            storagePath:
+              uploadResult.filename ??
+              mediaFileNameFromUrl(uploadResult.url) ??
+              uploadResult.url,
             originalFilename: asset.name,
             mimeType: asset.mimeType ?? "application/octet-stream",
             sizeBytes: asset.size ?? 0,
@@ -594,7 +598,10 @@ export function UnassignedDocumentsCard() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          storagePath: uploadResult.url,
+          storagePath:
+            uploadResult.filename ??
+            mediaFileNameFromUrl(uploadResult.url) ??
+            uploadResult.url,
           originalFilename: finalName,
           mimeType: "image/jpeg",
           sizeBytes,
@@ -656,7 +663,10 @@ export function UnassignedDocumentsCard() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          storagePath: uploadResult.url,
+          storagePath:
+            uploadResult.filename ??
+            mediaFileNameFromUrl(uploadResult.url) ??
+            uploadResult.url,
           originalFilename: finalName,
           mimeType: "image/jpeg",
           sizeBytes,

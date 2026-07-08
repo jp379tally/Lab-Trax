@@ -264,9 +264,11 @@ maybe("lab-inbox: object-storage-only file serve and assign", () => {
       expect(res.status).toBe(404);
     });
 
-    it("returns 404 when disk is missing and objectStorageKey is null", async () => {
+    it("returns 404 when disk is missing, objectStorageKey is null, and storage has no fallback object", async () => {
+      openStreamSpy.mockResolvedValue(null);
+      const storagePath = `nonexistent-disk-${rid("f")}.jpg`;
       const inboxFile = await insertInboxFile({
-        storagePath: `nonexistent-disk-${rid("f")}.jpg`,
+        storagePath,
         objectStorageKey: null,
       });
 
@@ -275,7 +277,9 @@ maybe("lab-inbox: object-storage-only file serve and assign", () => {
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.status).toBe(404);
-      expect(openStreamSpy).not.toHaveBeenCalled();
+      // Read-time repair: with a null objectStorageKey the route now falls
+      // back to the normalized storagePath before giving up.
+      expect(openStreamSpy).toHaveBeenCalledWith(storagePath, expect.anything());
     });
   });
 
@@ -323,9 +327,11 @@ maybe("lab-inbox: object-storage-only file serve and assign", () => {
       expect(res.status).toBe(404);
     });
 
-    it("returns 404 when disk is missing and objectStorageKey is null", async () => {
+    it("returns 404 when disk is missing, objectStorageKey is null, and storage has no fallback object", async () => {
+      openStreamSpy.mockResolvedValue(null);
+      const storagePath = `nonexistent-disk-${rid("f")}.jpg`;
       const inboxFile = await insertInboxFile({
-        storagePath: `nonexistent-disk-${rid("f")}.jpg`,
+        storagePath,
         objectStorageKey: null,
       });
 
@@ -335,7 +341,9 @@ maybe("lab-inbox: object-storage-only file serve and assign", () => {
         .send({ caseId });
 
       expect(res.status).toBe(404);
-      expect(openStreamSpy).not.toHaveBeenCalled();
+      // Read-time repair: with a null objectStorageKey the route now falls
+      // back to the normalized storagePath before giving up.
+      expect(openStreamSpy).toHaveBeenCalledWith(storagePath, expect.anything());
     });
 
     it("returns 409 when the inbox file was already assigned", async () => {

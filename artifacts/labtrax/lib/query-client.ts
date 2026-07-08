@@ -629,8 +629,29 @@ export async function uploadCaseMedia(
 // (PDFs, photos) are never dropped by the Replit proxy's ~20 MB single-shot
 // limit. Falls back cleanly if the session cannot be created.
 export type ChunkedUploadResult =
-  | { ok: true; url: string }
+  | { ok: true; url: string; filename?: string }
   | { ok: false; status?: number; error?: string };
+
+// Extracts the bare stored filename from a public media URL like
+// `https://host/api/cases/attachment-file/<filename>` or
+// `https://host/uploads/case-media/<filename>`. Used as a fallback when the
+// upload-session completion response predates the `filename` field.
+export function mediaFileNameFromUrl(url: string): string | null {
+  const markers = ["/api/cases/attachment-file/", "/uploads/case-media/"];
+  for (const marker of markers) {
+    const idx = url.indexOf(marker);
+    if (idx >= 0) {
+      const raw = url.slice(idx + marker.length).split(/[?#]/)[0] ?? "";
+      try {
+        const decoded = decodeURIComponent(raw);
+        return decoded || null;
+      } catch {
+        return raw || null;
+      }
+    }
+  }
+  return null;
+}
 
 const CHUNKED_UPLOAD_CHUNK_SIZE = 1 * 1024 * 1024; // 1 MB
 
@@ -857,7 +878,14 @@ export async function chunkedUploadCaseMedia(
       if (patchBody.complete && patchBody.url) {
         resumableSessionCache.delete(cacheKey);
         onProgress?.(1);
-        return { ok: true, url: patchBody.url as string };
+        return {
+          ok: true,
+          url: patchBody.url as string,
+          filename:
+            typeof patchBody.filename === "string" && patchBody.filename
+              ? (patchBody.filename as string)
+              : undefined,
+        };
       }
 
       uploadedBytes = (patchBody.uploadedBytes as number) ?? uploadedBytes + chunkBuffer.byteLength;

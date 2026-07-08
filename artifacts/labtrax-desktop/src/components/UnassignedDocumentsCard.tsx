@@ -68,6 +68,57 @@ function formatBytes(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Opens a dedicated preview window for a fetched file blob URL.
+ * - PDFs render in an <iframe>, images in an <img>.
+ * - Unsupported types get a fallback page with an explicit Download button
+ *   instead of triggering an automatic download.
+ * The caller owns the blob URL lifecycle (do not revoke while the window is open).
+ */
+function openFilePreviewWindow(
+  blobUrl: string,
+  contentType: string,
+  filename: string,
+): void {
+  // No "noopener" here: we need the window handle to write the preview
+  // document. The document is same-origin and fully under our control.
+  const win = window.open("", "_blank");
+  if (!win) {
+    // Popup blocked — fall back to opening the blob directly.
+    window.open(blobUrl, "_blank");
+    return;
+  }
+  const safeTitle = escapeHtml(filename);
+  const isPdf = contentType === "application/pdf";
+  const isImage = contentType.startsWith("image/");
+  let body: string;
+  if (isPdf) {
+    body = `<iframe src="${blobUrl}" title="${safeTitle}" style="border:0;width:100vw;height:100vh;display:block"></iframe>`;
+  } else if (isImage) {
+    body = `<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#1a1a1a"><img src="${blobUrl}" alt="${safeTitle}" style="max-width:100%;max-height:100vh;object-fit:contain" /></div>`;
+  } else {
+    body = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:16px;font-family:system-ui,sans-serif;background:#f5f5f5;color:#333">
+        <div style="font-size:48px">📎</div>
+        <div style="font-size:15px;font-weight:600;max-width:80vw;overflow-wrap:anywhere;text-align:center">${safeTitle}</div>
+        <div style="font-size:13px;color:#777">This file type cannot be previewed in the browser.</div>
+        <a href="${blobUrl}" download="${safeTitle}" style="padding:8px 20px;border-radius:6px;background:#2563eb;color:#fff;text-decoration:none;font-size:13px;font-weight:600">Download</a>
+      </div>`;
+  }
+  win.document.write(
+    `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title><style>html,body{margin:0;padding:0}</style></head><body>${body}</body></html>`,
+  );
+  win.document.close();
+}
+
 function fileIcon(mimeType: string): string {
   if (mimeType.startsWith("image/")) return "🖼";
   if (mimeType === "application/pdf") return "📄";
@@ -191,11 +242,21 @@ function InboxFileRow({
     try {
       const resp = await authedMediaFetch(apiUrl(`/lab-inbox/${file.id}/file`));
       if (!resp.ok) throw new Error(`status ${resp.status}`);
-      const blob = await resp.blob();
+      const raw = await resp.blob();
+      // Give the blob an explicit content type — a generic/missing type is
+      // what makes browsers/Electron download instead of previewing inline.
+      const contentType =
+        file.mimeType ||
+        resp.headers.get("content-type") ||
+        "application/octet-stream";
+      const blob =
+        raw.type === contentType ? raw : new Blob([raw], { type: contentType });
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
       const url = URL.createObjectURL(blob);
       objectUrlRef.current = url;
-      window.open(url, "_blank", "noopener");
+      // Keep the blob URL alive while the preview window uses it — it is
+      // revoked on the next view or on unmount, never immediately.
+      openFilePreviewWindow(url, contentType, file.originalFilename);
     } catch {
       toast({ title: "Could not open file", description: "Please try again.", variant: "destructive" });
     } finally {

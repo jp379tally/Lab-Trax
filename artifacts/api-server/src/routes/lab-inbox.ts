@@ -33,6 +33,25 @@ router.use(requireAuth);
 
 const caseMediaDir = path.resolve(process.cwd(), "uploads", "case-media");
 
+/**
+ * Canonicalizes an inbox storage reference to the bare stored filename.
+ * Historically the mobile client sent the full public media URL (e.g.
+ * `https://host/api/cases/attachment-file/<file>`) instead of the bare
+ * filename, so both new writes and legacy reads must normalize.
+ *
+ * Returns `null` when the value cannot be reduced to a safe bare filename
+ * (external URL, empty result, or a path-traversal shape).
+ */
+function normalizeInboxStorageName(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const name = extractMediaFileName(raw);
+  if (!name) return null;
+  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
+    return null;
+  }
+  return name;
+}
+
 const inboxStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     fs.mkdirSync(caseMediaDir, { recursive: true });
@@ -194,15 +213,19 @@ router.post(
 
     await assertLabMembership(userId, labOrganizationId);
 
+    // The client may send either a bare filename or a full public URL;
+    // canonicalize to the bare stored filename BEFORE both the existence
+    // check and the DB insert so serving routes can always resolve the row.
+    const normalizedName = normalizeInboxStorageName(storagePath);
+    if (!normalizedName) {
+      throw new HttpError(400, "Invalid storagePath: could not resolve a stored filename.");
+    }
+
     // Verify the chunked upload actually landed in object storage before committing
     // the DB row.  Without this check, a failed or partial upload would register an
     // inbox entry whose file is permanently missing after a server restart.
-    // The client may send either a bare filename or a full public URL; canonicalize it.
     if (caseMediaObjectStorageAvailable()) {
-      const diskFileName = extractMediaFileName(storagePath);
-      const fileExists = diskFileName
-        ? await caseMediaObjectStorageKeyExists(diskFileName)
-        : false;
+      const fileExists = await caseMediaObjectStorageKeyExists(normalizedName);
       if (!fileExists) {
         throw new HttpError(
           409,
@@ -213,8 +236,6 @@ router.post(
 
     // The file is already in object storage from the chunked upload session.
     // We just need to register it in the inbox so it appears in the unassigned list.
-    const objectStorageKey = storagePath;
-
     const [row] = await db
       .insert(labInboxFiles)
       .values({
@@ -223,8 +244,8 @@ router.post(
         originalFilename,
         mimeType,
         sizeBytes,
-        storagePath,
-        objectStorageKey,
+        storagePath: normalizedName,
+        objectStorageKey: normalizedName,
       })
       .returning()
       .catch((err: unknown): never =>
@@ -249,10 +270,13 @@ router.get(
 
     await assertLabMembership(userId, inboxFile.labOrganizationId);
 
-    const diskPath = path.resolve(caseMediaDir, inboxFile.storagePath);
+    // Read-time repair: legacy rows may carry a full public URL in
+    // storagePath / objectStorageKey instead of the bare stored filename.
+    const diskFileName = normalizeInboxStorageName(inboxFile.storagePath);
+    const diskPath = diskFileName ? path.resolve(caseMediaDir, diskFileName) : null;
     const safeName = encodeURIComponent(inboxFile.originalFilename).replace(/'/g, "%27");
 
-    if (fs.existsSync(diskPath)) {
+    if (diskPath && fs.existsSync(diskPath)) {
       res.setHeader("Content-Type", inboxFile.mimeType || "application/octet-stream");
       res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${safeName}`);
       res.setHeader("Cache-Control", "private, max-age=300");
@@ -267,8 +291,12 @@ router.get(
     }
 
     // Disk file missing — try object storage (chunked-upload path).
-    const objStream = inboxFile.objectStorageKey
-      ? await openCaseMediaObjectStream(inboxFile.objectStorageKey, inboxFile.mimeType ?? undefined)
+    // Fall back to the normalized storagePath when objectStorageKey itself
+    // does not normalize (legacy URL-shaped rows stored the URL in both).
+    const objectKey =
+      normalizeInboxStorageName(inboxFile.objectStorageKey) ?? diskFileName;
+    const objStream = objectKey
+      ? await openCaseMediaObjectStream(objectKey, inboxFile.mimeType ?? undefined)
       : null;
 
     if (!objStream) {
@@ -416,20 +444,25 @@ router.post(
       // attachment path is distinct from the inbox staging path.
       const ext = path.extname(inboxFile.originalFilename) || "";
       const attachmentDiskFilename = `${Date.now()}-${randomUUID()}${ext}`;
-      const srcPath = path.resolve(caseMediaDir, inboxFile.storagePath);
+      // Read-time repair: legacy rows may carry a full public URL instead of
+      // the bare stored filename (same normalization as the serving route).
+      const srcFileName = normalizeInboxStorageName(inboxFile.storagePath);
+      const srcPath = srcFileName ? path.resolve(caseMediaDir, srcFileName) : null;
       const dstPath = path.resolve(caseMediaDir, attachmentDiskFilename);
 
-      if (fs.existsSync(srcPath)) {
+      if (srcPath && fs.existsSync(srcPath)) {
         await copyFile(srcPath, dstPath);
       } else {
         // Disk file missing — file was uploaded via the chunked/mobile path and
         // only lives in object storage.  Download it so the attachment gets its
         // own local copy for the object-storage mirror step below.
-        if (!inboxFile.objectStorageKey || !caseMediaObjectStorageAvailable()) {
+        const objectKey =
+          normalizeInboxStorageName(inboxFile.objectStorageKey) ?? srcFileName;
+        if (!objectKey || !caseMediaObjectStorageAvailable()) {
           throw new HttpError(404, "Inbox file not found on disk or object storage.");
         }
         const objStream = await openCaseMediaObjectStream(
-          inboxFile.objectStorageKey,
+          objectKey,
           inboxFile.mimeType ?? undefined,
         );
         if (!objStream) {
