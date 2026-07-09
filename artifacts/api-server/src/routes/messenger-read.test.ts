@@ -232,6 +232,76 @@ maybe("Messenger durable read contract (unread stays bounded to what was seen)",
     await db.delete(messages).where(eq(messages.id, m2Id));
   });
 
+  it("never moves the watermark backwards on an out-of-order read of an older message", async () => {
+    const { db, messages } = dbMod as any;
+    // Two messages present: m1 (t1) and m2 (t2, newer).
+    await db.insert(messages).values({
+      id: m2Id,
+      conversationId: convId,
+      senderId: otherUserId,
+      body: "newer message",
+      createdAt: t2,
+    });
+
+    // Read up to the NEWER message m2 — everything is read.
+    await request(appMod.default)
+      .post(`/api/messenger/conversations/${convId}/read`)
+      .set("Authorization", `Bearer ${meToken}`)
+      .send({ lastMessageId: m2Id })
+      .expect(200);
+    expect(await getUnreadCount()).toBe(0);
+
+    // A delayed/out-of-order read event for the OLDER message m1 arrives
+    // (e.g. a stale client retry). It must NOT move the watermark backwards
+    // and resurrect m2 as unread.
+    await request(appMod.default)
+      .post(`/api/messenger/conversations/${convId}/read`)
+      .set("Authorization", `Bearer ${meToken}`)
+      .send({ lastMessageId: m1Id })
+      .expect(200);
+    expect(await getUnreadCount()).toBe(0);
+
+    await db.delete(messages).where(eq(messages.id, m2Id));
+  });
+
+  it("clears unread for a message whose created_at has microsecond precision", async () => {
+    // Regression: PostgreSQL stores created_at with microsecond precision, but
+    // a JS Date only carries milliseconds. The read endpoint previously set
+    // last_read_at from a JS Date round-trip, truncating the microseconds —
+    // last_read_at landed a few microseconds BEFORE the message it represented,
+    // so `created_at > last_read_at` kept counting the just-read message as
+    // unread forever (badge reappeared on every login). The fixtures above use
+    // JS Dates (whole milliseconds), which is exactly why they never caught it.
+    const { db, messages } = dbMod as any;
+    const { sql } = await import("drizzle-orm");
+    const m3Id = rid("m3");
+    await db.insert(messages).values({
+      id: m3Id,
+      conversationId: convId,
+      senderId: otherUserId,
+      body: "microsecond-precision message",
+      createdAt: t2,
+    });
+    // Give it a sub-millisecond component a JS Date cannot represent.
+    await db.execute(
+      sql`update messages set created_at = created_at + interval '41 microseconds' where id = ${m3Id}`
+    );
+
+    expect(await getUnreadCount()).toBe(2); // m1 + m3 unread
+
+    await request(appMod.default)
+      .post(`/api/messenger/conversations/${convId}/read`)
+      .set("Authorization", `Bearer ${meToken}`)
+      .send({ lastMessageId: m3Id })
+      .expect(200);
+
+    // Before the fix this stayed 1: m3 itself remained "unread" because
+    // last_read_at was truncated to lie 41µs before m3.created_at.
+    expect(await getUnreadCount()).toBe(0);
+
+    await db.delete(messages).where(eq(messages.id, m3Id));
+  });
+
   it("rejects a lastMessageId that does not belong to the conversation", async () => {
     await request(appMod.default)
       .post(`/api/messenger/conversations/${convId}/read`)

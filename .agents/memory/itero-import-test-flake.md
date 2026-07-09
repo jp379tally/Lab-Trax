@@ -46,6 +46,21 @@ a read-then-write race. Either serialize via a sequence/atomic counter or
 retry-on-23505. The same pattern exists at the other `generateIteroCaseNumber`
 call sites (ZIP batch importer, etc.) — harden them if they start flaking.
 
+## Related: full-suite concurrency flakes (different iTero test each run)
+
+Under the full `rel-api-tests` run (all forks in parallel) a *different*
+iTero test can fail each run while every one passes in isolation. Observed:
+- `cases-ai-reader.test.ts` "mirrors Rx PDF to object storage" —
+  `writeCaseMediaToObjectStorage` called 2× instead of 1× (mock call-count
+  bleed under concurrency).
+- `cases-material-normalization-e2e.test.ts` zip-batch import — returns
+  `status:"error"` instead of `"created"` (likely the max+1 case-number race
+  at the ZIP-batch call site, which is NOT yet hardened with the retry loop).
+
+**How to apply:** if the full gate fails on exactly one iTero test, rerun the
+file in isolation first; a green isolated run means the concurrency flake, not
+your change. Rerun the gate rather than loosening assertions.
+
 ## Related: shared-dev-DB unique-constraint flakes
 
 `cases-similarity.test.ts` had the same class of "passes locally, fails in

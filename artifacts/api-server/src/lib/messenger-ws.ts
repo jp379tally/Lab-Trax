@@ -9,7 +9,7 @@ import {
   users,
   userSessions,
 } from "@workspace/db";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { verifyAccessToken } from "./auth";
 import { logger } from "./logger";
 
@@ -169,9 +169,17 @@ async function handleMessage(
       .limit(1);
     if (!msgRow[0]) return;
 
+    // Set last_read_at from the message row directly in SQL — a JS Date
+    // round-trip truncates PostgreSQL microseconds, which left last_read_at
+    // just before the read message and made it count as unread forever
+    // (badge reappeared on every login). Mirrors the REST read endpoint.
+    // GREATEST keeps the watermark monotonic: a delayed/out-of-order read
+    // event for an older message must never move it backwards.
     await db
       .update(conversationParticipants)
-      .set({ lastReadAt: msgRow[0].createdAt })
+      .set({
+        lastReadAt: sql`greatest(coalesce(${conversationParticipants.lastReadAt}, '-infinity'::timestamp), (select ${messages.createdAt} from ${messages} where ${messages.id} = ${p.lastMessageId}))`,
+      })
       .where(
         and(
           eq(conversationParticipants.conversationId, p.conversationId),

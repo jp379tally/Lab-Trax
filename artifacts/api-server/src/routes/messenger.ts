@@ -171,8 +171,14 @@ router.get(
               eq(messages.conversationId, cid),
               isNull(messages.deletedAt),
               ne(messages.senderId, myUserId),
+              // Compare against the last_read_at COLUMN in SQL, never against
+              // the value read back into JS: a JS Date only carries
+              // milliseconds, so interpolating it truncated PostgreSQL's
+              // microsecond precision and the just-read message (created a few
+              // microseconds after the truncated watermark) stayed "unread"
+              // forever — the badge reappeared on every login.
               myParticipation[0]?.lastReadAt
-                ? sql`${messages.createdAt} > ${myParticipation[0].lastReadAt}`
+                ? sql`${messages.createdAt} > (select ${conversationParticipants.lastReadAt} from ${conversationParticipants} where ${conversationParticipants.conversationId} = ${cid} and ${conversationParticipants.userId} = ${myUserId})`
                 : sql`true`
             )
           );
@@ -448,9 +454,19 @@ router.post(
     }
 
     if (readMsg) {
+      // Set last_read_at from the message row directly in SQL. Selecting
+      // created_at into JS first truncates PostgreSQL's microsecond precision
+      // to milliseconds (JS Date), leaving last_read_at a few microseconds
+      // BEFORE the message it represents — so the strict created_at >
+      // last_read_at unread comparison kept counting the just-read message as
+      // unread forever and the badge reappeared on every login.
+      // GREATEST keeps the watermark monotonic: a delayed/out-of-order read
+      // event for an older message must never move it backwards.
       await db
         .update(conversationParticipants)
-        .set({ lastReadAt: readMsg.createdAt })
+        .set({
+          lastReadAt: sql`greatest(coalesce(${conversationParticipants.lastReadAt}, '-infinity'::timestamp), (select ${messages.createdAt} from ${messages} where ${messages.id} = ${readMsg.id}))`,
+        })
         .where(
           and(
             eq(conversationParticipants.conversationId, convId),
