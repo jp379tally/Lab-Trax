@@ -47,6 +47,12 @@ import { requireAuth, optionalAuth } from "../middlewares/auth";
 import { writeAuditLog } from "../lib/audit";
 import { softDeleteLegacyCases } from "../lib/legacy-case-delete.js";
 import {
+  SDR1_ORG_ID,
+  SDR1_CLEANUP_CONFIRM,
+  classifySdr1LegacyRows,
+  namesMatch,
+} from "../lib/sdr1-legacy-cleanup";
+import {
   createVerificationCode,
   verifyCode,
   normalizeEmailTarget,
@@ -6897,6 +6903,347 @@ Important rules:
       return res.json({ ok: true, dryRun: false, ...result });
     } catch (e: any) {
       req.log?.error?.({ err: e }, "pre-cutoff cleanup failed");
+      return res.status(500).json({ error: e?.message || "Cleanup failed." });
+    }
+  });
+
+  // ── Admin: SDR1 legacy open-invoice cleanup (one-shot, platform-admin gated) ──
+  // Removes the ~66 bad "open invoices" (INV-26-1…51 era, Apr–Jun 2026) that
+  // the SDR1 lab still sees. Those records are synthesized at read time from
+  // still-active legacy `lab_cases` blobs carrying an embedded invoiceId; the
+  // canonical INV-26-1…51 invoices were already voided + soft-deleted, and the
+  // lab's legitimate invoices are INV-26-101+ (July 2026 onward).
+  //
+  // Matching (see ../lib/sdr1-legacy-cleanup.ts) is by patient name from the
+  // structured target list + the legacy era date window — NEVER by invoice or
+  // case number alone, because the legacy numbers (26-1…26-51) were re-used by
+  // legitimate canonical cases with different patients.
+  //
+  // Safety model:
+  //   - Gated by platformAdminUserOrSecret + isPlatformAdmin (secret header).
+  //   - organizationId is REQUIRED and must be the SDR1 org id; any other org
+  //     needs allowNonSdr1OrgForTesting:true, which is rejected in production.
+  //   - Defaults to dryRun:true — full matched/ambiguous/nonTarget report,
+  //     changes nothing.
+  //   - A live run additionally requires confirm:"DELETE_SDR1_LEGACY_OPEN_INVOICES".
+  //   - Linked canonical cases/invoices are only soft-deleted when BOTH the
+  //     number AND the patient name match a matched legacy row; a number match
+  //     with a different patient is reported and skipped (fail-closed).
+  //   - Everything goes through softDeleteById / softDeleteLegacyCases, so it
+  //     is reversible and audit-logged.
+  router.post("/admin/cleanup/sdr1-legacy-open-invoices", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const dryRun = body.dryRun !== false; // default: dry run
+      if (!dryRun && body.confirm !== SDR1_CLEANUP_CONFIRM) {
+        return res.status(400).json({
+          error: `Live run requires body { dryRun: false, confirm: "${SDR1_CLEANUP_CONFIRM}" }.`,
+        });
+      }
+      const orgId =
+        typeof body.organizationId === "string" && body.organizationId.trim()
+          ? body.organizationId.trim()
+          : null;
+      if (!orgId) {
+        return res.status(400).json({ error: "organizationId is required." });
+      }
+      if (orgId !== SDR1_ORG_ID) {
+        const overrideAllowed =
+          body.allowNonSdr1OrgForTesting === true && process.env.NODE_ENV !== "production";
+        if (!overrideAllowed) {
+          return res.status(400).json({
+            error:
+              "This cleanup is scoped to the SDR1 lab organization. organizationId does not match.",
+          });
+        }
+      }
+
+      const actorUserId = ((req as any).user?.id as string | null) ?? null;
+      const actorName = ((req as any).user?.username as string) || "platform-admin";
+
+      // 1) Active legacy rows in the target org, classified by the pure
+      //    matching logic (patient name + legacy era window).
+      const activeLegacy = await db
+        .select({
+          id: labCases.id,
+          organizationId: labCases.organizationId,
+          caseData: labCases.caseData,
+        })
+        .from(labCases)
+        .where(and(isNull(labCases.deletedAt), eq(labCases.organizationId, orgId)));
+      const classification = classifySdr1LegacyRows(activeLegacy);
+      const { matched, ambiguous, nonTarget, unmatchedTargets } = classification;
+
+      // 2) Linked still-active canonical records. Candidate by number, but
+      //    ONLY deleted when the canonical patient name matches the same
+      //    target the legacy row matched — the legacy numbers were re-used by
+      //    unrelated legitimate cases which must never be touched.
+      const targetByCaseNumber = new Map<string, Set<string>>();
+      for (const m of matched) {
+        if (!m.caseNumber || !m.matchedTarget) continue;
+        const set = targetByCaseNumber.get(m.caseNumber) ?? new Set<string>();
+        set.add(m.matchedTarget);
+        targetByCaseNumber.set(m.caseNumber, set);
+      }
+      const matchedCaseNumbers = [...targetByCaseNumber.keys()];
+      const matchedLegacyIds = matched.map((m) => m.id);
+
+      const linkedCanonicalCases: {
+        id: string;
+        caseNumber: string | null;
+        patientName: string;
+        matchedTarget: string;
+      }[] = [];
+      const skippedCanonicalCaseCollisions: {
+        id: string;
+        caseNumber: string | null;
+        patientName: string;
+      }[] = [];
+      if (matchedCaseNumbers.length > 0) {
+        const candidateCases = await db
+          .select({
+            id: casesTable.id,
+            caseNumber: casesTable.caseNumber,
+            labOrganizationId: casesTable.labOrganizationId,
+            patientFirstName: casesTable.patientFirstName,
+            patientLastName: casesTable.patientLastName,
+          })
+          .from(casesTable)
+          .where(
+            and(
+              notDeleted(casesTable),
+              eq(casesTable.labOrganizationId, orgId),
+              inArray(casesTable.caseNumber, matchedCaseNumbers),
+            ),
+          );
+        for (const c of candidateCases) {
+          const patientName = [c.patientFirstName, c.patientLastName]
+            .filter(Boolean)
+            .join(" ");
+          const targets = c.caseNumber ? targetByCaseNumber.get(c.caseNumber) : undefined;
+          const hit = targets
+            ? [...targets].find((t) => patientName && namesMatch(patientName, t))
+            : undefined;
+          if (hit) {
+            linkedCanonicalCases.push({
+              id: c.id,
+              caseNumber: c.caseNumber,
+              patientName,
+              matchedTarget: hit,
+            });
+          } else {
+            skippedCanonicalCaseCollisions.push({
+              id: c.id,
+              caseNumber: c.caseNumber,
+              patientName,
+            });
+          }
+        }
+      }
+
+      const linkedCanonicalInvoices: {
+        id: string;
+        invoiceNumber: string;
+        patientName: string | null;
+        matchedTarget: string | null;
+        linkVia: "case_id" | "number_and_name";
+      }[] = [];
+      const skippedCanonicalInvoiceCollisions: {
+        id: string;
+        invoiceNumber: string;
+        patientName: string | null;
+      }[] = [];
+      const invoiceNumberByCaseNumber = new Map<string, Set<string>>();
+      for (const [caseNumber, targets] of targetByCaseNumber) {
+        invoiceNumberByCaseNumber.set(`INV-${caseNumber}`, targets);
+      }
+      const candidateInvoiceNumbers = [...invoiceNumberByCaseNumber.keys()];
+      if (candidateInvoiceNumbers.length > 0 || matchedLegacyIds.length > 0) {
+        const candidateInvoices = await db
+          .select({
+            id: invoices.id,
+            invoiceNumber: invoices.invoiceNumber,
+            caseId: invoices.caseId,
+            labOrganizationId: invoices.labOrganizationId,
+            displayMetadataJson: invoices.displayMetadataJson,
+          })
+          .from(invoices)
+          .where(
+            and(
+              notDeleted(invoices),
+              eq(invoices.labOrganizationId, orgId),
+              or(
+                ...(candidateInvoiceNumbers.length > 0
+                  ? [inArray(invoices.invoiceNumber, candidateInvoiceNumbers)]
+                  : []),
+                ...(matchedLegacyIds.length > 0
+                  ? [inArray(invoices.caseId, matchedLegacyIds)]
+                  : []),
+              ),
+            ),
+          );
+        for (const inv of candidateInvoices) {
+          const meta = (inv.displayMetadataJson ?? {}) as Record<string, unknown>;
+          const patientName =
+            typeof meta.patientName === "string" && meta.patientName.trim()
+              ? meta.patientName.trim()
+              : null;
+          if (inv.caseId && matchedLegacyIds.includes(inv.caseId)) {
+            // Direct link: the invoice points at a matched legacy row id.
+            linkedCanonicalInvoices.push({
+              id: inv.id,
+              invoiceNumber: inv.invoiceNumber,
+              patientName,
+              matchedTarget: null,
+              linkVia: "case_id",
+            });
+            continue;
+          }
+          const targets = invoiceNumberByCaseNumber.get(inv.invoiceNumber);
+          const hit =
+            targets && patientName
+              ? [...targets].find((t) => namesMatch(patientName, t))
+              : undefined;
+          if (hit) {
+            linkedCanonicalInvoices.push({
+              id: inv.id,
+              invoiceNumber: inv.invoiceNumber,
+              patientName,
+              matchedTarget: hit,
+              linkVia: "number_and_name",
+            });
+          } else {
+            skippedCanonicalInvoiceCollisions.push({
+              id: inv.id,
+              invoiceNumber: inv.invoiceNumber,
+              patientName,
+            });
+          }
+        }
+      }
+
+      const summary = {
+        scopeOrganizationId: orgId,
+        activeLegacyRows: activeLegacy.length,
+        matched: matched.length,
+        ambiguousSkipped: ambiguous.length,
+        nonTargetSkipped: nonTarget.length,
+        unmatchedTargets: unmatchedTargets.length,
+        linkedCanonicalCases: linkedCanonicalCases.length,
+        linkedCanonicalInvoices: linkedCanonicalInvoices.length,
+        skippedCanonicalCaseCollisions: skippedCanonicalCaseCollisions.length,
+        skippedCanonicalInvoiceCollisions: skippedCanonicalInvoiceCollisions.length,
+      };
+      const report = {
+        ...summary,
+        matchedRows: matched,
+        ambiguousRows: ambiguous,
+        nonTargetRows: nonTarget,
+        unmatchedTargetNames: unmatchedTargets,
+        linkedCanonicalCaseRows: linkedCanonicalCases,
+        linkedCanonicalInvoiceRows: linkedCanonicalInvoices,
+        skippedCanonicalCaseCollisionRows: skippedCanonicalCaseCollisions,
+        skippedCanonicalInvoiceCollisionRows: skippedCanonicalInvoiceCollisions,
+      };
+
+      req.log?.info?.(
+        { ...summary, dryRun, actor: actorName },
+        "sdr1 legacy cleanup: scan complete",
+      );
+
+      if (dryRun) {
+        return res.json({ ok: true, dryRun: true, ...report });
+      }
+
+      // ── Live run ──────────────────────────────────────────────────────────
+      // Soft-delete matched legacy rows (per-row audit via the shared helper).
+      let legacyDeleted = 0;
+      if (matchedLegacyIds.length > 0) {
+        const { deletedIds } = await softDeleteLegacyCases({
+          ids: matchedLegacyIds,
+          deletedBy: `cleanup:sdr1-legacy:${actorName}`,
+          actorUserId,
+          organizationId: orgId,
+          req,
+        });
+        legacyDeleted = deletedIds.length;
+      }
+
+      // Soft-delete linked canonical cases (number + name matched).
+      for (const c of linkedCanonicalCases) {
+        await softDeleteById({
+          table: casesTable,
+          id: c.id,
+          actorUserId,
+          req,
+          organizationId: orgId,
+          entityType: "case",
+          beforeJson: c,
+          metadataJson: {
+            caseNumber: c.caseNumber,
+            patientName: c.patientName,
+            cleanup: "sdr1_legacy_open_invoices",
+          },
+        });
+      }
+      // Freeze (never delete) any OTHER still-active invoice linked to a
+      // canonical case we just deleted — same guarantee as normal delete flows.
+      let invoicesFrozen = 0;
+      if (linkedCanonicalCases.length > 0) {
+        invoicesFrozen = await freezeInvoicesForDeletedCases({
+          req,
+          caseIds: linkedCanonicalCases.map((c) => c.id),
+          labOrganizationId: orgId,
+          deletingUserId: actorUserId,
+          caseNumberById: new Map(linkedCanonicalCases.map((c) => [c.id, c.caseNumber])),
+        });
+      }
+
+      // Soft-delete linked canonical invoices (part of the target set).
+      for (const inv of linkedCanonicalInvoices) {
+        await softDeleteById({
+          table: invoices,
+          id: inv.id,
+          actorUserId,
+          req,
+          organizationId: orgId,
+          entityType: "invoice",
+          beforeJson: inv,
+          metadataJson: {
+            invoiceNumber: inv.invoiceNumber,
+            patientName: inv.patientName,
+            linkVia: inv.linkVia,
+            cleanup: "sdr1_legacy_open_invoices",
+          },
+        });
+      }
+
+      const result = {
+        ...summary,
+        legacyDeleted,
+        canonicalCasesDeleted: linkedCanonicalCases.length,
+        canonicalInvoicesDeleted: linkedCanonicalInvoices.length,
+        invoicesFrozen,
+      };
+
+      await writeAuditLog({
+        req,
+        userId: actorUserId,
+        organizationId: orgId,
+        action: "sdr1_legacy_cleanup_completed",
+        entityType: "system",
+        entityId: "sdr1-legacy-cleanup",
+        metadataJson: { ...result, actor: actorName },
+      });
+
+      req.log?.info?.({ ...result, actor: actorName }, "sdr1 legacy cleanup: live run complete");
+
+      return res.json({ ok: true, dryRun: false, ...result, ...report });
+    } catch (e: any) {
+      req.log?.error?.({ err: e }, "sdr1 legacy cleanup failed");
       return res.status(500).json({ error: e?.message || "Cleanup failed." });
     }
   });
