@@ -41,6 +41,9 @@ interface ListScreenProps<T> {
   keyExtractor: (item: T, index: number) => string;
   renderItem: (item: T) => React.ReactElement;
   ListHeader?: React.ReactElement | null;
+  // Rendered above the FlatList (outside it) so it stays pinned while the
+  // list scrolls. Gets the screen background so rows never show through.
+  pinnedHeader?: React.ReactElement | null;
   emptyIcon?: IconName;
   emptyTitle?: string;
   emptyBody?: string;
@@ -64,6 +67,7 @@ export function ListScreen<T>({
   keyExtractor,
   renderItem,
   ListHeader = null,
+  pinnedHeader = null,
   emptyIcon = "file-tray-outline",
   emptyTitle = "Nothing here yet",
   emptyBody = "Items will appear here.",
@@ -120,28 +124,33 @@ export function ListScreen<T>({
           </Pressable>
         </View>
       ) : (
-        <FlatList
-          data={items}
-          keyExtractor={keyExtractor}
-          renderItem={({ item }) => renderItem(item)}
-          contentContainerStyle={styles.listContent}
-          keyboardShouldPersistTaps="handled"
-          ListHeaderComponent={ListHeader}
-          refreshControl={
-            <RefreshControl
-              refreshing={query.isFetching}
-              onRefresh={() => query.refetch()}
-              tintColor={colors.tint}
-            />
-          }
-          ListEmptyComponent={
-            <View style={styles.center}>
-              <Ionicons name={emptyIcon} size={40} color={colors.textTertiary} />
-              <Text style={styles.emptyTitle}>{emptyTitle}</Text>
-              <Text style={styles.emptyBody}>{emptyBody}</Text>
-            </View>
-          }
-        />
+        <>
+          {pinnedHeader ? (
+            <View style={styles.pinnedHeader}>{pinnedHeader}</View>
+          ) : null}
+          <FlatList
+            data={items}
+            keyExtractor={keyExtractor}
+            renderItem={({ item }) => renderItem(item)}
+            contentContainerStyle={styles.listContent}
+            keyboardShouldPersistTaps="handled"
+            ListHeaderComponent={ListHeader}
+            refreshControl={
+              <RefreshControl
+                refreshing={query.isFetching}
+                onRefresh={() => query.refetch()}
+                tintColor={colors.tint}
+              />
+            }
+            ListEmptyComponent={
+              <View style={styles.center}>
+                <Ionicons name={emptyIcon} size={40} color={colors.textTertiary} />
+                <Text style={styles.emptyTitle}>{emptyTitle}</Text>
+                <Text style={styles.emptyBody}>{emptyBody}</Text>
+              </View>
+            }
+          />
+        </>
       )}
     </View>
   );
@@ -150,6 +159,7 @@ export function ListScreen<T>({
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: c.backgroundSolid },
+    pinnedHeader: { backgroundColor: c.backgroundSolid },
     header: {
       flexDirection: "row",
       alignItems: "center",

@@ -206,7 +206,7 @@ export default function InvoicesScreen() {
             : "Invoices will appear here once they're created."
         }
         errorTitle="Couldn't load invoices"
-        ListHeader={filterHeader}
+        pinnedHeader={filterHeader}
         renderItem={(i) => {
           const customer = customerNameOf(i);
           return (

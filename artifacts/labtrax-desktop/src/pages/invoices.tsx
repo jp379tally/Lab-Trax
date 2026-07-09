@@ -461,7 +461,8 @@ export default function InvoicesPage() {
         </div>
       </div>
 
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
+      <div className="bg-card border border-border rounded-xl">
+        <div data-testid="invoice-controls" className="sticky top-0 z-20 bg-card rounded-t-xl">
         <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
           <div className="relative flex-1 min-w-[220px] max-w-md">
             <Search
@@ -608,8 +609,9 @@ export default function InvoicesPage() {
             </button>
           </div>
         )}
+        </div>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto rounded-b-xl">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
