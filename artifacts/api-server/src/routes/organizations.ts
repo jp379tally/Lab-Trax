@@ -2687,6 +2687,149 @@ async function notifyInviterOfResult(
 }
 
 /**
+ * Delivery outcome for an invite email. `status` is what gets recorded on
+ * the invite row; `reason` is a short, safe machine reason — never a raw
+ * SMTP/provider payload.
+ */
+export interface InviteEmailDelivery {
+  sent: boolean;
+  status: "sent" | "failed" | "skipped";
+  reason?: string;
+}
+
+// sendMail reasons that are already safe to surface to clients. Anything
+// else (raw transport error messages, e.g. "535 BadCredentials") collapses
+// to the generic "send_failed".
+const SAFE_SEND_FAILURE_REASONS = new Set([
+  "disabled_in_test",
+  "smtp_not_configured",
+  "reserved_domain",
+  "undeliverable_domain",
+]);
+
+function toSafeSendReason(reason?: string): string {
+  return reason && SAFE_SEND_FAILURE_REASONS.has(reason)
+    ? reason
+    : "send_failed";
+}
+
+/**
+ * Shared invite-email delivery path used by both invite create and resend so
+ * they behave identically: resolves the org/inviter/logo, checks the
+ * recipient's email preference, sends, and records the delivery outcome on
+ * the invite row (lastEmailAttemptAt / lastEmailStatus / lastEmailError).
+ *
+ * Never throws — returns the delivery outcome plus the invite row updated
+ * with the recorded attempt.
+ */
+async function deliverInviteEmail(
+  req: any,
+  invite: typeof organizationInvites.$inferSelect
+): Promise<{
+  delivery: InviteEmailDelivery;
+  invite: typeof organizationInvites.$inferSelect;
+}> {
+  const recipientDomain = invite.email?.split("@")[1]?.toLowerCase() ?? null;
+  let delivery: InviteEmailDelivery;
+  try {
+    if (!invite.email || !invite.roleToAssign || !invite.token) {
+      delivery = { sent: false, status: "failed", reason: "invite_incomplete" };
+    } else {
+      const [organization, inviter] = await Promise.all([
+        db.query.organizations.findFirst({
+          where: eq(organizations.id, invite.labId),
+        }),
+        invite.invitedByUserId
+          ? db.query.users.findFirst({
+              where: eq(users.id, invite.invitedByUserId),
+            })
+          : Promise.resolve(undefined),
+      ]);
+      const inviterName = inviter
+        ? [inviter.firstName, inviter.lastName]
+            .filter((part) => !!part && String(part).trim().length > 0)
+            .join(" ")
+            .trim() || inviter.username || inviter.email || null
+        : null;
+      const placements = resolveLogoplacements(organization);
+      const labLogoUrl =
+        placements.has("welcome_emails") && organization?.logoUrl
+          ? `${getAppBaseUrl()}${organization.logoUrl}`
+          : null;
+      const allowed = await checkEmailPref(
+        invite.email,
+        "orgInviteNotifications"
+      );
+      if (!allowed) {
+        req.log?.info?.(
+          { inviteId: invite.id, recipientDomain },
+          "invite email skipped — recipient opted out"
+        );
+        delivery = {
+          sent: false,
+          status: "skipped",
+          reason: "recipient_opted_out",
+        };
+      } else {
+        const result = await sendInviteEmail({
+          to: invite.email,
+          organizationName:
+            organization?.displayName?.trim() ||
+            organization?.name ||
+            "your organization",
+          roleToAssign: invite.roleToAssign,
+          token: invite.token,
+          inviterName,
+          expiresAt: invite.expiresAt ?? null,
+          labLogoUrl,
+        });
+        if (result.sent) {
+          delivery = { sent: true, status: "sent" };
+        } else {
+          const reason = toSafeSendReason(result.reason);
+          req.log?.warn?.(
+            { inviteId: invite.id, recipientDomain, reason },
+            "invite email not sent"
+          );
+          delivery = { sent: false, status: "failed", reason };
+        }
+      }
+    }
+  } catch (err: any) {
+    req.log?.error?.(
+      {
+        err: err?.message || String(err),
+        inviteId: invite.id,
+        recipientDomain,
+      },
+      "invite email failed"
+    );
+    delivery = { sent: false, status: "failed", reason: "send_failed" };
+  }
+
+  // Record the attempt on the invite row so admins can see failed deliveries.
+  let updated = invite;
+  try {
+    const [row] = await db
+      .update(organizationInvites)
+      .set({
+        lastEmailAttemptAt: new Date(),
+        lastEmailStatus: delivery.status,
+        lastEmailError: delivery.sent ? null : delivery.reason ?? null,
+      })
+      .where(eq(organizationInvites.id, invite.id))
+      .returning();
+    if (row) updated = row;
+  } catch (err: any) {
+    req.log?.error?.(
+      { err: err?.message || String(err), inviteId: invite.id },
+      "failed to record invite email delivery status"
+    );
+  }
+  return { delivery, invite: updated };
+}
+
+/**
  * Public (no-auth) router for invite surfaces that an invitee must reach
  * **before** authenticating — namely the accept/deny landing page preview.
  * Mounted at `/organizations` ahead of the auth-gated router so only the
@@ -2785,57 +2928,15 @@ router.post(
       afterJson: invite,
     });
 
-    try {
-      const [organization, inviter] = await Promise.all([
-        db.query.organizations.findFirst({
-          where: eq(organizations.id, organizationId),
-        }),
-        db.query.users.findFirst({
-          where: eq(users.id, (req as any).auth.userId),
-        }),
-      ]);
-      const inviterName = inviter
-        ? [inviter.firstName, inviter.lastName]
-            .filter((part) => !!part && String(part).trim().length > 0)
-            .join(" ")
-            .trim() || inviter.username || inviter.email || null
-        : null;
-      const invitePlacements = resolveLogoplacements(organization);
-      const labLogoUrl =
-        invitePlacements.has("welcome_emails") && organization?.logoUrl
-          ? `${getAppBaseUrl()}${organization.logoUrl}`
-          : null;
-      const allowed = await checkEmailPref(invite.email, "orgInviteNotifications");
-      if (!allowed) {
-        req.log.info({ inviteId: invite.id }, "invite email skipped — recipient opted out");
-      } else {
-        const result = await sendInviteEmail({
-          to: invite.email!,
-          organizationName:
-            organization?.displayName?.trim() ||
-            organization?.name ||
-            "your organization",
-          roleToAssign: invite.roleToAssign!,
-          token: invite.token!,
-          inviterName,
-          expiresAt: invite.expiresAt ?? null,
-          labLogoUrl,
-        });
-        if (!result.sent) {
-          req.log.warn(
-            { inviteId: invite.id, reason: result.reason },
-            "invite email not sent"
-          );
-        }
-      }
-    } catch (err: any) {
-      req.log.error(
-        { err: err?.message || String(err), inviteId: invite.id },
-        "invite email failed"
-      );
-    }
+    // Deliver the invite email and record the outcome on the invite row.
+    // The invite itself is created either way — the response tells the
+    // client truthfully whether the email actually went out.
+    const { delivery, invite: inviteWithDelivery } = await deliverInviteEmail(
+      req,
+      invite
+    );
 
-    return ok(res, invite, 201);
+    return ok(res, { ...inviteWithDelivery, emailDelivery: delivery }, 201);
   })
 );
 
@@ -2953,57 +3054,37 @@ router.post(
       afterJson: updatedInvite,
     });
 
-    try {
-      const [organization, inviter] = await Promise.all([
-        db.query.organizations.findFirst({
-          where: eq(organizations.id, invite.labId),
-        }),
-        db.query.users.findFirst({
-          where: eq(users.id, (req as any).auth.userId),
-        }),
-      ]);
-      const inviterName = inviter
-        ? [inviter.firstName, inviter.lastName]
-            .filter((part) => !!part && String(part).trim().length > 0)
-            .join(" ")
-            .trim() || inviter.username || inviter.email || null
-        : null;
-      const resendPlacements = resolveLogoplacements(organization);
-      const labLogoUrl =
-        resendPlacements.has("welcome_emails") && organization?.logoUrl
-          ? `${getAppBaseUrl()}${organization.logoUrl}`
-          : null;
-      const resendAllowed = await checkEmailPref(updatedInvite.email, "orgInviteNotifications");
-      if (!resendAllowed) {
-        req.log.info({ inviteId: updatedInvite.id }, "invite resend email skipped — recipient opted out");
-      } else {
-        const result = await sendInviteEmail({
-          to: updatedInvite.email!,
-          organizationName:
-            organization?.displayName?.trim() ||
-            organization?.name ||
-            "your organization",
-          roleToAssign: updatedInvite.roleToAssign!,
-          token: updatedInvite.token!,
-          inviterName,
-          expiresAt: updatedInvite.expiresAt ?? null,
-          labLogoUrl,
-        });
-        if (!result.sent) {
-          req.log.warn(
-            { inviteId: updatedInvite.id, reason: result.reason },
-            "invite resend email not sent"
-          );
-        }
+    // Deliver via the shared path so create & resend behave identically and
+    // the delivery outcome is recorded on the invite row. The whole point of
+    // a resend is the email, so a non-delivery is surfaced as an error —
+    // while keeping the token rotation that already happened.
+    const { delivery, invite: inviteWithDelivery } = await deliverInviteEmail(
+      req,
+      updatedInvite
+    );
+
+    if (!delivery.sent) {
+      if (delivery.status === "skipped") {
+        // Recipient opted out of invite emails — distinguishable from a
+        // send failure (409 vs 502).
+        throw new HttpError(
+          409,
+          "This recipient has opted out of invite emails, so no email was sent.",
+          { reason: delivery.reason ?? "recipient_opted_out" }
+        );
       }
-    } catch (err: any) {
-      req.log.error(
-        { err: err?.message || String(err), inviteId: updatedInvite.id },
-        "invite resend email failed"
+      throw new HttpError(
+        502,
+        "Invite saved, but the email could not be sent. Please try again or contact the person directly.",
+        { reason: delivery.reason ?? "send_failed" }
       );
     }
 
-    return ok(res, { ...updatedInvite, organizationId: updatedInvite.labId });
+    return ok(res, {
+      ...inviteWithDelivery,
+      organizationId: inviteWithDelivery.labId,
+      emailDelivery: delivery,
+    });
   })
 );
 

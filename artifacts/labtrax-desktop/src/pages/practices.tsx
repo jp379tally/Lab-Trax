@@ -47,6 +47,12 @@ interface PracticeMember {
   } | null;
 }
 
+interface PracticeInviteEmailDelivery {
+  sent: boolean;
+  status: "sent" | "failed" | "skipped";
+  reason?: string | null;
+}
+
 interface PracticeInvite {
   id: string;
   email: string;
@@ -54,6 +60,21 @@ interface PracticeInvite {
   status: string;
   expiresAt?: string | null;
   createdAt?: string | null;
+  lastEmailAttemptAt?: string | null;
+  lastEmailStatus?: string | null;
+  lastEmailError?: string | null;
+  emailDelivery?: PracticeInviteEmailDelivery;
+}
+
+/** Human-readable label for a failed/skipped invite email delivery. */
+function practiceInviteDeliveryProblem(inv: PracticeInvite): string | null {
+  if (inv.lastEmailStatus === "failed") {
+    return "Invite email failed to send";
+  }
+  if (inv.lastEmailStatus === "skipped") {
+    return "Email skipped — recipient opted out";
+  }
+  return null;
 }
 
 const ASSIGNABLE_ROLES = ["admin", "user", "billing", "read_only"] as const;
@@ -2491,8 +2512,18 @@ function MembershipSection({ org, members, membersLoading, currentUserId }: Memb
         body: JSON.stringify({ email: inviteEmail.trim(), roleToAssign: inviteRole }),
       }),
     onSuccess: (invite) => {
-      setActionError(null);
-      setInviteSuccess(`Invite sent to ${invite.email}.`);
+      const delivery = invite.emailDelivery;
+      if (delivery && !delivery.sent) {
+        setInviteSuccess(null);
+        setActionError(
+          delivery.status === "skipped"
+            ? `Invite saved, but ${invite.email} has opted out of invite emails.`
+            : `Invite saved, but the email to ${invite.email} could not be sent. Use resend to try again.`
+        );
+      } else {
+        setActionError(null);
+        setInviteSuccess(`Invite sent to ${invite.email}.`);
+      }
       setInviteEmail("");
       setInviteRole("user");
       queryClient.invalidateQueries({ queryKey: inviteKey });
@@ -2548,6 +2579,8 @@ function MembershipSection({ org, members, membersLoading, currentUserId }: Memb
     onError: (err: Error) => {
       setInviteSuccess(null);
       setActionError(err.message || "Could not resend invite.");
+      // Refresh so the recorded delivery failure shows on the invite row.
+      queryClient.invalidateQueries({ queryKey: inviteKey });
     },
   });
 
@@ -2692,6 +2725,18 @@ function MembershipSection({ org, members, membersLoading, currentUserId }: Memb
                         Invited {relativeTime(inv.createdAt)}
                         {inv.expiresAt ? ` · expires ${relativeTime(inv.expiresAt)}` : ""}
                       </div>
+                      {practiceInviteDeliveryProblem(inv) && (
+                        <div
+                          className="text-xs text-destructive truncate"
+                          title={
+                            inv.lastEmailAttemptAt
+                              ? `Last attempt: ${new Date(inv.lastEmailAttemptAt).toLocaleString()}`
+                              : undefined
+                          }
+                        >
+                          {practiceInviteDeliveryProblem(inv)}
+                        </div>
+                      )}
                     </div>
                     <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground text-xs">
                       {roleLabel(inv.roleToAssign)}

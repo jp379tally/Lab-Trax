@@ -3427,6 +3427,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuccessEnvelope"
+  /organizations/invites/{inviteId}/resend:
+    post:
+      operationId: resendInvitation
+      tags: [organizations]
+      summary: Resend a pending invitation's email with a fresh token (admin only)
+      parameters:
+        - in: path
+          name: inviteId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Invitation email re-sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationResult"
+        "409":
+          description: Invite is not pending, or the recipient opted out of invite emails
+        "502":
+          description: Invite saved but the email could not be sent
   /organizations/invites/{inviteId}/cancel:
     post:
       operationId: revokeInvitation
@@ -3929,7 +3950,33 @@ components:
         status: { type: string, nullable: true }
         token: { type: string, nullable: true }
         expiresAt: { type: string, nullable: true }
+        lastEmailAttemptAt:
+          type: string
+          nullable: true
+          description: When the invite email was last attempted.
+        lastEmailStatus:
+          type: string
+          nullable: true
+          description: Outcome of the last email attempt ("sent", "failed", or "skipped").
+        lastEmailError:
+          type: string
+          nullable: true
+          description: Short, safe reason for the last failed/skipped attempt.
+        emailDelivery:
+          $ref: "#/components/schemas/InviteEmailDelivery"
       required: [id]
+    InviteEmailDelivery:
+      type: object
+      description: Delivery outcome of the invite email triggered by this request.
+      properties:
+        sent: { type: boolean }
+        status:
+          type: string
+          enum: [sent, failed, skipped]
+        reason:
+          type: string
+          nullable: true
+      required: [sent, status]
     InvitationResult:
       type: object
       properties:

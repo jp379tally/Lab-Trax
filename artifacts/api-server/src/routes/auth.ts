@@ -1646,6 +1646,9 @@ router.get(
       roleToAssign: inv.roleToAssign,
       createdAt: inv.createdAt,
       expiresAt: inv.expiresAt,
+      lastEmailAttemptAt: inv.lastEmailAttemptAt,
+      lastEmailStatus: inv.lastEmailStatus,
+      lastEmailError: inv.lastEmailError,
     }));
 
     // Resolve requester identities so admins can recognise who is asking to

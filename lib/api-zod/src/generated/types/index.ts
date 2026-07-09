@@ -177,6 +177,8 @@ export * from "./importCasesFromIteroZipBatchBody";
 export * from "./invitation";
 export * from "./invitationListResult";
 export * from "./invitationResult";
+export * from "./inviteEmailDelivery";
+export * from "./inviteEmailDeliveryStatus";
 export * from "./invoiceDetailResult";
 export * from "./invoiceDetailResultData";
 export * from "./invoiceLineItem";

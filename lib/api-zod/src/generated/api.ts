@@ -4437,6 +4437,30 @@ export const ListInvitationsResponse = zod.object({
       status: zod.string().nullish(),
       token: zod.string().nullish(),
       expiresAt: zod.string().nullish(),
+      lastEmailAttemptAt: zod
+        .string()
+        .nullish()
+        .describe("When the invite email was last attempted."),
+      lastEmailStatus: zod
+        .string()
+        .nullish()
+        .describe(
+          'Outcome of the last email attempt (\"sent\", \"failed\", or \"skipped\").',
+        ),
+      lastEmailError: zod
+        .string()
+        .nullish()
+        .describe("Short, safe reason for the last failed\/skipped attempt."),
+      emailDelivery: zod
+        .object({
+          sent: zod.boolean(),
+          status: zod.enum(["sent", "failed", "skipped"]),
+          reason: zod.string().nullish(),
+        })
+        .optional()
+        .describe(
+          "Delivery outcome of the invite email triggered by this request.",
+        ),
     }),
   ),
 });
@@ -4457,6 +4481,30 @@ export const ListMyPendingInvitationsResponse = zod.object({
       status: zod.string().nullish(),
       token: zod.string().nullish(),
       expiresAt: zod.string().nullish(),
+      lastEmailAttemptAt: zod
+        .string()
+        .nullish()
+        .describe("When the invite email was last attempted."),
+      lastEmailStatus: zod
+        .string()
+        .nullish()
+        .describe(
+          'Outcome of the last email attempt (\"sent\", \"failed\", or \"skipped\").',
+        ),
+      lastEmailError: zod
+        .string()
+        .nullish()
+        .describe("Short, safe reason for the last failed\/skipped attempt."),
+      emailDelivery: zod
+        .object({
+          sent: zod.boolean(),
+          status: zod.enum(["sent", "failed", "skipped"]),
+          reason: zod.string().nullish(),
+        })
+        .optional()
+        .describe(
+          "Delivery outcome of the invite email triggered by this request.",
+        ),
     }),
   ),
 });
@@ -4488,6 +4536,52 @@ export const DeclineInvitationResponse = zod
     data: zod.record(zod.string(), zod.unknown()).optional(),
   })
   .describe("Generic enveloped success response (ok + data).");
+
+/**
+ * @summary Resend a pending invitation's email with a fresh token (admin only)
+ */
+export const ResendInvitationParams = zod.object({
+  inviteId: zod.coerce.string(),
+});
+
+export const ResendInvitationResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    organizationId: zod.string().nullish(),
+    labId: zod.string().nullish(),
+    email: zod.string().nullish(),
+    phone: zod.string().nullish(),
+    roleToAssign: zod.string().nullish(),
+    status: zod.string().nullish(),
+    token: zod.string().nullish(),
+    expiresAt: zod.string().nullish(),
+    lastEmailAttemptAt: zod
+      .string()
+      .nullish()
+      .describe("When the invite email was last attempted."),
+    lastEmailStatus: zod
+      .string()
+      .nullish()
+      .describe(
+        'Outcome of the last email attempt (\"sent\", \"failed\", or \"skipped\").',
+      ),
+    lastEmailError: zod
+      .string()
+      .nullish()
+      .describe("Short, safe reason for the last failed\/skipped attempt."),
+    emailDelivery: zod
+      .object({
+        sent: zod.boolean(),
+        status: zod.enum(["sent", "failed", "skipped"]),
+        reason: zod.string().nullish(),
+      })
+      .optional()
+      .describe(
+        "Delivery outcome of the invite email triggered by this request.",
+      ),
+  }),
+});
 
 /**
  * @summary Cancel/revoke a pending invitation (admin only)

@@ -331,6 +331,24 @@ export interface CreateInvitationInput {
   expiresInDays?: number | null;
 }
 
+export type InviteEmailDeliveryStatus =
+  (typeof InviteEmailDeliveryStatus)[keyof typeof InviteEmailDeliveryStatus];
+
+export const InviteEmailDeliveryStatus = {
+  sent: "sent",
+  failed: "failed",
+  skipped: "skipped",
+} as const;
+
+/**
+ * Delivery outcome of the invite email triggered by this request.
+ */
+export interface InviteEmailDelivery {
+  sent: boolean;
+  status: InviteEmailDeliveryStatus;
+  reason?: string | null;
+}
+
 export interface Invitation {
   id: string;
   organizationId?: string | null;
@@ -341,6 +359,13 @@ export interface Invitation {
   status?: string | null;
   token?: string | null;
   expiresAt?: string | null;
+  /** When the invite email was last attempted. */
+  lastEmailAttemptAt?: string | null;
+  /** Outcome of the last email attempt ("sent", "failed", or "skipped"). */
+  lastEmailStatus?: string | null;
+  /** Short, safe reason for the last failed/skipped attempt. */
+  lastEmailError?: string | null;
+  emailDelivery?: InviteEmailDelivery;
   [key: string]: unknown;
 }
 

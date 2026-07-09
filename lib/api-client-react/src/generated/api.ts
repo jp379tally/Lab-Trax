@@ -12012,6 +12012,90 @@ export const useDeclineInvitation = <
 };
 
 /**
+ * @summary Resend a pending invitation's email with a fresh token (admin only)
+ */
+export const getResendInvitationUrl = (inviteId: string) => {
+  return `/api/organizations/invites/${inviteId}/resend`;
+};
+
+export const resendInvitation = async (
+  inviteId: string,
+  options?: RequestInit,
+): Promise<InvitationResult> => {
+  return customFetch<InvitationResult>(getResendInvitationUrl(inviteId), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getResendInvitationMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof resendInvitation>>,
+    TError,
+    { inviteId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof resendInvitation>>,
+  TError,
+  { inviteId: string },
+  TContext
+> => {
+  const mutationKey = ["resendInvitation"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof resendInvitation>>,
+    { inviteId: string }
+  > = (props) => {
+    const { inviteId } = props ?? {};
+
+    return resendInvitation(inviteId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ResendInvitationMutationResult = NonNullable<
+  Awaited<ReturnType<typeof resendInvitation>>
+>;
+
+export type ResendInvitationMutationError = ErrorType<void>;
+
+/**
+ * @summary Resend a pending invitation's email with a fresh token (admin only)
+ */
+export const useResendInvitation = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof resendInvitation>>,
+    TError,
+    { inviteId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof resendInvitation>>,
+  TError,
+  { inviteId: string },
+  TContext
+> => {
+  return useMutation(getResendInvitationMutationOptions(options));
+};
+
+/**
  * @summary Cancel/revoke a pending invitation (admin only)
  */
 export const getRevokeInvitationUrl = (inviteId: string) => {

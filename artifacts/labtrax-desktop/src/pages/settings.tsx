@@ -246,12 +246,34 @@ interface LabTeamMember {
   status?: string | null;
 }
 
+interface InviteEmailDelivery {
+  sent: boolean;
+  status: "sent" | "failed" | "skipped";
+  reason?: string | null;
+}
+
 interface PendingInvite {
   id: string;
   email: string | null;
   roleToAssign: string | null;
   createdAt: string | Date | null;
   expiresAt: string | Date | null;
+  lastEmailAttemptAt?: string | Date | null;
+  lastEmailStatus?: string | null;
+  lastEmailError?: string | null;
+}
+
+/** Human-readable label for a failed/skipped invite email delivery. */
+function inviteDeliveryProblem(inv: PendingInvite): string | null {
+  if (inv.lastEmailStatus === "failed") {
+    return inv.lastEmailError === "recipient_opted_out"
+      ? "Recipient opted out of invite emails"
+      : "Invite email failed to send";
+  }
+  if (inv.lastEmailStatus === "skipped") {
+    return "Email skipped — recipient opted out";
+  }
+  return null;
 }
 
 interface PendingJoinRequest {
@@ -530,18 +552,40 @@ function ProfilePanel() {
   const inviteMutation = useMutation({
     mutationFn: async () => {
       if (!user?.practiceOrganizationId) throw new Error("No lab linked.");
-      return apiFetch(`/organizations/${user.practiceOrganizationId}/invites`, {
-        method: "POST",
-        body: JSON.stringify({ email: inviteEmail, roleToAssign: inviteRole }),
-      });
+      return apiFetch<{ emailDelivery?: InviteEmailDelivery }>(
+        `/organizations/${user.practiceOrganizationId}/invites`,
+        {
+          method: "POST",
+          body: JSON.stringify({ email: inviteEmail, roleToAssign: inviteRole }),
+        }
+      );
     },
-    onSuccess: () => {
+    onSuccess: (created) => {
       setInviteSuccess(true);
       setInviteError(null);
       setInviteEmail("");
       setInviteRole("user");
       void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
-      toast({ title: "Invite sent", description: `An invite was sent to ${inviteEmail}.`, duration: 4000 });
+      const delivery = created?.emailDelivery;
+      if (delivery && !delivery.sent) {
+        if (delivery.status === "skipped") {
+          toast({
+            title: "Invite saved — email not sent",
+            description: `${inviteEmail} has opted out of invite emails. Share the invite with them directly.`,
+            variant: "destructive",
+            duration: 8000,
+          });
+        } else {
+          toast({
+            title: "Invite saved, but the email could not be sent",
+            description: `The invite for ${inviteEmail} was created, but the email failed to send. Use Resend to try again.`,
+            variant: "destructive",
+            duration: 8000,
+          });
+        }
+      } else {
+        toast({ title: "Invite sent", description: `An invite was sent to ${inviteEmail}.`, duration: 4000 });
+      }
       setTimeout(() => {
         setInviteSuccess(false);
         setShowInviteModal(false);
@@ -585,7 +629,17 @@ function ProfilePanel() {
       }, 1800);
     },
     onError: (err: Error) => {
-      setInviteError(err.message || "Could not resend invite.");
+      const message = err.message || "Could not resend invite.";
+      setInviteError(message);
+      // The resend button also lives on the pending-invite list (outside the
+      // modal), so surface the failure as a toast too.
+      toast({
+        title: "Invite email not sent",
+        description: message,
+        variant: "destructive",
+        duration: 8000,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
     },
   });
 
@@ -1314,6 +1368,18 @@ function ProfilePanel() {
                 <div className="text-xs text-muted-foreground truncate">
                   {inv.roleToAssign || "user"} · <span className="text-amber-500 font-medium">Pending invite</span>
                 </div>
+                {inviteDeliveryProblem(inv) && (
+                  <div
+                    className="text-xs text-destructive truncate"
+                    title={
+                      inv.lastEmailAttemptAt
+                        ? `Last attempt: ${new Date(inv.lastEmailAttemptAt).toLocaleString()}`
+                        : undefined
+                    }
+                  >
+                    {inviteDeliveryProblem(inv)}
+                  </div>
+                )}
               </div>
               <div className="inline-flex items-center gap-3 shrink-0">
                 <button

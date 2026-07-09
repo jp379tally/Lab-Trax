@@ -10,7 +10,10 @@ import {
 let cachedTransport: { key: string; transporter: Transporter } | null = null;
 
 const EMAIL_RE = /^[^\s@]+@([^\s@]+\.[^\s@]+)$/;
-const mxCache = new Map<string, { ok: boolean; ts: number }>();
+const mxCache = new Map<
+  string,
+  { result: "deliverable" | "undeliverable"; ts: number }
+>();
 const MX_TTL_MS = 60 * 60 * 1000;
 const MX_NEG_TTL_MS = 10 * 60 * 1000;
 
@@ -31,7 +34,7 @@ const RESERVED_EMAIL_DOMAINS = new Set([
   "example.org",
 ]);
 
-function isReservedEmailDomain(email: string): boolean {
+export function isReservedEmailDomain(email: string): boolean {
   const m = EMAIL_RE.exec(email.trim());
   if (!m) return true;
   const domain = m[1].toLowerCase();
@@ -40,29 +43,79 @@ function isReservedEmailDomain(email: string): boolean {
   return RESERVED_EMAIL_TLDS.has(tld);
 }
 
-async function hasDeliverableDomain(email: string): Promise<boolean> {
+/**
+ * DNS error codes that mean the lookup itself completed and the domain
+ * definitively has no such records. Anything else (timeouts, SERVFAIL,
+ * EAI_AGAIN, sandboxed/blocked DNS runtimes, …) is an inconclusive lookup —
+ * SMTP remains the authority in that case and we must NOT refuse the send.
+ */
+const DNS_DEFINITIVE_NEGATIVE_CODES = new Set([
+  "ENOTFOUND",
+  "ENODATA",
+  "NXDOMAIN",
+]);
+
+export type DomainDeliverability =
+  | "deliverable"
+  | "undeliverable"
+  | "unknown";
+
+/**
+ * Best-effort MX/A preflight. Returns:
+ *  - "deliverable"   — lookup succeeded and found MX or A records
+ *  - "undeliverable" — lookup succeeded and definitively found no MX/A records
+ *  - "unknown"       — the lookup itself errored (runtime/DNS restriction);
+ *                      never cached, callers should fall through to SMTP
+ */
+export async function resolveDomainDeliverability(
+  email: string
+): Promise<DomainDeliverability> {
   const m = EMAIL_RE.exec(email.trim());
-  if (!m) return false;
+  if (!m) return "undeliverable";
   const domain = m[1].toLowerCase();
   const now = Date.now();
   const cached = mxCache.get(domain);
-  if (cached && now - cached.ts < (cached.ok ? MX_TTL_MS : MX_NEG_TTL_MS)) {
-    return cached.ok;
+  if (
+    cached &&
+    now - cached.ts <
+      (cached.result === "deliverable" ? MX_TTL_MS : MX_NEG_TTL_MS)
+  ) {
+    return cached.result;
   }
-  let ok = false;
+  let result: DomainDeliverability;
   try {
     const mx = await dns.resolveMx(domain);
-    ok = Array.isArray(mx) && mx.length > 0;
-  } catch {
+    result = Array.isArray(mx) && mx.length > 0 ? "deliverable" : "undeliverable";
+  } catch (mxErr: any) {
     try {
       const a = await dns.resolve(domain);
-      ok = Array.isArray(a) && a.length > 0;
-    } catch {
-      ok = false;
+      result = Array.isArray(a) && a.length > 0 ? "deliverable" : "undeliverable";
+    } catch (aErr: any) {
+      // Only a definitive "no such records" answer on BOTH lookups counts as
+      // undeliverable. Any other error means the lookup itself failed.
+      const mxCode = mxErr?.code ?? "";
+      const aCode = aErr?.code ?? "";
+      if (
+        DNS_DEFINITIVE_NEGATIVE_CODES.has(mxCode) &&
+        DNS_DEFINITIVE_NEGATIVE_CODES.has(aCode)
+      ) {
+        result = "undeliverable";
+      } else {
+        result = "unknown";
+      }
     }
   }
-  mxCache.set(domain, { ok, ts: now });
-  return ok;
+  // Never cache inconclusive lookups — a transient DNS failure must not
+  // block a domain for the negative-cache TTL.
+  if (result !== "unknown") {
+    mxCache.set(domain, { result, ts: now });
+  }
+  return result;
+}
+
+/** Test-only: reset the module-level MX cache between unit tests. */
+export function __clearMxCacheForTests() {
+  mxCache.clear();
 }
 
 function getTransporter(cfg: MailerConfig): Transporter {
@@ -109,12 +162,21 @@ export async function sendMail(opts: SendMailOptions): Promise<SendMailResult> {
     );
     return { sent: false, reason: "reserved_domain" };
   }
-  if (!(await hasDeliverableDomain(opts.to))) {
+  const deliverability = await resolveDomainDeliverability(opts.to);
+  if (deliverability === "undeliverable") {
     logger.warn(
       { to: opts.to, subject: opts.subject },
       "[mail] recipient domain has no MX/A record; skipping send"
     );
     return { sent: false, reason: "undeliverable_domain" };
+  }
+  if (deliverability === "unknown") {
+    // The DNS lookup itself failed (runtime restriction / transient DNS
+    // outage). SMTP is the authority for real domains — proceed to send.
+    logger.warn(
+      { to: opts.to, subject: opts.subject },
+      "[mail] MX/A preflight lookup errored; proceeding to SMTP"
+    );
   }
   try {
     const transporter = getTransporter(cfg);

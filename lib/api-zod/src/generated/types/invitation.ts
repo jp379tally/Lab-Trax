@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { InviteEmailDelivery } from "./inviteEmailDelivery";
 
 export interface Invitation {
   id: string;
@@ -16,5 +17,12 @@ export interface Invitation {
   status?: string | null;
   token?: string | null;
   expiresAt?: string | null;
+  /** When the invite email was last attempted. */
+  lastEmailAttemptAt?: string | null;
+  /** Outcome of the last email attempt ("sent", "failed", or "skipped"). */
+  lastEmailStatus?: string | null;
+  /** Short, safe reason for the last failed/skipped attempt. */
+  lastEmailError?: string | null;
+  emailDelivery?: InviteEmailDelivery;
   [key: string]: unknown;
 }

@@ -568,6 +568,16 @@ export const organizationInvites = pgTable(
       { onDelete: "set null" }
     ),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    // Delivery tracking for the invite email so admins can see whether the
+    // last send attempt actually went out. lastEmailStatus is one of
+    // "sent" | "failed" | "skipped" (recipient opted out / reserved domain);
+    // lastEmailError holds a short, safe reason string only — never raw
+    // SMTP/provider payloads.
+    lastEmailAttemptAt: timestamp("last_email_attempt_at", {
+      withTimezone: true,
+    }),
+    lastEmailStatus: text("last_email_status"),
+    lastEmailError: text("last_email_error"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

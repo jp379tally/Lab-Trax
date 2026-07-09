@@ -124,3 +124,4 @@
 - [ASC API direct build-status check](asc-api-direct-status-check.md) — query builds/buildBetaDetails with a self-signed JWT to confirm TestFlight state; ASC_API_KEY_P8 env has spaces-for-newlines and needs re-wrapping.
 - [Real iTero PLY fixture source](real-itero-ply-fixture-source.md) — real scans live in object storage case-media (none on disk); iTero face element puts `int object` BEFORE the index list; trim recipe inside.
 - [doctors.test.ts full-suite flake](doctors-merge-suite-flake.md) — merge tests flake under full api-server suite (timeout/500/off-by-one, symptom varies); pass in isolation via with-db-lock single-file run = not a regression.
+- [Invite email delivery contract](invite-email-delivery-contract.md) — invite sends record outcome on the row + expose emailDelivery; only allowlisted safe reasons reach clients; DNS preflight is tri-state, unknown never cached.
