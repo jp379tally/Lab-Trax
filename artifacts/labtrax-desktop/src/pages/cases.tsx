@@ -46,6 +46,11 @@ import {
 import QRCodeSVG from "react-qr-code";
 import { apiFetch, ApiError, getAccessToken, getApiOrigin } from "@/lib/api";
 import { uploadMediaFile } from "@/lib/upload-media-file";
+import {
+  computeShiftClickRange,
+  shiftKeyFromChangeEvent,
+  suppressShiftClickTextSelection,
+} from "@/lib/shift-click-range";
 import { DoctorNamePicker } from "@/components/DoctorNamePicker";
 import { FieldCombobox } from "@/components/FieldCombobox";
 import { MergeDialog, type MergeSourceInput } from "./doctors";
@@ -2549,13 +2554,13 @@ export default function CasesPage() {
   // current filtered/sorted order) to the selection. If the anchor is no
   // longer visible (filter changed), fall back to a normal single toggle.
   const handleRowCheckboxChange = (caseId: string, checked: boolean, shiftKey: boolean) => {
-    if (shiftKey && selectionAnchorIdRef.current && selectionAnchorIdRef.current !== caseId) {
-      const anchorIdx = filtered.findIndex((c) => c.id === selectionAnchorIdRef.current);
-      const clickedIdx = filtered.findIndex((c) => c.id === caseId);
-      if (anchorIdx !== -1 && clickedIdx !== -1) {
-        const start = Math.min(anchorIdx, clickedIdx);
-        const end = Math.max(anchorIdx, clickedIdx);
-        const rangeIds = filtered.slice(start, end + 1).map((c) => c.id);
+    if (shiftKey) {
+      const rangeIds = computeShiftClickRange(
+        filtered.map((c) => c.id),
+        selectionAnchorIdRef.current,
+        caseId,
+      );
+      if (rangeIds) {
         setSelectedIds((prev) => {
           const next = new Set(prev);
           for (const id of rangeIds) next.add(id);
@@ -3173,19 +3178,9 @@ export default function CasesPage() {
                       type="checkbox"
                       aria-label={`Select case ${c.caseNumber}`}
                       checked={selectedIds.has(c.id)}
-                      onMouseDown={(e) => {
-                        // Shift-clicking would otherwise start a native text
-                        // selection across the range of rows.
-                        if (e.shiftKey) e.preventDefault();
-                      }}
+                      onMouseDown={suppressShiftClickTextSelection}
                       onChange={(e) => {
-                        // React's checkbox onChange is backed by the click
-                        // event, so the native event carries shiftKey.
-                        const shiftKey =
-                          "shiftKey" in e.nativeEvent
-                            ? Boolean((e.nativeEvent as MouseEvent).shiftKey)
-                            : false;
-                        handleRowCheckboxChange(c.id, e.target.checked, shiftKey);
+                        handleRowCheckboxChange(c.id, e.target.checked, shiftKeyFromChangeEvent(e));
                       }}
                       className="rounded border-border"
                     />

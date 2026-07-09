@@ -26,10 +26,8 @@ real regressions still fail fast on the assertion, only starvation gets the
 extra budget. The "Not implemented: navigation to another Document" jsdom
 warning is harmless noise from another file, not this test.
 
-**Other known full-suite-only flakes (verified 2026-07-09, both pass in
-isolation on the same commit that failed the gate):**
-- `src/pages/__tests__/merge-dialog-notification-path.test.tsx` — "opens with
-  one target + one selectable source" fails to find the /Review/i button.
-- `src/pages/__tests__/settings-profile-phone.test.tsx` — "shows the OTP panel
-  after a successful send" hits the 5s timeout.
+**Other known full-suite-only flakes (verified 2026-07-09, pass in isolation on the same commit that failed the gate):**
+- `src/pages/__tests__/merge-dialog-notification-path.test.tsx` — "opens with one target + one selectable source" fails to find the /Review/i button.
+- `src/pages/__tests__/settings-profile-phone.test.tsx` — "shows the OTP panel after a successful send" hits the 5s timeout.
+- `src/pages/__tests__/invoice-editor-nav-guard.test.tsx` — "'Keep editing' cancels the deferred navigation" fails with "unable to find display value 'Jane Doe'". Candidate for the same raise-timeouts fix.
 Re-run these files in isolation before blaming an unrelated change.

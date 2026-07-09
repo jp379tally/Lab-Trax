@@ -3,6 +3,11 @@ import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CalendarClock, ChevronDown, ChevronUp, Download, Eye, History, Loader2, Mail, MessageSquare, Printer, Receipt, RefreshCw, RotateCcw, Search, Send, Trash2, X } from "lucide-react";
 import { ApiError, apiFetch } from "@/lib/api";
+import {
+  computeShiftClickRange,
+  shiftKeyFromChangeEvent,
+  suppressShiftClickTextSelection,
+} from "@/lib/shift-click-range";
 import { useLabOrganizations, useSelectedOrg } from "@/lib/finance";
 import type { Invoice, Organization } from "@/lib/types";
 import { formatDate, formatMoney, statusLabel } from "@/lib/format";
@@ -287,6 +292,43 @@ export default function StatementsPage() {
     },
   });
 
+  // Shift-click range selection for the practice checkboxes. A normal click
+  // toggles the single practice and moves the anchor; a shift-click with a
+  // valid anchor adds every practice between the anchor and the clicked row
+  // (in the current filtered/sorted order) to the selection. If the anchor
+  // is no longer visible, fall back to a normal single toggle.
+  const practiceAnchorIdRef = useRef<string | null>(null);
+  function handlePracticeCheckboxChange(
+    practiceId: string,
+    checked: boolean,
+    shiftKey: boolean,
+  ) {
+    if (shiftKey) {
+      const rangeIds = computeShiftClickRange(
+        filtered.map((r) => r.practiceId),
+        practiceAnchorIdRef.current,
+        practiceId,
+      );
+      if (rangeIds) {
+        setSelectedPractices((prev) => {
+          const next = new Set(prev);
+          for (const id of rangeIds) next.add(id);
+          return next;
+        });
+        return;
+      }
+      // Anchor filtered out of the visible list: reset and treat as normal.
+      practiceAnchorIdRef.current = null;
+    }
+    setSelectedPractices((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(practiceId);
+      else next.delete(practiceId);
+      return next;
+    });
+    practiceAnchorIdRef.current = practiceId;
+  }
+
   function handleBulkConfirm() {
     if (!bulkConfirm) return;
     if (bulkConfirm.kind === "delete_practices") {
@@ -492,13 +534,14 @@ export default function StatementsPage() {
                         type="checkbox"
                         className="h-3.5 w-3.5"
                         checked={selectedPractices.has(r.practiceId)}
+                        aria-label={`Select practice ${r.practiceName}`}
+                        onMouseDown={suppressShiftClickTextSelection}
                         onChange={(e) => {
-                          setSelectedPractices((prev) => {
-                            const next = new Set(prev);
-                            if (e.target.checked) next.add(r.practiceId);
-                            else next.delete(r.practiceId);
-                            return next;
-                          });
+                          handlePracticeCheckboxChange(
+                            r.practiceId,
+                            e.target.checked,
+                            shiftKeyFromChangeEvent(e),
+                          );
                         }}
                       />
                     </td>
@@ -1342,6 +1385,34 @@ function GenerateStatementsModal({
     setAllSelected(false);
   }
 
+  // Shift-click range selection for the practice checkboxes. Same semantics
+  // as the Cases list: normal click toggles + moves the anchor; shift-click
+  // with a valid anchor adds every practice between the anchor and the
+  // clicked row (in the current filtered order) to the selection; a stale
+  // (filtered-out) anchor falls back to a single toggle and resets.
+  const selectionAnchorIdRef = useRef<string | null>(null);
+  function handlePracticeCheckboxChange(id: string, shiftKey: boolean) {
+    if (shiftKey) {
+      const rangeIds = computeShiftClickRange(
+        filteredPractices.map((p) => p.id),
+        selectionAnchorIdRef.current,
+        id,
+      );
+      if (rangeIds) {
+        setSelectedIds((prev) => {
+          const base = allSelected ? new Set(filteredPractices.map((p) => p.id)) : new Set(prev);
+          for (const rid of rangeIds) base.add(rid);
+          return base;
+        });
+        setAllSelected(false);
+        return;
+      }
+      selectionAnchorIdRef.current = null;
+    }
+    togglePractice(id);
+    selectionAnchorIdRef.current = id;
+  }
+
   function selectAll() { setSelectedIds(new Set()); setAllSelected(true); }
   function deselectAll() { setSelectedIds(new Set()); setAllSelected(false); }
 
@@ -1504,7 +1575,14 @@ function GenerateStatementsModal({
                     const checked = isChecked(p.id);
                     return (
                       <label key={p.id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-secondary/60 select-none">
-                        <input type="checkbox" checked={checked} onChange={() => togglePractice(p.id)} className="h-4 w-4 accent-primary shrink-0" />
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          aria-label={`Select practice ${p.displayName || p.name}`}
+                          onMouseDown={suppressShiftClickTextSelection}
+                          onChange={(e) => handlePracticeCheckboxChange(p.id, shiftKeyFromChangeEvent(e))}
+                          className="h-4 w-4 accent-primary shrink-0"
+                        />
                         <span className="flex-1 min-w-0 truncate text-sm">{p.displayName || p.name}</span>
                         <span className="tabular-nums text-xs text-muted-foreground shrink-0">
                           {bal && bal.open > 0 ? formatMoney(bal.open) : ""}

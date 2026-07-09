@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import {
@@ -8,6 +8,11 @@ import {
   ReceivePaymentsInputPaymentMethod,
 } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
+import {
+  computeShiftClickRange,
+  shiftKeyFromChangeEvent,
+  suppressShiftClickTextSelection,
+} from "@/lib/shift-click-range";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankAccount, Invoice, Organization } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
@@ -122,6 +127,44 @@ function ReceivePayments({
 
   function setOne(invoiceId: string, value: string) {
     setApplications((prev) => ({ ...prev, [invoiceId]: value }));
+  }
+
+  // Shift-click range selection for the invoice checkboxes. A normal click
+  // toggles the single invoice and moves the anchor; a shift-click with a
+  // valid anchor applies the full balance to every unapplied invoice between
+  // the anchor and the clicked invoice (in the current visible order),
+  // keeping already-applied amounts outside and inside the range. If the
+  // anchor is no longer visible, fall back to a normal single toggle.
+  const selectionAnchorIdRef = useRef<string | null>(null);
+  function handleInvoiceCheckboxChange(
+    inv: OpenInvoice,
+    checked: boolean,
+    shiftKey: boolean,
+  ) {
+    const open = openQuery.data || [];
+    if (shiftKey) {
+      const rangeIds = computeShiftClickRange(
+        open.map((i) => i.id),
+        selectionAnchorIdRef.current,
+        inv.id,
+      );
+      if (rangeIds) {
+        setApplications((prev) => {
+          const next = { ...prev };
+          for (const id of rangeIds) {
+            if (Number(next[id]) > 0) continue;
+            const target = open.find((i) => i.id === id);
+            if (target) next[id] = Number(target.balanceDue).toFixed(2);
+          }
+          return next;
+        });
+        return;
+      }
+      // Anchor no longer in the visible list: reset and treat as normal.
+      selectionAnchorIdRef.current = null;
+    }
+    setOne(inv.id, checked ? Number(inv.balanceDue).toFixed(2) : "");
+    selectionAnchorIdRef.current = inv.id;
   }
 
   const appliedSum = Object.values(applications).reduce(
@@ -410,10 +453,12 @@ function ReceivePayments({
                       <input
                         type="checkbox"
                         checked={selected}
+                        onMouseDown={suppressShiftClickTextSelection}
                         onChange={(e) =>
-                          setOne(
-                            inv.id,
-                            e.target.checked ? balance.toFixed(2) : ""
+                          handleInvoiceCheckboxChange(
+                            inv,
+                            e.target.checked,
+                            shiftKeyFromChangeEvent(e)
                           )
                         }
                         aria-label={`Select invoice ${inv.invoiceNumber}`}

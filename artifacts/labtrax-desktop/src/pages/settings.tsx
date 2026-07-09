@@ -37,6 +37,11 @@ import type { LabCase, Invoice } from "@/lib/types";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
 import { getSessionSecret, clearSessionSecret, useSessionSecretVersion } from "@/lib/platform-admin-session";
 import { formatPhone } from "@/lib/format";
+import {
+  computeShiftClickRange,
+  shiftKeyFromChangeEvent,
+  suppressShiftClickTextSelection,
+} from "@/lib/shift-click-range";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse } from "@/lib/types";
 import { InvoiceLayoutPanel } from "@/pages/invoice-layout-panel";
@@ -7732,6 +7737,33 @@ function DeletedCasesPanel() {
     });
   }
 
+  // Shift-click range selection for the row checkboxes. Same semantics as
+  // the Cases list: normal click toggles + moves the anchor; shift-click
+  // with a valid anchor adds every row between the anchor and the clicked
+  // row (in the current visible order) to the selection; a stale anchor
+  // falls back to a single toggle and resets.
+  const selectionAnchorIdRef = useRef<string | null>(null);
+  function handleRowCheckboxChange(id: string, shiftKey: boolean) {
+    if (shiftKey) {
+      const rangeIds = computeShiftClickRange(
+        deletedList.map((c) => c.id),
+        selectionAnchorIdRef.current,
+        id,
+      );
+      if (rangeIds) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (const rid of rangeIds) next.add(rid);
+          return next;
+        });
+        return;
+      }
+      selectionAnchorIdRef.current = null;
+    }
+    toggleRow(id);
+    selectionAnchorIdRef.current = id;
+  }
+
   return (
     <PanelShell
       title="Deleted Cases"
@@ -7839,7 +7871,8 @@ function DeletedCasesPanel() {
                         <input
                           type="checkbox"
                           checked={selectedIds.has(c.id)}
-                          onChange={() => toggleRow(c.id)}
+                          onMouseDown={suppressShiftClickTextSelection}
+                          onChange={(e) => handleRowCheckboxChange(c.id, shiftKeyFromChangeEvent(e))}
                           className="h-3.5 w-3.5 rounded cursor-pointer"
                           aria-label={`Select case ${c.caseNumber}`}
                         />
