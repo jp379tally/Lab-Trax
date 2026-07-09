@@ -727,7 +727,13 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   const recognitionRef = useRef<any>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const voiceModeRef = useRef(false);
+  // When true, the next MediaRecorder onstop is a teardown stop (voice-mode
+  // exit or unmount): the captured audio is discarded — no STT, no auto-send.
+  const discardNextStopRef = useRef(false);
   const ttsVoiceRef = useRef<TtsVoice>(ttsVoice);
+  // Latest sendMessage, so async recorder callbacks never send with a stale
+  // messages closure (same reason voiceModeRef exists).
+  const sendMessageRef = useRef<(text: string) => Promise<void>>(async () => {});
   const prevIsSpeakingRef = useRef(false);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionsDropdownRef = useRef<HTMLDivElement>(null);
@@ -940,6 +946,12 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     ttsVoiceRef.current = ttsVoice;
   }, [ttsVoice]);
 
+  // Keep sendMessageRef pointing at the latest sendMessage so the recorder's
+  // async onstop callback never sends with a stale messages closure.
+  useEffect(() => {
+    sendMessageRef.current = sendMessage;
+  });
+
   useEffect(() => {
     writeVoicePrefs(voiceMode, ttsVoice);
   }, [voiceMode, ttsVoice]);
@@ -955,6 +967,26 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     prevIsSpeakingRef.current = isSpeaking;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSpeaking, sending, micState]);
+
+  // Unmount cleanup: stop any active recording (releasing all MediaStream
+  // tracks so the browser mic indicator turns off) and stop TTS playback.
+  useEffect(() => {
+    return () => {
+      const rec = recognitionRef.current as { mr: MediaRecorder; stream: MediaStream } | null;
+      recognitionRef.current = null;
+      if (rec) {
+        // Teardown: discard in-flight audio (no STT upload / auto-send).
+        discardNextStopRef.current = true;
+        try { rec.mr.stop(); } catch { /* ignore */ }
+        try { rec.stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+      }
+      const audio = currentAudioRef.current;
+      if (audio) {
+        try { audio.pause(); } catch { /* ignore */ }
+        currentAudioRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
@@ -1180,6 +1212,12 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       if (recognitionRef.current && (recognitionRef.current as any).mr === mr) {
         recognitionRef.current = null;
       }
+      if (discardNextStopRef.current) {
+        // Teardown stop (voice-mode exit or unmount): drop the captured audio —
+        // no STT upload and no auto-send.
+        discardNextStopRef.current = false;
+        return;
+      }
       const blob = new Blob(chunks, { type: mr.mimeType || "audio/webm" });
       setMicState("processing");
       try {
@@ -1201,9 +1239,15 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         const body = await resp.json() as { ok?: boolean; transcript?: string };
         const transcript = body.transcript?.trim() ?? "";
         if (transcript) {
-          setInput(transcript);
           setMicState("idle");
-          setTimeout(() => inputRef.current?.focus(), 50);
+          if (voiceModeRef.current) {
+            // Voice conversation: send the transcript straight into the flow so
+            // the speak → auto-listen loop continues without manual input.
+            void sendMessageRef.current(transcript);
+          } else {
+            setInput(transcript);
+            setTimeout(() => inputRef.current?.focus(), 50);
+          }
         } else {
           setMicState("idle");
         }
@@ -1233,6 +1277,13 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       try { rec.stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
     }
     setMicState("idle");
+  }
+
+  /** Stop any active recording and discard the captured audio (no STT, no
+   *  auto-send). Used for teardown paths: voice-mode exit and unmount. */
+  function cancelListening() {
+    if (recognitionRef.current) discardNextStopRef.current = true;
+    stopListening();
   }
 
   /** Call the AI endpoint with a given message list and append the response.
@@ -2183,7 +2234,21 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             onClick={() => {
               const next = !voiceMode;
               setVoiceMode(next);
-              if (!next) { stopListening(); stopSpeaking(); }
+              if (!next) {
+                // Exiting voice mode mid-capture is a teardown: discard the
+                // in-flight audio so no STT upload / auto-send fires after exit.
+                cancelListening();
+                stopSpeaking();
+                return;
+              }
+              // Entering voice mode from idle: start mic capture immediately from
+              // this direct user gesture so getUserMedia runs (permission prompt /
+              // browser mic indicator). If Maynard is currently speaking, leave it
+              // to the auto-listen effect that fires when speech ends. If a reply
+              // is in flight, the TTS → auto-listen loop takes over as before.
+              if (!sending && !isSpeaking && (micState === "idle" || micState === "error")) {
+                startListening();
+              }
             }}
             title={voiceMode ? "Exit voice mode" : "Voice conversation — Maynard will speak and listen automatically"}
             aria-label={voiceMode ? "Exit voice mode" : "Start voice conversation"}
@@ -2193,7 +2258,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                 : "bg-secondary border border-input text-muted-foreground hover:text-foreground"
             }`}
           >
-            {voiceMode ? <VoiceWaveform /> : <Headphones size={15} />}
+            {voiceMode && (micState === "listening" || isSpeaking) ? <VoiceWaveform /> : <Headphones size={15} />}
           </button>
 
           <button
@@ -2225,7 +2290,15 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
 
         <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">
           {voiceMode
-            ? "Voice mode on — Maynard will speak and listen automatically"
+            ? micState === "listening"
+              ? "Voice mode on — listening…"
+              : micState === "processing"
+              ? "Voice mode on — transcribing…"
+              : isSpeaking
+              ? "Voice mode on — Maynard is speaking"
+              : micState === "error"
+              ? "Voice mode on — microphone unavailable"
+              : "Voice mode on — Maynard will speak and listen automatically"
             : "Mic to dictate · Headphones for voice conversation · Enter to send"}
         </p>
       </div>
