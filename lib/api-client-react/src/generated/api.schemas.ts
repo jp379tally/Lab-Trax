@@ -5,6 +5,161 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+/**
+ * Analytics case category (uncategorized = legacy/unclassifiable).
+ */
+export type StatsCaseCategory =
+  (typeof StatsCaseCategory)[keyof typeof StatsCaseCategory];
+
+export const StatsCaseCategory = {
+  implants: "implants",
+  zirconia: "zirconia",
+  crown_bridge: "crown_bridge",
+  removable: "removable",
+  other: "other",
+  uncategorized: "uncategorized",
+} as const;
+
+export type StatsSummaryResultDataPreviousPeriod = {
+  from: string;
+  to: string;
+  totalCases: number;
+  totalRevenue: string;
+  invoiceCount: number;
+  averageCaseValue?: string;
+  /** Percent change vs previous period (null when previous is 0). */
+  casesChangePct?: number | null;
+  revenueChangePct?: number | null;
+};
+
+export type StatsSummaryResultData = {
+  from: string;
+  to: string;
+  timeZone: string;
+  category?: StatsCaseCategory | null;
+  material?: string | null;
+  totalCases: number;
+  /** How many of totalCases are legacy `lab_cases`. */
+  legacyCases: number;
+  /** Sum of non-void invoices.total in the window (decimal string). */
+  totalRevenue: string;
+  invoiceCount: number;
+  /** totalRevenue / distinct cases billed in the window (each
+caseless manual invoice counts as one case). Decimal
+string, "0.00" when no invoices.
+ */
+  averageCaseValue: string;
+  topCategory?: StatsCaseCategory | null;
+  topCategoryLabel?: string | null;
+  topCategoryCount?: number;
+  /** 0 = Monday … 6 = Sunday; null when no cases. */
+  busiestWeekday?: number | null;
+  busiestWeekdayLabel?: string | null;
+  previousPeriod: StatsSummaryResultDataPreviousPeriod;
+};
+
+export interface StatsSummaryResult {
+  ok: boolean;
+  data: StatsSummaryResultData;
+}
+
+export type StatsCaseCategoriesResultDataCategoriesItem = {
+  category: StatsCaseCategory;
+  label: string;
+  count: number;
+  /** How many of count are legacy `lab_cases`. */
+  legacyCount: number;
+};
+
+export type StatsCaseCategoriesResultDataMaterialsItem = {
+  material: string;
+  restorations: number;
+  units: number;
+};
+
+export type StatsCaseCategoriesResultData = {
+  from: string;
+  to: string;
+  category?: StatsCaseCategory | null;
+  material?: string | null;
+  totalCases: number;
+  categories: StatsCaseCategoriesResultDataCategoriesItem[];
+  /** Normalized material breakdown (canonical restorations only), sorted by units desc. */
+  materials: StatsCaseCategoriesResultDataMaterialsItem[];
+};
+
+export interface StatsCaseCategoriesResult {
+  ok: boolean;
+  data: StatsCaseCategoriesResultData;
+}
+
+export type StatsRevenueSeriesResultDataGroupBy =
+  (typeof StatsRevenueSeriesResultDataGroupBy)[keyof typeof StatsRevenueSeriesResultDataGroupBy];
+
+export const StatsRevenueSeriesResultDataGroupBy = {
+  day: "day",
+  week: "week",
+  month: "month",
+  year: "year",
+} as const;
+
+export type StatsRevenueSeriesResultDataSeriesItem = {
+  /** Bucket key (YYYY-MM-DD for day/week, YYYY-MM for month, YYYY for year). */
+  period: string;
+  periodStart: string;
+  revenue: string;
+  invoiceCount: number;
+};
+
+export type StatsRevenueSeriesResultDataTotals = {
+  revenue: string;
+  invoiceCount: number;
+  averageInvoice: string;
+};
+
+export type StatsRevenueSeriesResultData = {
+  from: string;
+  to: string;
+  groupBy: StatsRevenueSeriesResultDataGroupBy;
+  timeZone: string;
+  category?: StatsCaseCategory | null;
+  material?: string | null;
+  series: StatsRevenueSeriesResultDataSeriesItem[];
+  totals: StatsRevenueSeriesResultDataTotals;
+};
+
+export interface StatsRevenueSeriesResult {
+  ok: boolean;
+  data: StatsRevenueSeriesResultData;
+}
+
+export type StatsWeekdayVolumeResultDataWeekdaysItemByCategory = {
+  [key: string]: number;
+};
+
+export type StatsWeekdayVolumeResultDataWeekdaysItem = {
+  weekday: number;
+  label: string;
+  total: number;
+  byCategory: StatsWeekdayVolumeResultDataWeekdaysItemByCategory;
+};
+
+export type StatsWeekdayVolumeResultData = {
+  from: string;
+  to: string;
+  timeZone: string;
+  category?: StatsCaseCategory | null;
+  material?: string | null;
+  /** Always 7 entries, index 0 = Monday … 6 = Sunday. */
+  weekdays: StatsWeekdayVolumeResultDataWeekdaysItem[];
+  totalCases: number;
+};
+
+export interface StatsWeekdayVolumeResult {
+  ok: boolean;
+  data: StatsWeekdayVolumeResultData;
+}
+
 export interface SttResult {
   transcript: string;
 }
@@ -2556,6 +2711,37 @@ export interface BulkDeleteLabInboxFilesResult {
   data: BulkDeleteLabInboxFilesResultData;
 }
 
+/**
+ * Lab organization id (caller must hold owner/admin/billing role).
+ */
+export type StatsOrganizationIdParameter = string;
+
+/**
+ * Window start (ISO date or datetime, inclusive).
+ */
+export type StatsDateFromParameter = string;
+
+/**
+ * Window end (ISO date or datetime, inclusive).
+ */
+export type StatsDateToParameter = string;
+
+/**
+ * IANA timezone for bucketing/weekday attribution (default UTC).
+ */
+export type StatsTimeZoneParameter = string;
+
+export type StatsCategoryParameter = StatsCaseCategory;
+
+/**
+ * Restrict results to cases with at least one restoration of this
+normalized material name (as returned by the case-categories
+materials breakdown; "Unspecified" matches restorations without a
+material). Legacy cases match on their blob material string.
+
+ */
+export type StatsMaterialParameter = string;
+
 export type ListLabInboxFilesParams = {
   labOrganizationId: string;
 };
@@ -3123,4 +3309,139 @@ export type ListAuditLogsParams = {
    * ISO timestamp cursor — return entries created before this time
    */
   before?: string;
+};
+
+export type GetStatsSummaryParams = {
+  /**
+   * Lab organization id (caller must hold owner/admin/billing role).
+   */
+  organizationId: StatsOrganizationIdParameter;
+  /**
+   * Window start (ISO date or datetime, inclusive).
+   */
+  dateFrom: StatsDateFromParameter;
+  /**
+   * Window end (ISO date or datetime, inclusive).
+   */
+  dateTo: StatsDateToParameter;
+  /**
+   * IANA timezone for bucketing/weekday attribution (default UTC).
+   */
+  timeZone?: StatsTimeZoneParameter;
+  /**
+   * Analytics case category (uncategorized = legacy/unclassifiable).
+   */
+  category?: StatsCategoryParameter;
+  /**
+ * Restrict results to cases with at least one restoration of this
+normalized material name (as returned by the case-categories
+materials breakdown; "Unspecified" matches restorations without a
+material). Legacy cases match on their blob material string.
+
+ */
+  material?: StatsMaterialParameter;
+};
+
+export type GetStatsCaseCategoriesParams = {
+  /**
+   * Lab organization id (caller must hold owner/admin/billing role).
+   */
+  organizationId: StatsOrganizationIdParameter;
+  /**
+   * Window start (ISO date or datetime, inclusive).
+   */
+  dateFrom: StatsDateFromParameter;
+  /**
+   * Window end (ISO date or datetime, inclusive).
+   */
+  dateTo: StatsDateToParameter;
+  /**
+   * IANA timezone for bucketing/weekday attribution (default UTC).
+   */
+  timeZone?: StatsTimeZoneParameter;
+  /**
+   * Analytics case category (uncategorized = legacy/unclassifiable).
+   */
+  category?: StatsCategoryParameter;
+  /**
+ * Restrict results to cases with at least one restoration of this
+normalized material name (as returned by the case-categories
+materials breakdown; "Unspecified" matches restorations without a
+material). Legacy cases match on their blob material string.
+
+ */
+  material?: StatsMaterialParameter;
+};
+
+export type GetStatsRevenueSeriesParams = {
+  /**
+   * Lab organization id (caller must hold owner/admin/billing role).
+   */
+  organizationId: StatsOrganizationIdParameter;
+  /**
+   * Window start (ISO date or datetime, inclusive).
+   */
+  dateFrom: StatsDateFromParameter;
+  /**
+   * Window end (ISO date or datetime, inclusive).
+   */
+  dateTo: StatsDateToParameter;
+  /**
+   * IANA timezone for bucketing/weekday attribution (default UTC).
+   */
+  timeZone?: StatsTimeZoneParameter;
+  /**
+   * Analytics case category (uncategorized = legacy/unclassifiable).
+   */
+  category?: StatsCategoryParameter;
+  /**
+ * Restrict results to cases with at least one restoration of this
+normalized material name (as returned by the case-categories
+materials breakdown; "Unspecified" matches restorations without a
+material). Legacy cases match on their blob material string.
+
+ */
+  material?: StatsMaterialParameter;
+  groupBy?: GetStatsRevenueSeriesGroupBy;
+};
+
+export type GetStatsRevenueSeriesGroupBy =
+  (typeof GetStatsRevenueSeriesGroupBy)[keyof typeof GetStatsRevenueSeriesGroupBy];
+
+export const GetStatsRevenueSeriesGroupBy = {
+  day: "day",
+  week: "week",
+  month: "month",
+  year: "year",
+} as const;
+
+export type GetStatsWeekdayVolumeParams = {
+  /**
+   * Lab organization id (caller must hold owner/admin/billing role).
+   */
+  organizationId: StatsOrganizationIdParameter;
+  /**
+   * Window start (ISO date or datetime, inclusive).
+   */
+  dateFrom: StatsDateFromParameter;
+  /**
+   * Window end (ISO date or datetime, inclusive).
+   */
+  dateTo: StatsDateToParameter;
+  /**
+   * IANA timezone for bucketing/weekday attribution (default UTC).
+   */
+  timeZone?: StatsTimeZoneParameter;
+  /**
+   * Analytics case category (uncategorized = legacy/unclassifiable).
+   */
+  category?: StatsCategoryParameter;
+  /**
+ * Restrict results to cases with at least one restoration of this
+normalized material name (as returned by the case-categories
+materials breakdown; "Unspecified" matches restorations without a
+material). Legacy cases match on their blob material string.
+
+ */
+  material?: StatsMaterialParameter;
 };

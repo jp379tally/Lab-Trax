@@ -11,6 +11,7 @@ import { UpdateBanner } from "./UpdateBanner";
 import { Link, useLocation } from "wouter";
 import {
   AlertTriangle,
+  BarChart3,
   Bell,
   Building2,
   CheckCircle,
@@ -151,6 +152,7 @@ export const SECONDARY: (NavItem | NavGroup)[] = [
       { label: "Pricing", path: "/pricing", icon: Tag },
       { label: "Lists", path: "/lists", icon: List, billingOnly: true },
       { label: "Reports", path: "/reports", icon: FileBarChart2, billingOnly: true },
+      { label: "Stats", path: "/stats", icon: BarChart3, billingOnly: true },
     ],
   },
   { label: "Maintenance", path: "/maintenance", icon: HardDrive, adminOnly: true },

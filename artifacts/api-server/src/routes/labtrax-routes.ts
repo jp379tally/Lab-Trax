@@ -166,6 +166,7 @@ import vocabularyRoutes from "./vocabulary";
 import aiMemoryRoutes from "./ai-memory";
 import pricingRoutes from "./pricing";
 import statementRoutes from "./statements";
+import statsRoutes from "./stats";
 import billingRoutes from "./billing";
 import notificationsRoutes from "./notifications";
 import usersRoutes from "./users";
@@ -1386,6 +1387,7 @@ export async function registerRoutes(): Promise<IRouter> {
 
   router.use("/finance", financeRoutes);
   router.use("/lists", listsRoutes);
+  router.use("/stats", statsRoutes);
   router.use("/locations", locationsRoutes);
   router.use("/vocabulary", vocabularyRoutes);
   router.use("/ai-memory", aiMemoryRoutes);

@@ -31,3 +31,9 @@ warning is harmless noise from another file, not this test.
 - `src/pages/__tests__/settings-profile-phone.test.tsx` — "shows the OTP panel after a successful send" hits the 5s timeout.
 - `src/pages/__tests__/invoice-editor-nav-guard.test.tsx` — "'Keep editing' cancels the deferred navigation" fails with "unable to find display value 'Jane Doe'". Candidate for the same raise-timeouts fix.
 Re-run these files in isolation before blaming an unrelated change.
+
+**2026-07-09 second instance:** `src/__tests__/register-edit-drawer-alignment.test.tsx`
+("spanning cell colSpan === header column count", findByText "Acme Supply")
+timed out under the full gate and passed 4/4 in isolation — same
+starvation class. Treat any single-test rel-desktop-tests red that passes
+in isolation this way; the flake is not limited to the preview test.

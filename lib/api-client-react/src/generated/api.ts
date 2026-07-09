@@ -104,6 +104,10 @@ import type {
   GetLocationsParams,
   GetPatientSimilarityParams,
   GetRxPracticeAliasParams,
+  GetStatsCaseCategoriesParams,
+  GetStatsRevenueSeriesParams,
+  GetStatsSummaryParams,
+  GetStatsWeekdayVolumeParams,
   GetVocabularyParams,
   HealthStatus,
   ImportCaseFromIteroRxBody,
@@ -180,6 +184,10 @@ import type {
   SmsPreferencesResult,
   StatementScheduleInput,
   StatementScheduleResult,
+  StatsCaseCategoriesResult,
+  StatsRevenueSeriesResult,
+  StatsSummaryResult,
+  StatsWeekdayVolumeResult,
   SttResult,
   SuccessEnvelope,
   SuccessResult,
@@ -12724,6 +12732,437 @@ export function useListAuditLogs<
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getListAuditLogsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Read-only aggregate metrics for the Stats dashboard: total cases
+(canonical + legacy), invoiced revenue, average case value, most
+common case category, busiest weekday, and comparison against the
+immediately preceding period of equal length. Revenue comes from
+non-void `invoices.total` only; legacy blob invoices are excluded.
+All metrics follow the active category/material filters. Requires
+owner/admin/billing role on the lab.
+
+ * @summary Summary analytics metrics for a lab with previous-period comparison
+ */
+export const getGetStatsSummaryUrl = (params: GetStatsSummaryParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/stats/summary?${stringifiedParams}`
+    : `/api/stats/summary`;
+};
+
+export const getStatsSummary = async (
+  params: GetStatsSummaryParams,
+  options?: RequestInit,
+): Promise<StatsSummaryResult> => {
+  return customFetch<StatsSummaryResult>(getGetStatsSummaryUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetStatsSummaryQueryKey = (params?: GetStatsSummaryParams) => {
+  return [`/api/stats/summary`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetStatsSummaryQueryOptions = <
+  TData = Awaited<ReturnType<typeof getStatsSummary>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsSummaryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsSummary>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetStatsSummaryQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getStatsSummary>>> = ({
+    signal,
+  }) => getStatsSummary(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getStatsSummary>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetStatsSummaryQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getStatsSummary>>
+>;
+export type GetStatsSummaryQueryError = ErrorType<void>;
+
+/**
+ * @summary Summary analytics metrics for a lab with previous-period comparison
+ */
+
+export function useGetStatsSummary<
+  TData = Awaited<ReturnType<typeof getStatsSummary>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsSummaryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsSummary>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetStatsSummaryQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Case counts grouped by analytics category (implants, zirconia,
+crown & bridge, removable, other, uncategorized/legacy) for the
+window, including how many in each bucket are legacy `lab_cases`.
+Also returns a normalized material breakdown (canonical
+restorations only). Both breakdowns follow the active
+category/material filters. Requires owner/admin/billing role on
+the lab.
+
+ * @summary Case counts by analytics category plus material breakdown
+ */
+export const getGetStatsCaseCategoriesUrl = (
+  params: GetStatsCaseCategoriesParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/stats/case-categories?${stringifiedParams}`
+    : `/api/stats/case-categories`;
+};
+
+export const getStatsCaseCategories = async (
+  params: GetStatsCaseCategoriesParams,
+  options?: RequestInit,
+): Promise<StatsCaseCategoriesResult> => {
+  return customFetch<StatsCaseCategoriesResult>(
+    getGetStatsCaseCategoriesUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetStatsCaseCategoriesQueryKey = (
+  params?: GetStatsCaseCategoriesParams,
+) => {
+  return [`/api/stats/case-categories`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetStatsCaseCategoriesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getStatsCaseCategories>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsCaseCategoriesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsCaseCategories>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetStatsCaseCategoriesQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getStatsCaseCategories>>
+  > = ({ signal }) =>
+    getStatsCaseCategories(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getStatsCaseCategories>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetStatsCaseCategoriesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getStatsCaseCategories>>
+>;
+export type GetStatsCaseCategoriesQueryError = ErrorType<void>;
+
+/**
+ * @summary Case counts by analytics category plus material breakdown
+ */
+
+export function useGetStatsCaseCategories<
+  TData = Awaited<ReturnType<typeof getStatsCaseCategories>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsCaseCategoriesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsCaseCategories>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetStatsCaseCategoriesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Revenue series from non-void, non-deleted `invoices.total` keyed on
+COALESCE(issuedAt, createdAt), bucketed in the requested timezone
+(weeks anchor to Monday). Optional category/material filters
+attribute an invoice via its linked case's category and materials;
+caseless invoices are excluded when filtering. Requires
+owner/admin/billing role.
+
+ * @summary Invoiced revenue bucketed by day, week, month, or year
+ */
+export const getGetStatsRevenueSeriesUrl = (
+  params: GetStatsRevenueSeriesParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/stats/revenue-series?${stringifiedParams}`
+    : `/api/stats/revenue-series`;
+};
+
+export const getStatsRevenueSeries = async (
+  params: GetStatsRevenueSeriesParams,
+  options?: RequestInit,
+): Promise<StatsRevenueSeriesResult> => {
+  return customFetch<StatsRevenueSeriesResult>(
+    getGetStatsRevenueSeriesUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetStatsRevenueSeriesQueryKey = (
+  params?: GetStatsRevenueSeriesParams,
+) => {
+  return [`/api/stats/revenue-series`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetStatsRevenueSeriesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getStatsRevenueSeries>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsRevenueSeriesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsRevenueSeries>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetStatsRevenueSeriesQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getStatsRevenueSeries>>
+  > = ({ signal }) =>
+    getStatsRevenueSeries(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getStatsRevenueSeries>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetStatsRevenueSeriesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getStatsRevenueSeries>>
+>;
+export type GetStatsRevenueSeriesQueryError = ErrorType<void>;
+
+/**
+ * @summary Invoiced revenue bucketed by day, week, month, or year
+ */
+
+export function useGetStatsRevenueSeries<
+  TData = Awaited<ReturnType<typeof getStatsRevenueSeries>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsRevenueSeriesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsRevenueSeries>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetStatsRevenueSeriesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Case counts per weekday (0 = Monday … 6 = Sunday, computed in the
+requested timezone) with a per-category split, for canonical +
+legacy cases. Follows the active category/material filters.
+Requires owner/admin/billing role on the lab.
+
+ * @summary Case volume by weekday of receipt, split by category
+ */
+export const getGetStatsWeekdayVolumeUrl = (
+  params: GetStatsWeekdayVolumeParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/stats/weekday-volume?${stringifiedParams}`
+    : `/api/stats/weekday-volume`;
+};
+
+export const getStatsWeekdayVolume = async (
+  params: GetStatsWeekdayVolumeParams,
+  options?: RequestInit,
+): Promise<StatsWeekdayVolumeResult> => {
+  return customFetch<StatsWeekdayVolumeResult>(
+    getGetStatsWeekdayVolumeUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetStatsWeekdayVolumeQueryKey = (
+  params?: GetStatsWeekdayVolumeParams,
+) => {
+  return [`/api/stats/weekday-volume`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetStatsWeekdayVolumeQueryOptions = <
+  TData = Awaited<ReturnType<typeof getStatsWeekdayVolume>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsWeekdayVolumeParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsWeekdayVolume>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetStatsWeekdayVolumeQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getStatsWeekdayVolume>>
+  > = ({ signal }) =>
+    getStatsWeekdayVolume(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getStatsWeekdayVolume>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetStatsWeekdayVolumeQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getStatsWeekdayVolume>>
+>;
+export type GetStatsWeekdayVolumeQueryError = ErrorType<void>;
+
+/**
+ * @summary Case volume by weekday of receipt, split by category
+ */
+
+export function useGetStatsWeekdayVolume<
+  TData = Awaited<ReturnType<typeof getStatsWeekdayVolume>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsWeekdayVolumeParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsWeekdayVolume>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetStatsWeekdayVolumeQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

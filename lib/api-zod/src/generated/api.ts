@@ -4787,3 +4787,399 @@ export const ListAuditLogsResponse = zod.object({
     }),
   ),
 });
+
+/**
+ * Read-only aggregate metrics for the Stats dashboard: total cases
+(canonical + legacy), invoiced revenue, average case value, most
+common case category, busiest weekday, and comparison against the
+immediately preceding period of equal length. Revenue comes from
+non-void `invoices.total` only; legacy blob invoices are excluded.
+All metrics follow the active category/material filters. Requires
+owner/admin/billing role on the lab.
+
+ * @summary Summary analytics metrics for a lab with previous-period comparison
+ */
+export const GetStatsSummaryQueryParams = zod.object({
+  organizationId: zod.coerce
+    .string()
+    .describe(
+      "Lab organization id (caller must hold owner\/admin\/billing role).",
+    ),
+  dateFrom: zod.coerce
+    .string()
+    .describe("Window start (ISO date or datetime, inclusive)."),
+  dateTo: zod.coerce
+    .string()
+    .describe("Window end (ISO date or datetime, inclusive)."),
+  timeZone: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      "IANA timezone for bucketing\/weekday attribution (default UTC).",
+    ),
+  category: zod
+    .enum([
+      "implants",
+      "zirconia",
+      "crown_bridge",
+      "removable",
+      "other",
+      "uncategorized",
+    ])
+    .optional()
+    .describe("Restrict results to one analytics category."),
+  material: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      'Restrict results to cases with at least one restoration of this\nnormalized material name (as returned by the case-categories\nmaterials breakdown; \"Unspecified\" matches restorations without a\nmaterial). Legacy cases match on their blob material string.\n',
+    ),
+});
+
+export const GetStatsSummaryResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    from: zod.coerce.date(),
+    to: zod.coerce.date(),
+    timeZone: zod.string(),
+    category: zod
+      .enum([
+        "implants",
+        "zirconia",
+        "crown_bridge",
+        "removable",
+        "other",
+        "uncategorized",
+      ])
+      .describe(
+        "Analytics case category (uncategorized = legacy\/unclassifiable).",
+      )
+      .nullish(),
+    material: zod.string().nullish(),
+    totalCases: zod.number(),
+    legacyCases: zod
+      .number()
+      .describe("How many of totalCases are legacy `lab_cases`."),
+    totalRevenue: zod
+      .string()
+      .describe(
+        "Sum of non-void invoices.total in the window (decimal string).",
+      ),
+    invoiceCount: zod.number(),
+    averageCaseValue: zod
+      .string()
+      .describe(
+        'totalRevenue \/ distinct cases billed in the window (each\ncaseless manual invoice counts as one case). Decimal\nstring, \"0.00\" when no invoices.\n',
+      ),
+    topCategory: zod
+      .enum([
+        "implants",
+        "zirconia",
+        "crown_bridge",
+        "removable",
+        "other",
+        "uncategorized",
+      ])
+      .describe(
+        "Analytics case category (uncategorized = legacy\/unclassifiable).",
+      )
+      .nullish(),
+    topCategoryLabel: zod.string().nullish(),
+    topCategoryCount: zod.number().optional(),
+    busiestWeekday: zod
+      .number()
+      .nullish()
+      .describe("0 = Monday … 6 = Sunday; null when no cases."),
+    busiestWeekdayLabel: zod.string().nullish(),
+    previousPeriod: zod.object({
+      from: zod.coerce.date(),
+      to: zod.coerce.date(),
+      totalCases: zod.number(),
+      totalRevenue: zod.string(),
+      invoiceCount: zod.number(),
+      averageCaseValue: zod.string().optional(),
+      casesChangePct: zod
+        .number()
+        .nullish()
+        .describe(
+          "Percent change vs previous period (null when previous is 0).",
+        ),
+      revenueChangePct: zod.number().nullish(),
+    }),
+  }),
+});
+
+/**
+ * Case counts grouped by analytics category (implants, zirconia,
+crown & bridge, removable, other, uncategorized/legacy) for the
+window, including how many in each bucket are legacy `lab_cases`.
+Also returns a normalized material breakdown (canonical
+restorations only). Both breakdowns follow the active
+category/material filters. Requires owner/admin/billing role on
+the lab.
+
+ * @summary Case counts by analytics category plus material breakdown
+ */
+export const GetStatsCaseCategoriesQueryParams = zod.object({
+  organizationId: zod.coerce
+    .string()
+    .describe(
+      "Lab organization id (caller must hold owner\/admin\/billing role).",
+    ),
+  dateFrom: zod.coerce
+    .string()
+    .describe("Window start (ISO date or datetime, inclusive)."),
+  dateTo: zod.coerce
+    .string()
+    .describe("Window end (ISO date or datetime, inclusive)."),
+  timeZone: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      "IANA timezone for bucketing\/weekday attribution (default UTC).",
+    ),
+  category: zod
+    .enum([
+      "implants",
+      "zirconia",
+      "crown_bridge",
+      "removable",
+      "other",
+      "uncategorized",
+    ])
+    .optional()
+    .describe("Restrict results to one analytics category."),
+  material: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      'Restrict results to cases with at least one restoration of this\nnormalized material name (as returned by the case-categories\nmaterials breakdown; \"Unspecified\" matches restorations without a\nmaterial). Legacy cases match on their blob material string.\n',
+    ),
+});
+
+export const GetStatsCaseCategoriesResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    from: zod.coerce.date(),
+    to: zod.coerce.date(),
+    category: zod
+      .enum([
+        "implants",
+        "zirconia",
+        "crown_bridge",
+        "removable",
+        "other",
+        "uncategorized",
+      ])
+      .describe(
+        "Analytics case category (uncategorized = legacy\/unclassifiable).",
+      )
+      .nullish(),
+    material: zod.string().nullish(),
+    totalCases: zod.number(),
+    categories: zod.array(
+      zod.object({
+        category: zod
+          .enum([
+            "implants",
+            "zirconia",
+            "crown_bridge",
+            "removable",
+            "other",
+            "uncategorized",
+          ])
+          .describe(
+            "Analytics case category (uncategorized = legacy\/unclassifiable).",
+          ),
+        label: zod.string(),
+        count: zod.number(),
+        legacyCount: zod
+          .number()
+          .describe("How many of count are legacy `lab_cases`."),
+      }),
+    ),
+    materials: zod
+      .array(
+        zod.object({
+          material: zod.string(),
+          restorations: zod.number(),
+          units: zod.number(),
+        }),
+      )
+      .describe(
+        "Normalized material breakdown (canonical restorations only), sorted by units desc.",
+      ),
+  }),
+});
+
+/**
+ * Revenue series from non-void, non-deleted `invoices.total` keyed on
+COALESCE(issuedAt, createdAt), bucketed in the requested timezone
+(weeks anchor to Monday). Optional category/material filters
+attribute an invoice via its linked case's category and materials;
+caseless invoices are excluded when filtering. Requires
+owner/admin/billing role.
+
+ * @summary Invoiced revenue bucketed by day, week, month, or year
+ */
+export const getStatsRevenueSeriesQueryGroupByDefault = `month`;
+
+export const GetStatsRevenueSeriesQueryParams = zod.object({
+  organizationId: zod.coerce
+    .string()
+    .describe(
+      "Lab organization id (caller must hold owner\/admin\/billing role).",
+    ),
+  dateFrom: zod.coerce
+    .string()
+    .describe("Window start (ISO date or datetime, inclusive)."),
+  dateTo: zod.coerce
+    .string()
+    .describe("Window end (ISO date or datetime, inclusive)."),
+  timeZone: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      "IANA timezone for bucketing\/weekday attribution (default UTC).",
+    ),
+  category: zod
+    .enum([
+      "implants",
+      "zirconia",
+      "crown_bridge",
+      "removable",
+      "other",
+      "uncategorized",
+    ])
+    .optional()
+    .describe("Restrict results to one analytics category."),
+  material: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      'Restrict results to cases with at least one restoration of this\nnormalized material name (as returned by the case-categories\nmaterials breakdown; \"Unspecified\" matches restorations without a\nmaterial). Legacy cases match on their blob material string.\n',
+    ),
+  groupBy: zod
+    .enum(["day", "week", "month", "year"])
+    .default(getStatsRevenueSeriesQueryGroupByDefault),
+});
+
+export const GetStatsRevenueSeriesResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    from: zod.coerce.date(),
+    to: zod.coerce.date(),
+    groupBy: zod.enum(["day", "week", "month", "year"]),
+    timeZone: zod.string(),
+    category: zod
+      .enum([
+        "implants",
+        "zirconia",
+        "crown_bridge",
+        "removable",
+        "other",
+        "uncategorized",
+      ])
+      .describe(
+        "Analytics case category (uncategorized = legacy\/unclassifiable).",
+      )
+      .nullish(),
+    material: zod.string().nullish(),
+    series: zod.array(
+      zod.object({
+        period: zod
+          .string()
+          .describe(
+            "Bucket key (YYYY-MM-DD for day\/week, YYYY-MM for month, YYYY for year).",
+          ),
+        periodStart: zod.coerce.date(),
+        revenue: zod.string(),
+        invoiceCount: zod.number(),
+      }),
+    ),
+    totals: zod.object({
+      revenue: zod.string(),
+      invoiceCount: zod.number(),
+      averageInvoice: zod.string(),
+    }),
+  }),
+});
+
+/**
+ * Case counts per weekday (0 = Monday … 6 = Sunday, computed in the
+requested timezone) with a per-category split, for canonical +
+legacy cases. Follows the active category/material filters.
+Requires owner/admin/billing role on the lab.
+
+ * @summary Case volume by weekday of receipt, split by category
+ */
+export const GetStatsWeekdayVolumeQueryParams = zod.object({
+  organizationId: zod.coerce
+    .string()
+    .describe(
+      "Lab organization id (caller must hold owner\/admin\/billing role).",
+    ),
+  dateFrom: zod.coerce
+    .string()
+    .describe("Window start (ISO date or datetime, inclusive)."),
+  dateTo: zod.coerce
+    .string()
+    .describe("Window end (ISO date or datetime, inclusive)."),
+  timeZone: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      "IANA timezone for bucketing\/weekday attribution (default UTC).",
+    ),
+  category: zod
+    .enum([
+      "implants",
+      "zirconia",
+      "crown_bridge",
+      "removable",
+      "other",
+      "uncategorized",
+    ])
+    .optional()
+    .describe("Restrict results to one analytics category."),
+  material: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      'Restrict results to cases with at least one restoration of this\nnormalized material name (as returned by the case-categories\nmaterials breakdown; \"Unspecified\" matches restorations without a\nmaterial). Legacy cases match on their blob material string.\n',
+    ),
+});
+
+export const GetStatsWeekdayVolumeResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    from: zod.coerce.date(),
+    to: zod.coerce.date(),
+    timeZone: zod.string(),
+    category: zod
+      .enum([
+        "implants",
+        "zirconia",
+        "crown_bridge",
+        "removable",
+        "other",
+        "uncategorized",
+      ])
+      .describe(
+        "Analytics case category (uncategorized = legacy\/unclassifiable).",
+      )
+      .nullish(),
+    material: zod.string().nullish(),
+    weekdays: zod
+      .array(
+        zod.object({
+          weekday: zod.number(),
+          label: zod.string(),
+          total: zod.number(),
+          byCategory: zod.record(zod.string(), zod.number()),
+        }),
+      )
+      .describe("Always 7 entries, index 0 = Monday … 6 = Sunday."),
+    totalCases: zod.number(),
+  }),
+});

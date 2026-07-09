@@ -38,6 +38,8 @@ tags:
     description: Organization, membership, and invitation operations (LabTrax)
   - name: audit
     description: Audit-log read operations (LabTrax)
+  - name: stats
+    description: Read-only lab-scoped analytics aggregates (LabTrax)
   - name: lab-inbox
     description: Unassigned Documents inbox operations (LabTrax)
 paths:
@@ -3605,8 +3607,345 @@ paths:
                 $ref: "#/components/schemas/AuditLogListResult"
         "403":
           description: Insufficient role
+  /stats/summary:
+    get:
+      operationId: getStatsSummary
+      tags: [stats]
+      summary: Summary analytics metrics for a lab with previous-period comparison
+      description: |
+        Read-only aggregate metrics for the Stats dashboard: total cases
+        (canonical + legacy), invoiced revenue, average case value, most
+        common case category, busiest weekday, and comparison against the
+        immediately preceding period of equal length. Revenue comes from
+        non-void `invoices.total` only; legacy blob invoices are excluded.
+        All metrics follow the active category/material filters. Requires
+        owner/admin/billing role on the lab.
+      parameters:
+        - $ref: "#/components/parameters/StatsOrganizationId"
+        - $ref: "#/components/parameters/StatsDateFrom"
+        - $ref: "#/components/parameters/StatsDateTo"
+        - $ref: "#/components/parameters/StatsTimeZone"
+        - $ref: "#/components/parameters/StatsCategory"
+        - $ref: "#/components/parameters/StatsMaterial"
+      responses:
+        "200":
+          description: Summary metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsSummaryResult"
+        "403":
+          description: Insufficient role
+  /stats/case-categories:
+    get:
+      operationId: getStatsCaseCategories
+      tags: [stats]
+      summary: Case counts by analytics category plus material breakdown
+      description: |
+        Case counts grouped by analytics category (implants, zirconia,
+        crown & bridge, removable, other, uncategorized/legacy) for the
+        window, including how many in each bucket are legacy `lab_cases`.
+        Also returns a normalized material breakdown (canonical
+        restorations only). Both breakdowns follow the active
+        category/material filters. Requires owner/admin/billing role on
+        the lab.
+      parameters:
+        - $ref: "#/components/parameters/StatsOrganizationId"
+        - $ref: "#/components/parameters/StatsDateFrom"
+        - $ref: "#/components/parameters/StatsDateTo"
+        - $ref: "#/components/parameters/StatsTimeZone"
+        - $ref: "#/components/parameters/StatsCategory"
+        - $ref: "#/components/parameters/StatsMaterial"
+      responses:
+        "200":
+          description: Category and material counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsCaseCategoriesResult"
+        "403":
+          description: Insufficient role
+  /stats/revenue-series:
+    get:
+      operationId: getStatsRevenueSeries
+      tags: [stats]
+      summary: Invoiced revenue bucketed by day, week, month, or year
+      description: |
+        Revenue series from non-void, non-deleted `invoices.total` keyed on
+        COALESCE(issuedAt, createdAt), bucketed in the requested timezone
+        (weeks anchor to Monday). Optional category/material filters
+        attribute an invoice via its linked case's category and materials;
+        caseless invoices are excluded when filtering. Requires
+        owner/admin/billing role.
+      parameters:
+        - $ref: "#/components/parameters/StatsOrganizationId"
+        - $ref: "#/components/parameters/StatsDateFrom"
+        - $ref: "#/components/parameters/StatsDateTo"
+        - $ref: "#/components/parameters/StatsTimeZone"
+        - $ref: "#/components/parameters/StatsCategory"
+        - $ref: "#/components/parameters/StatsMaterial"
+        - in: query
+          name: groupBy
+          schema:
+            type: string
+            enum: [day, week, month, year]
+            default: month
+      responses:
+        "200":
+          description: Revenue series
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsRevenueSeriesResult"
+        "403":
+          description: Insufficient role
+  /stats/weekday-volume:
+    get:
+      operationId: getStatsWeekdayVolume
+      tags: [stats]
+      summary: Case volume by weekday of receipt, split by category
+      description: |
+        Case counts per weekday (0 = Monday … 6 = Sunday, computed in the
+        requested timezone) with a per-category split, for canonical +
+        legacy cases. Follows the active category/material filters.
+        Requires owner/admin/billing role on the lab.
+      parameters:
+        - $ref: "#/components/parameters/StatsOrganizationId"
+        - $ref: "#/components/parameters/StatsDateFrom"
+        - $ref: "#/components/parameters/StatsDateTo"
+        - $ref: "#/components/parameters/StatsTimeZone"
+        - $ref: "#/components/parameters/StatsCategory"
+        - $ref: "#/components/parameters/StatsMaterial"
+      responses:
+        "200":
+          description: Weekday volumes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsWeekdayVolumeResult"
+        "403":
+          description: Insufficient role
 components:
+  parameters:
+    StatsOrganizationId:
+      in: query
+      name: organizationId
+      required: true
+      schema: { type: string }
+      description: Lab organization id (caller must hold owner/admin/billing role).
+    StatsDateFrom:
+      in: query
+      name: dateFrom
+      required: true
+      schema: { type: string }
+      description: Window start (ISO date or datetime, inclusive).
+    StatsDateTo:
+      in: query
+      name: dateTo
+      required: true
+      schema: { type: string }
+      description: Window end (ISO date or datetime, inclusive).
+    StatsTimeZone:
+      in: query
+      name: timeZone
+      required: false
+      schema: { type: string }
+      description: IANA timezone for bucketing/weekday attribution (default UTC).
+    StatsCategory:
+      in: query
+      name: category
+      required: false
+      schema:
+        $ref: "#/components/schemas/StatsCaseCategory"
+      description: Restrict results to one analytics category.
+    StatsMaterial:
+      in: query
+      name: material
+      required: false
+      schema: { type: string }
+      description: |
+        Restrict results to cases with at least one restoration of this
+        normalized material name (as returned by the case-categories
+        materials breakdown; "Unspecified" matches restorations without a
+        material). Legacy cases match on their blob material string.
   schemas:
+    StatsCaseCategory:
+      type: string
+      enum: [implants, zirconia, crown_bridge, removable, other, uncategorized]
+      description: Analytics case category (uncategorized = legacy/unclassifiable).
+    StatsSummaryResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required:
+            [
+              from,
+              to,
+              timeZone,
+              totalCases,
+              legacyCases,
+              totalRevenue,
+              invoiceCount,
+              averageCaseValue,
+              previousPeriod,
+            ]
+          properties:
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+            timeZone: { type: string }
+            category:
+              allOf: [{ $ref: "#/components/schemas/StatsCaseCategory" }]
+              nullable: true
+            material: { type: string, nullable: true }
+            totalCases: { type: integer }
+            legacyCases:
+              type: integer
+              description: How many of totalCases are legacy `lab_cases`.
+            totalRevenue:
+              type: string
+              description: Sum of non-void invoices.total in the window (decimal string).
+            invoiceCount: { type: integer }
+            averageCaseValue:
+              type: string
+              description: |
+                totalRevenue / distinct cases billed in the window (each
+                caseless manual invoice counts as one case). Decimal
+                string, "0.00" when no invoices.
+            topCategory:
+              allOf: [{ $ref: "#/components/schemas/StatsCaseCategory" }]
+              nullable: true
+            topCategoryLabel: { type: string, nullable: true }
+            topCategoryCount: { type: integer }
+            busiestWeekday:
+              type: integer
+              nullable: true
+              description: 0 = Monday … 6 = Sunday; null when no cases.
+            busiestWeekdayLabel: { type: string, nullable: true }
+            previousPeriod:
+              type: object
+              required: [from, to, totalCases, totalRevenue, invoiceCount]
+              properties:
+                from: { type: string, format: date-time }
+                to: { type: string, format: date-time }
+                totalCases: { type: integer }
+                totalRevenue: { type: string }
+                invoiceCount: { type: integer }
+                averageCaseValue: { type: string }
+                casesChangePct:
+                  type: number
+                  nullable: true
+                  description: Percent change vs previous period (null when previous is 0).
+                revenueChangePct: { type: number, nullable: true }
+    StatsCaseCategoriesResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [from, to, totalCases, categories, materials]
+          properties:
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+            category:
+              allOf: [{ $ref: "#/components/schemas/StatsCaseCategory" }]
+              nullable: true
+            material: { type: string, nullable: true }
+            totalCases: { type: integer }
+            categories:
+              type: array
+              items:
+                type: object
+                required: [category, label, count, legacyCount]
+                properties:
+                  category:
+                    $ref: "#/components/schemas/StatsCaseCategory"
+                  label: { type: string }
+                  count: { type: integer }
+                  legacyCount:
+                    type: integer
+                    description: How many of count are legacy `lab_cases`.
+            materials:
+              type: array
+              description: Normalized material breakdown (canonical restorations only), sorted by units desc.
+              items:
+                type: object
+                required: [material, restorations, units]
+                properties:
+                  material: { type: string }
+                  restorations: { type: integer }
+                  units: { type: integer }
+    StatsRevenueSeriesResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [from, to, groupBy, timeZone, series, totals]
+          properties:
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+            groupBy:
+              type: string
+              enum: [day, week, month, year]
+            timeZone: { type: string }
+            category:
+              allOf: [{ $ref: "#/components/schemas/StatsCaseCategory" }]
+              nullable: true
+            material: { type: string, nullable: true }
+            series:
+              type: array
+              items:
+                type: object
+                required: [period, periodStart, revenue, invoiceCount]
+                properties:
+                  period:
+                    type: string
+                    description: Bucket key (YYYY-MM-DD for day/week, YYYY-MM for month, YYYY for year).
+                  periodStart: { type: string, format: date-time }
+                  revenue: { type: string }
+                  invoiceCount: { type: integer }
+            totals:
+              type: object
+              required: [revenue, invoiceCount, averageInvoice]
+              properties:
+                revenue: { type: string }
+                invoiceCount: { type: integer }
+                averageInvoice: { type: string }
+    StatsWeekdayVolumeResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [from, to, timeZone, weekdays, totalCases]
+          properties:
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+            timeZone: { type: string }
+            category:
+              allOf: [{ $ref: "#/components/schemas/StatsCaseCategory" }]
+              nullable: true
+            material: { type: string, nullable: true }
+            weekdays:
+              type: array
+              description: Always 7 entries, index 0 = Monday … 6 = Sunday.
+              items:
+                type: object
+                required: [weekday, label, total, byCategory]
+                properties:
+                  weekday: { type: integer }
+                  label: { type: string }
+                  total: { type: integer }
+                  byCategory:
+                    type: object
+                    additionalProperties: { type: integer }
+            totalCases: { type: integer }
     SttResult:
       type: object
       required: [transcript]

@@ -26,6 +26,7 @@ const AccountsPage = lazy(() => import("@/pages/accounts"));
 const StatementsPage = lazy(() => import("@/pages/statements"));
 const PricingPage = lazy(() => import("@/pages/pricing"));
 const ReportsPage = lazy(() => import("@/pages/reports"));
+const StatsPage = lazy(() => import("@/pages/stats"));
 const SettingsPage = lazy(() => import("@/pages/settings"));
 const MaintenancePage = lazy(() => import("@/pages/maintenance"));
 const RegisterPage = lazy(() => import("@/pages/finance/register"));
@@ -82,6 +83,7 @@ function AppLayoutWithUploads() {
           <Route path="/statements" component={StatementsPage} />
           <Route path="/pricing" component={PricingPage} />
           <Route path="/reports" component={ReportsPage} />
+          <Route path="/stats" component={StatsPage} />
           <Route path="/settings" component={SettingsPage} />
           <Route path="/maintenance" component={MaintenancePage} />
           <Route path="/finance" component={() => <Redirect to="/finance/register" />} />
