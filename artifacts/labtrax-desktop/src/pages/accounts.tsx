@@ -36,6 +36,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ColumnTotal } from "@/components/ColumnTotal";
 import {
   useUndoDoctorMerge,
   useGetDoctorDuplicateClusters,
@@ -1203,8 +1204,24 @@ export default function AccountsPage() {
                       <ArrowUpDown size={11} className="opacity-40" />
                     )}
                   </button>
+                  <ColumnTotal
+                    values={filteredPractices.map(
+                      (org) => practiceStats.get(org.id)?.totalBilled ?? 0,
+                    )}
+                    loading={isLoading}
+                    testId="column-total-billed"
+                  />
                 </th>
-                <th className="text-right font-medium py-2.5">Balance</th>
+                <th className="text-right font-medium py-2.5">
+                  Balance
+                  <ColumnTotal
+                    values={filteredPractices.map(
+                      (org) => practiceStats.get(org.id)?.openBalance ?? 0,
+                    )}
+                    loading={isLoading}
+                    testId="column-total-open-balance"
+                  />
+                </th>
                 <th className="text-left font-medium px-5 py-2.5">
                   <button
                     type="button"
@@ -1727,8 +1744,20 @@ export default function AccountsPage() {
                     <th className="text-left font-medium py-2.5">Issued</th>
                     <th className="text-left font-medium py-2.5">Due</th>
                     <th className="text-left font-medium py-2.5">Status</th>
-                    <th className="text-right font-medium px-4 py-2.5">Total</th>
-                    <th className="text-right font-medium px-4 py-2.5">Balance</th>
+                    <th className="text-right font-medium px-4 py-2.5">
+                      Total
+                      <ColumnTotal
+                        values={filteredInvoices.map((inv) => inv.total)}
+                        testId="column-total-dialog-total"
+                      />
+                    </th>
+                    <th className="text-right font-medium px-4 py-2.5">
+                      Balance
+                      <ColumnTotal
+                        values={filteredInvoices.map((inv) => inv.balanceDue)}
+                        testId="column-total-dialog-balance"
+                      />
+                    </th>
                   </tr>
                 </thead>
                 <tbody>

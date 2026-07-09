@@ -11,6 +11,7 @@ import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankAccount, Invoice, Organization } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
+import { ColumnTotal } from "@/components/ColumnTotal";
 
 export default function ReceivePaymentsPage() {
   return (
@@ -363,8 +364,22 @@ function ReceivePayments({
                 <th className="text-left font-medium py-2">Invoice</th>
                 <th className="text-left font-medium py-2">Issued</th>
                 <th className="text-right font-medium py-2">Age</th>
-                <th className="text-right font-medium py-2">Original</th>
-                <th className="text-right font-medium py-2">Balance</th>
+                <th className="text-right font-medium py-2">
+                  Original
+                  <ColumnTotal
+                    values={open.map((inv) => inv.total)}
+                    loading={openQuery.isLoading}
+                    testId="column-total-original"
+                  />
+                </th>
+                <th className="text-right font-medium py-2">
+                  Balance
+                  <ColumnTotal
+                    values={open.map((inv) => inv.balanceDue)}
+                    loading={openQuery.isLoading}
+                    testId="column-total-balance"
+                  />
+                </th>
                 <th className="text-right font-medium px-4 py-2 w-32">Payment</th>
               </tr>
             </thead>

@@ -61,6 +61,7 @@ import {
   formatRxTeethWithShades,
 } from "@/lib/rx-summary";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ColumnTotal } from "@/components/ColumnTotal";
 import { PrescriptionPreview } from "@/components/PrescriptionPreview";
 import {
   buildInvoicePdf,
@@ -672,8 +673,22 @@ export default function InvoicesPage() {
                   </button>
                 </th>
                 <th className="text-left font-medium py-2.5">Status</th>
-                <th className="text-right font-medium py-2.5">Total</th>
-                <th className="text-right font-medium px-5 py-2.5">Balance</th>
+                <th className="text-right font-medium py-2.5">
+                  Total
+                  <ColumnTotal
+                    values={filtered.map((i) => i.total)}
+                    loading={isLoading}
+                    testId="column-total-total"
+                  />
+                </th>
+                <th className="text-right font-medium px-5 py-2.5">
+                  Balance
+                  <ColumnTotal
+                    values={filtered.map((i) => i.balanceDue ?? i.total)}
+                    loading={isLoading}
+                    testId="column-total-balance"
+                  />
+                </th>
               </tr>
             </thead>
             <tbody>

@@ -204,9 +204,10 @@ describe("PracticeEditor — customer window tab bar", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Statements" }));
 
-    // Statement table rendered with the fetched row.
+    // Statement table rendered with the fetched row. "$300.00" appears both
+    // in the row cell and in the Balance Due column total header.
     expect(await screen.findByText("Balance Due")).toBeInTheDocument();
-    expect(screen.getByText("$300.00")).toBeInTheDocument();
+    expect(screen.getAllByText("$300.00").length).toBeGreaterThan(0);
     expect(
       calls.some(
         (c) =>

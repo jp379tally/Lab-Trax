@@ -24,6 +24,7 @@ import { useAuth } from "@/lib/auth-context";
 import type { Invoice, Organization, PracticeStatement } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ColumnTotal } from "@/components/ColumnTotal";
 import { InvoiceEditor, StatementBuilderDialog } from "@/pages/invoices";
 import { downloadStatementPdf } from "@/lib/export";
 import { useTableColumns } from "@/hooks/useTableColumns";
@@ -557,9 +558,30 @@ export function StatementsTab({
               <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
                 <th className="text-left px-5 py-2.5 font-medium">Period</th>
                 <th className="text-left px-3 py-2.5 font-medium">Invoices</th>
-                <th className="text-right px-3 py-2.5 font-medium">Billed</th>
-                <th className="text-right px-3 py-2.5 font-medium">Paid</th>
-                <th className="text-right px-3 py-2.5 font-medium">Balance Due</th>
+                <th className="text-right px-3 py-2.5 font-medium">
+                  Billed
+                  <ColumnTotal
+                    values={statements.map((s) => s.totalBilled)}
+                    loading={statementsQuery.isLoading}
+                    testId="column-total-billed"
+                  />
+                </th>
+                <th className="text-right px-3 py-2.5 font-medium">
+                  Paid
+                  <ColumnTotal
+                    values={statements.map((s) => s.totalPaid)}
+                    loading={statementsQuery.isLoading}
+                    testId="column-total-paid"
+                  />
+                </th>
+                <th className="text-right px-3 py-2.5 font-medium">
+                  Balance Due
+                  <ColumnTotal
+                    values={statements.map((s) => s.balanceDue)}
+                    loading={statementsQuery.isLoading}
+                    testId="column-total-balance-due"
+                  />
+                </th>
                 <th className="text-left px-3 py-2.5 font-medium">Generated</th>
                 <th className="text-right px-5 py-2.5 font-medium">Actions</th>
               </tr>
@@ -1126,6 +1148,14 @@ export function InvoicesTab({
     "labtrax_customer_center_cols_v1",
   );
 
+  const invColumnTotals: Record<
+    string,
+    Array<string | number | null | undefined>
+  > = {
+    amount: practiceInvoices.map((inv) => inv.total),
+    openBalance: practiceInvoices.map((inv) => inv.balanceDue ?? inv.total),
+  };
+
   const invColumnOptions = invCols.defs.map((d) => ({
     id: d.id,
     label: d.menuLabel,
@@ -1303,6 +1333,13 @@ export function InvoicesTab({
                   style={{ overflow: "hidden" }}
                 >
                   {col.label}
+                  {invColumnTotals[col.id] && (
+                    <ColumnTotal
+                      values={invColumnTotals[col.id]}
+                      loading={practiceInvoicesQuery.isLoading}
+                      testId={`column-total-${col.id}`}
+                    />
+                  )}
                   <div
                     onMouseDown={(e) => invCols.startResize(col.id, e)}
                     onDoubleClick={() => invCols.resetWidth(col.id)}

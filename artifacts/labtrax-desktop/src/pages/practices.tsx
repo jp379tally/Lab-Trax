@@ -9,6 +9,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatMoney, formatPhone, relativeTime } from "@/lib/format";
+import { ColumnTotal } from "@/components/ColumnTotal";
 
 import { DEFAULT_PRICE_KEYS, priceKeyLabel } from "@/lib/pricing-keys";
 import { RemoveDoctorDialog } from "@/components/RemoveDoctorDialog";
@@ -768,8 +769,22 @@ export default function PracticesPage() {
                 <th className="text-left font-medium py-2.5">Contact</th>
                 <th className="text-left font-medium py-2.5">Location</th>
                 <th className="text-right font-medium py-2.5">Cases</th>
-                <th className="text-right font-medium py-2.5">Billed</th>
-                <th className="text-right font-medium px-5 py-2.5">Open balance</th>
+                <th className="text-right font-medium py-2.5">
+                  Billed
+                  <ColumnTotal
+                    values={filtered.map((o) => stats.get(o.id)?.totalBilled ?? 0)}
+                    loading={isLoading || invoicesQuery.isLoading}
+                    testId="column-total-billed"
+                  />
+                </th>
+                <th className="text-right font-medium px-5 py-2.5">
+                  Open balance
+                  <ColumnTotal
+                    values={filtered.map((o) => stats.get(o.id)?.openBalance ?? 0)}
+                    loading={isLoading || invoicesQuery.isLoading}
+                    testId="column-total-open-balance"
+                  />
+                </th>
               </tr>
             </thead>
             <tbody>
