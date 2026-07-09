@@ -1,6 +1,6 @@
 ---
-name: UnassignedDocumentsCard preview test flake
-description: rel-desktop-tests gate flakes on the UnassignedDocumentsCard preview timeout; passes in isolation.
+name: rel-desktop-tests full-suite flakes
+description: rel-desktop-tests gate flakes on several jsdom tests under the full 2-worker suite; each passes in isolation.
 ---
 
 The `rel-desktop-tests` release gate intermittently fails on
@@ -25,3 +25,11 @@ the file's test timeout and pass explicit long timeouts to findBy/waitFor —
 real regressions still fail fast on the assertion, only starvation gets the
 extra budget. The "Not implemented: navigation to another Document" jsdom
 warning is harmless noise from another file, not this test.
+
+**Other known full-suite-only flakes (verified 2026-07-09, both pass in
+isolation on the same commit that failed the gate):**
+- `src/pages/__tests__/merge-dialog-notification-path.test.tsx` — "opens with
+  one target + one selectable source" fails to find the /Review/i button.
+- `src/pages/__tests__/settings-profile-phone.test.tsx` — "shows the OTP panel
+  after a successful send" hits the 5s timeout.
+Re-run these files in isolation before blaming an unrelated change.

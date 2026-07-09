@@ -6,6 +6,7 @@ import { Spacing, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { ListScreen } from "@/components/ui/ListScreen";
+import { ColumnTotals } from "@/components/ui/ColumnTotals";
 import { getJson } from "@/lib/read-api";
 import { useMe, primaryLabOrgId } from "@/lib/auth-me";
 import { titleCase, toNumber, formatMoney, formatDate } from "@/lib/format";
@@ -52,6 +53,18 @@ export default function StatementsScreen() {
       emptyTitle="No statement runs"
       emptyBody="Monthly statement sends will appear here."
       errorTitle="Couldn’t load statements"
+      ListHeader={
+        <ColumnTotals
+          loading={query.isLoading || query.isFetching}
+          items={[
+            {
+              label: "Total",
+              values: (query.data ?? []).map((r) => r.totalAmount),
+              testID: "column-total-total",
+            },
+          ]}
+        />
+      }
       blocked={
         labOrgId
           ? null

@@ -502,13 +502,21 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
     useQuery: vi.fn((options?: { queryKey?: unknown[] }) => {
       const key = Array.isArray(options?.queryKey) ? options.queryKey[0] : null;
       const isMeQuery = key === "auth-me";
+      let data: unknown;
+      if (isMeQuery && mockAppOverrides.current.meMemberships !== undefined) {
+        data = { memberships: mockAppOverrides.current.meMemberships };
+      } else if (key === "statement-runs") {
+        data = (mockAppOverrides.current.statementRuns as unknown[]) ?? [];
+      }
       return {
-        data:
-          isMeQuery && mockAppOverrides.current.meMemberships !== undefined
-            ? { memberships: mockAppOverrides.current.meMemberships }
-            : undefined,
+        data,
         isLoading: false,
         isError: false,
+        isFetching:
+          key === "statement-runs"
+            ? ((mockAppOverrides.current.statementRunsIsFetching as boolean | undefined) ?? false)
+            : false,
+        refetch: vi.fn(async () => undefined),
       };
     }),
     useQueryClient: vi.fn(() => ({
@@ -623,6 +631,7 @@ vi.mock("@workspace/api-client-react", async () => ({
   useInvoices: () => ({
     data: (mockAppOverrides.current.invoices as unknown[]) ?? [],
     isLoading: false,
+    isFetching: (mockAppOverrides.current.invoicesIsFetching as boolean | undefined) ?? false,
     isError: false,
     refetch: vi.fn(async () => undefined),
   }),

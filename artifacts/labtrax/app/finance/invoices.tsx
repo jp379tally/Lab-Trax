@@ -8,6 +8,7 @@ import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { ListScreen, type ListScreenQuery } from "@/components/ui/ListScreen";
+import { ColumnTotals } from "@/components/ui/ColumnTotals";
 import { FormSheet } from "@/components/ui/FormSheet";
 import { TextField } from "@/components/ui/TextField";
 import { useMe, primaryLabOrgId, primaryProviderOrgId } from "@/lib/auth-me";
@@ -104,8 +105,25 @@ export default function InvoicesScreen() {
       ? `${formatDate(customStart.toISOString())} – ${formatDate(customEnd.toISOString())}`
       : dateFilterLabel(dateFilter);
 
+  const displayedInvoices = filteredQuery.data ?? [];
+
   const filterHeader = (
     <View>
+      <ColumnTotals
+        loading={query.isLoading || query.isFetching}
+        items={[
+          {
+            label: "Total",
+            values: displayedInvoices.map((i) => i.total),
+            testID: "column-total-total",
+          },
+          {
+            label: "Balance",
+            values: displayedInvoices.map((i) => i.balanceDue ?? i.total),
+            testID: "column-total-balance",
+          },
+        ]}
+      />
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
