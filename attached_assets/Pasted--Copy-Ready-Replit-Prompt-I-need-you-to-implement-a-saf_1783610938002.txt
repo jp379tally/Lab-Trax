@@ -1,0 +1,87 @@
+**Copy-Ready Replit Prompt**
+
+I need you to implement a safe data cleanup task in the LabTracks app.
+
+**Goal:**
+Delete all cases and invoices dated before **June 1, 2026**. Keep all cases and invoices dated **June 1, 2026 or later**.
+
+**Important date rule:**
+Use a strict cutoff of:
+
+```text
+delete records where record date < 2026-06-01
+keep records where record date >= 2026-06-01
+```
+
+Assume the user’s local timezone is **America/New_York** unless the app already stores dates in UTC and has an established convention. Do not accidentally delete records from June 1, 2026.
+
+**Likely root cause / task type:**
+This is not a UI bug. This is a data cleanup / retention operation that likely needs to touch the database models or tables for cases and invoices. The risky part is ensuring the correct date fields are used and that related records are handled safely.
+
+**Implementation steps:**
+
+1. Inspect the database schema and identify the exact tables/models for:
+
+   * cases
+   * invoices
+   * invoice line items or related invoice records
+   * case-related child records, notes, files, appointments, tasks, or status history if applicable
+
+2. Identify the authoritative date field for each cleanup target:
+
+   * For cases, use the date that represents the case creation/open/submission date, not an updated timestamp unless that is the only available field.
+   * For invoices, use the invoice date or issued date, not the payment date unless invoice date is unavailable.
+   * If there is ambiguity, stop and explain the options before deleting anything.
+
+3. Before deletion, add a dry-run mode or run a preview query that reports:
+
+   * number of cases before June 1, 2026
+   * number of invoices before June 1, 2026
+   * number of related child records that would be deleted
+   * oldest and newest dates included in the deletion set
+
+4. Create a backup/export or use the app’s existing backup process before deleting. Do not proceed without a recoverable backup path.
+
+5. Implement the deletion safely:
+
+   * Prefer a transaction so the cleanup either fully succeeds or fully rolls back.
+   * Respect foreign key relationships.
+   * Delete dependent records in the correct order if cascading deletes are not configured.
+   * Do not delete customers, labs, providers, products, settings, users, or global reference data unless they are exclusively child records of the deleted cases/invoices and the schema requires it.
+
+6. If the app supports soft deletes or archiving, prefer that over hard deletion unless the project already uses hard deletes for this type of cleanup.
+
+7. Add clear logging for:
+
+   * cutoff date used
+   * counts deleted by table/model
+   * timestamp of cleanup
+   * whether the run was dry-run or live
+
+**Constraints / guardrails:**
+
+* Do not delete any case or invoice dated **2026-06-01** or later.
+* Do not use `updated_at` as the deletion basis unless there is no better date field and you explain why.
+* Do not delete unrelated customer/account records.
+* Do not run broad deletes without a `WHERE` clause using the strict cutoff.
+* Do not make schema changes unless absolutely necessary.
+* Do not leave a dangerous cleanup endpoint exposed in production. If you add a script or admin action, protect it or remove it after use.
+* If there is any uncertainty about date fields, relationships, or deletion scope, pause and explain before making destructive changes.
+
+**Regression checks before finishing:**
+
+1. Confirm zero cases remain with a case date before **2026-06-01**.
+2. Confirm zero invoices remain with an invoice/issued date before **2026-06-01**.
+3. Confirm cases and invoices dated exactly **2026-06-01** still exist.
+4. Confirm cases and invoices after **2026-06-01** still exist.
+5. Confirm the app still loads:
+
+   * case list
+   * invoice list
+   * customer/patient detail pages
+   * dashboards or reports that summarize cases/invoices
+6. Confirm there are no broken references, orphaned invoice line items, or orphaned case child records.
+7. Confirm financial totals and reports no longer include deleted invoices.
+8. Provide a summary of what was deleted, including counts per table/model, and confirm the backup location or recovery method.
+
+Please implement this carefully and explain any assumptions you make before performing the live deletion.
