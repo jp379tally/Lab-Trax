@@ -2339,7 +2339,24 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
               : micState === "error"
               ? "Voice mode on — microphone unavailable"
               : voiceResumePending
-              ? "Voice mode remembered — tap the headphones to resume the conversation"
+              ? (
+                  <>
+                    Voice mode remembered — tap the headphones to resume the conversation ·{" "}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Decline the resume: turn voice mode off in one action
+                        // without ever starting mic capture (no getUserMedia).
+                        setVoiceMode(false);
+                        setVoiceResumePending(false);
+                      }}
+                      aria-label="Turn voice mode off"
+                      className="underline underline-offset-2 text-muted-foreground/70 hover:text-foreground"
+                    >
+                      turn off
+                    </button>
+                  </>
+                )
               : "Voice mode on — Maynard will speak and listen automatically"
             : "Mic to dictate · Headphones for voice conversation · Enter to send"}
         </p>

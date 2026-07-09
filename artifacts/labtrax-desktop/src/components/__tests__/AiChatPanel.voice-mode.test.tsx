@@ -357,6 +357,34 @@ describe("AiChatPanel — remembered voice mode resumes only on a user gesture",
     });
   });
 
+  it("declining the resume via 'turn off' never starts mic capture and persists voice mode off", async () => {
+    renderPanel();
+    await settle();
+
+    // The one-action decline affordance is visible alongside the resume hint.
+    const turnOffBtn = screen.getByRole("button", { name: /turn voice mode off/i });
+    await act(async () => {
+      turnOffBtn.click();
+    });
+    await settle();
+
+    // No mic capture ever happened — getUserMedia was never called.
+    expect(getUserMediaMock).not.toHaveBeenCalled();
+    expect(recorderStart).not.toHaveBeenCalled();
+
+    // Voice mode is off: headphones button is back to its "start" state and
+    // the resume affordance is gone.
+    expect(screen.getByRole("button", { name: /start voice conversation/i })).toBeTruthy();
+    expect(screen.queryByText(/voice mode remembered/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /turn voice mode off/i })).toBeNull();
+
+    // Preference persisted as off, so the next open starts clean.
+    const prefs = JSON.parse(localStorage.getItem(VOICE_PREFS_KEY) ?? "{}") as {
+      voiceMode?: boolean;
+    };
+    expect(prefs.voiceMode).toBe(false);
+  });
+
   it("dictation click while resume is pending also clears the affordance", async () => {
     renderPanel();
     await settle();
