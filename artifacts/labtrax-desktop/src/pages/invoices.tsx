@@ -329,7 +329,7 @@ export default function InvoicesPage() {
 
   const bulkResetMutation = useMutation({
     mutationFn: ({ expected: _expected, ...payload }: { invoiceIds?: string[]; all?: boolean; expected: number }) =>
-      apiFetch<{ resetCount: number }>("/invoices/bulk-reset", {
+      apiFetch<{ resetCount: number; legacyResetCount?: number; skippedCount?: number }>("/invoices/bulk-reset", {
         method: "POST",
         body: JSON.stringify({ ...(labOrganizationId ? { labOrganizationId } : {}), ...payload }),
       }),
@@ -342,15 +342,55 @@ export default function InvoicesPage() {
         return;
       }
       if (!variables.all && affected < variables.expected) {
+        const skipped = result?.skippedCount ?? variables.expected - affected;
         setSelected(new Set());
         setBulkFeedback(
-          `Only ${affected} of ${variables.expected} selected invoice${variables.expected !== 1 ? "s" : ""} could be reset.`,
+          `Only ${affected} of ${variables.expected} selected invoice${variables.expected !== 1 ? "s" : ""} could be reset. ` +
+            `${skipped} invoice${skipped !== 1 ? "s were" : " was"} skipped — likely already deleted or no longer available.`,
         );
         return;
       }
       setSelected(new Set());
       setBulkConfirm(null);
       setBulkFeedback(null);
+    },
+    onError: async (err, variables) => {
+      // Network-level failure (status 0): the request may have actually
+      // landed on the server before the connection dropped. Refetch and
+      // check whether the targeted invoices now read $0 instead of showing
+      // a bare "Failed to fetch".
+      if (!(err instanceof ApiError) || err.status !== 0) return;
+      try {
+        await queryClient.refetchQueries({ queryKey: ["invoices"] });
+        const rows = queryClient
+          .getQueriesData<Invoice[]>({ queryKey: ["invoices"] })
+          .flatMap(([, d]) => d ?? []);
+        const targets = variables.all
+          ? rows.filter((r) => !labOrganizationId || r.labOrganizationId === labOrganizationId)
+          : rows.filter((r) => variables.invoiceIds?.includes(r.id));
+        const remaining = targets.filter(
+          (r) => Number(r.total ?? 0) !== 0 || Number(r.balanceDue ?? 0) !== 0,
+        );
+        if (remaining.length === 0) {
+          // The reset landed even though the response was lost.
+          bulkResetMutation.reset();
+          setSelected(new Set());
+          setBulkConfirm(null);
+          setBulkFeedback(null);
+          toast({
+            title: "Reset completed",
+            description:
+              "The connection dropped, but the reset went through — the affected invoices now show $0.00.",
+          });
+          return;
+        }
+        bulkResetMutation.reset();
+        setBulkFeedback(
+          `The connection dropped before the server confirmed the reset. ${remaining.length} invoice${remaining.length !== 1 ? "s" : ""} still show${remaining.length === 1 ? "s" : ""} a balance — please try again.`,
+        );
+      } catch {
+        // Refetch also failed — keep the original network error visible.
+      }
     },
   });
 

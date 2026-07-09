@@ -1396,6 +1396,54 @@ async function resolveLegacyMobileInvoiceTargets(
   return targets;
 }
 
+/**
+ * Resolve and authorize ALL legacy mobile invoices belonging to a single lab
+ * org — used by the `all: true` bulk-reset path so legacy invoices in scope
+ * are covered just like canonical ones. (The `practiceIds` path can never
+ * match a legacy invoice: they carry no providerOrganizationId, so no
+ * practice selection includes them.)
+ */
+async function resolveAllLegacyMobileInvoiceTargetsForLab(
+  labOrganizationId: string,
+  actorUserId: string,
+): Promise<LegacyMobileInvoiceTarget[]> {
+  await requireAnyRole(actorUserId, labOrganizationId, BILLING_ROLES);
+
+  const caseRows = await db
+    .select()
+    .from(labCases)
+    .where(
+      and(
+        isNull(labCases.deletedAt),
+        eq(labCases.organizationId, labOrganizationId),
+      ),
+    );
+
+  const targets: LegacyMobileInvoiceTarget[] = [];
+  for (const lc of caseRows as any[]) {
+    if (!lc.organizationId) continue;
+    let parsed: any;
+    try {
+      parsed =
+        typeof lc.caseData === "string" ? JSON.parse(lc.caseData) : lc.caseData;
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    const localInvoiceId =
+      typeof parsed.invoiceId === "string" ? parsed.invoiceId : "";
+    if (!localInvoiceId) continue;
+    targets.push({
+      labCaseId: lc.id,
+      labOrganizationId: lc.organizationId,
+      localInvoiceId,
+      caseNumber: typeof parsed.caseNumber === "string" ? parsed.caseNumber : "",
+      parsedBlob: parsed as Record<string, unknown>,
+    });
+  }
+  return targets;
+}
+
 router.delete(
   "/bulk",
   asyncHandler(async (req, res) => {
@@ -1543,61 +1591,173 @@ router.post(
     const input = bulkInvoiceTargetSchema.parse(req.body);
     const actorUserId: string = (req as any).auth.userId;
 
-    const toReset = await resolveBulkInvoiceTargets(input, actorUserId);
+    // Legacy mobile-origin invoices surface in the list with a synthetic
+    // `mobile:<localInvoiceId>` id and have no row in the relational invoices
+    // table. Split them out (mirrors DELETE /bulk above) so a selection that
+    // mixes real + legacy invoices resets ALL of them, instead of the legacy
+    // ids silently resolving to zero rows and keeping their balances.
+    const mobileInvoiceIds = (input.invoiceIds ?? []).filter((id) =>
+      id.startsWith(MOBILE_INVOICE_ID_PREFIX),
+    );
+    const realInput: BulkInvoiceTargetInput = {
+      ...input,
+      invoiceIds: input.invoiceIds
+        ? input.invoiceIds.filter(
+            (id) => !id.startsWith(MOBILE_INVOICE_ID_PREFIX),
+          )
+        : undefined,
+    };
+    const usedIdSelection =
+      !!input.invoiceIds && input.invoiceIds.length > 0;
+    const hasRealSelection =
+      (realInput.invoiceIds && realInput.invoiceIds.length > 0) ||
+      (realInput.practiceIds && realInput.practiceIds.length > 0) ||
+      realInput.all === true;
 
-    if (toReset.length === 0) {
-      return ok(res, { resetCount: 0 });
+    // Authorize + resolve BOTH sets before any mutation so the request fails
+    // closed (403) without partially resetting.
+    const toReset = hasRealSelection
+      ? await resolveBulkInvoiceTargets(realInput, actorUserId)
+      : [];
+
+    // Legacy targets come from the explicit id selection, or — on the
+    // `all: true` path — every legacy invoice in the lab org, matching how
+    // the canonical resolver scopes `all`. The practiceIds path can never
+    // include legacy invoices (they carry no providerOrganizationId).
+    let legacyTargets: LegacyMobileInvoiceTarget[] = [];
+    if (mobileInvoiceIds.length > 0) {
+      legacyTargets = await resolveLegacyMobileInvoiceTargets(
+        mobileInvoiceIds,
+        actorUserId,
+      );
+    } else if (
+      !usedIdSelection &&
+      input.all === true &&
+      input.labOrganizationId
+    ) {
+      legacyTargets = await resolveAllLegacyMobileInvoiceTargetsForLab(
+        input.labOrganizationId,
+        actorUserId,
+      );
+    }
+
+    // How many requested ids matched nothing (already deleted, never existed,
+    // or a legacy blob no longer carries the invoice reference). Only
+    // meaningful on the id-selection path; lets the client explain skips
+    // instead of showing a generic count mismatch.
+    const skippedCount = usedIdSelection
+      ? Math.max(
+          0,
+          new Set(input.invoiceIds).size -
+            toReset.length -
+            legacyTargets.length,
+        )
+      : 0;
+
+    if (toReset.length === 0 && legacyTargets.length === 0) {
+      return ok(res, { resetCount: 0, legacyResetCount: 0, skippedCount });
     }
 
     const ids = toReset.map((inv) => inv.id);
     const now = new Date();
     const actorIp: string | null = req.ip ?? null;
     const actorUserAgent: string | null = req.get("user-agent") ?? null;
+    const totalAffected = toReset.length + legacyTargets.length;
 
     await db.transaction(async (tx) => {
-      // 1. Zero all money fields, set status → draft
-      await tx
-        .update(invoices)
-        .set({
-          subtotal: "0",
-          tax: "0",
-          discount: "0",
-          total: "0",
-          balanceDue: "0",
-          status: "draft",
-          updatedByUserId: actorUserId,
-        })
-        .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
+      if (toReset.length > 0) {
+        // 1. Zero all money fields, set status → draft
+        await tx
+          .update(invoices)
+          .set({
+            subtotal: "0",
+            tax: "0",
+            discount: "0",
+            total: "0",
+            balanceDue: "0",
+            status: "draft",
+            updatedByUserId: actorUserId,
+          })
+          .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
 
-      // 2. Hard-delete all line items (not a protected table)
-      await tx.delete(invoiceLineItems).where(inArray(invoiceLineItems.invoiceId, ids));
+        // 2. Hard-delete all line items (not a protected table)
+        await tx.delete(invoiceLineItems).where(inArray(invoiceLineItems.invoiceId, ids));
 
-      // 3. Audit log — one row per invoice, scoped to its OWN lab org
-      await tx.insert(auditLogs).values(
-        toReset.map((inv) => ({
-          userId: actorUserId,
-          organizationId: inv.labOrganizationId,
-          action: "bulk_invoice_reset",
-          entityType: "invoice",
-          entityId: inv.id,
-          ipAddress: actorIp,
-          userAgent: actorUserAgent,
-          metadataJson: {
-            invoiceNumber: inv.invoiceNumber,
-            providerOrganizationId: inv.providerOrganizationId,
-            totalAffected: toReset.length,
-          },
-          createdAt: now,
-        })),
-      );
+        // 3. Audit log — one row per invoice, scoped to its OWN lab org
+        await tx.insert(auditLogs).values(
+          toReset.map((inv) => ({
+            userId: actorUserId,
+            organizationId: inv.labOrganizationId,
+            action: "bulk_invoice_reset",
+            entityType: "invoice",
+            entityId: inv.id,
+            ipAddress: actorIp,
+            userAgent: actorUserAgent,
+            metadataJson: {
+              invoiceNumber: inv.invoiceNumber,
+              providerOrganizationId: inv.providerOrganizationId,
+              totalAffected,
+            },
+            createdAt: now,
+          })),
+        );
+      }
+
+      if (legacyTargets.length > 0) {
+        // Zero the invoice amounts inside each legacy case blob so the
+        // synthesized invoice (see toMobileInvoice) reads $0.00 draft. The
+        // invoiceId reference is kept — the invoice stays visible at $0 —
+        // and the pre-reset price is preserved once for auditability.
+        for (const t of legacyTargets) {
+          const priorPrice = Number((t.parsedBlob as any).price ?? 0);
+          const nextBlob = {
+            ...t.parsedBlob,
+            price: 0,
+            invoiceStatus: "draft",
+            invoiceResetAt: now.toISOString(),
+            invoiceResetByUserId: actorUserId,
+            invoiceResetPriorPrice:
+              (t.parsedBlob as any).invoiceResetPriorPrice ?? priorPrice,
+          };
+          await tx
+            .update(labCases)
+            .set({ caseData: JSON.stringify(nextBlob) })
+            .where(eq(labCases.id, t.labCaseId));
+        }
+
+        // Audit log — one row per legacy invoice, scoped to its OWN lab org.
+        await tx.insert(auditLogs).values(
+          legacyTargets.map((t) => ({
+            userId: actorUserId,
+            organizationId: t.labOrganizationId,
+            action: "bulk_invoice_reset",
+            entityType: "invoice",
+            entityId: `${MOBILE_INVOICE_ID_PREFIX}${t.localInvoiceId}`,
+            ipAddress: actorIp,
+            userAgent: actorUserAgent,
+            metadataJson: {
+              legacyMobileInvoice: true,
+              labCaseId: t.labCaseId,
+              caseNumber: t.caseNumber,
+              priorPrice: Number((t.parsedBlob as any).price ?? 0),
+              totalAffected,
+            },
+            createdAt: now,
+          })),
+        );
+      }
     });
 
     req.log?.info?.(
-      { count: toReset.length },
+      { count: toReset.length, legacyCount: legacyTargets.length },
       "[INVOICE BULK RESET] completed",
     );
 
-    return ok(res, { resetCount: toReset.length });
+    return ok(res, {
+      resetCount: totalAffected,
+      legacyResetCount: legacyTargets.length,
+      skippedCount,
+    });
   }),
 );
 
@@ -2535,13 +2695,28 @@ function toMobileInvoice(lc: any, parsed: any, localInvoiceId: string) {
   const invoiceNumber = caseNumber
     ? `INV-${caseNumber}`
     : `INV-${localInvoiceId.slice(-8)}`;
+  // A bulk "Reset to $0" writes `invoiceStatus` into the blob so the
+  // synthesized invoice reads as a $0 draft instead of the default "open".
+  const VALID_STATUSES = [
+    "draft",
+    "open",
+    "partially_paid",
+    "paid",
+    "void",
+  ] as const;
+  type SynthStatus = (typeof VALID_STATUSES)[number];
+  const status: SynthStatus = VALID_STATUSES.includes(
+    parsed.invoiceStatus as SynthStatus,
+  )
+    ? (parsed.invoiceStatus as SynthStatus)
+    : "open";
   return {
     id: `mobile:${localInvoiceId}`,
     invoiceNumber,
     caseId: lc.id,
     labOrganizationId: lc.organizationId as string,
     providerOrganizationId: null as string | null,
-    status: "open" as const,
+    status,
     subtotal: total,
     tax: "0.00",
     discount: "0.00",

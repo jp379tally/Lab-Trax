@@ -111,6 +111,7 @@ export default function StatementsPage() {
     practiceCount: number;
     invoiceCount: number;
   } | null>(null);
+  const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
   const [orgId] = useSelectedOrg();
   const queryClient = useQueryClient();
 
@@ -280,15 +281,47 @@ export default function StatementsPage() {
 
   const bulkResetMutation = useMutation({
     mutationFn: (payload: { practiceIds?: string[]; all?: boolean }) =>
-      apiFetch("/invoices/bulk-reset", {
+      apiFetch<{ resetCount: number; legacyResetCount?: number; skippedCount?: number }>("/invoices/bulk-reset", {
         method: "POST",
         body: JSON.stringify({ labOrganizationId: orgId, ...payload }),
       }),
     onSuccess: () => {
       setSelectedPractices(new Set());
       setBulkConfirm(null);
+      setBulkFeedback(null);
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    },
+    onError: async (err, variables) => {
+      // Network-level failure (status 0): the reset may have landed before
+      // the connection dropped. Refetch and report the actual state instead
+      // of a bare "Failed to fetch".
+      if (!(err instanceof ApiError) || err.status !== 0) return;
+      try {
+        await queryClient.refetchQueries({ queryKey: ["invoices"] });
+        const rows = queryClient
+          .getQueriesData<Invoice[]>({ queryKey: ["invoices"] })
+          .flatMap(([, d]) => d ?? []);
+        const targets = variables.all
+          ? rows.filter((r) => !orgId || r.labOrganizationId === orgId)
+          : rows.filter((r) => variables.practiceIds?.includes(r.providerOrganizationId ?? ""));
+        const remaining = targets.filter(
+          (r) => Number(r.total ?? 0) !== 0 || Number(r.balanceDue ?? 0) !== 0,
+        );
+        bulkResetMutation.reset();
+        if (remaining.length === 0) {
+          // The reset landed even though the response was lost.
+          setSelectedPractices(new Set());
+          setBulkConfirm(null);
+          setBulkFeedback(null);
+          return;
+        }
+        setBulkFeedback(
+          `The connection dropped before the server confirmed the reset. ${remaining.length} invoice${remaining.length !== 1 ? "s" : ""} still show${remaining.length === 1 ? "s" : ""} a balance — please try again.`,
+        );
+      } catch {
+        // Refetch also failed — keep the original network error visible.
+      }
     },
   });
 
@@ -331,6 +364,7 @@ export default function StatementsPage() {
 
   function handleBulkConfirm() {
     if (!bulkConfirm) return;
+    setBulkFeedback(null);
     if (bulkConfirm.kind === "delete_practices") {
       bulkDeleteMutation.mutate({ practiceIds: Array.from(selectedPractices) });
     } else if (bulkConfirm.kind === "reset_practices") {
@@ -606,10 +640,14 @@ export default function StatementsPage() {
           invoiceCount={bulkConfirm.invoiceCount}
           pending={bulkDeleteMutation.isPending || bulkResetMutation.isPending}
           error={
+            bulkFeedback ??
             (bulkDeleteMutation.error instanceof Error ? bulkDeleteMutation.error.message : null) ??
             (bulkResetMutation.error instanceof Error ? bulkResetMutation.error.message : null)
           }
-          onCancel={() => setBulkConfirm(null)}
+          onCancel={() => {
+            setBulkConfirm(null);
+            setBulkFeedback(null);
+          }}
           onConfirm={handleBulkConfirm}
         />
       )}

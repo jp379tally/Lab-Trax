@@ -26,6 +26,15 @@ An out-of-scope legacy case is therefore invisible → fails closed as
 deletedCount 0 (not 403, unlike the real-invoice path which looks up by id
 globally then 403s). This is safe and avoids an expensive global JSON scan.
 
+**Reset = zero the blob in place** (price 0, `invoiceStatus:"draft"`, preserve
+the pre-reset price once as `invoiceResetPriorPrice`), keeping `invoiceId` so
+the invoice still surfaces at $0.00. The list synthesizer must respect a valid
+blob `invoiceStatus` or the reset invoice snaps back to "open". `all:true`
+sweeps need a dedicated all-in-org legacy resolver; practice-scoped paths can
+never match legacy invoices (their provider org is null).
+
 **Why:** bulk is the ONLY invoice delete path (no single `DELETE /:id`).
-Reference implementation: `resolveLegacyMobileInvoiceTargets` + the split in
-`DELETE /bulk`, `artifacts/api-server/src/routes/invoices.ts`.
+Reference implementation: `resolveLegacyMobileInvoiceTargets` + the splits in
+`DELETE /bulk` and `POST /bulk-reset`, `artifacts/api-server/src/routes/invoices.ts`.
+Delete + reset are handled; other bulk mutations (e.g. status change) added
+later must repeat the same split or they will no-op on legacy invoices.

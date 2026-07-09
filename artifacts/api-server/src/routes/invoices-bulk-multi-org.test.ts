@@ -428,4 +428,248 @@ maybe("Bulk invoice delete/reset across lab orgs (db integration)", () => {
     });
     expect(JSON.parse(row.caseData).invoiceId).toBe(localInvoiceId);
   });
+
+  // ── POST /bulk-reset with legacy mobile invoices ──────────────────────────
+  // Regression: bulk-reset passed ids straight to the canonical resolver, so
+  // `mobile:<id>` legacy invoices silently resolved to zero rows and kept
+  // their balances while the desktop reported a count mismatch.
+
+  it("POST /bulk-reset resets a legacy mobile invoice (mobile:<id>) by zeroing the case blob", async () => {
+    const localInvoiceId = rid("localInv");
+    const lcId = await insertLegacyMobileCase({
+      organizationId: labAOrgId,
+      localInvoiceId,
+      price: 250,
+    });
+
+    const r = await request(appMod.default)
+      .post("/api/invoices/bulk-reset")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({
+        labOrganizationId: labAOrgId,
+        invoiceIds: [`mobile:${localInvoiceId}`],
+      });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.resetCount).toBe(1);
+    expect(r.body.data.legacyResetCount).toBe(1);
+    expect(r.body.data.skippedCount).toBe(0);
+
+    // The blob is zeroed in place: invoiceId kept (still surfaces at $0),
+    // status forced to draft, pre-reset price preserved for auditability.
+    const { db, labCases, auditLogs } = dbMod as any;
+    const row = await db.query.labCases.findFirst({
+      where: eq(labCases.id, lcId),
+      columns: { caseData: true, deletedAt: true },
+    });
+    const blob = JSON.parse(row.caseData);
+    expect(blob.invoiceId).toBe(localInvoiceId);
+    expect(blob.price).toBe(0);
+    expect(blob.invoiceStatus).toBe("draft");
+    expect(blob.invoiceResetPriorPrice).toBe(250);
+    expect(row.deletedAt).toBeNull();
+
+    // The synthesized invoice now reads $0.00 draft in the list.
+    const list = await request(appMod.default)
+      .get("/api/invoices")
+      .set("Authorization", `Bearer ${tokens.both}`);
+    expect(list.status).toBe(200);
+    const synth = (list.body.data as any[]).find(
+      (inv) => inv.id === `mobile:${localInvoiceId}`,
+    );
+    expect(synth, "synthesized invoice should still surface").toBeTruthy();
+    expect(Number(synth.total)).toBe(0);
+    expect(Number(synth.balanceDue)).toBe(0);
+    expect(synth.status).toBe("draft");
+
+    // An audit row was written for the legacy reset.
+    const audits = await db.query.auditLogs.findMany({
+      where: eq(auditLogs.entityId, `mobile:${localInvoiceId}`),
+    });
+    const resetAudit = (audits as any[]).find(
+      (a) => a.action === "bulk_invoice_reset",
+    );
+    expect(resetAudit).toBeTruthy();
+    expect(resetAudit.organizationId).toBe(labAOrgId);
+    expect(resetAudit.metadataJson?.legacyMobileInvoice).toBe(true);
+    expect(resetAudit.metadataJson?.priorPrice).toBe(250);
+  });
+
+  it("POST /bulk-reset resets a mixed selection of real + legacy mobile invoices", async () => {
+    const real = await insertInvoice({
+      labOrganizationId: labAOrgId,
+      providerOrganizationId: practiceAId,
+      total: "180.00",
+      balanceDue: "180.00",
+    });
+    const localInvoiceId = rid("localInv");
+    const lcId = await insertLegacyMobileCase({
+      organizationId: labAOrgId,
+      localInvoiceId,
+      price: 99,
+    });
+
+    const r = await request(appMod.default)
+      .post("/api/invoices/bulk-reset")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({
+        labOrganizationId: labAOrgId,
+        invoiceIds: [real, `mobile:${localInvoiceId}`],
+      });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.resetCount).toBe(2);
+    expect(r.body.data.legacyResetCount).toBe(1);
+    expect(r.body.data.skippedCount).toBe(0);
+
+    const { db, invoices, labCases } = dbMod as any;
+    const realRow = await db.query.invoices.findFirst({
+      where: eq(invoices.id, real),
+      columns: { total: true, balanceDue: true, status: true },
+    });
+    expect(Number(realRow.total)).toBe(0);
+    expect(Number(realRow.balanceDue)).toBe(0);
+    expect(realRow.status).toBe("draft");
+
+    const lcRow = await db.query.labCases.findFirst({
+      where: eq(labCases.id, lcId),
+      columns: { caseData: true },
+    });
+    const blob = JSON.parse(lcRow.caseData);
+    expect(blob.price).toBe(0);
+    expect(blob.invoiceStatus).toBe("draft");
+    expect(blob.invoiceResetPriorPrice).toBe(99);
+  });
+
+  it("POST /bulk-reset reports unmatched ids via skippedCount", async () => {
+    const real = await insertInvoice({
+      labOrganizationId: labAOrgId,
+      providerOrganizationId: practiceAId,
+    });
+
+    const r = await request(appMod.default)
+      .post("/api/invoices/bulk-reset")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({
+        labOrganizationId: labAOrgId,
+        invoiceIds: [real, rid("missing"), `mobile:${rid("nope")}`],
+      });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.resetCount).toBe(1);
+    expect(r.body.data.legacyResetCount).toBe(0);
+    expect(r.body.data.skippedCount).toBe(2);
+  });
+
+  it("POST /bulk-reset with all:true also resets legacy mobile invoices in the lab org", async () => {
+    // Use a dedicated fresh lab org so counts are not affected by leftovers
+    // from earlier tests in this suite.
+    const { db, organizations, organizationMemberships, invoices, labCases, auditLogs } =
+      dbMod as any;
+    const labCOrgId = rid("labC");
+    const practiceCId = rid("provC");
+    const membershipId = rid("m");
+    await db.insert(organizations).values([
+      { id: labCOrgId, type: "lab", name: rid("MultiOrgLabC") },
+      {
+        id: practiceCId,
+        type: "provider",
+        name: rid("MultiOrgPracticeC"),
+        parentLabOrganizationId: labCOrgId,
+      },
+    ]);
+    await db.insert(organizationMemberships).values({
+      id: membershipId,
+      labId: labCOrgId,
+      userId: billingUserId,
+      role: "billing",
+      status: "active",
+    });
+
+    try {
+      const real = await insertInvoice({
+        labOrganizationId: labCOrgId,
+        providerOrganizationId: practiceCId,
+        total: "300.00",
+        balanceDue: "300.00",
+      });
+      const localInvoiceId = rid("localInv");
+      const lcId = await insertLegacyMobileCase({
+        organizationId: labCOrgId,
+        localInvoiceId,
+        price: 120,
+      });
+
+      const r = await request(appMod.default)
+        .post("/api/invoices/bulk-reset")
+        .set("Authorization", `Bearer ${tokens.both}`)
+        .send({ labOrganizationId: labCOrgId, all: true });
+
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.data.resetCount).toBe(2);
+      expect(r.body.data.legacyResetCount).toBe(1);
+
+      const realRow = await db.query.invoices.findFirst({
+        where: eq(invoices.id, real),
+        columns: { total: true, status: true },
+      });
+      expect(Number(realRow.total)).toBe(0);
+      expect(realRow.status).toBe("draft");
+
+      const lcRow = await db.query.labCases.findFirst({
+        where: eq(labCases.id, lcId),
+        columns: { caseData: true },
+      });
+      const blob = JSON.parse(lcRow.caseData);
+      expect(blob.price).toBe(0);
+      expect(blob.invoiceStatus).toBe("draft");
+    } finally {
+      await db
+        .delete(auditLogs)
+        .where(eq(auditLogs.organizationId, labCOrgId));
+      await db.delete(labCases).where(eq(labCases.organizationId, labCOrgId));
+      await db
+        .delete(invoices)
+        .where(eq(invoices.labOrganizationId, labCOrgId));
+      await db
+        .delete(organizationMemberships)
+        .where(eq(organizationMemberships.id, membershipId));
+      await db
+        .delete(organizations)
+        .where(inArray(organizations.id, [labCOrgId, practiceCId]));
+    }
+  });
+
+  it("POST /bulk-reset cannot reset a legacy mobile invoice outside the caller's org scope", async () => {
+    const localInvoiceId = rid("localInv");
+    const lcId = await insertLegacyMobileCase({
+      organizationId: labBOrgId,
+      localInvoiceId,
+      price: 400,
+    });
+
+    // labAOnly user has no membership in lab B: the legacy resolver scopes
+    // its reads to the caller's own orgs, so the lab B case is invisible and
+    // the request fails closed as "nothing to reset".
+    const r = await request(appMod.default)
+      .post("/api/invoices/bulk-reset")
+      .set("Authorization", `Bearer ${tokens.labAOnly}`)
+      .send({
+        labOrganizationId: labAOrgId,
+        invoiceIds: [`mobile:${localInvoiceId}`],
+      });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.resetCount).toBe(0);
+
+    // The blob is untouched.
+    const { db, labCases } = dbMod as any;
+    const row = await db.query.labCases.findFirst({
+      where: eq(labCases.id, lcId),
+      columns: { caseData: true },
+    });
+    const blob = JSON.parse(row.caseData);
+    expect(blob.price).toBe(400);
+    expect(blob.invoiceStatus).toBeUndefined();
+  });
 });
