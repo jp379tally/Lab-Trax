@@ -103,6 +103,41 @@ function inviteRoleLabel(role: string | null): string {
   return INVITE_ROLE_LABELS[role] ?? role.replace(/_/g, " ");
 }
 
+/** A sender-side invite as returned by GET /api/organizations/:orgId/invites. */
+interface SentInvite {
+  id: string;
+  email: string | null;
+  roleToAssign: string | null;
+  status: string;
+  createdAt?: string | null;
+  expiresAt?: string | null;
+  lastEmailAttemptAt?: string | null;
+  lastEmailStatus?: string | null;
+  lastEmailError?: string | null;
+}
+
+/**
+ * Human-readable label for a failed/skipped invite email delivery.
+ * Mirrors inviteDeliveryProblem() in labtrax-desktop settings.tsx.
+ */
+function inviteDeliveryProblem(inv: SentInvite): string | null {
+  if (inv.lastEmailStatus === "failed") {
+    return inv.lastEmailError === "recipient_opted_out"
+      ? "Recipient opted out of invite emails"
+      : "Invite email failed to send";
+  }
+  if (inv.lastEmailStatus === "skipped") {
+    return "Email skipped — recipient opted out";
+  }
+  return null;
+}
+
+const INVITE_SEND_ROLES = [
+  { value: "user", label: "Team member" },
+  { value: "billing", label: "Billing" },
+  { value: "admin", label: "Admin" },
+] as const;
+
 const DUP_STEPS = [0.50, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00];
 
 function nearestStep(v: number) {
@@ -195,6 +230,122 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
     enabled: org?.type === "lab" && !!orgId,
     staleTime: 60_000,
   });
+
+  const sentInvitesQuery = useQuery<SentInvite[]>({
+    queryKey: ["org-invites", orgId],
+    queryFn: async () => {
+      const res = await resilientFetch(`/api/organizations/${orgId}/invites`);
+      if (!res.ok) throw new Error(`Failed (${res.status})`);
+      const body = await res.json();
+      const list = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : [];
+      return (list as SentInvite[]).filter((inv) => inv.status === "pending");
+    },
+    enabled: isAdmin && org?.type === "lab" && !!orgId,
+    staleTime: 30_000,
+  });
+
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<string>("user");
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteNotice, setInviteNotice] = useState<string | null>(null);
+  const [actingInviteId, setActingInviteId] = useState<string | null>(null);
+
+  const createInviteMutation = useMutation({
+    mutationFn: async ({ email, roleToAssign }: { email: string; roleToAssign: string }) => {
+      const res = await resilientFetch(`/api/organizations/${orgId}/invites`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, roleToAssign }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          (body as any)?.message || (body as any)?.error || `Failed (${res.status})`,
+        );
+      }
+      return (body as any)?.data ?? body;
+    },
+    onSuccess: (created: any) => {
+      setInviteEmail("");
+      setInviteRole("user");
+      setInviteError(null);
+      // Truthful delivery state from day one: the invite row is created either
+      // way, but tell the admin when the email did NOT actually go out.
+      const delivery = created?.emailDelivery;
+      if (delivery && delivery.status !== "sent") {
+        setInviteNotice(
+          delivery.status === "skipped" || delivery.reason === "recipient_opted_out"
+            ? "Invite created, but no email was sent — the recipient opted out of invite emails."
+            : "Invite created, but the invite email failed to send. You can retry with Resend.",
+        );
+      } else {
+        setInviteNotice("Invite sent.");
+      }
+      qc.invalidateQueries({ queryKey: ["org-invites", orgId] });
+      qc.invalidateQueries({ queryKey: ["lab-team", orgId] });
+    },
+    onError: (err: Error) => {
+      setInviteNotice(null);
+      setInviteError(err.message);
+    },
+  });
+
+  const resendInviteMutation = useMutation({
+    mutationFn: async (inviteId: string) => {
+      const res = await resilientFetch(`/api/organizations/invites/${inviteId}/resend`, {
+        method: "POST",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          (body as any)?.message || (body as any)?.error || `Failed (${res.status})`,
+        );
+      }
+    },
+    onSuccess: () => {
+      Alert.alert("Invite email sent", "The invitation email was sent again.");
+      qc.invalidateQueries({ queryKey: ["org-invites", orgId] });
+    },
+    onError: (err: Error) => {
+      Alert.alert("Could not resend invite", err.message);
+      // The delivery outcome is recorded on the row either way — refresh so
+      // the listing shows the truthful lastEmailStatus.
+      qc.invalidateQueries({ queryKey: ["org-invites", orgId] });
+    },
+    onSettled: () => setActingInviteId(null),
+  });
+
+  const cancelInviteMutation = useMutation({
+    mutationFn: async (inviteId: string) => {
+      const res = await resilientFetch(`/api/organizations/invites/${inviteId}/cancel`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(
+          (body as any)?.message || (body as any)?.error || `Failed (${res.status})`,
+        );
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["org-invites", orgId] });
+      qc.invalidateQueries({ queryKey: ["lab-team", orgId] });
+    },
+    onError: (err: Error) => Alert.alert("Could not cancel invite", err.message),
+    onSettled: () => setActingInviteId(null),
+  });
+
+  function handleSendInvite() {
+    const email = inviteEmail.trim().toLowerCase();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setInviteNotice(null);
+      setInviteError("Enter a valid email address.");
+      return;
+    }
+    setInviteError(null);
+    setInviteNotice(null);
+    createInviteMutation.mutate({ email, roleToAssign: inviteRole });
+  }
 
   const changeMemberRoleMutation = useMutation({
     mutationFn: async ({ membershipId, role }: { membershipId: string; role: string }) => {
@@ -1030,6 +1181,186 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
           {labTeamQuery.isError && (
             <Text style={[styles.dupLabel, { color: colors.error }]}>Could not load team members.</Text>
           )}
+
+          {/* Sender-side invites — admin/owner only */}
+          {isAdmin && (
+            <View style={[styles.inviteSection, { borderTopColor: colors.border }]}>
+              <Text style={[styles.detailsSectionTitle, { color: colors.textSecondary }]}>
+                Invite a team member
+              </Text>
+              <TextInput
+                testID="invite-email-input"
+                value={inviteEmail}
+                onChangeText={(t) => {
+                  setInviteEmail(t);
+                  if (inviteError) setInviteError(null);
+                  if (inviteNotice) setInviteNotice(null);
+                }}
+                placeholder="teammate@example.com"
+                placeholderTextColor={colors.textTertiary}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={[
+                  styles.fieldInput,
+                  { color: colors.text, backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+                ]}
+              />
+              <View style={styles.inviteRoleRow}>
+                {INVITE_SEND_ROLES.map((r) => {
+                  const active = inviteRole === r.value;
+                  return (
+                    <Pressable
+                      key={r.value}
+                      testID={`invite-role-${r.value}`}
+                      onPress={() => setInviteRole(r.value)}
+                      style={[
+                        styles.placementChip,
+                        {
+                          backgroundColor: active ? colors.tint + "18" : colors.surfaceAlt,
+                          borderColor: active ? colors.tint : colors.border,
+                        },
+                      ]}
+                    >
+                      <Ionicons
+                        name={active ? "checkmark-circle" : "ellipse-outline"}
+                        size={12}
+                        color={active ? colors.tint : colors.textTertiary}
+                      />
+                      <Text style={[styles.placementText, { color: active ? colors.tint : colors.textSecondary }]}>
+                        {r.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Pressable
+                testID="invite-send-btn"
+                style={[
+                  styles.inviteSendBtn,
+                  { backgroundColor: colors.tint },
+                  createInviteMutation.isPending && { opacity: 0.6 },
+                ]}
+                onPress={handleSendInvite}
+                disabled={createInviteMutation.isPending}
+              >
+                {createInviteMutation.isPending ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="mail-outline" size={14} color="#fff" />
+                )}
+                <Text style={styles.inviteSendBtnText}>
+                  {createInviteMutation.isPending ? "Sending…" : "Send invite"}
+                </Text>
+              </Pressable>
+              {inviteError && (
+                <Text testID="invite-error" style={[styles.dupLabel, { color: colors.error }]}>
+                  {inviteError}
+                </Text>
+              )}
+              {inviteNotice && (
+                <Text
+                  testID="invite-notice"
+                  style={[
+                    styles.dupLabel,
+                    { color: inviteNotice === "Invite sent." ? colors.success : colors.warning },
+                  ]}
+                >
+                  {inviteNotice}
+                </Text>
+              )}
+
+              {(sentInvitesQuery.data ?? []).length > 0 && (
+                <View style={styles.sentInvitesWrap}>
+                  <Text style={[styles.detailsSectionTitle, { color: colors.textSecondary }]}>
+                    Pending invites
+                  </Text>
+                  {(sentInvitesQuery.data ?? []).map((inv) => {
+                    const problem = inviteDeliveryProblem(inv);
+                    const busy =
+                      actingInviteId === inv.id &&
+                      (resendInviteMutation.isPending || cancelInviteMutation.isPending);
+                    return (
+                      <View key={inv.id} testID={`invite-row-${inv.id}`} style={styles.sentInviteRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.detailValue, { color: colors.text }]} numberOfLines={1}>
+                            {inv.email ?? "—"}
+                          </Text>
+                          <Text style={[styles.dupLabel, { color: colors.textTertiary }]}>
+                            {inviteRoleLabel(inv.roleToAssign)}
+                            {inv.expiresAt
+                              ? ` · expires ${new Date(inv.expiresAt).toLocaleDateString()}`
+                              : ""}
+                          </Text>
+                          {problem && (
+                            <View style={styles.inviteProblemRow}>
+                              <Ionicons name="warning-outline" size={11} color={colors.error} />
+                              <Text
+                                testID={`invite-problem-${inv.id}`}
+                                style={[styles.dupLabel, { color: colors.error, flex: 1 }]}
+                              >
+                                {problem}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                        <Pressable
+                          testID={`invite-resend-${inv.id}`}
+                          disabled={busy}
+                          onPress={() => {
+                            setActingInviteId(inv.id);
+                            resendInviteMutation.mutate(inv.id);
+                          }}
+                          style={[
+                            styles.inviteRowBtn,
+                            { borderColor: colors.tint + "60" },
+                            busy && { opacity: 0.5 },
+                          ]}
+                          hitSlop={6}
+                        >
+                          <Text style={[styles.inviteRowBtnText, { color: colors.tint }]}>Resend</Text>
+                        </Pressable>
+                        <Pressable
+                          testID={`invite-cancel-${inv.id}`}
+                          disabled={busy}
+                          onPress={() =>
+                            Alert.alert(
+                              "Cancel invite",
+                              `Cancel the invitation for ${inv.email ?? "this person"}?`,
+                              [
+                                { text: "Keep invite", style: "cancel" },
+                                {
+                                  text: "Cancel invite",
+                                  style: "destructive",
+                                  onPress: () => {
+                                    setActingInviteId(inv.id);
+                                    cancelInviteMutation.mutate(inv.id);
+                                  },
+                                },
+                              ],
+                            )
+                          }
+                          style={[
+                            styles.inviteRowBtn,
+                            { borderColor: colors.error + "60" },
+                            busy && { opacity: 0.5 },
+                          ]}
+                          hitSlop={6}
+                        >
+                          <Text style={[styles.inviteRowBtnText, { color: colors.error }]}>Cancel</Text>
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+              {sentInvitesQuery.isError && (
+                <Text style={[styles.dupLabel, { color: colors.error }]}>
+                  Could not load pending invites.
+                </Text>
+              )}
+            </View>
+          )}
         </View>
       )}
 
@@ -1808,6 +2139,42 @@ function makeStyles(c: ThemeColors) {
     },
     dupSaveBtnText: { ...Typography.captionMedium, color: "#fff" },
     dupLabel: { ...Typography.caption },
+    inviteSection: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      paddingTop: Spacing.md,
+      marginTop: Spacing.sm,
+      gap: Spacing.sm,
+    },
+    inviteRoleRow: { flexDirection: "row", flexWrap: "wrap", gap: Spacing.xs },
+    inviteSendBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      borderRadius: Radius.sm,
+      paddingVertical: Spacing.sm,
+    },
+    inviteSendBtnText: { ...Typography.captionMedium, color: "#fff" },
+    sentInvitesWrap: { gap: Spacing.xs, marginTop: Spacing.xs },
+    sentInviteRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      paddingVertical: 4,
+    },
+    inviteProblemRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 3,
+      marginTop: 1,
+    },
+    inviteRowBtn: {
+      borderWidth: 1,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: 4,
+    },
+    inviteRowBtnText: { ...Typography.tiny, fontWeight: "600" },
     clusterPreview: {
       flexDirection: "row",
       gap: Spacing.sm,

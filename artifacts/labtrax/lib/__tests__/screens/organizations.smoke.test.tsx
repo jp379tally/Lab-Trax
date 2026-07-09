@@ -2,6 +2,7 @@ import React from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { Alert } from "react-native";
 import {
   resetMockAppState,
   setMockFetchHandler,
@@ -297,5 +298,414 @@ describe("OrganizationsScreen — provider practice editing", () => {
       ).toBeTruthy();
     });
     expect(patchedUrl).toContain("/api/organizations/prov-1");
+  });
+});
+
+// ── Sender-side team invites (lab admins) ────────────────────────────────────
+
+const LAB_ORG = {
+  id: "org-1",
+  type: "lab",
+  name: "My Dental Lab",
+  displayName: "My Dental Lab",
+};
+
+function labMe(role: string) {
+  return {
+    data: {
+      user: { id: "u-lab", userType: "lab" },
+      memberships: [
+        {
+          id: "mem-lab",
+          role,
+          status: "active",
+          organizationId: "org-1",
+          organization: LAB_ORG,
+        },
+      ],
+    },
+    isLoading: false,
+    isError: false,
+  };
+}
+
+/**
+ * Per-queryKey mock (a blanket mockReturnValue would feed the me-shape to
+ * every useQuery on the screen). `sentInvites` drives the ["org-invites"]
+ * query that powers the pending-invites listing.
+ */
+function applyInviteUseQueryMock(meValue: unknown, sentInvites: unknown[] = []) {
+  vi.mocked(useQuery).mockImplementation((options: any) => {
+    const key = options?.queryKey ?? [];
+    const head = Array.isArray(key) ? key[0] : key;
+    if (head === "pending-invites") {
+      return { data: [], isLoading: false, isError: false } as any;
+    }
+    if (head === "org-clusters") {
+      return { data: undefined, isLoading: false, isError: false } as any;
+    }
+    if (head === "lab-team") {
+      return { data: { team: [], callerRole: null }, isLoading: false, isError: false } as any;
+    }
+    if (head === "org-invites") {
+      return { data: sentInvites, isLoading: false, isError: false } as any;
+    }
+    return meValue as any;
+  });
+}
+
+describe("OrgCard — team invite form visibility (RBAC gate)", () => {
+  it("shows the invite form for lab admins", () => {
+    applyInviteUseQueryMock(labMe("admin"));
+    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+    expect(getByText("Invite a team member")).toBeTruthy();
+    expect(getByTestId("invite-email-input")).toBeTruthy();
+    expect(getByTestId("invite-send-btn")).toBeTruthy();
+  });
+
+  it("shows the invite form for lab owners", () => {
+    applyInviteUseQueryMock(labMe("owner"));
+    const { getByTestId } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+    expect(getByTestId("invite-send-btn")).toBeTruthy();
+  });
+
+  it("hides the invite form for non-admin lab members", () => {
+    applyInviteUseQueryMock(labMe("user"));
+    const { queryByTestId, queryByText, getByText } = render(
+      <OrganizationsScreen />,
+      { wrapper: makeWrapper() },
+    );
+    // Team members list is still visible…
+    expect(getByText("Team members")).toBeTruthy();
+    // …but the invite affordances are not.
+    expect(queryByText("Invite a team member")).toBeNull();
+    expect(queryByTestId("invite-send-btn")).toBeNull();
+  });
+});
+
+describe("OrgCard — sending an invite", () => {
+  beforeEach(() => {
+    applyInviteUseQueryMock(labMe("admin"));
+  });
+
+  it("rejects an invalid email inline without POSTing", async () => {
+    let posted = false;
+    setMockFetchHandler((url, init) => {
+      if (init?.method === "POST") posted = true;
+      return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
+    });
+    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+
+    fireEvent.changeText(getByTestId("invite-email-input"), "not-an-email");
+    fireEvent.press(getByTestId("invite-send-btn"));
+
+    await waitFor(() => {
+      expect(getByText("Enter a valid email address.")).toBeTruthy();
+    });
+    expect(posted).toBe(false);
+  });
+
+  it("POSTs email + roleToAssign and confirms a successfully-sent invite", async () => {
+    let postedUrl: string | null = null;
+    let postedBody: any = null;
+    setMockFetchHandler((url, init) => {
+      if (url.startsWith("/api/organizations/org-1/invites") && init?.method === "POST") {
+        postedUrl = url;
+        postedBody = JSON.parse(String(init.body));
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              id: "inv-new",
+              email: postedBody.email,
+              roleToAssign: postedBody.roleToAssign,
+              status: "pending",
+              emailDelivery: { sent: true, status: "sent" },
+            },
+          }),
+          { status: 201 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
+    });
+
+    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+
+    fireEvent.changeText(getByTestId("invite-email-input"), "New.Member@Example.com");
+    fireEvent.press(getByTestId("invite-role-billing"));
+    fireEvent.press(getByTestId("invite-send-btn"));
+
+    await waitFor(() => {
+      expect(getByText("Invite sent.")).toBeTruthy();
+    });
+    expect(postedUrl).toBe("/api/organizations/org-1/invites");
+    expect(postedBody).toEqual({
+      email: "new.member@example.com",
+      roleToAssign: "billing",
+    });
+  });
+
+  it("tells the truth when the invite was created but the email failed to send", async () => {
+    setMockFetchHandler((url, init) => {
+      if (url.startsWith("/api/organizations/org-1/invites") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              id: "inv-x",
+              status: "pending",
+              emailDelivery: { sent: false, status: "failed", reason: "send_failed" },
+            },
+          }),
+          { status: 201 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
+    });
+
+    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+
+    fireEvent.changeText(getByTestId("invite-email-input"), "member@example.com");
+    fireEvent.press(getByTestId("invite-send-btn"));
+
+    await waitFor(() => {
+      expect(
+        getByText(/invite created, but the invite email failed to send/i),
+      ).toBeTruthy();
+    });
+  });
+
+  it("tells the truth when the recipient opted out of invite emails", async () => {
+    setMockFetchHandler((url, init) => {
+      if (url.startsWith("/api/organizations/org-1/invites") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              id: "inv-y",
+              status: "pending",
+              emailDelivery: { sent: false, status: "skipped", reason: "recipient_opted_out" },
+            },
+          }),
+          { status: 201 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
+    });
+
+    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+
+    fireEvent.changeText(getByTestId("invite-email-input"), "optout@example.com");
+    fireEvent.press(getByTestId("invite-send-btn"));
+
+    await waitFor(() => {
+      expect(
+        getByText(/no email was sent — the recipient opted out/i),
+      ).toBeTruthy();
+    });
+  });
+
+  it("surfaces a 409 duplicate-pending-invite error inline", async () => {
+    setMockFetchHandler((url, init) => {
+      if (url.startsWith("/api/organizations/org-1/invites") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            message: "A pending invite already exists for that email address.",
+          }),
+          { status: 409 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
+    });
+
+    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+
+    fireEvent.changeText(getByTestId("invite-email-input"), "dupe@example.com");
+    fireEvent.press(getByTestId("invite-send-btn"));
+
+    await waitFor(() => {
+      expect(
+        getByText(/a pending invite already exists for that email address/i),
+      ).toBeTruthy();
+    });
+  });
+});
+
+const SENT_INVITES = [
+  {
+    id: "inv-ok",
+    email: "clean@example.com",
+    roleToAssign: "user",
+    status: "pending",
+    lastEmailStatus: "sent",
+    lastEmailError: null,
+  },
+  {
+    id: "inv-failed",
+    email: "bounce@example.com",
+    roleToAssign: "billing",
+    status: "pending",
+    lastEmailStatus: "failed",
+    lastEmailError: "send_failed",
+  },
+  {
+    id: "inv-optout",
+    email: "optout@example.com",
+    roleToAssign: "admin",
+    status: "pending",
+    lastEmailStatus: "failed",
+    lastEmailError: "recipient_opted_out",
+  },
+  {
+    id: "inv-skipped",
+    email: "skipped@example.com",
+    roleToAssign: "user",
+    status: "pending",
+    lastEmailStatus: "skipped",
+    lastEmailError: "recipient_opted_out",
+  },
+];
+
+describe("OrgCard — pending sent invites listing", () => {
+  it("lists pending invites with truthful delivery-problem labels (desktop parity)", () => {
+    applyInviteUseQueryMock(labMe("admin"), SENT_INVITES);
+    const { getByText, queryByTestId, getByTestId } = render(
+      <OrganizationsScreen />,
+      { wrapper: makeWrapper() },
+    );
+
+    expect(getByText("Pending invites")).toBeTruthy();
+    expect(getByText("clean@example.com")).toBeTruthy();
+    // Delivered fine → no problem label.
+    expect(queryByTestId("invite-problem-inv-ok")).toBeNull();
+    // Failed send.
+    expect(getByTestId("invite-problem-inv-failed")).toBeTruthy();
+    expect(getByText("Invite email failed to send")).toBeTruthy();
+    // Failed because recipient opted out.
+    expect(getByText("Recipient opted out of invite emails")).toBeTruthy();
+    // Skipped because recipient opted out.
+    expect(getByText("Email skipped — recipient opted out")).toBeTruthy();
+  });
+
+  it("resends an invite via POST /invites/:id/resend and confirms", async () => {
+    applyInviteUseQueryMock(labMe("admin"), [SENT_INVITES[1]]);
+    const alertSpy = vi.spyOn(Alert, "alert").mockImplementation(() => {});
+    let resendUrl: string | null = null;
+    setMockFetchHandler((url, init) => {
+      if (url.includes("/resend") && init?.method === "POST") {
+        resendUrl = url;
+        return new Response(
+          JSON.stringify({ ok: true, data: { id: "inv-failed", emailDelivery: { sent: true, status: "sent" } } }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
+    });
+
+    const { getByTestId } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+
+    fireEvent.press(getByTestId("invite-resend-inv-failed"));
+
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith(
+        "Invite email sent",
+        expect.stringMatching(/sent again/i),
+      );
+    });
+    expect(resendUrl).toBe("/api/organizations/invites/inv-failed/resend");
+  });
+
+  it("surfaces the server message when a resend fails (recipient opted out)", async () => {
+    applyInviteUseQueryMock(labMe("admin"), [SENT_INVITES[2]]);
+    const alertSpy = vi.spyOn(Alert, "alert").mockImplementation(() => {});
+    setMockFetchHandler((url, init) => {
+      if (url.includes("/resend") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            message:
+              "This recipient has opted out of invite emails, so no email was sent.",
+          }),
+          { status: 409 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
+    });
+
+    const { getByTestId } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+
+    fireEvent.press(getByTestId("invite-resend-inv-optout"));
+
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith(
+        "Could not resend invite",
+        expect.stringMatching(/opted out of invite emails/i),
+      );
+    });
+  });
+
+  it("cancels an invite after confirmation via POST /invites/:id/cancel", async () => {
+    applyInviteUseQueryMock(labMe("admin"), [SENT_INVITES[0]]);
+    const alertSpy = vi.spyOn(Alert, "alert").mockImplementation(() => {});
+    let cancelUrl: string | null = null;
+    setMockFetchHandler((url, init) => {
+      if (url.includes("/cancel") && init?.method === "POST") {
+        cancelUrl = url;
+        return new Response(
+          JSON.stringify({ ok: true, data: { id: "inv-ok", status: "revoked" } }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
+    });
+
+    const { getByTestId } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+
+    fireEvent.press(getByTestId("invite-cancel-inv-ok"));
+
+    // Confirmation dialog is shown; nothing POSTed yet.
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(cancelUrl).toBeNull();
+
+    const buttons = vi.mocked(Alert.alert).mock.calls[0][2] as
+      | { text: string; onPress?: () => void }[]
+      | undefined;
+    const confirm = buttons?.find((b) => b.text === "Cancel invite");
+    expect(confirm).toBeTruthy();
+    confirm!.onPress?.();
+
+    await waitFor(() => {
+      expect(cancelUrl).toBe("/api/organizations/invites/inv-ok/cancel");
+    });
+  });
+
+  it("does not show the pending-invites listing to non-admin members", () => {
+    applyInviteUseQueryMock(labMe("user"), SENT_INVITES);
+    const { queryByText } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+    expect(queryByText("Pending invites")).toBeNull();
+    expect(queryByText("bounce@example.com")).toBeNull();
   });
 });
