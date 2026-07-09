@@ -391,6 +391,8 @@ export interface PracticeStatement {
   totalPaid: string | number;
   balanceDue: string | number;
   invoiceIdsJson?: string[];
+  pdfStorageKey?: string | null;
+  pdfFileName?: string | null;
   createdAt?: string;
 }
 

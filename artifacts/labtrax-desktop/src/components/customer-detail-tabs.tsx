@@ -2,7 +2,7 @@
 // opened from the Accounts page. Originally built for the (now retired)
 // Customer Center page; the Invoices / Statements / Card on File tab content
 // lives here so every customer's window gets the full 4-tab experience.
-import { useMemo, useRef, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -19,7 +19,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { apiFetch, ApiError } from "@/lib/api";
+import { apiFetch, apiFetchArrayBuffer, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, Organization, PracticeStatement } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
@@ -363,6 +363,12 @@ export function StatementsTab({
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<StmtFilter>("all");
   const [sendOpen, setSendOpen] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [rowNotice, setRowNotice] = useState<{
+    id: string;
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
 
   const statementsQuery = useQuery({
     queryKey: ["practice-statements", { practiceId: selected.id }],
@@ -381,6 +387,71 @@ export function StatementsTab({
       return true;
     });
   }, [statementsQuery.data, filter]);
+
+  const practiceName = selected.displayName || selected.name;
+
+  function periodLabel(s: PracticeStatement): string {
+    const fmt = (d?: string | null) =>
+      d
+        ? new Date(d).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+          })
+        : "—";
+    return `${fmt(s.periodStart)} – ${fmt(s.periodEnd)}`;
+  }
+
+  async function handleDownloadPdf(s: PracticeStatement) {
+    setRowNotice(null);
+    setDownloadingId(s.id);
+    try {
+      const { buffer } = await apiFetchArrayBuffer(
+        `/invoices/practice-statements/${s.id}/pdf`
+      );
+      const blob = new Blob([buffer], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = s.pdfFileName || `statement-${s.id}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setRowNotice({
+        id: s.id,
+        kind: "error",
+        text: e instanceof Error ? e.message : "Download failed.",
+      });
+    } finally {
+      setDownloadingId(null);
+    }
+  }
+
+  const resendEmailMutation = useMutation({
+    mutationFn: (s: PracticeStatement) =>
+      apiFetch(`/invoices/practice-statements/${s.id}/email`, {
+        method: "POST",
+        body: JSON.stringify({
+          subject: `Statement for ${practiceName}`,
+          message: `Please find your account statement for ${periodLabel(s)} attached.`,
+        }),
+      }),
+    onMutate: () => setRowNotice(null),
+    onSuccess: (_data, s) =>
+      setRowNotice({
+        id: s.id,
+        kind: "success",
+        text: `Emailed to ${selected.billingEmail || "billing email"}.`,
+      }),
+    onError: (e: Error, s) =>
+      setRowNotice({
+        id: s.id,
+        kind: "error",
+        text: e.message || "Email failed.",
+      }),
+  });
 
   function handleFilterChange(val: string) {
     if (val === "send") {
@@ -453,58 +524,118 @@ export function StatementsTab({
                 <th className="text-right px-3 py-2.5 font-medium">Paid</th>
                 <th className="text-right px-3 py-2.5 font-medium">Balance Due</th>
                 <th className="text-left px-3 py-2.5 font-medium">Generated</th>
+                <th className="text-right px-5 py-2.5 font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {statements.map((s) => (
-                <tr
-                  key={s.id}
-                  className="border-t border-border hover:bg-secondary/30 transition-colors"
-                >
-                  <td className="px-5 py-3 text-left font-medium text-foreground">
-                    {s.periodStart
-                      ? new Date(s.periodStart).toLocaleDateString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                        })
-                      : "—"}{" "}
-                    <span className="text-muted-foreground">–</span>{" "}
-                    {s.periodEnd
-                      ? new Date(s.periodEnd).toLocaleDateString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                        })
-                      : "—"}
-                  </td>
-                  <td className="px-3 py-3 text-left text-muted-foreground">
-                    {s.invoiceCount}
-                  </td>
-                  <td className="px-3 py-3 text-right tabular-nums">
-                    {formatMoney(Number(s.totalBilled ?? 0))}
-                  </td>
-                  <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                    {formatMoney(Number(s.totalPaid ?? 0))}
-                  </td>
-                  <td className="px-3 py-3 text-right tabular-nums font-medium">
-                    {Number(s.balanceDue ?? 0) > 0 ? (
-                      <span className="text-warning">{formatMoney(Number(s.balanceDue))}</span>
-                    ) : (
-                      <span className="text-muted-foreground">{formatMoney(0)}</span>
+              {statements.map((s) => {
+                const isDownloading = downloadingId === s.id;
+                const isEmailing =
+                  resendEmailMutation.isPending &&
+                  resendEmailMutation.variables?.id === s.id;
+                return (
+                  <Fragment key={s.id}>
+                    <tr className="border-t border-border hover:bg-secondary/30 transition-colors">
+                      <td className="px-5 py-3 text-left font-medium text-foreground">
+                        {s.periodStart
+                          ? new Date(s.periodStart).toLocaleDateString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                            })
+                          : "—"}{" "}
+                        <span className="text-muted-foreground">–</span>{" "}
+                        {s.periodEnd
+                          ? new Date(s.periodEnd).toLocaleDateString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                            })
+                          : "—"}
+                      </td>
+                      <td className="px-3 py-3 text-left text-muted-foreground">
+                        {s.invoiceCount}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums">
+                        {formatMoney(Number(s.totalBilled ?? 0))}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                        {formatMoney(Number(s.totalPaid ?? 0))}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums font-medium">
+                        {Number(s.balanceDue ?? 0) > 0 ? (
+                          <span className="text-warning">{formatMoney(Number(s.balanceDue))}</span>
+                        ) : (
+                          <span className="text-muted-foreground">{formatMoney(0)}</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 text-left text-muted-foreground">
+                        {s.createdAt
+                          ? new Date(s.createdAt).toLocaleDateString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                            })
+                          : "—"}
+                      </td>
+                      <td className="px-5 py-3 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => void handleDownloadPdf(s)}
+                            disabled={isDownloading || isEmailing}
+                            title="Download PDF"
+                            data-testid={`button-download-statement-${s.id}`}
+                            className="h-7 px-2 rounded text-[11px] font-medium bg-secondary hover:bg-secondary/70 border border-border transition-colors inline-flex items-center gap-1 disabled:opacity-50"
+                          >
+                            {isDownloading ? (
+                              <Loader2 size={11} className="animate-spin" />
+                            ) : (
+                              <FileDown size={11} />
+                            )}
+                            PDF
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => resendEmailMutation.mutate(s)}
+                            disabled={isDownloading || isEmailing}
+                            title={
+                              selected.billingEmail
+                                ? `Resend to ${selected.billingEmail}`
+                                : "Resend to the practice's billing email"
+                            }
+                            data-testid={`button-resend-statement-${s.id}`}
+                            className="h-7 px-2 rounded text-[11px] font-medium bg-secondary hover:bg-secondary/70 border border-border transition-colors inline-flex items-center gap-1 disabled:opacity-50"
+                          >
+                            {isEmailing ? (
+                              <Loader2 size={11} className="animate-spin" />
+                            ) : (
+                              <Send size={11} />
+                            )}
+                            Resend
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {rowNotice?.id === s.id && (
+                      <tr key={`${s.id}-notice`} className="border-t-0">
+                        <td colSpan={7} className="px-5 pb-2.5 pt-0 text-right">
+                          <span
+                            data-testid={`statement-row-notice-${s.id}`}
+                            className={
+                              rowNotice.kind === "success"
+                                ? "text-[11px] text-emerald-600 dark:text-emerald-400"
+                                : "text-[11px] text-destructive"
+                            }
+                          >
+                            {rowNotice.text}
+                          </span>
+                        </td>
+                      </tr>
                     )}
-                  </td>
-                  <td className="px-3 py-3 text-left text-muted-foreground">
-                    {s.createdAt
-                      ? new Date(s.createdAt).toLocaleDateString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                        })
-                      : "—"}
-                  </td>
-                </tr>
-              ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}
