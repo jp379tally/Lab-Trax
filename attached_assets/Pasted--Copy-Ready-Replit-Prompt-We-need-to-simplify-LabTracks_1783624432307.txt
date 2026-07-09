@@ -1,0 +1,81 @@
+### Copy-Ready Replit Prompt
+
+We need to simplify LabTracks invoice statuses. The app should no longer support or display `draft` invoice status. Going forward, invoice statuses should only be:
+
+* `open`
+* `paid`
+* `void`
+
+Goal: remove `draft` from the invoice status lifecycle, UI filters, validation, defaults, and any backend logic. If existing invoice records currently have `draft`, they should be safely migrated or normalized to `open` unless there is a stronger existing business rule in the codebase.
+
+Likely root cause: invoice status options are defined in multiple places, likely including a frontend dropdown/filter, backend schema or enum validation, invoice creation defaults, and query/filter logic. The uploaded screenshot shows the invoice status filter still contains extra statuses like `Draft`, `Partial`, and `Frozen`. The desired state is a much tighter status model with only `open`, `paid`, and `void`.
+
+Implementation steps:
+
+1. Search the codebase for all invoice status definitions and references:
+
+   * `draft`
+   * `Draft`
+   * `partial`
+   * `Partial`
+   * `frozen`
+   * `Frozen`
+   * invoice status enums, constants, dropdown options, filters, badges, schema validators, and database defaults.
+
+2. Update the canonical invoice status model:
+
+   * Restrict valid invoice statuses to `open`, `paid`, and `void`.
+   * Remove `draft` from any enum, union type, Zod schema, database constraint, API validation, or shared constants.
+   * If `partial` and `frozen` are not actually supported business states anymore, remove them from the same surfaces too.
+   * Keep display labels as `Open`, `Paid`, and `Void`.
+
+3. Update invoice creation behavior:
+
+   * New invoices should default to `open`, not `draft`.
+   * Any code path that previously created invoices as `draft` should now create them as `open`.
+   * Do not introduce a replacement “draft-like” hidden status.
+
+4. Update invoice list filtering UI:
+
+   * The status dropdown should only show:
+
+     * `All`
+     * `Open`
+     * `Paid`
+     * `Void`
+   * Remove `Draft`, `Partial`, and `Frozen` from the dropdown shown in the invoices screen.
+   * Make sure any segmented controls or summary cards that depend on invoice status still work correctly.
+
+5. Update backend filtering/query logic:
+
+   * The invoice status filter should only accept `open`, `paid`, and `void`.
+   * If the frontend sends an unsupported status, handle it safely by rejecting it with a clear validation error or ignoring it according to the app’s existing pattern.
+   * Make sure `All` still returns all invoices across the allowed statuses.
+
+6. Handle existing data safely:
+
+   * Add a migration or startup/data normalization step if this app uses migrations.
+   * Convert existing `draft` invoices to `open`.
+   * Decide whether existing `partial` or `frozen` records should also become `open`, or whether they represent legacy data that needs special handling. Prefer mapping them to `open` unless the codebase clearly shows a reason not to.
+   * Do not delete invoices or invoice financial data.
+
+Constraints:
+
+* Do not change payment totals, invoice line items, patient billing data, or provider billing relationships.
+* Do not remove `paid` or `void` behavior.
+* Do not break existing invoice list filters, aging filters, practice filters, overdue totals, or invoice detail pages.
+* Keep the fix narrowly scoped to invoice status modeling and display.
+* Preserve existing styling and component patterns.
+* If there is a database enum or constraint, update it carefully and include a safe migration path for existing rows.
+
+Regression checks:
+
+* Create a new invoice and confirm its status is `open`.
+* Confirm no UI shows `Draft` as a selectable invoice status.
+* Confirm the invoice status dropdown only shows `All`, `Open`, `Paid`, and `Void`.
+* Confirm filtering by `Open`, `Paid`, and `Void` works correctly.
+* Confirm `All` still shows all invoices.
+* Confirm any existing `draft` invoices now appear as `open`.
+* Confirm paid invoices still show as paid and voided invoices still show as void.
+* Confirm invoice totals, overdue totals, and counts still calculate correctly.
+* Search the codebase after the change and confirm there are no remaining user-facing invoice `draft` status references.
