@@ -206,6 +206,25 @@ vi.mock("@/lib/api", () => ({
   }),
 }));
 
+// Export side effects (blob downloads / jsPDF) are mocked out — the CSV/PDF
+// content rules live in stats-export.test.ts; here we only assert wiring.
+const downloadRevenueCsvMock = vi.fn();
+const downloadCategoryCsvMock = vi.fn();
+const downloadMaterialCsvMock = vi.fn();
+const downloadStatsPdfMock = vi.fn();
+vi.mock("@/lib/stats-export", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/stats-export")>();
+  return {
+    ...actual,
+    downloadRevenueCsv: (...args: unknown[]) => downloadRevenueCsvMock(...args),
+    downloadCategoryCsv: (...args: unknown[]) =>
+      downloadCategoryCsvMock(...args),
+    downloadMaterialCsv: (...args: unknown[]) =>
+      downloadMaterialCsvMock(...args),
+    downloadStatsPdf: (...args: unknown[]) => downloadStatsPdfMock(...args),
+  };
+});
+
 // Recharts' ResponsiveContainer needs real layout measurements jsdom lacks.
 vi.mock("recharts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("recharts")>();
@@ -314,6 +333,104 @@ describe("StatsPage", () => {
     expect(screen.getByTestId("stats-categories-empty")).toBeTruthy();
     expect(screen.getByTestId("stats-materials-empty")).toBeTruthy();
     expect(screen.getByTestId("stats-weekday-empty")).toBeTruthy();
+  });
+
+  it("exports CSVs and the PDF report with the active filters threaded through", async () => {
+    meMemberships = [OWNER_MEMBERSHIP];
+    summaryPayload = SUMMARY;
+    categoriesPayload = CATEGORIES;
+    revenuePayload = REVENUE;
+    weekdaysPayload = WEEKDAYS;
+    downloadRevenueCsvMock.mockClear();
+    downloadCategoryCsvMock.mockClear();
+    downloadMaterialCsvMock.mockClear();
+    downloadStatsPdfMock.mockClear();
+    renderPage();
+
+    const trigger = await waitFor(
+      () => screen.getByTestId("stats-export-trigger") as HTMLButtonElement,
+    );
+    expect(trigger.disabled).toBe(false);
+
+    // Apply a material filter so we can assert it reaches the export.
+    fireEvent.change(screen.getByTestId("stats-material-select"), {
+      target: { value: "Zirconia" },
+    });
+
+    fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(screen.getByTestId("stats-export-menu")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId("stats-export-revenue-csv"));
+    expect(downloadRevenueCsvMock).toHaveBeenCalledTimes(1);
+    expect(downloadRevenueCsvMock.mock.calls[0]![0]).toMatchObject({
+      series: REVENUE.data.series,
+    });
+    expect(downloadRevenueCsvMock.mock.calls[0]![1]).toMatchObject({
+      orgName: "Main Lab",
+      material: "Zirconia",
+      categoryLabel: null,
+      groupByLabel: "Monthly",
+    });
+    // Menu closes after a selection.
+    expect(screen.queryByTestId("stats-export-menu")).toBeNull();
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByTestId("stats-export-categories-csv"));
+    expect(downloadCategoryCsvMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByTestId("stats-export-materials-csv"));
+    expect(downloadMaterialCsvMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByTestId("stats-export-pdf"));
+    expect(downloadStatsPdfMock).toHaveBeenCalledTimes(1);
+    expect(downloadStatsPdfMock.mock.calls[0]![0]).toMatchObject({
+      summary: SUMMARY.data,
+      revenue: REVENUE.data,
+      categories: CATEGORIES.data,
+      weekday: WEEKDAYS.data,
+    });
+  });
+
+  it("disables per-format items when their dataset is empty", async () => {
+    meMemberships = [OWNER_MEMBERSHIP];
+    summaryPayload = SUMMARY;
+    categoriesPayload = EMPTY_CATEGORIES;
+    revenuePayload = EMPTY_REVENUE;
+    weekdaysPayload = EMPTY_WEEKDAYS;
+    downloadRevenueCsvMock.mockClear();
+    renderPage();
+
+    const trigger = await waitFor(
+      () => screen.getByTestId("stats-export-trigger") as HTMLButtonElement,
+    );
+    // Summary is still present, so the trigger (and PDF) stay available.
+    expect(trigger.disabled).toBe(false);
+    fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(screen.getByTestId("stats-export-menu")).toBeTruthy();
+    });
+
+    const revenueItem = screen.getByTestId(
+      "stats-export-revenue-csv",
+    ) as HTMLButtonElement;
+    const categoriesItem = screen.getByTestId(
+      "stats-export-categories-csv",
+    ) as HTMLButtonElement;
+    const materialsItem = screen.getByTestId(
+      "stats-export-materials-csv",
+    ) as HTMLButtonElement;
+    const pdfItem = screen.getByTestId("stats-export-pdf") as HTMLButtonElement;
+    expect(revenueItem.disabled).toBe(true);
+    expect(categoriesItem.disabled).toBe(true);
+    expect(materialsItem.disabled).toBe(true);
+    expect(pdfItem.disabled).toBe(false);
+
+    fireEvent.click(revenueItem);
+    expect(downloadRevenueCsvMock).not.toHaveBeenCalled();
   });
 
   it("shows the restricted card for a non-billing member", async () => {

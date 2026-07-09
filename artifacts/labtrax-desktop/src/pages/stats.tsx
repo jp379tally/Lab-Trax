@@ -1,10 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   BarChart3,
   CalendarDays,
+  Download,
   DollarSign,
+  FileSpreadsheet,
+  FileText,
   Layers,
   TrendingDown,
   TrendingUp,
@@ -40,6 +43,17 @@ import {
   defaultRange,
   type DateRange,
 } from "@/components/reports/DateRangePicker";
+import {
+  downloadCategoryCsv,
+  downloadMaterialCsv,
+  downloadRevenueCsv,
+  downloadStatsPdf,
+  type StatsCategoriesData,
+  type StatsExportFilters,
+  type StatsRevenueData,
+  type StatsSummaryData,
+  type StatsWeekdayData,
+} from "@/lib/stats-export";
 
 const BILLING_ROLES = new Set(["owner", "admin", "billing"]);
 
@@ -220,6 +234,10 @@ export default function StatsPage() {
       {isBilling && orgId && (
         <StatsBody
           organizationId={orgId}
+          orgName={(() => {
+            const org = billingLabs.find((o) => o.id === orgId);
+            return org ? org.displayName || org.name : "Lab";
+          })()}
           range={range}
           groupBy={groupBy}
           category={category || undefined}
@@ -232,12 +250,14 @@ export default function StatsPage() {
 
 function StatsBody({
   organizationId,
+  orgName,
   range,
   groupBy,
   category,
   material,
 }: {
   organizationId: string;
+  orgName: string;
   range: DateRange;
   groupBy: GroupBy;
   category: StatsCaseCategory | undefined;
@@ -266,8 +286,36 @@ function StatsBody({
   const revenue = revenueQuery.data?.data;
   const weekday = weekdayQuery.data?.data;
 
+  const exportFilters: StatsExportFilters = {
+    orgName,
+    dateFrom: range.from,
+    dateTo: range.to,
+    groupByLabel:
+      GROUP_BY_OPTIONS.find((g) => g.key === groupBy)?.label ?? groupBy,
+    categoryLabel: category
+      ? (CATEGORY_OPTIONS.find((c) => c.key === category)?.label ?? category)
+      : null,
+    material: material ?? null,
+  };
+
   return (
     <div className="space-y-6">
+      {/* ── Export toolbar ────────────────────────────────────────── */}
+      <div className="flex justify-end -mb-2">
+        <ExportMenu
+          filters={exportFilters}
+          summary={summary ?? null}
+          categories={categories ?? null}
+          revenue={revenue ?? null}
+          weekday={weekday ?? null}
+          loading={
+            summaryQuery.isLoading ||
+            categoriesQuery.isLoading ||
+            revenueQuery.isLoading ||
+            weekdayQuery.isLoading
+          }
+        />
+      </div>
       {/* ── Summary cards ─────────────────────────────────────────── */}
       <div
         className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3"
@@ -486,6 +534,155 @@ function StatsBody({
           </ChartContainer>
         )}
       </ChartCard>
+    </div>
+  );
+}
+
+function ExportMenu({
+  filters,
+  summary,
+  categories,
+  revenue,
+  weekday,
+  loading,
+}: {
+  filters: StatsExportFilters;
+  summary: StatsSummaryData | null;
+  categories: StatsCategoriesData | null;
+  revenue: StatsRevenueData | null;
+  weekday: StatsWeekdayData | null;
+  loading: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const hasRevenue = !!revenue && revenue.series.length > 0;
+  const hasCategories = !!categories && categories.totalCases > 0;
+  const hasMaterials = !!categories && categories.materials.length > 0;
+  const hasAnything =
+    hasRevenue || hasCategories || hasMaterials || !!summary;
+
+  function itemClass(enabled: boolean): string {
+    return `w-full flex items-center gap-2 px-3 py-2 text-sm text-left rounded-md ${
+      enabled
+        ? "hover:bg-secondary cursor-pointer"
+        : "opacity-50 cursor-not-allowed"
+    }`;
+  }
+
+  return (
+    <div className="relative" ref={wrapRef}>
+      <button
+        type="button"
+        data-testid="stats-export-trigger"
+        onClick={() => setOpen((v) => !v)}
+        disabled={loading || !hasAnything}
+        className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed border border-transparent"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <Download className="h-4 w-4" />
+        Export
+      </button>
+      {open && (
+        <div
+          role="menu"
+          data-testid="stats-export-menu"
+          className="absolute right-0 top-full mt-1 w-64 bg-card border border-border rounded-lg shadow-lg p-1 z-50"
+        >
+          <div className="px-3 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Spreadsheet (CSV)
+          </div>
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="stats-export-revenue-csv"
+            disabled={!hasRevenue}
+            className={itemClass(hasRevenue)}
+            onClick={() => {
+              if (!revenue) return;
+              downloadRevenueCsv(revenue, filters);
+              setOpen(false);
+            }}
+          >
+            <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
+            Sales over time
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="stats-export-categories-csv"
+            disabled={!hasCategories}
+            className={itemClass(hasCategories)}
+            onClick={() => {
+              if (!categories) return;
+              downloadCategoryCsv(categories, filters);
+              setOpen(false);
+            }}
+          >
+            <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
+            Cases by category
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="stats-export-materials-csv"
+            disabled={!hasMaterials}
+            className={itemClass(hasMaterials)}
+            onClick={() => {
+              if (!categories) return;
+              downloadMaterialCsv(categories, filters);
+              setOpen(false);
+            }}
+          >
+            <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
+            Material breakdown
+          </button>
+          <div className="my-1 border-t border-border" />
+          <div className="px-3 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Report
+          </div>
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="stats-export-pdf"
+            disabled={!hasAnything}
+            className={itemClass(hasAnything)}
+            onClick={() => {
+              downloadStatsPdf({
+                filters,
+                summary,
+                revenue,
+                categories,
+                weekday,
+                generatedAt: new Date(),
+              });
+              setOpen(false);
+            }}
+          >
+            <FileText className="h-4 w-4 text-muted-foreground" />
+            Full report (PDF)
+          </button>
+        </div>
+      )}
     </div>
   );
 }
