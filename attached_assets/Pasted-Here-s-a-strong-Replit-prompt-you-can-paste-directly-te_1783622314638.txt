@@ -1,0 +1,98 @@
+Here’s a strong Replit prompt you can paste directly:
+
+```text
+Goal:
+Add invoice total summaries at the top of every invoice amount column in LabTracks.
+
+User-visible requirement:
+Anywhere the app displays a column/list/table of invoice amounts, show the sum of those invoice amounts at the top of that same column. This applies across the app, including but not limited to:
+- Invoice Center
+- Customer Center
+- Any customer detail view with invoice amounts
+- Any table, grid, or list where invoice amounts appear
+
+Do not put the totals only at the bottom. The total must appear at the top of the relevant invoice amount column, visually tied to that column.
+
+Likely root cause / missing feature:
+Invoice amount columns currently render individual invoice values but do not compute or display aggregate totals in the column header or top row. The app likely has repeated invoice display patterns across different centers, so the fix should avoid adding one-off totals in only one screen.
+
+Implementation steps:
+1. Search the codebase for all invoice amount displays.
+   Look for terms like:
+   - invoice
+   - invoice amount
+   - amountDue
+   - total
+   - balance
+   - invoiceTotal
+   - Customer Center
+   - Invoice Center
+
+2. Identify every table/grid/list component that renders invoice amounts.
+   Start with the Invoice Center and Customer Center, then check shared table components or customer detail invoice sections.
+
+3. For each invoice amount column:
+   - Compute the sum of the invoice amounts currently shown in that view.
+   - The total should respect the same filters/search/sort/page context as the visible data unless the existing UI clearly has a concept of “all matching records.”
+   - If the table is paginated, determine whether existing totals elsewhere are page-level or all-filtered-results totals, and match that pattern. If unclear, use the filtered dataset available to the current view and document the assumption.
+
+4. Render the total at the top of the invoice amount column.
+   Preferred options:
+   - In the column header, under or next to the “Invoice Amount” label.
+   - Or in a pinned/top summary row directly beneath the header.
+   The total should be visually aligned with the invoice amount column.
+
+5. Format the total using the same currency formatting already used for invoice amounts.
+   Examples:
+   - `$1,234.56`
+   - Preserve negative values, credits, or zero values consistently with existing invoice formatting.
+
+6. Handle edge cases:
+   - No invoices: show `$0.00` or the app’s existing empty-money format.
+   - Missing/null invoice amounts: treat as `0` unless existing business logic says otherwise.
+   - Credits/refunds/negative invoices: include them in the sum.
+   - Mixed string/number currency values: normalize safely before summing.
+   - Loading state: avoid showing incorrect totals before data loads.
+   - Filter/search changes: total updates immediately with the displayed invoice data.
+
+Constraints:
+- Do not redesign the Invoice Center or Customer Center.
+- Do not move invoice columns or change existing table behavior unless necessary.
+- Do not duplicate large blocks of logic across screens if there is already a reusable table or formatting helper.
+- Reuse existing currency formatting utilities if available.
+- Keep the change scoped to displaying invoice totals.
+- Do not change invoice data, invoice calculations, database schema, or saved invoice records.
+- Do not introduce broad refactors unless required for a shared total-summary helper.
+- Make sure the total appears at the top wherever invoice amount columns appear, not only in one screen.
+
+Acceptance criteria:
+- Invoice Center shows the total of invoice amounts at the top of the invoice amount column.
+- Customer Center shows the total at the top of any invoice amount column it displays.
+- Any other invoice amount column in the app also shows a correctly formatted total at the top.
+- Totals update correctly when filters/search results change.
+- Totals match the invoice amounts currently represented by that view.
+- Currency formatting matches the existing invoice amount formatting.
+- No layout overlap, broken headers, or misaligned columns on desktop or mobile.
+- Existing invoice rows still display correctly.
+
+Regression checks:
+1. Open Invoice Center and verify the invoice amount total appears at the top of the invoice amount column.
+2. Apply filters/search in Invoice Center and confirm the total updates correctly.
+3. Open Customer Center and verify any invoice amount column has a top total.
+4. Open a customer detail page or any related invoice list and verify totals appear there too.
+5. Test with:
+   - no invoices
+   - one invoice
+   - multiple invoices
+   - negative/credit invoice amounts if supported
+   - null or missing invoice amount values if possible
+6. Confirm existing invoice amount formatting has not changed.
+7. Confirm sorting, pagination, filters, and row clicks still work.
+8. Run the app’s existing tests or type checks before finishing.
+
+Before finishing:
+- List every file changed.
+- Explain where invoice totals were added.
+- Explain whether totals are calculated from visible rows, filtered rows, paginated rows, or all loaded rows.
+- Call out any invoice amount location that could not be updated and why.
+```

@@ -1,0 +1,91 @@
+**Copy-Ready Replit Prompt**
+
+We need to fix the LabTracks invoices UI so the invoice selection controls stay visible at the top of the invoice section while the user scrolls down the invoice list. This must work consistently in the invoices section for all three platforms.
+
+Goal:
+Keep the invoice filter/search bar and selected-invoice bulk action bar pinned at the top of the visible invoice section during vertical scrolling, so users can always see and use selections like:
+
+* invoice search
+* Open / All toggle
+* status filter
+* age filter
+* practice filter
+* AI-imported only checkbox
+* selected invoice count
+* Send selected invoices
+* Delete selected
+* Reset to $0
+* Reset all to $0
+* Change status
+
+User-visible problem:
+When many invoices are listed, users scroll down the invoice table and lose access to the selection/filter/action controls. This makes bulk invoice work awkward because the user must scroll back to the top to send, delete, reset, or change the status of selected invoices.
+
+Likely root cause:
+The invoice filter/action controls are currently part of the normal document flow above the invoice table. They are not inside a sticky header container, or the sticky behavior is blocked by a parent container with `overflow`, missing `top`, incorrect `z-index`, or the wrong scroll container.
+
+Relevant UI surface:
+Inspect the invoices page/components for all three platform invoice sections. Look for the components rendering the invoice list/table and the controls shown above it:
+
+* search input: “Search invoice # or client…”
+* Open / All toggle
+* invoice filters
+* AI-imported only checkbox
+* selected invoice bulk action toolbar
+
+Implementation steps:
+
+1. Locate the shared invoice list/table component if all three platforms reuse one. Prefer fixing the shared component once instead of duplicating CSS in three places.
+2. If the three platforms have separate invoice views, apply the same sticky-header pattern to each invoices section.
+3. Wrap the top invoice controls in a dedicated sticky container that includes both:
+
+   * the search/filter row
+   * the selected-invoice bulk action row
+4. Make the sticky container use the correct scroll context:
+
+   * If the whole page scrolls, use `position: sticky; top: <app header height or 0>;`
+   * If the invoice table is inside an internal scroll panel, the sticky element must be inside that scroll container.
+5. Give the sticky container a solid background matching the page/table background so table rows do not show through while scrolling.
+6. Add an appropriate `z-index` so it appears above invoice rows, table headers, checkboxes, dropdowns, and row hover states.
+7. Preserve the existing table header behavior. If the invoice table header is already sticky, make sure the filter/action area sits above it and does not overlap it.
+8. Ensure dropdown menus, status menus, and filter popovers still open correctly from the sticky area and are not clipped by parent `overflow: hidden`.
+9. Avoid hardcoded platform-specific hacks unless the layout truly differs between platforms. Use shared class names, component props, or layout wrappers where possible.
+10. Test with enough invoices selected to show the selected-count bulk action row, such as “257 invoices selected,” and verify the action row remains visible while scrolling.
+
+Constraints and guardrails:
+
+* Do not change invoice selection logic, filtering logic, invoice status behavior, send behavior, delete behavior, reset behavior, or billing data.
+* Do not alter API calls or invoice mutations.
+* Do not make the entire page header sticky unless that is already intended.
+* Keep the sticky behavior scoped to the invoices section.
+* Preserve responsive behavior on smaller screens.
+* Avoid visual overlap with any global app nav/header.
+* If there is a fixed global header, offset the sticky controls by that header’s height.
+* If a parent container’s `overflow` prevents sticky positioning, fix the layout carefully rather than adding brittle absolute positioning.
+
+Acceptance criteria:
+
+* In each of the three platform invoice sections, the invoice search/filter row remains visible while scrolling down the invoice list.
+* When invoices are selected, the selected-invoice bulk action row also remains visible while scrolling.
+* The invoice table rows scroll underneath the sticky controls without visual bleed-through.
+* Bulk action buttons remain clickable after scrolling.
+* Filter dropdowns and “Change status” still open and are not clipped.
+* The layout does not jump, overlap, or cover invoice rows unexpectedly.
+* The fix works with no selected invoices, one selected invoice, and many selected invoices.
+* The fix works at desktop width and at the smallest supported responsive width.
+
+Regression checks:
+
+* Verify invoice search still filters correctly.
+* Verify Open / All toggle still changes the invoice set correctly.
+* Verify status, age, practice, and AI-imported filters still work.
+* Verify selecting and deselecting invoices updates the selected count correctly.
+* Verify Send selected invoices still targets only selected invoices.
+* Verify Delete selected still targets only selected invoices.
+* Verify Reset to $0 and Reset all to $0 still behave exactly as before.
+* Verify Change status still applies to the correct selected invoices.
+* Verify all three platform invoice sections behave the same way.
+* Check for any horizontal overflow or mobile layout breakage caused by the sticky wrapper.
+
+Before finishing:
+Explain which invoice component(s) were changed, whether the fix was shared or applied per-platform, and any assumptions made about the page’s scroll container or global header height.

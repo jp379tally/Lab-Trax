@@ -1,0 +1,66 @@
+```text
+Goal:
+Add shift-click range selection for LabTracks case lists. When the user selects one case, holds Shift, and clicks another case several rows away, every case between the first selected case and the clicked case should become highlighted/selected.
+
+User-visible problem:
+In views that show multiple cases, users currently have to select cases one by one. They need standard range-selection behavior so they can quickly highlight a contiguous block of cases.
+
+Likely root cause:
+The case list selection logic likely only handles single-click or checkbox-style individual selection. It probably does not track the “anchor” case from the last normal click, so when Shift is held there is no way to calculate the range between the anchor case and the newly clicked case.
+
+Implementation steps:
+1. Find the component or module that renders the list/table of cases and handles case selection/highlighting.
+   - Look for case list/table components, checkbox handlers, selected case state, highlighted case state, or click handlers on case rows.
+   - Likely areas may include components related to cases, case tables, queues, review lists, or multi-select state.
+
+2. Add an anchor selection state.
+   - Store the case ID, row index, or stable ordering position of the last normally clicked case.
+   - This anchor should update on a regular click, not necessarily on every Shift-click unless the existing UX pattern expects that.
+
+3. Detect Shift-click.
+   - In the row or checkbox click handler, check the click event for `event.shiftKey`.
+   - If Shift is held and an anchor exists, calculate the range between the anchor row and the clicked row using the currently visible/sorted case list order.
+
+4. Select/highlight the full range.
+   - Determine the start and end indexes between the anchor case and clicked case.
+   - Add every case in that range to the selected/highlighted case set.
+   - Preserve any previously selected cases unless the app’s current selection model clearly replaces selection on click.
+   - Avoid selecting cases that are filtered out, hidden, disabled, or not part of the current visible list.
+
+5. Preserve existing click behavior.
+   - Normal click should continue to select or toggle a single case exactly as it does today.
+   - Ctrl/Cmd-click behavior, if present, should not be broken.
+   - Checkbox behavior and row-click behavior should remain consistent with the current UI.
+
+6. Use stable identifiers.
+   - Store selected cases by case ID, not by array index.
+   - Use indexes only to calculate the visible range at the moment of the click.
+   - This prevents incorrect selection after sorting, filtering, pagination, or data refreshes.
+
+Constraints and guardrails:
+- Do not rewrite the case list/table unless necessary.
+- Keep the change scoped to case selection/highlighting behavior.
+- Respect current filtering, sorting, and pagination.
+- Do not select cases across pages unless the existing product already supports cross-page bulk selection.
+- Do not introduce broad state-management changes unless the current architecture requires it.
+- Make sure selection styling remains accessible and visually clear.
+- If the list is virtualized, calculate the range from the full visible data model, not only currently mounted DOM rows.
+
+Regression checks:
+1. Click one case, hold Shift, click a case several rows below it. Confirm every visible case between them is highlighted.
+2. Repeat in the opposite direction: click a lower case first, then Shift-click a higher case. Confirm the range still works.
+3. Confirm a normal click still selects or toggles only one case according to current behavior.
+4. Confirm existing selected cases are not unexpectedly cleared unless that is the established behavior.
+5. Test after sorting the case list. Shift-click should follow the current sorted order.
+6. Test after filtering/searching the case list. Only visible matching cases in the current list should be selected.
+7. Test across pagination if applicable. Do not accidentally select hidden cases on other pages.
+8. Test disabled, locked, archived, or otherwise non-selectable cases if the app has them.
+9. Confirm the visual highlight state, selected count, bulk actions, and any downstream selected-case behavior all update correctly.
+10. Add or update tests for the selection handler/range-selection behavior if the project has frontend tests.
+
+Expected outcome:
+Users can select one case, hold Shift, click another case farther down or up the currently visible list, and all cases between those two cases become highlighted/selected reliably without breaking existing single-case selection behavior.
+
+Before finishing:
+Explain which component/file was changed, how the anchor selection works, and any assumptions made about pagination, sorting, filtering, or disabled cases.
+```

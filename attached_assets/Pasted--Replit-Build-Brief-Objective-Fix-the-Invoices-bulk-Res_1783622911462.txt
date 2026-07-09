@@ -1,0 +1,172 @@
+### Replit Build Brief
+
+**Objective**
+Fix the Invoices bulk “Reset to $0” action so selected invoices can be safely zeroed out without the browser showing `Could not reach the server (Failed to fetch)`.
+
+**User-visible problem**
+On the desktop Invoices page, selecting 8 invoices and confirming “Reset to $0” opens the confirmation modal, but the request fails at:
+
+`/api/invoices/bulk-reset`
+
+The modal reports a network-level fetch failure instead of completing the reset.
+
+**Likely root cause**
+The frontend is calling a bulk reset API route that is missing, not deployed, or crashing before it returns a response. In the current GitHub snapshot I inspected, `artifacts/api-server/src/routes/invoices.ts` has invoice routes such as `bulk-reassign`, `batch-mark-sent`, email/SMS, payments, void/write-off, and normal invoice PATCH behavior, but I did not find a `POST /api/invoices/bulk-reset` route or OpenAPI contract for it. That strongly suggests a frontend/backend mismatch or an incomplete Replit deploy.
+
+**Exact parts to inspect/change**
+
+* `artifacts/labtrax-desktop/src/pages/invoices.tsx`
+
+  * Bulk selection toolbar
+  * Reset-to-zero modal/action
+  * API call to `/invoices/bulk-reset`
+  * Query invalidation after success
+
+* `artifacts/api-server/src/routes/invoices.ts`
+
+  * Add or repair `POST /bulk-reset`
+  * Place it with other static invoice batch routes
+  * Use `requireAnyRole(..., BILLING_ROLES)`
+
+* `lib/api-spec/openapi.yaml`
+
+  * Add the endpoint contract if generated clients/specs are maintained
+
+* Generated API client files if the repo expects OpenAPI codegen after spec changes
+
+**Implementation plan**
+
+Add a first-class `POST /api/invoices/bulk-reset` endpoint accepting:
+
+```json
+{
+  "invoiceIds": ["..."]
+}
+```
+
+The endpoint should:
+
+1. Validate `invoiceIds` is a non-empty array, capped at a safe batch size such as 500.
+2. Load all matching invoices and reject if any selected ID is missing.
+3. Require billing/admin/owner access for every affected invoice’s lab organization.
+4. Refuse unsafe rows:
+
+   * deleted invoices
+   * frozen invoices
+   * voided invoices
+   * invoices with payments, credits, or linked bank transactions, unless the product explicitly wants reset to reverse those accounting records
+5. In one DB transaction:
+
+   * delete invoice line items for those invoice IDs
+   * set `subtotal`, `tax`, `discount`, `total`, and `balanceDue` to `"0.00"`
+   * set `status` to `"draft"`
+   * optionally clear `issuedAt` if the product meaning is “back to draft”
+   * update `updatedByUserId`
+   * write one audit log per invoice, or one batch audit plus per-invoice metadata
+   * add case timeline events for linked cases if LabTrax expects invoice changes in case history
+6. Return a clear result, for example `{ resetCount, invoiceIds }`.
+7. Update the frontend success path to close the modal, clear selection, invalidate `["invoices"]` and any invoice detail queries, and show partial/failed details only if the server intentionally supports partial success.
+
+**Important constraints/guardrails**
+
+Do not silently reset invoices that already have payments, credits, bank deposits, write-offs, or reconciliation links. That would corrupt financial history. For those, the server should return a clear 409 explaining which invoices must be voided, written off, or manually adjusted instead.
+
+**Acceptance criteria**
+
+* Selecting unpaid draft/open invoices and confirming reset sets them to draft with `$0.00` total and `$0.00` balance.
+* The invoice list refreshes immediately and selected rows are cleared.
+* The modal no longer shows `Failed to fetch`.
+* Unsafe invoices return a clear business error, not a network error.
+* Server logs show no uncaught exception when the endpoint is called.
+* Audit/case history records the reset.
+
+**Regression risks to check**
+
+* Normal invoice editing still recalculates totals correctly.
+* Payments and Receive Payments flows still protect accounting records.
+* Statement generation does not include reset invoices as open balances.
+* Bulk send, delete selected, void/write-off, and batch mark sent still work.
+* Frozen invoices from deleted cases remain protected.
+
+### Copy-Ready Replit Prompt
+
+Please debug and fix the LabTrax desktop Invoices bulk “Reset to $0” action.
+
+Current symptom: on the Invoices page, selecting multiple invoices and confirming “Reset to $0” calls `/api/invoices/bulk-reset`, but the UI shows: `Could not reach the server (Failed to fetch). URL: /api/invoices/bulk-reset.`
+
+Please inspect:
+
+* `artifacts/labtrax-desktop/src/pages/invoices.tsx`
+* `artifacts/api-server/src/routes/invoices.ts`
+* `lib/api-spec/openapi.yaml`
+* any generated API client/spec files if this repo requires codegen
+
+Likely issue: the frontend has a bulk reset action but the backend route is missing, not deployed, or crashing before returning a response. Implement the safest server-side fix.
+
+Add or repair `POST /api/invoices/bulk-reset` with this behavior:
+
+* Accept `{ invoiceIds: string[] }`, non-empty, capped at a safe max such as 500.
+* Require billing/admin/owner access for every affected invoice’s lab.
+* Reject missing, deleted, frozen, voided, paid, or accounting-linked invoices with a clear 400/409 response.
+* Specifically check payments, invoice credits, and bank transaction links before resetting.
+* In one transaction, delete invoice line items and set invoice `subtotal`, `tax`, `discount`, `total`, and `balanceDue` to `"0.00"`, set `status` to `"draft"`, update `updatedByUserId`, and optionally clear `issuedAt` if that matches the intended “draft reset” behavior.
+* Write audit logs and case timeline events for linked cases.
+* Return `{ resetCount, invoiceIds }`.
+
+Then update the desktop UI if needed so the reset modal uses that route, handles ApiError messages cleanly, clears selection on success, and invalidates invoice list/detail queries.
+
+Please do not implement this as a client-only patch. Do not silently reset invoices that already have payments, credits, bank transactions, deposits, or write-offs. If you find contradictory existing behavior, explain the tradeoff before choosing the safest approach.
+
+Before finishing, run the relevant typecheck/tests available in Replit and manually verify:
+
+1. bulk reset succeeds for unpaid draft/open invoices,
+2. unsafe accounting-linked invoices are rejected with a clear message,
+3. the invoice list refreshes to show `$0.00`,
+4. no server crash or network-level `Failed to fetch` occurs.
+
+### Debug Analysis
+
+**Probable root cause**
+The desktop frontend is ahead of the backend API contract. The screenshot shows the live UI calling `/api/invoices/bulk-reset`, but the current repo snapshot does not show that route in `artifacts/api-server/src/routes/invoices.ts`, and I did not find it in the OpenAPI spec. That means the browser is calling an endpoint the deployed API cannot properly satisfy, or a partial/uncommitted implementation is crashing.
+
+**Supporting evidence**
+
+* Screenshot shows the exact failing URL: `/api/invoices/bulk-reset`.
+* The visible error comes from the desktop `apiFetch` network error wrapper: `Could not reach the server (Failed to fetch)...`.
+* Repo invoice API has many invoice endpoints but no visible `bulk-reset`.
+* Existing invoice PATCH logic can recalculate one invoice, but there is no safe batch reset flow with audit/accounting guardrails.
+
+**Alternate hypotheses worth checking**
+
+* The route exists in the live Replit workspace but was not committed to GitHub.
+* The route exists but throws an uncaught exception, causing the Replit server/proxy to drop the connection.
+* The frontend is served from one deployment while the backend is an older deployment.
+* A Replit proxy/server restart happened during the request, though the endpoint mismatch makes that less likely as the full explanation.
+
+**Why this fix is best**
+Adding a real backend route fixes the contract where the failure occurs and gives the app a safe place to enforce financial rules. A frontend-only workaround would hide the error but still leave invoice totals, line items, audit history, and accounting links vulnerable to inconsistency.
+
+**Confidence level**
+Medium-high. The screenshot plus repo inspection strongly point to missing or mismatched backend support. The only missing proof is the live Replit server log for the failed request.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce the issue in Replit with DevTools Network open and confirm the failing request method, payload, and response/no-response behavior.
+
+2. Check Replit server logs while clicking “Reset to $0”. If there is an uncaught exception, capture the stack trace.
+
+3. Inspect the desktop reset handler in `artifacts/labtrax-desktop/src/pages/invoices.tsx` and confirm the expected request body.
+
+4. Add `POST /bulk-reset` to `artifacts/api-server/src/routes/invoices.ts`.
+
+5. Implement validation, authorization, accounting guardrails, and a transaction that zeroes totals and deletes line items.
+
+6. Add audit logging and linked case events.
+
+7. Update OpenAPI/codegen if this repo requires generated API contracts.
+
+8. Update the frontend success/error handling so selection clears only after confirmed success.
+
+9. Run typecheck/tests, then manually verify unpaid invoice reset and unsafe invoice rejection.
+
+10. Deploy frontend and backend together so the live UI and API are on the same contract.

@@ -1,0 +1,150 @@
+### Replit Build Brief
+
+**Objective**
+Remove the pasted open invoice/case clutter from the `SDR1` lab environment so those invoices and linked cases no longer appear in LabTracks.
+
+**User-visible problem**
+The user sees many old/open invoices that they cannot delete, zero out, or mark paid from the UI. Several are clearly bad/legacy records, including impossible due dates like `2016` and `2023`, duplicate invoice numbers like `INV-26-1`, `INV-26-2`, `INV-26-3`, etc., and zero-dollar open invoices.
+
+**Likely root cause**
+This is most likely a data cleanup issue, not a normal billing UI bug. The app has protected soft-delete behavior for `cases`, `invoices`, `invoice_attachments`, and related records, plus a separate legacy `lab_cases` table. Replit likely needs to run a targeted server-side maintenance cleanup in `SDR1`, because the normal UI intentionally blocks users from destructive invoice/case changes.
+
+A second likely issue: invoice numbers alone are not safe identifiers. The pasted list has repeated invoice numbers, so cleanup must match by lab org + invoice number + patient name/case link/date/amount where available.
+
+**Code areas to inspect/change**
+
+* `artifacts/api-server/src/routes/invoices.ts`
+* `artifacts/api-server/src/routes/cases.ts`
+* `artifacts/api-server/src/lib/soft-delete.ts`
+* `lib/db/src/schema/schema.ts`
+* Any existing scripts under `scripts/` or `artifacts/api-server/scripts/`
+* Tables: `invoices`, `invoice_line_items`, `invoice_attachments`, `payments`, `invoice_credits`, `cases`, `case_attachments`, `case_events`, `case_notes`, `case_restorations`, `lab_cases`, `legacy_case_media`, `audit_logs`
+
+**Implementation plan**
+
+Create a one-off guarded maintenance script for `SDR1` that:
+
+1. Resolves the `SDR1` lab organization id from `organizations`.
+2. Parses the pasted target list into structured match records.
+3. Performs a dry run first and prints matched invoices/cases plus unmatched rows.
+4. Matches canonical invoices by `lab_organization_id`, `invoice_number`, `deleted_at IS NULL`, and secondary clues like patient name, issued date, due date, total, and balance.
+5. For each matched invoice, soft-delete the invoice and invoice attachments by setting `deleted_at` and `deleted_by_user_id`.
+6. For each linked canonical case, soft-delete the case and case attachments if the case belongs to the same target cleanup set.
+7. For legacy `lab_cases`, inspect `case_data` for matching patient/case/invoice clues and set `deleted_at`.
+8. Do not hard-delete audit logs, payments, statement records, or bank transaction records.
+9. Write an audit log entry summarizing the cleanup.
+10. Re-run the invoice list query and confirm the target records no longer appear.
+
+**Guardrails**
+
+* Do not match by invoice number alone.
+* Do not delete anything outside `SDR1`.
+* Default to soft delete, not hard delete.
+* Require dry-run output before apply mode.
+* If duplicate invoice numbers match multiple active rows, print them and require secondary confirmation logic.
+* Preserve payment/bank/audit history unless Replit finds a specific FK/blocking reason.
+
+**Acceptance criteria**
+
+* All pasted target invoices disappear from the open invoices list in `SDR1`.
+* Linked cases disappear from active case lists/search.
+* No unrelated invoices/cases are hidden.
+* Duplicate invoice numbers are handled safely.
+* A dry-run report and final applied report are available.
+* Typecheck/tests pass.
+
+**Regression risks**
+
+* Accidentally hiding valid invoices that share duplicated invoice numbers.
+* Leaving linked cases visible after invoice cleanup.
+* Legacy `lab_cases` still showing because only canonical `cases` were handled.
+* Statements or reports still counting soft-deleted invoices if queries do not filter `deleted_at IS NULL`.
+
+### Copy-Ready Replit Prompt
+
+```text
+We need to clean up bad open invoices and their linked cases from the LabTracks SDR1 lab environment.
+
+User problem:
+The open invoice list contains many records that should not exist anymore. The user cannot delete them, zero them out, or mark them paid from the UI. They want the listed invoices and linked cases removed from active LabTracks views.
+
+Important: implement this safely as a targeted SDR1 maintenance cleanup. Do not blindly hard-delete data.
+
+Relevant code areas:
+- artifacts/api-server/src/routes/invoices.ts
+- artifacts/api-server/src/routes/cases.ts
+- artifacts/api-server/src/lib/soft-delete.ts
+- lib/db/src/schema/schema.ts
+- any existing maintenance scripts under scripts/ or artifacts/api-server/scripts/
+
+Relevant tables likely include:
+- organizations
+- invoices
+- invoice_line_items
+- invoice_attachments
+- invoice_credits
+- payments
+- cases
+- case_attachments
+- case_events
+- case_notes
+- case_restorations
+- lab_cases
+- legacy_case_media
+- audit_logs
+
+Build a one-off maintenance script that:
+1. Resolves the SDR1 lab organization id.
+2. Accepts the pasted target invoice list as structured data.
+3. Runs in dry-run mode by default.
+4. Matches invoices only inside SDR1.
+5. Does NOT match by invoice_number alone because the user’s list includes duplicate invoice numbers such as INV-26-1, INV-26-2, INV-26-3, INV-26-4, and INV-26-5.
+6. Match by a combination of invoice number, patient name, issued date, due date, amount/balance, and linked case/patient data.
+7. Soft-deletes matched invoices by setting deleted_at and deleted_by_user_id where supported.
+8. Soft-deletes invoice attachments.
+9. Soft-deletes linked canonical cases where they are part of the target cleanup set.
+10. Also checks legacy lab_cases/case_data for matching legacy cases and marks those deleted too.
+11. Writes an audit log entry summarizing matched, deleted, skipped, and unmatched records.
+12. Provides an apply mode only after the dry-run output is reviewed.
+13. After apply, verify that the target records no longer appear in the SDR1 open invoices query and active case lists.
+
+Target cleanup set:
+All open invoices pasted by the user from SDR1, covering invoice numbers INV-26-1 through INV-26-51, including INV-26-22B, with issue dates from Apr 4, 2026 through Jun 2, 2026. Patient names include Donald Wayne, Debra Hudson, Mike Smith, John David Doe, Lynn Lanier, Erica Luggery, Sherri Minns, Patrick Simmons, Lisa Belcher, Derrius Thomas, Lajuan Williany, Hiram Dodd, James Wacksman, William McMillan, Greg Salyer, Tara Manning, Joel Dotel, Shamari Feaster, Pam Mcgoff, Marlene Watson, Emilia Sangalang, Stephanie Sunderman-Barnes, Susan Reyna, Karrington Simmons, Angela Worrell, Corinne Strickland, Melinda Jeudi, Mary Barkley Myers, Elizabeth Peters, Fisher/Fred, Slayton/Cathy, Patricia Kirton, Glenn Hosken, Mcneil/Norma, Cooper/Boysie, Ramsden/Christopher, Jane Doe, Phipps/Angelina, Kidder/Daniel, Ohhh Crumbs, Zurko/Cindee, William Harrell, Greg Beaumont, Zapata/Yilder, Adkinson/Lori, Kessling/MaryAnn, Kevin Smith, James Alford, Jihad Brown, Bradley Lewis, Sally Test, Shellie Camp, Liane York, Robyn Blevins, John Toe, Jack McLeod, and George Braswell.
+
+Before finishing:
+- Show the dry-run matched/unmatched report.
+- Explain any ambiguous duplicate invoice-number matches.
+- Apply only the targeted cleanup.
+- Run typecheck or the project’s relevant verification command.
+- Confirm the SDR1 open invoice list no longer returns these records.
+```
+
+### Debug Analysis
+
+The strongest clue is the combination of duplicate invoice numbers and bad historical due dates. In the current schema, canonical invoices have `invoice_number`, `case_id`, `lab_organization_id`, `deleted_at`, totals, balances, and a unique index scoped by lab plus invoice number. The app also has a deliberate soft-delete layer, which means normal hard deletes are guarded against.
+
+So the best fix is not a UI patch or “mark paid” workaround. It is a guarded maintenance cleanup that hides/removes the bad records at the database layer using the app’s existing soft-delete model.
+
+Alternate hypotheses worth checking:
+
+* Some records are legacy `lab_cases` entries with invoice-like data embedded in `case_data`.
+* Some records were created before uniqueness/soft-delete constraints were added.
+* The invoice list query may not consistently filter `deleted_at IS NULL`, causing already-deleted records to still appear.
+* Duplicate invoice numbers may belong to multiple lab orgs or migrated environments, so `SDR1` scoping is essential.
+
+Confidence: medium-high. I inspected the repository structure, invoice/case routes, schema, and soft-delete layer, but I do not have direct access to the live `SDR1` database from here.
+
+### Step-by-Step Fix Plan
+
+1. Back up the `SDR1` database first.
+2. Build a dry-run maintenance script.
+3. Resolve the exact `SDR1` lab organization id.
+4. Query active invoices matching the pasted target set.
+5. Join each invoice to its linked case and patient fields.
+6. Print matched, ambiguous, and unmatched rows.
+7. Tighten matching for duplicate invoice numbers.
+8. Apply soft deletes to matched invoices, invoice attachments, linked cases, and legacy `lab_cases`.
+9. Add an audit log summary.
+10. Re-query open invoices and active cases to confirm they are gone.
+11. Check statements/reports to ensure deleted invoices are excluded.
+12. Run typecheck/tests before redeploying.

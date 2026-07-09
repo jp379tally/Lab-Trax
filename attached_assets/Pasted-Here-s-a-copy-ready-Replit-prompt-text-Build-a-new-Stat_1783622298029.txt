@@ -1,0 +1,102 @@
+Here’s a copy-ready Replit prompt:
+
+```text
+Build a new “Stats” section in the LabTracks admin area that gives admins useful business and production analytics from existing case/order data.
+
+Goal:
+Create an admin analytics dashboard that shows operational and sales stats, including:
+- Total case counts by major category, such as crown and bridge, zirconia, removable, implants, and other tracked case types.
+- Sales/revenue graphs broken down by day, week, month, and year.
+- Trends showing which days of the week receive more crown, bridge, implant, zirconia, removable, and other case types.
+- Summary cards for key metrics, such as total cases, total sales, average case value, most common case type, busiest day, and current period compared with previous period.
+- Filters for date range and case type/category.
+
+Likely Root Cause / Current Gap:
+The admin area currently appears to lack a dedicated analytics/statistics layer. Case and sales data likely already exists in the database, but there may not be aggregated queries, API routes, or dashboard components that summarize the data by category, time period, and trend.
+
+Implementation Steps:
+1. Inspect the current LabTracks data model.
+   - Find where cases, orders, invoices, products, departments, case types, materials, and prices/revenue are stored.
+   - Identify fields that represent:
+     - case creation date or received date
+     - completion date, if available
+     - case type/category
+     - material, such as zirconia
+     - restoration/product type, such as crown, bridge, implant, removable
+     - price, invoice amount, or sales total
+     - status, if closed/completed cases should be treated differently from active cases
+
+2. Add backend analytics support.
+   - Create safe aggregate queries for:
+     - case counts by category/type/material
+     - sales totals by day/week/month/year
+     - case volume by day of week
+     - case volume by product/material over time
+     - top case types/materials
+   - Make sure the queries respect existing admin authentication/authorization.
+   - Avoid loading all raw records into the frontend if the dataset could be large. Aggregate on the backend or database layer.
+
+3. Add an admin Stats page or section.
+   - Add navigation from the admin area to a new Stats/Analytics page.
+   - Include summary metric cards at the top.
+   - Include charts for:
+     - sales by day/week/month/year
+     - case counts by category
+     - material breakdown, especially zirconia
+     - weekday trends for crowns, implants, and other major categories
+   - Include filters:
+     - date range
+     - grouping period: day, week, month, year
+     - case type/material/category
+   - Use the app’s existing UI components and styling patterns.
+
+4. Define category mapping carefully.
+   - If the database has inconsistent labels, normalize them in one shared helper.
+   - Crown and bridge should include the correct product/case types already used by LabTracks.
+   - Zirconia should be counted by material, not only by product name, if material data exists.
+   - Removable should include dentures, partials, night guards, retainers, or whatever removable categories already exist in the app.
+   - Implants should be detected from existing implant-related case/product fields, not guessed from free text unless no better structured field exists.
+
+5. Handle missing or incomplete data.
+   - If sales/revenue is unavailable for some cases, show counts separately from revenue.
+   - Do not silently mix estimated sales with finalized invoice totals.
+   - If a chart has no data, show a clean empty state instead of breaking.
+   - Make timezone handling explicit. Use the app’s existing timezone convention if one exists.
+
+Constraints / Guardrails:
+- Do not rewrite the existing admin area.
+- Do not change existing case creation, billing, or invoice behavior unless absolutely necessary.
+- Do not introduce broad schema changes unless there is no existing field that can support the analytics.
+- Keep analytics read-only.
+- Protect all stats behind existing admin permissions.
+- Prefer database aggregation over frontend-only calculations.
+- Reuse existing chart/UI libraries if the app already has one.
+- Keep category logic centralized so future case types/materials can be added easily.
+- Do not make assumptions about revenue fields. Verify whether sales should come from invoices, orders, case prices, payments, or another source.
+
+Acceptance Criteria:
+- Admin users can open a Stats/Analytics section from the admin area.
+- The page shows total counts for crown and bridge, zirconia, removable, implants, and other major case groups.
+- The page shows sales/revenue graphs grouped by day, week, month, and year.
+- The page shows trend charts for which weekdays receive more crowns, implants, and other major categories.
+- Date range filters update all charts and summary cards.
+- Empty datasets render gracefully.
+- Non-admin users cannot access the stats endpoint or page.
+- The implementation explains which database fields are used for counts, categories, materials, and sales totals.
+
+Regression Checks:
+- Existing admin pages still load normally.
+- Existing case creation/editing flows still work.
+- Existing invoice/order/sales behavior is unchanged.
+- Case counts in the dashboard match manual counts from the database for a small sample date range.
+- Sales totals match the app’s existing invoice/order totals for the same date range.
+- Filters do not crash when there are no matching cases.
+- Time grouping works correctly across day, week, month, and year boundaries.
+- Admin authorization is enforced on both frontend route access and backend/API access.
+
+Before finishing:
+- Tell me exactly which files/components/routes/API handlers were changed.
+- Explain what fields are being used to classify crown and bridge, zirconia, removable, implants, and sales.
+- Call out any assumptions or places where the current data model limits the accuracy of the stats.
+- Run the relevant tests or at least perform a local smoke check of the new admin stats page.
+```
