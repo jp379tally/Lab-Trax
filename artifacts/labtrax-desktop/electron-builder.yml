@@ -110,10 +110,13 @@ dmg:
 # to fetch latest.yml at runtime — no environment variable is required on
 # the end-user's machine.
 #
-# scripts/electron-build.mjs passes an additional --config override when
-# UPDATE_FEED_URL is present. That override is kept so ad-hoc test builds
-# (local http-server feed — see docs/auto-update-runbook.md) can point at a
-# different URL without modifying this file.
+# scripts/electron-build.mjs substitutes ${UPDATE_FEED_URL} into a generated
+# copy of this file (electron-builder.generated.yml) and builds from that when
+# UPDATE_FEED_URL is present, so ad-hoc test builds (local http-server feed —
+# see docs/auto-update-runbook.md) can point at a different URL without
+# modifying this file. Do NOT pass the override as a second `--config <json>`
+# CLI argument — electron-builder 26 treats the JSON as a file path and fails
+# with ENOENT before repacking app.asar.
 publish:
   provider: generic
   url: ${UPDATE_FEED_URL}

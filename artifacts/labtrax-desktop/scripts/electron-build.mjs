@@ -23,10 +23,13 @@
  *   GET /downloads/latest.yml from the same API server that serves the
  *   installer ZIPs to discover new versions automatically.
  *
- *   When UPDATE_FEED_URL is set here, this script passes an additional
- *   --config override (takes precedence over electron-builder.yml) so
- *   ad-hoc test builds can point at a local http-server feed without
- *   modifying the yml. See docs/auto-update-runbook.md for the test flow.
+ *   When UPDATE_FEED_URL is set here, this script writes a temp merged
+ *   config (electron-builder.generated.yml) with the URL substituted and
+ *   points electron-builder at it, so ad-hoc test builds can use a local
+ *   http-server feed without modifying the yml. NEVER pass the override as
+ *   a second `--config <json>` argument — electron-builder 26 treats it as
+ *   a file path and dies with ENOENT before repacking app.asar.
+ *   See docs/auto-update-runbook.md for the test flow.
  *
  * Usage (Windows):
  *   VITE_API_BASE_URL=https://your-app.replit.app pnpm run electron:build
@@ -37,8 +40,16 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createWriteStream, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { Buffer } from "node:buffer";
+import { randomBytes } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import archiver from "archiver";
@@ -81,6 +92,46 @@ process.env.VITE_COMMIT_SHA = shortSha;
 process.env.VITE_BUILD_NUMBER = String(buildNumber);
 console.log(`Build identity: v${pkgVersion} build ${buildNumber}${shortSha ? ` (${shortSha})` : ""}`);
 
+// ─── Build stamp (staleness guard) ─────────────────────────────────────────
+// During the v1.0.5 publish, a broken electron-builder invocation died BEFORE
+// repacking app.asar, and the zip fallback silently re-zipped a stale
+// win-unpacked from a previous build. Every downstream check passed, and old
+// code shipped as a "successful" release.
+//
+// To make that impossible, each run generates a unique stamp token, writes it
+// into the vite output (dist/electron-app/build-stamp.json → packed into
+// app.asar), and records the expected token in electron-dist/build-stamp.txt.
+// Before zipping, zipUnpacked() greps win-unpacked's packed app files for the
+// token and refuses to produce a zip from stale bytes. desktop-build-publish.sh
+// additionally greps the final zip before uploading.
+const buildStamp =
+  `labtrax-build-stamp:v${pkgVersion}:b${buildNumber}:` +
+  `${shortSha || "nosha"}:${Date.now()}:${randomBytes(8).toString("hex")}`;
+const stampRecordFile = resolve(root, "electron-dist", "build-stamp.txt");
+// Remove any stale stamp record up front so an aborted run can never leave a
+// token that a later verification step would wrongly trust.
+rmSync(stampRecordFile, { force: true });
+
+/**
+ * Returns true when the packed application payload inside
+ * electron-dist/win-unpacked contains this run's build stamp. Handles both
+ * the normal asar layout (resources/app.asar) and the manually staged
+ * unpacked layout (resources/app/dist/electron-app/build-stamp.json).
+ */
+function unpackedContainsStamp() {
+  const resources = resolve(root, "electron-dist", "win-unpacked", "resources");
+  const candidates = [
+    resolve(resources, "app.asar"),
+    resolve(resources, "app", "dist", "electron-app", "build-stamp.json"),
+  ];
+  const needle = Buffer.from(buildStamp, "utf8");
+  for (const file of candidates) {
+    if (!existsSync(file)) continue;
+    if (readFileSync(file).includes(needle)) return true;
+  }
+  return false;
+}
+
 if (!process.env.VITE_API_BASE_URL) {
   console.error(
     "\nERROR: VITE_API_BASE_URL is required for production packaging.\n" +
@@ -119,6 +170,23 @@ async function zipUnpacked() {
     console.error("\nERROR: electron-dist/win-unpacked not found — cannot create zip.");
     process.exit(1);
   }
+
+  // Staleness guard: refuse to zip a win-unpacked that does not contain THIS
+  // run's build stamp. Without this, an electron-builder failure that happens
+  // before app.asar is repacked silently re-zips the previous build's bytes
+  // (this is how the v1.0.5 publish shipped May-28 code as a "success").
+  if (!unpackedContainsStamp()) {
+    console.error(
+      "\nERROR: electron-dist/win-unpacked does NOT contain this run's build stamp.\n" +
+      `Expected stamp: ${buildStamp}\n` +
+      "electron-builder did not repack the application payload — win-unpacked is\n" +
+      "STALE (left over from a previous build). Refusing to create the portable\n" +
+      "zip from old code. Check the electron-builder output above for the real\n" +
+      "failure (it must at least repack app.asar before the wine/NSIS step).",
+    );
+    process.exit(1);
+  }
+  console.log("\n✓ win-unpacked contains this run's build stamp — payload is fresh.");
 
   console.log(`\nCreating portable zip from win-unpacked…`);
   console.log(`  ${unpackedDir} → ${outFile}\n`);
@@ -169,6 +237,25 @@ if (viteCode !== 0) {
   process.exit(viteCode);
 }
 
+// Embed the build stamp into the freshly built renderer output so it gets
+// packed into app.asar, and record the expected token for downstream
+// verification (zipUnpacked() below + scripts/desktop-build-publish.sh).
+const stampPayload = JSON.stringify(
+  {
+    stamp: buildStamp,
+    version: pkgVersion,
+    buildNumber,
+    commitSha: shortSha || null,
+    builtAt: new Date().toISOString(),
+  },
+  null,
+  2,
+) + "\n";
+writeFileSync(resolve(root, "dist", "electron-app", "build-stamp.json"), stampPayload, "utf8");
+mkdirSync(resolve(root, "electron-dist"), { recursive: true });
+writeFileSync(stampRecordFile, buildStamp + "\n", "utf8");
+console.log(`Build stamp: ${buildStamp}`);
+
 const builderArgs = [
   "exec",
   "electron-builder",
@@ -179,8 +266,31 @@ const builderArgs = [
 
 if (shouldPublish) {
   if (updateFeedUrl) {
-    const publishOverride = JSON.stringify({ publish: { provider: "generic", url: updateFeedUrl } });
-    builderArgs.push("--config", publishOverride);
+    // IMPORTANT: never pass the publish override as a second
+    // `--config {"publish":...}` JSON argument. electron-builder 26 treats
+    // that JSON string as a config FILE PATH and dies with ENOENT *before*
+    // repacking app.asar — which is exactly how the v1.0.5 publish shipped a
+    // stale zip while reporting success. Instead, write a merged temp config
+    // with the feed URL substituted and point --config at that file.
+    const baseConfigFile = resolve(root, "electron-builder.yml");
+    const baseConfig = readFileSync(baseConfigFile, "utf8");
+    if (!baseConfig.includes("${UPDATE_FEED_URL}")) {
+      console.error(
+        "\nERROR: electron-builder.yml no longer contains the ${UPDATE_FEED_URL}\n" +
+        "placeholder in its publish block — cannot generate the publish config.\n" +
+        "Restore the placeholder or update scripts/electron-build.mjs.",
+      );
+      process.exit(1);
+    }
+    const generatedConfigFile = resolve(root, "electron-builder.generated.yml");
+    writeFileSync(
+      generatedConfigFile,
+      "# AUTO-GENERATED by scripts/electron-build.mjs — do not edit or commit.\n" +
+      "# electron-builder.yml with ${UPDATE_FEED_URL} substituted for this build.\n" +
+      baseConfig.replaceAll("${UPDATE_FEED_URL}", updateFeedUrl),
+      "utf8",
+    );
+    builderArgs[builderArgs.indexOf("electron-builder.yml")] = "electron-builder.generated.yml";
   }
   builderArgs.push("--publish", "always");
   console.log(

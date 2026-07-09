@@ -72,7 +72,16 @@ mv electron-dist/win-unpacked/electron.exe electron-dist/win-unpacked/LabTrax.ex
 
 Resulting zip is ~140 MB (vs ~153 MB from a normal electron-builder run because we omit `default_app.asar`). The portable starts cleanly because `resources/app/package.json` has `"main": "electron/main.cjs"` and electron prefers `resources/app/` over a missing `default_app.asar`.
 
-## desktop-build-publish.sh can "succeed" while shipping a STALE zip (2026-07-08)
+## desktop-build-publish.sh can "succeed" while shipping a STALE zip (2026-07-08 — FIXED same day)
+
+**Fix now in place:** electron-build.mjs no longer passes the JSON `--config` override
+(it writes `electron-builder.generated.yml` with `${UPDATE_FEED_URL}` substituted and
+builds from that), embeds a unique per-run build stamp into `dist/electron-app/
+build-stamp.json` (packed into app.asar) with the expected token recorded in
+`electron-dist/build-stamp.txt`, and `zipUnpacked()` refuses to zip a win-unpacked
+missing the stamp. desktop-build-publish.sh additionally greps the actual artifact
+(zip's app.asar via `unzip -p`, or win-unpacked asar for the exe path) for the token
+before upload and aborts loudly on a mismatch. Original incident notes below.
 
 `pnpm run electron:build` (electron-build.mjs) passes the publish override as a second
 `--config {"publish":...}` JSON arg when UPDATE_FEED_URL is set; electron-builder 26

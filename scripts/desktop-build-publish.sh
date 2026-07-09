@@ -262,6 +262,78 @@ EOF
   echo "[publish]    Until then, NSIS-installed users will not receive update notifications."
 fi
 
+# Build-freshness verification -------------------------------------------------
+# CRITICAL: the v1.0.5 publish uploaded a STALE zip built from weeks-old code
+# while every step below reported success. electron-builder had died before
+# repacking app.asar, and the zip fallback re-zipped the previous build's
+# win-unpacked. To make that impossible, electron-build.mjs embeds a unique
+# per-run build stamp into the vite output (packed into app.asar) and records
+# the expected token in electron-dist/build-stamp.txt. Here we grep the actual
+# artifact about to be uploaded for that token and abort loudly if it is
+# missing — stale bytes must never reach App Storage again.
+echo ""
+echo "[verify] Checking that the installer contains this run's build stamp …"
+STAMP_FILE="${DESKTOP_DIR}/electron-dist/build-stamp.txt"
+if [[ ! -f "$STAMP_FILE" ]]; then
+  echo "[verify] ERROR: ${STAMP_FILE} not found."
+  echo "[verify]   electron-build.mjs writes this file after a successful vite build."
+  echo "[verify]   Its absence means the build did not complete — refusing to upload."
+  exit 1
+fi
+BUILD_STAMP=$(head -n1 "$STAMP_FILE" | tr -d '[:space:]')
+if [[ -z "$BUILD_STAMP" ]]; then
+  echo "[verify] ERROR: ${STAMP_FILE} is empty — refusing to upload."
+  exit 1
+fi
+echo "[verify] Expected stamp: ${BUILD_STAMP}"
+
+stamp_failure() {
+  echo ""
+  echo "[verify] ERROR: the artifact about to be uploaded does NOT contain this"
+  echo "[verify]   run's build stamp. The packaged app payload is STALE — it was"
+  echo "[verify]   built from an earlier run, not from the code just compiled."
+  echo "[verify]   This is exactly the failure that shipped old code in v1.0.5."
+  echo "[verify]   Check the electron-builder output above: it must repack"
+  echo "[verify]   app.asar (win-unpacked) BEFORE the wine/NSIS step fails."
+  echo "[verify]   Nothing was uploaded."
+  exit 1
+}
+
+if [[ "$INSTALLER_KIND" == "zip" ]]; then
+  # Verify the exact bytes being uploaded: extract the packed app payload from
+  # the zip and grep it for the stamp. Handles both the asar layout and the
+  # manually staged resources/app layout.
+  if unzip -l "$INSTALLER_PATH" "LabTrax/resources/app.asar" >/dev/null 2>&1; then
+    unzip -p "$INSTALLER_PATH" "LabTrax/resources/app.asar" | grep -aqF "$BUILD_STAMP" || stamp_failure
+    echo "[verify] ✓ Zip's app.asar contains the fresh build stamp."
+  elif unzip -l "$INSTALLER_PATH" "LabTrax/resources/app/dist/electron-app/build-stamp.json" >/dev/null 2>&1; then
+    unzip -p "$INSTALLER_PATH" "LabTrax/resources/app/dist/electron-app/build-stamp.json" \
+      | grep -aqF "$BUILD_STAMP" || stamp_failure
+    echo "[verify] ✓ Zip's unpacked app payload contains the fresh build stamp."
+  else
+    echo "[verify] ERROR: zip contains neither LabTrax/resources/app.asar nor"
+    echo "[verify]   LabTrax/resources/app/dist/electron-app/build-stamp.json —"
+    echo "[verify]   cannot prove the payload is fresh. Refusing to upload."
+    exit 1
+  fi
+else
+  # NSIS installer: the compressed exe cannot be grepped reliably, but it was
+  # packed from win-unpacked in this same run — verify that payload instead.
+  UNPACKED_ASAR="${DESKTOP_DIR}/electron-dist/win-unpacked/resources/app.asar"
+  UNPACKED_STAMP_JSON="${DESKTOP_DIR}/electron-dist/win-unpacked/resources/app/dist/electron-app/build-stamp.json"
+  if [[ -f "$UNPACKED_ASAR" ]]; then
+    grep -aqF "$BUILD_STAMP" "$UNPACKED_ASAR" || stamp_failure
+    echo "[verify] ✓ win-unpacked app.asar contains the fresh build stamp."
+  elif [[ -f "$UNPACKED_STAMP_JSON" ]]; then
+    grep -aqF "$BUILD_STAMP" "$UNPACKED_STAMP_JSON" || stamp_failure
+    echo "[verify] ✓ win-unpacked app payload contains the fresh build stamp."
+  else
+    echo "[verify] ERROR: win-unpacked contains no app.asar or build-stamp.json —"
+    echo "[verify]   cannot prove the installer payload is fresh. Refusing to upload."
+    exit 1
+  fi
+fi
+
 # Upload installer + latest.yml to App Storage --------------------------------
 # NOTE: upload runs AFTER signature verification. If verification failed,
 # set -euo pipefail has already stopped the script — no artifact is uploaded.
