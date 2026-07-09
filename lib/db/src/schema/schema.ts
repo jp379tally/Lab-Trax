@@ -578,6 +578,10 @@ export const organizationInvites = pgTable(
     }),
     lastEmailStatus: text("last_email_status"),
     lastEmailError: text("last_email_error"),
+    // Number of automatic retries already performed for the invite email.
+    // Incremented by the background retry sweep when it claims an invite;
+    // reset to 0 on a successful send and on a manual resend (fresh budget).
+    emailRetryCount: integer("email_retry_count").default(0).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

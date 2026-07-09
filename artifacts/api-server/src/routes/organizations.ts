@@ -2721,8 +2721,11 @@ function toSafeSendReason(reason?: string): string {
  *
  * Never throws — returns the delivery outcome plus the invite row updated
  * with the recorded attempt.
+ *
+ * Exported for the automatic retry sweep (`lib/invite-email-retry.ts`) so
+ * retries go through the exact same delivery + recording path.
  */
-async function deliverInviteEmail(
+export async function deliverInviteEmail(
   req: any,
   invite: typeof organizationInvites.$inferSelect
 ): Promise<{
@@ -2816,6 +2819,9 @@ async function deliverInviteEmail(
         lastEmailAttemptAt: new Date(),
         lastEmailStatus: delivery.status,
         lastEmailError: delivery.sent ? null : delivery.reason ?? null,
+        // A successful send closes the retry loop — reset the budget so a
+        // later manual resend that fails gets a fresh set of auto-retries.
+        ...(delivery.sent ? { emailRetryCount: 0 } : {}),
       })
       .where(eq(organizationInvites.id, invite.id))
       .returning();
@@ -3040,6 +3046,8 @@ router.post(
         token: newToken,
         expiresAt: newExpiresAt,
         invitedByUserId: (req as any).auth.userId,
+        // Manual resend restarts the automatic retry budget.
+        emailRetryCount: 0,
       })
       .where(eq(organizationInvites.id, invite.id))
       .returning();

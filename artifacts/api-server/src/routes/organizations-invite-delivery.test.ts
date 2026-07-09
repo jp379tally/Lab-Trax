@@ -346,6 +346,162 @@ maybe("Invite email delivery tracking (db integration)", () => {
     expect(listed.lastEmailAttemptAt).toBeTruthy();
   });
 
+  // ── Automatic retry sweep ─────────────────────────────────────────────────
+
+  async function backdateAttempt(inviteId: string, msAgo: number) {
+    const { db, organizationInvites } = dbMod as any;
+    await db
+      .update(organizationInvites)
+      .set({ lastEmailAttemptAt: new Date(Date.now() - msAgo) })
+      .where(eq(organizationInvites.id, inviteId));
+  }
+
+  async function runSweep(inviteId: string): Promise<number> {
+    const retryLib = await import("../lib/invite-email-retry.js");
+    return retryLib.processDueInviteEmailRetries(new Date(), {
+      onlyInviteIds: [inviteId],
+    });
+  }
+
+  it("retry sweep: retries a transient failure and records a successful send", async () => {
+    sendInviteEmailMock().mockResolvedValue({
+      sent: false,
+      reason: "451 transient smtp burp",
+    });
+    const { access } = await makeSession(ownerId);
+    const created = await createInvite(access, `rt_${rid("e")}@labtrax-test.com`);
+    const inviteId = created.body.data.id;
+    expect((await inviteRow(inviteId)).lastEmailStatus).toBe("failed");
+
+    // Backoff not yet elapsed → nothing happens.
+    sendInviteEmailMock().mockClear();
+    expect(await runSweep(inviteId)).toBe(0);
+    expect(sendInviteEmailMock()).not.toHaveBeenCalled();
+
+    // Backoff elapsed, SMTP recovered → retry succeeds.
+    await backdateAttempt(inviteId, 6 * 60 * 1000);
+    sendInviteEmailMock().mockResolvedValue({ sent: true });
+    expect(await runSweep(inviteId)).toBe(1);
+    expect(sendInviteEmailMock()).toHaveBeenCalledTimes(1);
+
+    const row = await inviteRow(inviteId);
+    expect(row.lastEmailStatus).toBe("sent");
+    expect(row.lastEmailError).toBeNull();
+    // Successful send resets the retry budget.
+    expect(row.emailRetryCount).toBe(0);
+
+    // A sent invite is never picked up again — no duplicate emails.
+    sendInviteEmailMock().mockClear();
+    await backdateAttempt(inviteId, 60 * 60 * 1000);
+    expect(await runSweep(inviteId)).toBe(0);
+    expect(sendInviteEmailMock()).not.toHaveBeenCalled();
+  });
+
+  it("retry sweep: records each failed retry and stops after the budget is spent", async () => {
+    sendInviteEmailMock().mockResolvedValue({
+      sent: false,
+      reason: "socket hang up",
+    });
+    const { access } = await makeSession(ownerId);
+    const created = await createInvite(access, `rb_${rid("e")}@labtrax-test.com`);
+    const inviteId = created.body.data.id;
+
+    // Retry 1 (fails again).
+    await backdateAttempt(inviteId, 6 * 60 * 1000);
+    const before1 = (await inviteRow(inviteId)).lastEmailAttemptAt;
+    expect(await runSweep(inviteId)).toBe(1);
+    let row = await inviteRow(inviteId);
+    expect(row.emailRetryCount).toBe(1);
+    expect(row.lastEmailStatus).toBe("failed");
+    expect(row.lastEmailError).toBe("send_failed");
+    expect(row.lastEmailAttemptAt.getTime()).toBeGreaterThan(
+      before1.getTime()
+    );
+
+    // Second retry needs the longer backoff — 6 min is not enough.
+    await backdateAttempt(inviteId, 6 * 60 * 1000);
+    expect(await runSweep(inviteId)).toBe(0);
+
+    // Retry 2 (fails again) after the longer backoff.
+    await backdateAttempt(inviteId, 31 * 60 * 1000);
+    expect(await runSweep(inviteId)).toBe(1);
+    row = await inviteRow(inviteId);
+    expect(row.emailRetryCount).toBe(2);
+    expect(row.lastEmailStatus).toBe("failed");
+
+    // Budget spent — no further retries no matter how much time passes.
+    sendInviteEmailMock().mockClear();
+    await backdateAttempt(inviteId, 24 * 60 * 60 * 1000);
+    expect(await runSweep(inviteId)).toBe(0);
+    expect(sendInviteEmailMock()).not.toHaveBeenCalled();
+
+    // Manual resend restarts the budget.
+    const r = await request(appMod.default)
+      .post(`/api/organizations/invites/${inviteId}/resend`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(502); // still failing, but…
+    row = await inviteRow(inviteId);
+    expect(row.emailRetryCount).toBe(0); // …the auto-retry budget is fresh
+  });
+
+  it("retry sweep: never retries skipped or non-transient failures", async () => {
+    const { access } = await makeSession(ownerId);
+
+    // Skipped (recipient opted out) — never retried.
+    const skipped = await createInvite(access, optedOutEmail).catch(() => null);
+    // A pending invite for this email may already exist from earlier tests.
+    const { db, organizationInvites } = dbMod as any;
+    const [skippedRow] = await db
+      .select()
+      .from(organizationInvites)
+      .where(eq(organizationInvites.email, optedOutEmail));
+    const skippedId = skippedRow?.id ?? skipped?.body?.data?.id;
+    expect(skippedId).toBeTruthy();
+    await backdateAttempt(skippedId, 60 * 60 * 1000);
+    sendInviteEmailMock().mockClear();
+    expect(await runSweep(skippedId)).toBe(0);
+    expect(sendInviteEmailMock()).not.toHaveBeenCalled();
+
+    // Non-transient failure reason (undeliverable_domain) — never retried.
+    sendInviteEmailMock().mockResolvedValue({
+      sent: false,
+      reason: "undeliverable_domain",
+    });
+    const created = await createInvite(access, `nd_${rid("e")}@labtrax-test.com`);
+    const inviteId = created.body.data.id;
+    expect((await inviteRow(inviteId)).lastEmailError).toBe(
+      "undeliverable_domain"
+    );
+    await backdateAttempt(inviteId, 60 * 60 * 1000);
+    sendInviteEmailMock().mockClear();
+    expect(await runSweep(inviteId)).toBe(0);
+    expect(sendInviteEmailMock()).not.toHaveBeenCalled();
+    expect((await inviteRow(inviteId)).emailRetryCount).toBe(0);
+  });
+
+  it("retry sweep: skips an invite that was already claimed (no double send)", async () => {
+    sendInviteEmailMock().mockResolvedValue({
+      sent: false,
+      reason: "boom transient",
+    });
+    const { access } = await makeSession(ownerId);
+    const created = await createInvite(access, `cl_${rid("e")}@labtrax-test.com`);
+    const inviteId = created.body.data.id;
+    await backdateAttempt(inviteId, 6 * 60 * 1000);
+
+    // Simulate a concurrent success between candidate selection and claim:
+    // flip the row to sent before the sweep would claim it.
+    const { db, organizationInvites } = dbMod as any;
+    await db
+      .update(organizationInvites)
+      .set({ lastEmailStatus: "sent", lastEmailError: null })
+      .where(eq(organizationInvites.id, inviteId));
+
+    sendInviteEmailMock().mockClear();
+    expect(await runSweep(inviteId)).toBe(0);
+    expect(sendInviteEmailMock()).not.toHaveBeenCalled();
+  });
+
   it("lab-team pendingInvites exposes the delivery fields", async () => {
     const { access } = await makeSession(ownerId);
     sendInviteEmailMock().mockResolvedValue({ sent: false, reason: "raw boom" });

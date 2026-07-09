@@ -13,6 +13,7 @@ import { startStatementScheduler } from "./lib/statements";
 import { startDailyOrphanedMediaCleanup } from "./lib/case-media";
 import { restartScheduledBackupJob } from "./lib/backup";
 import { startBillingJobs } from "./lib/billing-jobs";
+import { startInviteEmailRetryScheduler } from "./lib/invite-email-retry";
 import { logStripeAccountOwnership } from "./lib/stripeClient";
 import { handleStripeWebhook } from "./routes/billing";
 import {
@@ -427,6 +428,7 @@ app.use("/api", requireCsrf, router);
 startStatementScheduler();
 startDailyOrphanedMediaCleanup();
 startBillingJobs();
+startInviteEmailRetryScheduler();
 logStripeAccountOwnership().catch((err: unknown) => {
   logger.warn({ err }, "[stripe] Stripe account ownership check failed at startup");
 });
