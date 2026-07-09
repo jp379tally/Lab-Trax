@@ -1,22 +1,20 @@
+// Customer detail tabs — shared by the slide-in customer window (PracticeEditor)
+// opened from the Accounts page. Originally built for the (now retired)
+// Customer Center page; the Invoices / Statements / Card on File tab content
+// lives here so every customer's window gets the full 4-tab experience.
 import { useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   ArrowRightLeft,
-  Building2,
   CalendarDays,
-  ChevronLeft,
-  ChevronRight,
   CreditCard,
   FileDown,
   FileText,
   Loader2,
-  Mail,
   PenLine,
-  Phone,
   Plus,
-  Search,
   Send,
   Trash2,
   X,
@@ -26,7 +24,7 @@ import { useAuth } from "@/lib/auth-context";
 import type { Invoice, Organization, PracticeStatement } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
-import { InvoiceEditor, StatementBuilderDialog } from "./invoices";
+import { InvoiceEditor, StatementBuilderDialog } from "@/pages/invoices";
 import { downloadStatementPdf } from "@/lib/export";
 import { useTableColumns } from "@/hooks/useTableColumns";
 import { ColumnSettingsPopover } from "@/components/ColumnSettingsPopover";
@@ -101,13 +99,9 @@ function agingDays(inv: Invoice): number | null {
   return diff > 0 ? diff : null;
 }
 
-const LEFT_MIN = 220;
-const LEFT_MAX = 500;
-const LEFT_DEFAULT = 300;
+export type DetailTab = "basic" | "invoices" | "statements" | "card";
 
-type DetailTab = "basic" | "invoices" | "statements" | "card";
-
-const DETAIL_TABS: { id: DetailTab; label: string }[] = [
+export const DETAIL_TABS: { id: DetailTab; label: string }[] = [
   { id: "basic", label: "Basic Info" },
   { id: "invoices", label: "Invoices" },
   { id: "statements", label: "Statements" },
@@ -170,14 +164,12 @@ function AuthFormModal({
   defaultContent,
   practiceName,
   practiceEmail,
-  labOrgId,
   onClose,
 }: {
   title: string;
   defaultContent: string;
   practiceName: string;
   practiceEmail?: string | null;
-  labOrgId: string;
   onClose: () => void;
 }) {
   const [content, setContent] = useState(defaultContent);
@@ -357,11 +349,11 @@ function AuthFormModal({
   );
 }
 
-// ── Statements tab sub-component ───────────────────────────────────────────
+// ── Statements tab ─────────────────────────────────────────────────────────
 
 type StmtFilter = "all" | "open" | "paid";
 
-function StatementsTab({
+export function StatementsTab({
   selected,
   labOrgId,
 }: {
@@ -534,7 +526,7 @@ function StatementsTab({
 
 // ── Card on File tab ───────────────────────────────────────────────────────
 
-function CardOnFileTab({ practice, labOrgId }: { practice: Organization; labOrgId: string }) {
+export function CardOnFileTab({ practice }: { practice: Organization; labOrgId?: string }) {
   const [cardAuthOpen, setCardAuthOpen] = useState(false);
   const [autoPayAuthOpen, setAutoPayAuthOpen] = useState(false);
 
@@ -675,7 +667,6 @@ function CardOnFileTab({ practice, labOrgId }: { practice: Organization; labOrgI
           defaultContent={CARD_AUTH_DEFAULT}
           practiceName={practice.displayName || practice.name}
           practiceEmail={practice.billingEmail}
-          labOrgId={labOrgId}
           onClose={() => setCardAuthOpen(false)}
         />
       )}
@@ -685,7 +676,6 @@ function CardOnFileTab({ practice, labOrgId }: { practice: Organization; labOrgI
           defaultContent={AUTOPAY_AUTH_DEFAULT}
           practiceName={practice.displayName || practice.name}
           practiceEmail={practice.billingEmail}
-          labOrgId={labOrgId}
           onClose={() => setAutoPayAuthOpen(false)}
         />
       )}
@@ -693,37 +683,34 @@ function CardOnFileTab({ practice, labOrgId }: { practice: Organization; labOrgI
   );
 }
 
-// ── Main page ──────────────────────────────────────────────────────────────
+// ── Invoices tab ───────────────────────────────────────────────────────────
 
-export default function CustomerCenterPage() {
+export function InvoicesTab({
+  practice,
+  labOrgId,
+}: {
+  practice: Organization;
+  labOrgId: string;
+}) {
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
   const { user } = useAuth();
 
-  const isAdmin =
-    user?.role === "owner" ||
-    user?.role === "admin";
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
 
+  const practiceInvoicesQuery = useQuery({
+    queryKey: ["invoices", { practiceId: practice.id }],
+    queryFn: () =>
+      apiFetch<Invoice[]>(`/invoices?practiceId=${encodeURIComponent(practice.id)}`),
+    enabled: !!practice.id,
+  });
+
+  // Only needed for the admin "Reassign all…" destination list.
   const orgsQuery = useQuery({
     queryKey: ["organizations", { includeLabPractices: true }],
     queryFn: () =>
       apiFetch<Organization[]>("/organizations?includeLabPractices=true"),
-  });
-
-  const openInvoicesQuery = useQuery({
-    queryKey: ["invoices", { status: "open" }],
-    queryFn: () => apiFetch<Invoice[]>("/invoices?status=open"),
-  });
-
-  const [search, setSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detailTab, setDetailTab] = useState<DetailTab>("basic");
-
-  const practiceInvoicesQuery = useQuery({
-    queryKey: ["invoices", { practiceId: selectedId }],
-    queryFn: () =>
-      apiFetch<Invoice[]>(`/invoices?practiceId=${encodeURIComponent(selectedId!)}`),
-    enabled: !!selectedId,
+    enabled: isAdmin,
   });
 
   const [filterBy, setFilterBy] = useState<"all" | "open" | "overdue" | "paid">("all");
@@ -731,11 +718,6 @@ export default function CustomerCenterPage() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
-
-  const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT);
-  const dragging = useRef(false);
-  const startX = useRef(0);
-  const startW = useRef(LEFT_DEFAULT);
 
   const [reassignOpen, setReassignOpen] = useState(false);
   const [reassignTargetId, setReassignTargetId] = useState<string>("");
@@ -776,34 +758,7 @@ export default function CustomerCenterPage() {
     },
   });
 
-  function onDividerMouseDown(e: React.MouseEvent) {
-    dragging.current = true;
-    startX.current = e.clientX;
-    startW.current = leftWidth;
-    e.preventDefault();
-
-    function onMouseMove(ev: MouseEvent) {
-      if (!dragging.current) return;
-      const delta = ev.clientX - startX.current;
-      setLeftWidth(Math.min(LEFT_MAX, Math.max(LEFT_MIN, startW.current + delta)));
-    }
-    function onMouseUp() {
-      dragging.current = false;
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    }
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-  }
-
-  const orgs = orgsQuery.data ?? [];
-  const openInvoices = openInvoicesQuery.data ?? [];
   const selectedPracticeInvoices = practiceInvoicesQuery.data ?? [];
-
-  const labOrgId = useMemo(
-    () => orgs.find((o) => o.type === "lab")?.id ?? "",
-    [orgs],
-  );
 
   const nonVoidedCount = useMemo(
     () => selectedPracticeInvoices.filter((inv) => inv.status !== "void").length,
@@ -812,55 +767,18 @@ export default function CustomerCenterPage() {
 
   const otherPractices = useMemo(
     () =>
-      orgs
+      (orgsQuery.data ?? [])
         .filter(
           (o) =>
             o.type === "provider" &&
             !o.deletedAt &&
-            o.id !== selectedId,
+            o.id !== practice.id,
         )
         .sort((a, b) =>
           (a.displayName || a.name).localeCompare(b.displayName || b.name),
         ),
-    [orgs, selectedId],
+    [orgsQuery.data, practice.id],
   );
-
-  const practiceOpenBalance = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const inv of openInvoices) {
-      const id = inv.providerOrganizationId;
-      map.set(id, (map.get(id) ?? 0) + Number(inv.balanceDue ?? inv.total ?? 0));
-    }
-    return map;
-  }, [openInvoices]);
-
-  const practiceInvoiceCounts = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const inv of openInvoices) {
-      const id = inv.providerOrganizationId;
-      map.set(id, (map.get(id) ?? 0) + 1);
-    }
-    return map;
-  }, [openInvoices]);
-
-  const practices = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return orgs
-      .filter((o) => {
-        if (o.type !== "provider") return false;
-        if (o.deletedAt) return false;
-        if (!q) return true;
-        return (
-          o.name.toLowerCase().includes(q) ||
-          (o.displayName || "").toLowerCase().includes(q)
-        );
-      })
-      .sort((a, b) =>
-        (a.displayName || a.name).localeCompare(b.displayName || b.name)
-      );
-  }, [orgs, search]);
-
-  const selected = practices.find((p) => p.id === selectedId) ?? null;
 
   const { from: rangeFrom, to: rangeTo } = resolveDateRange(dateRange, {
     from: customFrom,
@@ -868,7 +786,6 @@ export default function CustomerCenterPage() {
   });
 
   const practiceInvoices = useMemo(() => {
-    if (!selectedId) return [];
     return selectedPracticeInvoices
       .filter((inv) => {
         if (filterBy === "open") {
@@ -896,9 +813,7 @@ export default function CustomerCenterPage() {
           a.issuedAt || a.createdAt || ""
         )
       );
-  }, [selectedPracticeInvoices, selectedId, filterBy, rangeFrom, rangeTo]);
-
-  const isLoading = orgsQuery.isLoading || openInvoicesQuery.isLoading;
+  }, [selectedPracticeInvoices, filterBy, rangeFrom, rangeTo]);
 
   const invCols = useTableColumns<Invoice>(
     [
@@ -963,8 +878,6 @@ export default function CustomerCenterPage() {
   }));
 
   function handleExportStatementPdf() {
-    if (!selected) return;
-
     const allInvoices = selectedPracticeInvoices;
     const billed = allInvoices.reduce((s, i) => s + Number(i.total ?? 0), 0);
     const paid = allInvoices.reduce(
@@ -1008,7 +921,7 @@ export default function CustomerCenterPage() {
     }
 
     downloadStatementPdf({
-      practiceName: selected.displayName || selected.name,
+      practiceName: practice.displayName || practice.name,
       generatedAt: new Date(),
       filtersDescription: filterParts.length > 0 ? filterParts.join(" · ") : undefined,
       totals: { billed, paid, open, overdue },
@@ -1027,428 +940,171 @@ export default function CustomerCenterPage() {
     });
   }
 
-  function handleSelectPractice(id: string) {
-    setSelectedId(id);
-    setDetailTab("basic");
-  }
-
   return (
-    <div className="flex h-full overflow-hidden">
-      {/* Left pane */}
-      <div
-        className="shrink-0 flex flex-col border-r border-border overflow-hidden"
-        style={{ width: leftWidth }}
-      >
-        <div className="px-4 pt-5 pb-3 border-b border-border">
-          <h1 className="text-base font-semibold tracking-tight mb-3">
-            Customer Center
-          </h1>
-          <div className="relative">
-            <Search
-              size={13}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
-            />
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="px-5 py-2.5 border-b border-border bg-card/50 flex flex-wrap items-center gap-3 shrink-0">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="font-medium">Filter:</span>
+          <select
+            value={filterBy}
+            onChange={(e) => setFilterBy(e.target.value as any)}
+            className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
+          >
+            <option value="all">All</option>
+            <option value="open">Open</option>
+            <option value="overdue">Overdue</option>
+            <option value="paid">Paid</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <CalendarDays size={12} />
+          <select
+            value={dateRange}
+            onChange={(e) => setDateRange(e.target.value as DateRangeKey)}
+            className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
+          >
+            <option value="all">All Dates</option>
+            <option value="this_month">This Month</option>
+            <option value="last_month">Last Month</option>
+            <option value="this_quarter">This Quarter</option>
+            <option value="last_quarter">Last Quarter</option>
+            <option value="this_year">This Year</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </div>
+        {dateRange === "custom" && (
+          <div className="flex items-center gap-1.5 text-xs">
             <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search practices…"
-              className="w-full h-8 pl-8 pr-2.5 rounded-md bg-secondary text-xs focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
+            />
+            <span className="text-muted-foreground">–</span>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
             />
           </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto scrollbar-thin">
-          {isLoading && (
-            <div className="py-8 text-center text-muted-foreground text-xs">
-              <Loader2 size={14} className="inline animate-spin mr-1.5" />
-              Loading…
-            </div>
+        )}
+        <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
+          {practiceInvoices.length} row
+          {practiceInvoices.length !== 1 ? "s" : ""}
+        </span>
+        <ColumnSettingsPopover
+          columns={invColumnOptions}
+          onToggle={invCols.toggleColumn}
+          onMove={invCols.moveColumn}
+          onReset={invCols.resetAll}
+        />
+        <button
+          type="button"
+          onClick={handleExportStatementPdf}
+          disabled={practiceInvoicesQuery.isLoading}
+          title={practiceInvoicesQuery.isLoading ? "Loading invoices…" : "Export statement as PDF"}
+          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {practiceInvoicesQuery.isLoading ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <FileDown size={12} />
           )}
-          {!isLoading && practices.length === 0 && (
-            <div className="py-8 text-center text-muted-foreground text-xs">
-              No practices found.
-            </div>
-          )}
-          {practices.map((p) => {
-            const balance = practiceOpenBalance.get(p.id) ?? 0;
-            const active = p.id === selectedId;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => handleSelectPractice(p.id)}
-                className={`w-full text-left px-4 py-2.5 border-b border-border text-sm transition-colors ${
-                  active
-                    ? "bg-primary text-primary-foreground"
-                    : "hover:bg-secondary/60"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium truncate">
-                    {p.displayName || p.name}
-                  </span>
-                  {balance > 0 && (
-                    <span
-                      className={`text-xs tabular-nums font-medium shrink-0 ${
-                        active ? "text-primary-foreground/80" : "text-warning"
-                      }`}
-                    >
-                      {formatMoney(balance)}
-                    </span>
-                  )}
-                </div>
-                {!active && (
-                  <div className="text-[11px] text-muted-foreground mt-0.5">
-                    {practiceInvoiceCounts.get(p.id) ?? 0} invoice
-                    {(practiceInvoiceCounts.get(p.id) ?? 0) !== 1 ? "s" : ""}
-                  </div>
-                )}
-              </button>
-            );
-          })}
-        </div>
+          Export PDF
+        </button>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => {
+              setReassignTargetId("");
+              setReassignError(null);
+              setReassignSuccess(null);
+              reassignMutation.reset();
+              setReassignOpen(true);
+            }}
+            className="flex items-center gap-1.5 h-7 px-2.5 rounded bg-secondary text-xs text-muted-foreground hover:bg-secondary/80 hover:text-foreground transition-colors border border-border"
+          >
+            <ArrowRightLeft size={11} />
+            Reassign all…
+          </button>
+        )}
       </div>
 
-      {/* Resize handle */}
-      <div
-        onMouseDown={onDividerMouseDown}
-        className="w-1 shrink-0 cursor-col-resize hover:bg-primary/30 bg-border transition-colors select-none"
-      />
-
-      {/* Right pane */}
-      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-        {!selected ? (
-          <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-            <div className="text-center">
-              <Building2 size={32} className="mx-auto mb-3 opacity-30" />
-              <p>Select a practice to view their details</p>
-            </div>
-          </div>
-        ) : (
-          <>
-            {/* Practice header — always visible */}
-            <div className="px-6 py-4 border-b border-border bg-card shrink-0">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <div className="h-7 w-7 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
-                      <Building2 size={13} />
-                    </div>
-                    <h2 className="text-lg font-semibold tracking-tight">
-                      {selected.displayName || selected.name}
-                    </h2>
-                  </div>
-                  {selected.displayName && (
-                    <p className="text-xs text-muted-foreground ml-9">
-                      {selected.name}
-                    </p>
-                  )}
-                </div>
-                <div className="shrink-0 text-right">
-                  <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium">
-                    Open balance
-                  </div>
-                  <div
-                    className={`text-xl font-semibold tabular-nums ${
-                      (practiceOpenBalance.get(selected.id) ?? 0) > 0
-                        ? "text-warning"
-                        : "text-muted-foreground"
-                    }`}
-                  >
-                    {formatMoney(practiceOpenBalance.get(selected.id) ?? 0)}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Tab bar */}
-            <div className="shrink-0 flex border-b border-border bg-card px-6">
-              {DETAIL_TABS.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setDetailTab(tab.id)}
-                  className={`px-4 py-2.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
-                    detailTab === tab.id
-                      ? "border-primary text-primary"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}
+      <div className="flex-1 overflow-auto scrollbar-thin">
+        <table className="text-sm" style={{ tableLayout: "fixed", width: invCols.visible.reduce((sum, c) => sum + invCols.getWidth(c.id), 0) }}>
+          <colgroup>
+            {invCols.visible.map((col) => (
+              <col key={col.id} style={{ width: invCols.getWidth(col.id) }} />
+            ))}
+          </colgroup>
+          <thead className="sticky top-0 z-10 bg-secondary/80 backdrop-blur-sm">
+            <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              {invCols.visible.map((col) => (
+                <th
+                  key={col.id}
+                  className={`${col.align === "right" ? "text-right" : "text-left"} px-3 py-2.5 relative font-medium`}
+                  style={{ overflow: "hidden" }}
                 >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Tab content */}
-            <div className="flex-1 min-h-0 overflow-hidden">
-              {/* Basic Info tab */}
-              {detailTab === "basic" && (
-                <div className="h-full overflow-y-auto p-6 space-y-5">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-                      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        Contact
-                      </div>
-                      {selected.phone && (
-                        <div className="flex items-center gap-2 text-sm">
-                          <Phone size={13} className="text-muted-foreground shrink-0" />
-                          <span>{selected.phone}</span>
-                        </div>
-                      )}
-                      {selected.billingEmail && (
-                        <div className="flex items-center gap-2 text-sm">
-                          <Mail size={13} className="text-muted-foreground shrink-0" />
-                          <span className="truncate">{selected.billingEmail}</span>
-                        </div>
-                      )}
-                      {!selected.phone && !selected.billingEmail && (
-                        <p className="text-xs text-muted-foreground italic">No contact info on file.</p>
-                      )}
-                    </div>
-
-                    <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-                      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        Address
-                      </div>
-                      {selected.addressLine1 ? (
-                        <div className="text-sm space-y-0.5">
-                          <p>{selected.addressLine1}</p>
-                          {selected.addressLine2 && <p>{selected.addressLine2}</p>}
-                          <p>
-                            {[selected.city, selected.state].filter(Boolean).join(", ")}
-                            {selected.zip ? ` ${selected.zip}` : ""}
-                          </p>
-                        </div>
-                      ) : (
-                        <p className="text-xs text-muted-foreground italic">No address on file.</p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="bg-card border border-border rounded-xl p-4">
-                    <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">
-                      Billing Details
-                    </div>
-                    <div className="grid grid-cols-3 gap-4">
-                      <div>
-                        <div className="text-[11px] text-muted-foreground mb-1">Account Number</div>
-                        <div className="text-sm font-mono">
-                          {selected.accountNumber ?? <span className="text-muted-foreground italic">—</span>}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[11px] text-muted-foreground mb-1">Open Balance</div>
-                        <div className={`text-sm font-semibold tabular-nums ${(practiceOpenBalance.get(selected.id) ?? 0) > 0 ? "text-warning" : "text-muted-foreground"}`}>
-                          {formatMoney(practiceOpenBalance.get(selected.id) ?? 0)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[11px] text-muted-foreground mb-1">Statement Email Opt-out</div>
-                        <div className="text-sm">
-                          {selected.statementEmailOptOut ? (
-                            <span className="text-destructive font-medium">Opted out</span>
-                          ) : (
-                            <span className="text-muted-foreground">Receives statements</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {selected.licenseNumber && (
-                    <div className="bg-card border border-border rounded-xl p-4">
-                      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                        License
-                      </div>
-                      <div className="text-sm font-mono">{selected.licenseNumber}</div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Invoices tab */}
-              {detailTab === "invoices" && (
-                <div className="flex flex-col h-full overflow-hidden">
-                  <div className="px-5 py-2.5 border-b border-border bg-card/50 flex flex-wrap items-center gap-3 shrink-0">
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <span className="font-medium">Filter:</span>
-                      <select
-                        value={filterBy}
-                        onChange={(e) => setFilterBy(e.target.value as any)}
-                        className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
-                      >
-                        <option value="all">All</option>
-                        <option value="open">Open</option>
-                        <option value="overdue">Overdue</option>
-                        <option value="paid">Paid</option>
-                      </select>
-                    </div>
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <CalendarDays size={12} />
-                      <select
-                        value={dateRange}
-                        onChange={(e) => setDateRange(e.target.value as DateRangeKey)}
-                        className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
-                      >
-                        <option value="all">All Dates</option>
-                        <option value="this_month">This Month</option>
-                        <option value="last_month">Last Month</option>
-                        <option value="this_quarter">This Quarter</option>
-                        <option value="last_quarter">Last Quarter</option>
-                        <option value="this_year">This Year</option>
-                        <option value="custom">Custom…</option>
-                      </select>
-                    </div>
-                    {dateRange === "custom" && (
-                      <div className="flex items-center gap-1.5 text-xs">
-                        <input
-                          type="date"
-                          value={customFrom}
-                          onChange={(e) => setCustomFrom(e.target.value)}
-                          className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
-                        />
-                        <span className="text-muted-foreground">–</span>
-                        <input
-                          type="date"
-                          value={customTo}
-                          onChange={(e) => setCustomTo(e.target.value)}
-                          className="h-7 px-2 rounded bg-secondary text-xs border-none focus:outline-none"
-                        />
-                      </div>
-                    )}
-                    <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
-                      {practiceInvoices.length} row
-                      {practiceInvoices.length !== 1 ? "s" : ""}
-                    </span>
-                    <ColumnSettingsPopover
-                      columns={invColumnOptions}
-                      onToggle={invCols.toggleColumn}
-                      onMove={invCols.moveColumn}
-                      onReset={invCols.resetAll}
+                  {col.label}
+                  <div
+                    onMouseDown={(e) => invCols.startResize(col.id, e)}
+                    onDoubleClick={() => invCols.resetWidth(col.id)}
+                    className="group/resize"
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      right: 0,
+                      width: 6,
+                      height: "100%",
+                      cursor: "col-resize",
+                      userSelect: "none",
+                      display: "flex",
+                      alignItems: "stretch",
+                      justifyContent: "flex-end",
+                    }}
+                  >
+                    <span
+                      className={`w-0.5 transition-colors duration-100 ${invCols.resizingId === col.id ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
+                      style={{ display: "block", height: "100%" }}
                     />
-                    <button
-                      type="button"
-                      onClick={handleExportStatementPdf}
-                      disabled={practiceInvoicesQuery.isLoading}
-                      title={practiceInvoicesQuery.isLoading ? "Loading invoices…" : "Export statement as PDF"}
-                      className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {practiceInvoicesQuery.isLoading ? (
-                        <Loader2 size={12} className="animate-spin" />
-                      ) : (
-                        <FileDown size={12} />
-                      )}
-                      Export PDF
-                    </button>
-                    {isAdmin && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setReassignTargetId("");
-                          setReassignError(null);
-                          setReassignSuccess(null);
-                          reassignMutation.reset();
-                          setReassignOpen(true);
-                        }}
-                        className="flex items-center gap-1.5 h-7 px-2.5 rounded bg-secondary text-xs text-muted-foreground hover:bg-secondary/80 hover:text-foreground transition-colors border border-border"
-                      >
-                        <ArrowRightLeft size={11} />
-                        Reassign all…
-                      </button>
-                    )}
                   </div>
-
-                  <div className="flex-1 overflow-auto scrollbar-thin">
-                    <table className="text-sm" style={{ tableLayout: "fixed", width: invCols.visible.reduce((sum, c) => sum + invCols.getWidth(c.id), 0) }}>
-                      <colgroup>
-                        {invCols.visible.map((col) => (
-                          <col key={col.id} style={{ width: invCols.getWidth(col.id) }} />
-                        ))}
-                      </colgroup>
-                      <thead className="sticky top-0 z-10 bg-secondary/80 backdrop-blur-sm">
-                        <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                          {invCols.visible.map((col) => (
-                            <th
-                              key={col.id}
-                              className={`${col.align === "right" ? "text-right" : "text-left"} px-3 py-2.5 relative font-medium`}
-                              style={{ overflow: "hidden" }}
-                            >
-                              {col.label}
-                              <div
-                                onMouseDown={(e) => invCols.startResize(col.id, e)}
-                                onDoubleClick={() => invCols.resetWidth(col.id)}
-                                className="group/resize"
-                                style={{
-                                  position: "absolute",
-                                  top: 0,
-                                  right: 0,
-                                  width: 6,
-                                  height: "100%",
-                                  cursor: "col-resize",
-                                  userSelect: "none",
-                                  display: "flex",
-                                  alignItems: "stretch",
-                                  justifyContent: "flex-end",
-                                }}
-                              >
-                                <span
-                                  className={`w-0.5 transition-colors duration-100 ${invCols.resizingId === col.id ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
-                                  style={{ display: "block", height: "100%" }}
-                                />
-                              </div>
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {practiceInvoicesQuery.isLoading && (
-                          <tr>
-                            <td colSpan={Math.max(1, invCols.visible.length)} className="px-5 py-12 text-center text-muted-foreground">
-                              <Loader2 size={16} className="inline animate-spin mr-2" />
-                              Loading invoices…
-                            </td>
-                          </tr>
-                        )}
-                        {!practiceInvoicesQuery.isLoading && practiceInvoices.length === 0 && (
-                          <tr>
-                            <td colSpan={Math.max(1, invCols.visible.length)} className="px-5 py-12 text-center text-muted-foreground">
-                              No invoices match the current filters.
-                            </td>
-                          </tr>
-                        )}
-                        {practiceInvoices.map((inv) => (
-                          <tr
-                            key={inv.id}
-                            onClick={() => setEditingInvoice(inv)}
-                            onDoubleClick={() => setEditingInvoice(inv)}
-                            className="border-t border-border cursor-pointer hover:bg-secondary/40"
-                          >
-                            {invCols.visible.map((col) => (
-                              <td key={col.id} className={`px-3 py-2.5 ${col.align === "right" ? "text-right" : "text-left"}`}>
-                                {col.render(inv)}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {/* Statements tab */}
-              {detailTab === "statements" && selected && (
-                <StatementsTab selected={selected} labOrgId={labOrgId} />
-              )}
-
-              {/* Card on File tab */}
-              {detailTab === "card" && selected && (
-                <CardOnFileTab practice={selected} labOrgId={labOrgId} />
-              )}
-            </div>
-          </>
-        )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {practiceInvoicesQuery.isLoading && (
+              <tr>
+                <td colSpan={Math.max(1, invCols.visible.length)} className="px-5 py-12 text-center text-muted-foreground">
+                  <Loader2 size={16} className="inline animate-spin mr-2" />
+                  Loading invoices…
+                </td>
+              </tr>
+            )}
+            {!practiceInvoicesQuery.isLoading && practiceInvoices.length === 0 && (
+              <tr>
+                <td colSpan={Math.max(1, invCols.visible.length)} className="px-5 py-12 text-center text-muted-foreground">
+                  No invoices match the current filters.
+                </td>
+              </tr>
+            )}
+            {practiceInvoices.map((inv) => (
+              <tr
+                key={inv.id}
+                onClick={() => setEditingInvoice(inv)}
+                onDoubleClick={() => setEditingInvoice(inv)}
+                className="border-t border-border cursor-pointer hover:bg-secondary/40"
+              >
+                {invCols.visible.map((col) => (
+                  <td key={col.id} className={`px-3 py-2.5 ${col.align === "right" ? "text-right" : "text-left"}`}>
+                    {col.render(inv)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
       {editingInvoice && (
@@ -1471,7 +1127,7 @@ export default function CustomerCenterPage() {
       )}
 
       {/* Bulk reassign dialog */}
-      {reassignOpen && selected && (
+      {reassignOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="bg-card border border-border rounded-lg shadow-xl w-full max-w-md mx-4 p-6">
             <div className="flex items-center gap-3 mb-4">
@@ -1483,7 +1139,7 @@ export default function CustomerCenterPage() {
                 <p className="text-xs text-muted-foreground mt-0.5">
                   Move invoices from{" "}
                   <span className="font-medium text-foreground">
-                    {selected.displayName || selected.name}
+                    {practice.displayName || practice.name}
                   </span>{" "}
                   to another practice
                 </p>
@@ -1547,7 +1203,7 @@ export default function CustomerCenterPage() {
                       setReassignError(null);
                       reassignMutation.mutate({
                         labOrganizationId: labOrgId,
-                        fromProviderOrganizationId: selected.id,
+                        fromProviderOrganizationId: practice.id,
                         toProviderOrganizationId: reassignTargetId,
                       });
                     }}
@@ -1575,10 +1231,7 @@ export default function CustomerCenterPage() {
                 <div className="flex justify-end">
                   <button
                     type="button"
-                    onClick={() => {
-                      setReassignOpen(false);
-                      setSelectedId(null);
-                    }}
+                    onClick={() => setReassignOpen(false)}
                     className="h-8 px-4 rounded bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
                   >
                     Done

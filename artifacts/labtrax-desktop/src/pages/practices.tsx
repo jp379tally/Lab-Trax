@@ -13,6 +13,13 @@ import { formatMoney, formatPhone, relativeTime } from "@/lib/format";
 import { DEFAULT_PRICE_KEYS, priceKeyLabel } from "@/lib/pricing-keys";
 import { RemoveDoctorDialog } from "@/components/RemoveDoctorDialog";
 import { toast } from "@/hooks/use-toast";
+import {
+  DETAIL_TABS,
+  type DetailTab,
+  InvoicesTab,
+  StatementsTab,
+  CardOnFileTab,
+} from "@/components/customer-detail-tabs";
 
 // Canonicalize a doctor name for cross-source matching: drop a leading
 // "dr"/"dr." honorific and all non-alphanumerics so "Dr. Byrne" and "byrne"
@@ -1604,6 +1611,7 @@ export function PracticeEditor({
   const { user: currentUser } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [addDoctorOpen, setAddDoctorOpen] = useState(false);
+  const [detailTab, setDetailTab] = useState<DetailTab>("basic");
   const [fields, setFields] = useState<PracticeFields>({
     name: org.name || "",
     displayName: org.displayName || "",
@@ -1627,6 +1635,14 @@ export function PracticeEditor({
   const membersQuery = useQuery({
     queryKey: ["organization", org.id, "members"],
     queryFn: () => apiFetch<PracticeMember[]>(`/organizations/${org.id}/members`),
+  });
+
+  // Used by the Invoices / Statements / Card on File tabs. For a lab-type org
+  // the lab is the org itself; for practices it's the parent lab; otherwise
+  // fall back to the current user's first active lab membership.
+  const meQuery = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
   });
 
   useEffect(() => {
@@ -1674,6 +1690,15 @@ export function PracticeEditor({
   const liveOrg = detailQuery.data ?? org;
   const isArchived = !!liveOrg.deletedAt;
   const canArchive = org.type === "provider";
+
+  const labOrgId = useMemo(() => {
+    if (liveOrg.type === "lab") return liveOrg.id;
+    if (liveOrg.parentLabOrganizationId) return liveOrg.parentLabOrganizationId;
+    const labMembership = (meQuery.data?.memberships ?? []).find(
+      (m) => m.status === "active" && m.organization?.type === "lab",
+    );
+    return labMembership?.organizationId ?? "";
+  }, [liveOrg, meQuery.data]);
 
   const archiveMutation = useMutation({
     mutationFn: () =>
@@ -1725,8 +1750,10 @@ export function PracticeEditor({
 
   return (
     <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-foreground/30">
-      <div className="w-full max-w-2xl bg-card border-l border-border h-full overflow-y-auto scrollbar-thin">
-        <header className="sticky top-0 z-10 bg-card border-b border-border px-6 py-4 flex items-center justify-between">
+      <div
+        className={`w-full ${detailTab === "basic" ? "max-w-2xl" : "max-w-4xl"} bg-card border-l border-border h-full flex flex-col overflow-hidden`}
+      >
+        <header className="shrink-0 bg-card border-b border-border px-6 py-4 flex items-center justify-between">
           <div>
             <div className="text-xs text-muted-foreground">Practice</div>
             <div className="text-sm font-semibold">{org.displayName || org.name}</div>
@@ -1801,6 +1828,42 @@ export function PracticeEditor({
           </div>
         </header>
 
+        <nav className="shrink-0 bg-card border-b border-border px-6 flex items-center gap-1">
+          {DETAIL_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setDetailTab(t.id)}
+              className={`h-10 px-3 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                detailTab === t.id
+                  ? "border-primary text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+
+        {detailTab === "invoices" && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <InvoicesTab practice={liveOrg} labOrgId={labOrgId} />
+          </div>
+        )}
+        {detailTab === "statements" && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <StatementsTab selected={liveOrg} labOrgId={labOrgId} />
+          </div>
+        )}
+        {detailTab === "card" && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <CardOnFileTab practice={liveOrg} labOrgId={labOrgId} />
+          </div>
+        )}
+
+        <div
+          className={`flex-1 min-h-0 overflow-y-auto scrollbar-thin ${detailTab === "basic" ? "" : "hidden"}`}
+        >
         <div className="px-6 py-6 space-y-6">
           {isArchived && (
             <div className="text-sm bg-secondary border border-border text-muted-foreground px-3 py-2 rounded-md flex items-center gap-2">
@@ -1914,6 +1977,7 @@ export function PracticeEditor({
           <section className="text-xs text-muted-foreground">
             Created {relativeTime(org.createdAt)} · Updated {relativeTime(org.updatedAt)}
           </section>
+        </div>
         </div>
       </div>
       {addDoctorOpen && (
