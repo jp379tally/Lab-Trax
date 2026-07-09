@@ -1075,3 +1075,105 @@ describe("AiAssistantScreen — load earlier messages", () => {
     });
   });
 });
+
+// ─── Voice-resume affordance tests ────────────────────────────────────────────
+//
+// Mirrors the desktop AiChatPanel voiceResumePending behavior: when the screen
+// mounts with voice mode remembered as ON (AsyncStorage AI_VOICE_MODE_KEY),
+// the mic must NOT start on its own — instead a "tap to resume" affordance is
+// shown, and the first tap on the headphones button restarts the voice loop.
+
+const AI_VOICE_MODE_KEY = "labtrax_ai_voice_mode_v1";
+const RESUME_HINT = /Voice mode remembered — tap the headphones to resume/;
+
+describe("AiAssistantScreen — voice-resume affordance (remembered voice mode)", () => {
+  it("shows the resume affordance without starting the mic when voice mode is remembered as on", async () => {
+    await AsyncStorage.setItem(AI_VOICE_MODE_KEY, "true");
+
+    const { getByLabelText, getByText } = render(<AiAssistantScreen />);
+
+    await waitFor(() => {
+      expect(getByLabelText("Resume voice conversation")).toBeTruthy();
+      expect(getByText(RESUME_HINT)).toBeTruthy();
+    });
+
+    // No mic recording is ever started without a user tap.
+    expect(mockRecordingCreateAsync).not.toHaveBeenCalled();
+  });
+
+  it("does not show the resume affordance when voice mode is not remembered", async () => {
+    const { getByLabelText, queryByText, queryByLabelText } = render(<AiAssistantScreen />);
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(getByLabelText("Talk with Maynard")).toBeTruthy();
+    expect(queryByLabelText("Resume voice conversation")).toBeNull();
+    expect(queryByText(RESUME_HINT)).toBeNull();
+  });
+
+  it("first tap on the headphones button starts recording and clears the affordance", async () => {
+    await AsyncStorage.setItem(AI_VOICE_MODE_KEY, "true");
+
+    const { getByLabelText, queryByText, queryByLabelText } = render(<AiAssistantScreen />);
+
+    const resumeBtn = await waitFor(() => getByLabelText("Resume voice conversation"));
+    fireEvent.press(resumeBtn);
+
+    await waitFor(() => {
+      expect(mockRecordingCreateAsync).toHaveBeenCalled();
+    });
+
+    // Affordance is gone once the loop is running again.
+    await waitFor(() => {
+      expect(queryByLabelText("Resume voice conversation")).toBeNull();
+      expect(queryByText(RESUME_HINT)).toBeNull();
+    });
+  });
+
+  it("clears the affordance when the loop resumes via the dictation mic instead", async () => {
+    await AsyncStorage.setItem(AI_VOICE_MODE_KEY, "true");
+
+    const { getByLabelText, queryByText, queryByLabelText } = render(<AiAssistantScreen />);
+
+    await waitFor(() => {
+      expect(getByLabelText("Resume voice conversation")).toBeTruthy();
+    });
+
+    fireEvent.press(getByLabelText("Dictate message"));
+
+    await waitFor(() => {
+      expect(mockRecordingCreateAsync).toHaveBeenCalled();
+      expect(queryByLabelText("Resume voice conversation")).toBeNull();
+      expect(queryByText(RESUME_HINT)).toBeNull();
+    });
+  });
+
+  it("clears the affordance when a typed message is sent", async () => {
+    await AsyncStorage.setItem(AI_VOICE_MODE_KEY, "true");
+    mockStreamResponseOnce(
+      new Response(
+        makeSSEStream([{ token: "Hi!" }, { done: true }]),
+        { status: 200 },
+      ),
+    );
+
+    const { getByLabelText, getByPlaceholderText, queryByText, queryByLabelText, findByText } = render(
+      <AiAssistantScreen />,
+    );
+
+    await waitFor(() => {
+      expect(getByLabelText("Resume voice conversation")).toBeTruthy();
+    });
+
+    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    fireEvent.press(getByLabelText("Send message"));
+
+    await findByText("Hi!");
+    await waitFor(() => {
+      expect(queryByLabelText("Resume voice conversation")).toBeNull();
+      expect(queryByText(RESUME_HINT)).toBeNull();
+    });
+  });
+});

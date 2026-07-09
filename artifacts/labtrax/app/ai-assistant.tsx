@@ -898,6 +898,13 @@ export default function AiAssistantScreen() {
   const [voiceMode, setVoiceMode] = useState(false);
   const voiceModeRef = useRef(false);
   voiceModeRef.current = voiceMode;
+  // When the screen mounts with voice mode remembered as ON (AsyncStorage),
+  // we never start the mic without a user tap — so the mode would sit in a
+  // confusing half-on state (headphones lit, nothing listening). Track that
+  // "remembered but not yet resumed" state and surface a clear "tap to
+  // resume" affordance; the first tap restarts the full voice loop. Mirrors
+  // the desktop AiChatPanel voiceResumePending behavior.
+  const [voiceResumePending, setVoiceResumePending] = useState(false);
   const [micState, setMicState] = useState<MicState>("idle");
   const [micErrorMsg, setMicErrorMsg] = useState<string | null>(null);
   const [micErrorKind, setMicErrorKind] = useState<"permission" | "other">("other");
@@ -1076,7 +1083,12 @@ export default function AiAssistantScreen() {
     AsyncStorage.getItem(AI_VOICE_MODE_KEY)
       .then((val) => {
         voiceModeLoadedRef.current = true;
-        if (val === "true") setVoiceMode(true);
+        if (val === "true") {
+          setVoiceMode(true);
+          // Remembered-on: don't start the mic without a tap — show the
+          // "tap to resume" affordance instead.
+          setVoiceResumePending(true);
+        }
       })
       .catch(() => {
         voiceModeLoadedRef.current = true;
@@ -1088,6 +1100,15 @@ export default function AiAssistantScreen() {
     if (!voiceModeLoadedRef.current) return;
     AsyncStorage.setItem(AI_VOICE_MODE_KEY, voiceMode ? "true" : "false").catch(() => {});
   }, [voiceMode]);
+
+  // Clear the "tap to resume" affordance once the voice loop is actually
+  // running again via some other user gesture (dictation tap, sending a
+  // typed message that triggers the speak → auto-listen loop, etc.).
+  useEffect(() => {
+    if (voiceResumePending && (micState === "listening" || micState === "processing" || isSpeaking || sending)) {
+      setVoiceResumePending(false);
+    }
+  }, [voiceResumePending, micState, isSpeaking, sending]);
 
   // Auto-listen after Maynard finishes speaking (voice mode only, idle mic only).
   // Skipped when speech playback failed (speakErrorMsg set): silently re-opening
@@ -2041,6 +2062,14 @@ export default function AiAssistantScreen() {
               </Pressable>
             </View>
           ) : null}
+          {voiceResumePending && !micErrorMsg && !speakErrorMsg ? (
+            <View style={[s.micErrorBanner, { backgroundColor: colors.tint + "0D", borderColor: colors.tint + "33" }]}>
+              <Ionicons name="headset-outline" size={13} color={colors.tint} style={{ marginTop: 1 }} />
+              <Text style={[s.micErrorText, { color: colors.tint, flex: 1 }]}>
+                Voice mode remembered — tap the headphones to resume the conversation
+              </Text>
+            </View>
+          ) : null}
           {/* Auto-execute toggle */}
           <View style={s.autoExecuteRow}>
             <Pressable
@@ -2115,12 +2144,17 @@ export default function AiAssistantScreen() {
               const convListening = micState === "listening" && recordingIntentRef.current === "conversation";
               return (
                 <View style={{ position: "relative", alignItems: "center", justifyContent: "center" }}>
-                  {convListening && <ConvListeningRing color={colors.tint} />}
+                  {(convListening || voiceResumePending) && <ConvListeningRing color={colors.tint} />}
                   <Pressable
                     onPress={() => {
                       if (micState === "listening") {
                         void stopRecording();
                       } else if (micState !== "processing") {
+                        // A resume tap (voice mode remembered as on) and a
+                        // fresh start both do the same thing: this tap is the
+                        // user gesture that starts the mic and the speak →
+                        // auto-listen loop takes over from there.
+                        setVoiceResumePending(false);
                         recordingIntentRef.current = "conversation";
                         if (!voiceMode) setVoiceMode(true);
                         if (isSpeaking) stopSpeaking();
@@ -2133,7 +2167,7 @@ export default function AiAssistantScreen() {
                       convListening && { backgroundColor: colors.tint + "1A", borderColor: colors.tint + "66" },
                       !convListening && voiceMode && { backgroundColor: colors.tint + "0D", borderColor: colors.tint + "33" },
                     ]}
-                    accessibilityLabel="Talk with Maynard"
+                    accessibilityLabel={voiceResumePending ? "Resume voice conversation" : "Talk with Maynard"}
                   >
                     <Ionicons
                       name={convListening ? "radio-outline" : "headset-outline"}
