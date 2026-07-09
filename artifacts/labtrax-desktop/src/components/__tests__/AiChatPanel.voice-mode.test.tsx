@@ -289,6 +289,91 @@ describe("AiChatPanel — voice-conversation toggle starts mic capture", () => {
   });
 });
 
+describe("AiChatPanel — remembered voice mode resumes only on a user gesture", () => {
+  const VOICE_PREFS_KEY = "labtrax_ai_voice_prefs_v1";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    localStorage.setItem(VOICE_PREFS_KEY, JSON.stringify({ voiceMode: true, ttsVoice: "onyx" }));
+    stubMedia();
+  });
+
+  it("mounting with remembered voice mode never starts mic capture and shows the resume affordance", async () => {
+    renderPanel();
+    await settle();
+
+    // No mic capture without a user gesture.
+    expect(getUserMediaMock).not.toHaveBeenCalled();
+    expect(recorderStart).not.toHaveBeenCalled();
+
+    // Clear "tap to resume" affordance instead of a silent half-on state.
+    expect(screen.getByRole("button", { name: /resume voice conversation/i })).toBeTruthy();
+    expect(
+      screen.getByText(/voice mode remembered — tap the headphones to resume/i),
+    ).toBeTruthy();
+  });
+
+  it("first click on the headphones resumes the full loop (mic starts, voice mode stays on)", async () => {
+    renderPanel();
+    await settle();
+
+    await act(async () => {
+      screen.getByRole("button", { name: /resume voice conversation/i }).click();
+    });
+
+    await waitFor(() => {
+      expect(getUserMediaMock).toHaveBeenCalledWith({ audio: true });
+      expect(recorderStart).toHaveBeenCalled();
+    });
+
+    // Voice mode was NOT toggled off — the button now reads "Exit voice mode".
+    expect(screen.getByRole("button", { name: /exit voice mode/i })).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /stop listening/i })).toBeTruthy();
+    });
+    expect(screen.queryByText(/voice mode remembered/i)).toBeNull();
+  });
+
+  it("after resuming, stopping listening auto-sends the transcript (loop continues)", async () => {
+    renderPanel();
+    await settle();
+
+    await act(async () => {
+      screen.getByRole("button", { name: /resume voice conversation/i }).click();
+    });
+    await waitFor(() => expect(recorderStart).toHaveBeenCalled());
+
+    await act(async () => {
+      screen.getByRole("button", { name: /stop listening/i }).click();
+    });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/ai-stt"),
+        expect.anything(),
+      );
+      expect(screen.getByText(STT_TRANSCRIPT)).toBeTruthy();
+    });
+  });
+
+  it("dictation click while resume is pending also clears the affordance", async () => {
+    renderPanel();
+    await settle();
+
+    await act(async () => {
+      screen.getByRole("button", { name: /dictate message/i }).click();
+    });
+    await waitFor(() => expect(recorderStart).toHaveBeenCalled());
+
+    await waitFor(() => {
+      expect(screen.queryByText(/voice mode remembered/i)).toBeNull();
+      // The gesture happened, so voice mode is now fully active.
+      expect(screen.getByRole("button", { name: /exit voice mode/i })).toBeTruthy();
+    });
+  });
+});
+
 describe("AiChatPanel — voice-mode entry with denied mic permission", () => {
   beforeEach(() => {
     vi.clearAllMocks();

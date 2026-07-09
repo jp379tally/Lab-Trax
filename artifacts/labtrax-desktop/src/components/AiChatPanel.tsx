@@ -723,6 +723,12 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   const [micErrorKind, setMicErrorKind] = useState<"permission" | "other">("other");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceMode, setVoiceMode] = useState<boolean>(() => readVoicePrefs().voiceMode);
+  // When the panel mounts with voice mode remembered as ON, browsers won't let
+  // us start mic capture without a user gesture — so the mode would sit in a
+  // confusing half-on state (headphones lit, nothing listening). Track that
+  // "remembered but not yet resumed" state and surface a clear "tap to resume"
+  // affordance; the first click is the gesture that restarts the full loop.
+  const [voiceResumePending, setVoiceResumePending] = useState<boolean>(() => readVoicePrefs().voiceMode);
   const [ttsVoice, setTtsVoice] = useState<TtsVoice>(() => readVoicePrefs().ttsVoice);
   const recognitionRef = useRef<any>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -955,6 +961,15 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   useEffect(() => {
     writeVoicePrefs(voiceMode, ttsVoice);
   }, [voiceMode, ttsVoice]);
+
+  // Clear the "tap to resume" affordance once the voice loop is actually
+  // running again via some other user gesture (dictation click, typing a
+  // message that triggers the speak → auto-listen loop, etc.).
+  useEffect(() => {
+    if (voiceResumePending && (micState === "listening" || micState === "processing" || isSpeaking || sending)) {
+      setVoiceResumePending(false);
+    }
+  }, [voiceResumePending, micState, isSpeaking, sending]);
 
   // Auto-listen after Maynard finishes speaking (voice mode only, idle only).
   // Reads voiceModeRef.current (not the voiceMode state) so it never captures
@@ -2232,8 +2247,19 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           <button
             type="button"
             onClick={() => {
+              if (voiceMode && voiceResumePending) {
+                // Remembered-on mount: this click is the user gesture that
+                // resumes the full voice loop (mic starts, speak → auto-listen
+                // continues). Don't toggle voice mode off.
+                setVoiceResumePending(false);
+                if (!sending && !isSpeaking && (micState === "idle" || micState === "error")) {
+                  startListening();
+                }
+                return;
+              }
               const next = !voiceMode;
               setVoiceMode(next);
+              setVoiceResumePending(false);
               if (!next) {
                 // Exiting voice mode mid-capture is a teardown: discard the
                 // in-flight audio so no STT upload / auto-send fires after exit.
@@ -2250,11 +2276,25 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                 startListening();
               }
             }}
-            title={voiceMode ? "Exit voice mode" : "Voice conversation — Maynard will speak and listen automatically"}
-            aria-label={voiceMode ? "Exit voice mode" : "Start voice conversation"}
+            title={
+              voiceMode
+                ? voiceResumePending
+                  ? "Tap to resume voice conversation"
+                  : "Exit voice mode"
+                : "Voice conversation — Maynard will speak and listen automatically"
+            }
+            aria-label={
+              voiceMode
+                ? voiceResumePending
+                  ? "Resume voice conversation"
+                  : "Exit voice mode"
+                : "Start voice conversation"
+            }
             className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 transition-colors ${
               voiceMode
-                ? "bg-foreground text-background"
+                ? voiceResumePending
+                  ? "bg-foreground text-background animate-pulse ring-2 ring-ring/50"
+                  : "bg-foreground text-background"
                 : "bg-secondary border border-input text-muted-foreground hover:text-foreground"
             }`}
           >
@@ -2298,6 +2338,8 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
               ? "Voice mode on — Maynard is speaking"
               : micState === "error"
               ? "Voice mode on — microphone unavailable"
+              : voiceResumePending
+              ? "Voice mode remembered — tap the headphones to resume the conversation"
               : "Voice mode on — Maynard will speak and listen automatically"
             : "Mic to dictate · Headphones for voice conversation · Enter to send"}
         </p>
