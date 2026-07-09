@@ -80,6 +80,13 @@ const ITEMS: MenuItem[] = [
     requiresAdmin: true,
   },
   {
+    title: "Stats",
+    subtitle: "Case volume and sales trends",
+    icon: "stats-chart-outline",
+    route: "/manage/stats",
+    requiresEdit: true,
+  },
+  {
     title: "Possible duplicate doctors",
     subtitle: "Review likely-duplicate doctor names and merge",
     icon: "git-merge-outline",

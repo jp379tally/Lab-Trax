@@ -769,6 +769,55 @@ vi.mock("@workspace/api-client-react", async () => ({
     isPending: false,
     isError: false,
   }),
+  useGetStatsSummary: () => ({
+    data: mockAppOverrides.current.statsSummary
+      ? { ok: true, data: mockAppOverrides.current.statsSummary }
+      : undefined,
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  getGetStatsSummaryQueryKey: (params?: unknown) => ["/api/stats/summary", params],
+  useGetStatsCaseCategories: () => ({
+    data: mockAppOverrides.current.statsCaseCategories
+      ? { ok: true, data: mockAppOverrides.current.statsCaseCategories }
+      : undefined,
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  getGetStatsCaseCategoriesQueryKey: (params?: unknown) => [
+    "/api/stats/case-categories",
+    params,
+  ],
+  useGetStatsRevenueSeries: () => ({
+    data: mockAppOverrides.current.statsRevenueSeries
+      ? { ok: true, data: mockAppOverrides.current.statsRevenueSeries }
+      : undefined,
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  getGetStatsRevenueSeriesQueryKey: (params?: unknown) => [
+    "/api/stats/revenue-series",
+    params,
+  ],
+  useGetStatsWeekdayVolume: () => ({
+    data: mockAppOverrides.current.statsWeekdayVolume
+      ? { ok: true, data: mockAppOverrides.current.statsWeekdayVolume }
+      : undefined,
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  getGetStatsWeekdayVolumeQueryKey: (params?: unknown) => [
+    "/api/stats/weekday-volume",
+    params,
+  ],
   setBaseUrl: vi.fn(),
   setAuthTokenGetter: vi.fn(),
   setAuthRefresher: vi.fn(),
