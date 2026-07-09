@@ -30,6 +30,7 @@
     "cleanup-bogus-provider-memberships": "tsx ./src/cleanup-bogus-provider-memberships.ts",
     "push-to-github": "tsx ./src/push-to-github.ts",
     "with-db-lock": "tsx ./src/run-with-db-lock.ts",
+    "run-pre-cutoff-cleanup": "tsx ./src/run-pre-cutoff-cleanup.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

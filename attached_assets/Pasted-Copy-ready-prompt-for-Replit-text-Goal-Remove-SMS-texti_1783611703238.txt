@@ -1,0 +1,97 @@
+Copy-ready prompt for Replit:
+
+```text
+Goal:
+Remove SMS texting as a two-factor authentication option across LabTracks and make email-based two-factor verification the only supported 2FA method for now.
+
+Issue:
+We cannot find a reliable vendor for sending and receiving SMS messages, so SMS-based two-factor authorization should be fully disabled or removed from the app. Any workflow that currently asks for, stores, sends, receives, verifies, displays, or depends on SMS 2FA should be updated to use email verification only.
+
+Likely root cause:
+The app currently supports multiple 2FA channels, including SMS, but SMS depends on an external vendor/integration that is not reliable or not available. Keeping SMS paths active creates broken authentication flows, failed verification attempts, confusing UI, and possible account access issues.
+
+Desired outcome:
+All two-factor authorization flows should work through email verification only. Users should no longer see SMS as an option, be prompted to enter a phone number for 2FA, receive SMS verification instructions, or hit backend SMS send/receive logic.
+
+Implementation steps:
+1. Search the codebase for all SMS-related 2FA references, including terms like:
+   - sms
+   - text
+   - texting
+   - phone
+   - twilio
+   - verification method
+   - twoFactor
+   - 2fa
+   - mfa
+   - otp
+   - auth code
+
+2. Identify every authentication or authorization flow that uses two-factor verification, including:
+   - login 2FA
+   - account setup 2FA
+   - password reset or sensitive-account-change verification
+   - admin or staff authorization flows
+   - any route, API endpoint, service, model, schema, component, or settings page related to 2FA
+
+3. Remove SMS as a selectable or reachable 2FA method:
+   - remove SMS/texting options from UI controls
+   - remove phone-number prompts that exist only for 2FA
+   - remove SMS-specific help text, labels, errors, and onboarding copy
+   - hide or remove any “choose email or SMS” screens and default directly to email verification
+
+4. Update backend logic so email is the only valid 2FA channel:
+   - do not call SMS vendor APIs
+   - do not enqueue SMS jobs
+   - do not wait for inbound SMS replies
+   - reject or ignore SMS 2FA method requests safely
+   - default existing users with SMS 2FA enabled to email verification
+   - preserve the actual security requirement: users still need a valid second-factor email code where 2FA is required
+
+5. Update data handling carefully:
+   - do not delete user phone numbers if they are used elsewhere in the app
+   - only remove or stop using phone numbers for 2FA
+   - if there is a user preference like twoFactorMethod = "sms", migrate or normalize it to "email"
+   - avoid destructive database migrations unless absolutely necessary
+   - if a migration is needed, make it backward-compatible and explain it clearly
+
+6. Update validation and API behavior:
+   - any request that previously accepted "sms" as a 2FA method should either default to "email" or return a clear validation error
+   - do not allow broken states where a user has 2FA enabled but no email verification path
+   - ensure email verification requires a verified or deliverable email address, depending on the app’s existing auth rules
+
+7. Update tests or add focused regression coverage:
+   - login requiring 2FA sends email verification
+   - login requiring 2FA does not attempt SMS
+   - users previously configured for SMS 2FA are routed to email verification
+   - UI no longer displays SMS/texting as an option
+   - backend rejects or safely handles SMS method requests
+   - existing non-2FA phone number features, if any, still work
+
+Constraints and guardrails:
+- Do not remove two-factor authorization entirely.
+- Do not weaken authentication requirements.
+- Email verification must become the only 2FA method anywhere 2FA is required.
+- Do not delete phone number fields globally unless they are exclusively used for SMS 2FA and removal is safe.
+- Do not leave dead UI paths that mention texting, SMS, phone verification, or choosing a 2FA method.
+- Do not leave backend paths that attempt to contact an SMS vendor.
+- Avoid broad auth refactors; keep this change scoped to removing SMS 2FA and standardizing on email 2FA.
+- If any SMS code is shared with unrelated notifications, separate the 2FA removal from unrelated messaging behavior and explain what remains.
+
+Regression checks before finishing:
+1. Create or use a test user with 2FA enabled and confirm login requires an email verification code.
+2. Confirm no SMS/text option appears in the login, setup, profile, admin, or security settings UI.
+3. Confirm no SMS vendor call is made during any 2FA flow.
+4. Confirm an existing user whose 2FA method was previously SMS can still authenticate via email.
+5. Confirm email verification codes expire, validate, and fail securely according to the existing rules.
+6. Confirm password reset, sensitive account changes, admin access, or any other 2FA-required actions still enforce email verification.
+7. Search the final codebase for remaining SMS/texting references and confirm any remaining references are unrelated to 2FA or intentionally retained.
+
+Please implement the safest scoped fix, then summarize:
+- files changed
+- SMS 2FA paths removed or disabled
+- how existing SMS-configured users are handled
+- any database migration or config changes
+- regression checks performed
+- any remaining assumptions or risks
+```

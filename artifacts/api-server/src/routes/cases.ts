@@ -3143,14 +3143,16 @@ router.post(
  * (POST /:caseId/restore) reverses this.
  *
  * Used by BOTH the single-case delete (DELETE /:caseId) and the bulk delete
- * (POST /bulk-delete) so the two paths can never drift. Returns the number of
- * invoices frozen.
+ * (POST /bulk-delete) so the two paths can never drift. Also exported for the
+ * platform-admin pre-cutoff cleanup (labtrax-routes.ts), whose CI-secret path
+ * has no real user row — hence `deletingUserId` may be null there. Returns
+ * the number of invoices frozen.
  */
-async function freezeInvoicesForDeletedCases(params: {
+export async function freezeInvoicesForDeletedCases(params: {
   req: Request;
   caseIds: string[];
   labOrganizationId: string;
-  deletingUserId: string;
+  deletingUserId: string | null;
   caseNumberById?: Map<string, string | null | undefined>;
 }): Promise<number> {
   const { req, caseIds, labOrganizationId, deletingUserId, caseNumberById } =
@@ -3179,10 +3181,14 @@ async function freezeInvoicesForDeletedCases(params: {
   if (linkedInvoices.length === 0) return 0;
 
   // Derive initials from the deleting user's profile. Fall back to the initials
-  // field stored on the user row, then to "?" when nothing is set.
-  const actorUser = await db.query.users.findFirst({
-    where: eq(users.id, deletingUserId),
-  });
+  // field stored on the user row, then to "?" when nothing is set. The
+  // platform-admin secret path has no user row (deletingUserId === null), so
+  // skip the lookup entirely there.
+  const actorUser = deletingUserId
+    ? await db.query.users.findFirst({
+        where: eq(users.id, deletingUserId),
+      })
+    : undefined;
   const derivedInitials = (() => {
     const first = String(actorUser?.firstName ?? "").trim();
     const last = String(actorUser?.lastName ?? "").trim();

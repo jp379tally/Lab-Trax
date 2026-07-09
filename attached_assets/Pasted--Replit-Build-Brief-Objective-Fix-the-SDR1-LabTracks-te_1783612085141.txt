@@ -1,0 +1,169 @@
+### Replit Build Brief
+
+**Objective**
+Fix the SDR1 LabTracks team invite email regression so new-member invites and resend attempts actually send email, and so admins are told when email delivery fails instead of seeing a silent “Pending invite.”
+
+**User-visible problem**
+Ben and Alex appear as pending invites in SDR1, but they never receive the LabTrax invite emails. Resending from LabTrax still does not deliver. Their inboxes are working because direct test emails from John arrive normally.
+
+**Likely root cause**
+The invite is being created successfully in the database, but the email send is treated as best-effort and can fail silently. In `artifacts/api-server/src/routes/organizations.ts`, both invite creation and resend:
+
+1. create/update the `organizationInvites` row,
+2. call `sendInviteEmail(...)`,
+3. log `invite email not sent` if `result.sent === false`,
+4. still return success to the UI.
+
+So the UI shows “Pending invite” even if LabTrax never actually sent the email.
+
+There is also a suspicious mail preflight in `artifacts/api-server/src/lib/mail.ts`: `sendMail` checks DNS MX/A records before SMTP. That can create false negatives in hosted runtimes or DNS-restricted environments. The safer behavior is to skip only obviously fake/reserved domains and let SMTP decide deliverability for real addresses.
+
+**Code areas to inspect/change**
+
+* `artifacts/api-server/src/routes/organizations.ts`
+
+  * `POST /:organizationId/invites`
+  * `POST /invites/:inviteId/resend`
+  * shared invite-email helper should be extracted so create and resend behave identically.
+* `artifacts/api-server/src/lib/mail.ts`
+
+  * `sendMail`
+  * `hasDeliverableDomain`
+  * reserved/test-domain filtering.
+* `artifacts/api-server/src/routes/auth.ts`
+
+  * `/api/auth/lab-team` returns `pendingInvites`; consider exposing delivery status/error if stored.
+* UI that renders the screenshot’s team panel
+
+  * likely desktop settings/profile team component plus mobile `artifacts/labtrax/app/settings/organizations.tsx` if pending invite state is shared.
+
+**Implementation plan**
+
+1. Add explicit invite email delivery handling.
+
+   * Create a helper like `sendOrganizationInviteEmailOrThrow(...)`.
+   * It should send the email and return a clear delivery result.
+   * If SMTP is not configured, recipient opted out, DNS check blocks it, or SMTP send fails, the route must not pretend the resend succeeded.
+
+2. Store or return invite email delivery status.
+
+   * Best fix: add fields to `organizationInvites`, such as `emailLastAttemptAt`, `emailLastStatus`, `emailLastError`, and optionally `emailProviderMessageId`.
+   * If avoiding a migration, at minimum return `{ emailSent: false, reason }` and use a non-2xx response on create/resend failure.
+
+3. Change create/resend behavior.
+
+   * Creating an invite may still create the pending row, but the API response must tell the UI the email failed.
+   * Resend should return success only when `sendInviteEmail` returns `sent: true`.
+   * If email fails, return a clear `502` or `424` style error: “Invite saved, but email could not be sent. Reason: SMTP not configured / send failed / recipient opted out / domain check failed.”
+
+4. Harden `sendMail`.
+
+   * Keep the reserved/test-domain guard.
+   * Do not block real recipient domains solely because DNS preflight fails.
+   * Prefer: if MX lookup fails due to runtime/DNS error, log a warning and proceed to SMTP.
+   * SMTP is the real authority for whether a recipient can be accepted.
+
+5. Add tests.
+
+   * Test invite create when `sendInviteEmail` succeeds.
+   * Test invite create/resend when `sendInviteEmail` returns `{ sent: false, reason: "smtp_not_configured" }`.
+   * Test that the API does not return normal success on failed invite email delivery.
+   * Test that reserved domains are skipped in non-production/test contexts without causing real sends.
+   * Add a regression test for the DNS preflight not blocking real domains when MX lookup errors.
+
+**Guardrails**
+
+* Do not remove invite token security or accept-invite expiration behavior.
+* Do not expose raw SMTP credentials or full provider error payloads to users.
+* Keep PHI out of logs and emails.
+* Do not break existing working invites for George, Lauren, or current team members.
+* Preserve account/signup/invitation regression tests listed in `REGRESSION_GUARDRAILS.md`.
+
+**Acceptance criteria**
+
+* Inviting `ben@sdrdl.com` and `alex@sdrdl.com` either sends a real LabTrax invite email or shows an immediate visible failure.
+* Resend only shows success when the email was actually accepted by the mail send path.
+* The admin can see that a pending invite exists but the last email attempt failed, if it failed.
+* Server logs include invite id, recipient domain, and safe failure reason.
+* `pnpm --filter @workspace/api-server run test` passes.
+
+**Regression risks to check**
+
+* Existing invite acceptance links still work.
+* Pending invite rows still render correctly.
+* Invite expiration, cancel, decline, and accept flows still work.
+* Email verification/password/security emails are not accidentally blocked or spammed.
+* Test fixtures using `example.com`, `.test`, `.local`, etc. still do not send real mail.
+
+### Copy-Ready Replit Prompt
+
+Please debug and fix a LabTrax regression where team invite emails are not being received.
+
+Symptoms:
+
+* In SDR1 lab, invites for `ben@sdrdl.com` and `alex@sdrdl.com` show as “Pending invite.”
+* Resending the invites does not deliver email.
+* Direct test emails from John to those addresses do arrive, so the recipient inboxes are working.
+* The problem appears to be LabTrax’s invite email send path, not the addresses themselves.
+
+Relevant code to inspect:
+
+* `artifacts/api-server/src/routes/organizations.ts`
+
+  * `POST /:organizationId/invites`
+  * `POST /invites/:inviteId/resend`
+* `artifacts/api-server/src/lib/mail.ts`
+
+  * `sendMail`
+  * DNS deliverability checks
+* `artifacts/api-server/src/lib/mailer.ts`
+* `artifacts/api-server/src/routes/auth.ts`
+
+  * `/api/auth/lab-team` pending invite response
+* The UI that renders pending team invites/resend actions.
+
+Likely root cause:
+The backend creates or updates the invite row, calls `sendInviteEmail`, logs when email sending fails, but still returns success. This makes the UI show “Pending invite” even if no email was actually sent. Also review the DNS preflight in `sendMail`; real recipient domains should not be blocked just because runtime DNS/MX lookup fails. SMTP should be the authority for real delivery attempts.
+
+Please implement the safest fix:
+
+1. Make invite create/resend report email delivery truthfully.
+2. Do not return normal success from resend if `sendInviteEmail` returns `{ sent: false }`.
+3. Add or return delivery status so the UI can show “email failed to send” with a safe reason.
+4. Harden `sendMail` so reserved/test domains are skipped, but real domains are not falsely blocked by DNS lookup failures.
+5. Add API tests covering successful invite email, failed invite email, failed resend, and DNS-preflight fallback behavior.
+6. Run the relevant API tests and explain any assumptions or tradeoffs before finishing.
+
+Do not expose SMTP secrets or raw provider payloads in the UI. Keep invite token security, expiration, accept, decline, and cancel behavior intact.
+
+### Debug Analysis
+
+**Probable root cause**
+The invite workflow is creating valid pending invite records, but email sending is non-authoritative. The backend logs failed delivery and still responds as if the invite/resend succeeded. That exactly matches the screenshot: Ben and Alex exist as pending invite rows, but no email arrives.
+
+**Supporting evidence**
+The screenshot shows `ben@sdrdl.com` and `alex@sdrdl.com` as `Pending invite`, so the database invite creation path worked. In `organizations.ts`, create/resend catches email failures and only logs them. In `mail.ts`, `sendMail` can return failure reasons like `smtp_not_configured`, `reserved_domain`, `undeliverable_domain`, or SMTP errors without throwing to the caller.
+
+**Alternate hypotheses worth checking**
+
+* SMTP provider suppression/bounce list has these two recipients blocked.
+* Their emails already exist as LabTrax users with `orgInviteNotifications` disabled.
+* The invite emails are sent but routed to spam/quarantine.
+* `SMTP_FROM`/domain authentication changed and SDRDL’s mail server rejects the sender.
+
+**Why this fix is best**
+The core product bug is not only “email failed”; it is “LabTrax says the invite/resend happened even when it did not.” Making delivery status explicit fixes the current issue and prevents future silent regressions.
+
+**Confidence level**
+High that silent email failure handling is a real bug. Medium on the exact underlying delivery failure until Replit checks production logs for `invite email not sent` and the `reason` for these invite ids.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce by resending one pending invite and checking server logs for `invite resend email not sent` or `invite resend email failed`.
+2. Confirm the failure reason from `sendInviteEmail`.
+3. Extract a shared helper for invite email delivery in `organizations.ts`.
+4. Update create/resend endpoints so failed email delivery returns a visible failure or stored delivery status.
+5. Harden `mail.ts` DNS preflight so real domains are not skipped just because MX lookup fails.
+6. Update the pending invite UI to show last email send status when available.
+7. Add regression tests for invite email success and failure.
+8. Run the API test suite and manually test inviting/resending to the two affected addresses.

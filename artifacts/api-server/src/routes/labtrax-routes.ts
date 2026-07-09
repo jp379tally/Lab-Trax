@@ -38,8 +38,8 @@ import OpenAI, { toFile } from "openai";
 import { getMailerConfig } from "../lib/mailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, caseRestorations, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases, bankTransactions } from "@workspace/db";
-import { notDeleted } from "../lib/soft-delete";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, caseRestorations, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases, bankTransactions, invoices } from "@workspace/db";
+import { notDeleted, softDeleteById } from "../lib/soft-delete";
 import { eq, and, inArray, or, isNull, sql, desc, count, type SQL } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
 import { HttpError, wrapDbError } from "../lib/http";
@@ -148,7 +148,7 @@ async function fetchUserActiveLabIds(userId: string): Promise<string[]> {
 
 import authRoutes from "./auth";
 import organizationRoutes, { publicInviteRouter } from "./organizations";
-import caseRoutes from "./cases";
+import caseRoutes, { freezeInvoicesForDeletedCases } from "./cases";
 import doctorRoutes from "./doctors";
 import practiceRoutes from "./practices";
 import invoiceRoutes from "./invoices";
@@ -6625,6 +6625,257 @@ Important rules:
       return res.json({ ok: true });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to send email." });
+    }
+  });
+
+  // ── Admin: pre-cutoff data cleanup (one-shot, platform-admin gated) ───────
+  // Soft-deletes every canonical case, invoice, and legacy mobile case dated
+  // before June 1 2026 (America/New_York → 2026-06-01T04:00:00Z). Built for a
+  // one-time production cleanup requested by the platform owner. Everything
+  // goes through the standard soft-delete machinery (softDeleteById /
+  // softDeleteLegacyCases) so it is fully reversible and audit-logged.
+  //
+  // Safety model:
+  //   - Gated by platformAdminUserOrSecret + isPlatformAdmin (secret header).
+  //   - Defaults to dryRun:true — reports counts, changes nothing.
+  //   - A live run additionally requires confirm:"DELETE_PRE_JUNE_2026".
+  //   - Date fields are authoritative business dates: cases.received_at,
+  //     COALESCE(invoices.issued_at, invoices.created_at), and the legacy
+  //     blob's createdAt (epoch-ms or ISO). Rows exactly AT the cutoff are
+  //     kept (strict <). A legacy blob whose createdAt cannot be parsed is
+  //     NEVER deleted (fail-closed).
+  router.post("/admin/cleanup/pre-cutoff-cases", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const CUTOFF = new Date("2026-06-01T04:00:00.000Z"); // 2026-06-01 00:00 America/New_York (EDT)
+    const CONFIRM_PHRASE = "DELETE_PRE_JUNE_2026";
+
+    const parseLegacyCreatedAtMs = (raw: unknown): number | null => {
+      if (raw == null) return null;
+      if (typeof raw === "number" && Number.isFinite(raw)) {
+        // Blob createdAt is epoch-milliseconds; reject implausibly small
+        // numbers (e.g. epoch-seconds or garbage) instead of guessing.
+        return raw > 10_000_000_000 ? raw : null;
+      }
+      if (typeof raw === "string") {
+        const trimmed = raw.trim();
+        if (!trimmed) return null;
+        if (/^\d{12,}$/.test(trimmed)) return Number(trimmed);
+        const t = Date.parse(trimmed);
+        return Number.isNaN(t) ? null : t;
+      }
+      return null;
+    };
+
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const dryRun = body.dryRun !== false; // default: dry run
+      if (!dryRun && body.confirm !== CONFIRM_PHRASE) {
+        return res.status(400).json({
+          error: `Live run requires body { dryRun: false, confirm: "${CONFIRM_PHRASE}" }.`,
+        });
+      }
+      // Optional tenant scope: when set, only rows belonging to this lab org
+      // are considered. Keeps the blast radius contained (tests scope to their
+      // own seeded org; the production run passes the real lab's org id).
+      const scopeOrgId =
+        typeof body.organizationId === "string" && body.organizationId.trim()
+          ? body.organizationId.trim()
+          : null;
+
+      const actorUserId = ((req as any).user?.id as string | null) ?? null;
+      const actorName = ((req as any).user?.username as string) || "platform-admin";
+
+      // 1) Canonical cases received before the cutoff.
+      const preCases = await db
+        .select({
+          id: casesTable.id,
+          caseNumber: casesTable.caseNumber,
+          labOrganizationId: casesTable.labOrganizationId,
+          patientFirstName: casesTable.patientFirstName,
+          patientLastName: casesTable.patientLastName,
+          receivedAt: casesTable.receivedAt,
+        })
+        .from(casesTable)
+        .where(
+          and(
+            notDeleted(casesTable),
+            sql`${casesTable.receivedAt} < ${CUTOFF}`,
+            ...(scopeOrgId ? [eq(casesTable.labOrganizationId, scopeOrgId)] : []),
+          ),
+        );
+
+      // 2) Invoices dated before the cutoff (issued_at, falling back to
+      //    created_at for never-issued drafts).
+      const preInvoices = await db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          labOrganizationId: invoices.labOrganizationId,
+          issuedAt: invoices.issuedAt,
+          createdAt: invoices.createdAt,
+        })
+        .from(invoices)
+        .where(
+          and(
+            notDeleted(invoices),
+            sql`coalesce(${invoices.issuedAt}, ${invoices.createdAt}) < ${CUTOFF}`,
+            ...(scopeOrgId ? [eq(invoices.labOrganizationId, scopeOrgId)] : []),
+          ),
+        );
+
+      // 3) Legacy mobile cases whose blob createdAt predates the cutoff.
+      const allLegacy = await db
+        .select({ id: labCases.id, organizationId: labCases.organizationId, caseData: labCases.caseData })
+        .from(labCases)
+        .where(
+          and(
+            isNull(labCases.deletedAt),
+            ...(scopeOrgId ? [eq(labCases.organizationId, scopeOrgId)] : []),
+          ),
+        );
+      const preLegacy: { id: string; createdAtMs: number }[] = [];
+      let unparseableLegacy = 0;
+      for (const row of allLegacy) {
+        try {
+          const data = typeof row.caseData === "string" ? JSON.parse(row.caseData) : (row.caseData ?? {});
+          const t = parseLegacyCreatedAtMs(data?.createdAt);
+          if (t == null) {
+            unparseableLegacy++;
+          } else if (t < CUTOFF.getTime()) {
+            preLegacy.push({ id: row.id, createdAtMs: t });
+          }
+        } catch {
+          unparseableLegacy++; // malformed blob → keep (never delete on uncertainty)
+        }
+      }
+
+      const summary = {
+        cutoff: CUTOFF.toISOString(),
+        scopeOrganizationId: scopeOrgId,
+        canonicalCases: preCases.length,
+        invoices: preInvoices.length,
+        legacyCases: preLegacy.length,
+        unparseableLegacySkipped: unparseableLegacy,
+        caseReceivedRange: preCases.length
+          ? {
+              oldest: new Date(Math.min(...preCases.map((c) => +new Date(c.receivedAt as any)))).toISOString(),
+              newest: new Date(Math.max(...preCases.map((c) => +new Date(c.receivedAt as any)))).toISOString(),
+            }
+          : null,
+        legacyCreatedRange: preLegacy.length
+          ? {
+              oldest: new Date(Math.min(...preLegacy.map((c) => c.createdAtMs))).toISOString(),
+              newest: new Date(Math.max(...preLegacy.map((c) => c.createdAtMs))).toISOString(),
+            }
+          : null,
+      };
+
+      req.log?.info?.(
+        { ...summary, dryRun, actor: actorName },
+        "pre-cutoff cleanup: scan complete",
+      );
+
+      if (dryRun) {
+        return res.json({ ok: true, dryRun: true, ...summary });
+      }
+
+      // ── Live run ──────────────────────────────────────────────────────────
+      // Soft-delete canonical cases (one audit entry per case).
+      for (const c of preCases) {
+        await softDeleteById({
+          table: casesTable,
+          id: c.id,
+          actorUserId,
+          req,
+          organizationId: c.labOrganizationId,
+          entityType: "case",
+          beforeJson: c,
+          metadataJson: {
+            caseNumber: c.caseNumber,
+            patientName: [c.patientFirstName, c.patientLastName].filter(Boolean).join(" "),
+            cleanup: "pre_cutoff_2026_06_01",
+          },
+        });
+      }
+
+      // Freeze any invoice still linked to a deleted case (kept, not deleted —
+      // same guarantee as the normal delete flows). Grouped per lab because the
+      // shared helper is tenant-scoped.
+      const caseIdsByLab = new Map<string, { ids: string[]; numbers: Map<string, string | null | undefined> }>();
+      for (const c of preCases) {
+        const bucket =
+          caseIdsByLab.get(c.labOrganizationId) ??
+          { ids: [] as string[], numbers: new Map<string, string | null | undefined>() };
+        bucket.ids.push(c.id);
+        bucket.numbers.set(c.id, c.caseNumber);
+        caseIdsByLab.set(c.labOrganizationId, bucket);
+      }
+      let invoicesFrozen = 0;
+      for (const [labOrganizationId, bucket] of caseIdsByLab) {
+        invoicesFrozen += await freezeInvoicesForDeletedCases({
+          req,
+          caseIds: bucket.ids,
+          labOrganizationId,
+          deletingUserId: actorUserId,
+          caseNumberById: bucket.numbers,
+        });
+      }
+
+      // Soft-delete pre-cutoff invoices (one audit entry per invoice).
+      for (const inv of preInvoices) {
+        await softDeleteById({
+          table: invoices,
+          id: inv.id,
+          actorUserId,
+          req,
+          organizationId: inv.labOrganizationId,
+          entityType: "invoice",
+          beforeJson: inv,
+          metadataJson: {
+            invoiceNumber: inv.invoiceNumber,
+            cleanup: "pre_cutoff_2026_06_01",
+          },
+        });
+      }
+
+      // Soft-delete legacy mobile cases via the shared helper (per-case audit;
+      // embedded mobile invoices live inside the blob and disappear with it).
+      let legacyDeleted = 0;
+      if (preLegacy.length > 0) {
+        const { deletedIds } = await softDeleteLegacyCases({
+          ids: preLegacy.map((c) => c.id),
+          deletedBy: `cleanup:${actorName}`,
+          actorUserId,
+          organizationId: null, // audit falls back to each row's own org
+          req,
+        });
+        legacyDeleted = deletedIds.length;
+      }
+
+      const result = {
+        ...summary,
+        legacyCases: legacyDeleted,
+        invoicesFrozen,
+      };
+
+      await writeAuditLog({
+        req,
+        userId: actorUserId,
+        organizationId: null,
+        action: "pre_cutoff_cleanup_completed",
+        entityType: "system",
+        entityId: "pre-cutoff-cleanup",
+        metadataJson: { ...result, actor: actorName },
+      });
+
+      req.log?.info?.({ ...result, actor: actorName }, "pre-cutoff cleanup: live run complete");
+
+      return res.json({ ok: true, dryRun: false, ...result });
+    } catch (e: any) {
+      req.log?.error?.({ err: e }, "pre-cutoff cleanup failed");
+      return res.status(500).json({ error: e?.message || "Cleanup failed." });
     }
   });
 

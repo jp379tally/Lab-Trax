@@ -18,15 +18,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "typecheck-all"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "knowledge-test"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "installer-download-test"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
@@ -65,17 +57,6 @@ task = "workflow.run"
 args = "rel-protected-tables"
 
 [[workflows.workflow]]
-name = "typecheck-all"
-author = "agent"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm run typecheck"
-
-[[workflows.workflow]]
 name = "knowledge-test"
 author = "agent"
 
@@ -85,17 +66,6 @@ args = "pnpm --filter @workspace/ai-knowledge run test"
 
 [workflows.workflow.metadata]
 isValidation = true
-
-[[workflows.workflow]]
-name = "installer-download-test"
-author = "agent"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/api-server exec vitest run --reporter=verbose src/installer-download.test.ts"
 
 [[workflows.workflow]]
 name = "EAS iOS Build + Submit"

@@ -1,0 +1,140 @@
+### Replit Build Brief
+
+**Objective**
+Fix Maynard’s voice conversation mode so clicking the in-app microphone starts live audio capture on the website version, opens the browser microphone indicator, and sends captured speech into the Maynard conversation flow.
+
+**User-visible problem**
+Voice dictation works: the browser/OS microphone indicator turns on and speech is transcribed into text. But Maynard conversation mode does not work on PC/web: clicking or activating the conversation microphone does not turn on the microphone indicator, so the app is likely not starting browser audio capture at all.
+
+**Likely root cause**
+The dictation feature and Maynard conversation feature are probably using separate microphone paths. Dictation may be using browser speech recognition or a working transcription input, while the Maynard conversation button likely fails before `navigator.mediaDevices.getUserMedia({ audio: true })` is called, or its click handler is blocked by state, permissions gating, feature detection, device checks, or an unsupported voice-session initialization path.
+
+Most likely: the Maynard conversation mic UI is not bound to the same working audio-permission/capture flow as dictation, or it silently fails during voice-session setup before requesting microphone permission.
+
+**Exact app areas to inspect/change**
+
+Inspect voice-related frontend code, especially files/components with names like:
+
+* `Maynard`
+* `VoiceConversation`
+* `VoiceChat`
+* `MicButton`
+* `AudioRecorder`
+* `useMicrophone`
+* `useVoice`
+* `useSpeechRecognition`
+* `dictation`
+* `transcription`
+* `conversation`
+* API/client code for Maynard realtime or voice sessions
+
+Also inspect any browser permission, feature flag, auth, or environment gating around Maynard voice conversation.
+
+**Implementation plan**
+
+1. Trace the dictation microphone path and identify the exact working microphone acquisition code.
+2. Trace the Maynard conversation microphone button path and confirm whether it calls `getUserMedia`.
+3. Refactor both flows to use one shared microphone acquisition helper/hook if possible.
+4. Ensure the Maynard conversation mic click is a direct user gesture that calls microphone permission/capture immediately.
+5. Add visible error states for blocked permissions, unsupported browser APIs, missing voice session config, or failed realtime/audio session startup.
+6. Do not show the conversation mic as active unless an actual `MediaStream` is open.
+7. Stop tracks cleanly when conversation ends.
+8. Add logging around mic permission request, stream start, session connection, audio send, and cleanup.
+
+**Constraints and guardrails**
+
+* Do not confuse browser dictation with Maynard conversation. Treat them as separate flows until proven otherwise.
+* Do not only change the icon state. The browser mic indicator must turn on when conversation listening starts.
+* Avoid broad rewrites of Maynard chat. Keep the fix scoped to microphone acquisition, voice session startup, and error handling.
+* Preserve working dictation behavior.
+* If Maynard conversation depends on a realtime API key/session token, fail visibly when that setup is unavailable.
+
+**Acceptance criteria**
+
+* On desktop web, clicking Maynard’s conversation microphone triggers the browser mic permission flow or turns on the browser mic indicator if already allowed.
+* Conversation mode receives speech input and sends it into Maynard’s conversational flow.
+* Dictation still works exactly as before.
+* If microphone access is blocked, unavailable, or the voice session cannot start, the user sees a clear message.
+* The mic icon accurately reflects real capture state.
+* Ending conversation turns off the browser mic indicator.
+
+**Regression checks**
+
+* Chrome/Edge desktop web.
+* Fresh browser profile with no prior mic permission.
+* Browser with mic permission already allowed.
+* Browser with mic permission denied.
+* No microphone device available.
+* Dictation after using conversation mode.
+* Conversation mode after using dictation.
+* Page reload while mic is active.
+
+---
+
+### Copy-Ready Replit Prompt
+
+Debug and fix a LabTracks Maynard voice conversation issue.
+
+Symptoms: voice dictation works on the website version and successfully transcribes speech into text. When dictation is active, the browser/PC microphone indicator turns on. But when trying to have a voice conversation with Maynard, the microphone icon/indicator does not turn on at all, and the user cannot converse with Maynard.
+
+Please inspect the Maynard voice conversation flow and compare it against the working dictation flow. Search for components/hooks/modules related to Maynard, voice conversation, mic button, speech recognition, dictation, transcription, audio recording, microphone permissions, realtime voice sessions, and browser audio capture.
+
+Likely root cause: dictation and Maynard conversation use different microphone paths. The Maynard conversation mic button may not be calling `navigator.mediaDevices.getUserMedia({ audio: true })`, may be blocked by state/feature gating, may fail before requesting mic permission, or may not be using the same working microphone helper as dictation.
+
+Please implement the safest fix:
+
+1. Identify the working dictation microphone acquisition path.
+2. Identify why the Maynard conversation mic path does not start actual browser audio capture.
+3. Prefer sharing a common microphone acquisition helper/hook between dictation and Maynard conversation if appropriate.
+4. Ensure clicking the Maynard conversation mic starts microphone capture from a direct user gesture.
+5. Ensure the UI mic-active state reflects a real active `MediaStream`, not just a toggled boolean.
+6. Add clear user-facing errors for microphone permission denied, no microphone device, unsupported browser APIs, failed audio capture, or failed Maynard voice/realtime session setup.
+7. Cleanly stop all media tracks when conversation ends.
+8. Preserve existing dictation behavior.
+
+Before finishing, verify:
+
+* Dictation still transcribes speech.
+* Maynard conversation turns on the browser mic indicator.
+* Maynard conversation can receive spoken input.
+* Permission denied shows a clear error.
+* Ending conversation turns the microphone off.
+* No console errors occur in the normal path.
+
+If the code shows a different root cause, explain the evidence, the tradeoffs, and why your chosen fix is safest.
+
+---
+
+### Debug Analysis
+
+The strongest clue is that dictation turns on the microphone indicator, but Maynard conversation does not. That means the browser is not receiving a live audio capture request from the Maynard conversation flow, or that request is failing before capture begins.
+
+This is probably not a hardware or browser-level microphone problem, because dictation works on the same PC and same website context. It is more likely an app-level issue in the Maynard conversation path.
+
+Alternate hypotheses worth checking:
+
+* Maynard voice conversation is behind a feature flag or environment variable that is disabled on web.
+* The conversation mic button is visually enabled but its handler exits early because Maynard session state is not ready.
+* The app initializes a realtime/voice session first, that setup fails silently, and microphone capture never starts.
+* The conversation feature uses a different browser API than dictation, and that API is unsupported or blocked on the user’s desktop browser.
+* The mic icon state is disconnected from actual `MediaStream` state.
+
+The recommended fix is to unify or closely align the conversation mic acquisition path with the known-working dictation path, then add explicit state and error handling around the Maynard voice-session startup. That targets the real failure point instead of just changing UI state.
+
+Confidence: medium-high based on symptoms. The exact file/function names need repository inspection, but the failure boundary is fairly clear: Maynard conversation is not successfully initiating browser microphone capture.
+
+---
+
+### Step-by-Step Fix Plan
+
+1. Reproduce on desktop web: confirm dictation opens mic, Maynard conversation does not.
+2. Search the codebase for Maynard voice, dictation, mic, audio, transcription, and speech recognition code.
+3. Put temporary logs around the Maynard mic click handler, permission request, stream creation, voice session creation, and error paths.
+4. Compare with the working dictation flow.
+5. Move shared mic startup into a helper such as `requestMicrophoneStream()` or an existing hook.
+6. Update Maynard conversation to call that helper directly from the mic click.
+7. Store the real stream in state/ref and derive “listening” UI from actual stream/session state.
+8. Pipe the stream into Maynard’s conversation/transcription/realtime flow.
+9. Add visible errors for permission/session failures.
+10. Stop tracks on end, cancel, navigation, or component unmount.
+11. Test dictation and conversation in the browser cases listed above.
