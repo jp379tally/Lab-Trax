@@ -343,6 +343,122 @@ maybe("Invoice PDF and statement generation (db integration)", () => {
     expect(mailArg.attachments[0].contentType).toBe("application/pdf");
   });
 
+  it("GET /api/invoices/practice-statements exposes last email send (lastEmailedAt/lastEmailedTo)", async () => {
+    mockSendMail.mockClear();
+    const { access } = await makeSession(labOwnerId);
+
+    const gen = await request(appMod.default)
+      .post("/api/invoices/practice-statements/generate")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        providerOrganizationIds: [providerOrgId],
+        periodStart: new Date(Date.now() - 45 * 86400000).toISOString(),
+        periodEnd: new Date(Date.now() + 5 * 86400000).toISOString(),
+        includeStatuses: ["draft", "open", "partially_paid", "paid"],
+      });
+    expect(gen.status).toBe(201);
+    const stmt = gen.body.data.statements[0];
+    expect(stmt?.id).toBeTruthy();
+
+    // Never emailed → nulls.
+    const before = await request(appMod.default)
+      .get(
+        `/api/invoices/practice-statements?labOrganizationId=${labOrgId}&providerOrganizationId=${providerOrgId}`
+      )
+      .set("Authorization", `Bearer ${access}`);
+    expect(before.status).toBe(200);
+    const rowBefore = (before.body.data as any[]).find((r) => r.id === stmt.id);
+    expect(rowBefore).toBeTruthy();
+    expect(rowBefore.lastEmailedAt).toBeNull();
+    expect(rowBefore.lastEmailedTo).toBeNull();
+
+    // Send it, then the list reflects the send time + recipient.
+    const send = await request(appMod.default)
+      .post(`/api/invoices/practice-statements/${stmt.id}/email`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        to: "lastsend@test.invalid",
+        subject: "Statement",
+        message: "Attached.",
+      });
+    expect(send.status).toBe(200);
+
+    const after = await request(appMod.default)
+      .get(
+        `/api/invoices/practice-statements?labOrganizationId=${labOrgId}&providerOrganizationId=${providerOrgId}`
+      )
+      .set("Authorization", `Bearer ${access}`);
+    expect(after.status).toBe(200);
+    const rowAfter = (after.body.data as any[]).find((r) => r.id === stmt.id);
+    expect(rowAfter).toBeTruthy();
+    expect(rowAfter.lastEmailedTo).toBe("lastsend@test.invalid");
+    expect(rowAfter.lastEmailedAt).toBeTruthy();
+    expect(new Date(rowAfter.lastEmailedAt).getTime()).not.toBeNaN();
+
+    // A second send to a different recipient wins as the latest.
+    const send2 = await request(appMod.default)
+      .post(`/api/invoices/practice-statements/${stmt.id}/email`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        to: "resend@test.invalid",
+        subject: "Statement (resend)",
+        message: "Attached again.",
+      });
+    expect(send2.status).toBe(200);
+
+    const after2 = await request(appMod.default)
+      .get(
+        `/api/invoices/practice-statements?labOrganizationId=${labOrgId}&providerOrganizationId=${providerOrgId}`
+      )
+      .set("Authorization", `Bearer ${access}`);
+    expect(after2.status).toBe(200);
+    const rowAfter2 = (after2.body.data as any[]).find((r) => r.id === stmt.id);
+    expect(rowAfter2.lastEmailedTo).toBe("resend@test.invalid");
+    expect(
+      new Date(rowAfter2.lastEmailedAt).getTime()
+    ).toBeGreaterThanOrEqual(new Date(rowAfter.lastEmailedAt).getTime());
+  });
+
+  it("failed email sends do not update lastEmailedAt/lastEmailedTo", async () => {
+    mockSendMail.mockClear();
+    const { access } = await makeSession(labOwnerId);
+
+    const gen = await request(appMod.default)
+      .post("/api/invoices/practice-statements/generate")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        providerOrganizationIds: [providerOrgId],
+        periodStart: new Date(Date.now() - 75 * 86400000).toISOString(),
+        periodEnd: new Date(Date.now() + 6 * 86400000).toISOString(),
+        includeStatuses: ["draft", "open", "partially_paid", "paid"],
+      });
+    expect(gen.status).toBe(201);
+    const stmt = gen.body.data.statements[0];
+
+    mockSendMail.mockRejectedValueOnce(new Error("SMTP down"));
+    const send = await request(appMod.default)
+      .post(`/api/invoices/practice-statements/${stmt.id}/email`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        to: "failed@test.invalid",
+        subject: "Statement",
+        message: "Attached.",
+      });
+    expect(send.status).toBe(502);
+
+    const list = await request(appMod.default)
+      .get(
+        `/api/invoices/practice-statements?labOrganizationId=${labOrgId}&providerOrganizationId=${providerOrgId}`
+      )
+      .set("Authorization", `Bearer ${access}`);
+    expect(list.status).toBe(200);
+    const row = (list.body.data as any[]).find((r) => r.id === stmt.id);
+    expect(row.lastEmailedAt).toBeNull();
+    expect(row.lastEmailedTo).toBeNull();
+  });
+
   it("email endpoint returns 401 without auth", async () => {
     const r = await request(appMod.default)
       .post("/api/invoices/practice-statements/nonexistent/email")

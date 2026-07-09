@@ -30,28 +30,31 @@ const practice = {
   billingEmail: "billing@smith.example",
 } as unknown as Organization;
 
-const statements = [
-  {
-    id: "st-1",
-    labOrganizationId: "lab-1",
-    providerOrganizationId: "prov-1",
-    periodStart: "2026-06-01T00:00:00.000Z",
-    periodEnd: "2026-06-30T23:59:59.000Z",
-    invoiceCount: 3,
-    totalBilled: "450.00",
-    totalPaid: "100.00",
-    balanceDue: "350.00",
-    pdfFileName: "statement-Dr_Smith_Practice-st-1.pdf",
-    pdfStorageKey: "statement-Dr_Smith_Practice-st-1.pdf",
-    createdAt: "2026-07-01T12:00:00.000Z",
-  },
-];
+const baseStatement = {
+  id: "st-1",
+  labOrganizationId: "lab-1",
+  providerOrganizationId: "prov-1",
+  periodStart: "2026-06-01T00:00:00.000Z",
+  periodEnd: "2026-06-30T23:59:59.000Z",
+  invoiceCount: 3,
+  totalBilled: "450.00",
+  totalPaid: "100.00",
+  balanceDue: "350.00",
+  pdfFileName: "statement-Dr_Smith_Practice-st-1.pdf",
+  pdfStorageKey: "statement-Dr_Smith_Practice-st-1.pdf",
+  createdAt: "2026-07-01T12:00:00.000Z",
+  lastEmailedAt: null as string | null,
+  lastEmailedTo: null as string | null,
+};
+
+let statements: (typeof baseStatement)[];
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let emailFailure: { status: number; message: string } | null = null;
 
 beforeEach(() => {
   emailFailure = null;
+  statements = [{ ...baseStatement }];
   fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.includes("/practice-statements/st-1/email")) {
@@ -61,6 +64,17 @@ beforeEach(() => {
           { status: emailFailure.status, headers: { "Content-Type": "application/json" } },
         );
       }
+      // Simulate the server recording the send: subsequent list fetches
+      // include the last-emailed timestamp + recipient.
+      statements = statements.map((s) =>
+        s.id === "st-1"
+          ? {
+              ...s,
+              lastEmailedAt: "2026-07-09T15:30:00.000Z",
+              lastEmailedTo: "billing@smith.example",
+            }
+          : s,
+      );
       return new Response(
         JSON.stringify({ ok: true, data: { id: "send-1", status: "sent" } }),
         { status: 200, headers: { "Content-Type": "application/json" } },
@@ -225,6 +239,44 @@ describe("StatementsTab per-row actions", () => {
     fireEvent.click(screen.getByTestId("button-resend-cancel-st-1"));
     expect(screen.queryByTestId("input-resend-recipient-st-1")).not.toBeInTheDocument();
     expect(getEmailCall()).toBeUndefined();
+  });
+
+  it("shows no last-emailed indicator for rows never emailed", async () => {
+    renderTab();
+    await waitForRow();
+    expect(screen.queryByTestId("statement-last-emailed-st-1")).not.toBeInTheDocument();
+  });
+
+  it("shows 'Emailed <date> to <address>' when the statement was already sent", async () => {
+    statements = [
+      {
+        ...baseStatement,
+        lastEmailedAt: "2026-07-05T10:00:00.000Z",
+        lastEmailedTo: "billing@smith.example",
+      },
+    ];
+    renderTab();
+    await waitForRow();
+    const indicator = screen.getByTestId("statement-last-emailed-st-1");
+    expect(indicator.textContent).toContain("Emailed");
+    expect(indicator.textContent).toContain("Jul 5, 2026");
+    expect(indicator.textContent).toContain("to billing@smith.example");
+  });
+
+  it("Resend refetches the list so the last-emailed indicator appears", async () => {
+    renderTab();
+    await waitForRow();
+    expect(screen.queryByTestId("statement-last-emailed-st-1")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("button-resend-statement-st-1"));
+    fireEvent.click(screen.getByTestId("button-resend-send-st-1"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("statement-last-emailed-st-1")).toBeInTheDocument(),
+    );
+    const indicator = screen.getByTestId("statement-last-emailed-st-1");
+    expect(indicator.textContent).toContain("Emailed");
+    expect(indicator.textContent).toContain("to billing@smith.example");
   });
 
   it("Resend surfaces a server error inline on the row and keeps the form open", async () => {

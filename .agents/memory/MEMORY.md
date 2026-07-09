@@ -126,3 +126,4 @@
 - [doctors.test.ts full-suite flake](doctors-merge-suite-flake.md) — merge tests flake under full api-server suite (timeout/500/off-by-one, symptom varies); pass in isolation via with-db-lock single-file run = not a regression.
 - [Invite email delivery contract](invite-email-delivery-contract.md) — invite sends record outcome on the row + expose emailDelivery; only allowlisted safe reasons reach clients; DNS preflight is tri-state, unknown never cached.
 - [UnassignedDocumentsCard preview flake](unassigned-docs-preview-test-flake.md) — rel-desktop-tests red only on this 5s-timeout test = load flake; passes in isolation, re-run the file before blaming your change.
+- [Express catch-all shadows literal routes](invoices-route-catchall-shadowing.md) — a literal single-segment route registered after GET /:param 404s silently; register above the catch-all; only supertest-style tests catch it.

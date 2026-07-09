@@ -394,6 +394,8 @@ export interface PracticeStatement {
   pdfStorageKey?: string | null;
   pdfFileName?: string | null;
   createdAt?: string;
+  lastEmailedAt?: string | null;
+  lastEmailedTo?: string | null;
 }
 
 export interface Organization {

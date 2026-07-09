@@ -3053,6 +3053,79 @@ async function resolveMobileInvoiceId(
   return targetInvoice.id;
 }
 
+// NOTE: must be registered BEFORE GET /:invoiceId or that catch-all matches
+// "practice-statements" as an invoice id and returns 404.
+router.get(
+  "/practice-statements",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const providerOrganizationId =
+      typeof req.query.providerOrganizationId === "string"
+        ? req.query.providerOrganizationId
+        : null;
+    const labOrganizationId =
+      typeof req.query.labOrganizationId === "string"
+        ? req.query.labOrganizationId
+        : null;
+    if (!providerOrganizationId && !labOrganizationId) {
+      throw new HttpError(
+        400,
+        "Provide providerOrganizationId or labOrganizationId.",
+      );
+    }
+    if (labOrganizationId) {
+      await requireMembership(callerId, labOrganizationId);
+    } else if (providerOrganizationId) {
+      await requireMembership(callerId, providerOrganizationId);
+    }
+    const rows = await db.query.practiceStatements.findMany({
+      where: and(
+        providerOrganizationId
+          ? eq(practiceStatements.providerOrganizationId, providerOrganizationId)
+          : undefined,
+        labOrganizationId
+          ? eq(practiceStatements.labOrganizationId, labOrganizationId)
+          : undefined,
+      ),
+      orderBy: [desc(practiceStatements.createdAt)],
+    });
+    // Attach the most recent successful email send per statement so clients
+    // can show "Emailed <date> to <address>" and avoid double-sending.
+    const stmtIds = rows.map((r) => r.id);
+    const lastEmailByStatementId = new Map<
+      string,
+      { sentAt: Date; recipient: string }
+    >();
+    if (stmtIds.length > 0) {
+      const sends = await db.query.practiceStatementSends.findMany({
+        where: and(
+          inArray(practiceStatementSends.statementId, stmtIds),
+          eq(practiceStatementSends.channel, "email"),
+          eq(practiceStatementSends.status, "sent"),
+        ),
+        orderBy: [desc(practiceStatementSends.sentAt)],
+      });
+      for (const send of sends) {
+        if (!lastEmailByStatementId.has(send.statementId)) {
+          lastEmailByStatementId.set(send.statementId, {
+            sentAt: send.sentAt,
+            recipient: send.recipient,
+          });
+        }
+      }
+    }
+    const withLastEmail = rows.map((r) => {
+      const last = lastEmailByStatementId.get(r.id) ?? null;
+      return {
+        ...r,
+        lastEmailedAt: last?.sentAt ?? null,
+        lastEmailedTo: last?.recipient ?? null,
+      };
+    });
+    return ok(res, withLastEmail);
+  }),
+);
+
 router.get(
   "/:invoiceId",
   asyncHandler(async (req, res) => {
@@ -4318,44 +4391,6 @@ router.patch(
 // ─────────────────────────────────────────────────────────────────────────────
 // Practice statements (manual builder).
 // ─────────────────────────────────────────────────────────────────────────────
-
-router.get(
-  "/practice-statements",
-  asyncHandler(async (req, res) => {
-    const callerId = (req as any).auth.userId as string;
-    const providerOrganizationId =
-      typeof req.query.providerOrganizationId === "string"
-        ? req.query.providerOrganizationId
-        : null;
-    const labOrganizationId =
-      typeof req.query.labOrganizationId === "string"
-        ? req.query.labOrganizationId
-        : null;
-    if (!providerOrganizationId && !labOrganizationId) {
-      throw new HttpError(
-        400,
-        "Provide providerOrganizationId or labOrganizationId.",
-      );
-    }
-    if (labOrganizationId) {
-      await requireMembership(callerId, labOrganizationId);
-    } else if (providerOrganizationId) {
-      await requireMembership(callerId, providerOrganizationId);
-    }
-    const rows = await db.query.practiceStatements.findMany({
-      where: and(
-        providerOrganizationId
-          ? eq(practiceStatements.providerOrganizationId, providerOrganizationId)
-          : undefined,
-        labOrganizationId
-          ? eq(practiceStatements.labOrganizationId, labOrganizationId)
-          : undefined,
-      ),
-      orderBy: [desc(practiceStatements.createdAt)],
-    });
-    return ok(res, rows);
-  }),
-);
 
 const practiceStatementsDir = path.resolve(
   process.cwd(),

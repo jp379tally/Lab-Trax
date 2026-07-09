@@ -450,6 +450,8 @@ export function StatementsTab({
         kind: "success",
         text: `Emailed to ${to || selected.billingEmail || "billing email"}.`,
       });
+      // Refresh the list so the "Emailed <date> to <address>" indicator updates.
+      void queryClient.invalidateQueries({ queryKey: ["practice-statements"] });
     },
     onError: (e: Error, { s }) =>
       setRowNotice({
@@ -605,13 +607,29 @@ export function StatementsTab({
                         )}
                       </td>
                       <td className="px-3 py-3 text-left text-muted-foreground">
-                        {s.createdAt
-                          ? new Date(s.createdAt).toLocaleDateString("en-US", {
+                        <div>
+                          {s.createdAt
+                            ? new Date(s.createdAt).toLocaleDateString("en-US", {
+                                month: "short",
+                                day: "numeric",
+                                year: "numeric",
+                              })
+                            : "—"}
+                        </div>
+                        {s.lastEmailedAt && (
+                          <div
+                            data-testid={`statement-last-emailed-${s.id}`}
+                            className="mt-0.5 text-[10px] text-emerald-600 dark:text-emerald-400"
+                          >
+                            Emailed{" "}
+                            {new Date(s.lastEmailedAt).toLocaleDateString("en-US", {
                               month: "short",
                               day: "numeric",
                               year: "numeric",
-                            })
-                          : "—"}
+                            })}
+                            {s.lastEmailedTo ? ` to ${s.lastEmailedTo}` : ""}
+                          </div>
+                        )}
                       </td>
                       <td className="px-5 py-3 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1.5">
