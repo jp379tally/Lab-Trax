@@ -39,6 +39,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import {
   useUndoDoctorMerge,
   useGetDoctorDuplicateClusters,
+  useDismissDoctorDuplicateCluster,
   getGetDoctorDuplicateClustersQueryKey,
   type LegacyDoctorDirectoryEntry,
 } from "@workspace/api-client-react";
@@ -168,6 +169,9 @@ export default function AccountsPage() {
   const [mergeDialog, setMergeDialog] = useState<{
     sources: MergeSourceInput[];
     labOrganizationId: string;
+    // Present only when the dialog was opened from a duplicate-suggestion
+    // cluster; enables the "Do not merge" (permanent dismiss) button.
+    clusterKey?: string;
   } | null>(null);
   const [undoToast, setUndoToast] = useState<UndoToast | null>(null);
   const [pageView, setPageView] = useState<PageView>("practices");
@@ -186,6 +190,16 @@ export default function AccountsPage() {
     },
   });
   const dupClusters = dupClustersQuery.data?.data?.clusters ?? [];
+
+  const dismissClusterMutation = useDismissDoctorDuplicateCluster({
+    mutation: {
+      onSuccess: () => {
+        queryClient.invalidateQueries({
+          queryKey: getGetDoctorDuplicateClustersQueryKey(),
+        });
+      },
+    },
+  });
 
   // Deep-link from the nav badge: /accounts?view=duplicates focuses the
   // possible-duplicate banner.
@@ -874,6 +888,7 @@ export default function AccountsPage() {
                       setMergeDialog({
                         sources,
                         labOrganizationId: cluster.labOrganizationId,
+                        clusterKey: cluster.clusterKey,
                       });
                     }}
                     className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-border text-sm font-semibold hover:bg-secondary"
@@ -1602,6 +1617,24 @@ export default function AccountsPage() {
               expiresAt: Date.now() + result.undoWindowMs,
             });
           }}
+          onDoNotMerge={
+            mergeDialog.clusterKey
+              ? () => {
+                  dismissClusterMutation.mutate({
+                    data: {
+                      labOrganizationId: mergeDialog.labOrganizationId,
+                      clusterKey: mergeDialog.clusterKey!,
+                      doctors: mergeDialog.sources.map((s) => ({
+                        doctorName: s.doctorName,
+                        providerOrganizationId: s.providerOrganizationId,
+                        practiceName: s.practiceName,
+                      })),
+                    },
+                  });
+                  setMergeDialog(null);
+                }
+              : undefined
+          }
         />
       )}
 

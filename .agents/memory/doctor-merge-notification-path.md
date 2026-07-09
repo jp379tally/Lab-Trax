@@ -43,3 +43,14 @@ differs.
 **How to apply:** When asked to "make the notification path catch pure casing
 regressions," don't — the rows-map lowercasing makes it unreachable; point to
 the dialog-level capitalization test instead.
+
+## Two launch surfaces — wire cluster affordances in BOTH
+The shared MergeDialog is opened from TWO duplicate-cluster banners: the
+Doctors page AND the Customer Center (accounts page). Cluster-specific
+affordances (e.g. the "Do not merge" dismiss button, gated on
+`!singleReassign && onDoNotMerge`) only appear if the launching surface passes
+the cluster's `clusterKey` and an `onDoNotMerge` callback. The Customer Center
+banner originally omitted both, so the button silently never showed there —
+"missing button" reports naming the Customer Center are a wiring gap on that
+surface, not a dialog bug. Any new cluster-level feature must be threaded
+through both launch paths (each has its own regression test file).
