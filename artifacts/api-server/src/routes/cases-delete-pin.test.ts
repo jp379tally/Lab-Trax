@@ -1,12 +1,12 @@
 /**
  * Integration tests for the 3-step case deletion security flow:
  *   POST /api/cases/delete-initiate  — validates admin PIN, finds lab owner,
- *                                       sends SMS OTP, returns signed session token
+ *                                       emails OTP, returns signed session token
  *   POST /api/cases/bulk-delete      — now requires token + OTP (security gate)
  *
- * The verification module is mocked so no real DB writes or SMS calls are
- * needed for the OTP phase; SMS sending falls through to the dev-mode
- * console.warn path (no SMS provider env vars configured in the test environment).
+ * The verification module is mocked so no real DB writes are needed for the
+ * OTP phase; email sending goes through a mocked sendMail so tests can assert
+ * the code is emailed to the lab owner and that no SMS is ever sent.
  *
  * Skipped when DATABASE_URL is not configured (matches sibling suite convention).
  */
@@ -31,7 +31,18 @@ vi.mock("../lib/verification.js", () => ({
   createVerificationCode: vi.fn().mockResolvedValue(undefined),
   verifyCode: vi.fn().mockResolvedValue({ verified: true }),
   normalizePhoneTarget: (p: string) => p.replace(/\D/g, ""),
+  normalizeEmailTarget: (e: string) => e.trim().toLowerCase(),
 }));
+
+// Mock only sendMail (keep the rest of the mail module intact) so the suite
+// can assert the case-delete OTP is emailed to the lab owner.
+vi.mock("../lib/mail.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/mail.js")>();
+  return {
+    ...actual,
+    sendMail: vi.fn().mockResolvedValue({ sent: true }),
+  };
+});
 
 vi.mock("../lib/sms.js", () => ({
   sendSms: vi.fn().mockResolvedValue({ ok: true, skipped: true }),
@@ -53,12 +64,12 @@ maybe("Case delete security flow (db integration)", () => {
   let appMod: { default: import("express").Express };
   let auth: typeof import("../lib/auth.js");
 
-  // Main test lab: owner has a verified phone.
+  // Main test lab: owner has an email address on file.
   const labOrgId = rid("lab");
   const adminUserId = rid("uadmin");
   const staffUserId = rid("ustaff");
 
-  // Secondary lab: owner has no verified phone — tests the 400 guard.
+  // Secondary lab: owner has no email address — tests the 400 guard.
   const noPhoneLabId = rid("noplab");
   const noPhoneUserId = rid("unophone");
 
@@ -105,6 +116,7 @@ maybe("Case delete security flow (db integration)", () => {
         id: adminUserId,
         username: `pin_adm_${adminUserId}`,
         password: "x",
+        email: `${adminUserId}@test.local`,
         phone: "5550007777",
         phoneVerifiedAt: new Date(),
       },
@@ -113,7 +125,7 @@ maybe("Case delete security flow (db integration)", () => {
         id: noPhoneUserId,
         username: `pin_noph_${noPhoneUserId}`,
         password: "x",
-        // intentionally no phone / phoneVerifiedAt
+        // intentionally no email (and no phone) — triggers the 400 guard
       },
     ]);
 
@@ -198,7 +210,7 @@ maybe("Case delete security flow (db integration)", () => {
     expect(r.status).toBe(404);
   });
 
-  it("returns 400 when lab owner has no verified phone number", async () => {
+  it("returns 400 when lab owner has no email address", async () => {
     const noPhoneToken = await makeSession(noPhoneUserId);
     const c = await insertCanonical(noPhoneLabId);
     const r = await request(appMod.default)
@@ -206,11 +218,15 @@ maybe("Case delete security flow (db integration)", () => {
       .set("Authorization", `Bearer ${noPhoneToken}`)
       .send({ adminPin: "testpin999", caseIds: [c] });
     expect(r.status).toBe(400);
-    expect(r.body.error).toMatch(/phone/i);
+    expect(r.body.error).toMatch(/email/i);
   });
 
-  it("returns 200 and a signed deleteSessionToken on happy path", async () => {
+  it("returns 200 and a signed deleteSessionToken on happy path (emails OTP, no SMS)", async () => {
     const adminToken = await makeSession(adminUserId);
+    const { sendMail } = await import("../lib/mail.js");
+    const { sendSms } = await import("../lib/sms.js");
+    (sendMail as ReturnType<typeof vi.fn>).mockClear();
+    (sendSms as ReturnType<typeof vi.fn>).mockClear();
     const c = await insertCanonical();
     const r = await request(appMod.default)
       .post("/api/cases/delete-initiate")
@@ -219,6 +235,12 @@ maybe("Case delete security flow (db integration)", () => {
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
     expect(typeof r.body.data.deleteSessionToken).toBe("string");
+    // OTP must be delivered by email to the lab owner — never by SMS.
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect((sendMail as ReturnType<typeof vi.fn>).mock.calls[0][0].to).toBe(
+      `${adminUserId}@test.local`,
+    );
+    expect(sendSms).not.toHaveBeenCalled();
   });
 
   // ── POST /api/cases/bulk-delete security gate ──────────────────────────────

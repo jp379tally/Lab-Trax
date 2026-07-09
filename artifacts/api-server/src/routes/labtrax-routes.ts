@@ -203,17 +203,40 @@ function generateCode(): string {
 const SETTING_ADMIN_PIN_RESET_CODE = "admin_pin_reset_code";
 const SETTING_ADMIN_PIN_RESET_EXPIRES = "admin_pin_reset_expires";
 
-async function sendAdminPinResetSms(phone: string, code: string): Promise<void> {
-  const toE164 = normalizePhoneE164(phone);
-  if (!toE164) throw new Error(`Invalid phone number: ${phone}`);
-  const { sendSms } = await import("../lib/sms.js");
-  const result = await sendSms({
-    to: toE164,
-    body: `Your LabTrax admin PIN reset code is: ${code}. It expires in 10 minutes.`,
+async function sendAdminPinResetEmail(email: string, code: string): Promise<void> {
+  const result = await sendMail({
+    to: email.trim(),
+    subject: "LabTrax - Admin PIN Reset Code",
+    html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">LabTrax</h2>
+            <p style="margin: 4px 0 0; opacity: 0.85;">Admin PIN Reset</p>
+          </div>
+          <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>Your admin PIN reset code is:</p>
+            <p style="text-align: center; margin: 24px 0;">
+              <span style="display: inline-block; background: #F0F4FF; padding: 16px 40px; border-radius: 8px; font-size: 28px; font-weight: bold; color: #4A6CF7; letter-spacing: 6px;">${code}</span>
+            </p>
+            <p style="color: #666; font-size: 13px;">This code expires in 10 minutes. If you did not request a PIN reset, you can ignore this email.</p>
+          </div>
+        </div>`,
+    text: `Your LabTrax admin PIN reset code is: ${code}. It expires in 10 minutes.`,
   });
-  if (!result.ok && !result.skipped) {
-    throw new Error(result.errorMessage ?? "SMS delivery failed.");
+  // A skipped send (SMTP unconfigured, test runner, reserved/undeliverable
+  // test domain) is not an error — only a genuine delivery failure throws.
+  if (
+    !result.sent &&
+    result.reason &&
+    !["smtp_not_configured", "reserved_domain", "undeliverable_domain", "disabled_in_test"].includes(result.reason)
+  ) {
+    throw new Error("Email delivery failed.");
   }
+}
+
+function maskEmailAddress(email: string): string {
+  const at = email.indexOf("@");
+  if (at <= 0) return "***";
+  return `${email[0]}***${email.slice(at)}`;
 }
 
 function isPlatformAdmin(req: any): boolean {
@@ -628,13 +651,13 @@ export async function registerRoutes(): Promise<IRouter> {
     const reqUser = (req as any).user;
     if (!reqUser || reqUser.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const userRows = await db
-      .select({ phone: users.phone })
+      .select({ email: users.email })
       .from(users)
       .where(eq(users.id, reqUser.id))
       .limit(1);
-    const phone = userRows[0]?.phone;
-    if (!phone) {
-      return res.status(400).json({ error: "No phone number on your account. Ask another admin to reset your PIN." });
+    const email = userRows[0]?.email;
+    if (!email) {
+      return res.status(400).json({ error: "No email address on your account. Ask another admin to reset your PIN." });
     }
     const code = generateCode();
     const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -647,12 +670,11 @@ export async function registerRoutes(): Promise<IRouter> {
       .values({ key: SETTING_ADMIN_PIN_RESET_EXPIRES, value: expires, updatedAt: new Date() })
       .onConflictDoUpdate({ target: systemSettings.key, set: { value: expires, updatedAt: new Date() } });
     try {
-      await sendAdminPinResetSms(phone, code);
+      await sendAdminPinResetEmail(email, code);
     } catch (err) {
-      return res.status(502).json({ error: err instanceof Error ? err.message : "Failed to send SMS" });
+      return res.status(502).json({ error: err instanceof Error ? err.message : "Failed to send email" });
     }
-    const masked = phone.replace(/\d(?=\d{4})/g, "*");
-    return res.json({ ok: true, maskedPhone: masked });
+    return res.json({ ok: true, maskedEmail: maskEmailAddress(email) });
   });
 
   router.post("/admin/pin/verify-reset", requireAuth, async (req, res) => {

@@ -202,7 +202,7 @@ function SetPinModal({
 }
 
 // ---------------------------------------------------------------------------
-// ForgotPinModal — SMS verification → reset → then triggers SetPinModal
+// ForgotPinModal — email verification → reset → then triggers SetPinModal
 // ---------------------------------------------------------------------------
 
 function ForgotPinModal({
@@ -214,7 +214,7 @@ function ForgotPinModal({
 }) {
   type Stage = "sending" | "enter-code" | "error";
   const [stage, setStage] = useState<Stage>("sending");
-  const [maskedPhone, setMaskedPhone] = useState<string>("");
+  const [maskedEmail, setMaskedEmail] = useState<string>("");
   const [code, setCode] = useState("");
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -225,7 +225,7 @@ function ForgotPinModal({
       const { ok, data } = await apiCall("admin/pin/forgot", "POST");
       if (cancelled) return;
       if (!ok) { setError((data.error as string) ?? "Failed to send code."); setStage("error"); return; }
-      setMaskedPhone((data.maskedPhone as string) ?? "");
+      setMaskedEmail((data.maskedEmail as string) ?? "");
       setStage("enter-code");
     }
     send();
@@ -270,7 +270,7 @@ function ForgotPinModal({
         {stage === "enter-code" && (
           <form onSubmit={handleVerify} className="space-y-4">
             <p className="text-xs text-muted-foreground leading-relaxed">
-              A 6-digit code was sent to <span className="font-medium text-foreground">{maskedPhone}</span>.
+              A 6-digit code was emailed to <span className="font-medium text-foreground">{maskedEmail}</span>.
               Enter it below to reset your PIN.
             </p>
             <input

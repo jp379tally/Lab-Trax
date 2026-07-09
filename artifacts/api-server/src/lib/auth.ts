@@ -75,7 +75,7 @@ export type DeleteSessionPayload = {
   caseIds: string[];
   labOrgId: string;
   actorId: string;
-  ownerPhoneTarget: string;
+  ownerEmailTarget: string;
   type: "case-delete-session";
   exp?: number;
 };
@@ -84,7 +84,7 @@ export function signDeleteSessionToken(payload: {
   caseIds: string[];
   labOrgId: string;
   actorId: string;
-  ownerPhoneTarget: string;
+  ownerEmailTarget: string;
 }): string {
   return jwt.sign({ ...payload, type: "case-delete-session" }, RESOLVED_JWT_SECRET, {
     expiresIn: DELETE_SESSION_TOKEN_TTL,

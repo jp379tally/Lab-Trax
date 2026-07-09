@@ -1784,10 +1784,12 @@ function readIteroActiveBatch(): { batchId: string; caseIds: string[]; importedA
 
 // ─── 3-step case deletion modal ───────────────────────────────────────────────
 // Step 1 ("pin")     — caller enters admin PIN; /cases/delete-initiate is hit,
-//                       server validates PIN, sends OTP to lab owner, returns token.
+//                       server validates PIN, emails OTP to lab owner, returns token.
 // Step 2 ("confirm") — "Are you sure?" confirmation before consuming the OTP.
-// Step 3 ("otp")     — caller enters SMS code; /cases/bulk-delete is hit with
+// Step 3 ("otp")     — caller enters emailed code; /cases/bulk-delete is hit with
 //                       token + OTP, server verifies both and soft-deletes.
+//                       (Wire field is still named `smsOtpCode` for backward
+//                       compatibility with older deployed servers/clients.)
 function CaseDeleteModal({
   caseIds,
   onClose,
@@ -1934,26 +1936,26 @@ function CaseDeleteModal({
                   </div>
                 </div>
               )}
-              {user?.role === "owner" && !user?.phoneVerifiedAt && (
+              {user?.role === "owner" && !user?.email && (
                 <div className="flex items-start gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
                   <AlertTriangle size={15} className="shrink-0 mt-0.5" />
                   <div className="space-y-1 text-xs leading-relaxed">
-                    <p className="font-medium">Phone not verified</p>
+                    <p className="font-medium">No email address on file</p>
                     <p>
-                      Case deletion sends an SMS code to the lab owner to confirm. Your phone number isn't verified yet.{" "}
+                      Case deletion sends a confirmation code to the lab owner's email. Your account has no email address.{" "}
                       <a
                         href="/settings?tab=profile"
                         className="underline hover:no-underline"
                         onClick={onClose}
                       >
-                        Go to Settings → Profile to verify it
+                        Go to Settings → Profile to add one
                       </a>
                       {" "}before proceeding.
                     </p>
                   </div>
                 </div>
               )}
-              <p className="text-sm text-muted-foreground">Enter the admin PIN to begin. A verification code will be sent to the lab owner's phone.</p>
+              <p className="text-sm text-muted-foreground">Enter the admin PIN to begin. A verification code will be sent to the lab owner's email.</p>
               <div className="space-y-1.5">
                 <label htmlFor="cdm-pin" className="text-xs font-medium text-muted-foreground">Admin PIN</label>
                 <input
@@ -1970,7 +1972,7 @@ function CaseDeleteModal({
               </div>
               {error && (
                 <div className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
-                  {error.toLowerCase().includes("verified phone") ? (
+                  {error.toLowerCase().includes("email address") ? (
                     <>
                       {error}{" "}
                       <a
@@ -2011,7 +2013,7 @@ function CaseDeleteModal({
                 </div>
                 <div>
                   <p className="text-sm font-medium">Delete {label}?</p>
-                  <p className="text-sm text-muted-foreground mt-1">This will permanently remove {label} from the lab. An SMS code will be sent to the lab owner to confirm. This cannot be undone.</p>
+                  <p className="text-sm text-muted-foreground mt-1">This will permanently remove {label} from the lab. An email code will be sent to the lab owner to confirm. This cannot be undone.</p>
                 </div>
               </div>
             </div>
@@ -2030,16 +2032,16 @@ function CaseDeleteModal({
         {step === "otp" && (
           <>
             <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-              <h2 className="text-base font-semibold text-destructive">Enter SMS code</h2>
+              <h2 className="text-base font-semibold text-destructive">Enter email code</h2>
               <button type="button" onClick={onClose} disabled={isPending} className="text-muted-foreground hover:text-foreground transition-colors" aria-label="Close">
                 <X size={18} />
               </button>
             </div>
             <div className="px-6 py-5 space-y-4">
-              <p className="text-sm text-muted-foreground">A 6-digit code was sent to the lab owner's phone. Enter it to confirm deletion of {label}.</p>
+              <p className="text-sm text-muted-foreground">A 6-digit code was sent to the lab owner's email. Enter it to confirm deletion of {label}.</p>
               <div className="space-y-1.5">
                 <label htmlFor="cdm-otp" className="text-xs font-medium text-muted-foreground">
-                  SMS code{" "}
+                  Email code{" "}
                   <span className={secondsLeft === 0 ? "text-destructive" : "text-muted-foreground"}>
                     ({secondsLeft === 0 ? "expired" : `${mm}:${ss}`})
                   </span>

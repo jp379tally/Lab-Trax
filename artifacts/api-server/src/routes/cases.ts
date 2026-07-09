@@ -77,7 +77,7 @@ import {
 import { signDeleteSessionToken, verifyDeleteSessionToken } from "../lib/auth.js";
 import {
   createVerificationCode,
-  normalizePhoneTarget,
+  normalizeEmailTarget,
   verifyCode,
 } from "../lib/verification.js";
 import { normalizePhoneE164 } from "../lib/account-link-sms.js";
@@ -2940,34 +2940,59 @@ function _checkDeleteInitiateRateLimit(orgId: string): boolean {
   return entry.count <= MAX;
 }
 
-async function _sendCaseDeleteSms(
-  toPhoneE164: string,
+function _maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at <= 0) return "***";
+  return `${email[0]}***${email.slice(at)}`;
+}
+
+async function _sendCaseDeleteEmail(
+  toEmail: string,
   code: string,
   log?: Pick<import("pino").Logger, "info" | "warn" | "error">,
 ): Promise<void> {
-  const { sendSms } = await import("../lib/sms.js");
-  const maskedPhone = toPhoneE164.length > 4
-    ? toPhoneE164.slice(0, -4).replace(/\d/g, "*") + toPhoneE164.slice(-4)
-    : toPhoneE164;
-  const result = await sendSms({
-    to: toPhoneE164,
-    body: `LabTrax security code: ${code}. Used to confirm case deletion. Expires in 10 minutes. If you did not request this, contact your lab immediately.`,
-    log,
+  const { sendMail } = await import("../lib/mail.js");
+  const maskedEmail = _maskEmail(toEmail);
+  const result = await sendMail({
+    to: toEmail,
+    subject: "LabTrax security code — confirm case deletion",
+    html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">LabTrax</h2>
+            <p style="margin: 4px 0 0; opacity: 0.85;">Case Deletion Confirmation</p>
+          </div>
+          <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>Your LabTrax security code is:</p>
+            <p style="text-align: center; margin: 24px 0;">
+              <span style="display: inline-block; background: #F0F4FF; padding: 16px 40px; border-radius: 8px; font-size: 28px; font-weight: bold; color: #4A6CF7; letter-spacing: 6px;">${code}</span>
+            </p>
+            <p style="color: #666; font-size: 13px;">This code is used to confirm case deletion. It expires in 10 minutes.</p>
+            <p style="color: #666; font-size: 13px;">If you did not request this, contact your lab immediately.</p>
+          </div>
+        </div>`,
+    text: `LabTrax security code: ${code}. Used to confirm case deletion. Expires in 10 minutes. If you did not request this, contact your lab immediately.`,
   });
-  if (!result.ok && !result.skipped) {
+  // A skipped send (SMTP unconfigured, the test runner, or a reserved/
+  // undeliverable test domain) is not an error — only a genuine delivery
+  // failure should surface as a 500 so the client can retry.
+  if (
+    !result.sent &&
+    result.reason &&
+    !["smtp_not_configured", "reserved_domain", "undeliverable_domain", "disabled_in_test"].includes(result.reason)
+  ) {
     log?.warn?.(
-      { phone: maskedPhone, providerError: result.errorMessage, providerCode: result.errorCode },
-      "case-delete OTP SMS send failed",
+      { email: maskedEmail, reason: result.reason },
+      "case-delete OTP email send failed",
     );
     throw new HttpError(
       500,
-      "We could not send the SMS code. Check the lab owner phone number and try again.",
+      "We could not send the email code. Check the lab owner's email address and try again.",
     );
   }
-  if (!result.skipped) {
+  if (result.sent) {
     log?.info?.(
-      { phone: maskedPhone, messageId: result.messageId },
-      "case-delete OTP SMS dispatched",
+      { email: maskedEmail },
+      "case-delete OTP email dispatched",
     );
   }
 }
@@ -3072,32 +3097,23 @@ router.post(
     const ownerUser = await db.query.users.findFirst({
       where: eq(users.id, ownerMembership.userId),
     });
-    if (!ownerUser?.phone || !ownerUser.phoneVerifiedAt) {
+    if (!ownerUser?.email) {
       return res.status(400).json({
         ok: false,
-        error: "The lab owner has no verified phone number. Please verify the owner's phone in their profile before deleting cases.",
+        error: "The lab owner has no email address on file. Please add the owner's email in their profile before deleting cases.",
       });
     }
 
-    // Normalize to E.164 before sending — Vonage requires +1XXXXXXXXXX format.
-    // Every other SMS path in the codebase does this; skipping it causes Vonage
-    // to silently drop or reject the message even though it returns HTTP 200.
-    const ownerPhoneE164 = normalizePhoneE164(ownerUser.phone);
-    if (!ownerPhoneE164) {
-      return res.status(400).json({
-        ok: false,
-        error: "The lab owner's phone number is not a valid US number. Please update it in the owner's profile and try again.",
-      });
-    }
+    const ownerEmail = ownerUser.email.trim();
 
-    // Prefixed target keeps case-delete OTPs isolated from regular phone
+    // Prefixed target keeps case-delete OTPs isolated from regular email
     // verification codes so an in-flight signup/login flow is never interrupted.
-    const ownerPhoneTarget = `case-delete:${normalizePhoneTarget(ownerUser.phone)}`;
+    const ownerEmailTarget = `case-delete:${normalizeEmailTarget(ownerEmail)}`;
 
     const code = String(Math.floor(100000 + Math.random() * 900000));
     await createVerificationCode({
-      channel: "sms",
-      target: ownerPhoneTarget,
+      channel: "email",
+      target: ownerEmailTarget,
       code,
       userId: ownerUser.id,
     });
@@ -3106,17 +3122,17 @@ router.post(
         labOrgId: labOrganizationId,
         actorId: userId,
         ownerUserId: ownerUser.id,
-        phone: ownerPhoneE164.slice(0, -4).replace(/\d/g, "*") + ownerPhoneE164.slice(-4),
+        email: _maskEmail(ownerEmail),
       },
-      "case-delete OTP: sending SMS",
+      "case-delete OTP: sending email",
     );
-    await _sendCaseDeleteSms(ownerPhoneE164, code, req.log as any);
+    await _sendCaseDeleteEmail(ownerEmail, code, req.log as any);
 
     const deleteSessionToken = signDeleteSessionToken({
       caseIds: uniqueCaseIds,
       labOrgId: labOrganizationId,
       actorId: userId,
-      ownerPhoneTarget,
+      ownerEmailTarget,
     });
 
     await writeAuditLog({
@@ -3249,6 +3265,9 @@ export async function freezeInvoicesForDeletedCases(params: {
 const bulkDeleteSchema = z.object({
   caseIds: z.array(z.string().min(1)).min(1).max(200),
   deleteSessionToken: z.string().optional(),
+  // Wire name kept as `smsOtpCode` for compatibility with already-deployed
+  // desktop/mobile clients; since the email migration this field carries the
+  // 6-digit code that was EMAILED to the lab owner.
   smsOtpCode: z.string().optional(),
 });
 
@@ -3301,14 +3320,14 @@ router.post(
     // Admin-only — owners and admins may bulk-delete cases.
     await requireAnyRole(userId, labOrganizationId, ADMIN_ROLES);
 
-    // ── Security gate: require delete-session token + SMS OTP ──────────────
+    // ── Security gate: require delete-session token + emailed OTP ──────────
     // Callers must first complete POST /cases/delete-initiate (validates
-    // admin PIN and sends an SMS OTP to the lab owner). Without a valid
+    // admin PIN and emails an OTP to the lab owner). Without a valid
     // token + OTP we refuse the deletion regardless of admin status.
     if (!input.deleteSessionToken || !input.smsOtpCode) {
       throw new HttpError(
         403,
-        "Case deletion requires admin PIN verification and SMS confirmation. Please use the case deletion flow.",
+        "Case deletion requires admin PIN verification and email confirmation. Please use the case deletion flow.",
       );
     }
 
@@ -3326,7 +3345,7 @@ router.post(
       throw new HttpError(403, "Deletion session does not match this organization.");
     }
 
-    // Token id scoping: the OTP was issued (and SMS-confirmed) for a specific
+    // Token id scoping: the OTP was issued (and email-confirmed) for a specific
     // set of case ids in delete-initiate. Require every requested id to be
     // covered by that set so a token issued for one selection cannot be
     // replayed to delete a different or larger batch. The desktop and mobile
@@ -3343,12 +3362,12 @@ router.post(
     }
 
     const otpResult = await verifyCode({
-      channel: "sms",
-      target: tokenPayload.ownerPhoneTarget,
+      channel: "email",
+      target: tokenPayload.ownerEmailTarget,
       code: input.smsOtpCode,
     });
     if (!otpResult.verified) {
-      throw new HttpError(400, otpResult.error ?? "Invalid or expired SMS code.");
+      throw new HttpError(400, otpResult.error ?? "Invalid or expired code.");
     }
     // ── End security gate ──────────────────────────────────────────────────
 

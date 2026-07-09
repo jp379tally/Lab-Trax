@@ -838,7 +838,9 @@ function DatePickerModal({
 // ─── 3-step case deletion modal (mobile) ─────────────────────────────────────
 // Step 1 ("pin")     — admin PIN entry → POST /api/cases/delete-initiate
 // Step 2 ("confirm") — "Are you sure?" gate before consuming the OTP
-// Step 3 ("otp")     — 6-digit SMS code → POST /api/cases/bulk-delete
+// Step 3 ("otp")     — 6-digit emailed code → POST /api/cases/bulk-delete
+//                       (wire field is still named `smsOtpCode` for backward
+//                       compatibility with older deployed servers/clients)
 function CaseDeleteMobileModal({
   caseId,
   visible,
@@ -959,7 +961,7 @@ function CaseDeleteMobileModal({
             <>
               <Text style={styles.sheetTitle}>Delete Case</Text>
               <Text style={[styles.editLabel, { color: colors.textSecondary, textAlign: "center" }]}>
-                Enter the admin PIN. A verification code will be sent to the lab owner's phone.
+                Enter the admin PIN. A verification code will be sent to the lab owner's email.
               </Text>
               <TextInput
                 style={[styles.input, { textAlign: "center" }]}
@@ -997,7 +999,7 @@ function CaseDeleteMobileModal({
             <>
               <Text style={styles.sheetTitle}>Confirm Deletion</Text>
               <Text style={[styles.editLabel, { color: colors.textSecondary, textAlign: "center" }]}>
-                This will permanently delete this case. A code will be sent to the lab owner's phone. This cannot be undone.
+                This will permanently delete this case. A code will be sent to the lab owner's email. This cannot be undone.
               </Text>
               <View style={{ flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.xs }}>
                 <Pressable style={[styles.sheetCancel, { flex: 1 }]} onPress={onClose}>
@@ -1014,9 +1016,9 @@ function CaseDeleteMobileModal({
           )}
           {step === "otp" && (
             <>
-              <Text style={styles.sheetTitle}>Enter SMS Code</Text>
+              <Text style={styles.sheetTitle}>Enter Email Code</Text>
               <Text style={[styles.editLabel, { color: colors.textSecondary, textAlign: "center" }]}>
-                {"A 6-digit code was sent to the lab owner's phone.\nExpires in "}
+                {"A 6-digit code was sent to the lab owner's email.\nExpires in "}
                 <Text style={{ color: secondsLeft === 0 ? colors.error : colors.textSecondary }}>
                   {secondsLeft === 0 ? "expired" : `${mm}:${ss}`}
                 </Text>

@@ -34,14 +34,26 @@ vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
 }));
 
-// Verification module is mocked so tests bypass the OTP DB table and real SMS.
-// verifyCode always returns verified:true, letting the happy-path tests complete
-// the 3-step flow without seeding a real verification_codes row.
+// Verification module is mocked so tests bypass the OTP DB table and real
+// email delivery. verifyCode always returns verified:true, letting the
+// happy-path tests complete the 3-step flow without seeding a real
+// verification_codes row.
 vi.mock("../lib/verification.js", () => ({
   createVerificationCode: vi.fn().mockResolvedValue(undefined),
   verifyCode: vi.fn().mockResolvedValue({ verified: true }),
   normalizePhoneTarget: (p: string) => p.replace(/\D/g, ""),
+  normalizeEmailTarget: (e: string) => e.trim().toLowerCase(),
 }));
+
+// Mock only sendMail (keep the rest of the mail module intact) so
+// delete-initiate's owner-email OTP send never attempts real SMTP.
+vi.mock("../lib/mail.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/mail.js")>();
+  return {
+    ...actual,
+    sendMail: vi.fn().mockResolvedValue({ sent: true }),
+  };
+});
 
 vi.mock("../lib/sms.js", () => ({
   sendSms: vi.fn().mockResolvedValue({ ok: true, skipped: true }),
@@ -168,6 +180,7 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
         id: adminUserId,
         username: `adm_${adminUserId}`,
         password: "x",
+        email: `${adminUserId}@test.local`,
         phone: "5550001234",
         phoneVerifiedAt: new Date(),
       },
