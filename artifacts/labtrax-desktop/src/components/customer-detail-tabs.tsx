@@ -364,6 +364,9 @@ export function StatementsTab({
   const [filter, setFilter] = useState<StmtFilter>("all");
   const [sendOpen, setSendOpen] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [resendFor, setResendFor] = useState<string | null>(null);
+  const [resendEmail, setResendEmail] = useState("");
+  const [resendError, setResendError] = useState<string | null>(null);
   const [rowNotice, setRowNotice] = useState<{
     id: string;
     kind: "success" | "error";
@@ -430,28 +433,60 @@ export function StatementsTab({
   }
 
   const resendEmailMutation = useMutation({
-    mutationFn: (s: PracticeStatement) =>
+    mutationFn: ({ s, to }: { s: PracticeStatement; to?: string }) =>
       apiFetch(`/invoices/practice-statements/${s.id}/email`, {
         method: "POST",
         body: JSON.stringify({
           subject: `Statement for ${practiceName}`,
           message: `Please find your account statement for ${periodLabel(s)} attached.`,
+          ...(to ? { to } : {}),
         }),
       }),
     onMutate: () => setRowNotice(null),
-    onSuccess: (_data, s) =>
+    onSuccess: (_data, { s, to }) => {
+      setResendFor(null);
       setRowNotice({
         id: s.id,
         kind: "success",
-        text: `Emailed to ${selected.billingEmail || "billing email"}.`,
-      }),
-    onError: (e: Error, s) =>
+        text: `Emailed to ${to || selected.billingEmail || "billing email"}.`,
+      });
+    },
+    onError: (e: Error, { s }) =>
       setRowNotice({
         id: s.id,
         kind: "error",
         text: e.message || "Email failed.",
       }),
   });
+
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  function openResendForm(s: PracticeStatement) {
+    if (resendFor === s.id) {
+      setResendFor(null);
+      return;
+    }
+    setRowNotice(null);
+    setResendError(null);
+    setResendEmail(selected.billingEmail || "");
+    setResendFor(s.id);
+  }
+
+  function handleResendSend(s: PracticeStatement) {
+    const trimmed = resendEmail.trim();
+    if (!trimmed) {
+      setResendError("Enter a recipient email address.");
+      return;
+    }
+    if (!EMAIL_RE.test(trimmed)) {
+      setResendError("Enter a valid email address.");
+      return;
+    }
+    setResendError(null);
+    const billing = (selected.billingEmail || "").trim().toLowerCase();
+    const to = trimmed.toLowerCase() === billing ? undefined : trimmed;
+    resendEmailMutation.mutate({ s, to });
+  }
 
   function handleFilterChange(val: string) {
     if (val === "send") {
@@ -532,7 +567,7 @@ export function StatementsTab({
                 const isDownloading = downloadingId === s.id;
                 const isEmailing =
                   resendEmailMutation.isPending &&
-                  resendEmailMutation.variables?.id === s.id;
+                  resendEmailMutation.variables?.s.id === s.id;
                 return (
                   <Fragment key={s.id}>
                     <tr className="border-t border-border hover:bg-secondary/30 transition-colors">
@@ -597,12 +632,12 @@ export function StatementsTab({
                           </button>
                           <button
                             type="button"
-                            onClick={() => resendEmailMutation.mutate(s)}
+                            onClick={() => openResendForm(s)}
                             disabled={isDownloading || isEmailing}
                             title={
                               selected.billingEmail
-                                ? `Resend to ${selected.billingEmail}`
-                                : "Resend to the practice's billing email"
+                                ? `Resend to ${selected.billingEmail} or another address`
+                                : "Resend this statement by email"
                             }
                             data-testid={`button-resend-statement-${s.id}`}
                             className="h-7 px-2 rounded text-[11px] font-medium bg-secondary hover:bg-secondary/70 border border-border transition-colors inline-flex items-center gap-1 disabled:opacity-50"
@@ -617,6 +652,78 @@ export function StatementsTab({
                         </div>
                       </td>
                     </tr>
+                    {resendFor === s.id && (
+                      <tr key={`${s.id}-resend`} className="border-t-0">
+                        <td colSpan={7} className="px-5 pb-2.5 pt-0 text-right">
+                          <div
+                            data-testid={`resend-form-${s.id}`}
+                            className="inline-flex flex-col items-end gap-1"
+                          >
+                            <div className="inline-flex items-center gap-1.5">
+                              <label
+                                htmlFor={`resend-recipient-${s.id}`}
+                                className="text-[11px] text-muted-foreground"
+                              >
+                                Send to:
+                              </label>
+                              <input
+                                id={`resend-recipient-${s.id}`}
+                                type="email"
+                                value={resendEmail}
+                                onChange={(e) => {
+                                  setResendEmail(e.target.value);
+                                  if (resendError) setResendError(null);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    handleResendSend(s);
+                                  }
+                                }}
+                                placeholder="recipient@example.com"
+                                autoFocus
+                                data-testid={`input-resend-recipient-${s.id}`}
+                                className="h-7 w-64 px-2 rounded text-[11px] bg-secondary border border-border focus:outline-none focus:ring-1 focus:ring-ring"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleResendSend(s)}
+                                disabled={isEmailing}
+                                data-testid={`button-resend-send-${s.id}`}
+                                className="h-7 px-2.5 rounded text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors inline-flex items-center gap-1 disabled:opacity-50"
+                              >
+                                {isEmailing ? (
+                                  <Loader2 size={11} className="animate-spin" />
+                                ) : (
+                                  <Send size={11} />
+                                )}
+                                Send
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setResendFor(null);
+                                  setResendError(null);
+                                }}
+                                disabled={isEmailing}
+                                data-testid={`button-resend-cancel-${s.id}`}
+                                className="h-7 px-2 rounded text-[11px] font-medium bg-secondary hover:bg-secondary/70 border border-border transition-colors disabled:opacity-50"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                            {resendError && (
+                              <span
+                                data-testid={`resend-recipient-error-${s.id}`}
+                                className="text-[11px] text-destructive"
+                              >
+                                {resendError}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
                     {rowNotice?.id === s.id && (
                       <tr key={`${s.id}-notice`} className="border-t-0">
                         <td colSpan={7} className="px-5 pb-2.5 pt-0 text-right">

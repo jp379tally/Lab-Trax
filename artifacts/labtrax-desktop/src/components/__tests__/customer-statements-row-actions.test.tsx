@@ -1,8 +1,10 @@
 /** @vitest-environment jsdom */
 // Per-row "Download PDF" / "Resend email" actions on the Statements tab of the
 // customer slide-in window. Download must hit the server-persisted PDF
-// endpoint; Resend must POST to the statement email endpoint WITHOUT a `to`
-// field so the server falls back to the practice's billing email.
+// endpoint. Resend opens an inline recipient form prefilled with the
+// practice's billing email: sending it unchanged POSTs WITHOUT a `to` field
+// (server resolves billingEmail); editing it to another valid address POSTs
+// WITH `to`; invalid/empty addresses are rejected client-side.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { StatementsTab } from "@/components/customer-detail-tabs";
@@ -104,6 +106,12 @@ async function waitForRow() {
   );
 }
 
+function getEmailCall() {
+  return fetchMock.mock.calls.find(([u]) =>
+    String(u).includes("/practice-statements/st-1/email"),
+  );
+}
+
 describe("StatementsTab per-row actions", () => {
   it("renders Download PDF and Resend actions for each statement row", async () => {
     renderTab();
@@ -112,11 +120,24 @@ describe("StatementsTab per-row actions", () => {
     expect(screen.getByTestId("button-resend-statement-st-1")).toBeInTheDocument();
   });
 
-  it("Resend posts to the statement email endpoint without a `to` override and shows success", async () => {
+  it("Resend opens a recipient form prefilled with the practice's billing email", async () => {
     renderTab();
     await waitForRow();
 
     fireEvent.click(screen.getByTestId("button-resend-statement-st-1"));
+
+    const input = screen.getByTestId("input-resend-recipient-st-1") as HTMLInputElement;
+    expect(input.value).toBe("billing@smith.example");
+    // Nothing is sent until the user confirms.
+    expect(getEmailCall()).toBeUndefined();
+  });
+
+  it("sending with the prefilled billing email posts WITHOUT a `to` override and shows success", async () => {
+    renderTab();
+    await waitForRow();
+
+    fireEvent.click(screen.getByTestId("button-resend-statement-st-1"));
+    fireEvent.click(screen.getByTestId("button-resend-send-st-1"));
 
     await waitFor(() =>
       expect(screen.getByTestId("statement-row-notice-st-1")).toBeInTheDocument(),
@@ -125,9 +146,7 @@ describe("StatementsTab per-row actions", () => {
       "billing@smith.example",
     );
 
-    const emailCall = fetchMock.mock.calls.find(([u]) =>
-      String(u).includes("/practice-statements/st-1/email"),
-    );
+    const emailCall = getEmailCall();
     expect(emailCall).toBeTruthy();
     const [, init] = emailCall!;
     expect(init?.method).toBe("POST");
@@ -136,9 +155,79 @@ describe("StatementsTab per-row actions", () => {
     expect(body.to).toBeUndefined();
     expect(body.subject).toContain("Dr. Smith Practice");
     expect(body.message).toContain("statement");
+
+    // The form closes on success.
+    expect(screen.queryByTestId("input-resend-recipient-st-1")).not.toBeInTheDocument();
   });
 
-  it("Resend surfaces a server error inline on the row", async () => {
+  it("sending to an edited address posts WITH the `to` override", async () => {
+    renderTab();
+    await waitForRow();
+
+    fireEvent.click(screen.getByTestId("button-resend-statement-st-1"));
+    fireEvent.change(screen.getByTestId("input-resend-recipient-st-1"), {
+      target: { value: "accountant@office.example" },
+    });
+    fireEvent.click(screen.getByTestId("button-resend-send-st-1"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("statement-row-notice-st-1")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("statement-row-notice-st-1").textContent).toContain(
+      "accountant@office.example",
+    );
+
+    const emailCall = getEmailCall();
+    expect(emailCall).toBeTruthy();
+    const body = JSON.parse(String(emailCall![1]?.body));
+    expect(body.to).toBe("accountant@office.example");
+  });
+
+  it("rejects an invalid custom address client-side without posting", async () => {
+    renderTab();
+    await waitForRow();
+
+    fireEvent.click(screen.getByTestId("button-resend-statement-st-1"));
+    fireEvent.change(screen.getByTestId("input-resend-recipient-st-1"), {
+      target: { value: "not-an-email" },
+    });
+    fireEvent.click(screen.getByTestId("button-resend-send-st-1"));
+
+    expect(screen.getByTestId("resend-recipient-error-st-1").textContent).toContain(
+      "valid email",
+    );
+    expect(getEmailCall()).toBeUndefined();
+  });
+
+  it("rejects an empty address client-side without posting", async () => {
+    renderTab();
+    await waitForRow();
+
+    fireEvent.click(screen.getByTestId("button-resend-statement-st-1"));
+    fireEvent.change(screen.getByTestId("input-resend-recipient-st-1"), {
+      target: { value: "   " },
+    });
+    fireEvent.click(screen.getByTestId("button-resend-send-st-1"));
+
+    expect(screen.getByTestId("resend-recipient-error-st-1").textContent).toContain(
+      "Enter a recipient",
+    );
+    expect(getEmailCall()).toBeUndefined();
+  });
+
+  it("Cancel closes the recipient form without posting", async () => {
+    renderTab();
+    await waitForRow();
+
+    fireEvent.click(screen.getByTestId("button-resend-statement-st-1"));
+    expect(screen.getByTestId("input-resend-recipient-st-1")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("button-resend-cancel-st-1"));
+    expect(screen.queryByTestId("input-resend-recipient-st-1")).not.toBeInTheDocument();
+    expect(getEmailCall()).toBeUndefined();
+  });
+
+  it("Resend surfaces a server error inline on the row and keeps the form open", async () => {
     emailFailure = {
       status: 400,
       message: "This practice has no billing email on file. Add one first or enter a recipient.",
@@ -147,6 +236,7 @@ describe("StatementsTab per-row actions", () => {
     await waitForRow();
 
     fireEvent.click(screen.getByTestId("button-resend-statement-st-1"));
+    fireEvent.click(screen.getByTestId("button-resend-send-st-1"));
 
     await waitFor(() =>
       expect(screen.getByTestId("statement-row-notice-st-1")).toBeInTheDocument(),
@@ -154,6 +244,8 @@ describe("StatementsTab per-row actions", () => {
     expect(screen.getByTestId("statement-row-notice-st-1").textContent).toContain(
       "no billing email",
     );
+    // The form stays open so the user can correct the recipient and retry.
+    expect(screen.getByTestId("input-resend-recipient-st-1")).toBeInTheDocument();
   });
 
   it("Download PDF fetches the server-persisted statement PDF", async () => {
