@@ -24,7 +24,26 @@
  */
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor as rtlWaitFor,
+} from "@testing-library/react";
+
+// Under the full desktop suite (2 forked jsdom workers sharing the container)
+// mount + interaction can exceed the 5s default test timeout and the 1s
+// default findBy/waitFor timeout, producing false-alarm release-gate reds
+// while the file passes in isolation. Give this file generous budgets: the
+// timeouts only matter when the machine is starved — a real regression still
+// fails fast on the assertion itself.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
+const ASYNC_UI_TIMEOUT = 15_000;
+
+function waitFor<T>(cb: () => T | Promise<T>): Promise<T> {
+  return rtlWaitFor(cb, { timeout: ASYNC_UI_TIMEOUT });
+}
 
 // ---- api layer mock: observe exactly which URL is fetched, no real network.
 const authedMediaFetch = vi.fn();
@@ -161,9 +180,13 @@ afterEach(() => {
 async function clickView(filename: string) {
   // The filename itself is a "Click to view" button; use it (the Eye icon
   // button triggers the same handleView).
-  const btn = await screen.findByRole("button", {
-    name: new RegExp(filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-  });
+  const btn = await screen.findByRole(
+    "button",
+    {
+      name: new RegExp(filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    },
+    { timeout: ASYNC_UI_TIMEOUT },
+  );
   fireEvent.click(btn);
 }
 
