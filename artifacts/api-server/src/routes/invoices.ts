@@ -35,6 +35,7 @@ import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { HttpError, ok, wrapDbError } from "../lib/http";
 import { createTransport, getMailerConfig } from "../lib/mailer";
+import { classifySmtpError } from "../lib/smtp-error";
 import {
   generateStatementPdfBuffer,
   type PracticeStatementData,
@@ -143,11 +144,16 @@ router.post(
         ],
       });
     } catch (err: any) {
-      req.log?.error?.({ err }, "[STATEMENT EMAIL] sendMail failed");
-      throw new HttpError(
-        502,
-        "Failed to send the email. Check SMTP settings and try again.",
+      const classified = classifySmtpError(err);
+      req.log?.error?.(
+        {
+          smtpCategory: classified.category,
+          smtpResponseCode: classified.responseCode,
+          smtpCode: classified.code,
+        },
+        "[STATEMENT EMAIL] sendMail failed",
       );
+      throw new HttpError(502, classified.message);
     }
 
     const user = (req as any).user;
@@ -396,11 +402,16 @@ router.post(
         ],
       });
     } catch (err: any) {
-      req.log?.error?.({ err }, "[INVOICE EMAIL] sendMail failed");
-      throw new HttpError(
-        502,
-        "Failed to send the email. Check SMTP settings and try again.",
+      const classified = classifySmtpError(err);
+      req.log?.error?.(
+        {
+          smtpCategory: classified.category,
+          smtpResponseCode: classified.responseCode,
+          smtpCode: classified.code,
+        },
+        "[INVOICE EMAIL] sendMail failed",
       );
+      throw new HttpError(502, classified.message);
     }
 
     const user = (req as any).user;
@@ -4837,7 +4848,16 @@ router.post(
       });
     } catch (err: any) {
       status = "failed";
-      errorMessage = err?.message || "Email failed.";
+      const classified = classifySmtpError(err);
+      errorMessage = classified.message;
+      req.log?.error?.(
+        {
+          smtpCategory: classified.category,
+          smtpResponseCode: classified.responseCode,
+          smtpCode: classified.code,
+        },
+        "[PRACTICE STATEMENT EMAIL] sendMail failed",
+      );
     }
 
     const [send] = await db
@@ -5002,23 +5022,42 @@ router.post(
           continue;
         }
         const buf = Buffer.from(item.pdfBase64, "base64");
-        await transporter.sendMail({
-          from: cfg.from,
-          to: recipientList,
-          ...(item.cc && item.cc.length ? { cc: item.cc } : {}),
-          ...(item.bcc && item.bcc.length ? { bcc: item.bcc } : {}),
-          subject: item.subject,
-          text: item.message,
-          attachments: [
+        try {
+          await transporter.sendMail({
+            from: cfg.from,
+            to: recipientList,
+            ...(item.cc && item.cc.length ? { cc: item.cc } : {}),
+            ...(item.bcc && item.bcc.length ? { bcc: item.bcc } : {}),
+            subject: item.subject,
+            text: item.message,
+            attachments: [
+              {
+                filename: item.filename.endsWith(".pdf")
+                  ? item.filename
+                  : `${item.filename}.pdf`,
+                content: buf,
+                contentType: "application/pdf",
+              },
+            ],
+          });
+        } catch (err: any) {
+          const classified = classifySmtpError(err);
+          req.log?.error?.(
             {
-              filename: item.filename.endsWith(".pdf")
-                ? item.filename
-                : `${item.filename}.pdf`,
-              content: buf,
-              contentType: "application/pdf",
+              invoiceId: item.invoiceId,
+              smtpCategory: classified.category,
+              smtpResponseCode: classified.responseCode,
+              smtpCode: classified.code,
             },
-          ],
-        });
+            "[INVOICE BATCH EMAIL] sendMail failed",
+          );
+          results.push({
+            invoiceId: item.invoiceId,
+            status: "failed",
+            error: classified.message,
+          });
+          continue;
+        }
         // Mark as sent
         if (invoice.status === "draft") {
           await db

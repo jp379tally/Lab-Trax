@@ -459,6 +459,100 @@ maybe("Invoice PDF and statement generation (db integration)", () => {
     expect(row.lastEmailedTo).toBeNull();
   });
 
+  it("classifies an SMTP auth failure with a login-specific message", async () => {
+    mockSendMail.mockClear();
+    const { access } = await makeSession(labOwnerId);
+
+    const gen = await request(appMod.default)
+      .post("/api/invoices/practice-statements/generate")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        providerOrganizationIds: [providerOrgId],
+        periodStart: new Date(Date.now() - 80 * 86400000).toISOString(),
+        periodEnd: new Date(Date.now() + 6 * 86400000).toISOString(),
+        includeStatuses: ["draft", "open", "partially_paid", "paid"],
+      });
+    expect(gen.status).toBe(201);
+    const stmt = gen.body.data.statements[0];
+
+    mockSendMail.mockRejectedValueOnce(
+      Object.assign(new Error("535 auth failed"), {
+        code: "EAUTH",
+        responseCode: 535,
+      }),
+    );
+    const r = await request(appMod.default)
+      .post(`/api/invoices/practice-statements/${stmt.id}/email`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ to: "auth@test.invalid", subject: "S", message: "m" });
+
+    expect(r.status).toBe(502);
+    expect(r.body.message).toMatch(/rejected the login/i);
+    expect(r.body.message).not.toMatch(/535 auth failed/);
+  });
+
+  it("classifies an SMTP connection failure with a connection-specific message", async () => {
+    mockSendMail.mockClear();
+    const { access } = await makeSession(labOwnerId);
+
+    const gen = await request(appMod.default)
+      .post("/api/invoices/practice-statements/generate")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        providerOrganizationIds: [providerOrgId],
+        periodStart: new Date(Date.now() - 82 * 86400000).toISOString(),
+        periodEnd: new Date(Date.now() + 7 * 86400000).toISOString(),
+        includeStatuses: ["draft", "open", "partially_paid", "paid"],
+      });
+    expect(gen.status).toBe(201);
+    const stmt = gen.body.data.statements[0];
+
+    mockSendMail.mockRejectedValueOnce(
+      Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNECTION" }),
+    );
+    const r = await request(appMod.default)
+      .post(`/api/invoices/practice-statements/${stmt.id}/email`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ to: "conn@test.invalid", subject: "S", message: "m" });
+
+    expect(r.status).toBe(502);
+    expect(r.body.message).toMatch(/connect to the email server/i);
+  });
+
+  it("classifies a rejected recipient with a recipient-specific message", async () => {
+    mockSendMail.mockClear();
+    const { access } = await makeSession(labOwnerId);
+
+    const gen = await request(appMod.default)
+      .post("/api/invoices/practice-statements/generate")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        providerOrganizationIds: [providerOrgId],
+        periodStart: new Date(Date.now() - 84 * 86400000).toISOString(),
+        periodEnd: new Date(Date.now() + 8 * 86400000).toISOString(),
+        includeStatuses: ["draft", "open", "partially_paid", "paid"],
+      });
+    expect(gen.status).toBe(201);
+    const stmt = gen.body.data.statements[0];
+
+    mockSendMail.mockRejectedValueOnce(
+      Object.assign(new Error("550 no such user"), {
+        code: "EENVELOPE",
+        responseCode: 550,
+      }),
+    );
+    const r = await request(appMod.default)
+      .post(`/api/invoices/practice-statements/${stmt.id}/email`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ to: "reject@test.invalid", subject: "S", message: "m" });
+
+    expect(r.status).toBe(502);
+    expect(r.body.message).toMatch(/rejected the recipient/i);
+  });
+
   it("email endpoint returns 401 without auth", async () => {
     const r = await request(appMod.default)
       .post("/api/invoices/practice-statements/nonexistent/email")
