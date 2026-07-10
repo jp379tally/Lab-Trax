@@ -1,0 +1,142 @@
+### Replit Build Brief
+
+**Objective**
+Update LabTracks AI prescription intake so doctor assignment only happens when the AI-extracted doctor name exactly matches an existing doctor account name for the selected lab/practice. If it does not match exactly, show the user a “doctor not on file” resolution step with similar existing doctors and an “Add new doctor” option.
+
+**User-visible problem**
+If the AI reads `Dr. Cole` but the doctor account is `Dr. Kenisha Cole`, LabTracks must not silently assign the case to `Dr. Kenisha Cole`. It should warn that `Dr. Cole` is not on file, show similar options like `Dr. Kenisha Cole`, and require the user to choose the correct existing doctor or add `Dr. Cole` as a new doctor.
+
+**Likely root cause**
+The AI-reader flow currently treats doctor name as editable free text and only shows a lightweight warning when the name is unknown. In `artifacts/labtrax/app/ai-reader/extracted.tsx`, `normalizeDoctorForCompare()` removes `Dr.` and compares names loosely enough for display-warning purposes, but there is no required resolution step before `handleSubmit()` creates the case. The payload still sends `doctorName: doctorName.trim()`.
+
+The backend already has useful pieces in `artifacts/api-server/src/routes/doctors.ts`:
+
+* `/api/doctors/known-names` returns doctor names seen for a lab/practice.
+* `/api/doctors/search` has similarity scoring, but it is admin-only and built for merge tooling, not normal AI intake.
+
+**Exact parts to inspect/change**
+
+* `artifacts/labtrax/app/ai-reader/extracted.tsx`
+* `artifacts/labtrax-desktop/src/components/DashboardDropZone.tsx`
+* `artifacts/api-server/src/routes/doctors.ts`
+* API client/schema generation files if the OpenAPI client must be regenerated
+* Existing tests around doctors and desktop AI intake, especially `artifacts/api-server/src/routes/doctors.test.ts`
+
+**Implementation plan**
+
+1. Add a non-admin doctor resolution endpoint, for example `GET /api/doctors/resolve-name`.
+2. Input: `labOrganizationId`, optional `providerOrganizationId`, and `doctorName`.
+3. Return:
+
+   * `exactMatch`: existing doctor entry only if the stored doctor name exactly matches the scanned name under the agreed strict normalization.
+   * `similarMatches`: likely existing doctors when exact match fails.
+   * `canAddNew: true`.
+4. Define strict exact matching as trimmed/collapsed whitespace only. Do not strip first names, last names, titles, or abbreviations. If the account says `Dr. Kenisha Cole`, then `Dr. Cole` is not exact.
+5. Use fuzzy similarity only for suggestions, never for automatic assignment.
+6. In mobile AI reader, block case creation when no exact doctor match exists until the user chooses:
+
+   * one suggested existing doctor, which replaces `doctorName` with that exact stored account spelling, or
+   * “Add new doctor,” which keeps the scanned/new name and proceeds through the correct new-doctor/account-number path.
+7. Apply the same behavior to desktop drop-zone AI intake so mobile and desktop match.
+8. Add regression tests for:
+
+   * `Dr. Kenisha Cole` exact match succeeds.
+   * `Dr. Cole` does not exact-match `Dr. Kenisha Cole`.
+   * `Dr. Cole` returns `Dr. Kenisha Cole` as a similar suggestion.
+   * case creation cannot proceed with unresolved non-exact AI doctor name.
+   * selecting the suggested doctor submits the stored spelling.
+
+**Guardrails**
+
+* Do not merge, rename, or auto-correct doctor records during intake.
+* Do not use fuzzy matching to assign account numbers.
+* Keep similar matches as user-facing suggestions only.
+* Keep lab/practice scoping strict so suggestions do not leak doctors across labs or unrelated practices.
+* If there is a real doctor account table or account-number table in the Replit codebase, use that as the source of truth instead of case history.
+
+**Acceptance criteria**
+
+* AI reads `Dr. Cole`; existing account is `Dr. Kenisha Cole`; app shows “Dr. Cole is not on file” and lists `Dr. Kenisha Cole`.
+* User selects `Dr. Kenisha Cole`; created case uses `Dr. Kenisha Cole` and that doctor’s account number.
+* User selects “Add new doctor”; `Dr. Cole` is created as a new doctor and receives a new account number according to existing account-number rules.
+* No case is silently created under a similar-but-not-exact doctor.
+* Existing exact matches continue to create cases normally.
+
+**Regression risks to check**
+
+* Existing known doctor detection may currently ignore `Dr.` prefixes; tighten this carefully.
+* `/api/doctors/search` is admin-only, so do not depend on it directly from normal AI reader users unless authorization is intentionally changed.
+* Pricing overrides and invoices may key off `doctorName`, so the final stored spelling must be the selected canonical account spelling.
+
+---
+
+### Copy-Ready Replit Prompt
+
+Please fix the LabTracks AI prescription doctor-matching flow.
+
+Current issue: when the AI reader extracts a doctor name from a prescription, LabTracks must only assign the case to an existing doctor account if the scanned doctor name exactly matches the doctor’s stored account spelling. Similar names must not be auto-assigned. Example: if the existing doctor account is `Dr. Kenisha Cole` and the scanned Rx says `Dr. Cole`, then `Dr. Cole` is not on file. The UI should warn the user and show similar doctors, including `Dr. Kenisha Cole`, so the user can choose the correct existing doctor or select “Add new doctor.”
+
+Please inspect and update these areas:
+
+* `artifacts/labtrax/app/ai-reader/extracted.tsx`
+* `artifacts/labtrax-desktop/src/components/DashboardDropZone.tsx`
+* `artifacts/api-server/src/routes/doctors.ts`
+* any generated API client/schema files if needed
+
+Important requirements:
+
+* Exact matching must be strict. Do not strip first names, last names, titles, or abbreviations for assignment. `Dr. Cole` must not exact-match `Dr. Kenisha Cole`.
+* Fuzzy/similar matching is only for suggestions, never automatic assignment.
+* Add or reuse a non-admin-safe backend endpoint for AI intake doctor resolution. It should return exact match status plus similar matches scoped to the selected lab and selected practice/provider organization.
+* If an exact match exists, the case can proceed normally using the stored doctor account spelling.
+* If no exact match exists, block case creation until the user either selects a suggested existing doctor or chooses “Add new doctor.”
+* If the user selects a suggested doctor, replace the submitted `doctorName` with the exact stored account spelling so billing/account-number lookup uses the correct doctor.
+* If the user chooses “Add new doctor,” preserve the scanned name and send it through the existing new-doctor/account-number creation flow.
+* Apply the same behavior to both mobile AI reader and desktop drop-zone AI intake.
+* Do not merge or rename doctors during intake.
+
+Before finishing, add regression coverage for:
+
+* `Dr. Kenisha Cole` exact match succeeds.
+* `Dr. Cole` does not exact-match `Dr. Kenisha Cole`.
+* `Dr. Cole` returns `Dr. Kenisha Cole` as a similar suggestion.
+* unresolved non-exact doctor names cannot create a case.
+* selecting a suggested doctor creates the case with the selected stored spelling.
+
+If you find a dedicated doctor account/account-number table, use that as the source of truth. If the current app only derives doctors from case history, explain that assumption and use the most authoritative existing doctor directory available.
+
+---
+
+### Debug Analysis
+
+**Probable root cause**
+The app has unknown-doctor detection, but it is not a hard resolution gate. The AI reader can still submit `doctorName` as free text after only showing a dismissible warning.
+
+**Supporting evidence**
+In `extracted.tsx`, the mobile AI flow fetches `/api/doctors/known-names`, computes `showUnknownDoctorBanner`, and shows an “isn't on file” banner. But `handleSubmit()` only requires a non-empty doctor name, then submits `doctorName: doctorName.trim()`.
+
+Also, the existing compare helper strips `Dr.` before comparing, which is looser than the business rule you described. That is fine for suggestions, but not for exact account assignment.
+
+**Alternate hypotheses**
+
+* The real account-number lookup may happen later in pricing/invoice code and may be matching loosely there too.
+* Desktop drop-zone intake may have a separate doctor autofill path that also needs tightening.
+* The app may not yet have a true doctor account table, and may currently infer doctors from prior cases.
+
+**Why this fix is best**
+It separates two concepts cleanly: exact match for account assignment, fuzzy match for human suggestions. That prevents silent misassignment while still helping the user quickly pick the right existing doctor.
+
+---
+
+### Step-by-Step Fix Plan
+
+1. Identify the authoritative doctor/account source.
+2. Add a strict doctor-name resolution helper.
+3. Add a non-admin-safe doctor resolution endpoint for AI intake.
+4. Update mobile AI reader to call resolution when practice or doctor name changes.
+5. Replace the dismissible warning with a required resolution modal/sheet when no exact match exists.
+6. Add the same resolution behavior to desktop drop-zone intake.
+7. Ensure selected suggestions submit the stored canonical spelling.
+8. Ensure “Add new doctor” triggers the existing account-number generation flow.
+9. Add backend and UI regression tests.
+10. Manually test with `Dr. Kenisha Cole` vs `Dr. Cole` before shipping.
