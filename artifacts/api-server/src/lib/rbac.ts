@@ -32,5 +32,6 @@ export async function requireAnyRole(userId: string, organizationId: string, rol
   return membership;
 }
 
+export const OWNER_ROLES: MembershipRole[] = ["owner"];
 export const ADMIN_ROLES: MembershipRole[] = ["owner", "admin"];
 export const BILLING_ROLES: MembershipRole[] = ["owner", "admin", "billing"];

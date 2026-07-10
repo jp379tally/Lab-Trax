@@ -144,3 +144,34 @@ export function canAdminAnyLab(me: MeResponse | undefined): boolean {
 export function primaryAdminLabOrgId(me: MeResponse | undefined): string | null {
   return adminLabMemberships(me)[0]?.organizationId ?? null;
 }
+
+// Roles permitted to see the owner-only Sales Forecaster. Stricter than both
+// EDIT_ROLES and ADMIN_ROLES — the server gates GET /stats/sales-forecast on
+// OWNER_ROLES, so the mobile affordance must match exactly or it would surface
+// a screen the server refuses to serve (403).
+export const OWNER_ROLES = ["owner"] as const;
+
+export function roleIsOwner(role: string | null | undefined): boolean {
+  return (OWNER_ROLES as readonly string[]).includes(role ?? "");
+}
+
+// Active lab memberships where the user is the owner.
+export function ownerLabMemberships(me: MeResponse | undefined): MeMembership[] {
+  return (me?.memberships ?? []).filter(
+    (m) =>
+      m.status === "active" &&
+      (m.organization?.type ?? "").toLowerCase() === "lab" &&
+      roleIsOwner(m.role),
+  );
+}
+
+// Whether the user owns at least one active lab. Gates the Sales Forecaster.
+export function canOwnAnyLab(me: MeResponse | undefined): boolean {
+  return ownerLabMemberships(me).length > 0;
+}
+
+// The user's primary lab organization id where they are the owner — scopes the
+// owner-only Sales Forecaster screen. Returns null for non-owner users.
+export function primaryOwnerLabOrgId(me: MeResponse | undefined): string | null {
+  return ownerLabMemberships(me)[0]?.organizationId ?? null;
+}

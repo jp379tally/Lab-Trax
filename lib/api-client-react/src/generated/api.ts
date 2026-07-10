@@ -106,6 +106,7 @@ import type {
   GetRxPracticeAliasParams,
   GetStatsCaseCategoriesParams,
   GetStatsRevenueSeriesParams,
+  GetStatsSalesForecastParams,
   GetStatsSummaryParams,
   GetStatsWeekdayVolumeParams,
   GetVocabularyParams,
@@ -186,6 +187,7 @@ import type {
   StatementScheduleResult,
   StatsCaseCategoriesResult,
   StatsRevenueSeriesResult,
+  StatsSalesForecastResult,
   StatsSummaryResult,
   StatsWeekdayVolumeResult,
   SttResult,
@@ -13163,6 +13165,118 @@ export function useGetStatsWeekdayVolume<
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getGetStatsWeekdayVolumeQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Projects total sales for the current week, month, and year from the
+pace so far, using Monday–Friday business days only:
+`forecast = periodToDateSales / elapsedBusinessDays * totalBusinessDays`.
+Elapsed business days run from the period start through today
+(inclusive) in the lab timezone; a weekend "today" is never counted as
+a worked day, and sales are summed only up to now (never the future).
+All arithmetic is performed server-side. Requires the **owner** role on
+the lab (stricter than the other stats endpoints).
+
+ * @summary Owner-only sales pace forecast for the current week/month/year
+ */
+export const getGetStatsSalesForecastUrl = (
+  params: GetStatsSalesForecastParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/stats/sales-forecast?${stringifiedParams}`
+    : `/api/stats/sales-forecast`;
+};
+
+export const getStatsSalesForecast = async (
+  params: GetStatsSalesForecastParams,
+  options?: RequestInit,
+): Promise<StatsSalesForecastResult> => {
+  return customFetch<StatsSalesForecastResult>(
+    getGetStatsSalesForecastUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetStatsSalesForecastQueryKey = (
+  params?: GetStatsSalesForecastParams,
+) => {
+  return [`/api/stats/sales-forecast`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetStatsSalesForecastQueryOptions = <
+  TData = Awaited<ReturnType<typeof getStatsSalesForecast>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsSalesForecastParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsSalesForecast>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetStatsSalesForecastQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getStatsSalesForecast>>
+  > = ({ signal }) =>
+    getStatsSalesForecast(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getStatsSalesForecast>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetStatsSalesForecastQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getStatsSalesForecast>>
+>;
+export type GetStatsSalesForecastQueryError = ErrorType<void>;
+
+/**
+ * @summary Owner-only sales pace forecast for the current week/month/year
+ */
+
+export function useGetStatsSalesForecast<
+  TData = Awaited<ReturnType<typeof getStatsSalesForecast>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsSalesForecastParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsSalesForecast>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetStatsSalesForecastQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

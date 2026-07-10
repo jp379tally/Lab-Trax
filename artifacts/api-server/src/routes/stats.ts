@@ -51,7 +51,7 @@ import { z } from "zod";
 import { db } from "@workspace/db";
 import { caseRestorations, cases, invoices, labCases } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
-import { BILLING_ROLES, requireAnyRole } from "../lib/rbac";
+import { BILLING_ROLES, OWNER_ROLES, requireAnyRole } from "../lib/rbac";
 import { notDeleted } from "../lib/soft-delete";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -697,6 +697,186 @@ router.get(
         byCategory: d.byCategory,
       })),
       totalCases: filtered.length,
+    });
+  }),
+);
+
+// ─────────────────────── GET /stats/sales-forecast ───────────────────────
+//
+// Owner-only sales projection. Projects the current week, month, and year
+// sales from the pace so far, counting only Monday–Friday business days:
+//
+//   forecast = periodToDateSales / elapsedBusinessDays * totalBusinessDays
+//
+// "Elapsed" business days are the Mon–Fri days from the period start through
+// today (inclusive) in the lab's timezone — a weekend "today" is never a
+// worked day, and the sales window's upper bound is `now` (never the future).
+// All arithmetic lives here so the desktop and mobile clients only render the
+// returned numbers.
+const forecastQuerySchema = z.object({
+  organizationId: z.string().min(1),
+  timeZone: z.string().min(1).max(64).optional(),
+});
+
+/**
+ * The UTC offset (ms, positive when ahead of UTC) that `tz` is at the given
+ * instant. Derived from Intl parts so it honors DST without a tz database.
+ */
+function tzOffsetMs(fmt: Intl.DateTimeFormat, date: Date): number {
+  const parts = fmt.formatToParts(date);
+  const m: Record<string, number> = {};
+  for (const p of parts) {
+    if (p.type !== "literal") m[p.type] = Number(p.value);
+  }
+  let hour = m.hour ?? 0;
+  if (hour === 24) hour = 0;
+  const asIfUtc = Date.UTC(
+    m.year!,
+    (m.month ?? 1) - 1,
+    m.day ?? 1,
+    hour,
+    m.minute ?? 0,
+    m.second ?? 0,
+  );
+  return asIfUtc - date.getTime();
+}
+
+/** UTC instant of local midnight (00:00:00) of the given local calendar date. */
+function zonedMidnightToUtc(
+  offsetFmt: Intl.DateTimeFormat,
+  yr: number,
+  mo: number,
+  day: number,
+): Date {
+  const naive = Date.UTC(yr, mo, day, 0, 0, 0);
+  const offset = tzOffsetMs(offsetFmt, new Date(naive));
+  return new Date(naive - offset);
+}
+
+/**
+ * Count Monday–Friday days in the inclusive local-calendar range
+ * [start, endInclusive]. Weekends are never counted. Returns 0 when the
+ * range is empty (start after end).
+ */
+function countBusinessDays(
+  start: { yr: number; mo: number; day: number },
+  endInclusive: { yr: number; mo: number; day: number },
+): number {
+  let cur = Date.UTC(start.yr, start.mo, start.day);
+  const end = Date.UTC(endInclusive.yr, endInclusive.mo, endInclusive.day);
+  let count = 0;
+  while (cur <= end) {
+    const dow = new Date(cur).getUTCDay(); // 0 = Sun … 6 = Sat
+    if (dow >= 1 && dow <= 5) count += 1;
+    cur += 86_400_000;
+  }
+  return count;
+}
+
+router.get(
+  "/sales-forecast",
+  asyncHandler(async (req, res) => {
+    const q = forecastQuerySchema.parse(req.query);
+    // Stricter than the other stats endpoints: OWNER only, not BILLING_ROLES.
+    await requireAnyRole((req as any).auth.userId, q.organizationId, OWNER_ROLES);
+
+    const tz = q.timeZone ?? "UTC";
+    const dateFmt = tzFormatter(tz);
+    // Second formatter with time parts, used only to read the tz offset.
+    let offsetFmt: Intl.DateTimeFormat;
+    try {
+      offsetFmt = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+        hour12: false,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    } catch {
+      throw new HttpError(400, `Invalid timeZone: ${tz}`);
+    }
+
+    const now = new Date();
+    const today = localYmd(dateFmt, now);
+
+    // Period start/end (inclusive) in local calendar dates.
+    const dowMon0 = (new Date(Date.UTC(today.yr, today.mo, today.day)).getUTCDay() + 6) % 7;
+    const weekStartMs = Date.UTC(today.yr, today.mo, today.day - dowMon0);
+    const weekStart = new Date(weekStartMs);
+    const weekEnd = new Date(weekStartMs + 6 * 86_400_000);
+    const monthEndDay = new Date(Date.UTC(today.yr, today.mo + 1, 0)).getUTCDate();
+
+    const periods: Array<{
+      key: "week" | "month" | "year";
+      start: { yr: number; mo: number; day: number };
+      end: { yr: number; mo: number; day: number };
+    }> = [
+      {
+        key: "week",
+        start: {
+          yr: weekStart.getUTCFullYear(),
+          mo: weekStart.getUTCMonth(),
+          day: weekStart.getUTCDate(),
+        },
+        end: {
+          yr: weekEnd.getUTCFullYear(),
+          mo: weekEnd.getUTCMonth(),
+          day: weekEnd.getUTCDate(),
+        },
+      },
+      {
+        key: "month",
+        start: { yr: today.yr, mo: today.mo, day: 1 },
+        end: { yr: today.yr, mo: today.mo, day: monthEndDay },
+      },
+      {
+        key: "year",
+        start: { yr: today.yr, mo: 0, day: 1 },
+        end: { yr: today.yr, mo: 11, day: 31 },
+      },
+    ];
+
+    const results = await Promise.all(
+      periods.map(async (p) => {
+        const from = zonedMidnightToUtc(offsetFmt, p.start.yr, p.start.mo, p.start.day);
+        // Sales-to-date window ends at "now" — never projects future revenue.
+        const invoicesInWindow = await loadRevenueInvoices(q.organizationId, from, now);
+        const periodToDateSales = invoicesInWindow.reduce((a, r) => a + r.total, 0);
+
+        const elapsedBusinessDays = countBusinessDays(p.start, today);
+        const totalBusinessDays = countBusinessDays(p.start, p.end);
+
+        // Guard divide-by-zero: no elapsed business day yet (e.g. a period
+        // that starts on a weekend), or no sales recorded so far.
+        const insufficientData = elapsedBusinessDays === 0 || periodToDateSales <= 0;
+        const averagePerBusinessDay =
+          elapsedBusinessDays > 0 ? periodToDateSales / elapsedBusinessDays : 0;
+        const forecast = averagePerBusinessDay * totalBusinessDays;
+
+        return {
+          key: p.key,
+          periodStart: from.toISOString(),
+          periodToDateSales: periodToDateSales.toFixed(2),
+          elapsedBusinessDays,
+          totalBusinessDays,
+          averagePerBusinessDay: averagePerBusinessDay.toFixed(2),
+          forecast: forecast.toFixed(2),
+          insufficientData,
+        };
+      }),
+    );
+
+    const byKey = Object.fromEntries(results.map((r) => [r.key, r]));
+    return ok(res, {
+      organizationId: q.organizationId,
+      timeZone: tz,
+      asOf: now.toISOString(),
+      week: byKey.week,
+      month: byKey.month,
+      year: byKey.year,
     });
   }),
 );

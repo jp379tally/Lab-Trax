@@ -3725,6 +3725,32 @@ paths:
                 $ref: "#/components/schemas/StatsWeekdayVolumeResult"
         "403":
           description: Insufficient role
+  /stats/sales-forecast:
+    get:
+      operationId: getStatsSalesForecast
+      tags: [stats]
+      summary: Owner-only sales pace forecast for the current week/month/year
+      description: |
+        Projects total sales for the current week, month, and year from the
+        pace so far, using Monday–Friday business days only:
+        `forecast = periodToDateSales / elapsedBusinessDays * totalBusinessDays`.
+        Elapsed business days run from the period start through today
+        (inclusive) in the lab timezone; a weekend "today" is never counted as
+        a worked day, and sales are summed only up to now (never the future).
+        All arithmetic is performed server-side. Requires the **owner** role on
+        the lab (stricter than the other stats endpoints).
+      parameters:
+        - $ref: "#/components/parameters/StatsOrganizationId"
+        - $ref: "#/components/parameters/StatsTimeZone"
+      responses:
+        "200":
+          description: Sales forecast
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsSalesForecastResult"
+        "403":
+          description: Insufficient role (owner required)
 components:
   parameters:
     StatsOrganizationId:
@@ -3773,6 +3799,67 @@ components:
       type: string
       enum: [implants, zirconia, crown_bridge, removable, other, uncategorized]
       description: Analytics case category (uncategorized = legacy/unclassifiable).
+    StatsSalesForecastPeriod:
+      type: object
+      required:
+        [
+          periodStart,
+          periodToDateSales,
+          elapsedBusinessDays,
+          totalBusinessDays,
+          averagePerBusinessDay,
+          forecast,
+          insufficientData,
+        ]
+      properties:
+        periodStart:
+          type: string
+          format: date-time
+          description: UTC instant of the period's local-midnight start.
+        periodToDateSales:
+          type: string
+          description: |
+            Sum of non-void, non-deleted invoices.total from period start
+            through now (decimal string). Legacy mobile blob invoices excluded.
+        elapsedBusinessDays:
+          type: integer
+          description: Mon–Fri days from period start through today (inclusive).
+        totalBusinessDays:
+          type: integer
+          description: Total Mon–Fri days in the whole period.
+        averagePerBusinessDay:
+          type: string
+          description: periodToDateSales / elapsedBusinessDays (decimal string; 0 when no elapsed day).
+        forecast:
+          type: string
+          description: Projected period total = averagePerBusinessDay * totalBusinessDays (decimal string).
+        insufficientData:
+          type: boolean
+          description: |
+            True when the forecast is not meaningful yet — no elapsed business
+            day (e.g. a period starting on a weekend) or no sales recorded so
+            far. Forecast is $0.00 in that case.
+    StatsSalesForecastResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [organizationId, timeZone, asOf, week, month, year]
+          properties:
+            organizationId: { type: string }
+            timeZone: { type: string }
+            asOf:
+              type: string
+              format: date-time
+              description: The instant the forecast was computed.
+            week:
+              $ref: "#/components/schemas/StatsSalesForecastPeriod"
+            month:
+              $ref: "#/components/schemas/StatsSalesForecastPeriod"
+            year:
+              $ref: "#/components/schemas/StatsSalesForecastPeriod"
     StatsSummaryResult:
       type: object
       required: [ok, data]

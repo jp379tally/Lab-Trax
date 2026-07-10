@@ -7,6 +7,7 @@ import {
   DollarSign,
   Download,
   Loader2,
+  TrendingUp,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
@@ -25,6 +26,7 @@ const TABS = [
   { key: "summary", label: "Summary" },
   { key: "production", label: "Production" },
   { key: "sales", label: "Sales" },
+  { key: "forecast", label: "Forecast", ownerOnly: true },
   { key: "pnl", label: "Profit & Loss" },
   { key: "balance-sheet", label: "Balance Sheet" },
 ] as const;
@@ -49,6 +51,20 @@ export default function ReportsPage() {
         .filter(Boolean) as Organization[],
     [memberships],
   );
+  // Labs the caller OWNS — the Forecast tab is stricter than billing.
+  const ownerLabs = useMemo(
+    () =>
+      memberships
+        .filter(
+          (m) =>
+            m.status === "active" &&
+            m.organization?.type === "lab" &&
+            m.role === "owner",
+        )
+        .map((m) => m.organization!)
+        .filter(Boolean) as Organization[],
+    [memberships],
+  );
 
   const [tab, setTab] = useState<TabKey>("summary");
   const [orgId, setOrgId] = useState<string | null>(null);
@@ -61,6 +77,7 @@ export default function ReportsPage() {
   }, [billingLabs, orgId]);
 
   const isBilling = billingLabs.length > 0;
+  const isOwner = ownerLabs.length > 0;
 
   return (
     <div className="px-8 py-7 max-w-[1500px] mx-auto">
@@ -72,7 +89,7 @@ export default function ReportsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
-          {isBilling && billingLabs.length > 1 && (
+          {tab !== "forecast" && isBilling && billingLabs.length > 1 && (
             <select
               value={orgId || ""}
               onChange={(e) => setOrgId(e.target.value || null)}
@@ -85,13 +102,20 @@ export default function ReportsPage() {
               ))}
             </select>
           )}
-          <DateRangePicker value={range} onChange={setRange} />
+          {/* The forecast is now-based; the date range does not apply. */}
+          {tab !== "forecast" && (
+            <DateRangePicker value={range} onChange={setRange} />
+          )}
         </div>
       </div>
 
       <div className="border-b border-border mb-5">
         <nav className="flex gap-1 -mb-px overflow-x-auto">
-          {TABS.filter((t) => isBilling || t.key === "summary").map((t) => {
+          {TABS.filter(
+            (t) =>
+              (isBilling || t.key === "summary") &&
+              (!("ownerOnly" in t && t.ownerOnly) || isOwner),
+          ).map((t) => {
             const active = tab === t.key;
             return (
               <button
@@ -128,7 +152,9 @@ export default function ReportsPage() {
           range={range}
         />
       )}
-      {tab !== "summary" && isBilling && orgId && (
+      {tab === "forecast" && isOwner && <ForecastTab ownerLabs={ownerLabs} />}
+
+      {tab !== "summary" && tab !== "forecast" && isBilling && orgId && (
         <>
           {tab === "production" && (
             <ProductionTab organizationId={orgId} range={range} />
@@ -142,6 +168,165 @@ export default function ReportsPage() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────── Forecast tab ───────────────────────────
+//
+// Owner-only sales pace projection. The server (GET /stats/sales-forecast)
+// does ALL the math — this component only picks the lab + timezone and
+// renders the numbers it returns.
+interface ForecastPeriod {
+  periodStart: string;
+  periodToDateSales: string;
+  elapsedBusinessDays: number;
+  totalBusinessDays: number;
+  averagePerBusinessDay: string;
+  forecast: string;
+  insufficientData: boolean;
+}
+interface ForecastResult {
+  organizationId: string;
+  timeZone: string;
+  asOf: string;
+  week: ForecastPeriod;
+  month: ForecastPeriod;
+  year: ForecastPeriod;
+}
+
+function localTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+function ForecastTab({ ownerLabs }: { ownerLabs: Organization[] }) {
+  const [orgId, setOrgId] = useState<string>(() => ownerLabs[0]?.id ?? "");
+  const activeOrgId =
+    orgId && ownerLabs.some((o) => o.id === orgId)
+      ? orgId
+      : (ownerLabs[0]?.id ?? "");
+  const timeZone = useMemo(() => localTimeZone(), []);
+
+  const q = useQuery({
+    queryKey: ["reports", "sales-forecast", activeOrgId, timeZone],
+    enabled: !!activeOrgId,
+    queryFn: () => {
+      const params = new URLSearchParams({
+        organizationId: activeOrgId,
+        timeZone,
+      });
+      return apiFetch<ForecastResult>(`/stats/sales-forecast?${params}`);
+    },
+  });
+  const data = q.data;
+
+  return (
+    <>
+      {ownerLabs.length > 1 && (
+        <div className="mb-5">
+          <select
+            value={activeOrgId}
+            onChange={(e) => setOrgId(e.target.value)}
+            className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+          >
+            {ownerLabs.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.displayName || o.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <p className="text-xs text-muted-foreground mb-5">
+        Projected from the current sales pace using Monday–Friday business days
+        only. Forecast = sales so far ÷ business days elapsed × total business
+        days in the period.
+      </p>
+
+      {q.isLoading && (
+        <div className="text-sm text-muted-foreground py-16 text-center">
+          <Loader2 size={16} className="inline animate-spin mr-2" />
+          Loading forecast…
+        </div>
+      )}
+
+      {q.isError && (
+        <div className="bg-card border border-border rounded-xl p-12 text-center">
+          <div className="text-base font-medium mb-1">
+            Couldn’t load the forecast
+          </div>
+          <p className="text-sm text-muted-foreground max-w-md mx-auto">
+            The sales forecaster is available to lab owners only. Refresh to try
+            again.
+          </p>
+        </div>
+      )}
+
+      {data && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <ForecastCard title="This week" period={data.week} />
+          <ForecastCard title="This month" period={data.month} />
+          <ForecastCard title="This year" period={data.year} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function ForecastCard({
+  title,
+  period,
+}: {
+  title: string;
+  period: ForecastPeriod;
+}) {
+  return (
+    <section className="bg-card border border-border rounded-xl p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold">{title}</h2>
+        <TrendingUp size={16} className="text-muted-foreground" />
+      </div>
+      <div className="text-3xl font-semibold tracking-tight tabular-nums">
+        {period.insufficientData ? "—" : formatMoney(period.forecast)}
+      </div>
+      <div className="text-xs text-muted-foreground mt-1 mb-4">
+        Projected {title.toLowerCase()} sales
+      </div>
+
+      {period.insufficientData ? (
+        <div className="text-sm text-muted-foreground">
+          Not enough data yet to project this period.
+        </div>
+      ) : (
+        <dl className="space-y-2 text-sm">
+          <ForecastRow
+            label="Sales so far"
+            value={formatMoney(period.periodToDateSales)}
+          />
+          <ForecastRow
+            label="Avg / business day"
+            value={formatMoney(period.averagePerBusinessDay)}
+          />
+          <ForecastRow
+            label="Business days"
+            value={`${period.elapsedBusinessDays} of ${period.totalBusinessDays}`}
+          />
+        </dl>
+      )}
+    </section>
+  );
+}
+
+function ForecastRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="tabular-nums font-medium">{value}</dd>
     </div>
   );
 }

@@ -585,3 +585,278 @@ maybe("Stats analytics routes (db integration)", () => {
     expect(d.weekdays[2].total).toBe(0); // Wednesday legacy denture excluded
   });
 });
+
+/**
+ * Integration tests for the owner-only Sales Forecaster
+ * (GET /stats/sales-forecast).
+ *
+ * Self-contained fixtures (separate from the Stats suite above) because the
+ * forecast is "now"-relative — it projects the CURRENT week/month/year — so
+ * revenue rows are dated relative to `Date.now()` rather than a fixed window.
+ *
+ * Coverage:
+ *  - RBAC: 401 unauthenticated, 403 for a plain member, 403 for a BILLING role
+ *    (proving the gate is stricter than BILLING_ROLES — owner only), 200 owner
+ *  - Business-day math: forecast = periodToDateSales / elapsedBusinessDays ×
+ *    totalBusinessDays, counting Mon–Fri only; void + soft-deleted + legacy
+ *    blob invoices are excluded from periodToDateSales
+ *  - Zero-sales guard: a lab with no invoices returns insufficientData with a
+ *    $0 forecast and no divide-by-zero
+ */
+maybe("Sales forecast route (db integration)", () => {
+  let dbMod: typeof import("@workspace/db");
+  let appMod: { default: import("express").Express };
+  let authLib: typeof import("../lib/auth.js");
+
+  const ownerId = rid("u");
+  const billingId = rid("b");
+  const memberId = rid("m");
+  const labOrgId = rid("lab"); // has sales
+  const emptyLabOrgId = rid("lab2"); // owned, no sales
+  const providerOrgId = rid("prov");
+
+  const invoiceIds: string[] = [];
+
+  // UTC "today" — the forecast uses timeZone=UTC in these tests.
+  const now = new Date();
+  const today = {
+    yr: now.getUTCFullYear(),
+    mo: now.getUTCMonth(),
+    day: now.getUTCDate(),
+  };
+
+  // Mirror of the server's countBusinessDays (Mon–Fri inclusive) so the test
+  // can compute the expected forecast without importing a non-exported helper.
+  function countBiz(
+    start: { yr: number; mo: number; day: number },
+    end: { yr: number; mo: number; day: number },
+  ): number {
+    let cur = Date.UTC(start.yr, start.mo, start.day);
+    const last = Date.UTC(end.yr, end.mo, end.day);
+    let n = 0;
+    while (cur <= last) {
+      const dow = new Date(cur).getUTCDay();
+      if (dow >= 1 && dow <= 5) n += 1;
+      cur += 86_400_000;
+    }
+    return n;
+  }
+
+  async function makeSession(userId: string): Promise<{ access: string }> {
+    const { db, userSessions } = dbMod as any;
+    const sessionId = rid("sess");
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const refresh = authLib.signRefreshToken(userId, sessionId);
+    const hash = createHash("sha256").update(refresh).digest("hex");
+    await db
+      .insert(userSessions)
+      .values({ id: sessionId, userId, tokenHash: hash, expiresAt });
+    return { access: authLib.signAccessToken(userId, sessionId) };
+  }
+
+  function qs(orgId: string) {
+    return new URLSearchParams({
+      organizationId: orgId,
+      timeZone: "UTC",
+    }).toString();
+  }
+
+  beforeAll(async () => {
+    process.env["JWT_SECRET"] =
+      process.env["JWT_SECRET"] ?? "labtrax-test-secret-forecast";
+    dbMod = await import("@workspace/db");
+    appMod = await import("../app.js");
+    authLib = await import("../lib/auth.js");
+
+    const {
+      db,
+      users,
+      organizations,
+      organizationMemberships,
+      invoices,
+    } = dbMod as any;
+
+    await db.insert(users).values([
+      { id: ownerId, username: `fcowner_${ownerId}`, password: "x" },
+      { id: billingId, username: `fcbill_${billingId}`, password: "x" },
+      { id: memberId, username: `fcmem_${memberId}`, password: "x" },
+    ]);
+    await db.insert(organizations).values([
+      { id: labOrgId, type: "lab", name: rid("FcLab") },
+      { id: emptyLabOrgId, type: "lab", name: rid("FcLabEmpty") },
+      { id: providerOrgId, type: "provider", name: rid("FcProv") },
+    ]);
+    await db.insert(organizationMemberships).values([
+      // Owner of BOTH labs.
+      {
+        id: rid("m1"),
+        labId: labOrgId,
+        userId: ownerId,
+        role: "owner",
+        status: "active",
+        approvedByUserId: ownerId,
+        joinedAt: new Date(),
+      },
+      {
+        id: rid("m1b"),
+        labId: emptyLabOrgId,
+        userId: ownerId,
+        role: "owner",
+        status: "active",
+        approvedByUserId: ownerId,
+        joinedAt: new Date(),
+      },
+      // Billing role on the lab-with-sales — must still be forbidden.
+      {
+        id: rid("m2"),
+        labId: labOrgId,
+        userId: billingId,
+        role: "billing",
+        status: "active",
+        approvedByUserId: ownerId,
+        joinedAt: new Date(),
+      },
+      // Plain member.
+      {
+        id: rid("m3"),
+        labId: labOrgId,
+        userId: memberId,
+        role: "user",
+        status: "active",
+        approvedByUserId: ownerId,
+        joinedAt: new Date(),
+      },
+    ]);
+
+    // Two counted invoices dated ~5 min ago (safely inside the current week,
+    // month, and year), one void, one soft-deleted. Sum of counted = 350.00.
+    const issued = new Date(Date.now() - 5 * 60_000);
+    const invDefaults = {
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      createdByUserId: ownerId,
+    };
+    const mkInv = (over: Record<string, unknown>) => {
+      const id = rid("inv");
+      invoiceIds.push(id);
+      return { ...invDefaults, id, invoiceNumber: rid("FINV"), ...over };
+    };
+    await db.insert(invoices).values([
+      mkInv({ caseId: null, total: "100.00", status: "sent", issuedAt: issued }),
+      mkInv({ caseId: null, total: "250.00", status: "sent", issuedAt: issued }),
+      mkInv({ caseId: null, total: "5000.00", status: "void", issuedAt: issued }),
+      mkInv({
+        caseId: null,
+        total: "7000.00",
+        status: "sent",
+        issuedAt: issued,
+        deletedAt: new Date(),
+      }),
+    ]);
+  });
+
+  afterAll(async () => {
+    if (!SHOULD_RUN) return;
+    const {
+      db,
+      invoices,
+      userSessions,
+      organizationMemberships,
+      organizations,
+      users,
+    } = dbMod as any;
+    if (invoiceIds.length) {
+      await db.delete(invoices).where(inArray(invoices.id, invoiceIds));
+    }
+    await db
+      .delete(userSessions)
+      .where(inArray(userSessions.userId, [ownerId, billingId, memberId]));
+    await db
+      .delete(organizationMemberships)
+      .where(inArray(organizationMemberships.userId, [ownerId, billingId, memberId]));
+    await db
+      .delete(organizations)
+      .where(inArray(organizations.id, [labOrgId, emptyLabOrgId, providerOrgId]));
+    await db
+      .delete(users)
+      .where(inArray(users.id, [ownerId, billingId, memberId]));
+  });
+
+  // ── RBAC ────────────────────────────────────────────────────────────────
+
+  it("returns 401 without a token", async () => {
+    const r = await request(appMod.default).get(
+      `/api/stats/sales-forecast?${qs(labOrgId)}`,
+    );
+    expect(r.status).toBe(401);
+  });
+
+  it("returns 403 for a plain member", async () => {
+    const { access } = await makeSession(memberId);
+    const r = await request(appMod.default)
+      .get(`/api/stats/sales-forecast?${qs(labOrgId)}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(403);
+  });
+
+  it("returns 403 for a BILLING role (stricter than BILLING_ROLES)", async () => {
+    const { access } = await makeSession(billingId);
+    const r = await request(appMod.default)
+      .get(`/api/stats/sales-forecast?${qs(labOrgId)}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(403);
+  });
+
+  // ── Business-day math ─────────────────────────────────────────────────────
+
+  it("projects year sales from the current business-day pace", async () => {
+    const { access } = await makeSession(ownerId);
+    const r = await request(appMod.default)
+      .get(`/api/stats/sales-forecast?${qs(labOrgId)}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(200);
+    const d = r.body.data;
+    expect(d.organizationId).toBe(labOrgId);
+    expect(d.timeZone).toBe("UTC");
+    expect(d.week).toBeTruthy();
+    expect(d.month).toBeTruthy();
+    expect(d.year).toBeTruthy();
+
+    // Void + soft-deleted excluded → 100 + 250 = 350.00 counted for the year.
+    const year = d.year;
+    expect(year.periodToDateSales).toBe("350.00");
+    expect(year.insufficientData).toBe(false);
+
+    const elapsed = countBiz({ yr: today.yr, mo: 0, day: 1 }, today);
+    const total = countBiz(
+      { yr: today.yr, mo: 0, day: 1 },
+      { yr: today.yr, mo: 11, day: 31 },
+    );
+    expect(year.elapsedBusinessDays).toBe(elapsed);
+    expect(year.totalBusinessDays).toBe(total);
+
+    const expectedAvg = 350 / elapsed;
+    const expectedForecast = expectedAvg * total;
+    expect(year.averagePerBusinessDay).toBe(expectedAvg.toFixed(2));
+    expect(year.forecast).toBe(expectedForecast.toFixed(2));
+
+    // forecast is the pace projection: at least the sales already booked, and
+    // always avg × total by construction.
+    expect(Number(year.forecast)).toBeGreaterThanOrEqual(350);
+  });
+
+  it("returns insufficientData with a $0 forecast for a lab with no sales", async () => {
+    const { access } = await makeSession(ownerId);
+    const r = await request(appMod.default)
+      .get(`/api/stats/sales-forecast?${qs(emptyLabOrgId)}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(200);
+    const d = r.body.data;
+    for (const key of ["week", "month", "year"] as const) {
+      expect(d[key].periodToDateSales, key).toBe("0.00");
+      expect(d[key].insufficientData, key).toBe(true);
+      expect(d[key].forecast, key).toBe("0.00");
+      expect(d[key].averagePerBusinessDay, key).toBe("0.00");
+    }
+  });
+});

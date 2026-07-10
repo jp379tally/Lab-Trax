@@ -5183,3 +5183,131 @@ export const GetStatsWeekdayVolumeResponse = zod.object({
     totalCases: zod.number(),
   }),
 });
+
+/**
+ * Projects total sales for the current week, month, and year from the
+pace so far, using Monday–Friday business days only:
+`forecast = periodToDateSales / elapsedBusinessDays * totalBusinessDays`.
+Elapsed business days run from the period start through today
+(inclusive) in the lab timezone; a weekend "today" is never counted as
+a worked day, and sales are summed only up to now (never the future).
+All arithmetic is performed server-side. Requires the **owner** role on
+the lab (stricter than the other stats endpoints).
+
+ * @summary Owner-only sales pace forecast for the current week/month/year
+ */
+export const GetStatsSalesForecastQueryParams = zod.object({
+  organizationId: zod.coerce
+    .string()
+    .describe(
+      "Lab organization id (caller must hold owner\/admin\/billing role).",
+    ),
+  timeZone: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      "IANA timezone for bucketing\/weekday attribution (default UTC).",
+    ),
+});
+
+export const GetStatsSalesForecastResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    organizationId: zod.string(),
+    timeZone: zod.string(),
+    asOf: zod.coerce.date().describe("The instant the forecast was computed."),
+    week: zod.object({
+      periodStart: zod.coerce
+        .date()
+        .describe("UTC instant of the period's local-midnight start."),
+      periodToDateSales: zod
+        .string()
+        .describe(
+          "Sum of non-void, non-deleted invoices.total from period start\nthrough now (decimal string). Legacy mobile blob invoices excluded.\n",
+        ),
+      elapsedBusinessDays: zod
+        .number()
+        .describe("Mon–Fri days from period start through today (inclusive)."),
+      totalBusinessDays: zod
+        .number()
+        .describe("Total Mon–Fri days in the whole period."),
+      averagePerBusinessDay: zod
+        .string()
+        .describe(
+          "periodToDateSales \/ elapsedBusinessDays (decimal string; 0 when no elapsed day).",
+        ),
+      forecast: zod
+        .string()
+        .describe(
+          "Projected period total = averagePerBusinessDay \* totalBusinessDays (decimal string).",
+        ),
+      insufficientData: zod
+        .boolean()
+        .describe(
+          "True when the forecast is not meaningful yet — no elapsed business\nday (e.g. a period starting on a weekend) or no sales recorded so\nfar. Forecast is $0.00 in that case.\n",
+        ),
+    }),
+    month: zod.object({
+      periodStart: zod.coerce
+        .date()
+        .describe("UTC instant of the period's local-midnight start."),
+      periodToDateSales: zod
+        .string()
+        .describe(
+          "Sum of non-void, non-deleted invoices.total from period start\nthrough now (decimal string). Legacy mobile blob invoices excluded.\n",
+        ),
+      elapsedBusinessDays: zod
+        .number()
+        .describe("Mon–Fri days from period start through today (inclusive)."),
+      totalBusinessDays: zod
+        .number()
+        .describe("Total Mon–Fri days in the whole period."),
+      averagePerBusinessDay: zod
+        .string()
+        .describe(
+          "periodToDateSales \/ elapsedBusinessDays (decimal string; 0 when no elapsed day).",
+        ),
+      forecast: zod
+        .string()
+        .describe(
+          "Projected period total = averagePerBusinessDay \* totalBusinessDays (decimal string).",
+        ),
+      insufficientData: zod
+        .boolean()
+        .describe(
+          "True when the forecast is not meaningful yet — no elapsed business\nday (e.g. a period starting on a weekend) or no sales recorded so\nfar. Forecast is $0.00 in that case.\n",
+        ),
+    }),
+    year: zod.object({
+      periodStart: zod.coerce
+        .date()
+        .describe("UTC instant of the period's local-midnight start."),
+      periodToDateSales: zod
+        .string()
+        .describe(
+          "Sum of non-void, non-deleted invoices.total from period start\nthrough now (decimal string). Legacy mobile blob invoices excluded.\n",
+        ),
+      elapsedBusinessDays: zod
+        .number()
+        .describe("Mon–Fri days from period start through today (inclusive)."),
+      totalBusinessDays: zod
+        .number()
+        .describe("Total Mon–Fri days in the whole period."),
+      averagePerBusinessDay: zod
+        .string()
+        .describe(
+          "periodToDateSales \/ elapsedBusinessDays (decimal string; 0 when no elapsed day).",
+        ),
+      forecast: zod
+        .string()
+        .describe(
+          "Projected period total = averagePerBusinessDay \* totalBusinessDays (decimal string).",
+        ),
+      insufficientData: zod
+        .boolean()
+        .describe(
+          "True when the forecast is not meaningful yet — no elapsed business\nday (e.g. a period starting on a weekend) or no sales recorded so\nfar. Forecast is $0.00 in that case.\n",
+        ),
+    }),
+  }),
+});

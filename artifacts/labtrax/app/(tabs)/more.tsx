@@ -14,6 +14,7 @@ import {
   useMe,
   canEditAnyLab,
   canAdminAnyLab,
+  canOwnAnyLab,
   primaryLabOrgId,
   adminLabMemberships,
 } from "@/lib/auth-me";
@@ -32,6 +33,8 @@ interface MenuItem {
   requiresAdmin?: boolean;
   // any active lab member — reads open to all members, writes gated in-screen
   requiresLabMember?: boolean;
+  // owner-only — the Sales Forecaster (stricter than requiresAdmin)
+  requiresOwner?: boolean;
   // show the pending AI-suggestion count badge (admin-only) on this row
   showAiCandidateBadge?: boolean;
   // show the possible-duplicate doctor count badge (admin-only) on this row
@@ -87,6 +90,13 @@ const ITEMS: MenuItem[] = [
     requiresEdit: true,
   },
   {
+    title: "Sales Forecaster",
+    subtitle: "Projected weekly, monthly, and yearly sales",
+    icon: "trending-up-outline",
+    route: "/manage/sales-forecast",
+    requiresOwner: true,
+  },
+  {
     title: "Possible duplicate doctors",
     subtitle: "Review likely-duplicate doctor names and merge",
     icon: "git-merge-outline",
@@ -118,6 +128,7 @@ export default function MoreMenuScreen() {
   const meQuery = useMe();
   const canEdit = canEditAnyLab(meQuery.data);
   const canAdmin = canAdminAnyLab(meQuery.data);
+  const canOwn = canOwnAnyLab(meQuery.data);
   const labOrgId = primaryLabOrgId(meQuery.data);
   const hasLab = !!labOrgId;
 
@@ -147,6 +158,7 @@ export default function MoreMenuScreen() {
     (item) =>
       (!item.requiresEdit || canEdit) &&
       (!item.requiresAdmin || canAdmin) &&
+      (!item.requiresOwner || canOwn) &&
       (!item.requiresLabMember || hasLab),
   );
 

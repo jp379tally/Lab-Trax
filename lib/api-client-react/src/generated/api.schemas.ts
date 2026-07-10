@@ -20,6 +20,43 @@ export const StatsCaseCategory = {
   uncategorized: "uncategorized",
 } as const;
 
+export interface StatsSalesForecastPeriod {
+  /** UTC instant of the period's local-midnight start. */
+  periodStart: string;
+  /** Sum of non-void, non-deleted invoices.total from period start
+through now (decimal string). Legacy mobile blob invoices excluded.
+ */
+  periodToDateSales: string;
+  /** Mon–Fri days from period start through today (inclusive). */
+  elapsedBusinessDays: number;
+  /** Total Mon–Fri days in the whole period. */
+  totalBusinessDays: number;
+  /** periodToDateSales / elapsedBusinessDays (decimal string; 0 when no elapsed day). */
+  averagePerBusinessDay: string;
+  /** Projected period total = averagePerBusinessDay * totalBusinessDays (decimal string). */
+  forecast: string;
+  /** True when the forecast is not meaningful yet — no elapsed business
+day (e.g. a period starting on a weekend) or no sales recorded so
+far. Forecast is $0.00 in that case.
+ */
+  insufficientData: boolean;
+}
+
+export type StatsSalesForecastResultData = {
+  organizationId: string;
+  timeZone: string;
+  /** The instant the forecast was computed. */
+  asOf: string;
+  week: StatsSalesForecastPeriod;
+  month: StatsSalesForecastPeriod;
+  year: StatsSalesForecastPeriod;
+};
+
+export interface StatsSalesForecastResult {
+  ok: boolean;
+  data: StatsSalesForecastResultData;
+}
+
 export type StatsSummaryResultDataPreviousPeriod = {
   from: string;
   to: string;
@@ -3444,4 +3481,15 @@ material). Legacy cases match on their blob material string.
 
  */
   material?: StatsMaterialParameter;
+};
+
+export type GetStatsSalesForecastParams = {
+  /**
+   * Lab organization id (caller must hold owner/admin/billing role).
+   */
+  organizationId: StatsOrganizationIdParameter;
+  /**
+   * IANA timezone for bucketing/weekday attribution (default UTC).
+   */
+  timeZone?: StatsTimeZoneParameter;
 };
