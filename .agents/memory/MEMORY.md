@@ -129,3 +129,4 @@
 - [Express catch-all shadows literal routes](invoices-route-catchall-shadowing.md) — a literal single-segment route registered after GET /:param 404s silently; register above the catch-all; only supertest-style tests catch it.
 - [lab-team pendingInvites unscoped](lab-team-pending-invites-unscoped.md) — sender-side invite listings must use GET /organizations/:orgId/invites; lab-team pendingInvites span all admin labs with no lab id.
 - [Dev platform-admin smoke](dev-platform-admin-secret-smoke.md) — PLATFORM_ADMIN_SECRET is prod-only; smoke admin routes via a one-bash-call short-lived server with an ad-hoc secret.
+- [Maynard active-case context](ai-agent-active-case-context.md) — grounding the AI in the viewed case is an authz surface: apply the SAME tenant+role gate as lookup_case, not just tenant scope.

@@ -25,8 +25,9 @@ import {
 } from "../lib/ai-agent-tools";
 import { db } from "@workspace/db";
 import { organizations, organizationMemberships, pricingTiers, invoices, cases } from "@workspace/db";
-import { eq, and, inArray, ilike } from "drizzle-orm";
+import { eq, and, inArray, ilike, isNull } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
+import { BILLING_ROLES, requireAnyRole } from "../lib/rbac";
 import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock, RETENTION_LEGAL_DISCLAIMER } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
 import { persistAiChatExchange } from "../lib/ai-chat-history";
@@ -243,6 +244,106 @@ ${autoExecuteNote}
   return { prompt, knowledgeSectionIds: knowledgeMeta.sectionIds, retentionDisclaimer: knowledgeMeta.retentionDisclaimer, privacyDisclaimer: knowledgeMeta.privacyDisclaimer };
 }
 
+// ─── Active-case context injection ───────────────────────────────────────────
+//
+// The clients pass the case the user is currently viewing (caseId) or the set
+// of cases pinned in the desktop panel (caseIds). We fetch a bounded set of
+// safe summary fields for those case(s) — strictly scoped to the requester's
+// org using the exact same tenant rules as the case tools — and format them as
+// a system-prompt block so "this case" / "these cases" resolve without the user
+// restating the case number. Never leaks cross-tenant data: a case that does
+// not belong to the requester's org simply does not appear.
+
+/** Max number of active cases injected into the prompt (keeps it bounded). */
+const MAX_ACTIVE_CASES = 8;
+/** Max characters of rx notes injected per case (keeps the prompt bounded). */
+const MAX_RX_NOTES_CHARS = 400;
+
+/**
+ * Build the active-case context block for the system prompt.
+ *
+ * Returns an empty string when there is nothing to inject: no ids were passed,
+ * the requester has no org scope, or none of the requested cases belong to the
+ * requester's org. All DB errors degrade to an empty string so a lookup failure
+ * never breaks the chat.
+ */
+async function buildActiveCaseContextBlock(
+  rawCaseId: string | undefined,
+  rawCaseIds: string[] | undefined,
+  ctx: ToolContext,
+): Promise<string> {
+  // Collect, trim, and dedupe the requested ids, then cap to keep it bounded.
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  const push = (v: unknown) => {
+    if (typeof v !== "string") return;
+    const t = v.trim();
+    if (!t || seen.has(t)) return;
+    seen.add(t);
+    ids.push(t);
+  };
+  push(rawCaseId);
+  if (Array.isArray(rawCaseIds)) for (const v of rawCaseIds) push(v);
+  if (ids.length === 0) return "";
+  const cappedIds = ids.slice(0, MAX_ACTIVE_CASES);
+
+  // Tenant + role scoping — identical rules to lookup_case / the other case
+  // tools. For lab users we must enforce the same BILLING_ROLES gate that
+  // lookup_case applies, or a role-restricted lab user could see case summaries
+  // in prompt context that the case tools would deny them. requireAnyRole throws
+  // on denial; that (and any other lookup error) degrades to no injected block.
+  let rows: Array<typeof cases.$inferSelect>;
+  try {
+    let scope;
+    if (ctx.userType === "provider") {
+      if (ctx.providerOrgIds.length === 0) return "";
+      scope = inArray(cases.providerOrganizationId, ctx.providerOrgIds);
+    } else {
+      if (!ctx.labOrganizationId) return "";
+      await requireAnyRole(ctx.userId, ctx.labOrganizationId, BILLING_ROLES);
+      scope = eq(cases.labOrganizationId, ctx.labOrganizationId);
+    }
+
+    rows = await db
+      .select()
+      .from(cases)
+      .where(and(inArray(cases.id, cappedIds), isNull(cases.deletedAt), scope))
+      .limit(MAX_ACTIVE_CASES);
+  } catch {
+    return "";
+  }
+  if (!rows || rows.length === 0) return "";
+
+  const fmtDate = (d: Date | string | null | undefined): string => {
+    if (!d) return "—";
+    const date = d instanceof Date ? d : new Date(d);
+    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString();
+  };
+
+  const lines = rows.map((c) => {
+    const patient = `${c.patientFirstName ?? ""} ${c.patientLastName ?? ""}`.trim() || "Unknown";
+    const parts = [
+      `case #${c.caseNumber} (ID: ${c.id})`,
+      `patient: ${patient}`,
+      `doctor: ${c.doctorName ?? "—"}`,
+      `status: ${c.status ?? "—"}`,
+      `priority: ${c.priority ?? "normal"}`,
+      `due: ${fmtDate(c.dueDate)}`,
+      `expected delivery: ${fmtDate(c.expectedDeliveryDate)}`,
+    ];
+    if (c.shade) parts.push(`shade: ${c.shade}`);
+    if (c.rxNotes) parts.push(`rx notes: ${String(c.rxNotes).slice(0, MAX_RX_NOTES_CHARS)}`);
+    return `- ${parts.join(" | ")}`;
+  });
+
+  const header =
+    rows.length === 1
+      ? `ACTIVE CASE (the user is viewing this case right now; "this case" refers to it):`
+      : `ACTIVE CASES (the user has these ${rows.length} cases pinned; reason about all of them):`;
+
+  return `\n\n${header}\n${lines.join("\n")}\nUse these details to answer questions about "this case"/"these cases" without asking the user to restate the case number. For actions, still call the appropriate tool with the case ID shown above.`;
+}
+
 // ─── Route registration ──────────────────────────────────────────────────────
 
 export function registerAiAgentRoutes(router: IRouter): void {
@@ -327,6 +428,12 @@ export function registerAiAgentRoutes(router: IRouter): void {
     );
     const { prompt: systemPrompt, knowledgeSectionIds, retentionDisclaimer, privacyDisclaimer } = systemPromptResult;
 
+    // Ground the assistant in the case(s) the user is currently viewing so
+    // "this case" / "these cases" resolve without restating the case number.
+    // Tenant-scoped; degrades to no block on any failure.
+    const caseContextBlock = await buildActiveCaseContextBlock(body.caseId, body.caseIds, toolCtx);
+    const systemPromptWithCases = systemPrompt + caseContextBlock;
+
     // Persist each completed exchange to the shared cross-device chat history so
     // it follows the user across devices (the same store `/ai-chat/history`
     // reads). Fire-and-forget: a persistence failure never blocks or alters the
@@ -358,7 +465,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
 
     // Tool-calling loop — runs up to 6 iterations
     const loopMessages: OpenAI.ChatCompletionMessageParam[] = [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: systemPromptWithCases },
       ...safeMessages,
     ];
 
@@ -637,6 +744,12 @@ export function registerAiAgentRoutes(router: IRouter): void {
 
     const { prompt: systemPrompt, knowledgeSectionIds, retentionDisclaimer, privacyDisclaimer } = systemPromptResult;
 
+    // Ground the assistant in the case(s) the user is currently viewing so
+    // "this case" / "these cases" resolve without restating the case number.
+    // Tenant-scoped; degrades to no block on any failure.
+    const caseContextBlock = await buildActiveCaseContextBlock(body.caseId, body.caseIds, toolCtx);
+    const systemPromptWithCases = systemPrompt + caseContextBlock;
+
     // Persist each completed exchange to the shared cross-device chat history so
     // it follows the user across devices (the same store `/ai-chat/history`
     // reads). Fire-and-forget: a persistence failure never blocks or alters the
@@ -665,7 +778,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
 
     const openAiTools = buildOpenAiTools();
     const loopMessages: OpenAI.ChatCompletionMessageParam[] = [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: systemPromptWithCases },
       ...safeMessages,
     ];
 
