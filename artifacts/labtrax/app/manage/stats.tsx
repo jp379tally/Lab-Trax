@@ -34,6 +34,7 @@ import {
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
+import { DateField } from "@/components/DateField";
 import {
   useMe,
   canEditAnyLab,
@@ -56,6 +57,10 @@ const PRESETS: Array<{ key: PresetKey; label: string; groupBy: GroupBy }> = [
   { key: "12mo", label: "12 months", groupBy: "month" },
 ];
 
+// The "Custom" chip lives alongside the presets; it swaps the preset range for
+// two user-chosen calendar dates (via the shared DateField picker).
+type RangeKey = PresetKey | "custom";
+
 function rangeForPreset(key: PresetKey): { from: string; to: string } {
   const now = new Date();
   const end = new Date(now);
@@ -76,6 +81,43 @@ function rangeForPreset(key: PresetKey): { from: string; to: string } {
   }
   start.setHours(0, 0, 0, 0);
   return { from: start.toISOString(), to: end.toISOString() };
+}
+
+// Convert a date-only "YYYY-MM-DD" string into a local start-of-day (or
+// end-of-day) ISO timestamp — mirrors the preset boundaries so the server sees
+// the same inclusive window it does for a preset.
+function ymdToIso(value: string, endOfDay: boolean): string | null {
+  const [y, m, d] = value.split("-").map((n) => Number(n));
+  if (!y || !m || !d) return null;
+  const dt = new Date(y, m - 1, d);
+  if (Number.isNaN(dt.getTime())) return null;
+  if (endOfDay) dt.setHours(23, 59, 59, 999);
+  else dt.setHours(0, 0, 0, 0);
+  return dt.toISOString();
+}
+
+function todayYmd(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(
+    n.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+function monthStartYmd(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
+// Auto-derive the revenue-chart bucket size from how long the custom window is,
+// so a few days show daily bars and a multi-year window shows monthly bars.
+function groupByForRange(fromIso: string, toIso: string): GroupBy {
+  const fromMs = new Date(fromIso).getTime();
+  const toMs = new Date(toIso).getTime();
+  if (Number.isNaN(fromMs) || Number.isNaN(toMs)) return "month";
+  const days = Math.abs(toMs - fromMs) / 86_400_000;
+  if (days <= 62) return "day";
+  if (days <= 190) return "week";
+  return "month";
 }
 
 const CATEGORY_OPTIONS: Array<{ key: StatsCaseCategory; label: string }> = [
@@ -136,13 +178,41 @@ export default function StatsScreen() {
     [me, orgId],
   );
 
-  const [preset, setPreset] = useState<PresetKey>("month");
+  const [rangeKey, setRangeKey] = useState<RangeKey>("month");
+  const [customFrom, setCustomFrom] = useState<string>("");
+  const [customTo, setCustomTo] = useState<string>("");
   const [category, setCategory] = useState<StatsCaseCategory | "">("");
 
-  // Recompute only when the preset changes — a fresh `new Date()` each render
-  // would churn the query key on every render.
-  const range = useMemo(() => rangeForPreset(preset), [preset]);
-  const groupBy = PRESETS.find((p) => p.key === preset)?.groupBy ?? "month";
+  // Seed the custom dates from the current preset window the first time the
+  // user opens Custom, so there's always a valid range to start from.
+  function selectRange(key: RangeKey) {
+    if (key === "custom" && (!customFrom || !customTo)) {
+      setCustomFrom(monthStartYmd());
+      setCustomTo(todayYmd());
+    }
+    setRangeKey(key);
+  }
+
+  // Recompute only when inputs change — a fresh `new Date()` each render would
+  // churn the query key on every render. Custom dates are date-only strings, so
+  // a stray inverted range is auto-swapped before it hits the queries.
+  const range = useMemo(() => {
+    if (rangeKey === "custom") {
+      const lo = customFrom && customTo && customFrom > customTo ? customTo : customFrom;
+      const hi = customFrom && customTo && customFrom > customTo ? customFrom : customTo;
+      const from = ymdToIso(lo, false);
+      const to = ymdToIso(hi, true);
+      if (from && to) return { from, to };
+      return rangeForPreset("month");
+    }
+    return rangeForPreset(rangeKey);
+  }, [rangeKey, customFrom, customTo]);
+
+  const groupBy = useMemo<GroupBy>(() => {
+    if (rangeKey === "custom") return groupByForRange(range.from, range.to);
+    return PRESETS.find((p) => p.key === rangeKey)?.groupBy ?? "month";
+  }, [rangeKey, range.from, range.to]);
+
   const timeZone = useMemo(() => localTimeZone(), []);
 
   const baseParams = {
@@ -261,11 +331,39 @@ export default function StatsScreen() {
 
           <ChipRow
             styles={styles}
-            options={PRESETS.map((p) => ({ key: p.key, label: p.label }))}
-            selected={preset}
-            onSelect={(k) => setPreset(k as PresetKey)}
+            options={[
+              ...PRESETS.map((p) => ({ key: p.key as string, label: p.label })),
+              { key: "custom", label: "Custom" },
+            ]}
+            selected={rangeKey}
+            onSelect={(k) => selectRange(k as RangeKey)}
             testIDPrefix="stats-range"
           />
+
+          {rangeKey === "custom" ? (
+            <View style={styles.customRange} testID="stats-custom-range">
+              <View style={styles.customField}>
+                <Text style={styles.customLabel}>Start</Text>
+                <DateField
+                  value={customFrom}
+                  onChange={setCustomFrom}
+                  title="Start date"
+                  placeholder="Start date"
+                  testID="stats-custom-from"
+                />
+              </View>
+              <View style={styles.customField}>
+                <Text style={styles.customLabel}>End</Text>
+                <DateField
+                  value={customTo}
+                  onChange={setCustomTo}
+                  title="End date"
+                  placeholder="End date"
+                  testID="stats-custom-to"
+                />
+              </View>
+            </View>
+          ) : null}
 
           <ChipRow
             styles={styles}
@@ -773,6 +871,13 @@ function makeStyles(c: ThemeColors) {
     chipActive: { backgroundColor: c.tint },
     chipText: { ...Typography.captionMedium, color: c.textSecondary },
     chipTextActive: { color: c.textInverse },
+    customRange: { flexDirection: "row", gap: Spacing.sm },
+    customField: { flex: 1, gap: 4 },
+    customLabel: {
+      ...Typography.label,
+      color: c.textSecondary,
+      textTransform: "uppercase",
+    },
     metricGrid: {
       flexDirection: "row",
       flexWrap: "wrap",

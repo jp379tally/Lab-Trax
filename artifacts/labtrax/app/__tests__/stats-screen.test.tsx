@@ -6,7 +6,7 @@
 // useQuery keyed on "auth-me" (seed memberships via meMemberships).
 import React from "react";
 import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react-native";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react-native";
 import StatsScreen from "../manage/stats";
 import { setMockAppState, resetMockAppState } from "../../vitest.setup";
 
@@ -150,6 +150,29 @@ describe("StatsScreen — billing-role rendering", () => {
     // Date-range presets present
     expect(screen.getByTestId("stats-range-month")).toBeTruthy();
     expect(screen.getByTestId("stats-range-12mo")).toBeTruthy();
+  });
+
+  it("opens start/end calendar pickers when the Custom range chip is tapped", () => {
+    setMockAppState({
+      meMemberships: [OWNER_MEMBERSHIP],
+      statsSummary: SUMMARY,
+      statsRevenueSeries: REVENUE,
+      statsCaseCategories: CATEGORIES,
+      statsWeekdayVolume: WEEKDAYS,
+    });
+    render(<StatsScreen />);
+
+    // Custom chip is present alongside the presets, and the pickers are hidden
+    // until it is selected.
+    expect(screen.getByTestId("stats-range-custom")).toBeTruthy();
+    expect(screen.queryByTestId("stats-custom-range")).toBeNull();
+
+    fireEvent.press(screen.getByTestId("stats-range-custom"));
+
+    // Both date-field triggers now render, seeded with a valid range.
+    expect(screen.getByTestId("stats-custom-range")).toBeTruthy();
+    expect(screen.getByTestId("stats-custom-from")).toBeTruthy();
+    expect(screen.getByTestId("stats-custom-to")).toBeTruthy();
   });
 
   it("shows empty states when there is no data in the window", () => {
