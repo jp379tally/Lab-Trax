@@ -80,6 +80,7 @@ const STATUS_FILTERS = [
   { value: "paid", label: "Paid" },
   { value: "void", label: "Void" },
   { value: "frozen", label: "Frozen" },
+  { value: "zero_balance", label: "$0 balance" },
 ];
 
 const EDITABLE_STATUSES = [
@@ -165,8 +166,9 @@ export default function InvoicesPage() {
 
   const queryString = useMemo(() => {
     const sp = new URLSearchParams();
-    if (openOnly) sp.set("status", "open");
-    else if (status && status !== "all" && status !== "frozen") sp.set("status", status);
+    if (openOnly && status !== "zero_balance") sp.set("status", "open");
+    else if (status && status !== "all" && status !== "frozen" && status !== "zero_balance")
+      sp.set("status", status);
     if (practiceId) sp.set("practiceId", practiceId);
     if (aiOnly) sp.set("aiOnly", "true");
     if (overdueBucket) sp.set("overdueBucket", overdueBucket);
@@ -228,7 +230,9 @@ export default function InvoicesPage() {
     const rows = data ?? [];
     const q = search.trim().toLowerCase();
     const list = rows.filter((i) => {
-      if (openOnly) {
+      if (status === "zero_balance") {
+        if (Number(i.balanceDue ?? i.total ?? 0) !== 0) return false;
+      } else if (openOnly) {
         if (i.status !== "open" && i.status !== "partially_paid") return false;
       } else if (status === "frozen") {
         if (!i.frozen) return false;
