@@ -17,7 +17,7 @@ import {
 } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { router, useFocusEffect } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import * as Haptics from "expo-haptics";
@@ -43,8 +43,20 @@ import { useDayChange } from "@/hooks/useDayChange";
 import { extractLookupCase } from "@/lib/barcode-lookup";
 import { pickBestBarcode, guideBoxFromLayout } from "@/lib/barcode-guide-box";
 import { useMe, primaryLabOrgId } from "@/lib/auth-me";
+import { classifyCaseCategory, CASE_CATEGORY_KEYS, type CaseCategory } from "@/lib/case-category";
 
 type DateFilterPreset = "all" | "today" | "yesterday" | "thisWeek" | "thisMonth" | "custom";
+
+// Labels for the category chip seeded by the Stats screen — mirrors the
+// Stats screen's CATEGORY_OPTIONS labels.
+const CATEGORY_FILTER_LABELS: Record<CaseCategory, string> = {
+  implants: "Implants",
+  zirconia: "Zirconia",
+  crown_bridge: "Crown & Bridge",
+  removable: "Removable",
+  other: "Other",
+  uncategorized: "Uncategorized",
+};
 
 const DATE_PRESET_OPTIONS: { value: DateFilterPreset; label: string }[] = [
   { value: "today", label: "Today" },
@@ -544,6 +556,11 @@ export default function CasesListScreen() {
   // ── Conflict filter (show only cases with duplicate active barcodes)
   const [conflictFilter, setConflictFilter] = useState(false);
 
+  // ── Category filter (seeded by tapping a Stats "Cases by category" bar).
+  // Not user-selectable from a picker on this screen — it appears as a
+  // dismissible chip only when active.
+  const [categoryFilter, setCategoryFilter] = useState<CaseCategory | "">("");
+
   // ── Location filter (empty array = all locations)
   const [locationFilter, setLocationFilter] = useState<string[]>([]);
   const [showLocationModal, setShowLocationModal] = useState(false);
@@ -568,6 +585,7 @@ export default function CasesListScreen() {
     setBarcodeFilter("");
     setShowBarcodeFilter(false);
     setConflictFilter(false);
+    setCategoryFilter("");
   }, []);
 
   // Reset Cases filters when leaving the Cases section entirely, but preserve
@@ -585,6 +603,39 @@ export default function CasesListScreen() {
       };
     }, [resetFilters]),
   );
+
+  // ── Deep-link filters from the Stats screen ────────────────────────────────
+  // Tapping a "Cases by category" bar (or a "Sales over time" period bar) on
+  // the Stats screen navigates here with a category and/or created-date window.
+  // Seed the matching filters once, then strip the params so a later refocus
+  // (e.g. returning from a case) doesn't re-apply a filter the user cleared.
+  const params = useLocalSearchParams<{
+    category?: string;
+    createdFrom?: string;
+    createdTo?: string;
+  }>();
+  useEffect(() => {
+    const { category, createdFrom, createdTo } = params;
+    if (!category && !createdFrom && !createdTo) return;
+
+    if (typeof category === "string" && (CASE_CATEGORY_KEYS as readonly string[]).includes(category)) {
+      setCategoryFilter(category as CaseCategory);
+    }
+
+    const from = typeof createdFrom === "string" ? new Date(createdFrom) : null;
+    const to = typeof createdTo === "string" ? new Date(createdTo) : null;
+    const fromValid = from && !Number.isNaN(from.getTime());
+    const toValid = to && !Number.isNaN(to.getTime());
+    if (fromValid || toValid) {
+      setCreatedCustomFrom(fromValid ? from : null);
+      setCreatedCustomTo(toValid ? to : null);
+      setCreatedFilter("custom");
+    }
+
+    // Consume the params so they don't linger and re-seed on the next focus.
+    router.setParams({ category: undefined, createdFrom: undefined, createdTo: undefined });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.category, params.createdFrom, params.createdTo]);
 
   // ── Long-press locate (single) + multi-select mode
   // Guard: after a long-press fires, the subsequent pressOut→onPress (on that
@@ -773,9 +824,21 @@ export default function CasesListScreen() {
       result = result.filter((c) => conflictIds.has(c.id));
     }
 
+    // Category filter (seeded from the Stats screen) — classify each case from
+    // its restoration type/material strings, mirroring the Stats grouping.
+    if (categoryFilter) {
+      result = result.filter(
+        (c) =>
+          classifyCaseCategory(
+            typeof c.restorationTypes === "string" ? c.restorationTypes : null,
+            typeof c.restorationMaterials === "string" ? c.restorationMaterials : null,
+          ) === categoryFilter,
+      );
+    }
+
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cases, query, createdFilter, dueFilter, createdCustomFrom, createdCustomTo, dueCustomFrom, dueCustomTo, locationFilter, barcodeFilter, conflictFilter, conflictIds, dayKey]);
+  }, [cases, query, createdFilter, dueFilter, createdCustomFrom, createdCustomTo, dueCustomFrom, dueCustomTo, locationFilter, barcodeFilter, conflictFilter, categoryFilter, conflictIds, dayKey]);
 
   // ── Date preset matching helper ─────────────────────────────────────────
   function dateMatchesPreset(
@@ -905,7 +968,7 @@ export default function CasesListScreen() {
   }, [locationFilter]);
 
   const activeFilters =
-    createdFilter !== "all" || dueFilter !== "all" || locationFilter.length > 0 || barcodeFilter.trim().length > 0 || conflictFilter;
+    createdFilter !== "all" || dueFilter !== "all" || locationFilter.length > 0 || barcodeFilter.trim().length > 0 || conflictFilter || categoryFilter !== "";
 
   // Includes the text search too — drives the visible Reset filters control.
   const anyFilterActive = activeFilters || query.trim().length > 0;
@@ -1139,6 +1202,29 @@ export default function CasesListScreen() {
               </Pressable>
             )}
           </Pressable>
+
+          {/* Category chip — only shown when seeded from the Stats screen */}
+          {categoryFilter !== "" && (
+            <Pressable
+              style={[
+                styles.chip,
+                { backgroundColor: colors.tint + "22", borderColor: colors.tint },
+              ]}
+              onPress={() => setCategoryFilter("")}
+              testID="cases-category-filter-chip"
+            >
+              <Ionicons
+                name="bar-chart-outline"
+                size={13}
+                color={colors.tint}
+                style={{ marginRight: 4 }}
+              />
+              <Text style={[styles.chipText, { color: colors.tint }]}>
+                {CATEGORY_FILTER_LABELS[categoryFilter]}
+              </Text>
+              <Ionicons name="close-circle" size={14} color={colors.tint} style={{ marginLeft: 4 }} />
+            </Pressable>
+          )}
 
           {/* Divider */}
           <View style={styles.chipDivider} />

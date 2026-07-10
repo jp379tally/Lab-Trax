@@ -120,6 +120,38 @@ function groupByForRange(fromIso: string, toIso: string): GroupBy {
   return "month";
 }
 
+// Given a revenue bucket's `periodStart` (a UTC-midnight ISO stamp encoding
+// the local start of the bucket) and the group size, return the local
+// created-date window [from, to] for that single bar so tapping it drills the
+// Cases list into just that day/week/month/year.
+function bucketWindow(
+  periodStart: string | null | undefined,
+  groupBy: GroupBy,
+): { createdFrom: string; createdTo: string } | null {
+  if (!periodStart) return null;
+  const d = new Date(periodStart);
+  if (Number.isNaN(d.getTime())) return null;
+  // periodStart was built from Date.UTC(localY, localM, localD), so read it
+  // back in UTC and rebuild as a local Date to get the intended calendar day.
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
+  const from = new Date(y, m, day);
+  from.setHours(0, 0, 0, 0);
+  const to = new Date(from);
+  if (groupBy === "day") {
+    // to stays on the same day
+  } else if (groupBy === "week") {
+    to.setDate(to.getDate() + 6);
+  } else if (groupBy === "month") {
+    to.setMonth(to.getMonth() + 1, 0);
+  } else {
+    to.setFullYear(to.getFullYear() + 1, 0, 0);
+  }
+  to.setHours(23, 59, 59, 999);
+  return { createdFrom: from.toISOString(), createdTo: to.toISOString() };
+}
+
 const CATEGORY_OPTIONS: Array<{ key: StatsCaseCategory; label: string }> = [
   { key: "implants", label: "Implants" },
   { key: "zirconia", label: "Zirconia" },
@@ -271,6 +303,24 @@ export default function StatsScreen() {
     void revenueQuery.refetch();
     void weekdayQuery.refetch();
     if (isAdminForOrg) void remakesQuery.refetch();
+  }
+
+  // Navigate to the Cases list pre-filtered to a category and/or created-date
+  // window, turning a stat bar into a drill-down. `createdFrom`/`createdTo`
+  // default to the currently selected range so the list matches the chart.
+  function drillIntoCases(opts: {
+    category?: StatsCaseCategory;
+    createdFrom?: string;
+    createdTo?: string;
+  }) {
+    router.push({
+      pathname: "/(tabs)",
+      params: {
+        ...(opts.category ? { category: opts.category } : {}),
+        createdFrom: opts.createdFrom ?? range.from,
+        createdTo: opts.createdTo ?? range.to,
+      },
+    } as never);
   }
 
   const blocked = !meQuery.isLoading && !canView;
@@ -467,6 +517,10 @@ export default function StatsScreen() {
                   bars={revenue.series.map((s) => ({
                     key: s.period,
                     value: toNumber(s.revenue),
+                    onPress: () => {
+                      const win = bucketWindow(s.periodStart, groupBy);
+                      if (win) drillIntoCases(win);
+                    },
                   }))}
                   firstLabel={revenue.series[0]?.period ?? ""}
                   lastLabel={revenue.series[revenue.series.length - 1]?.period ?? ""}
@@ -497,7 +551,11 @@ export default function StatsScreen() {
                 colors={colors}
                 rows={categories.categories
                   .filter((c) => c.count > 0)
-                  .map((c) => ({ label: c.label, value: c.count }))}
+                  .map((c) => ({
+                    label: c.label,
+                    value: c.count,
+                    onPress: () => drillIntoCases({ category: c.category }),
+                  }))}
               />
             ) : null}
           </ChartCard>
@@ -768,7 +826,7 @@ function VerticalBars({
 }: {
   styles: Styles;
   colors: ThemeColors;
-  bars: Array<{ key: string; value: number }>;
+  bars: Array<{ key: string; value: number; onPress?: () => void }>;
   firstLabel: string;
   lastLabel: string;
 }) {
@@ -779,7 +837,14 @@ function VerticalBars({
         {bars.map((b) => {
           const pct = Math.round((b.value / max) * 100);
           return (
-            <View key={b.key} style={styles.vbarTrack}>
+            <Pressable
+              key={b.key}
+              style={styles.vbarTrack}
+              onPress={b.onPress}
+              disabled={!b.onPress}
+              hitSlop={4}
+              testID={`stats-revenue-bar-${b.key}`}
+            >
               <View
                 style={[
                   styles.vbarFill,
@@ -789,7 +854,7 @@ function VerticalBars({
                   },
                 ]}
               />
-            </View>
+            </Pressable>
           );
         })}
       </View>
@@ -808,7 +873,7 @@ function HorizontalBars({
 }: {
   styles: Styles;
   colors: ThemeColors;
-  rows: Array<{ label: string; value: number }>;
+  rows: Array<{ label: string; value: number; onPress?: () => void }>;
 }) {
   const max = Math.max(...rows.map((r) => r.value), 1);
   return (
@@ -816,7 +881,13 @@ function HorizontalBars({
       {rows.map((r) => {
         const pct = Math.max(4, Math.round((r.value / max) * 100));
         return (
-          <View key={r.label} style={styles.hbarRow}>
+          <Pressable
+            key={r.label}
+            style={styles.hbarRow}
+            onPress={r.onPress}
+            disabled={!r.onPress}
+            testID={`stats-category-bar-${r.label}`}
+          >
             <Text style={styles.hbarLabel} numberOfLines={1}>
               {r.label}
             </Text>
@@ -829,7 +900,7 @@ function HorizontalBars({
               />
             </View>
             <Text style={styles.hbarValue}>{r.value}</Text>
-          </View>
+          </Pressable>
         );
       })}
     </View>

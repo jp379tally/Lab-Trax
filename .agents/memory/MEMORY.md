@@ -131,3 +131,4 @@
 - [Dev platform-admin smoke](dev-platform-admin-secret-smoke.md) — PLATFORM_ADMIN_SECRET is prod-only; smoke admin routes via a one-bash-call short-lived server with an ad-hoc secret.
 - [Maynard active-case context](ai-agent-active-case-context.md) — grounding the AI in the viewed case is an authz surface: apply the SAME tenant+role gate as lookup_case, not just tenant scope.
 - [RN Modal test stub renders children](rn-modal-stub-renders-children.md) — labtrax mobile Modal stub ignores `visible`; two same modals collide on shared testIDs; namespace internal testIDs by the trigger testID.
+- [Mobile stat-bar drill-down classifier](mobile-stat-bar-drilldown-classifier.md) — mobile Stats bars drill into the Cases list via a self-contained case-category mirror (server rules aren't shared; material-mapping too entangled); category items expose `category` not `key`.
