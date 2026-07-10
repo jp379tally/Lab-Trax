@@ -340,6 +340,7 @@ export * from "./statsRevenueSeriesResultDataGroupBy";
 export * from "./statsRevenueSeriesResultDataSeriesItem";
 export * from "./statsRevenueSeriesResultDataTotals";
 export * from "./statsSalesForecastPeriod";
+export * from "./statsSalesForecastPreviousPeriod";
 export * from "./statsSalesForecastResult";
 export * from "./statsSalesForecastResultData";
 export * from "./statsSummaryResult";

@@ -20,6 +20,28 @@ export const StatsCaseCategory = {
   uncategorized: "uncategorized",
 } as const;
 
+/**
+ * The prior comparable period used for the pace-trend indicator: the same
+number of elapsed business days into the immediately-preceding
+week/month/year as have elapsed in the current period.
+
+ */
+export interface StatsSalesForecastPreviousPeriod {
+  /** UTC instant of the prior period's local-midnight start. */
+  periodStart: string;
+  /** Sum of non-void, non-deleted invoices.total over the prior period's
+comparable elapsed business-day window (decimal string).
+ */
+  comparableSales: string;
+  /** Mon–Fri days in the prior comparable window (equals the current
+elapsedBusinessDays, unless the prior period was shorter and the
+window was capped to its end).
+ */
+  comparableBusinessDays: number;
+  /** comparableSales / comparableBusinessDays (decimal string; 0 when none). */
+  averagePerBusinessDay: string;
+}
+
 export interface StatsSalesForecastPeriod {
   /** UTC instant of the period's local-midnight start. */
   periodStart: string;
@@ -40,6 +62,16 @@ day (e.g. a period starting on a weekend) or no sales recorded so
 far. Forecast is $0.00 in that case.
  */
   insufficientData: boolean;
+  /** Percent change of the current per-business-day pace vs the prior
+comparable period's pace (one decimal place; positive = accelerating).
+Null when there is nothing to compare — the current period has
+insufficient data, or the prior comparable window recorded no sales.
+ */
+  paceChangePct: number | null;
+  /** The prior comparable period the pace trend is measured against.
+Null when the current period has insufficient data.
+ */
+  previousPeriod: StatsSalesForecastPreviousPeriod | null;
 }
 
 export type StatsSalesForecastResultData = {

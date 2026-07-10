@@ -888,6 +888,39 @@ function countBusinessDays(
   return count;
 }
 
+/**
+ * Local calendar date of the Nth Monday–Friday day (1-based) counting from
+ * `start` (inclusive). Returns null when `n <= 0` or the search runs past a
+ * two-year guard without reaching the Nth business day (only possible when a
+ * caller asks for more business days than exist in the prior period, which the
+ * caller then caps to that period's end).
+ */
+export function nthBusinessDay(
+  start: { yr: number; mo: number; day: number },
+  n: number,
+  end?: { yr: number; mo: number; day: number },
+): { yr: number; mo: number; day: number } | null {
+  if (n <= 0) return null;
+  let cur = Date.UTC(start.yr, start.mo, start.day);
+  const endMs = end ? Date.UTC(end.yr, end.mo, end.day) : null;
+  let count = 0;
+  for (let guard = 0; guard < 366 * 2; guard += 1) {
+    // Stop if we have scanned past the (inclusive) end bound: the Nth business
+    // day does not exist within [start, end], so the caller should clamp.
+    if (endMs !== null && cur > endMs) return null;
+    const dow = new Date(cur).getUTCDay(); // 0 = Sun … 6 = Sat
+    if (dow >= 1 && dow <= 5) {
+      count += 1;
+      if (count === n) {
+        const d = new Date(cur);
+        return { yr: d.getUTCFullYear(), mo: d.getUTCMonth(), day: d.getUTCDate() };
+      }
+    }
+    cur += 86_400_000;
+  }
+  return null;
+}
+
 router.get(
   "/sales-forecast",
   asyncHandler(async (req, res) => {
@@ -924,10 +957,25 @@ router.get(
     const weekEnd = new Date(weekStartMs + 6 * 86_400_000);
     const monthEndDay = new Date(Date.UTC(today.yr, today.mo + 1, 0)).getUTCDate();
 
+    // Prior comparable period (the immediately preceding week/month/year),
+    // used for the pace-trend indicator. The trend compares the current
+    // per-business-day pace against the SAME number of elapsed business days
+    // into this prior period (apples-to-apples), so seasonality within a
+    // period (e.g. end-of-month billing surges) does not distort the signal.
+    const priorWeekStart = new Date(weekStartMs - 7 * 86_400_000);
+    const priorWeekEnd = new Date(weekStartMs - 86_400_000);
+    const priorMonthYr = today.mo === 0 ? today.yr - 1 : today.yr;
+    const priorMonthMo = today.mo === 0 ? 11 : today.mo - 1;
+    const priorMonthEndDay = new Date(
+      Date.UTC(priorMonthYr, priorMonthMo + 1, 0),
+    ).getUTCDate();
+
     const periods: Array<{
       key: "week" | "month" | "year";
       start: { yr: number; mo: number; day: number };
       end: { yr: number; mo: number; day: number };
+      priorStart: { yr: number; mo: number; day: number };
+      priorEnd: { yr: number; mo: number; day: number };
     }> = [
       {
         key: "week",
@@ -941,16 +989,30 @@ router.get(
           mo: weekEnd.getUTCMonth(),
           day: weekEnd.getUTCDate(),
         },
+        priorStart: {
+          yr: priorWeekStart.getUTCFullYear(),
+          mo: priorWeekStart.getUTCMonth(),
+          day: priorWeekStart.getUTCDate(),
+        },
+        priorEnd: {
+          yr: priorWeekEnd.getUTCFullYear(),
+          mo: priorWeekEnd.getUTCMonth(),
+          day: priorWeekEnd.getUTCDate(),
+        },
       },
       {
         key: "month",
         start: { yr: today.yr, mo: today.mo, day: 1 },
         end: { yr: today.yr, mo: today.mo, day: monthEndDay },
+        priorStart: { yr: priorMonthYr, mo: priorMonthMo, day: 1 },
+        priorEnd: { yr: priorMonthYr, mo: priorMonthMo, day: priorMonthEndDay },
       },
       {
         key: "year",
         start: { yr: today.yr, mo: 0, day: 1 },
         end: { yr: today.yr, mo: 11, day: 31 },
+        priorStart: { yr: today.yr - 1, mo: 0, day: 1 },
+        priorEnd: { yr: today.yr - 1, mo: 11, day: 31 },
       },
     ];
 
@@ -971,6 +1033,72 @@ router.get(
           elapsedBusinessDays > 0 ? periodToDateSales / elapsedBusinessDays : 0;
         const forecast = averagePerBusinessDay * totalBusinessDays;
 
+        // ── Pace trend vs the prior comparable period ──────────────────────
+        // Compare the current per-business-day pace against the SAME number of
+        // elapsed business days into the immediately-preceding period. When
+        // the current period lacks data there is nothing to trend, and when
+        // the prior comparable window had no sales the change is undefined
+        // (null) rather than a misleading +∞.
+        let previousPeriod: {
+          periodStart: string;
+          comparableSales: string;
+          comparableBusinessDays: number;
+          averagePerBusinessDay: string;
+        } | null = null;
+        let paceChangePct: number | null = null;
+
+        if (!insufficientData) {
+          // Nth business day into the prior period (same elapsed count as now),
+          // capped to the prior period's end when it is shorter (e.g. a 20-day
+          // prior month vs a 23-day current month).
+          const priorCutoff =
+            nthBusinessDay(p.priorStart, elapsedBusinessDays, p.priorEnd) ??
+            p.priorEnd;
+          const priorFrom = zonedMidnightToUtc(
+            offsetFmt,
+            p.priorStart.yr,
+            p.priorStart.mo,
+            p.priorStart.day,
+          );
+          // Inclusive through the end of the cutoff local day: local midnight
+          // of the following day, minus 1ms.
+          const nextMs =
+            Date.UTC(priorCutoff.yr, priorCutoff.mo, priorCutoff.day) + 86_400_000;
+          const nextDay = new Date(nextMs);
+          const priorTo = new Date(
+            zonedMidnightToUtc(
+              offsetFmt,
+              nextDay.getUTCFullYear(),
+              nextDay.getUTCMonth(),
+              nextDay.getUTCDate(),
+            ).getTime() - 1,
+          );
+          const priorInvoices = await loadRevenueInvoices(
+            q.organizationId,
+            priorFrom,
+            priorTo,
+          );
+          const priorSales = priorInvoices.reduce((a, r) => a + r.total, 0);
+          const priorBusinessDays = countBusinessDays(p.priorStart, priorCutoff);
+          const priorAveragePerBusinessDay =
+            priorBusinessDays > 0 ? priorSales / priorBusinessDays : 0;
+          previousPeriod = {
+            periodStart: priorFrom.toISOString(),
+            comparableSales: priorSales.toFixed(2),
+            comparableBusinessDays: priorBusinessDays,
+            averagePerBusinessDay: priorAveragePerBusinessDay.toFixed(2),
+          };
+          if (priorAveragePerBusinessDay > 0) {
+            paceChangePct = Number(
+              (
+                ((averagePerBusinessDay - priorAveragePerBusinessDay) /
+                  priorAveragePerBusinessDay) *
+                100
+              ).toFixed(1),
+            );
+          }
+        }
+
         return {
           key: p.key,
           periodStart: from.toISOString(),
@@ -980,6 +1108,8 @@ router.get(
           averagePerBusinessDay: averagePerBusinessDay.toFixed(2),
           forecast: forecast.toFixed(2),
           insufficientData,
+          paceChangePct,
+          previousPeriod,
         };
       }),
     );

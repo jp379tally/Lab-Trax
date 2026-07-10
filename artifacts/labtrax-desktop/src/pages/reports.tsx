@@ -7,6 +7,8 @@ import {
   DollarSign,
   Download,
   Loader2,
+  Minus,
+  TrendingDown,
   TrendingUp,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
@@ -177,6 +179,12 @@ export default function ReportsPage() {
 // Owner-only sales pace projection. The server (GET /stats/sales-forecast)
 // does ALL the math — this component only picks the lab + timezone and
 // renders the numbers it returns.
+interface ForecastPreviousPeriod {
+  periodStart: string;
+  comparableSales: string;
+  comparableBusinessDays: number;
+  averagePerBusinessDay: string;
+}
 interface ForecastPeriod {
   periodStart: string;
   periodToDateSales: string;
@@ -185,6 +193,8 @@ interface ForecastPeriod {
   averagePerBusinessDay: string;
   forecast: string;
   insufficientData: boolean;
+  paceChangePct: number | null;
+  previousPeriod: ForecastPreviousPeriod | null;
 }
 interface ForecastResult {
   organizationId: string;
@@ -285,6 +295,8 @@ function ForecastCard({
   title: string;
   period: ForecastPeriod;
 }) {
+  // "This week" → "last week", etc. — labels the comparable prior period.
+  const priorLabel = title.toLowerCase().replace(/^this\b/, "last");
   return (
     <section className="bg-card border border-border rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">
@@ -294,9 +306,15 @@ function ForecastCard({
       <div className="text-3xl font-semibold tracking-tight tabular-nums">
         {period.insufficientData ? "—" : formatMoney(period.forecast)}
       </div>
-      <div className="text-xs text-muted-foreground mt-1 mb-4">
+      <div className="text-xs text-muted-foreground mt-1 mb-3">
         Projected {title.toLowerCase()} sales
       </div>
+
+      {!period.insufficientData && (
+        <div className="mb-4">
+          <PaceTrend pct={period.paceChangePct} priorLabel={priorLabel} />
+        </div>
+      )}
 
       {period.insufficientData ? (
         <div className="text-sm text-muted-foreground">
@@ -327,6 +345,46 @@ function ForecastRow({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between">
       <dt className="text-muted-foreground">{label}</dt>
       <dd className="tabular-nums font-medium">{value}</dd>
+    </div>
+  );
+}
+
+// Pace-trend chip: the current per-business-day pace vs the prior comparable
+// period (server-computed). Null = no comparable prior sales to trend against.
+function PaceTrend({
+  pct,
+  priorLabel,
+}: {
+  pct: number | null;
+  priorLabel: string;
+}) {
+  if (pct === null) {
+    return (
+      <div className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Minus size={13} />
+        <span>No comparison for {priorLabel}</span>
+      </div>
+    );
+  }
+  const up = pct > 0;
+  const flat = pct === 0;
+  const Icon = flat ? Minus : up ? TrendingUp : TrendingDown;
+  const color = flat
+    ? "text-muted-foreground"
+    : up
+      ? "text-emerald-600 dark:text-emerald-500"
+      : "text-red-600 dark:text-red-500";
+  const word = flat ? "flat" : up ? "up" : "down";
+  const magnitude = `${Math.abs(pct).toFixed(1)}%`;
+  return (
+    <div
+      className={`inline-flex items-center gap-1.5 text-xs font-medium ${color}`}
+    >
+      <Icon size={13} />
+      <span>
+        Pace {word}
+        {flat ? "" : ` ${magnitude}`} vs {priorLabel}
+      </span>
     </div>
   );
 }

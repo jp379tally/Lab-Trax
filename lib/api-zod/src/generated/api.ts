@@ -5247,6 +5247,42 @@ export const GetStatsSalesForecastResponse = zod.object({
         .describe(
           "True when the forecast is not meaningful yet — no elapsed business\nday (e.g. a period starting on a weekend) or no sales recorded so\nfar. Forecast is $0.00 in that case.\n",
         ),
+      paceChangePct: zod
+        .number()
+        .nullable()
+        .describe(
+          "Percent change of the current per-business-day pace vs the prior\ncomparable period's pace (one decimal place; positive = accelerating).\nNull when there is nothing to compare — the current period has\ninsufficient data, or the prior comparable window recorded no sales.\n",
+        ),
+      previousPeriod: zod
+        .object({
+          periodStart: zod.coerce
+            .date()
+            .describe(
+              "UTC instant of the prior period's local-midnight start.",
+            ),
+          comparableSales: zod
+            .string()
+            .describe(
+              "Sum of non-void, non-deleted invoices.total over the prior period's\ncomparable elapsed business-day window (decimal string).\n",
+            ),
+          comparableBusinessDays: zod
+            .number()
+            .describe(
+              "Mon–Fri days in the prior comparable window (equals the current\nelapsedBusinessDays, unless the prior period was shorter and the\nwindow was capped to its end).\n",
+            ),
+          averagePerBusinessDay: zod
+            .string()
+            .describe(
+              "comparableSales \/ comparableBusinessDays (decimal string; 0 when none).",
+            ),
+        })
+        .describe(
+          "The prior comparable period used for the pace-trend indicator: the same\nnumber of elapsed business days into the immediately-preceding\nweek\/month\/year as have elapsed in the current period.\n",
+        )
+        .nullable()
+        .describe(
+          "The prior comparable period the pace trend is measured against.\nNull when the current period has insufficient data.\n",
+        ),
     }),
     month: zod.object({
       periodStart: zod.coerce
@@ -5278,6 +5314,42 @@ export const GetStatsSalesForecastResponse = zod.object({
         .describe(
           "True when the forecast is not meaningful yet — no elapsed business\nday (e.g. a period starting on a weekend) or no sales recorded so\nfar. Forecast is $0.00 in that case.\n",
         ),
+      paceChangePct: zod
+        .number()
+        .nullable()
+        .describe(
+          "Percent change of the current per-business-day pace vs the prior\ncomparable period's pace (one decimal place; positive = accelerating).\nNull when there is nothing to compare — the current period has\ninsufficient data, or the prior comparable window recorded no sales.\n",
+        ),
+      previousPeriod: zod
+        .object({
+          periodStart: zod.coerce
+            .date()
+            .describe(
+              "UTC instant of the prior period's local-midnight start.",
+            ),
+          comparableSales: zod
+            .string()
+            .describe(
+              "Sum of non-void, non-deleted invoices.total over the prior period's\ncomparable elapsed business-day window (decimal string).\n",
+            ),
+          comparableBusinessDays: zod
+            .number()
+            .describe(
+              "Mon–Fri days in the prior comparable window (equals the current\nelapsedBusinessDays, unless the prior period was shorter and the\nwindow was capped to its end).\n",
+            ),
+          averagePerBusinessDay: zod
+            .string()
+            .describe(
+              "comparableSales \/ comparableBusinessDays (decimal string; 0 when none).",
+            ),
+        })
+        .describe(
+          "The prior comparable period used for the pace-trend indicator: the same\nnumber of elapsed business days into the immediately-preceding\nweek\/month\/year as have elapsed in the current period.\n",
+        )
+        .nullable()
+        .describe(
+          "The prior comparable period the pace trend is measured against.\nNull when the current period has insufficient data.\n",
+        ),
     }),
     year: zod.object({
       periodStart: zod.coerce
@@ -5308,6 +5380,42 @@ export const GetStatsSalesForecastResponse = zod.object({
         .boolean()
         .describe(
           "True when the forecast is not meaningful yet — no elapsed business\nday (e.g. a period starting on a weekend) or no sales recorded so\nfar. Forecast is $0.00 in that case.\n",
+        ),
+      paceChangePct: zod
+        .number()
+        .nullable()
+        .describe(
+          "Percent change of the current per-business-day pace vs the prior\ncomparable period's pace (one decimal place; positive = accelerating).\nNull when there is nothing to compare — the current period has\ninsufficient data, or the prior comparable window recorded no sales.\n",
+        ),
+      previousPeriod: zod
+        .object({
+          periodStart: zod.coerce
+            .date()
+            .describe(
+              "UTC instant of the prior period's local-midnight start.",
+            ),
+          comparableSales: zod
+            .string()
+            .describe(
+              "Sum of non-void, non-deleted invoices.total over the prior period's\ncomparable elapsed business-day window (decimal string).\n",
+            ),
+          comparableBusinessDays: zod
+            .number()
+            .describe(
+              "Mon–Fri days in the prior comparable window (equals the current\nelapsedBusinessDays, unless the prior period was shorter and the\nwindow was capped to its end).\n",
+            ),
+          averagePerBusinessDay: zod
+            .string()
+            .describe(
+              "comparableSales \/ comparableBusinessDays (decimal string; 0 when none).",
+            ),
+        })
+        .describe(
+          "The prior comparable period used for the pace-trend indicator: the same\nnumber of elapsed business days into the immediately-preceding\nweek\/month\/year as have elapsed in the current period.\n",
+        )
+        .nullable()
+        .describe(
+          "The prior comparable period the pace trend is measured against.\nNull when the current period has insufficient data.\n",
         ),
     }),
   }),

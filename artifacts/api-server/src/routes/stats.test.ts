@@ -43,6 +43,62 @@ function rid(prefix: string) {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
 }
 
+// Pure helper — no DB required, so runs unconditionally.
+describe("nthBusinessDay (pace-trend prior-window helper)", () => {
+  it("returns the Nth Mon–Fri from the start", async () => {
+    const { nthBusinessDay } = await import("./stats.js");
+    // Jan 1 2024 is a Monday. 1st business day = Jan 1, 5th = Jan 5 (Fri).
+    expect(nthBusinessDay({ yr: 2024, mo: 0, day: 1 }, 1)).toEqual({
+      yr: 2024,
+      mo: 0,
+      day: 1,
+    });
+    expect(nthBusinessDay({ yr: 2024, mo: 0, day: 1 }, 5)).toEqual({
+      yr: 2024,
+      mo: 0,
+      day: 5,
+    });
+    // 6th business day skips the weekend to Jan 8 (Mon).
+    expect(nthBusinessDay({ yr: 2024, mo: 0, day: 1 }, 6)).toEqual({
+      yr: 2024,
+      mo: 0,
+      day: 8,
+    });
+  });
+
+  it("returns null for a non-positive count", async () => {
+    const { nthBusinessDay } = await import("./stats.js");
+    expect(nthBusinessDay({ yr: 2024, mo: 0, day: 1 }, 0)).toBeNull();
+    expect(nthBusinessDay({ yr: 2024, mo: 0, day: 1 }, -3)).toBeNull();
+  });
+
+  it("returns null (does not spill past the period) when the Nth day is beyond the end bound", async () => {
+    const { nthBusinessDay } = await import("./stats.js");
+    // Feb 2021: 20 business days, ending Feb 28 (Sun -> last biz day Feb 26).
+    // Asking for the 25th business day would land in March without a bound;
+    // with the end bound it must return null so the caller clamps to Feb end.
+    const priorStart = { yr: 2021, mo: 1, day: 1 };
+    const priorEnd = { yr: 2021, mo: 1, day: 28 };
+    expect(nthBusinessDay(priorStart, 25, priorEnd)).toBeNull();
+    // Without the bound the old behavior spilled into March (regression guard).
+    const spill = nthBusinessDay(priorStart, 25);
+    expect(spill).not.toBeNull();
+    expect(spill!.mo).toBe(2); // March
+  });
+
+  it("still returns an in-range day when the Nth day fits inside the end bound", async () => {
+    const { nthBusinessDay } = await import("./stats.js");
+    const priorStart = { yr: 2021, mo: 1, day: 1 };
+    const priorEnd = { yr: 2021, mo: 1, day: 28 };
+    // 20th business day of Feb 2021 is Feb 26 (Fri) — inside the bound.
+    expect(nthBusinessDay(priorStart, 20, priorEnd)).toEqual({
+      yr: 2021,
+      mo: 1,
+      day: 26,
+    });
+  });
+});
+
 maybe("Stats analytics routes (db integration)", () => {
   let dbMod: typeof import("@workspace/db");
   let appMod: { default: import("express").Express };
@@ -962,6 +1018,112 @@ maybe("Sales forecast route (db integration)", () => {
       expect(d[key].insufficientData, key).toBe(true);
       expect(d[key].forecast, key).toBe("0.00");
       expect(d[key].averagePerBusinessDay, key).toBe("0.00");
+      // Nothing to trend against when the current period has no data.
+      expect(d[key].paceChangePct, key).toBeNull();
+      expect(d[key].previousPeriod, key).toBeNull();
+    }
+  });
+
+  // ── Pace trend vs prior comparable period ────────────────────────────────
+
+  it("reports paceChangePct null when there is no prior comparable sales", async () => {
+    // The primary lab has current-year sales but no prior-year sales, so the
+    // YEAR card has a defined pace now but nothing to compare against.
+    const { access } = await makeSession(ownerId);
+    const r = await request(appMod.default)
+      .get(`/api/stats/sales-forecast?${qs(labOrgId)}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(200);
+    const year = r.body.data.year;
+    expect(year.insufficientData).toBe(false);
+    // previousPeriod is always present for a sufficient current period, but its
+    // comparable sales are zero here, so the change is undefined (null).
+    expect(year.previousPeriod).toBeTruthy();
+    expect(year.previousPeriod.comparableSales).toBe("0.00");
+    expect(year.paceChangePct).toBeNull();
+  });
+
+  it("computes paceChangePct from the prior comparable business-day window", async () => {
+    // Insert prior-year sales for a fresh owned lab so the YEAR pace trend has
+    // a comparable prior window. Prior-year sales are placed on Jan 2 (or the
+    // period's first business day) so they fall inside the comparable window
+    // for any "today".
+    const { db, organizations, organizationMemberships, invoices } = dbMod as any;
+    const trendLab = rid("lab3");
+    const trendMemId = rid("m4");
+    await db
+      .insert(organizations)
+      .values([{ id: trendLab, type: "lab", name: rid("FcTrend") }]);
+    await db.insert(organizationMemberships).values([
+      {
+        id: trendMemId,
+        labId: trendLab,
+        userId: ownerId,
+        role: "owner",
+        status: "active",
+        approvedByUserId: ownerId,
+        joinedAt: new Date(),
+      },
+    ]);
+
+    // Prior year, first business day (Jan 1 is a holiday-agnostic weekday check
+    // — use Jan 2 which is a weekday in most years; fall back handled by the
+    // server capping to prior period end). Total prior comparable = 100.
+    const priorYr = today.yr - 1;
+    // First Mon–Fri on/after Jan 1 of the prior year.
+    let jan = Date.UTC(priorYr, 0, 1);
+    while ([0, 6].includes(new Date(jan).getUTCDay())) jan += 86_400_000;
+    const priorIssued = new Date(jan + 12 * 3_600_000); // midday UTC
+
+    // Current year sales already exist on labOrgId, but this lab needs its own
+    // current sales too. Place 200 on the first business day of THIS year.
+    let curJan = Date.UTC(today.yr, 0, 1);
+    while ([0, 6].includes(new Date(curJan).getUTCDay())) curJan += 86_400_000;
+    const curIssued = new Date(curJan + 12 * 3_600_000);
+
+    const mk = (over: Record<string, unknown>) => {
+      return {
+        labOrganizationId: trendLab,
+        providerOrganizationId: providerOrgId,
+        createdByUserId: ownerId,
+        caseId: null,
+        invoiceNumber: rid("TINV"),
+        ...over,
+      };
+    };
+    await db.insert(invoices).values([
+      mk({ total: "100.00", status: "sent", issuedAt: priorIssued }),
+      mk({ total: "200.00", status: "sent", issuedAt: curIssued }),
+    ]);
+
+    try {
+      const { access } = await makeSession(ownerId);
+      const r = await request(appMod.default)
+        .get(`/api/stats/sales-forecast?${qs(trendLab)}`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(r.status).toBe(200);
+      const year = r.body.data.year;
+      expect(year.insufficientData).toBe(false);
+      expect(year.previousPeriod).toBeTruthy();
+      // The comparable window is the same number of elapsed business days into
+      // the prior year, which includes the Jan prior-year invoice (100.00).
+      expect(year.previousPeriod.comparableSales).toBe("100.00");
+      expect(year.previousPeriod.comparableBusinessDays).toBe(
+        year.elapsedBusinessDays,
+      );
+      // paceChangePct compares current avg/day (200 / elapsed) to prior avg/day
+      // (100 / elapsed) → +100.0%.
+      expect(year.paceChangePct).toBe(100);
+    } finally {
+      // Delete by lab org id (not tracked ids) so the org can never be left
+      // with a dangling invoice FK, then memberships, then the org itself.
+      await db
+        .delete(invoices)
+        .where(eq(invoices.labOrganizationId, trendLab));
+      await db
+        .delete(organizationMemberships)
+        .where(eq(organizationMemberships.id, trendMemId));
+      await db.delete(organizations).where(eq(organizations.id, trendLab));
     }
   });
 });

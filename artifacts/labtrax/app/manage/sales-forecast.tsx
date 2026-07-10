@@ -223,6 +223,15 @@ function ForecastCard({
       <Text style={styles.cardCaption}>Projected {title.toLowerCase()} sales</Text>
 
       {!loading && period && !period.insufficientData ? (
+        <PaceTrend
+          styles={styles}
+          colors={colors}
+          pct={period.paceChangePct}
+          priorLabel={title.toLowerCase().replace(/^this\b/, "last")}
+        />
+      ) : null}
+
+      {!loading && period && !period.insufficientData ? (
         <View style={styles.detailList}>
           <DetailRow
             styles={styles}
@@ -262,6 +271,49 @@ function DetailRow({
     <View style={styles.detailRow}>
       <Text style={styles.detailLabel}>{label}</Text>
       <Text style={styles.detailValue}>{value}</Text>
+    </View>
+  );
+}
+
+// Pace-trend chip: current per-business-day pace vs the prior comparable
+// period (server-computed). Null pct = no comparable prior sales to trend.
+function PaceTrend({
+  styles,
+  colors,
+  pct,
+  priorLabel,
+}: {
+  styles: Styles;
+  colors: ThemeColors;
+  pct: number | null;
+  priorLabel: string;
+}) {
+  if (pct === null) {
+    return (
+      <View style={styles.paceRow}>
+        <Ionicons name="remove-outline" size={14} color={colors.textTertiary} />
+        <Text style={[styles.paceText, { color: colors.textTertiary }]}>
+          No comparison for {priorLabel}
+        </Text>
+      </View>
+    );
+  }
+  const up = pct > 0;
+  const flat = pct === 0;
+  const color = flat ? colors.textSecondary : up ? colors.success : colors.error;
+  const icon = flat
+    ? "remove-outline"
+    : up
+      ? "trending-up-outline"
+      : "trending-down-outline";
+  const word = flat ? "flat" : up ? "up" : "down";
+  const label = flat
+    ? `Pace flat vs ${priorLabel}`
+    : `Pace ${word} ${Math.abs(pct).toFixed(1)}% vs ${priorLabel}`;
+  return (
+    <View style={styles.paceRow}>
+      <Ionicons name={icon} size={14} color={color} />
+      <Text style={[styles.paceText, { color }]}>{label}</Text>
     </View>
   );
 }
@@ -320,6 +372,13 @@ function makeStyles(c: ThemeColors) {
     cardTitle: { ...Typography.bodyLgMedium, color: c.text },
     cardValue: { ...Typography.h1, color: c.text },
     cardCaption: { ...Typography.caption, color: c.textSecondary },
+    paceRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      marginTop: Spacing.xs,
+    },
+    paceText: { ...Typography.captionSemibold },
     detailList: { marginTop: Spacing.md, gap: Spacing.xs },
     detailRow: {
       flexDirection: "row",

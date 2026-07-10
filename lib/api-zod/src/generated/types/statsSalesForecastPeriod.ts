@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { StatsSalesForecastPreviousPeriod } from "./statsSalesForecastPreviousPeriod";
 
 export interface StatsSalesForecastPeriod {
   /** UTC instant of the period's local-midnight start. */
@@ -26,4 +27,14 @@ day (e.g. a period starting on a weekend) or no sales recorded so
 far. Forecast is $0.00 in that case.
  */
   insufficientData: boolean;
+  /** Percent change of the current per-business-day pace vs the prior
+comparable period's pace (one decimal place; positive = accelerating).
+Null when there is nothing to compare — the current period has
+insufficient data, or the prior comparable window recorded no sales.
+ */
+  paceChangePct: number | null;
+  /** The prior comparable period the pace trend is measured against.
+Null when the current period has insufficient data.
+ */
+  previousPeriod: StatsSalesForecastPreviousPeriod | null;
 }
