@@ -1,0 +1,200 @@
+### Replit Build Brief
+
+**Objective**
+Rebuild the Statements generation workflow so LabTracks admins can generate and send statements like QuickBooks: choose one or more practices/doctors, choose the invoice scope, choose email and/or SMS delivery, customize the message, and send/download multiple statement PDFs in one run.
+
+**User-visible problem**
+In `Statements > Generate Statements`, the modal only shows one selectable office, even though the Statements table behind it shows many practices with open balances. The workflow also lacks the needed statement options: doctor-level selection, flexible invoice age/date scopes, multi-statement sending, email subject/header/message controls, and true PDF delivery by email/SMS.
+
+**Likely root cause**
+The Statements page builds the main table from invoices, but the Generate Statements modal builds its recipient list from organizations filtered by `parentLabOrganizationId === orgId`. If most invoice-linked practices do not have that parent link populated, they appear in the table but not in the modal. That explains why the table shows many balances while the modal only shows “First Care Dental Associates.”
+
+Relevant code areas:
+
+* `artifacts/labtrax-desktop/src/pages/statements.tsx`
+* `GenerateStatementsModal`
+* `rows` memo that groups invoices by `providerOrganizationId`
+* modal `practices={organizationsQuery.data?.filter((o) => o.parentLabOrganizationId === orgId) ?? []}`
+* `artifacts/api-server/src/routes/statements.ts`
+* `artifacts/api-server/src/lib/statements.ts`
+* `buildPracticeStatementsForScope`
+* `runBatchSendStatements`
+* `generateStatementsZipBufferForLab`
+
+**Implementation plan**
+
+1. Fix recipient sourcing first.
+
+   * The modal should use the same invoice-backed recipient set as the Statements table.
+   * Build selectable recipients from `rows`, then enrich with matching `Organization` data when available.
+   * Do not require `parentLabOrganizationId` for a recipient to appear if that practice has invoices for the selected lab.
+   * Keep `parentLabOrganizationId` as a useful metadata check, not the sole inclusion rule.
+
+2. Add practice/doctor recipient modes.
+
+   * Add a recipient type toggle: `Practice / Doctor`.
+   * Practice mode groups by `providerOrganizationId`.
+   * Doctor mode should group by the invoice’s doctor/provider field if one exists. If doctor data is only embedded in invoice metadata, normalize the grouping carefully and document the fallback.
+   * Allow selecting multiple recipients in either mode.
+
+3. Replace the limited invoice scope options.
+
+   * Current backend only supports `open`, `open_overdue_90`, and `all`.
+   * Add scopes such as:
+
+     * `open_all`: all open/unpaid invoices
+     * `last_30_days`: invoices issued in the last 30 days
+     * `over_90_days`: open invoices more than 90 days past due
+     * `custom_date_range`: optional, if quick to add safely
+     * keep `all` for full history
+   * Make sure frontend labels match the actual backend behavior.
+
+4. Improve delivery options.
+
+   * Email should attach the generated statement PDF.
+   * SMS should either send a secure PDF link or MMS attachment if the existing Twilio setup supports media URLs. Do not pretend an SMS can attach a local PDF directly.
+   * Let the user select email, SMS, download ZIP, or combinations.
+   * Clearly flag missing billing email or phone per recipient before send.
+
+5. Add message controls.
+
+   * Add fields for:
+
+     * email subject
+     * email header/title
+     * email body/message
+     * optional reply-to
+   * Support placeholders like `{{practiceName}}`, `{{doctorName}}`, `{{periodLabel}}`, `{{openBalance}}`, `{{labName}}`.
+   * Save defaults using the existing statement schedule/template storage or a dedicated statement settings endpoint.
+
+6. Fix review/send behavior.
+
+   * Review screen should show exactly the selected recipients, not all practices when a filter was active.
+   * Send/download should pass explicit selected IDs and recipient type to the server.
+   * Results should show per-recipient email/SMS/download status and errors.
+
+**Constraints and guardrails**
+
+* Do not break existing scheduled monthly statements.
+* Do not send statements to inactive practices unless the current table already includes them intentionally.
+* Do not send to recipients missing the selected delivery method; mark them skipped with a reason.
+* Do not change invoice balances or payment state.
+* Be careful with PHI in SMS. Prefer a secure PDF link over exposing detailed statement content in text.
+* If adding persistent PDF links, ensure they are access-controlled or time-limited.
+
+**Acceptance criteria**
+
+* Generate Statements shows every practice/office currently visible in the Statements table when “open balance only” is enabled.
+* The user can select one, many, or all recipients.
+* The user can select practice-level or doctor-level statements.
+* The user can choose all open invoices, last 30 days, over 90 days, all invoices, and ideally a custom range.
+* Email sends a PDF attachment with configurable subject/header/body.
+* SMS sends a statement PDF link or supported PDF media delivery.
+* Review step accurately lists only the selected recipients.
+* Send history records each recipient and channel result.
+* ZIP download contains one PDF per selected statement.
+
+**Regression checks**
+
+* Existing Statements table totals still match invoice data.
+* Existing Auto-send monthly statements still work.
+* Existing statement send history still displays.
+* Practices with no email/phone are skipped, not crashed.
+* Selecting all after searching/filtering does not accidentally send to the wrong hidden set.
+* Open invoice filtering excludes paid/voided invoices correctly.
+* Over-90 filtering uses due date aging, not invoice creation date.
+
+### Copy-Ready Replit Prompt
+
+Please fix and expand the LabTracks statement generation workflow.
+
+Current issue: On the Statements page, clicking “Generate Statements” opens a modal where only one office can be selected, even though the Statements table behind it shows many practices with open balances. This is incorrect. The user must be able to select one or more offices/practices, or doctors individually, and generate/send statements for the selected recipients.
+
+Likely root cause: In `artifacts/labtrax-desktop/src/pages/statements.tsx`, the main table is built from invoice-backed `rows`, but `GenerateStatementsModal` receives `practices` from `organizationsQuery.data?.filter((o) => o.parentLabOrganizationId === orgId)`. If most invoice-linked practices do not have `parentLabOrganizationId` populated, they appear in the table but disappear from the modal. Fix the recipient list so it is sourced from the same invoice-backed statement rows used by the table, then enrich with matching organization data when available.
+
+Inspect and update these files:
+
+* `artifacts/labtrax-desktop/src/pages/statements.tsx`
+* `artifacts/api-server/src/routes/statements.ts`
+* `artifacts/api-server/src/lib/statements.ts`
+* any relevant invoice/organization types or API schemas
+
+Required behavior:
+
+1. The Generate Statements modal must show all statement recipients with open balances, matching the Statements table.
+2. The user must be able to select one, many, or all recipients.
+3. Add a recipient mode for practice/office vs doctor, if doctor data exists on invoices or invoice metadata. If the data model does not support doctor-level grouping cleanly yet, implement practice-level correctly first and clearly explain what field/schema is needed for doctor-level grouping.
+4. Add invoice scope choices similar to QuickBooks:
+
+   * all open invoices
+   * invoices from the last 30 days
+   * invoices over 90 days past due
+   * all invoices
+   * custom range if feasible without a risky refactor
+5. Update backend statement generation so those invoice scopes are real server-side filters, not just frontend labels.
+6. Delivery options must support:
+
+   * email statement as PDF attachment
+   * SMS/text delivery of the statement PDF, preferably through a secure PDF link or Twilio-supported media URL
+   * download ZIP of PDFs
+   * multiple selected statements in one run
+7. Add email controls:
+
+   * subject line
+   * email header/title
+   * message body
+   * optional reply-to if already supported
+   * placeholders such as `{{practiceName}}`, `{{doctorName}}`, `{{periodLabel}}`, `{{openBalance}}`, `{{labName}}`
+8. The Review step must show exactly the selected recipients and selected delivery channels.
+9. Results must show per-recipient email/SMS status and skip reasons for missing email/phone.
+
+Important guardrails:
+
+* Do not break existing Auto-send scheduled statements.
+* Do not alter invoice totals, balances, or payment records.
+* Do not expose sensitive statement details directly in SMS. Use a secure PDF link or supported PDF media delivery if SMS cannot attach a PDF directly.
+* Keep send history working through `statement_send_runs`.
+* Add or update basic regression checks for recipient selection, invoice scopes, and batch send/download behavior.
+
+Before finishing, explain any assumptions or tradeoffs, especially around doctor-level grouping and SMS PDF delivery.
+
+### Debug Analysis
+
+**Primary root-cause hypothesis**
+The modal recipient list is using the wrong source of truth. The table uses invoice-derived statement rows, while the modal filters organizations by `parentLabOrganizationId`. The screenshot shows many invoice-backed statement rows, but the modal shows only one practice. That matches a data-link mismatch: only one organization likely has the expected parent lab link.
+
+**Supporting evidence**
+The current page passes this into the modal:
+
+`practices={organizationsQuery.data?.filter((o) => o.parentLabOrganizationId === orgId) ?? []}`
+
+But the table rows are created from invoices grouped by:
+
+`inv.providerOrganizationId`
+
+Those two datasets can diverge. When they do, the table correctly shows invoice activity, while the modal incorrectly hides valid recipients.
+
+**Alternate hypotheses worth checking**
+
+* Some practices may be inactive or have missing organization records, but invoice-backed rows should still be selectable if statements can be generated.
+* The `Open balance only` checkbox could be filtering the modal too aggressively, but the screenshot’s table shows many open balances, so this is probably secondary.
+* The selected lab org may be wrong, but the table totals look coherent for the current lab, so this is less likely.
+
+**Why the recommended approach is best**
+Using the invoice-backed statement rows as the modal’s recipient source fixes the actual contract mismatch. It keeps the modal aligned with what the user sees on the Statements page and avoids hiding valid billable recipients just because organization parent metadata is incomplete.
+
+Confidence: medium-high for the one-office bug. Medium for the broader feature design because doctor-level grouping depends on the exact invoice/provider data model.
+
+### Step-by-Step Fix Plan
+
+1. In `statements.tsx`, replace the modal’s recipient source with a normalized recipient list built from `rows`.
+2. Join each row to `organizationsQuery.data` by `practiceId` for email, phone, display name, opt-out, and address metadata.
+3. Keep the visible modal count aligned with `rows` and the `Open balance only` toggle.
+4. Fix selection state so “Select all” means all recipients in the intended scope, and review/send uses the same exact selected IDs.
+5. Extend frontend invoice scope options beyond the current three.
+6. Extend backend schema in `routes/statements.ts` to accept the new invoice scopes.
+7. Update `buildPracticeStatementsForScope` in `lib/statements.ts` to filter by status, issue date, due date, and custom range where applicable.
+8. Add recipient type handling for doctor-level grouping if the invoice model supports it.
+9. Update email template fields to include subject, header, body, and placeholders.
+10. Implement SMS PDF delivery as a secure link or Twilio-supported media attachment.
+11. Verify with a lab that has multiple open-balance practices: modal list, selection, review, send, history, and ZIP download.

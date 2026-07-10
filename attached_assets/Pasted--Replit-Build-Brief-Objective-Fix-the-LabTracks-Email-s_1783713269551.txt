@@ -1,0 +1,174 @@
+### Replit Build Brief
+
+**Objective**
+Fix the LabTracks “Email statement” workflow so users can successfully send a statement PDF by email, or receive a precise configuration/error message when sending fails.
+
+**User-visible problem**
+In the Statement drawer, the user opens **Email statement**, enters `JP@Phillipsdl.com`, and clicks **Send email**. The modal fails with:
+
+`Failed to send the email. Check SMTP settings and try again.`
+
+The PDF appears ready to attach: “The current statement PDF (35 invoices) will be attached.”
+
+**Likely root cause**
+The failure is most likely happening server-side during the SMTP send step, not in the statement UI itself. The generic error points to one of these:
+
+* Missing or invalid SMTP environment variables in Replit.
+* SMTP auth failure, especially if Gmail/Workspace/Microsoft credentials require app passwords or OAuth-compatible settings.
+* Incorrect `from` address or sender verification mismatch.
+* Backend email route swallowing the real SMTP error and returning a generic failure.
+* Possible recipient casing is not likely the issue; email addresses are case-insensitive in practice.
+
+**Exact areas to inspect/change**
+
+Inspect the backend route or service that handles statement email sending, likely named something like:
+
+* `sendStatementEmail`
+* `emailStatement`
+* `statementEmail`
+* `/api/statements/:id/email`
+* `/api/practices/:id/statements/email`
+* `mailer`, `smtp`, `nodemailer`, `emailService`, or similar
+
+Also inspect:
+
+* Replit Secrets / environment variables for SMTP config.
+* Statement PDF generation path used before attaching.
+* Practice billing email fallback logic.
+* Server logs around the failed send request.
+
+**Implementation Plan**
+
+1. Locate the statement email API handler and the shared email/SMPP mailer utility.
+2. Verify required SMTP env vars are present and read correctly:
+
+   * SMTP host
+   * SMTP port
+   * SMTP username
+   * SMTP password/app password
+   * secure/TLS setting
+   * from address
+3. Add server-side validation at startup or before send so missing config returns a clear admin-facing error.
+4. Improve error logging server-side to capture SMTP response codes without exposing secrets.
+5. Return safer, more specific client messages:
+
+   * missing config
+   * authentication failed
+   * connection/TLS failed
+   * recipient rejected
+   * attachment/PDF generation failed
+6. Keep the modal UX the same, but display a clearer message when the backend knows the category.
+7. Add a test or manual verification path using a known recipient and a small statement PDF.
+
+**Constraints / Guardrails**
+
+* Do not expose SMTP username, password, tokens, or full provider error details to the browser.
+* Do not change invoice balances or statement generation logic unless the PDF attachment is proven to be failing.
+* Do not hardcode SMTP credentials.
+* Do not silently fall back to sending without the PDF.
+* Preserve the practice billing email fallback behavior unless it is broken.
+
+**Acceptance Criteria**
+
+* Sending a statement email succeeds with valid SMTP settings.
+* If SMTP settings are missing, the UI says something like:
+  `Email is not configured. Add SMTP settings in server environment variables.`
+* If auth fails, the UI says something like:
+  `Email provider rejected the login. Check SMTP username/password or app password.`
+* Server logs include the SMTP failure category and provider response code, but no secrets.
+* The statement PDF remains attached to the email.
+* Manual test confirms the email is delivered to the requested recipient.
+
+**Regression Risks To Check**
+
+* PDF download still works.
+* Text statement still works.
+* CSV and PDF export buttons still work.
+* Emailing a practice with no billing email still allows manual recipient override.
+* Multiple-invoice statements still attach correctly.
+* Error messages do not leak credentials or internal stack traces.
+
+---
+
+### Copy-Ready Replit Prompt
+
+Please debug and fix the LabTracks statement email failure shown in the screenshot.
+
+In the Statement drawer for `Heartland Dental - Mahan Village Dental Care [985]`, clicking **Email statement** opens the email modal. The recipient field contains `JP@Phillipsdl.com`, the modal says the current statement PDF with 35 invoices will be attached, but clicking **Send email** fails with:
+
+`Failed to send the email. Check SMTP settings and try again.`
+
+Please inspect the backend API handler used by the statement email modal and the shared email/SMPP utility, likely files or functions related to `statement email`, `sendStatementEmail`, `emailStatement`, `mailer`, `smtp`, `nodemailer`, or `/api/.../statement.../email`.
+
+Primary suspected root cause: the server-side SMTP configuration is missing, invalid, or failing authentication, and the app is returning a generic error instead of a precise failure category.
+
+Implement the safest fix:
+
+1. Verify the statement email route correctly generates/loads the statement PDF attachment before sending.
+2. Verify the SMTP config is read from environment variables/Replit Secrets correctly.
+3. Add validation for required SMTP settings before attempting to send.
+4. Improve server-side logging so SMTP failures include useful categories/provider response codes without logging secrets.
+5. Return safe, user-readable error categories to the frontend:
+
+   * email not configured
+   * SMTP authentication failed
+   * SMTP connection/TLS failed
+   * recipient rejected
+   * PDF attachment generation failed
+   * unknown email send failure
+6. Update the modal/frontend only as needed to display the clearer backend message.
+7. Do not hardcode credentials or expose secrets to the client.
+8. Do not modify invoice totals, statement balances, or export behavior unless the PDF attachment path is actually failing.
+
+Before finishing, run or manually verify:
+
+* Statement PDF export still works.
+* Email send succeeds with valid SMTP settings.
+* Missing SMTP config produces a clear error.
+* Bad SMTP credentials produce a clear auth/config error.
+* The sent email includes the current statement PDF attachment.
+* No secrets appear in browser responses or logs.
+
+If you find evidence that the failure is not SMTP-related, explain the conflicting evidence and choose the safest fix based on the actual failing step.
+
+---
+
+### Debug Analysis
+
+**Probable root cause**
+The screenshot strongly suggests the UI reaches the send step successfully, but the backend fails while sending through SMTP. The modal has recipient, subject, body, and attachment info populated, so the visible failure is downstream of modal state and likely inside the server email service.
+
+**Supporting evidence**
+
+* The exact error says: `Check SMTP settings`.
+* The modal says the statement PDF is already selected for attachment.
+* The app UI remains functional; this is not a frontend crash.
+* The failure happens only after clicking **Send email**, which usually calls a backend route.
+
+**Alternate hypotheses worth checking**
+
+* The PDF attachment generation fails during send, despite the modal preview text.
+* The backend rejects the recipient due to validation rules or provider restrictions.
+* The configured sender address is not verified with the email provider.
+* The practice email fallback logic is passing an empty or malformed value when the override field is blank. In this screenshot, though, a recipient is present.
+
+**Why this fix is best**
+Fixing the SMTP validation and error handling addresses the actual failure path and prevents future support confusion. A frontend-only change would just reword the same dead end. A broad rewrite of email sending would be risky unless the current mailer is structurally broken.
+
+**Confidence level**
+Moderate-high from the screenshot. The only missing proof is the backend log or email route code showing the actual SMTP exception.
+
+---
+
+### Step-by-Step Fix Plan
+
+1. Reproduce the issue from the Statement drawer and capture the backend console error.
+2. Find the API route called by the **Send email** button.
+3. Trace that route into the email/mailer utility.
+4. Confirm whether SMTP env vars are present in Replit Secrets.
+5. Add a config validator that fails before send when required values are missing.
+6. Wrap the SMTP send call and map known provider errors into safe categories.
+7. Return `{ success: false, message, code }` to the frontend.
+8. Update the modal to display the backend message instead of only the generic SMTP warning.
+9. Test with missing config, bad credentials, and valid credentials.
+10. Confirm delivered email includes the statement PDF and that existing PDF/CSV/text-statement actions still work.

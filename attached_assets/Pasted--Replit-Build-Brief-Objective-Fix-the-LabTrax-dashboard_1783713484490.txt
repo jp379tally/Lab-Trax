@@ -1,0 +1,157 @@
+### Replit Build Brief
+
+**Objective**
+Fix the LabTrax dashboard so the logged-in `Admin · SDR1` user no longer triggers repeated `403 Forbidden` errors for admin background endpoints and the live messenger WebSocket either connects correctly or is gated off when unavailable.
+
+**User-visible problem**
+The dashboard loads, but Chrome DevTools shows repeated failures:
+
+* `GET /api/admin/backup/schedule` returns `403`
+* `GET /api/admin/cleanup/orphaned-media/runs?limit=20` returns `403`
+* `GET /api/admin/cleanup/orphaned-media/status` returns `403`
+* `GET /api/admin/settings/cleanup-schedule` returns `403`
+* `wss://lab-trax.replit.app/ws/messenger?...` fails repeatedly
+
+The UI shows the user as `Admin · SDR1`, so the app appears to believe the user has admin access, while the backend rejects admin utility requests.
+
+**Likely root cause**
+There is an authorization/capability mismatch between the frontend dashboard and backend admin routes.
+
+Most likely, the frontend is mounting admin/maintenance widgets for any `Admin` user, but the backend routes require a different role or permission, such as `super_admin`, `platform_admin`, `owner`, or a specific maintenance permission. A secondary issue may exist in the WebSocket auth/token handling, but the `403` admin API failures are the clearest confirmed bug.
+
+**Exact app/code areas to inspect or change**
+
+Inspect the frontend code that runs on `/desktop/`, especially any dashboard mount effects or admin settings widgets that call:
+
+* `/api/admin/backup/schedule`
+* `/api/admin/cleanup/orphaned-media/runs`
+* `/api/admin/cleanup/orphaned-media/status`
+* `/api/admin/settings/cleanup-schedule`
+
+Inspect backend route definitions and middleware for:
+
+* admin route authorization
+* backup schedule endpoints
+* cleanup/orphaned media endpoints
+* cleanup schedule settings endpoint
+* current-user/session role serialization
+* `/ws/messenger` WebSocket authentication
+
+Likely files may be named something like:
+
+* `server/routes/admin.ts`
+* `server/routes/admin/backup.ts`
+* `server/routes/admin/cleanup.ts`
+* `server/middleware/auth.ts`
+* `server/auth/permissions.ts`
+* `client/src/pages/DesktopDashboard.tsx`
+* `client/src/components/admin/*`
+* `client/src/lib/api.ts`
+* `client/src/lib/socket.ts`
+
+**Implementation plan**
+
+1. Identify the permission expected by each failing admin endpoint.
+2. Identify the permission/role exposed to the frontend for the current user shown as `Admin · SDR1`.
+3. Decide whether SDR lab admins should be allowed to access backup/cleanup schedule data.
+4. If yes, update the backend authorization guard to allow the correct scoped admin role.
+5. If no, update the frontend so it does not call those endpoints unless the user has the required capability.
+6. Prefer a shared capability such as `canManageSystemMaintenance` or `canViewAdminMaintenance` over string-checking roles in many places.
+7. Fix the WebSocket separately by verifying that the token format used by the frontend matches what `/ws/messenger` expects.
+8. Add graceful handling so forbidden admin utilities do not spam retries or console errors.
+
+**Constraints and guardrails**
+
+* Do not simply ignore all `403` errors globally.
+* Do not broaden admin access blindly if backup/cleanup controls are intended to be platform-only.
+* Keep tenant/lab-scoped admins separate from system-wide admins if the app has both concepts.
+* Avoid repeated polling/retry loops after a known `403`.
+* WebSocket reconnect logic should back off and stop retrying on permanent auth failure.
+
+**Acceptance criteria**
+
+* Loading `/desktop/` as the affected `Admin · SDR1` user no longer produces repeated `403` errors.
+* Admin maintenance widgets either load successfully or are hidden/disabled based on actual capability.
+* Backup and cleanup schedule endpoints are protected by the intended permission.
+* WebSocket connection either succeeds or fails once with controlled handling, not repeated console noise.
+* Non-admin users still cannot access admin or maintenance endpoints.
+* System/platform admins retain access if they previously had it.
+
+**Regression checks**
+
+* Login as SDR/lab admin and open dashboard.
+* Login as non-admin and verify admin endpoints remain forbidden and hidden.
+* Login as platform/system admin, if that role exists, and verify maintenance controls still work.
+* Test direct API access to the failing endpoints.
+* Verify WebSocket auth on fresh login, page refresh, and expired session.
+
+---
+
+### Copy-Ready Replit Prompt
+
+Please debug and fix a LabTrax dashboard authorization issue.
+
+The screenshot shows the app loaded at `/desktop/` with the current user displayed as `Admin · SDR1`, but Chrome DevTools reports repeated `403 Forbidden` responses from these requests:
+
+* `GET /api/admin/backup/schedule`
+* `GET /api/admin/cleanup/orphaned-media/runs?limit=20`
+* `GET /api/admin/cleanup/orphaned-media/status`
+* `GET /api/admin/settings/cleanup-schedule`
+
+It also shows repeated failed WebSocket connections to:
+
+* `/ws/messenger?token=...`
+
+Please inspect the frontend dashboard code and backend route/middleware code for these admin endpoints.
+
+Likely root cause: the frontend is calling admin maintenance endpoints for a user labeled `Admin`, but the backend authorization guard requires a different role/capability, or the frontend is not checking the correct capability before mounting those admin maintenance widgets.
+
+Implement the safest fix:
+
+1. Determine whether SDR/lab admins are supposed to access backup and cleanup schedule data.
+2. If they are supposed to access it, update the backend authorization guard to allow the correct scoped admin role/capability.
+3. If those endpoints are system/platform-admin only, update the frontend so SDR/lab admins do not call them and the UI hides or disables those widgets.
+4. Prefer a shared capability check instead of scattered role string checks.
+5. Add graceful frontend handling for `403` responses so the dashboard does not repeatedly poll forbidden admin endpoints.
+6. Investigate `/ws/messenger` token auth separately and ensure the frontend token matches the server’s WebSocket auth expectations. If the user is not allowed to use messenger, prevent the connection attempt; if allowed, fix the token/session validation mismatch.
+7. Before finishing, verify that non-admin users are still blocked, the affected admin user no longer gets console spam, and any platform/system admin role still has intended access.
+
+Please explain any assumptions or tradeoffs if the code shows that `Admin · SDR1` is intentionally different from a system admin.
+
+---
+
+### Debug Analysis
+
+**Primary root-cause hypothesis**
+The dashboard frontend and backend authorization model disagree about what `Admin` means. The UI treats the user as eligible for admin maintenance calls, but the backend rejects those same calls with `403`.
+
+**Supporting evidence**
+The screenshot confirms the user is shown as `Admin · SDR1`. The app itself loads and shows dashboard data, so the session is not totally invalid. The failures are concentrated on `/api/admin/...` maintenance-style endpoints, which strongly points to permission mismatch rather than a general network or login failure.
+
+**Alternate hypotheses worth checking**
+
+* The user’s JWT/session token lacks a recently added admin claim after a role model change.
+* The frontend is using stale cached user metadata after login.
+* The admin endpoints require CSRF/session cookies, but the API client sends only partial auth.
+* The WebSocket token is expired, malformed, or generated for HTTP APIs but not accepted by the WS handler.
+
+**Why the recommended fix is best**
+The safest fix is to align the app around explicit capabilities. Either the user can access maintenance APIs and the backend should allow it, or they cannot and the frontend should not call them. That avoids both security drift and cosmetic error suppression.
+
+**Confidence level**
+Medium-high for the admin API issue. The screenshot is strong evidence of an auth/capability mismatch, but the exact role names and intended permission boundary need code confirmation.
+
+---
+
+### Step-by-Step Fix Plan
+
+1. Reproduce by logging in as the affected `Admin · SDR1` user and opening `/desktop/`.
+2. Confirm the failing requests and inspect the response body for each `403`.
+3. Locate the frontend code that calls the four `/api/admin/...` endpoints.
+4. Locate the backend route guards for those endpoints.
+5. Compare the current user’s actual server-side role/permissions with what the route guards require.
+6. Introduce or reuse one canonical permission check for maintenance features.
+7. Apply the permission consistently on both frontend and backend.
+8. Stop forbidden endpoints from polling/retrying repeatedly.
+9. Inspect `/ws/messenger` auth and fix token/session validation or gate the connection behind the correct capability.
+10. Retest with lab admin, non-admin, and system admin accounts.

@@ -1,0 +1,151 @@
+### Replit Build Brief
+
+**Objective**
+Permanently fix the LabTrax messenger unread badge so a message that has been opened/read stays read across refreshes, logout/login, app restart, and future polling.
+
+**User-visible problem**
+The messenger launcher keeps showing a red `1` unread notification even though the user has opened and viewed the same message repeatedly over several weeks. After logout/login, the same old message is treated as unread again.
+
+**Likely root cause**
+The badge is driven by server-provided `unreadCount`, but the read state is not being durably advanced or verified. The current code does attempt to mark messages read, but it also clears unread locally before proving the server saved the read marker. That means the UI can briefly look fixed, then the badge returns when `/messenger/conversations` reloads.
+
+Relevant code areas:
+
+```text
+artifacts/labtrax-desktop/src/context/MessengerContext.tsx
+artifacts/labtrax-desktop/src/components/messenger/MessengerDock.tsx
+artifacts/labtrax-desktop/src/components/messenger/MessengerInbox.tsx
+artifacts/labtrax-desktop/src/components/messenger/ChatPanel.tsx
+artifacts/api-server/src/routes/messenger.ts
+artifacts/api-server/src/lib/messenger-ws.ts
+lib/db/src/schema/schema.ts
+```
+
+**Implementation plan**
+
+1. Treat this as a read-receipt persistence bug, not a visual badge bug.
+2. Update `POST /api/messenger/conversations/:id/read` so it accepts an optional `lastMessageId`, validates that message belongs to the conversation, and updates the current user’s `conversation_participants.last_read_at`.
+3. Make the update monotonic: never move `last_read_at` backward.
+4. Return the saved `lastReadAt` and recalculated `unreadCount` from the read endpoint.
+5. Update `MessengerContext.markRead` to send `{ lastMessageId }` to the REST endpoint and refresh/reconcile conversations after success.
+6. Do not silently swallow read-save failures during debugging. Log them clearly or surface a non-intrusive error.
+7. When opening a conversation from the inbox, if `lastMessage.id` exists, immediately call `markRead(conversationId, lastMessage.id)` instead of only clearing local unread state.
+8. Add a one-time repair/admin-safe script or migration check to mark the currently stuck conversation read for the affected user after the code fix is deployed.
+9. Verify against the real deployed database, not only local dev.
+
+**Constraints and guardrails**
+
+* Do not remove messenger unless the persistent read-state fix fails after direct DB/API verification.
+* Do not “fix” this by hiding the badge.
+* Do not only set `unreadCount: 0` in React state.
+* Do not mark this resolved until `/api/messenger/conversations` returns `unreadCount: 0` after logout/login.
+* Preserve unread behavior for genuinely new incoming messages.
+
+**Acceptance criteria**
+
+* Open the existing unread conversation.
+* Confirm the read endpoint returns success and `unreadCount: 0`.
+* Refresh the app: badge remains gone.
+* Log out and back in: badge remains gone.
+* Restart desktop app/browser: badge remains gone.
+* Send a new message from another account: badge appears.
+* Open that new message: badge disappears and stays gone.
+* Database row for the affected user/conversation has `last_read_at` at or after the latest message timestamp.
+
+**Regression checks**
+
+* New incoming messages still increment unread count.
+* Messages sent by the current user never count as unread.
+* Minimized/open chat panels still behave correctly.
+* WebSocket read receipts still notify the sender.
+* REST read persistence still works when WebSocket is disconnected.
+
+### Copy-Ready Replit Prompt
+
+Please reopen and permanently fix the LabTrax messenger unread badge bug. This has been reported multiple times and is still not fixed.
+
+Current symptom: the messenger launcher shows a red unread badge with `1` for an old message that has already been opened many times. Every time the user logs out/in or reloads, the same old message becomes “unread” again.
+
+This is not just a UI badge issue. Fix the durable read/unread state.
+
+Inspect these areas:
+
+```text
+artifacts/labtrax-desktop/src/context/MessengerContext.tsx
+artifacts/labtrax-desktop/src/components/messenger/MessengerDock.tsx
+artifacts/labtrax-desktop/src/components/messenger/MessengerInbox.tsx
+artifacts/labtrax-desktop/src/components/messenger/ChatPanel.tsx
+artifacts/api-server/src/routes/messenger.ts
+artifacts/api-server/src/lib/messenger-ws.ts
+lib/db/src/schema/schema.ts
+```
+
+Required fix:
+
+1. Review how `unreadCount` is calculated in `GET /api/messenger/conversations`.
+2. Review how `POST /api/messenger/conversations/:id/read` updates `conversation_participants.last_read_at`.
+3. Change the read endpoint to accept `{ lastMessageId }`, validate that message belongs to the conversation, and persist the current user’s read marker to that message’s timestamp.
+4. Make the update monotonic so `last_read_at` never moves backward.
+5. Return `{ ok: true, lastReadAt, unreadCount }` from the read endpoint.
+6. Update `MessengerContext.markRead` to send the actual `lastMessageId` in the REST request.
+7. After the REST read call succeeds, refresh/reconcile `/messenger/conversations` so the badge reflects server truth.
+8. When `openConversation()` is called from the inbox and the conversation has a `lastMessage.id`, call `markRead(conversationId, lastMessage.id)` immediately. Do not only clear local React state.
+9. Do not silently swallow read persistence failures while fixing this. Add temporary logging so failures are visible.
+10. Add a one-time repair step for the existing stuck unread row in production: identify the affected user/conversation and set `conversation_participants.last_read_at` to the newest non-deleted message timestamp in that conversation.
+11. Verify on the deployed app/database, not only local dev.
+
+Acceptance test before marking fixed:
+
+```text
+- Log in as the affected user.
+- Confirm messenger badge shows 1.
+- Open the conversation.
+- Confirm POST /api/messenger/conversations/:id/read succeeds.
+- Confirm GET /api/messenger/conversations returns unreadCount: 0.
+- Refresh the app.
+- Confirm badge stays gone.
+- Log out and log back in.
+- Confirm badge stays gone.
+- Send a new message from another user.
+- Confirm badge appears.
+- Open the new message.
+- Refresh/logout/login again.
+- Confirm badge disappears and stays gone.
+```
+
+Do not close this as fixed if the badge is only hidden locally. It is fixed only when the server unread count stays zero after reload and login.
+
+### Debug Analysis
+
+**Primary root-cause hypothesis**
+The read marker is not being durably persisted or not being trusted after persistence. The UI clears `unreadCount` locally, but the server later recalculates unread messages from `conversation_participants.last_read_at`, and that value is still null, stale, or behind the old message.
+
+**Supporting evidence**
+The screenshot shows the persistent red `1` badge. In the code, `MessengerDock` displays `totalUnread` from `MessengerContext`. `MessengerContext` loads `/messenger/conversations`, and the server computes unread count from messages newer than `lastReadAt`. That means if the badge returns after login, the server is still reporting the message as unread.
+
+**Alternate hypotheses worth checking**
+
+* The deployed app is not running the latest messenger fix.
+* The affected production database row has a stuck/null `last_read_at`.
+* The REST read request is failing silently.
+* The WebSocket read path works sometimes, but REST persistence is not reliable.
+* Timestamp comparison is behaving incorrectly for one row because of old data or timezone/type mismatch.
+
+**Why this fix is best**
+Removing the badge or resetting local React state would only hide the symptom. The correct fix is to make the read contract explicit: “this user has read through this exact message,” persist it server-side, return the recalculated unread count, then reconcile the UI from server truth.
+
+Confidence: high on the failure path, medium on the exact production cause until Replit checks the deployed DB row and read endpoint response.
+
+### Step-by-Step Fix Plan
+
+1. Reproduce with the affected account.
+2. Open DevTools/network logs and watch `/api/messenger/conversations`.
+3. Note the stuck conversation ID and `unreadCount`.
+4. Open the conversation and inspect the read request.
+5. Confirm whether `conversation_participants.last_read_at` changes in the database.
+6. Patch the read endpoint to accept and persist `lastMessageId`.
+7. Patch the client to call `markRead` immediately when opening a conversation with a known last message.
+8. Recalculate and return server `unreadCount` after marking read.
+9. Add temporary logging for failed read persistence.
+10. Run a one-time repair for the existing stuck conversation.
+11. Verify refresh, logout/login, restart, and a genuinely new incoming message.

@@ -1,0 +1,138 @@
+### Replit Build Brief
+
+**Objective**
+Fix the LabTrax team invite workflow so creating/resending an invite never fails with a `502`, and so the app clearly reports whether the invite was saved and whether the email was actually delivered.
+
+**User-visible problem**
+In `/desktop/settings`, inviting `ben@sdrdl.com` creates or keeps a pending invite, but the email is not sent. The screenshot shows:
+
+* Modal error: “Invite saved, but the email could not be sent.”
+* Toast: “Invite email not sent.”
+* Console: `POST /api/organizations/.../invites` returns `409` because a pending invite already exists.
+* Console: `POST /api/organizations/.../invites/.../resend` returns `502`, which should not happen.
+
+**Likely root cause**
+The invite persistence path works, but the email delivery/resend path is still failing. In `artifacts/api-server/src/routes/organizations.ts`, the invite create/resend handlers try to catch email failures, but the failure logging uses `req.log.warn(...)`, `req.log.info(...)`, and `req.log.error(...)` without optional chaining in several spots. If `req.log` is missing in the Replit runtime, the error handler itself can throw, turning a normal “email not sent” condition into a server error/`502`.
+
+There is also a real email-delivery dependency to verify: `artifacts/api-server/src/lib/mailer.ts` requires `SMTP_HOST`, `SMTP_USER`, and `SMTP_PASS`. If these are missing or wrong, `sendInviteEmail()` will return `sent: false`.
+
+**Exact areas to change**
+
+* `artifacts/api-server/src/routes/organizations.ts`
+
+  * `POST /:organizationId/invites`
+  * `POST /invites/:inviteId/resend`
+  * shared invite-email send logic if extracted
+* `artifacts/api-server/src/lib/mail.ts`
+
+  * verify `sendMail()` returns structured reasons and does not throw
+* `artifacts/api-server/src/lib/mailer.ts`
+
+  * verify Replit environment variables are present
+* desktop settings invite UI that calls invite/resend endpoints
+
+  * ensure `409` duplicate invite is handled by offering resend
+  * ensure `502` is never expected for email delivery failure
+
+**Implementation plan**
+
+1. Extract invite email delivery into one helper, for example `sendOrganizationInviteEmail(...)`, used by both create and resend.
+2. Make all route logging defensive: use `req.log?.warn?.(...)`, `req.log?.info?.(...)`, `req.log?.error?.(...)`, or the shared server logger.
+3. Make create/resend responses explicit:
+
+   * `201` or `200` when the invite row is saved/updated.
+   * Include `emailSent: true/false`.
+   * Include a safe `emailFailureReason` such as `smtp_not_configured`, `undeliverable_domain`, `send_failed`, or `recipient_opted_out`.
+4. Do not let email failure roll back invite creation or token refresh.
+5. For resend, do not rotate token/expiry until the handler has passed validation and authorization. If email fails, keep the refreshed invite but return `emailSent: false`.
+6. Verify Replit secrets include `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM`.
+7. Update the desktop UI so:
+
+   * duplicate pending invite `409` shows “Pending invite already exists” with a resend action.
+   * resend success with `emailSent: false` shows “Invite link refreshed, but email was not sent.”
+   * no email failure is displayed as a fatal app/server crash.
+
+**Acceptance criteria**
+
+* Creating a new invite returns `201` and creates a pending invite.
+* If SMTP is missing/broken, the API still returns success for saved invite with `emailSent: false`, not `502`.
+* Resending a pending invite returns `200`, refreshes token/expiry, and reports `emailSent`.
+* Existing pending invite returns a controlled `409` with clear UI handling.
+* No invite route uses unguarded `req.log.*`.
+* Server logs contain the safe email failure reason.
+* A real invite email to `ben@sdrdl.com` sends successfully once SMTP config is valid.
+
+**Regression risks to check**
+
+* Accept invite by token still works after resend.
+* Decline invite still works.
+* Existing pending invite duplicate guard still works.
+* Expired invite logic still works.
+* Account/signup/invitation tests still pass.
+* No raw SMTP error or stack trace is exposed to users.
+
+### Copy-Ready Replit Prompt
+
+Please fix the LabTrax organization/team invite email workflow. The issue is still happening in `/desktop/settings`: inviting `ben@sdrdl.com` creates or preserves a pending invite, but the email is not sent. The browser console shows `POST /api/organizations/.../invites` returning `409` for an existing pending invite, and `POST /api/organizations/.../invites/.../resend` returning `502`.
+
+Inspect these areas first:
+
+* `artifacts/api-server/src/routes/organizations.ts`
+* `artifacts/api-server/src/lib/mail.ts`
+* `artifacts/api-server/src/lib/mailer.ts`
+* the desktop settings invite UI that calls the invite and resend endpoints
+
+Likely root cause: the invite create/resend handlers catch mail failures, but some logging inside those paths uses `req.log.warn/info/error` without optional chaining. If `req.log` is missing in Replit, an email-send failure can throw again and become a `502`. Also verify SMTP env vars are configured: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`.
+
+Implement the safest fix:
+
+1. Make all invite email logging defensive with `req.log?.warn?.(...)`, `req.log?.info?.(...)`, `req.log?.error?.(...)`, or a shared logger.
+2. Extract shared invite-email send logic used by both create and resend.
+3. Ensure email delivery failure never causes invite creation/resend to return `500/502`.
+4. Return structured fields from create/resend like `emailSent: boolean` and a safe `emailFailureReason`.
+5. Keep the invite row/token/expiry behavior correct.
+6. Update the UI to treat `409` as “pending invite already exists” and offer/respect resend.
+7. Add or update tests for:
+
+   * invite creation with SMTP not configured
+   * resend with SMTP not configured
+   * resend with `sendInviteEmail()` returning `{ sent: false }`
+   * no unhandled throw when `req.log` is absent
+   * duplicate pending invite still returns controlled `409`
+
+Before finishing, run the relevant API tests for organization invites and explain any tradeoffs or assumptions. Do not mask the email problem as success: the UI should say the invite is saved/refreshed but the email was not sent when SMTP delivery fails.
+
+### Debug Analysis
+
+**Primary root-cause hypothesis**
+The invite record is being saved, but the email failure path is throwing while trying to log the failure. The screenshot’s `502` on resend is consistent with an unhandled server-side exception after the invite already exists.
+
+**Supporting evidence**
+
+* Screenshot shows `ben@sdrdl.com` appears as `Pending invite`, so invite persistence works.
+* Console shows `409` on create, which is expected once a pending invite already exists.
+* Console shows `502` on resend, which is not expected because the route is supposed to catch email send failures.
+* Code shows `sendMail()` returns `{ sent: false, reason }` for missing SMTP, bad domain, or provider failures.
+* Code also shows invite create/resend routes call `req.log.warn/error/info` without optional chaining in mail-failure paths.
+
+**Alternate hypotheses worth checking**
+
+* SMTP secrets are missing or incorrect in Replit.
+* Replit blocks outbound SMTP to the configured host/port.
+* `ben@sdrdl.com` delivery is rejected by the SMTP provider.
+* A deployed version differs from the repo version and still throws directly on `sendInviteEmail()` failure.
+
+**Why this approach is best**
+It fixes both layers: the app stops crashing on email failure, and it still surfaces the true delivery problem instead of pretending the email sent. That gives you a stable invite workflow plus honest diagnostics.
+
+### Step-by-Step Fix Plan
+
+1. Patch invite create/resend logging to use optional logging or shared logger.
+2. Extract a shared `attemptInviteEmailSend()` helper.
+3. Return `{ invite, organizationId, emailSent, emailFailureReason }` from both create and resend.
+4. Update desktop settings UI copy for duplicate invite and resend failure states.
+5. Check Replit SMTP environment variables.
+6. Test with SMTP intentionally disabled: invite should save, resend should not `502`.
+7. Test with valid SMTP: invite email should arrive.
+8. Test accept invite link after resend.
+9. Run organization/auth invite tests before release.
