@@ -27,12 +27,19 @@ import {
   getGetStatsRevenueSeriesQueryKey,
   useGetStatsWeekdayVolume,
   getGetStatsWeekdayVolumeQueryKey,
+  useGetStatsRemakes,
+  getGetStatsRemakesQueryKey,
   type StatsCaseCategory,
 } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
-import { useMe, canEditAnyLab, editableLabMemberships } from "@/lib/auth-me";
+import {
+  useMe,
+  canEditAnyLab,
+  editableLabMemberships,
+  adminLabMemberships,
+} from "@/lib/auth-me";
 import { formatMoney, toNumber } from "@/lib/format";
 
 // ── Date-range presets ──────────────────────────────────────────────────────
@@ -121,6 +128,14 @@ export default function StatsScreen() {
       ? orgIdOverride
       : (billingLabs[0]?.id ?? null);
 
+  // Remakes are owner/admin-only (server enforces ADMIN_ROLES on
+  // /api/stats/remakes) — gate on the SELECTED org so a billing-only role on
+  // the current lab never sees the section even if the user admins another.
+  const isAdminForOrg = useMemo(
+    () => adminLabMemberships(me).some((m) => m.organizationId === orgId),
+    [me, orgId],
+  );
+
   const [preset, setPreset] = useState<PresetKey>("month");
   const [category, setCategory] = useState<StatsCaseCategory | "">("");
 
@@ -153,22 +168,39 @@ export default function StatsScreen() {
     query: { queryKey: getGetStatsWeekdayVolumeQueryKey(baseParams), enabled },
   });
 
+  // Remakes: date-range only, owner/admin-only (server enforces).
+  const remakesParams = {
+    organizationId: orgId ?? "",
+    dateFrom: range.from,
+    dateTo: range.to,
+    timeZone,
+  };
+  const remakesQuery = useGetStatsRemakes(remakesParams, {
+    query: {
+      queryKey: getGetStatsRemakesQueryKey(remakesParams),
+      enabled: isAdminForOrg && !!orgId,
+    },
+  });
+
   const summary = summaryQuery.data?.data;
   const categories = categoriesQuery.data?.data;
   const revenue = revenueQuery.data?.data;
   const weekday = weekdayQuery.data?.data;
+  const remakes = remakesQuery.data?.data;
 
   const refreshing =
     summaryQuery.isFetching ||
     categoriesQuery.isFetching ||
     revenueQuery.isFetching ||
-    weekdayQuery.isFetching;
+    weekdayQuery.isFetching ||
+    remakesQuery.isFetching;
 
   function refetchAll() {
     void summaryQuery.refetch();
     void categoriesQuery.refetch();
     void revenueQuery.refetch();
     void weekdayQuery.refetch();
+    if (isAdminForOrg) void remakesQuery.refetch();
   }
 
   const blocked = !meQuery.isLoading && !canView;
@@ -426,6 +458,67 @@ export default function StatsScreen() {
               </View>
             ) : null}
           </ChartCard>
+
+          {/* ── Remakes (owner/admin only) ──────────────────────────────────────────── */}
+          {isAdminForOrg && (
+            <View testID="stats-remakes">
+              <View style={styles.remakeTotalCard}>
+                <Text style={styles.remakeTitle}>Remakes</Text>
+                <Text style={styles.remakeSubtitle}>
+                  Remade cases received in this period
+                </Text>
+                {remakesQuery.isLoading ? (
+                  <ActivityIndicator style={styles.remakeSpinner} />
+                ) : remakesQuery.isError ? (
+                  <Text style={styles.chartStateText}>Could not load remakes.</Text>
+                ) : !remakes || remakes.totalRemakes === 0 ? (
+                  <Text style={styles.chartStateText} testID="stats-remakes-empty">
+                    No remakes in this period
+                  </Text>
+                ) : (
+                  <View>
+                    <Text style={styles.remakeTotal} testID="stats-remakes-total">
+                      {remakes.totalRemakes}
+                    </Text>
+                    <Text style={styles.remakeSubtitle}>Total remakes</Text>
+                    <View style={styles.remakeSplitRow}>
+                      <View style={styles.remakeSplitItem}>
+                        <Text style={[styles.remakeSplitValue, { color: "#059669" }]}>
+                          {remakes.rechargedRemakes}
+                        </Text>
+                        <Text style={styles.remakeSplitLabel}>Recharged</Text>
+                      </View>
+                      <View style={styles.remakeSplitItem}>
+                        <Text style={[styles.remakeSplitValue, { color: "#DC2626" }]}>
+                          {remakes.nonRechargedRemakes}
+                        </Text>
+                        <Text style={styles.remakeSplitLabel}>Not recharged</Text>
+                      </View>
+                    </View>
+                  </View>
+                )}
+              </View>
+              <View style={styles.remakeReasonsCard}>
+                <Text style={styles.remakeTitle}>Remake reasons</Text>
+                {remakesQuery.isLoading ? (
+                  <ActivityIndicator style={styles.remakeSpinner} />
+                ) : !remakes || remakes.remakeReasons.length === 0 ? (
+                  <Text style={styles.chartStateText}>No remakes in this period</Text>
+                ) : (
+                  <View testID="stats-remakes-reasons">
+                    {remakes.remakeReasons.map((r) => (
+                      <View key={r.reason} style={styles.reasonRow}>
+                        <Text style={styles.reasonLabel} numberOfLines={1}>
+                          {r.reason}
+                        </Text>
+                        <Text style={styles.reasonCount}>{r.count}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+            </View>
+          )}
         </ScrollView>
       )}
     </View>
@@ -772,5 +865,51 @@ function makeStyles(c: ThemeColors) {
       backgroundColor: c.tint,
     },
     weekdayLabel: { ...Typography.tiny, color: c.textTertiary, marginTop: 4 },
+    // Remake cards
+    remakeTotalCard: {
+      backgroundColor: c.surface,
+      borderRadius: Radius.md,
+      padding: Spacing.md,
+      marginTop: Spacing.md,
+      gap: 4,
+    },
+    remakeReasonsCard: {
+      backgroundColor: c.surface,
+      borderRadius: Radius.md,
+      padding: Spacing.md,
+      marginTop: Spacing.sm,
+      gap: 4,
+    },
+    remakeTitle: { ...Typography.bodySemibold, color: c.text },
+    remakeSubtitle: { ...Typography.caption, color: c.textSecondary },
+    remakeTotal: {
+      ...Typography.h1,
+      color: c.text,
+      marginTop: Spacing.sm,
+      textAlign: "center",
+    },
+    remakeSpinner: { marginVertical: Spacing.lg },
+    remakeSplitRow: {
+      flexDirection: "row",
+      justifyContent: "center",
+      gap: Spacing.md,
+      marginTop: Spacing.md,
+    },
+    remakeSplitItem: { alignItems: "center", gap: 2 },
+    remakeSplitValue: { ...Typography.h3, color: c.text },
+    remakeSplitLabel: { ...Typography.caption, color: c.textSecondary },
+    reasonRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingVertical: 6,
+    },
+    reasonLabel: { ...Typography.body, color: c.text, flexShrink: 1, flex: 1 },
+    reasonCount: {
+      ...Typography.bodySemibold,
+      color: c.textSecondary,
+      minWidth: 24,
+      textAlign: "right",
+    },
   });
 }

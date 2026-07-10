@@ -3751,6 +3751,33 @@ paths:
                 $ref: "#/components/schemas/StatsSalesForecastResult"
         "403":
           description: Insufficient role (owner required)
+  /stats/remakes:
+    get:
+      operationId: getStatsRemakes
+      tags: [stats]
+      summary: Remake totals, recharge split, and reason breakdown for a lab
+      description: |
+        Owner/admin-only remake analytics for the window: total remakes
+        (canonical `cases.remakeOfCaseId` set + legacy `lab_cases` blobs
+        flagged as remakes), a recharge split (recharged vs not), and a
+        remake-reason breakdown (blank reasons roll up to "Unspecified",
+        sorted by count desc). Scoped by date range only — category/material
+        filters are NOT accepted. Permission is intentionally narrower than
+        the other stats endpoints: owner/admin ONLY, NOT billing.
+      parameters:
+        - $ref: "#/components/parameters/StatsOrganizationId"
+        - $ref: "#/components/parameters/StatsDateFrom"
+        - $ref: "#/components/parameters/StatsDateTo"
+        - $ref: "#/components/parameters/StatsTimeZone"
+      responses:
+        "200":
+          description: Remake totals and reason breakdown
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsRemakesResult"
+        "403":
+          description: Insufficient role (owner/admin required)
 components:
   parameters:
     StatsOrganizationId:
@@ -4033,6 +4060,45 @@ components:
                     type: object
                     additionalProperties: { type: integer }
             totalCases: { type: integer }
+    StatsRemakesResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required:
+            [
+              from,
+              to,
+              timeZone,
+              totalRemakes,
+              rechargedRemakes,
+              nonRechargedRemakes,
+              remakeReasons,
+            ]
+          properties:
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+            timeZone: { type: string }
+            totalRemakes:
+              type: integer
+              description: Canonical + legacy remakes in the window.
+            rechargedRemakes:
+              type: integer
+              description: How many remakes were recharged to the provider.
+            nonRechargedRemakes:
+              type: integer
+              description: totalRemakes - rechargedRemakes.
+            remakeReasons:
+              type: array
+              description: Reason breakdown, sorted by count desc; blank reasons roll up to "Unspecified".
+              items:
+                type: object
+                required: [reason, count]
+                properties:
+                  reason: { type: string }
+                  count: { type: integer }
     SttResult:
       type: object
       required: [transcript]

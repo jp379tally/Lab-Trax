@@ -5184,6 +5184,7 @@ export const GetStatsWeekdayVolumeResponse = zod.object({
   }),
 });
 
+
 /**
  * Projects total sales for the current week, month, and year from the
 pace so far, using Monday–Friday business days only:
@@ -5239,7 +5240,7 @@ export const GetStatsSalesForecastResponse = zod.object({
       forecast: zod
         .string()
         .describe(
-          "Projected period total = averagePerBusinessDay \* totalBusinessDays (decimal string).",
+          "Projected period total = averagePerBusinessDay * totalBusinessDays (decimal string).",
         ),
       insufficientData: zod
         .boolean()
@@ -5270,7 +5271,7 @@ export const GetStatsSalesForecastResponse = zod.object({
       forecast: zod
         .string()
         .describe(
-          "Projected period total = averagePerBusinessDay \* totalBusinessDays (decimal string).",
+          "Projected period total = averagePerBusinessDay * totalBusinessDays (decimal string).",
         ),
       insufficientData: zod
         .boolean()
@@ -5301,7 +5302,7 @@ export const GetStatsSalesForecastResponse = zod.object({
       forecast: zod
         .string()
         .describe(
-          "Projected period total = averagePerBusinessDay \* totalBusinessDays (decimal string).",
+          "Projected period total = averagePerBusinessDay * totalBusinessDays (decimal string).",
         ),
       insufficientData: zod
         .boolean()
@@ -5309,5 +5310,64 @@ export const GetStatsSalesForecastResponse = zod.object({
           "True when the forecast is not meaningful yet — no elapsed business\nday (e.g. a period starting on a weekend) or no sales recorded so\nfar. Forecast is $0.00 in that case.\n",
         ),
     }),
+  }),
+});
+
+/**
+ * Owner/admin-only remake analytics for the window: total remakes
+(canonical `cases.remakeOfCaseId` set + legacy `lab_cases` blobs
+flagged as remakes), a recharge split (recharged vs not), and a
+remake-reason breakdown (blank reasons roll up to "Unspecified",
+sorted by count desc). Scoped by date range only — category/material
+filters are NOT accepted. Permission is intentionally narrower than
+the other stats endpoints: owner/admin ONLY, NOT billing.
+
+ * @summary Remake totals, recharge split, and reason breakdown for a lab
+ */
+export const GetStatsRemakesQueryParams = zod.object({
+  organizationId: zod.coerce
+    .string()
+    .describe(
+      "Lab organization id (caller must hold owner\/admin\/billing role).",
+    ),
+  dateFrom: zod.coerce
+    .string()
+    .describe("Window start (ISO date or datetime, inclusive)."),
+  dateTo: zod.coerce
+    .string()
+    .describe("Window end (ISO date or datetime, inclusive)."),
+  timeZone: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      "IANA timezone for bucketing\/weekday attribution (default UTC).",
+    ),
+});
+
+export const GetStatsRemakesResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    from: zod.coerce.date(),
+    to: zod.coerce.date(),
+    timeZone: zod.string(),
+    totalRemakes: zod
+      .number()
+      .describe("Canonical + legacy remakes in the window."),
+    rechargedRemakes: zod
+      .number()
+      .describe("How many remakes were recharged to the provider."),
+    nonRechargedRemakes: zod
+      .number()
+      .describe("totalRemakes - rechargedRemakes."),
+    remakeReasons: zod
+      .array(
+        zod.object({
+          reason: zod.string(),
+          count: zod.number(),
+        }),
+      )
+      .describe(
+        'Reason breakdown, sorted by count desc; blank reasons roll up to "Unspecified".',
+      ),
   }),
 });

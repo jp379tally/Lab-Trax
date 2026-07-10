@@ -193,6 +193,11 @@ vi.mock("@workspace/api-client-react", async (importOriginal) => {
       isLoading: false,
       isError: false,
     }),
+    useGetStatsRemakes: () => ({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+    }),
   };
 });
 

@@ -24,6 +24,7 @@ import {
 import {
   getGetStatsCaseCategoriesQueryKey,
   useGetStatsCaseCategories,
+  useGetStatsRemakes,
   useGetStatsRevenueSeries,
   useGetStatsSummary,
   useGetStatsWeekdayVolume,
@@ -56,6 +57,7 @@ import {
 } from "@/lib/stats-export";
 
 const BILLING_ROLES = new Set(["owner", "admin", "billing"]);
+const ADMIN_ROLES = new Set(["owner", "admin"]);
 
 const CATEGORY_OPTIONS: Array<{ key: StatsCaseCategory; label: string }> = [
   { key: "implants", label: "Implants" },
@@ -124,6 +126,16 @@ export default function StatsPage() {
   }, [billingLabs, orgId]);
 
   const isBilling = billingLabs.length > 0;
+  const isAdminForOrg = useMemo(() => {
+    if (!orgId) return false;
+    return memberships.some(
+      (m) =>
+        m.status === "active" &&
+        m.organization?.id === orgId &&
+        m.organization?.type === "lab" &&
+        ADMIN_ROLES.has(m.role),
+    );
+  }, [memberships, orgId]);
 
   const timeZone = useMemo(() => localTimeZone(), []);
   // Unfiltered materials list for the dropdown options — deliberately NOT
@@ -242,6 +254,7 @@ export default function StatsPage() {
           groupBy={groupBy}
           category={category || undefined}
           material={material || undefined}
+          isAdmin={isAdminForOrg}
         />
       )}
     </div>
@@ -255,6 +268,7 @@ function StatsBody({
   groupBy,
   category,
   material,
+  isAdmin,
 }: {
   organizationId: string;
   orgName: string;
@@ -262,6 +276,7 @@ function StatsBody({
   groupBy: GroupBy;
   category: StatsCaseCategory | undefined;
   material: string | undefined;
+  isAdmin: boolean;
 }) {
   const timeZone = useMemo(() => localTimeZone(), []);
   const baseParams = {
@@ -272,6 +287,17 @@ function StatsBody({
     category,
     material,
   };
+  // Remakes are date-range only (no category/material) and owner/admin-only.
+  const remakesParams = {
+    organizationId,
+    dateFrom: range.from,
+    dateTo: range.to,
+    timeZone,
+  };
+  const remakesQuery = useGetStatsRemakes(remakesParams, {
+    query: { queryKey: ["stats", "remakes", remakesParams], enabled: isAdmin },
+  });
+  const remakes = remakesQuery.data?.data;
 
   const summaryQuery = useGetStatsSummary(baseParams);
   const categoriesQuery = useGetStatsCaseCategories(baseParams);
@@ -534,6 +560,103 @@ function StatsBody({
           </ChartContainer>
         )}
       </ChartCard>
+
+      {/* ── Remakes (owner/admin only) ────────────────────────────── */}
+      {isAdmin && (
+        <div data-testid="stats-remakes">
+          <div className="grid lg:grid-cols-2 gap-6">
+            <div className="bg-card border border-border rounded-xl p-5">
+              <div className="mb-4">
+                <div className="text-sm font-semibold">Remakes</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  Remade cases received in this period (canonical + legacy).
+                </div>
+              </div>
+              {remakesQuery.isLoading ? (
+                <div className="h-[160px] flex items-center justify-center text-sm text-muted-foreground">
+                  Loading…
+                </div>
+              ) : remakesQuery.isError ? (
+                <div className="h-[160px] flex items-center justify-center text-sm text-red-600">
+                  Could not load remakes.
+                </div>
+              ) : !remakes || remakes.totalRemakes === 0 ? (
+                <div
+                  className="h-[160px] flex items-center justify-center text-center text-sm text-muted-foreground"
+                  data-testid="stats-remakes-empty"
+                >
+                  No remakes in this period
+                </div>
+              ) : (
+                <div>
+                  <div
+                    className="text-4xl font-semibold tabular-nums"
+                    data-testid="stats-remakes-total"
+                  >
+                    {remakes.totalRemakes}
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-1">
+                    Total remakes
+                  </div>
+                  <div className="mt-4 flex items-center gap-6">
+                    <div>
+                      <div className="text-lg font-semibold tabular-nums text-emerald-600">
+                        {remakes.rechargedRemakes}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Recharged
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-lg font-semibold tabular-nums text-red-600">
+                        {remakes.nonRechargedRemakes}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Not recharged
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-card border border-border rounded-xl p-5">
+              <div className="mb-4">
+                <div className="text-sm font-semibold">Remake reasons</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  Grouped by reason, most frequent first.
+                </div>
+              </div>
+              {remakesQuery.isLoading ? (
+                <div className="h-[160px] flex items-center justify-center text-sm text-muted-foreground">
+                  Loading…
+                </div>
+              ) : !remakes || remakes.remakeReasons.length === 0 ? (
+                <div className="h-[160px] flex items-center justify-center text-center text-sm text-muted-foreground">
+                  No remakes in this period
+                </div>
+              ) : (
+                <div
+                  className="space-y-2"
+                  data-testid="stats-remakes-reasons"
+                >
+                  {remakes.remakeReasons.map((r) => (
+                    <div
+                      key={r.reason}
+                      className="flex items-center justify-between gap-3 text-sm"
+                    >
+                      <span className="truncate">{r.reason}</span>
+                      <span className="tabular-nums text-muted-foreground">
+                        {r.count}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

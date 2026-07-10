@@ -19,6 +19,7 @@
  *    blob material strings
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+vi.setConfig({ hookTimeout: 30_000 });
 import { createHash, randomBytes } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import request from "supertest";
@@ -60,8 +61,10 @@ maybe("Stats analytics routes (db integration)", () => {
   const zirCaseId = rid("c_zir");
   const implantCaseId = rid("c_imp");
   const blankCaseId = rid("c_blank");
+  const remakeCaseId = rid("c_remake");
   const legacyCatId = rid("lc_denture");
   const legacyUncatId = rid("lc_blank");
+  const legacyRemakeId = rid("lc_remake");
 
   const invoiceIds: string[] = [];
 
@@ -163,6 +166,15 @@ maybe("Stats analytics routes (db integration)", () => {
         caseNumber: rid("SC-B"),
         receivedAt: new Date("2026-03-02T12:00:00.000Z"), // Monday
       },
+      {
+        ...caseDefaults,
+        id: remakeCaseId,
+        caseNumber: rid("SC-R"),
+        receivedAt: new Date("2026-03-05T10:00:00.000Z"), // Thursday
+        remakeOfCaseId: zirCaseId,
+        remakeReason: "Shade mismatch",
+        remakeCharged: true,
+      },
     ]);
     await db.insert(caseRestorations).values([
       {
@@ -184,8 +196,8 @@ maybe("Stats analytics routes (db integration)", () => {
       // blankCaseId has no restoration rows → uncategorized
     ]);
 
-    // Legacy lab_cases: one categorizable (denture → removable), one blank.
-    // Legacy blob invoiceTotal must NOT count toward revenue.
+    // Legacy lab_cases: one categorizable (denture → removable), one blank,
+    // one remake. Legacy blob invoiceTotal must NOT count toward revenue.
     await db.insert(labCases).values([
       {
         id: legacyCatId,
@@ -207,6 +219,18 @@ maybe("Stats analytics routes (db integration)", () => {
         caseData: JSON.stringify({
           patientName: "Legacy Two",
           createdAt: "2026-03-05T09:00:00.000Z", // Thursday
+        }),
+      },
+      {
+        id: legacyRemakeId,
+        ownerId,
+        organizationId: labOrgId,
+        caseData: JSON.stringify({
+          patientName: "Legacy Remake",
+          isRemake: true,
+          remakeReason: "", // blank → should roll up to "Unspecified"
+          remakeCharged: false,
+          createdAt: "2026-03-06T09:00:00.000Z", // Friday
         }),
       },
     ]);
@@ -295,8 +319,8 @@ maybe("Stats analytics routes (db integration)", () => {
       .where(inArray(caseRestorations.caseId, [zirCaseId, implantCaseId, blankCaseId]));
     await db
       .delete(cases)
-      .where(inArray(cases.id, [zirCaseId, implantCaseId, blankCaseId]));
-    await db.delete(labCases).where(inArray(labCases.id, [legacyCatId, legacyUncatId]));
+      .where(inArray(cases.id, [zirCaseId, implantCaseId, blankCaseId, remakeCaseId]));
+    await db.delete(labCases).where(inArray(labCases.id, [legacyCatId, legacyUncatId, legacyRemakeId]));
     await db.delete(auditLogs).where(eq(auditLogs.organizationId, labOrgId));
     await db
       .delete(userSessions)
@@ -317,19 +341,53 @@ maybe("Stats analytics routes (db integration)", () => {
     expect(r.status).toBe(401);
   });
 
-  it("returns 403 for a non-billing member on all four endpoints", async () => {
+  it("returns 403 for a non-billing member on all five endpoints", async () => {
     const { access } = await makeSession(memberId);
     for (const ep of [
       "summary",
       "case-categories",
       "revenue-series",
       "weekday-volume",
+      "remakes",
     ]) {
       const r = await request(appMod.default)
         .get(`/api/stats/${ep}?${baseQs()}`)
         .set("Authorization", `Bearer ${access}`);
       expect(r.status, ep).toBe(403);
     }
+  });
+
+  it("returns 403 for a billing-only member on remakes (owner/admin only)", async () => {
+    const billingId = rid("billing");
+    const {
+      db,
+      users,
+      organizationMemberships,
+    } = dbMod as any;
+    await db.insert(users).values({
+      id: billingId,
+      username: `statsbilling_${billingId}`,
+      password: "x",
+    });
+    await db.insert(organizationMemberships).values({
+      id: rid("m_billing"),
+      labId: labOrgId,
+      userId: billingId,
+      role: "billing",
+      status: "active",
+      approvedByUserId: ownerId,
+      joinedAt: new Date(),
+    });
+    const { access } = await makeSession(billingId);
+    const r = await request(appMod.default)
+      .get(`/api/stats/remakes?${baseQs()}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(403);
+    // Cleanup
+    await db
+      .delete(organizationMemberships)
+      .where(eq(organizationMemberships.userId, billingId));
+    await db.delete(users).where(eq(users.id, billingId));
   });
 
   // ── /stats/summary ────────────────────────────────────────────────────
@@ -342,10 +400,10 @@ maybe("Stats analytics routes (db integration)", () => {
     expect(r.status).toBe(200);
     const d = r.body.data;
 
-    // 3 canonical + 2 legacy; legacy blob invoiceTotal (9999) NOT in revenue,
+    // 4 canonical + 3 legacy; legacy blob invoiceTotal (9999) NOT in revenue,
     // void (5000) and soft-deleted (7000) invoices excluded.
-    expect(d.totalCases).toBe(5);
-    expect(d.legacyCases).toBe(2);
+    expect(d.totalCases).toBe(7);
+    expect(d.legacyCases).toBe(3);
     expect(d.totalRevenue).toBe("450.00"); // 100 + 60 + 250 + 40 (caseless counts unfiltered)
     expect(d.invoiceCount).toBe(4);
     // Per-CASE average: 450 / 3 billed cases (zir counted ONCE despite two
@@ -353,7 +411,7 @@ maybe("Stats analytics routes (db integration)", () => {
     expect(d.averageCaseValue).toBe("150.00");
     expect(d.topCategoryCount).toBeGreaterThan(0);
 
-    // Monday (2 cases) is the busiest weekday.
+    // Monday (2 non-remake cases) is the busiest weekday; remake is Thursday.
     expect(d.busiestWeekday).toBe(0);
     expect(d.busiestWeekdayLabel).toBe("Monday");
 
@@ -434,7 +492,7 @@ maybe("Stats analytics routes (db integration)", () => {
       .set("Authorization", `Bearer ${access}`);
     expect(r.status).toBe(200);
     const d = r.body.data;
-    expect(d.totalCases).toBe(5);
+    expect(d.totalCases).toBe(7);
 
     const byKey = Object.fromEntries(
       d.categories.map((c: any) => [c.category, c]),
@@ -443,9 +501,9 @@ maybe("Stats analytics routes (db integration)", () => {
     expect(byKey["zirconia"].count).toBe(1);
     expect(byKey["removable"].count).toBe(1); // legacy denture
     expect(byKey["removable"].legacyCount).toBe(1);
-    // blank canonical case + blank legacy case
-    expect(byKey["uncategorized"].count).toBe(2);
-    expect(byKey["uncategorized"].legacyCount).toBe(1);
+    // 2 canonical blank (blank + remake) + 2 legacy blank cases
+    expect(byKey["uncategorized"].count).toBe(4);
+    expect(byKey["uncategorized"].legacyCount).toBe(2);
     expect(byKey["uncategorized"].label).toBe("Uncategorized / Legacy");
 
     // Materials: BruxZir + Zirconia normalize to one "Zirconia" row,
@@ -545,7 +603,7 @@ maybe("Stats analytics routes (db integration)", () => {
     expect(r.status).toBe(200);
     const d = r.body.data;
     expect(d.weekdays).toHaveLength(7);
-    expect(d.totalCases).toBe(5);
+    expect(d.totalCases).toBe(7);
 
     const monday = d.weekdays[0];
     expect(monday.label).toBe("Monday");
@@ -556,7 +614,8 @@ maybe("Stats analytics routes (db integration)", () => {
     expect(d.weekdays[1].total).toBe(1); // Tuesday: implant case
     expect(d.weekdays[2].total).toBe(1); // Wednesday: legacy denture
     expect(d.weekdays[2].byCategory["removable"]).toBe(1);
-    expect(d.weekdays[3].total).toBe(1); // Thursday: legacy blank
+    expect(d.weekdays[3].total).toBe(2); // Thursday: legacy blank + canonical remake
+    expect(d.weekdays[4].total).toBe(1); // Friday: legacy remake
   });
 
   it("weekday-volume honors the category filter", async () => {
@@ -583,6 +642,52 @@ maybe("Stats analytics routes (db integration)", () => {
     expect(d.weekdays[0].total).toBe(1); // Monday: zirconia case
     expect(d.weekdays[1].total).toBe(1); // Tuesday: implant case
     expect(d.weekdays[2].total).toBe(0); // Wednesday legacy denture excluded
+  });
+
+  // ── /stats/remakes ───────────────────────────────────────────
+
+  it("remakes totals canonical + legacy, recharged split, and reasons", async () => {
+    const { access } = await makeSession(ownerId);
+    const r = await request(appMod.default)
+      .get(`/api/stats/remakes?${baseQs()}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(200);
+    const d = r.body.data;
+
+    // One canonical remake (shade mismatch, recharged) + one legacy remake
+    // (blank reason → Unspecified, not recharged).
+    expect(d.totalRemakes).toBe(2);
+    expect(d.rechargedRemakes).toBe(1);
+    expect(d.nonRechargedRemakes).toBe(1);
+
+    // Reasons sorted count desc; "Shade mismatch" (1) then "Unspecified" (1).
+    // Tied counts fall back to alphabetical.
+    expect(d.remakeReasons).toHaveLength(2);
+    const byReason = Object.fromEntries(
+      d.remakeReasons.map((x: any) => [x.reason, x.count]),
+    );
+    expect(byReason["Shade mismatch"]).toBe(1);
+    expect(byReason["Unspecified"]).toBe(1);
+  });
+
+  it("remakes returns empty when there are no remakes", async () => {
+    const { access } = await makeSession(ownerId);
+    // A date range before any cases were inserted.
+    const qs = new URLSearchParams({
+      organizationId: labOrgId,
+      dateFrom: "2025-01-01T00:00:00.000Z",
+      dateTo: "2025-01-31T23:59:59.999Z",
+      timeZone: "UTC",
+    }).toString();
+    const r = await request(appMod.default)
+      .get(`/api/stats/remakes?${qs}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(200);
+    const d = r.body.data;
+    expect(d.totalRemakes).toBe(0);
+    expect(d.rechargedRemakes).toBe(0);
+    expect(d.nonRechargedRemakes).toBe(0);
+    expect(d.remakeReasons).toEqual([]);
   });
 });
 

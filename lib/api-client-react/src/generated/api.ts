@@ -105,6 +105,7 @@ import type {
   GetPatientSimilarityParams,
   GetRxPracticeAliasParams,
   GetStatsCaseCategoriesParams,
+  GetStatsRemakesParams,
   GetStatsRevenueSeriesParams,
   GetStatsSalesForecastParams,
   GetStatsSummaryParams,
@@ -186,6 +187,7 @@ import type {
   StatementScheduleInput,
   StatementScheduleResult,
   StatsCaseCategoriesResult,
+  StatsRemakesResult,
   StatsRevenueSeriesResult,
   StatsSalesForecastResult,
   StatsSummaryResult,
@@ -13277,6 +13279,108 @@ export function useGetStatsSalesForecast<
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getGetStatsSalesForecastQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Owner/admin-only remake analytics for the window: total remakes
+(canonical `cases.remakeOfCaseId` set + legacy `lab_cases` blobs
+flagged as remakes), a recharge split (recharged vs not), and a
+remake-reason breakdown (blank reasons roll up to "Unspecified",
+sorted by count desc). Scoped by date range only — category/material
+filters are NOT accepted. Permission is intentionally narrower than
+the other stats endpoints: owner/admin ONLY, NOT billing.
+
+ * @summary Remake totals, recharge split, and reason breakdown for a lab
+ */
+export const getGetStatsRemakesUrl = (params: GetStatsRemakesParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/stats/remakes?${stringifiedParams}`
+    : `/api/stats/remakes`;
+};
+
+export const getStatsRemakes = async (
+  params: GetStatsRemakesParams,
+  options?: RequestInit,
+): Promise<StatsRemakesResult> => {
+  return customFetch<StatsRemakesResult>(getGetStatsRemakesUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetStatsRemakesQueryKey = (params?: GetStatsRemakesParams) => {
+  return [`/api/stats/remakes`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetStatsRemakesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getStatsRemakes>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsRemakesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsRemakes>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetStatsRemakesQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getStatsRemakes>>> = ({
+    signal,
+  }) => getStatsRemakes(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getStatsRemakes>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetStatsRemakesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getStatsRemakes>>
+>;
+export type GetStatsRemakesQueryError = ErrorType<void>;
+
+/**
+ * @summary Remake totals, recharge split, and reason breakdown for a lab
+ */
+
+export function useGetStatsRemakes<
+  TData = Awaited<ReturnType<typeof getStatsRemakes>>,
+  TError = ErrorType<void>,
+>(
+  params: GetStatsRemakesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsRemakes>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetStatsRemakesQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

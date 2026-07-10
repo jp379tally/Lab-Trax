@@ -197,6 +197,30 @@ export interface StatsWeekdayVolumeResult {
   data: StatsWeekdayVolumeResultData;
 }
 
+export type StatsRemakesResultDataRemakeReasonsItem = {
+  reason: string;
+  count: number;
+};
+
+export type StatsRemakesResultData = {
+  from: string;
+  to: string;
+  timeZone: string;
+  /** Canonical + legacy remakes in the window. */
+  totalRemakes: number;
+  /** How many remakes were recharged to the provider. */
+  rechargedRemakes: number;
+  /** totalRemakes - rechargedRemakes. */
+  nonRechargedRemakes: number;
+  /** Reason breakdown, sorted by count desc; blank reasons roll up to "Unspecified". */
+  remakeReasons: StatsRemakesResultDataRemakeReasonsItem[];
+};
+
+export interface StatsRemakesResult {
+  ok: boolean;
+  data: StatsRemakesResultData;
+}
+
 export interface SttResult {
   transcript: string;
 }
@@ -3488,6 +3512,25 @@ export type GetStatsSalesForecastParams = {
    * Lab organization id (caller must hold owner/admin/billing role).
    */
   organizationId: StatsOrganizationIdParameter;
+  /**
+   * IANA timezone for bucketing/weekday attribution (default UTC).
+   */
+  timeZone?: StatsTimeZoneParameter;
+};
+
+export type GetStatsRemakesParams = {
+  /**
+   * Lab organization id (caller must hold owner/admin/billing role).
+   */
+  organizationId: StatsOrganizationIdParameter;
+  /**
+   * Window start (ISO date or datetime, inclusive).
+   */
+  dateFrom: StatsDateFromParameter;
+  /**
+   * Window end (ISO date or datetime, inclusive).
+   */
+  dateTo: StatsDateToParameter;
   /**
    * IANA timezone for bucketing/weekday attribution (default UTC).
    */

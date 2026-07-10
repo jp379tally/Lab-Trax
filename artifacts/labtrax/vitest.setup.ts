@@ -818,6 +818,19 @@ vi.mock("@workspace/api-client-react", async () => ({
     "/api/stats/weekday-volume",
     params,
   ],
+  useGetStatsRemakes: () => ({
+    data: mockAppOverrides.current.statsRemakes
+      ? { ok: true, data: mockAppOverrides.current.statsRemakes }
+      : undefined,
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  getGetStatsRemakesQueryKey: (params?: unknown) => [
+    "/api/stats/remakes",
+    params,
+  ],
   setBaseUrl: vi.fn(),
   setAuthTokenGetter: vi.fn(),
   setAuthRefresher: vi.fn(),

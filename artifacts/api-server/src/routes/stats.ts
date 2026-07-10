@@ -51,7 +51,7 @@ import { z } from "zod";
 import { db } from "@workspace/db";
 import { caseRestorations, cases, invoices, labCases } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
-import { BILLING_ROLES, OWNER_ROLES, requireAnyRole } from "../lib/rbac";
+import { ADMIN_ROLES, BILLING_ROLES, OWNER_ROLES, requireAnyRole } from "../lib/rbac";
 import { notDeleted } from "../lib/soft-delete";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -299,6 +299,121 @@ async function loadCategorizedCases(
       category: classifyLegacyCase(parsed),
       source: "legacy",
       materials,
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Blank / whitespace-only remake reasons collapse to "Unspecified" so the
+ * reasons list always has a stable label (matching the materialKey
+ * convention for blank materials).
+ */
+function remakeReasonKey(raw: string | null | undefined): string {
+  return (raw ?? "").trim() || "Unspecified";
+}
+
+interface RemakeCase {
+  /** Normalized remake reason ("Unspecified" for blank). */
+  reason: string;
+  /** true when the remake was recharged to the provider. */
+  recharged: boolean;
+}
+
+/**
+ * Load every remake (canonical + legacy) for one lab in [from, to].
+ *
+ * A canonical case is a remake when `remakeOfCaseId` is set; it is scoped by
+ * `receivedAt` and excludes soft-deletes (same window rules as
+ * loadCategorizedCases). A legacy `lab_cases` blob is a remake when its
+ * `isRemake` flag is true or it carries a `remakeOfCaseId`; it is scoped by
+ * the blob's `createdAt` (falling back to the row's `updatedAt`). Canonical
+ * and legacy ids live in separate spaces, so a case is never double-counted
+ * — the same de-dup posture as the other stats loaders.
+ */
+async function loadRemakeCases(
+  organizationId: string,
+  from: Date,
+  to: Date,
+): Promise<RemakeCase[]> {
+  const out: RemakeCase[] = [];
+
+  // Canonical remakes.
+  const canonical = (await db
+    .select({
+      receivedAt: cases.receivedAt,
+      remakeReason: cases.remakeReason,
+      remakeCharged: cases.remakeCharged,
+    })
+    .from(cases)
+    .where(
+      and(
+        eq(cases.labOrganizationId, organizationId),
+        notDeleted(cases),
+        gte(cases.receivedAt, from),
+        lte(cases.receivedAt, to),
+        sql`${cases.remakeOfCaseId} is not null`,
+      ),
+    )) as Array<{
+    receivedAt: Date | string | null;
+    remakeReason: string | null;
+    remakeCharged: boolean | null;
+  }>;
+
+  for (const c of canonical) {
+    const receivedAt = c.receivedAt ? new Date(c.receivedAt) : null;
+    if (!receivedAt || Number.isNaN(receivedAt.getTime())) continue;
+    out.push({
+      reason: remakeReasonKey(c.remakeReason),
+      recharged: c.remakeCharged === true,
+    });
+  }
+
+  // Legacy remakes from lab_cases blobs.
+  const legacyRows = (await db
+    .select({
+      caseData: labCases.caseData,
+      updatedAt: labCases.updatedAt,
+    })
+    .from(labCases)
+    .where(
+      and(eq(labCases.organizationId, organizationId), isNull(labCases.deletedAt)),
+    )) as Array<{ caseData: unknown; updatedAt: Date | null }>;
+
+  for (const row of legacyRows) {
+    let parsed: unknown = null;
+    try {
+      parsed =
+        typeof row.caseData === "string" ? JSON.parse(row.caseData) : row.caseData;
+    } catch {
+      parsed = null;
+    }
+    const blob =
+      parsed && typeof parsed === "object"
+        ? (parsed as Record<string, unknown>)
+        : null;
+    if (!blob) continue;
+    const isRemake =
+      blob["isRemake"] === true ||
+      (typeof blob["remakeOfCaseId"] === "string" && !!blob["remakeOfCaseId"]);
+    if (!isRemake) continue;
+
+    const rawCreated = blob["createdAt"];
+    let receivedAt: Date | null = null;
+    if (typeof rawCreated === "string" || typeof rawCreated === "number") {
+      const d = new Date(rawCreated);
+      if (!Number.isNaN(d.getTime())) receivedAt = d;
+    }
+    if (!receivedAt && row.updatedAt) receivedAt = new Date(row.updatedAt);
+    if (!receivedAt || Number.isNaN(receivedAt.getTime())) continue;
+    if (receivedAt.getTime() < from.getTime() || receivedAt.getTime() > to.getTime()) {
+      continue;
+    }
+    const rawReason = blob["remakeReason"];
+    out.push({
+      reason: remakeReasonKey(typeof rawReason === "string" ? rawReason : null),
+      recharged: blob["remakeCharged"] === true,
     });
   }
 
@@ -877,6 +992,50 @@ router.get(
       week: byKey.week,
       month: byKey.month,
       year: byKey.year,
+    });
+  }),
+);
+
+// ───────────────────────── GET /stats/remakes ─────────────────────────
+// Owner/admin ONLY (ADMIN_ROLES) — intentionally narrower than the other
+// stats endpoints (which allow BILLING_ROLES). Billing members must not see
+// remake stats. Scoped by date range only; category/material filters do not
+// cleanly map to a quality/remake breakdown, so they are not accepted here.
+router.get(
+  "/remakes",
+  asyncHandler(async (req, res) => {
+    const q = baseQuerySchema
+      .pick({
+        organizationId: true,
+        dateFrom: true,
+        dateTo: true,
+        timeZone: true,
+      })
+      .parse(req.query);
+    await requireAnyRole((req as any).auth.userId, q.organizationId, ADMIN_ROLES);
+    const { from, to } = parseWindow(q.dateFrom, q.dateTo);
+    const tz = q.timeZone ?? "UTC";
+
+    const remakes = await loadRemakeCases(q.organizationId, from, to);
+    const rechargedRemakes = remakes.filter((r) => r.recharged).length;
+    const nonRechargedRemakes = remakes.length - rechargedRemakes;
+
+    const reasonCounts = new Map<string, number>();
+    for (const r of remakes) {
+      reasonCounts.set(r.reason, (reasonCounts.get(r.reason) ?? 0) + 1);
+    }
+    const remakeReasons = Array.from(reasonCounts.entries())
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+
+    return ok(res, {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      timeZone: tz,
+      totalRemakes: remakes.length,
+      rechargedRemakes,
+      nonRechargedRemakes,
+      remakeReasons,
     });
   }),
 );
