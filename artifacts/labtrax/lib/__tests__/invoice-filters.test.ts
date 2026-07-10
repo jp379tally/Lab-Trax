@@ -129,6 +129,12 @@ describe("dateRangeForFilter", () => {
     expect(r.end.getTime()).toBe(new Date(2026, 6, 1).getTime());
   });
 
+  it("this_month covers the first of the current month through the end of today", () => {
+    const r = dateRangeForFilter("this_month", NOW)!;
+    expect(r.start.getTime()).toBe(new Date(2026, 6, 1).getTime());
+    expect(r.end.getTime()).toBe(new Date(2026, 6, 8).getTime());
+  });
+
   it("last_year covers the previous calendar year", () => {
     const r = dateRangeForFilter("last_year", NOW)!;
     expect(r.start.getTime()).toBe(new Date(2025, 0, 1).getTime());

@@ -1,0 +1,89 @@
+### Copy-Ready Replit Prompt
+
+Please update the LabTracks **Invoices** page filter dropdown so users can view invoices that have a **$0 balance**.
+
+**Goal:**
+Add a clear option to the invoice status/balance dropdown that lets users see invoices where `balance = 0`, even if those invoices are not currently visible under the existing filters.
+
+**Current user-visible issue:**
+On the Invoices page, the dropdown currently shows options like:
+
+* All
+* Draft
+* Open
+* Partial
+* Paid
+* Void
+* Frozen
+
+There is no obvious option for invoices with a **$0 balance**. Users need a way to filter invoices whose remaining balance is exactly `$0.00`.
+
+**Likely root cause:**
+The existing dropdown appears to be status-based, and the invoice query/filter logic likely only filters by invoice status values. A `$0 balance` invoice may not always map cleanly to the existing `Paid` status, especially if the app tracks invoice balance separately from invoice status. The UI needs a balance-based filter option, and the backend/query logic needs to support it.
+
+**Implementation steps:**
+
+1. Find the Invoices page/filter component that renders the status dropdown shown near the search bar.
+
+   * Look for labels/options like `All`, `Draft`, `Open`, `Partial`, `Paid`, `Void`, and `Frozen`.
+   * Likely areas: invoice list page, invoice table component, filter state, API query params, or invoice route/controller.
+
+2. Add a new dropdown option named something clear, such as:
+
+   * `Zero balance`
+   * or `$0 balance`
+
+3. Give the new option a distinct internal filter value, for example:
+
+   * `zero_balance`
+   * Do not reuse `paid` unless the existing business logic proves that paid invoices and zero-balance invoices are always identical.
+
+4. Update the invoice filtering/query logic so selecting this option returns invoices where the invoice balance is exactly zero.
+
+   * Use the app’s existing invoice balance field.
+   * Prefer a numeric comparison against the stored balance value.
+   * If balances are stored in cents, filter on `balanceCents === 0`.
+   * If balances are stored as decimal dollars, filter on `balance === 0`.
+   * Avoid string comparisons like `"$0.00"`.
+
+5. Make sure the new filter works with the existing filters on the page:
+
+   * search invoice/client
+   * open/all toggle if applicable
+   * age filter
+   * practice filter
+   * AI-imported-only checkbox
+   * pagination/sorting if present
+
+6. Check whether the top-level `Open` / `All` segmented control also affects visibility.
+
+   * If the user selects `$0 balance`, make sure the app does not accidentally hide zero-balance invoices because the `Open` toggle excludes them.
+   * If needed, clarify the intended behavior in code comments or by making `$0 balance` force/require the broader invoice set.
+
+**Constraints and guardrails:**
+
+* Do not change invoice totals, payment records, accounting calculations, or invoice status rules.
+* Do not rename or remove existing dropdown options.
+* Do not treat `$0 balance` as the same thing as `Paid` unless existing data confirms that every zero-balance invoice is paid and every paid invoice has zero balance.
+* Preserve the current table columns and layout.
+* Keep the new option consistent with the existing dropdown style.
+* Avoid broad refactors; this should be a targeted UI + filter/query update.
+
+**Acceptance criteria:**
+
+* The status dropdown on the Invoices page includes a new option for `$0 balance` invoices.
+* Selecting that option displays invoices whose remaining balance is `$0.00`.
+* The Balance column for returned invoices shows `$0.00`.
+* Existing options like `All`, `Open`, `Paid`, `Void`, and `Frozen` still behave as before.
+* The filter still works alongside search, practice, age, AI-imported-only, sorting, and pagination.
+* No invoice financial data is changed by this update.
+
+**Regression checks before finishing:**
+
+* Verify `All` still shows the expected invoices.
+* Verify `Open` still shows invoices with outstanding balances.
+* Verify `Paid` still behaves according to the app’s existing status rules.
+* Verify the new `$0 balance` option returns zero-balance invoices even if their status is not exactly `Paid`.
+* Verify invoices with positive balances do not appear in the `$0 balance` view.
+* Verify empty state behavior if no `$0 balance` invoices exist.
+* Verify the dropdown selection persists correctly through refresh/query params if the page currently supports that behavior.

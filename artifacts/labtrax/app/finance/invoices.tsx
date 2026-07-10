@@ -10,7 +10,7 @@ import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { ListScreen, type ListScreenQuery } from "@/components/ui/ListScreen";
 import { ColumnTotals } from "@/components/ui/ColumnTotals";
 import { FormSheet } from "@/components/ui/FormSheet";
-import { TextField } from "@/components/ui/TextField";
+import { DateField } from "@/components/DateField";
 import { useMe, primaryLabOrgId, primaryProviderOrgId } from "@/lib/auth-me";
 import { titleCase, toNumber, formatMoney, formatDate } from "@/lib/format";
 import {
@@ -281,36 +281,36 @@ export default function InvoicesScreen() {
         </View>
         {pendingDate === "custom" ? (
           <View style={styles.customFields}>
-            <TextField
-              label="From"
-              placeholder="MM/DD/YYYY"
-              value={pendingStartText}
-              onChangeText={setPendingStartText}
-              keyboardType="numbers-and-punctuation"
-              autoCapitalize="none"
-              autoCorrect={false}
-              error={pendingStartText.trim().length > 0 && !pendingStart}
-              testID="custom-date-start"
-            />
-            <TextField
-              label="To"
-              placeholder="MM/DD/YYYY"
-              value={pendingEndText}
-              onChangeText={setPendingEndText}
-              keyboardType="numbers-and-punctuation"
-              autoCapitalize="none"
-              autoCorrect={false}
-              error={
-                (pendingEndText.trim().length > 0 && !pendingEnd) ||
-                Boolean(pendingStart && pendingEnd && pendingEnd.getTime() < pendingStart.getTime())
-              }
-              hint={
-                pendingStart && pendingEnd && pendingEnd.getTime() < pendingStart.getTime()
-                  ? "End date must be on or after the start date."
-                  : "Dates are inclusive."
-              }
-              testID="custom-date-end"
-            />
+            <View style={styles.customField}>
+              <Text style={styles.customFieldLabel}>From</Text>
+              <DateField
+                title="From date"
+                placeholder="Select start date"
+                value={pendingStartText || null}
+                onChange={setPendingStartText}
+                error={pendingStartText.trim().length > 0 && !pendingStart}
+                testID="custom-date-start"
+              />
+            </View>
+            <View style={styles.customField}>
+              <Text style={styles.customFieldLabel}>To</Text>
+              <DateField
+                title="To date"
+                placeholder="Select end date"
+                value={pendingEndText || null}
+                onChange={setPendingEndText}
+                error={
+                  (pendingEndText.trim().length > 0 && !pendingEnd) ||
+                  Boolean(pendingStart && pendingEnd && pendingEnd.getTime() < pendingStart.getTime())
+                }
+                testID="custom-date-end"
+              />
+            </View>
+            <Text style={styles.customHint}>
+              {pendingStart && pendingEnd && pendingEnd.getTime() < pendingStart.getTime()
+                ? "End date must be on or after the start date."
+                : "Dates are inclusive."}
+            </Text>
           </View>
         ) : null}
       </FormSheet>
@@ -354,6 +354,9 @@ function makeStyles(c: ThemeColors) {
     dateOptionText: { ...Typography.body, color: c.text },
     dateOptionTextActive: { ...Typography.bodySemibold, color: c.tint },
     customFields: { marginTop: Spacing.md, gap: Spacing.md },
+    customField: { gap: Spacing.xs },
+    customFieldLabel: { ...Typography.captionSemibold, color: c.textSecondary },
+    customHint: { ...Typography.caption, color: c.textSecondary },
     row: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
     main: { flex: 1, gap: 2 },
     name: { ...Typography.bodySemibold, color: c.text },

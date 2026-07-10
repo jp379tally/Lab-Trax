@@ -135,34 +135,57 @@ describe("InvoicesScreen — date filter sheet", () => {
     expect(screen.getByText("No invoices match your filters.")).toBeTruthy();
   });
 
-  it("applies a valid custom range and keeps Apply disabled for an inverted range", () => {
+  it("applies a valid custom range via the calendar and keeps Apply disabled for an inverted range", () => {
     seedInvoices();
     const screen = render(<InvoicesScreen />);
 
     fireEvent.press(screen.getByTestId("filter-date"));
     fireEvent.press(screen.getByTestId("date-option-custom"));
 
-    const fmt = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
-    const start = new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() - 15);
-    const end = new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() - 5);
+    // The custom range is now picked with calendars (not typed text). Both
+    // pickers default to the current month, so days 1..lastDay are available.
+    const lastDay = new Date(NOW.getFullYear(), NOW.getMonth() + 1, 0).getDate();
 
-    // Inverted range first: Apply must not change the list.
-    fireEvent.changeText(screen.getByTestId("custom-date-start"), fmt(end));
-    fireEvent.changeText(screen.getByTestId("custom-date-end"), fmt(start));
+    // Each picker's internal controls are uniquely addressable (namespaced by
+    // the trigger testID) so the two mounted calendars never collide.
+    expect(screen.getByTestId("custom-date-start-clear")).toBeTruthy();
+    expect(screen.getByTestId("custom-date-end-clear")).toBeTruthy();
+
+    // Inverted range first (From = last day, To = 1st): Apply must be a no-op.
+    fireEvent.press(screen.getByTestId("custom-date-start"));
+    fireEvent.press(screen.getByTestId(`custom-date-start-day-${lastDay}`));
+    fireEvent.press(screen.getByTestId("custom-date-end"));
+    fireEvent.press(screen.getByTestId("custom-date-end-day-1"));
     fireEvent.press(screen.getByText("Apply"));
     // Sheet still open (Apply disabled) — the options are still rendered.
     expect(screen.getByTestId("date-option-custom")).toBeTruthy();
     expect(visibleInvoiceIds(screen.queryAllByTestId)).toHaveLength(4);
 
-    // Valid range including only the overdue invoice's due window (issued 60d
-    // ago is outside; paid-yesterday outside; only dueAt-10d invoice's issue
-    // date of 60d ago is outside too — pick a range around day-10 issue dates).
-    fireEvent.changeText(screen.getByTestId("custom-date-start"), fmt(start));
-    fireEvent.changeText(screen.getByTestId("custom-date-end"), fmt(end));
+    // Valid range = the whole current month (1st → last day). This always
+    // includes the invoice issued today and excludes the one issued ~60 days
+    // ago and the undated frozen draft, regardless of the current date.
+    fireEvent.press(screen.getByTestId("custom-date-start"));
+    fireEvent.press(screen.getByTestId("custom-date-start-day-1"));
+    fireEvent.press(screen.getByTestId("custom-date-end"));
+    fireEvent.press(screen.getByTestId(`custom-date-end-day-${lastDay}`));
     fireEvent.press(screen.getByText("Apply"));
-    // No invoice was issued 5–15 days ago → filtered empty state.
-    expect(visibleInvoiceIds(screen.queryAllByTestId)).toEqual([]);
-    expect(screen.getByText("No invoices match your filters.")).toBeTruthy();
+    const ids = visibleInvoiceIds(screen.queryAllByTestId);
+    expect(ids).toContain("invoice-open-today");
+    expect(ids).not.toContain("invoice-overdue-old");
+    expect(ids).not.toContain("invoice-frozen-draft");
+  });
+
+  it('filters to the current month via the "This month" option', () => {
+    seedInvoices();
+    const screen = render(<InvoicesScreen />);
+
+    fireEvent.press(screen.getByTestId("filter-date"));
+    fireEvent.press(screen.getByTestId("date-option-this_month"));
+    fireEvent.press(screen.getByText("Apply"));
+    const ids = visibleInvoiceIds(screen.queryAllByTestId);
+    expect(ids).toContain("invoice-open-today");
+    expect(ids).not.toContain("invoice-overdue-old");
+    expect(ids).not.toContain("invoice-frozen-draft");
   });
 });
 

@@ -63,6 +63,7 @@ export function DateField({
   value,
   onChange,
   placeholder = "Select a date",
+  title = "Due date",
   error,
   testID,
 }: {
@@ -70,6 +71,8 @@ export function DateField({
   value: string | null;
   onChange: (next: string) => void;
   placeholder?: string;
+  /** Heading shown at the top of the calendar sheet. */
+  title?: string;
   error?: boolean;
   testID?: string;
 }) {
@@ -87,6 +90,8 @@ export function DateField({
       setView({ y: p.y, m: p.m });
     }
   }, [open, value]);
+
+  const idFor = (suffix: string) => (testID ? `${testID}-${suffix}` : `cal-${suffix}`);
 
   const label = formatDateInput(value);
   const selected = parseYMD(value);
@@ -113,13 +118,13 @@ export function DateField({
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
           <Pressable style={styles.sheet} onPress={() => undefined}>
-            <Text style={styles.sheetTitle}>Due date</Text>
+            <Text style={styles.sheetTitle}>{title}</Text>
             <View style={styles.calHeader}>
               <Pressable
                 style={styles.calNav}
                 onPress={() => setView((v) => shiftMonth(v, -1))}
                 hitSlop={8}
-                testID="cal-prev"
+                testID={idFor("prev")}
               >
                 <Ionicons name="chevron-back" size={20} color={colors.text} />
               </Pressable>
@@ -130,7 +135,7 @@ export function DateField({
                 style={styles.calNav}
                 onPress={() => setView((v) => shiftMonth(v, 1))}
                 hitSlop={8}
-                testID="cal-next"
+                testID={idFor("next")}
               >
                 <Ionicons name="chevron-forward" size={20} color={colors.text} />
               </Pressable>
@@ -158,7 +163,7 @@ export function DateField({
                       onChange(ymd(view.y, view.m, d));
                       setOpen(false);
                     }}
-                    testID={`cal-day-${d}`}
+                    testID={testID ? `${testID}-day-${d}` : `cal-day-${d}`}
                   >
                     <Text
                       style={[
@@ -180,7 +185,7 @@ export function DateField({
                   onChange("");
                   setOpen(false);
                 }}
-                testID="cal-clear"
+                testID={idFor("clear")}
               >
                 <Text style={styles.footerBtnText}>Clear</Text>
               </Pressable>

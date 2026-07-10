@@ -9,6 +9,7 @@ export type InvoiceDateFilter =
   | "today"
   | "yesterday"
   | "last_week"
+  | "this_month"
   | "last_month"
   | "last_year"
   | "this_year"
@@ -30,6 +31,7 @@ export const DATE_FILTERS: { key: InvoiceDateFilter; label: string }[] = [
   { key: "today", label: "Today" },
   { key: "yesterday", label: "Yesterday" },
   { key: "last_week", label: "Last week" },
+  { key: "this_month", label: "This month" },
   { key: "last_month", label: "Last month" },
   { key: "last_year", label: "Last year" },
   { key: "this_year", label: "This year" },
@@ -152,6 +154,11 @@ export function dateRangeForFilter(
       // Previous calendar week, Sunday through Saturday.
       const thisWeekStart = addDays(today, -today.getDay());
       return { start: addDays(thisWeekStart, -7), end: thisWeekStart };
+    }
+    case "this_month": {
+      // First of the current month through the end of today ("so far this month").
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      return { start, end: addDays(today, 1) };
     }
     case "last_month": {
       const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
