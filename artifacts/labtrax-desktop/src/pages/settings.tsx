@@ -35,6 +35,7 @@ import {
 } from "@/pages/practices";
 import type { LabCase, Invoice } from "@/lib/types";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
+import { retryUnlessForbidden } from "@/lib/platform-admin-query";
 import { getSessionSecret, clearSessionSecret, useSessionSecretVersion } from "@/lib/platform-admin-session";
 import { formatPhone } from "@/lib/format";
 import {
@@ -114,6 +115,7 @@ export default function SettingsPage() {
     enabled: isAdmin,
     queryKey: ["admin", "backup-schedule-v2"],
     queryFn: () => apiFetch("/admin/backup/schedule"),
+    retry: retryUnlessForbidden,
     staleTime: 5 * 60 * 1000,
   });
   const backupOverdue = isAdmin && backupScheduleQuery.isSuccess && (() => {
@@ -1923,6 +1925,7 @@ function BackupPanel() {
   const scheduleQuery = useQuery<BackupScheduleData>({
     queryKey: ["admin", "backup-schedule-v2"],
     queryFn: () => apiFetch("/admin/backup/schedule"),
+    retry: retryUnlessForbidden,
   });
 
   const historyQuery = useQuery<{ ok: boolean; runs: BackupRunRow[] }>({

@@ -4,6 +4,7 @@ import { AlertCircle, AlertTriangle, CheckCircle2, Clock, Info, Loader2, Play, R
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
+import { retryUnlessForbidden, haltPollingIfForbidden } from "@/lib/platform-admin-query";
 import { TriggeredByBadge } from "@/components/TriggeredByBadge";
 
 interface CleanupRun {
@@ -85,10 +86,11 @@ export default function MaintenancePage() {
         `/admin/cleanup/orphaned-media/runs?limit=${limit}`,
       ),
     enabled: isAdmin,
-    refetchInterval: (query) => {
+    retry: retryUnlessForbidden,
+    refetchInterval: haltPollingIfForbidden((query) => {
       const runs = query.state.data?.runs ?? [];
       return runs.some((r) => r.status === "running") ? 3000 : 10000;
-    },
+    }),
   });
 
   const hasActiveRuns =

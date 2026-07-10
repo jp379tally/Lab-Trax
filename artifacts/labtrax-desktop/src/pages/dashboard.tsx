@@ -21,6 +21,7 @@ import {
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAiPanel } from "@/lib/ai-panel-context";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
+import { retryUnlessForbidden, haltPollingIfForbidden } from "@/lib/platform-admin-query";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { TriggeredByBadge } from "@/components/TriggeredByBadge";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
@@ -615,15 +616,17 @@ function MediaCleanupCard() {
       apiFetch<{ runs: MediaCleanupRun[] }>(
         `/admin/cleanup/orphaned-media/runs?limit=${HISTORY_LIMIT}`,
       ),
-    refetchInterval: (query) => {
+    retry: retryUnlessForbidden,
+    refetchInterval: haltPollingIfForbidden((query) => {
       const latest = query.state.data?.runs?.[0];
       return latest?.status === "running" ? 5_000 : 5 * 60 * 1000;
-    },
+    }),
   });
 
   const scheduleQuery = useQuery({
     queryKey: ["admin", "cleanup-schedule"],
     queryFn: () => apiFetch<CleanupScheduleSettings>("/admin/settings/cleanup-schedule"),
+    retry: retryUnlessForbidden,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -680,6 +683,7 @@ function MediaCleanupCard() {
   const backupScheduleQuery = useQuery({
     queryKey: ["admin", "backup-schedule"],
     queryFn: () => apiFetch<BackupScheduleSettings>("/admin/settings/backup-schedule"),
+    retry: retryUnlessForbidden,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -690,12 +694,13 @@ function MediaCleanupCard() {
   const cleanupStatusQuery = useQuery({
     queryKey: ["admin", "cleanup", "status"],
     queryFn: () => apiFetch<CleanupProgress>("/admin/cleanup/orphaned-media/status"),
-    refetchInterval: (query) => {
+    retry: retryUnlessForbidden,
+    refetchInterval: haltPollingIfForbidden((query) => {
       const stage = query.state.data?.stage;
       return runNowMutation.isPending || isRunningFromQuery || (stage && stage !== "idle")
         ? 1500
         : 5_000;
-    },
+    }),
   });
 
   const isRunningFromProgress =

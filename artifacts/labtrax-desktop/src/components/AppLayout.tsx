@@ -50,6 +50,7 @@ import {
   getGetDoctorDuplicateClustersQueryKey,
 } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
+import { retryUnlessForbidden } from "@/lib/platform-admin-query";
 import type { MeResponse } from "@/lib/types";
 
 interface BackupScheduleShape {
@@ -263,6 +264,7 @@ export function AppLayout({ children }: Props) {
     queryKey: ["admin", "backup-schedule-v2"],
     queryFn: () => apiFetch<BackupScheduleShape>("/admin/backup/schedule"),
     enabled: isAdmin,
+    retry: retryUnlessForbidden,
     staleTime: 5 * 60 * 1000,
   });
 

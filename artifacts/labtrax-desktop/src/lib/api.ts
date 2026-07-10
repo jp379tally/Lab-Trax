@@ -467,6 +467,18 @@ export function getAccessToken(): string | null {
   return _tokens?.accessToken ?? null;
 }
 
+/**
+ * Force a single access-token refresh using the stored refresh token, reusing
+ * the same in-flight/dedup logic as the fetch layer. Exposed for non-fetch
+ * consumers — e.g. the messenger WebSocket, which must proactively refresh an
+ * expired token before rebuilding its connection URL (the WS handshake can't
+ * transparently retry a 401 the way `apiFetch` does). Resolves `true` when a
+ * fresh access token is now available.
+ */
+export function refreshAccessTokenNow(): Promise<boolean> {
+  return refreshAccessToken();
+}
+
 let refreshInFlight: Promise<boolean> | null = null;
 
 async function refreshAccessToken(): Promise<boolean> {

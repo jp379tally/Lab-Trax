@@ -132,4 +132,8 @@
 - [Maynard active-case context](ai-agent-active-case-context.md) — grounding the AI in the viewed case is an authz surface: apply the SAME tenant+role gate as lookup_case, not just tenant scope.
 - [RN Modal test stub renders children](rn-modal-stub-renders-children.md) — labtrax mobile Modal stub ignores `visible`; two same modals collide on shared testIDs; namespace internal testIDs by the trigger testID.
 - [Mobile stat-bar drill-down classifier](mobile-stat-bar-drilldown-classifier.md) — mobile Stats bars drill into the Cases list via a self-contained case-category mirror (server rules aren't shared; material-mapping too entangled); category items expose `category` not `key`.
+<<<<<<< HEAD
 - [Invoice email SMTP failure classification](invoice-email-smtp-classification.md) — classifySmtpError() is the shared safe mapper for direct nodemailer sends; classify ONLY around sendMail, log category+code, never raw provider msg (leaks creds).
+=======
+- [Desktop 403 polling & WS auth loop](desktop-platform-admin-403-and-ws-auth-loop.md) — platform-admin queries must retryUnlessForbidden+haltPollingIfForbidden; messenger WS: close-without-open = auth-suspect, refresh token once then cap reconnects.
+>>>>>>> c92e30da (Desktop: stop console flooding from platform-admin 403s and messenger WS auth loop)
