@@ -1,0 +1,117 @@
+### Replit Build Brief
+
+**Objective**
+Make Maynard usable as a real conversational assistant: first as reliable low-latency typed/chat streaming, then as true live speech-to-speech conversation for lab questions, case lookups, stats, and general conversation.
+
+**User-visible problem**
+Maynard currently does not feel like Copilot/ChatGPT live voice. The app can stream text tokens and has STT/TTS voice pieces, but the “conversation” loop is still basically:
+
+record audio → stop → transcribe → send text → wait for full answer → synthesize speech → optionally listen again.
+
+That is turn-based voice dictation, not real-time conversation with interruption, natural turn-taking, or low-latency speech.
+
+**Likely root cause**
+The Maynard feature is split across a few surfaces:
+
+* Mobile/Expo assistant screen: `artifacts/labtrax/app/ai-assistant.tsx`
+* Desktop side panel: `artifacts/labtrax-desktop/src/components/AiChatPanel.tsx`
+* Backend agent route: `artifacts/api-server/src/routes/ai-agent.ts`
+* OpenAI client wrapper: `artifacts/api-server/src/lib/ai-openai-client.ts`
+* Tool registry for lab actions/statistics: `artifacts/api-server/src/lib/ai-agent-tools.ts`
+* STT/TTS routes: `artifacts/api-server/src/routes/ai-stt.ts`, `artifacts/api-server/src/routes/ai-tts.ts`
+
+The backend already has `/ai-agent/stream` with Server-Sent Events for token streaming. The clients already consume those SSE tokens. But there is no true realtime audio session endpoint. Also, the UI passes `caseId` / `caseIds` into `/ai-agent/stream`, but the backend currently does not appear to use those IDs when building Maynard’s prompt or tool context. That weakens case-specific conversation.
+
+**Safest fix**
+Do this in two phases.
+
+1. Stabilize current Maynard chat:
+
+   * Keep `/ai-agent/stream`.
+   * Make sure typed chat streams reliably.
+   * Make sure voice dictation works as “record, transcribe, send.”
+   * Inject active `caseId` / `caseIds` into the system prompt so Maynard actually knows which case(s) the user is discussing.
+   * Preserve confirmation cards for write actions.
+
+2. Add true live conversation:
+
+   * Add a new realtime voice path instead of trying to force it through `/ai-agent/stream`.
+   * Use OpenAI Realtime voice over WebRTC for browser/mobile-style speech-to-speech.
+   * Keep LabTrax tools and permission checks server-side.
+   * Start read-only: case lookup, case history, due cases, financial summaries, remake rate, counts/statuses, draft messages.
+   * Keep write actions behind confirmation, exactly like the existing proposed-action flow.
+
+**Acceptance Criteria**
+
+* User can type to Maynard and see streaming responses.
+* User can ask “what cases are due this week?” and Maynard uses lab-scoped tools.
+* From a case screen, user can ask “summarize this case” without restating the case number.
+* Voice dictation works as a fallback.
+* New live voice mode supports natural turn-taking and spoken replies.
+* Write actions still require confirmation unless explicitly in safe auto-execute mode.
+* Provider/admin/user permission rules remain enforced on the server.
+
+### Copy-Ready Replit Prompt
+
+Please inspect and improve LabTrax’s Maynard AI assistant so it can support real conversation.
+
+Relevant files to inspect first:
+
+* `artifacts/labtrax/app/ai-assistant.tsx`
+* `artifacts/labtrax-desktop/src/components/AiChatPanel.tsx`
+* `artifacts/api-server/src/routes/ai-agent.ts`
+* `artifacts/api-server/src/lib/ai-agent-tools.ts`
+* `artifacts/api-server/src/routes/ai-stt.ts`
+* `artifacts/api-server/src/routes/ai-tts.ts`
+* `artifacts/api-server/src/lib/ai-openai-client.ts`
+
+Current finding: Maynard already has a streaming text endpoint at `/api/ai-agent/stream`, and both clients consume SSE token events. However, the voice flow is still a chained flow: record audio, stop, transcribe, send text, wait for reply, then TTS. That will not feel like Copilot/ChatGPT live conversation.
+
+Please implement the safest staged fix:
+
+1. First stabilize the existing `/ai-agent/stream` path.
+2. Confirm typed chat streams token-by-token.
+3. Confirm STT and TTS still work.
+4. Fix active case context: the clients pass `caseId` / `caseIds`, but the backend should actually inject those case details into Maynard’s prompt or tool context so “this case” works.
+5. Preserve the existing proposed-action confirmation flow for impactful tools.
+6. Add or plan a new realtime voice endpoint/session path using OpenAI Realtime WebRTC or equivalent, rather than trying to make `/ai-agent/stream` behave like live duplex audio.
+7. Keep LabTrax data access and tool execution server-side. Do not expose unrestricted database access to the client.
+8. Start realtime voice in read-only mode for lab questions, case lookups, case history, due-case stats, financial summaries, remake rates, and draft messages.
+9. Require confirmation for any write action.
+
+Before finishing, run focused tests for:
+
+* `/ai-agent/stream`
+* mobile `ai-assistant.tsx` streaming behavior
+* desktop `AiChatPanel` streaming behavior
+* STT/TTS routes
+* case-context prompt behavior
+
+Explain any tradeoffs, especially if true realtime voice requires a separate endpoint and cannot be safely bolted onto the existing SSE route.
+
+### Debug Analysis
+
+The most important part of the app involved is the AI assistant stack: the Expo assistant screen, the desktop Maynard side panel, and the backend `ai-agent` routes/tools.
+
+The current implementation is not empty or hopeless. It already has a serious foundation: OpenAI client setup, tool calling, lab-scoped tools, proposed action confirmation, chat history, text streaming, STT, and TTS. The problem is that it is architected as streamed text plus chained voice, not as a native live audio conversation.
+
+The second likely issue is case context. The frontend sends `caseId` or `caseIds`, but the backend route body accepts them without visibly using them in `buildSystemPrompt` or the tool context. That means Maynard may not reliably understand “this case” unless the user repeats the case number.
+
+The recommended approach is best because it avoids ripping out the current working assistant. Keep the existing text agent and confirmation safety, then add a dedicated realtime voice layer for the interaction style you actually want.
+
+Confidence: high on the architecture diagnosis; medium-high on the case-context gap based on the route code inspected.
+
+### Step-by-Step Fix Plan
+
+1. Verify `/api/ai-agent/stream` works for typed chat.
+2. Add backend handling for `caseId` / `caseIds`.
+3. When case IDs are provided, fetch safe summary fields and inject them into Maynard’s system prompt.
+4. Add tests proving “this case” works from a case screen.
+5. Keep STT/TTS as fallback voice dictation.
+6. Add a dedicated realtime voice session endpoint.
+7. Use Realtime/WebRTC for live speech-to-speech.
+8. Map existing readonly Maynard tools into the realtime session.
+9. Keep write tools behind server-side confirmation.
+10. Smoke test typed chat, case chat, stats questions, dictation, and live voice.
+
+Official OpenAI docs support this split: OpenAI recommends WebRTC for browser/mobile realtime voice, and the Realtime docs describe speech-to-speech interaction without separate STT/TTS steps for lower latency. Sources: [Realtime WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc), [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations), [Voice agents](https://developers.openai.com/api/docs/guides/voice-agents).
