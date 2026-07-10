@@ -91,6 +91,12 @@ const EDITABLE_STATUSES = [
   "void",
 ] as const;
 
+const BULK_EDITABLE_STATUSES = [
+  "open",
+  "paid",
+  "void",
+] as const;
+
 type DraftLine = {
   id?: string;
   item: string;
@@ -154,7 +160,7 @@ export default function InvoicesPage() {
     kind: "delete_selected" | "reset_selected" | "reset_all" | "status_change";
     count: number;
     labOrganizationId: string;
-    targetStatus?: (typeof EDITABLE_STATUSES)[number];
+    targetStatus?: (typeof BULK_EDITABLE_STATUSES)[number];
   } | null>(null);
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
 
@@ -399,7 +405,7 @@ export default function InvoicesPage() {
   });
 
   const bulkStatusMutation = useMutation({
-    mutationFn: ({ expected: _expected, ...payload }: { invoiceIds: string[]; status: (typeof EDITABLE_STATUSES)[number]; expected: number }) =>
+    mutationFn: ({ expected: _expected, ...payload }: { invoiceIds: string[]; status: (typeof BULK_EDITABLE_STATUSES)[number]; expected: number }) =>
       apiFetch<{ updatedCount: number; skippedFrozenCount: number; status: string }>("/invoices/bulk-status", {
         method: "POST",
         body: JSON.stringify({ ...(labOrganizationId ? { labOrganizationId } : {}), ...payload }),
@@ -431,7 +437,7 @@ export default function InvoicesPage() {
     },
   });
 
-  function applyBulkStatus(target: (typeof EDITABLE_STATUSES)[number]) {
+  function applyBulkStatus(target: (typeof BULK_EDITABLE_STATUSES)[number]) {
     if (!labOrganizationId || selected.size === 0) return;
     setBulkFeedback(null);
     if (target === "paid" || target === "void") {
@@ -631,14 +637,14 @@ export default function InvoicesPage() {
                   value=""
                   disabled={bulkStatusMutation.isPending}
                   onChange={(e) => {
-                    const v = e.target.value as (typeof EDITABLE_STATUSES)[number];
+                    const v = e.target.value as (typeof BULK_EDITABLE_STATUSES)[number];
                     e.target.value = "";
                     if (v) applyBulkStatus(v);
                   }}
                   className="px-3 py-1.5 rounded-md bg-secondary text-foreground border border-border text-xs font-medium hover:bg-secondary/70 disabled:opacity-50"
                 >
                   <option value="">Change status…</option>
-                  {EDITABLE_STATUSES.map((s) => (
+                  {BULK_EDITABLE_STATUSES.map((s) => (
                     <option key={s} value={s}>{statusLabel(s)}</option>
                   ))}
                 </select>

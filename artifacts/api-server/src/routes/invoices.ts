@@ -1220,7 +1220,7 @@ const bulkInvoiceStatusSchema = z.object({
   // Optional hint only; each invoice is authorized by its OWN labOrganizationId.
   labOrganizationId: z.string().min(1).optional(),
   invoiceIds: z.array(z.string().min(1)).min(1).max(2000),
-  status: z.enum(["draft", "open", "partially_paid", "paid", "void"]),
+  status: z.enum(["open", "paid", "void"]),
 });
 
 type BulkInvoiceTarget = {

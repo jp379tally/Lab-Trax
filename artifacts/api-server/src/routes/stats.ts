@@ -593,6 +593,8 @@ router.get(
       return Number((((cur - prev) / prev) * 100).toFixed(1));
     }
 
+    const daysInRange = Math.max(1, Math.ceil((to.getTime() - from.getTime()) / 86400000));
+
     // Average case value = revenue / distinct cases billed in the window
     // (each caseless manual invoice counts as its own "case" — it is
     // revenue not attributable to any tracked case). This is per-CASE, not
@@ -619,6 +621,7 @@ router.get(
       legacyCases: curCases.filter((c) => c.source === "legacy").length,
       totalRevenue: curRevenue.toFixed(2),
       invoiceCount: curInvoices.length,
+      averageDailyRevenue: (curRevenue / daysInRange).toFixed(2),
       averageCaseValue: curBilledCases
         ? (curRevenue / curBilledCases).toFixed(2)
         : "0.00",

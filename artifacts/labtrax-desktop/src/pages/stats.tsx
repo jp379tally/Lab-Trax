@@ -344,7 +344,7 @@ function StatsBody({
       </div>
       {/* ── Summary cards ─────────────────────────────────────────── */}
       <div
-        className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3"
+        className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3"
         data-testid="stats-summary-cards"
       >
         <MetricCard
@@ -369,12 +369,18 @@ function StatsBody({
         />
         <MetricCard
           icon={Activity}
+          label="Avg daily sales"
+          value={summary ? formatMoney(summary.averageDailyRevenue) : "—"}
+          loading={summaryQuery.isLoading}
+        />
+        <MetricCard
+          icon={BarChart3}
           label="Avg case value"
           value={summary ? formatMoney(summary.averageCaseValue) : "—"}
           loading={summaryQuery.isLoading}
         />
         <MetricCard
-          icon={BarChart3}
+          icon={CalendarDays}
           label="Top case type"
           value={summary?.topCategoryLabel ?? "—"}
           sub={
@@ -385,13 +391,13 @@ function StatsBody({
           loading={summaryQuery.isLoading}
         />
         <MetricCard
-          icon={CalendarDays}
+          icon={TrendingUp}
           label="Busiest weekday"
           value={summary?.busiestWeekdayLabel ?? "—"}
           loading={summaryQuery.isLoading}
         />
         <MetricCard
-          icon={TrendingUp}
+          icon={TrendingDown}
           label="Prev period sales"
           value={
             summary?.previousPeriod

@@ -128,21 +128,21 @@ describe("Invoices bulk change-status", () => {
     expect(screen.getByLabelText(/change status/i)).toBeInTheDocument();
   });
 
-  it("applies a non-financial status immediately without confirmation", async () => {
+  it("applies open status immediately without confirmation", async () => {
     const calls: BulkCall[] = [];
-    installFetch({ updatedCount: 2, skippedFrozenCount: 0, status: "draft" }, calls);
+    installFetch({ updatedCount: 2, skippedFrozenCount: 0, status: "open" }, calls);
     const Wrapper = makeAuthWrapper("/invoices", { user: BILLING_USER, status: "authed" });
     render(<Wrapper><InvoicesPage /></Wrapper>);
 
     await selectAll();
-    fireEvent.change(screen.getByLabelText(/change status/i), { target: { value: "draft" } });
+    fireEvent.change(screen.getByLabelText(/change status/i), { target: { value: "open" } });
 
     await waitFor(() => expect(calls.length).toBe(1));
     expect(calls[0]!.method).toBe("POST");
     expect(calls[0]!.url).toContain("/invoices/bulk-status");
     const body = calls[0]!.body as { invoiceIds?: string[]; status?: string };
     expect(new Set(body.invoiceIds)).toEqual(new Set(["inv-a", "inv-b"]));
-    expect(body.status).toBe("draft");
+    expect(body.status).toBe("open");
   });
 
   it("requires confirmation before applying a financial status (void)", async () => {

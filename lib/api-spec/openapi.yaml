@@ -3971,6 +3971,11 @@ components:
               type: string
               description: Sum of non-void invoices.total in the window (decimal string).
             invoiceCount: { type: integer }
+            averageDailyRevenue:
+              type: string
+              description: |
+                totalRevenue / number of days in the window. Decimal
+                string, "0.00" when no invoices.
             averageCaseValue:
               type: string
               description: |

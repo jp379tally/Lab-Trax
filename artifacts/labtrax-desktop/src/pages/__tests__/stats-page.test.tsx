@@ -22,6 +22,7 @@ const SUMMARY = {
     legacyCases: 5,
     totalRevenue: "1234.50",
     invoiceCount: 10,
+    averageDailyRevenue: "39.82",
     averageCaseValue: "123.45",
     topCategory: "zirconia",
     topCategoryLabel: "Zirconia",

@@ -20,6 +20,10 @@ export type StatsSummaryResultData = {
   /** Sum of non-void invoices.total in the window (decimal string). */
   totalRevenue: string;
   invoiceCount: number;
+  /** totalRevenue / number of days in the window. Decimal
+string, "0.00" when no invoices.
+ */
+  averageDailyRevenue?: string;
   /** totalRevenue / distinct cases billed in the window (each
 caseless manual invoice counts as one case). Decimal
 string, "0.00" when no invoices.

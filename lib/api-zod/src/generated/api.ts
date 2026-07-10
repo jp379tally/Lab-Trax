@@ -4866,6 +4866,12 @@ export const GetStatsSummaryResponse = zod.object({
         "Sum of non-void invoices.total in the window (decimal string).",
       ),
     invoiceCount: zod.number(),
+    averageDailyRevenue: zod
+      .string()
+      .optional()
+      .describe(
+        'totalRevenue \/ number of days in the window. Decimal\nstring, \"0.00\" when no invoices.\n',
+      ),
     averageCaseValue: zod
       .string()
       .describe(
@@ -5184,7 +5190,6 @@ export const GetStatsWeekdayVolumeResponse = zod.object({
   }),
 });
 
-
 /**
  * Projects total sales for the current week, month, and year from the
 pace so far, using Monday–Friday business days only:
@@ -5240,7 +5245,7 @@ export const GetStatsSalesForecastResponse = zod.object({
       forecast: zod
         .string()
         .describe(
-          "Projected period total = averagePerBusinessDay * totalBusinessDays (decimal string).",
+          "Projected period total = averagePerBusinessDay \* totalBusinessDays (decimal string).",
         ),
       insufficientData: zod
         .boolean()
@@ -5307,7 +5312,7 @@ export const GetStatsSalesForecastResponse = zod.object({
       forecast: zod
         .string()
         .describe(
-          "Projected period total = averagePerBusinessDay * totalBusinessDays (decimal string).",
+          "Projected period total = averagePerBusinessDay \* totalBusinessDays (decimal string).",
         ),
       insufficientData: zod
         .boolean()
@@ -5374,7 +5379,7 @@ export const GetStatsSalesForecastResponse = zod.object({
       forecast: zod
         .string()
         .describe(
-          "Projected period total = averagePerBusinessDay * totalBusinessDays (decimal string).",
+          "Projected period total = averagePerBusinessDay \* totalBusinessDays (decimal string).",
         ),
       insufficientData: zod
         .boolean()
@@ -5475,7 +5480,7 @@ export const GetStatsRemakesResponse = zod.object({
         }),
       )
       .describe(
-        'Reason breakdown, sorted by count desc; blank reasons roll up to "Unspecified".',
+        'Reason breakdown, sorted by count desc; blank reasons roll up to \"Unspecified\".',
       ),
   }),
 });

@@ -29,6 +29,7 @@ export interface StatsSummaryData {
   legacyCases: number;
   totalRevenue: string;
   invoiceCount: number;
+  averageDailyRevenue?: string;
   averageCaseValue: string;
   topCategoryLabel?: string | null;
   topCategoryCount?: number;
@@ -230,6 +231,7 @@ export function buildSummaryPdfRows(
     ["Legacy cases", String(summary.legacyCases)],
     ["Total sales", money(summary.totalRevenue)],
     ["Invoices", String(summary.invoiceCount)],
+    ["Average daily sales", money(summary.averageDailyRevenue ?? "0.00")],
     ["Average case value", money(summary.averageCaseValue)],
     [
       "Top case type",
