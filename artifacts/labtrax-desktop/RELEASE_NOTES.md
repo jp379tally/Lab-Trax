@@ -20,6 +20,19 @@
   - Keep individual entries concise — one bullet point per change.
 -->
 
+## v1.0.5
+
+- Stats dashboard: export cases to CSV or PDF for your accountant, plus per-material and per-case revenue metrics and an owner/admin Remakes section.
+- Sales Forecaster (owner-only) with a sales-pace trend indicator and average daily revenue.
+- Invoices: added a "$0 balance" status filter, column totals shown at the top of every amount column, and filters/bulk actions now stay visible while scrolling.
+- Shift-click to select a range of rows on the Cases page and the bulk invoice lists.
+- Statements: per-row Download PDF and Resend actions, resend a statement to a different email address, and a "last emailed" indicator.
+- Customer Center: new tabs on the account slide-in window, merging of legacy/providerless doctor names, and the ability to dismiss duplicate-doctor suggestions.
+- Case photos: fixed viewing through the Electron media bridge, and mobile-uploaded documents that were previously unopenable now open on desktop.
+- Maynard AI assistant: resume voice mode where you left off, turn voice mode off without resuming first, mic fixes on desktop web, and clearer error handling.
+- New case content (photos, videos, files, notes) now defaults to Lab Only.
+- Case deletion and admin PIN reset now use email verification instead of SMS.
+
 ## v1.0.3
 
 - Barcode field in AI intake panel: scan or type a case pan barcode when creating a case from an Rx.
