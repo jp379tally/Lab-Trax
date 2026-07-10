@@ -45,6 +45,10 @@ import {
   type LegacyDoctorDirectoryEntry,
 } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
+import {
+  computeShiftClickRange,
+  suppressShiftClickTextSelection,
+} from "@/lib/shift-click-range";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization, OrgMemberRow } from "@/lib/types";
 import { formatDate, formatMoney, relativeTime } from "@/lib/format";
@@ -695,6 +699,138 @@ export default function AccountsPage() {
     });
   }
 
+  // Shift-click range selection for the practice checkboxes. A normal click
+  // toggles the single practice and moves the anchor; a shift-click with a
+  // valid anchor adds every practice between the anchor and the clicked row
+  // (in the current filtered order) to the selection. If the anchor is no
+  // longer visible, fall back to a normal single toggle.
+  const practiceAnchorIdRef = useRef<string | null>(null);
+  function handlePracticeSelectClick(orgId: string, shiftKey: boolean) {
+    if (shiftKey) {
+      const rangeIds = computeShiftClickRange(
+        filteredPractices.map((o) => o.id),
+        practiceAnchorIdRef.current,
+        orgId,
+      );
+      if (rangeIds) {
+        setSelectedPracticeIds((prev) => {
+          const next = new Set(prev);
+          for (const id of rangeIds) next.add(id);
+          return next;
+        });
+        return;
+      }
+      practiceAnchorIdRef.current = null;
+    }
+    togglePractice(orgId);
+    practiceAnchorIdRef.current = orgId;
+  }
+
+  // Doctor rows are filtered + sorted per practice; this replicates the exact
+  // ordering used in the render so shift-click ranges follow what is on screen.
+  function sortOrgDoctors(docs: DoctorRow[], q: string): DoctorRow[] {
+    return docs
+      .filter((d) => {
+        if (openCasesOnly && d.openCases === 0) return false;
+        if (!q) return true;
+        return (
+          d.doctorName.toLowerCase().includes(q) ||
+          d.practiceName.toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => {
+        let cmp = 0;
+        if (doctorSortKey === "lastCaseAt") {
+          const aVal = a.lastCaseAt ?? "";
+          const bVal = b.lastCaseAt ?? "";
+          cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+        } else {
+          cmp = a[doctorSortKey] - b[doctorSortKey];
+        }
+        return doctorSortDir === "desc" ? -cmp : cmp;
+      });
+  }
+
+  // Flattened, in-display-order list of the doctor keys currently visible:
+  // expanded practices' doctors (in sorted order) followed by legacy rows.
+  const visibleDoctorKeys = useMemo(() => {
+    const keys: string[] = [];
+    const q = search.trim().toLowerCase();
+    for (const org of filteredPractices) {
+      if (!effectiveExpanded.has(org.id)) continue;
+      for (const d of sortOrgDoctors(doctorsByPractice.get(org.id) ?? [], q)) {
+        keys.push(d.key);
+      }
+    }
+    for (const row of legacyDoctorRows) keys.push(row.key);
+    return keys;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    filteredPractices,
+    effectiveExpanded,
+    doctorsByPractice,
+    legacyDoctorRows,
+    search,
+    openCasesOnly,
+    doctorSortKey,
+    doctorSortDir,
+  ]);
+
+  // Shift-click range selection for the doctor merge picker (nested + legacy
+  // rows share the same `picked` set). A shift-click extends from the anchor to
+  // the clicked doctor over the visible order, restricted to the clicked
+  // doctor's lab so a merge never spans labs.
+  const doctorAnchorKeyRef = useRef<string | null>(null);
+  function handleAccountsDoctorPick(doctor: DoctorRow, shiftKey: boolean) {
+    if (!adminLabIds.has(doctor.labOrganizationId)) return;
+    if (shiftKey) {
+      const rangeKeys = computeShiftClickRange(
+        visibleDoctorKeys,
+        doctorAnchorKeyRef.current,
+        doctor.key,
+      );
+      if (rangeKeys) {
+        setPicked((prev) => {
+          const byKey = new Map(allDoctorRows.map((r) => [r.key, r]));
+          const targetLab = doctor.labOrganizationId;
+          const existingLab = allDoctorRows.find((x) => prev.has(x.key))
+            ?.labOrganizationId;
+          const next = new Set(
+            existingLab && existingLab !== targetLab ? [] : prev,
+          );
+          for (const key of rangeKeys) {
+            const r = byKey.get(key);
+            if (
+              r &&
+              adminLabIds.has(r.labOrganizationId) &&
+              r.labOrganizationId === targetLab
+            ) {
+              next.add(key);
+            }
+          }
+          return next;
+        });
+        return;
+      }
+      doctorAnchorKeyRef.current = null;
+    }
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(doctor.key)) {
+        next.delete(doctor.key);
+        return next;
+      }
+      const firstPickedLab = allDoctorRows.find((x) => prev.has(x.key))
+        ?.labOrganizationId;
+      if (firstPickedLab && firstPickedLab !== doctor.labOrganizationId) {
+        next.clear();
+      }
+      next.add(doctor.key);
+      return next;
+    });
+    doctorAnchorKeyRef.current = doctor.key;
+  }
+
   const totalSelected = picked.size + selectedPracticeIds.size;
 
   const selectedInvoices = useMemo<Invoice[]>(() => {
@@ -1296,8 +1432,11 @@ export default function AccountsPage() {
                         <button
                           type="button"
                           className="shrink-0 h-5 w-5 flex items-center justify-center"
-                          aria-label={selectedPracticeIds.has(org.id) ? "Deselect practice" : "Select practice"}
-                          onClick={() => togglePractice(org.id)}
+                          role="checkbox"
+                          aria-checked={selectedPracticeIds.has(org.id)}
+                          aria-label={`Select practice ${org.displayName || org.name}`}
+                          onMouseDown={suppressShiftClickTextSelection}
+                          onClick={(e) => handlePracticeSelectClick(org.id, e.shiftKey)}
                         >
                           {selectedPracticeIds.has(org.id) ? (
                             <CheckSquare size={14} className="text-primary" />
@@ -1386,20 +1525,14 @@ export default function AccountsPage() {
                         </td>
                         <td
                           className="px-4 py-2.5"
+                          role={canSelect ? "checkbox" : undefined}
+                          aria-checked={canSelect ? isPicked : undefined}
+                          aria-label={canSelect ? `Select doctor ${doctor.doctorName}` : undefined}
+                          onMouseDown={suppressShiftClickTextSelection}
                           onClick={(e) => {
                             if (canSelect) {
                               e.stopPropagation();
-                              setPicked((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(doctor.key)) {
-                                  next.delete(doctor.key);
-                                  return next;
-                                }
-                                const firstPickedLab = allDoctorRows.find((x) => prev.has(x.key))?.labOrganizationId;
-                                if (firstPickedLab && firstPickedLab !== doctor.labOrganizationId) next.clear();
-                                next.add(doctor.key);
-                                return next;
-                              });
+                              handleAccountsDoctorPick(doctor, e.shiftKey);
                             }
                           }}
                         >
@@ -1494,25 +1627,11 @@ export default function AccountsPage() {
                 return (
                   <div
                     key={row.key}
-                    onClick={() => {
-                      setPicked((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(row.key)) {
-                          next.delete(row.key);
-                          return next;
-                        }
-                        const firstPickedLab = allDoctorRows.find((x) =>
-                          prev.has(x.key)
-                        )?.labOrganizationId;
-                        if (
-                          firstPickedLab &&
-                          firstPickedLab !== row.labOrganizationId
-                        )
-                          next.clear();
-                        next.add(row.key);
-                        return next;
-                      });
-                    }}
+                    role="checkbox"
+                    aria-checked={isPicked}
+                    aria-label={`Select doctor ${row.doctorName}`}
+                    onMouseDown={suppressShiftClickTextSelection}
+                    onClick={(e) => handleAccountsDoctorPick(row, e.shiftKey)}
                     className="flex items-center gap-2.5 px-4 py-2.5 cursor-pointer hover:bg-secondary/30"
                   >
                     <div className="shrink-0">

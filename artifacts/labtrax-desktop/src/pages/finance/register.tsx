@@ -2,6 +2,11 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Ban, CheckCircle2, Download, Landmark, Loader2, Plus, Repeat, Scale, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import {
+  computeShiftClickRange,
+  shiftKeyFromChangeEvent,
+  suppressShiftClickTextSelection,
+} from "@/lib/shift-click-range";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import { TYPE_BADGE_CLASS, TYPE_LABEL, useVendors, VendorCombobox } from "@/components/finance/VendorCombobox";
 import { CategorySelect } from "@/components/finance/CategorySelect";
@@ -989,6 +994,43 @@ function ReconcileDialog({
       else next.add(id);
       return next;
     });
+    selectionAnchorIdRef.current = id;
+  }
+
+  // Shift-click range selection for the reconcile checkboxes. A normal click
+  // toggles the single transaction and moves the anchor; a shift-click with a
+  // valid anchor adds every transaction between the anchor and the clicked row
+  // (in the current visible order) to the selection. If the anchor is no
+  // longer visible, fall back to a normal single toggle.
+  const selectionAnchorIdRef = useRef<string | null>(null);
+  function handleCandidateCheckboxChange(
+    id: string,
+    checked: boolean,
+    shiftKey: boolean,
+  ) {
+    if (shiftKey) {
+      const rangeIds = computeShiftClickRange(
+        candidates.map((c) => c.id),
+        selectionAnchorIdRef.current,
+        id,
+      );
+      if (rangeIds) {
+        setCheckedIds((prev) => {
+          const next = new Set(prev);
+          for (const rid of rangeIds) next.add(rid);
+          return next;
+        });
+        return;
+      }
+      selectionAnchorIdRef.current = null;
+    }
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+    selectionAnchorIdRef.current = id;
   }
 
   function toggleAll() {
@@ -1207,8 +1249,16 @@ function ReconcileDialog({
                           <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
                             <input
                               type="checkbox"
+                              aria-label={`Select transaction ${txn.id}`}
                               checked={checked}
-                              onChange={() => toggleId(txn.id)}
+                              onMouseDown={suppressShiftClickTextSelection}
+                              onChange={(e) =>
+                                handleCandidateCheckboxChange(
+                                  txn.id,
+                                  e.target.checked,
+                                  shiftKeyFromChangeEvent(e),
+                                )
+                              }
                               className="cursor-pointer"
                             />
                           </td>

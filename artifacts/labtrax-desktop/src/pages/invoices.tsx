@@ -1,4 +1,9 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  computeShiftClickRange,
+  shiftKeyFromChangeEvent,
+  suppressShiftClickTextSelection,
+} from "@/lib/shift-click-range";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
@@ -155,6 +160,41 @@ export default function InvoicesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [statementBuilderOpen, setStatementBuilderOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Shift-click range selection for the invoice checkboxes. A normal click
+  // toggles the single invoice and moves the anchor; a shift-click with a
+  // valid anchor adds every invoice between the anchor and the clicked row
+  // (in the current filtered/sorted order) to the selection. If the anchor is
+  // no longer visible (filter/sort changed), fall back to a normal toggle.
+  const selectionAnchorIdRef = useRef<string | null>(null);
+  const handleInvoiceRowCheckboxChange = (
+    invoiceId: string,
+    checked: boolean,
+    shiftKey: boolean,
+  ) => {
+    if (shiftKey) {
+      const rangeIds = computeShiftClickRange(
+        filtered.map((i) => i.id),
+        selectionAnchorIdRef.current,
+        invoiceId,
+      );
+      if (rangeIds) {
+        setSelected((prev) => {
+          const next = new Set(prev);
+          for (const id of rangeIds) next.add(id);
+          return next;
+        });
+        return;
+      }
+      selectionAnchorIdRef.current = null;
+    }
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(invoiceId);
+      else next.delete(invoiceId);
+      return next;
+    });
+    selectionAnchorIdRef.current = invoiceId;
+  };
   const [bulkSendOpen, setBulkSendOpen] = useState(false);
   const [bulkConfirm, setBulkConfirm] = useState<{
     kind: "delete_selected" | "reset_selected" | "reset_all" | "status_change";
@@ -778,14 +818,16 @@ export default function InvoicesPage() {
                     <input
                       type="checkbox"
                       className="h-3.5 w-3.5"
+                      aria-label={`Select invoice ${i.invoiceNumber}`}
                       checked={selected.has(i.id)}
-                      onChange={(e) => {
-                        setSelected((prev) => {
-                          const next = new Set(prev);
-                          if (e.target.checked) next.add(i.id); else next.delete(i.id);
-                          return next;
-                        });
-                      }}
+                      onMouseDown={suppressShiftClickTextSelection}
+                      onChange={(e) =>
+                        handleInvoiceRowCheckboxChange(
+                          i.id,
+                          e.target.checked,
+                          shiftKeyFromChangeEvent(e),
+                        )
+                      }
                     />
                   </td>
                   <td className="px-2 py-3 font-mono text-xs">

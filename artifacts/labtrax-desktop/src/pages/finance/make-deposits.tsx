@@ -1,8 +1,13 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { AlertTriangle, CheckCircle2, Loader2, Landmark, ArrowRight } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import {
+  computeShiftClickRange,
+  shiftKeyFromChangeEvent,
+  suppressShiftClickTextSelection,
+} from "@/lib/shift-click-range";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankAccount } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
@@ -75,6 +80,43 @@ function MakeDeposits({
       else next.add(id);
       return next;
     });
+    selectionAnchorIdRef.current = id;
+  }
+
+  // Shift-click range selection for the payment checkboxes. A normal click
+  // toggles the single payment and moves the anchor; a shift-click with a
+  // valid anchor adds every payment between the anchor and the clicked row
+  // (in the current visible order) to the selection. If the anchor is no
+  // longer visible, fall back to a normal single toggle.
+  const selectionAnchorIdRef = useRef<string | null>(null);
+  function handleDepositCheckboxChange(
+    id: string,
+    checked: boolean,
+    shiftKey: boolean,
+  ) {
+    if (shiftKey) {
+      const rangeIds = computeShiftClickRange(
+        items.map((t) => t.id),
+        selectionAnchorIdRef.current,
+        id,
+      );
+      if (rangeIds) {
+        setSelected((prev) => {
+          const next = new Set(prev);
+          for (const rid of rangeIds) next.add(rid);
+          return next;
+        });
+        return;
+      }
+      selectionAnchorIdRef.current = null;
+    }
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+    selectionAnchorIdRef.current = id;
   }
 
   const selectedTotal = useMemo(() => {
@@ -282,8 +324,16 @@ function MakeDeposits({
                   <td className="pl-4 pr-2 py-2.5" onClick={(e) => e.stopPropagation()}>
                     <input
                       type="checkbox"
+                      aria-label={`Select payment ${txn.id}`}
                       checked={selected.has(txn.id)}
-                      onChange={() => toggle(txn.id)}
+                      onMouseDown={suppressShiftClickTextSelection}
+                      onChange={(e) =>
+                        handleDepositCheckboxChange(
+                          txn.id,
+                          e.target.checked,
+                          shiftKeyFromChangeEvent(e),
+                        )
+                      }
                       className="h-3.5 w-3.5 cursor-pointer"
                     />
                   </td>

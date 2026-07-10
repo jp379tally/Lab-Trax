@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -31,6 +31,10 @@ import {
   searchDoctors,
 } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
+import {
+  computeShiftClickRange,
+  suppressShiftClickTextSelection,
+} from "@/lib/shift-click-range";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatDate, formatMoney, formatPhone, relativeTime } from "@/lib/format";
@@ -263,6 +267,62 @@ export default function DoctorsPage() {
   const [caseView, setCaseView] = useState<"open" | "all">("open");
   const [selected, setSelected] = useState<DoctorRow | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  // Shift-click range selection for the doctor merge picker. A normal click
+  // toggles the single doctor and moves the anchor; a shift-click with a valid
+  // anchor adds every doctor between the anchor and the clicked row (in the
+  // current filtered/sorted order) to the selection, restricted to the clicked
+  // row's lab so a merge never spans labs. If the anchor is no longer visible,
+  // fall back to a normal single toggle.
+  const selectionAnchorKeyRef = useRef<string | null>(null);
+  function handleDoctorPick(row: DoctorRow, shiftKey: boolean) {
+    if (!adminLabIds.has(row.labOrganizationId)) return;
+    if (shiftKey) {
+      const rangeKeys = computeShiftClickRange(
+        filtered.map((r) => r.key),
+        selectionAnchorKeyRef.current,
+        row.key,
+      );
+      if (rangeKeys) {
+        setPicked((prev) => {
+          const byKey = new Map(filtered.map((r) => [r.key, r]));
+          const targetLab = row.labOrganizationId;
+          const existingLab = rows.find((x) => prev.has(x.key))?.labOrganizationId;
+          const next = new Set(
+            existingLab && existingLab !== targetLab ? [] : prev,
+          );
+          for (const key of rangeKeys) {
+            const r = byKey.get(key);
+            if (
+              r &&
+              adminLabIds.has(r.labOrganizationId) &&
+              r.labOrganizationId === targetLab
+            ) {
+              next.add(key);
+            }
+          }
+          return next;
+        });
+        return;
+      }
+      selectionAnchorKeyRef.current = null;
+    }
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(row.key)) {
+        next.delete(row.key);
+        return next;
+      }
+      // Merge runs against a single lab; if the user tries to mix labs, drop
+      // the prior selection rather than silently failing server-side.
+      const firstPickedLab = rows.find((x) => prev.has(x.key))?.labOrganizationId;
+      if (firstPickedLab && firstPickedLab !== row.labOrganizationId) {
+        next.clear();
+      }
+      next.add(row.key);
+      return next;
+    });
+    selectionAnchorKeyRef.current = row.key;
+  }
   const [mergeDialog, setMergeDialog] = useState<{
     sources: MergeSourceInput[];
     labOrganizationId: string;
@@ -816,30 +876,14 @@ export default function DoctorsPage() {
                 >
                   <td
                     className="px-3 py-3"
+                    role={canSelect ? "checkbox" : undefined}
+                    aria-checked={canSelect ? isPicked : undefined}
+                    aria-label={canSelect ? `Select doctor ${r.doctorName}` : undefined}
+                    onMouseDown={suppressShiftClickTextSelection}
                     onClick={(e) => {
                       e.stopPropagation();
                       if (!canSelect) return;
-                      setPicked((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(r.key)) {
-                          next.delete(r.key);
-                          return next;
-                        }
-                        // Merge runs against a single lab; if the user
-                        // tries to mix labs, drop the prior selection
-                        // rather than silently failing server-side.
-                        const firstPickedLab = rows.find(
-                          (x) => prev.has(x.key),
-                        )?.labOrganizationId;
-                        if (
-                          firstPickedLab &&
-                          firstPickedLab !== r.labOrganizationId
-                        ) {
-                          next.clear();
-                        }
-                        next.add(r.key);
-                        return next;
-                      });
+                      handleDoctorPick(r, e.shiftKey);
                     }}
                   >
                     {canSelect ? (
