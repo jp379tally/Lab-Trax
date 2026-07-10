@@ -105,6 +105,7 @@ import {
   bigramJaccard,
   doctorNameSimilarity as similarity,
   resolveLabDupThreshold,
+  DOCTOR_RESOLVE_SUGGESTION_THRESHOLD,
 } from "../lib/doctor-similarity.js";
 
 async function loadAndAuthorizeMerge(
@@ -980,6 +981,143 @@ router.get(
       .filter((n): n is string => !!n && n.trim().length > 0);
 
     return ok(res, { names });
+  })
+);
+
+// ---------------------------------------------------------------------------
+// GET /doctors/resolve-name
+//
+// Non-admin, membership-scoped. Powers the required "doctor not on file" step
+// in the AI prescription intake (mobile AI reader + desktop drop zone). Given a
+// scanned `doctorName` + selected lab (+ optional practice), it reports whether
+// that name STRICTLY matches an existing doctor's stored spelling, and — when
+// it does not — the likely existing doctors to suggest.
+//
+// Two matching concepts, kept deliberately separate:
+//   - exactMatch: strict compare only (trim + collapse internal whitespace,
+//     case-insensitive, NO title/first/last-name stripping). Returns the stored
+//     canonical spelling so pricing/invoice lookups key off it. This is the
+//     ONLY thing that makes intake "safe to auto-assign".
+//   - similarMatches: fuzzy, human-facing suggestions via the shared
+//     doctor-similarity scorer at the low DOCTOR_RESOLVE_SUGGESTION_THRESHOLD so
+//     near-misses like "Dr. Cole" -> "Dr. Kenisha Cole" surface. Never
+//     auto-assigned; the user must explicitly pick one.
+//
+// Doctor names come from the same lab(+practice)-scoped directory the pickers
+// use: distinct canonical `cases.doctorName` unioned with names parsed from
+// legacy `lab_cases` JSON blobs (which are lab-scoped and carry no practice).
+// It does NOT reuse the admin-gated /doctors/search endpoint or fork the
+// normalization. The authoritative backstop remains the 409
+// DOCTOR_CONFIRMATION_REQUIRED gate on POST /cases.
+// ---------------------------------------------------------------------------
+router.get(
+  "/resolve-name",
+  asyncHandler(async (req, res) => {
+    const labId = String(req.query.labOrganizationId ?? "");
+    if (!labId) throw new HttpError(400, "labOrganizationId is required.");
+    const userId = (req as any).auth.userId as string;
+    await requireMembership(userId, labId);
+
+    const providerOrgId = req.query.providerOrganizationId
+      ? String(req.query.providerOrganizationId).trim()
+      : null;
+
+    // Strict normalization: trim + collapse internal whitespace + lowercase.
+    // No title/name stripping — "Dr. Cole" must NOT strict-match "Dr. Kenisha Cole".
+    const strictNormalize = (s: string) =>
+      s.trim().replace(/\s+/g, " ").toLowerCase();
+
+    const scanned = String(req.query.doctorName ?? "").trim().replace(/\s+/g, " ");
+    if (!scanned) {
+      return ok(res, { exactMatch: null, similarMatches: [], canAddNew: true });
+    }
+
+    // Canonical doctor-name groups (with counts) scoped to lab (+ practice).
+    const canonicalConds = [
+      eq(cases.labOrganizationId, labId),
+      notDeleted(cases),
+      sql`${cases.doctorName} is not null and trim(${cases.doctorName}) <> ''`,
+    ];
+    if (providerOrgId) {
+      canonicalConds.push(eq(cases.providerOrganizationId, providerOrgId));
+    }
+    const canonicalGroups = await db
+      .select({
+        doctorName: cases.doctorName,
+        totalCases: sql<number>`count(*)::int`,
+      })
+      .from(cases)
+      .where(and(...canonicalConds))
+      .groupBy(cases.doctorName);
+
+    // Legacy mobile cases keep the doctor name in a TEXT JSON blob and carry no
+    // practice, so they are only lab-scoped — mirrors the picker union.
+    const legacyRows = await db
+      .select({ caseData: labCases.caseData })
+      .from(labCases)
+      .where(and(isNull(labCases.deletedAt), eq(labCases.organizationId, labId)));
+
+    // Directory keyed by strict-normalized spelling → { stored spelling, count }.
+    const directory = new Map<string, { spelling: string; totalCases: number }>();
+    const addName = (raw: string, count: number) => {
+      const name = raw.trim().replace(/\s+/g, " ");
+      if (!name) return;
+      const key = name.toLowerCase();
+      const existing = directory.get(key);
+      if (existing) existing.totalCases += count;
+      else directory.set(key, { spelling: name, totalCases: count });
+    };
+    for (const g of canonicalGroups) {
+      addName(String(g.doctorName ?? ""), Number(g.totalCases ?? 0));
+    }
+    for (const r of legacyRows) {
+      try {
+        const parsed =
+          typeof r.caseData === "string" ? JSON.parse(r.caseData) : r.caseData;
+        const n = String(parsed?.doctorName ?? "").trim();
+        if (n) addName(n, 1);
+      } catch {
+        // skip malformed blobs
+      }
+    }
+
+    const scannedKey = strictNormalize(scanned);
+    const exact = directory.get(scannedKey);
+    if (exact) {
+      return ok(res, {
+        exactMatch: exact.spelling,
+        similarMatches: [],
+        canAddNew: true,
+      });
+    }
+
+    // No strict match → fuzzy suggestions at the low resolve threshold.
+    const similarMatches: Array<{
+      doctorName: string;
+      providerOrganizationId: string | null;
+      similarity: number;
+      totalCases: number;
+    }> = [];
+    for (const { spelling, totalCases } of directory.values()) {
+      const sim = similarity(scanned, spelling);
+      if (sim >= DOCTOR_RESOLVE_SUGGESTION_THRESHOLD) {
+        similarMatches.push({
+          doctorName: spelling,
+          providerOrganizationId: providerOrgId,
+          similarity: sim,
+          totalCases,
+        });
+      }
+    }
+    similarMatches.sort(
+      (a, b) => b.similarity - a.similarity || b.totalCases - a.totalCases
+    );
+
+    return ok(res, {
+      exactMatch: null,
+      similarMatches: similarMatches.slice(0, 12),
+      canAddNew: true,
+    });
   })
 );
 

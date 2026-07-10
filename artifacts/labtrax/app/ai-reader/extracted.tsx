@@ -98,10 +98,6 @@ function errorMessage(e: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
-function normalizeDoctorForCompare(name: string): string {
-  return name.trim().replace(/^dr\.?\s+/i, "").toLowerCase();
-}
-
 // ─── Similarity hit type ──────────────────────────────────────────────────────
 
 interface SimilarityHit {
@@ -192,10 +188,6 @@ export default function AiReaderExtractedScreen() {
   // ── Scroll ref (keyboard avoidance) ──
   const scrollViewRef = useRef<ScrollView>(null);
 
-  // ── Unknown doctor banner + add-doctor confirmation modal ──
-  const [unknownDoctorDismissed, setUnknownDoctorDismissed] = useState(false);
-  const [addDoctorModalVisible, setAddDoctorModalVisible] = useState(false);
-  const [addDoctorNameInput, setAddDoctorNameInput] = useState("");
 
   // ── Confidence tooltip ──
   const [confidenceTooltipVisible, setConfidenceTooltipVisible] = useState(false);
@@ -207,6 +199,14 @@ export default function AiReaderExtractedScreen() {
   // 409 DOCTOR_CONFIRMATION_REQUIRED because the typed name closely matches an
   // existing doctor in this practice. Mirrors the New Case screen's flow.
   const [doctorConfirm, setDoctorConfirm] = useState<{
+    candidates: DoctorMatchCandidate[];
+    typedName: string;
+  } | null>(null);
+  // Required "doctor not on file" step — populated in handleSubmit when the
+  // scanned name does NOT strictly match an existing doctor in the selected
+  // lab+practice. Blocks case creation until the user either picks a suggested
+  // existing doctor (adopting its stored spelling) or confirms a brand-new one.
+  const [doctorResolve, setDoctorResolve] = useState<{
     candidates: DoctorMatchCandidate[];
     typedName: string;
   } | null>(null);
@@ -302,7 +302,7 @@ export default function AiReaderExtractedScreen() {
     () => JSON.stringify(previewRestorations),
     [previewRestorations],
   );
-  const trimmedDoctorName = doctorName.trim();
+  const trimmedDoctorName = doctorName.trim().replace(/\s+/g, " ");
   useEffect(() => {
     if (!selectedLabId || previewRestorations.length === 0) {
       setInvoicePreview(null);
@@ -444,27 +444,47 @@ export default function AiReaderExtractedScreen() {
     () => providers.find((p) => p.id === providerOrgId) ?? null,
     [providers, providerOrgId],
   );
-  // Fetch known doctor names for the selected practice (non-admin endpoint).
-  // Used to show an inline banner when the AI extracted an unrecognised doctor.
-  const knownDoctorNamesQuery = useQuery({
-    queryKey: ["known-doctor-names", selectedLabId, providerOrgId],
+  // `trimmedDoctorName` (declared above, trim + collapse internal whitespace) is
+  // the strict-normalized scanned doctor name. Keyed on the lowercased form so
+  // re-querying only happens on a meaningful change, not on casing/whitespace
+  // edits the server also ignores.
+  //
+  // Resolve the scanned doctor name against the selected lab+practice directory.
+  // `exactMatch` (strict, no title stripping) is the ONLY thing that makes the
+  // case safe to create without an explicit confirmation; otherwise the user
+  // must resolve the doctor before submitting (see handleSubmit). Replaces the
+  // old dismissible "isn't on file" banner.
+  const doctorResolveQuery = useQuery({
+    queryKey: [
+      "doctor-resolve",
+      selectedLabId,
+      providerOrgId,
+      trimmedDoctorName.toLowerCase(),
+    ],
     queryFn: async () => {
       const url =
-        `/api/doctors/known-names?labOrganizationId=${encodeURIComponent(selectedLabId ?? "")}` +
-        `&providerOrganizationId=${encodeURIComponent(providerOrgId ?? "")}`;
+        `/api/doctors/resolve-name?labOrganizationId=${encodeURIComponent(selectedLabId ?? "")}` +
+        `&providerOrganizationId=${encodeURIComponent(providerOrgId ?? "")}` +
+        `&doctorName=${encodeURIComponent(trimmedDoctorName)}`;
       const res = await resilientFetch(url);
-      if (!res.ok) throw new Error(`known-names ${res.status}`);
-      const body = (await res.json()) as { data?: { names?: string[] } };
-      return (body?.data?.names ?? []) as string[];
+      if (!res.ok) throw new Error(`resolve-name ${res.status}`);
+      const body = (await res.json()) as {
+        data?: {
+          exactMatch?: string | null;
+          similarMatches?: DoctorMatchCandidate[];
+          canAddNew?: boolean;
+        };
+      };
+      return {
+        exactMatch: body?.data?.exactMatch ?? null,
+        similarMatches: body?.data?.similarMatches ?? [],
+        canAddNew: body?.data?.canAddNew ?? true,
+      };
     },
-    enabled: !!selectedLabId && !!providerOrgId,
-    staleTime: 5 * 60 * 1000,
+    enabled: !!selectedLabId && !!providerOrgId && !!trimmedDoctorName,
+    staleTime: 60 * 1000,
   });
 
-  // Reset banner dismissal whenever the selected practice changes.
-  useEffect(() => {
-    setUnknownDoctorDismissed(false);
-  }, [providerOrgId]);
 
   const filteredProviders = useMemo(() => {
     const q = pickerFilter.trim().toLowerCase();
@@ -674,7 +694,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
   }) {
     const skipDupeCheck = opts?.skipDupeCheck ?? false;
     const confirmNewDoctor = opts?.confirmNewDoctor ?? false;
-    const effectiveDoctorName = (opts?.doctorNameOverride ?? doctorName).trim();
+    let effectiveDoctorName = (opts?.doctorNameOverride ?? doctorName).trim();
     const effectiveProviderOrgId = opts?.providerOrgIdOverride ?? providerOrgId;
     if (!selectedLabId) {
       Alert.alert("No lab selected", "Select a lab to create the case in.");
@@ -729,6 +749,28 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
           return;
         }
       } catch {}
+    }
+
+    // Required doctor-resolution gate. Unless this submit was already resolved
+    // (confirmNewDoctor set by the resolution step / the 409 flow), the scanned
+    // name must STRICTLY match an existing doctor in this lab+practice. On an
+    // exact match we adopt the stored spelling; otherwise we open the required
+    // "doctor not on file" step and block creation until it is resolved. The
+    // POST /cases 409 gate remains the authoritative backstop.
+    if (!confirmNewDoctor) {
+      const resolution = doctorResolveQuery.data;
+      if (doctorResolveQuery.isSuccess && resolution) {
+        if (resolution.exactMatch) {
+          effectiveDoctorName = resolution.exactMatch;
+        } else {
+          setDoctorResolve({
+            typedName: effectiveDoctorName,
+            candidates: resolution.similarMatches ?? [],
+          });
+          setSubmitting(false);
+          return;
+        }
+      }
     }
 
     setSubmitting(true);
@@ -837,6 +879,8 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
     // Adopt the existing doctor's exact spelling (and their practice, if the
     // candidate carries one) and re-submit with confirmation. Pass overrides
     // directly so we don't race the async state updates.
+    setDoctorConfirm(null);
+    setDoctorResolve(null);
     setDoctorName(candidate.doctorName);
     if (candidate.providerOrganizationId) {
       setProviderOrgId(candidate.providerOrganizationId);
@@ -852,6 +896,8 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
   }
 
   function handleKeepNewDoctor() {
+    setDoctorConfirm(null);
+    setDoctorResolve(null);
     void handleSubmit({ skipDupeCheck: true, confirmNewDoctor: true });
   }
 
@@ -899,22 +945,15 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
   const firstPageUri = session.pages[0]?.uri ?? null;
   const providerResolved = !!providerOrgId;
 
-  // Show a banner when the AI-extracted doctor isn't found in this practice's
-  // case history. Hidden when: no practice selected, no doctor name, still
-  // loading, query failed, or already dismissed.
-  const showUnknownDoctorBanner = useMemo(() => {
-    if (unknownDoctorDismissed) return false;
-    if (!providerOrgId) return false;
-    const trimmed = doctorName.trim();
-    if (!trimmed) return false;
-    if (!knownDoctorNamesQuery.isSuccess) return false;
-    const known = knownDoctorNamesQuery.data ?? [];
-    // When no known doctors exist for this practice (new or case-less practice),
-    // any extracted name is "not on file" — still worth flagging.
-    if (known.length === 0) return true;
-    const normalized = normalizeDoctorForCompare(trimmed);
-    return !known.some((n) => normalizeDoctorForCompare(n) === normalized);
-  }, [unknownDoctorDismissed, providerOrgId, doctorName, knownDoctorNamesQuery.isSuccess, knownDoctorNamesQuery.data]);
+  // Inform the user (non-dismissibly) when the scanned doctor has no STRICT
+  // match in this practice. The actual gate is enforced in handleSubmit; this is
+  // purely a heads-up. Only shown once the resolve query has a definitive
+  // no-exact-match answer for a selected practice + non-empty name.
+  const doctorNotOnFile =
+    !!providerOrgId &&
+    !!trimmedDoctorName &&
+    doctorResolveQuery.isSuccess &&
+    !doctorResolveQuery.data?.exactMatch;
 
   const practiceLabel =
     selectedProvider?.displayName ||
@@ -1114,25 +1153,16 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
             autoCorrect={false}
           />
 
-          {/* Unknown doctor banner */}
-          {showUnknownDoctorBanner && (
+          {/* Doctor-not-on-file notice. Non-dismissible: the required
+              resolution step is enforced in handleSubmit, so this only informs
+              the user that they'll confirm the doctor before the case is made. */}
+          {doctorNotOnFile && (
             <View style={[styles.warnBanner, { marginTop: Spacing.sm }]}>
               <Ionicons name="person-add-outline" size={16} color={colors.warningStrong} />
               <Text style={styles.warnText}>
-                "{doctorName.trim()}" isn't on file for this practice.
+                "{trimmedDoctorName}" isn't on file for this practice — you'll
+                confirm the doctor before creating the case.
               </Text>
-              <Pressable
-                hitSlop={8}
-                onPress={() => {
-                  setAddDoctorNameInput(doctorName.trim());
-                  setAddDoctorModalVisible(true);
-                }}
-              >
-                <Text style={[styles.addNewText, { fontSize: 13 }]}>Add</Text>
-              </Pressable>
-              <Pressable onPress={() => setUnknownDoctorDismissed(true)} hitSlop={8}>
-                <Ionicons name="close" size={16} color={colors.warningStrong} />
-              </Pressable>
             </View>
           )}
         </Section>
@@ -1420,52 +1450,6 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
         </Pressable>
       </Modal>
 
-      {/* Add doctor to practice confirmation modal */}
-      <Modal visible={addDoctorModalVisible} transparent animationType="fade">
-        <Pressable style={styles.modalOverlay} onPress={() => setAddDoctorModalVisible(false)}>
-          <Pressable style={[styles.modalSheet, { paddingBottom: insets.bottom + Spacing.lg }]}>
-            <View style={styles.modalHandle} />
-            <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.sm, marginBottom: Spacing.xs }}>
-              <Ionicons name="person-add-outline" size={20} color={colors.tint} />
-              <Text style={styles.modalTitle}>Add doctor to practice</Text>
-            </View>
-            <Text style={[styles.modalBody, { marginBottom: Spacing.sm }]}>
-              Adding to: {practiceLabel}
-            </Text>
-            <Text style={[styles.sectionLabel, { marginBottom: Spacing.xs }]}>Doctor name</Text>
-            <TextInput
-              style={[styles.input, { marginBottom: Spacing.lg }]}
-              value={addDoctorNameInput}
-              onChangeText={setAddDoctorNameInput}
-              placeholder="e.g. Dr. Jane Smith"
-              placeholderTextColor={colors.textTertiary}
-              autoCorrect={false}
-              autoCapitalize="words"
-            />
-            <View style={{ flexDirection: "row", gap: Spacing.sm }}>
-              <Pressable
-                style={[styles.newCaseBtn, { flex: 1, backgroundColor: colors.backgroundSolid }]}
-                onPress={() => setAddDoctorModalVisible(false)}
-              >
-                <Text style={[styles.newCaseBtnText, { color: colors.textSecondary }]}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.newCaseBtn, { flex: 1 }]}
-                onPress={() => {
-                  if (addDoctorNameInput.trim()) {
-                    setDoctorName(addDoctorNameInput.trim());
-                  }
-                  setAddDoctorModalVisible(false);
-                  setUnknownDoctorDismissed(true);
-                }}
-              >
-                <Text style={styles.newCaseBtnText}>Add doctor</Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
       {/* Duplicate detection modal */}
       <Modal visible={duplicateModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
@@ -1719,6 +1703,45 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
             onPress={() => handleUseExistingDoctor(c)}
             disabled={submitting}
             testID="doctor-confirm-candidate"
+          >
+            <Ionicons name="person-circle-outline" size={22} color={colors.tint} />
+            <View style={styles.confirmRowMain}>
+              <Text style={styles.confirmRowName}>{c.doctorName}</Text>
+              <Text style={styles.confirmRowMeta} numberOfLines={1}>
+                {`${c.totalCases} ${c.totalCases === 1 ? "case" : "cases"}`}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+          </Pressable>
+        ))}
+      </FormSheet>
+
+      {/* Required "doctor not on file" step — shown when the scanned doctor name
+          does NOT strictly match an existing doctor in this practice. The user
+          must pick a suggested existing doctor (adopting its stored spelling) or
+          explicitly add the scanned name as a new doctor before the case is
+          created. */}
+      <FormSheet
+        visible={!!doctorResolve}
+        title="Doctor not on file"
+        onClose={() => setDoctorResolve(null)}
+        onSubmit={handleKeepNewDoctor}
+        submitting={submitting}
+        submitLabel={`Add "${doctorResolve?.typedName ?? ""}" as new doctor`}
+        testIDPrefix="doctor-resolve"
+      >
+        <Text style={styles.confirmIntro}>
+          {(doctorResolve?.candidates.length ?? 0) > 0
+            ? `"${doctorResolve?.typedName ?? ""}" isn't on file for this practice. Tap an existing doctor to use their name, or add it as a new doctor.`
+            : `"${doctorResolve?.typedName ?? ""}" isn't on file for this practice. Add it as a new doctor to continue.`}
+        </Text>
+        {(doctorResolve?.candidates ?? []).map((c) => (
+          <Pressable
+            key={`${c.doctorName}::${c.providerOrganizationId ?? ""}`}
+            style={styles.confirmRow}
+            onPress={() => handleUseExistingDoctor(c)}
+            disabled={submitting}
+            testID="doctor-resolve-candidate"
           >
             <Ionicons name="person-circle-outline" size={22} color={colors.tint} />
             <View style={styles.confirmRowMain}>

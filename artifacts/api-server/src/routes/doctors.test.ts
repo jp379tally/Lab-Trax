@@ -1079,6 +1079,151 @@ maybe("Task #382 doctor merge route (db integration)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // GET /doctors/resolve-name — strict doctor-name resolution for AI intake.
+  // -------------------------------------------------------------------------
+  describe("GET /doctors/resolve-name", () => {
+    type ResolveBody = {
+      exactMatch: string | null;
+      similarMatches: Array<{
+        doctorName: string;
+        providerOrganizationId: string | null;
+        similarity: number;
+        totalCases: number;
+      }>;
+      canAddNew: boolean;
+    };
+
+    it("strict-matches ignoring case + surrounding/internal whitespace only", async () => {
+      const { db, cases } = dbMod as any;
+      const stored = `Dr. Meredith Vaughn ${rid("x")}`;
+      const c = await insertCase({
+        caseNumber: rid("CN"),
+        doctorName: stored,
+        practiceId: practiceAId,
+      });
+
+      // Scanned name differs only by case + collapsible whitespace → exact.
+      const scanned = `  ${stored.toUpperCase().replace(" ", "   ")}  `;
+      const r = await request(appMod.default)
+        .get("/api/doctors/resolve-name")
+        .query({
+          labOrganizationId: labOrgId,
+          providerOrganizationId: practiceAId,
+          doctorName: scanned,
+        })
+        .set("Authorization", `Bearer ${tokens.admin}`);
+      expect(r.status).toBe(200);
+      const body = r.body.data as ResolveBody;
+      // Returns the stored spelling verbatim so the case adopts it.
+      expect(body.exactMatch).toBe(stored);
+      expect(body.similarMatches).toEqual([]);
+
+      await db.delete(cases).where(eq(cases.id, c));
+    }, 30000);
+
+    it("does NOT strict-match on title/name stripping (partial names stay unresolved)", async () => {
+      const { db, cases } = dbMod as any;
+      const stored = `Dr. Kenisha Cole ${rid("x")}`;
+      const c = await insertCase({
+        caseNumber: rid("CN"),
+        doctorName: stored,
+        practiceId: practiceAId,
+      });
+
+      // "Dr. Cole <rid>" shares surname but is NOT a strict match — must NOT
+      // auto-assign; instead surfaces as a fuzzy suggestion.
+      const partial = `Dr. Cole ${stored.split(" ").pop()}`;
+      const r = await request(appMod.default)
+        .get("/api/doctors/resolve-name")
+        .query({
+          labOrganizationId: labOrgId,
+          providerOrganizationId: practiceAId,
+          doctorName: partial,
+        })
+        .set("Authorization", `Bearer ${tokens.admin}`);
+      expect(r.status).toBe(200);
+      const body = r.body.data as ResolveBody;
+      expect(body.exactMatch).toBeNull();
+      expect(
+        body.similarMatches.some((m) => m.doctorName === stored)
+      ).toBe(true);
+      expect(body.canAddNew).toBe(true);
+
+      await db.delete(cases).where(eq(cases.id, c));
+    }, 30000);
+
+    it("returns no exact + no suggestions for a wholly-unknown doctor", async () => {
+      const r = await request(appMod.default)
+        .get("/api/doctors/resolve-name")
+        .query({
+          labOrganizationId: labOrgId,
+          providerOrganizationId: practiceAId,
+          doctorName: `Dr. Zznobody Qxwv ${rid("x")}`,
+        })
+        .set("Authorization", `Bearer ${tokens.admin}`);
+      expect(r.status).toBe(200);
+      const body = r.body.data as ResolveBody;
+      expect(body.exactMatch).toBeNull();
+      expect(body.similarMatches).toEqual([]);
+      expect(body.canAddNew).toBe(true);
+    }, 30000);
+
+    it("includes lab-scoped legacy blob names in the directory", async () => {
+      const { db, labCases } = dbMod as any;
+      const legName = `Dr. Legacy Resolve ${rid("x")}`;
+      const leg = await insertLegacyCase({ caseData: { doctorName: legName } });
+
+      const r = await request(appMod.default)
+        .get("/api/doctors/resolve-name")
+        .query({
+          labOrganizationId: labOrgId,
+          doctorName: legName.toLowerCase(),
+        })
+        .set("Authorization", `Bearer ${tokens.admin}`);
+      expect(r.status).toBe(200);
+      const body = r.body.data as ResolveBody;
+      expect(body.exactMatch).toBe(legName);
+
+      await db.delete(labCases).where(eq(labCases.id, leg));
+    }, 30000);
+
+    it("scopes the directory to the lab (other lab's names never resolve)", async () => {
+      const { db, cases } = dbMod as any;
+      const stored = `Dr. Crosslab Isolation ${rid("x")}`;
+      const c = await insertCase({
+        caseNumber: rid("CN"),
+        doctorName: stored,
+        practiceId: practiceAId,
+      });
+
+      const r = await request(appMod.default)
+        .get("/api/doctors/resolve-name")
+        .query({
+          labOrganizationId: otherLabOrgId,
+          doctorName: stored,
+        })
+        .set("Authorization", `Bearer ${tokens.otherLabAdmin}`);
+      expect(r.status).toBe(200);
+      const body = r.body.data as ResolveBody;
+      expect(body.exactMatch).toBeNull();
+      expect(body.similarMatches).toEqual([]);
+
+      await db.delete(cases).where(eq(cases.id, c));
+    }, 30000);
+
+    it("rejects a non-member of the requested lab", async () => {
+      const r = await request(appMod.default)
+        .get("/api/doctors/resolve-name")
+        .query({
+          labOrganizationId: labOrgId,
+          doctorName: "Dr. Anyone",
+        })
+        .set("Authorization", `Bearer ${tokens.otherLabAdmin}`);
+      expect(r.status).toBe(403);
+    }, 30000);
+  });
+
+  // -------------------------------------------------------------------------
   // GET /doctors/duplicate-clusters — the nav duplicate-count badge source.
   // -------------------------------------------------------------------------
   describe("GET /doctors/duplicate-clusters", () => {

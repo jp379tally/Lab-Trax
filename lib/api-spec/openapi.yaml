@@ -1409,6 +1409,55 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/LegacyDoctorDirectoryEntry"
+  /doctors/resolve-name:
+    get:
+      operationId: resolveDoctorName
+      tags: [doctors]
+      summary: Resolve a scanned doctor name to an existing doctor (AI intake)
+      description: |
+        Powers the required "doctor not on file" step in the AI prescription
+        intake (mobile AI reader + desktop drop zone). Given a scanned
+        `doctorName` and the selected lab (+ optional practice), reports whether
+        the name STRICTLY matches an existing doctor's stored spelling and, when
+        it does not, lists likely existing doctors to suggest.
+
+        `exactMatch` is the stored canonical spelling returned ONLY when the
+        scanned name strictly matches (trim + collapse internal whitespace,
+        case-insensitive, with no title/first/last-name stripping). When there
+        is no strict match, `similarMatches` lists fuzzy suggestions via the
+        shared doctor-similarity scorer at a deliberately low threshold so
+        near-misses like `Dr. Cole` → `Dr. Kenisha Cole` surface. `canAddNew`
+        is always true (the user may keep the scanned name as a new doctor).
+
+        Doctor names are sourced from the same lab(+practice)-scoped directory
+        the pickers use (canonical `cases.doctorName` unioned with legacy
+        `lab_cases` blob names). The caller must be an active member of
+        `labOrganizationId`. The authoritative backstop remains the 409
+        `DOCTOR_CONFIRMATION_REQUIRED` gate on `POST /cases`.
+      parameters:
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: providerOrganizationId
+          required: false
+          schema: { type: string }
+        - in: query
+          name: doctorName
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Resolution result (exact match and/or suggestions)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorResolveNameResult"
+        "400":
+          description: Missing required query parameters
+        "403":
+          description: Caller is not a member of the lab
   /doctors/search:
     get:
       operationId: searchDoctors
@@ -4885,6 +4934,30 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/DoctorMatchCandidate"
+    DoctorResolveNameResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [exactMatch, similarMatches, canAddNew]
+          properties:
+            exactMatch:
+              type: string
+              nullable: true
+              description: >
+                Stored canonical doctor spelling when the scanned name strictly
+                matches an existing doctor; null otherwise.
+            similarMatches:
+              type: array
+              description: >
+                Likely existing doctors to suggest when there is no strict match
+                (fuzzy, human-facing suggestions only — never auto-assigned).
+              items:
+                $ref: "#/components/schemas/DoctorMatchCandidate"
+            canAddNew:
+              type: boolean
+              description: Always true — the user may keep the scanned name as a new doctor.
     CaseDetailResult:
       type: object
       properties:

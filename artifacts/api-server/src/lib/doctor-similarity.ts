@@ -64,6 +64,16 @@ export function doctorNameSimilarity(a: string, b: string): number {
 // duplicates. A lab may override this via organizations.duplicateSuggestionThreshold.
 export const DEFAULT_DUP_SIMILARITY_THRESHOLD = 0.7;
 
+// Deliberately-low threshold used ONLY by the AI-intake doctor "resolve-name"
+// step. When a scanned name is NOT a strict match to an existing doctor, this
+// surfaces likely existing doctors as human-facing suggestions (e.g.
+// "Dr. Cole" -> "Dr. Kenisha Cole", which scores ~0.38 and would be missed by
+// both the ~0.7 pre-create duplicate gate and the 0.4 create-path banner). It
+// is only ever a suggestion the user must explicitly pick — never an
+// auto-assign — so it is intentionally permissive. Kept separate from the
+// create-gate threshold so tuning one never moves the other.
+export const DOCTOR_RESOLVE_SUGGESTION_THRESHOLD = 0.35;
+
 // Clamp + parse a per-lab override from organizations.duplicateSuggestionThreshold.
 // Mirrors resolveLabDupThreshold on the desktop client (clamp 0.5–0.95).
 export function resolveLabDupThreshold(

@@ -1883,6 +1883,66 @@ export const GetLegacyDoctorDirectoryResponse = zod.array(
 );
 
 /**
+ * Powers the required "doctor not on file" step in the AI prescription
+intake (mobile AI reader + desktop drop zone). Given a scanned
+`doctorName` and the selected lab (+ optional practice), reports whether
+the name STRICTLY matches an existing doctor's stored spelling and, when
+it does not, lists likely existing doctors to suggest.
+
+`exactMatch` is the stored canonical spelling returned ONLY when the
+scanned name strictly matches (trim + collapse internal whitespace,
+case-insensitive, with no title/first/last-name stripping). When there
+is no strict match, `similarMatches` lists fuzzy suggestions via the
+shared doctor-similarity scorer at a deliberately low threshold so
+near-misses like `Dr. Cole` → `Dr. Kenisha Cole` surface. `canAddNew`
+is always true (the user may keep the scanned name as a new doctor).
+
+Doctor names are sourced from the same lab(+practice)-scoped directory
+the pickers use (canonical `cases.doctorName` unioned with legacy
+`lab_cases` blob names). The caller must be an active member of
+`labOrganizationId`. The authoritative backstop remains the 409
+`DOCTOR_CONFIRMATION_REQUIRED` gate on `POST /cases`.
+
+ * @summary Resolve a scanned doctor name to an existing doctor (AI intake)
+ */
+export const ResolveDoctorNameQueryParams = zod.object({
+  labOrganizationId: zod.coerce.string(),
+  providerOrganizationId: zod.coerce.string().optional(),
+  doctorName: zod.coerce.string(),
+});
+
+export const ResolveDoctorNameResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      exactMatch: zod
+        .string()
+        .nullable()
+        .describe(
+          "Stored canonical doctor spelling when the scanned name strictly matches an existing doctor; null otherwise.\n",
+        ),
+      similarMatches: zod
+        .array(
+          zod.object({
+            doctorName: zod.string(),
+            providerOrganizationId: zod.string().nullish(),
+            similarity: zod.number(),
+            totalCases: zod.number(),
+          }),
+        )
+        .describe(
+          "Likely existing doctors to suggest when there is no strict match (fuzzy, human-facing suggestions only — never auto-assigned).\n",
+        ),
+      canAddNew: zod
+        .boolean()
+        .describe(
+          "Always true — the user may keep the scanned name as a new doctor.",
+        ),
+    })
+    .optional(),
+});
+
+/**
  * Lists distinct (doctorName, providerOrganizationId) groups in the
 given lab, ranked by similarity to the optional `q` / `like`
 parameters using normalized name comparison (trim, lowercase,

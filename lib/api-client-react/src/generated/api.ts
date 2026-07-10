@@ -84,6 +84,7 @@ import type {
   DoctorMergeRequest,
   DoctorMergeResult,
   DoctorMergeUndoResult,
+  DoctorResolveNameResult,
   DoctorSearchResult,
   DoctorSimilarityResult,
   EmailInvoice200,
@@ -165,6 +166,7 @@ import type {
   RegisterUserInput,
   RemoveDoctorFromPracticeInput,
   RemoveDoctorFromPracticeResult,
+  ResolveDoctorNameParams,
   ResolveItemPrice200,
   ResolveItemPriceParams,
   RestoreBackupBody,
@@ -5251,6 +5253,123 @@ export function useGetLegacyDoctorDirectory<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getGetLegacyDoctorDirectoryQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Powers the required "doctor not on file" step in the AI prescription
+intake (mobile AI reader + desktop drop zone). Given a scanned
+`doctorName` and the selected lab (+ optional practice), reports whether
+the name STRICTLY matches an existing doctor's stored spelling and, when
+it does not, lists likely existing doctors to suggest.
+
+`exactMatch` is the stored canonical spelling returned ONLY when the
+scanned name strictly matches (trim + collapse internal whitespace,
+case-insensitive, with no title/first/last-name stripping). When there
+is no strict match, `similarMatches` lists fuzzy suggestions via the
+shared doctor-similarity scorer at a deliberately low threshold so
+near-misses like `Dr. Cole` → `Dr. Kenisha Cole` surface. `canAddNew`
+is always true (the user may keep the scanned name as a new doctor).
+
+Doctor names are sourced from the same lab(+practice)-scoped directory
+the pickers use (canonical `cases.doctorName` unioned with legacy
+`lab_cases` blob names). The caller must be an active member of
+`labOrganizationId`. The authoritative backstop remains the 409
+`DOCTOR_CONFIRMATION_REQUIRED` gate on `POST /cases`.
+
+ * @summary Resolve a scanned doctor name to an existing doctor (AI intake)
+ */
+export const getResolveDoctorNameUrl = (params: ResolveDoctorNameParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/doctors/resolve-name?${stringifiedParams}`
+    : `/api/doctors/resolve-name`;
+};
+
+export const resolveDoctorName = async (
+  params: ResolveDoctorNameParams,
+  options?: RequestInit,
+): Promise<DoctorResolveNameResult> => {
+  return customFetch<DoctorResolveNameResult>(getResolveDoctorNameUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getResolveDoctorNameQueryKey = (
+  params?: ResolveDoctorNameParams,
+) => {
+  return [`/api/doctors/resolve-name`, ...(params ? [params] : [])] as const;
+};
+
+export const getResolveDoctorNameQueryOptions = <
+  TData = Awaited<ReturnType<typeof resolveDoctorName>>,
+  TError = ErrorType<void>,
+>(
+  params: ResolveDoctorNameParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof resolveDoctorName>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getResolveDoctorNameQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof resolveDoctorName>>
+  > = ({ signal }) => resolveDoctorName(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof resolveDoctorName>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ResolveDoctorNameQueryResult = NonNullable<
+  Awaited<ReturnType<typeof resolveDoctorName>>
+>;
+export type ResolveDoctorNameQueryError = ErrorType<void>;
+
+/**
+ * @summary Resolve a scanned doctor name to an existing doctor (AI intake)
+ */
+
+export function useResolveDoctorName<
+  TData = Awaited<ReturnType<typeof resolveDoctorName>>,
+  TError = ErrorType<void>,
+>(
+  params: ResolveDoctorNameParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof resolveDoctorName>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getResolveDoctorNameQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

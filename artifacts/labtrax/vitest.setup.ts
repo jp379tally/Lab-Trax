@@ -507,11 +507,16 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
         data = { memberships: mockAppOverrides.current.meMemberships };
       } else if (key === "statement-runs") {
         data = (mockAppOverrides.current.statementRuns as unknown[]) ?? [];
+      } else if (key === "doctor-resolve") {
+        // Drives the AI-reader "doctor not on file" resolution gate. Tests seed
+        // the resolve result via `setMockAppState({ doctorResolve: {...} })`.
+        data = mockAppOverrides.current.doctorResolve;
       }
       return {
         data,
         isLoading: false,
         isError: false,
+        isSuccess: key === "doctor-resolve" && data !== undefined,
         isFetching:
           key === "statement-runs"
             ? ((mockAppOverrides.current.statementRunsIsFetching as boolean | undefined) ?? false)

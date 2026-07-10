@@ -25,6 +25,13 @@ interface FormSheetProps {
   /** When provided, renders a destructive action in the footer. */
   onDelete?: () => void;
   deleteLabel?: string;
+  /**
+   * Namespaces the footer button testIDs (`${testIDPrefix}-save` /
+   * `-cancel` / `-delete`). Defaults to "form". Use a distinct prefix when
+   * two FormSheets can be mounted at once (e.g. the mobile test Modal stub
+   * renders children regardless of `visible`) so their buttons don't collide.
+   */
+  testIDPrefix?: string;
   children: React.ReactNode;
 }
 
@@ -44,6 +51,7 @@ export function FormSheet({
   submitDisabled = false,
   onDelete,
   deleteLabel = "Delete",
+  testIDPrefix = "form",
   children,
 }: FormSheetProps) {
   const { colors } = useTheme();
@@ -73,12 +81,12 @@ export function FormSheet({
                   style={styles.deleteBtn}
                   onPress={onDelete}
                   disabled={submitting}
-                  testID="form-delete"
+                  testID={`${testIDPrefix}-delete`}
                 >
                   <Text style={styles.deleteText}>{deleteLabel}</Text>
                 </Pressable>
               ) : (
-                <Pressable style={styles.cancelBtn} onPress={onClose} disabled={submitting} testID="form-cancel">
+                <Pressable style={styles.cancelBtn} onPress={onClose} disabled={submitting} testID={`${testIDPrefix}-cancel`}>
                   <Text style={styles.cancelText}>Cancel</Text>
                 </Pressable>
               )}
@@ -86,7 +94,7 @@ export function FormSheet({
                 style={[styles.saveBtn, (submitting || submitDisabled) && styles.saveBtnDisabled]}
                 onPress={onSubmit}
                 disabled={submitting || submitDisabled}
-                testID="form-save"
+                testID={`${testIDPrefix}-save`}
               >
                 {submitting ? (
                   <ActivityIndicator size="small" color={colors.textInverse} />

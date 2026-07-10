@@ -869,6 +869,22 @@ export interface DoctorSimilarityResult {
   data?: DoctorSimilarityResultData;
 }
 
+export type DoctorResolveNameResultData = {
+  /** Stored canonical doctor spelling when the scanned name strictly matches an existing doctor; null otherwise.
+   */
+  exactMatch: string | null;
+  /** Likely existing doctors to suggest when there is no strict match (fuzzy, human-facing suggestions only — never auto-assigned).
+   */
+  similarMatches: DoctorMatchCandidate[];
+  /** Always true — the user may keep the scanned name as a new doctor. */
+  canAddNew: boolean;
+};
+
+export interface DoctorResolveNameResult {
+  ok?: boolean;
+  data?: DoctorResolveNameResultData;
+}
+
 export interface CaseDetailResult {
   ok?: boolean;
   data?: CanonicalCase;
@@ -3061,6 +3077,12 @@ export type GetIteroImportHistoryParams = {
   labOrganizationId: string;
   limit?: number;
   offset?: number;
+};
+
+export type ResolveDoctorNameParams = {
+  labOrganizationId: string;
+  providerOrganizationId?: string;
+  doctorName: string;
 };
 
 export type SearchDoctorsParams = {

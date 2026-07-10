@@ -247,6 +247,15 @@ describe("DashboardDropZone — ZIP-import remake path", () => {
       if (path.startsWith("/cases/patient-similarity"))
         return Promise.resolve({ matches: [SIMILARITY_MATCH] });
 
+      // Doctor-not-on-file resolve gate: the extracted doctor is already on
+      // file (exact match), so creation proceeds without the resolution modal.
+      if (path.startsWith("/doctors/resolve-name"))
+        return Promise.resolve({
+          exactMatch: "Dr. Jane Smith",
+          similarMatches: [],
+          canAddNew: true,
+        });
+
       // Media uploads (rx PDF + scan), small files → single-shot.
       if (path === "/media/upload")
         return Promise.resolve({ url: "media://uploaded" });

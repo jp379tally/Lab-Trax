@@ -22,6 +22,7 @@ import type {
   PreviewDraftInvoiceInput,
   PreviewDraftInvoiceResultData,
 } from "@workspace/api-client-react";
+import type { DoctorMatchCandidate } from "@/lib/types";
 import { uploadMediaFile } from "@/lib/upload-media-file";
 import type { MediaUploadResult } from "@/lib/upload-media-file";
 import { useAuth } from "@/lib/auth-context";
@@ -694,6 +695,103 @@ export function DuplicatePromptPanel({
   );
 }
 
+// Required "doctor not on file" step for the Rx drop zone. Shown when the
+// scanned doctor name does NOT strictly match an existing doctor in the selected
+// lab+practice. The user must pick a suggested existing doctor (adopting its
+// stored spelling) or explicitly add the scanned name as a new doctor before the
+// case is created.
+function DoctorNotOnFileModal({
+  typedName,
+  candidates,
+  onCancel,
+  onUseExisting,
+  onAddNew,
+}: {
+  typedName: string;
+  candidates: DoctorMatchCandidate[];
+  onCancel: () => void;
+  onUseExisting: (candidate: DoctorMatchCandidate) => void;
+  onAddNew: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div
+        className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[90vh] flex flex-col"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Doctor not on file"
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={18} className="text-amber-500" />
+            <h2 className="text-base font-semibold">Doctor not on file</h2>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-6 py-4 overflow-y-auto flex-1 space-y-4">
+          <p className="text-sm text-muted-foreground">
+            "<span className="font-medium text-foreground">{typedName}</span>"
+            isn't on file for this practice.{" "}
+            {candidates.length > 0
+              ? "Pick an existing doctor to use their name, or add it as a new doctor."
+              : "Add it as a new doctor to continue."}
+          </p>
+
+          {candidates.length > 0 && (
+            <div className="space-y-2">
+              {candidates.map((m) => (
+                <button
+                  key={`${m.providerOrganizationId ?? ""}:${m.doctorName}`}
+                  type="button"
+                  onClick={() => onUseExisting(m)}
+                  className="w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border border-border bg-secondary/30 hover:bg-secondary/60 hover:border-primary/40 transition-colors text-left"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-foreground truncate">
+                      {m.doctorName}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {m.totalCases} case{m.totalCases === 1 ? "" : "s"}
+                    </div>
+                  </div>
+                  <span className="shrink-0 text-xs font-medium text-primary">
+                    Use this doctor
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-border">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="h-9 px-4 rounded-md border border-border text-sm font-medium hover:bg-secondary/60 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onAddNew}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+          >
+            Add "{typedName}" as new doctor
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function DashboardDropZone() {
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -878,6 +976,21 @@ export function DashboardDropZone() {
   const [rxProviderOrgId, setRxProviderOrgId] = useState<string>("");
   const [rxBarcode, setRxBarcode] = useState<string>("");
   const [rxPracticeError, setRxPracticeError] = useState(false);
+  // Required "doctor not on file" step — populated when the scanned doctor name
+  // does NOT strictly match an existing doctor in the selected lab+practice.
+  // Blocks case creation until the user either picks a suggested existing doctor
+  // (adopting its stored spelling) or confirms a brand-new one.
+  const [doctorResolve, setDoctorResolve] = useState<{
+    candidates: DoctorMatchCandidate[];
+    typedName: string;
+    file: File;
+    caseNumber: string;
+    remake?: {
+      remakeOfCaseId: string;
+      remakeReason: string;
+      remakeCharged: boolean;
+    };
+  } | null>(null);
   useEffect(() => {
     if (phase.kind !== "rxConfirm") setRxPracticeError(false);
   }, [phase.kind]);
@@ -1666,6 +1779,55 @@ export function DashboardDropZone() {
     }
   }
 
+  // Required doctor-resolution gate. The scanned doctor name must STRICTLY
+  // match (trim + collapse whitespace, case-insensitive, NO title stripping) an
+  // existing doctor in the selected lab+practice. On an exact match we adopt the
+  // stored spelling; otherwise we open the required "doctor not on file" step and
+  // block creation until the user picks a suggested doctor or confirms a new one.
+  // iTero ZIP imports are out of scope (their own dedicated import path). The
+  // POST /cases 409 DOCTOR_CONFIRMATION_REQUIRED gate remains the backstop.
+  async function resolveDoctorBeforeCreate(
+    file: File,
+    caseNumber: string,
+    remake?: {
+      remakeOfCaseId: string;
+      remakeReason: string;
+      remakeCharged: boolean;
+    },
+  ): Promise<{ proceed: boolean; doctorNameOverride?: string }> {
+    if (zipSource?.isItero) return { proceed: true };
+    const typed = (rxDraft.doctorName || "").trim().replace(/\s+/g, " ");
+    if (!typed || !rxLabOrgId || !rxProviderOrgId) return { proceed: true };
+    try {
+      const qs = new URLSearchParams({
+        labOrganizationId: rxLabOrgId,
+        providerOrganizationId: rxProviderOrgId,
+        doctorName: typed,
+      });
+      const res = await apiFetch<{
+        exactMatch: string | null;
+        similarMatches: DoctorMatchCandidate[];
+        canAddNew: boolean;
+      }>(`/doctors/resolve-name?${qs.toString()}`);
+      if (res.exactMatch) {
+        return { proceed: true, doctorNameOverride: res.exactMatch };
+      }
+      setDoctorResolve({
+        typedName: typed,
+        candidates: Array.isArray(res.similarMatches) ? res.similarMatches : [],
+        file,
+        caseNumber,
+        remake,
+      });
+      setPhase({ kind: "rxConfirm", file, caseNumber });
+      return { proceed: false };
+    } catch {
+      // If the resolve lookup fails, fall through to creation — the server 409
+      // DOCTOR_CONFIRMATION_REQUIRED gate remains the authoritative backstop.
+      return { proceed: true };
+    }
+  }
+
   async function createCaseFromRx() {
     if (phase.kind !== "rxConfirm") return;
     const r = rxDraft;
@@ -1701,11 +1863,23 @@ export function DashboardDropZone() {
         scheduleIdleReset(5000);
         return;
       }
-      await proceedCreateCase(phase.file, phase.caseNumber, {
+      const remakePayload = {
         remakeOfCaseId: manualRemakeSelected.id,
         remakeReason: manualRemakeReason.trim(),
         remakeCharged: manualRemakeCharged === "yes",
-      });
+      };
+      const remakeGate = await resolveDoctorBeforeCreate(
+        phase.file,
+        phase.caseNumber,
+        remakePayload,
+      );
+      if (!remakeGate.proceed) return;
+      await proceedCreateCase(
+        phase.file,
+        phase.caseNumber,
+        remakePayload,
+        remakeGate.doctorNameOverride,
+      );
       return;
     }
 
@@ -1730,7 +1904,14 @@ export function DashboardDropZone() {
       }
     }
 
-    await proceedCreateCase(phase.file, phase.caseNumber);
+    const gate = await resolveDoctorBeforeCreate(phase.file, phase.caseNumber);
+    if (!gate.proceed) return;
+    await proceedCreateCase(
+      phase.file,
+      phase.caseNumber,
+      undefined,
+      gate.doctorNameOverride,
+    );
   }
 
   async function proceedCreateCase(
@@ -1741,9 +1922,16 @@ export function DashboardDropZone() {
       remakeReason: string;
       remakeCharged: boolean;
     },
+    doctorNameOverride?: string,
+    confirmNewDoctor?: boolean,
   ) {
     const r = rxDraft;
     if (!user?.id || !rxLabOrgId || !rxProviderOrgId) return;
+    // When a doctor was resolved (exact stored spelling adopted, or the user
+    // explicitly picked/added one in the "doctor not on file" step), use that
+    // name in place of the scanned one.
+    const effectiveDoctorName =
+      (doctorNameOverride ?? r.doctorName ?? "").trim() || "Unknown Provider";
     setPhase({ kind: "uploading", message: "Creating case…" });
 
     // ── ZIP path ─────────────────────────────────────────────────────────────
@@ -1954,8 +2142,9 @@ export function DashboardDropZone() {
             providerOrganizationId: rxProviderOrgId,
             patientFirstName: first || "Unknown",
             patientLastName: last || "Patient",
-            doctorName: (r.doctorName || "").trim() || "Unknown Provider",
+            doctorName: effectiveDoctorName,
             priority: r.isRush ? "rush" : "normal",
+            ...(confirmNewDoctor ? { confirmNewDoctor: true } : {}),
             ...(r.dueDate ? { dueDate: r.dueDate } : {}),
             ...(restorations
               ? { restorations: applyPriceOverrides(restorations) }
@@ -2128,9 +2317,9 @@ export function DashboardDropZone() {
             providerOrganizationId: rxProviderOrgId,
             patientFirstName: first || "Unknown",
             patientLastName: last || "Patient",
-            doctorName:
-              (r.doctorName || "").trim() || "Unknown Provider",
+            doctorName: effectiveDoctorName,
             priority: r.isRush ? "rush" : "normal",
+            ...(confirmNewDoctor ? { confirmNewDoctor: true } : {}),
             ...(r.dueDate ? { dueDate: r.dueDate } : {}),
             ...(restorations
               ? { restorations: applyPriceOverrides(restorations) }
@@ -2203,6 +2392,45 @@ export function DashboardDropZone() {
     }
   }
 
+  // The "doctor not on file" resolution modal is a fixed overlay that must be
+  // available regardless of the current phase — the resolve gate sets phase to
+  // "rxConfirm", whose return is separate from the top-level return below, so
+  // render this shared element in both places.
+  const doctorResolveModal = doctorResolve ? (
+    <DoctorNotOnFileModal
+      typedName={doctorResolve.typedName}
+      candidates={doctorResolve.candidates}
+      onCancel={() => setDoctorResolve(null)}
+      onUseExisting={(candidate) => {
+        // Adopt the existing doctor's exact stored spelling and continue.
+        // confirmNewDoctor=true bypasses the server 409 since the decision
+        // is now explicit.
+        const dr = doctorResolve;
+        setRxDraft((d) => ({ ...d, doctorName: candidate.doctorName }));
+        setDoctorResolve(null);
+        void proceedCreateCase(
+          dr.file,
+          dr.caseNumber,
+          dr.remake,
+          candidate.doctorName,
+          true,
+        );
+      }}
+      onAddNew={() => {
+        // The user confirmed this really is a new, distinct doctor.
+        const dr = doctorResolve;
+        setDoctorResolve(null);
+        void proceedCreateCase(
+          dr.file,
+          dr.caseNumber,
+          dr.remake,
+          dr.typedName,
+          true,
+        );
+      }}
+    />
+  ) : null;
+
   // ── Duplicate-patient prompt ──
   if (phase.kind === "duplicatePrompt") {
     return (
@@ -2212,10 +2440,30 @@ export function DashboardDropZone() {
           setPhase({ kind: "rxConfirm", file: phase.file, caseNumber: phase.caseNumber })
         }
         onCancel={() => cancelQueue()}
-        onCreateAsNew={() => proceedCreateCase(phase.file, phase.caseNumber)}
-        onCreateAsRemake={(remake) =>
-          proceedCreateCase(phase.file, phase.caseNumber, remake)
-        }
+        onCreateAsNew={async () => {
+          const gate = await resolveDoctorBeforeCreate(phase.file, phase.caseNumber);
+          if (!gate.proceed) return;
+          await proceedCreateCase(
+            phase.file,
+            phase.caseNumber,
+            undefined,
+            gate.doctorNameOverride,
+          );
+        }}
+        onCreateAsRemake={async (remake) => {
+          const gate = await resolveDoctorBeforeCreate(
+            phase.file,
+            phase.caseNumber,
+            remake,
+          );
+          if (!gate.proceed) return;
+          await proceedCreateCase(
+            phase.file,
+            phase.caseNumber,
+            remake,
+            gate.doctorNameOverride,
+          );
+        }}
       />
     );
   }
@@ -3189,6 +3437,7 @@ export function DashboardDropZone() {
             Create case {phase.caseNumber}
           </button>
         </div>
+        {doctorResolveModal}
       </div>
     );
   }
@@ -3406,6 +3655,8 @@ export function DashboardDropZone() {
           </p>
         </>
       )}
+
+      {doctorResolveModal}
     </div>
   );
 }

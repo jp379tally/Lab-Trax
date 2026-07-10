@@ -105,6 +105,21 @@ function installFetchHandler() {
         status: 200,
       });
     }
+    // The scanned "Dr. Smith" strict-matches an on-file doctor, so the new
+    // resolution gate passes straight through to createCase (which then
+    // exercises the server 409 DOCTOR_CONFIRMATION_REQUIRED backstop below).
+    if (url.includes("/api/doctors/resolve-name")) {
+      return new Response(
+        JSON.stringify({
+          data: {
+            exactMatch: "Dr. Smith",
+            similarMatches: [],
+            canAddNew: true,
+          },
+        }),
+        { status: 200 },
+      );
+    }
     return new Response(JSON.stringify({ data: null }), { status: 200 });
   });
 }
@@ -253,5 +268,109 @@ describe("AiReaderExtractedScreen — doctor confirmation", () => {
     // Keeps the bound practice + extracted doctor name, not a candidate.
     expect(resubmit.data.doctorName).toBe("Dr. Smith");
     expect(resubmit.data.providerOrganizationId).toBe(BOUND_ORG_ID);
+  });
+});
+
+/**
+ * Tests for the required "doctor not on file" resolution step that runs BEFORE
+ * createCase. When the scanned doctor name does NOT strictly match an on-file
+ * doctor for the selected lab+practice, handleSubmit must open the resolution
+ * sheet and block case creation until the user resolves it. This is the new
+ * client-side gate; the server 409 remains the authoritative backstop.
+ */
+describe("AiReaderExtractedScreen — doctor resolution (not on file)", () => {
+  /**
+   * The resolve gate reads `doctorResolveQuery` (a `useQuery` keyed on
+   * "doctor-resolve"), which is stubbed in vitest.setup. Seed its result via
+   * `setMockAppState({ doctorResolve })` — no exact match + one fuzzy
+   * suggestion means the scanned name is not on file.
+   */
+  const NON_EXACT_RESOLVE = {
+    exactMatch: null,
+    similarMatches: [
+      {
+        doctorName: "Dr. John Smith",
+        providerOrganizationId: BOUND_ORG_ID,
+        similarity: 0.6,
+        totalCases: 4,
+      },
+    ],
+    canAddNew: true,
+  };
+
+  it("blocks createCase and opens the resolution sheet when the scanned name is not on file", async () => {
+    seedEditableLab();
+    seedExtracted();
+    installFetchHandler();
+    setMockAppState({ doctorResolve: NON_EXACT_RESOLVE });
+
+    const screen = await renderAndPrepare();
+    fireEvent.press(screen.getByTestId("ai-reader-create-btn"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("doctor-resolve-candidate")).toBeTruthy();
+    });
+    // The case must NOT have been created — the gate blocks it.
+    expect(mockCreateCaseMutateAsync).not.toHaveBeenCalled();
+    expect(Alert.alert).not.toHaveBeenCalledWith(
+      "Couldn't create case",
+      expect.anything(),
+    );
+  });
+
+  it("'use existing doctor' adopts the candidate's spelling and re-submits with confirmNewDoctor", async () => {
+    seedEditableLab();
+    seedExtracted();
+    installFetchHandler();
+    setMockAppState({ doctorResolve: NON_EXACT_RESOLVE });
+
+    const screen = await renderAndPrepare();
+    fireEvent.press(screen.getByTestId("ai-reader-create-btn"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("doctor-resolve-candidate")).toBeTruthy();
+    });
+
+    fireEvent.press(screen.getByTestId("doctor-resolve-candidate"));
+
+    await waitFor(() => {
+      expect(mockCreateCaseMutateAsync).toHaveBeenCalledTimes(1);
+    });
+    const submit = mockCreateCaseMutateAsync.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(submit.data.confirmNewDoctor).toBe(true);
+    expect(submit.data.doctorName).toBe("Dr. John Smith");
+    expect(submit.data.providerOrganizationId).toBe(BOUND_ORG_ID);
+  });
+
+  it("'add as new doctor' re-submits with the scanned name + confirmNewDoctor", async () => {
+    seedEditableLab();
+    seedExtracted();
+    installFetchHandler();
+    setMockAppState({ doctorResolve: NON_EXACT_RESOLVE });
+
+    const screen = await renderAndPrepare();
+    fireEvent.press(screen.getByTestId("ai-reader-create-btn"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("doctor-resolve-candidate")).toBeTruthy();
+    });
+
+    // FormSheet primary action = "Add … as new doctor". The resolve sheet uses
+    // testIDPrefix="doctor-resolve" so its save button doesn't collide with the
+    // confirm sheet's form-save (both mount under the test Modal stub).
+    fireEvent.press(screen.getByTestId("doctor-resolve-save"));
+
+    await waitFor(() => {
+      expect(mockCreateCaseMutateAsync).toHaveBeenCalledTimes(1);
+    });
+    const submit = mockCreateCaseMutateAsync.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(submit.data.confirmNewDoctor).toBe(true);
+    // Keeps the scanned name + bound practice.
+    expect(submit.data.doctorName).toBe("Dr. Smith");
+    expect(submit.data.providerOrganizationId).toBe(BOUND_ORG_ID);
   });
 });
