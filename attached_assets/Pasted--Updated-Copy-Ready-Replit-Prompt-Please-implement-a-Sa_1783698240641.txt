@@ -1,0 +1,114 @@
+### Updated Copy-Ready Replit Prompt
+
+Please implement a Sales Forecaster feature in the LabTracks financial section across **web, desktop, and mobile**.
+
+**Goal**
+
+Add or update the Sales Forecaster so it forecasts **weekly, monthly, and yearly sales** based on current sales pace. This feature should be available in the **web app, desktop app, and mobile app**, but only for users with the **owner role**.
+
+**User-visible behavior**
+
+In the financial section, owner users should see a Sales Forecaster that calculates projected sales using current sales pace and Monday-Friday working days.
+
+Example:
+
+* Month-to-date sales: `$10,000`
+* Worked business days so far: `10`
+* Average sales per worked business day: `$1,000`
+* Total business days in month: `22`
+* Monthly forecast: `$22,000`
+
+The feature should also show weekly and yearly forecasts using the same business-day pace logic.
+
+**Likely root cause / missing functionality**
+
+The current app likely either does not have a shared Sales Forecaster feature, does not restrict access properly to owners, or only exposes financial forecasting in one platform surface. The safest fix is to create shared forecast logic and expose it consistently through the web, desktop, and mobile financial sections.
+
+**Implementation steps**
+
+1. Inspect the existing financial section in the web, desktop, and mobile app.
+
+   * Find the financial dashboard/reporting components or screens.
+   * Identify shared modules used across platforms.
+   * Identify existing owner-only permission checks.
+   * Identify how sales totals are currently calculated in financial reports.
+
+2. Implement shared forecast calculation logic.
+
+   * Prefer a shared utility/service used by all three app surfaces.
+   * Inputs should include:
+
+     * sales total
+     * current date
+     * period type: weekly, monthly, yearly
+     * working-day definition: Monday through Friday
+   * Exclude Saturdays and Sundays.
+   * Avoid duplicating forecast math separately in web, desktop, and mobile.
+
+3. Add owner-only authorization.
+
+   * Owner users should see and use the Sales Forecaster.
+   * Non-owner users should not see it.
+   * If forecast data comes from an API/backend route, protect that route as owner-only too.
+   * Do not rely only on hiding frontend UI if sales data is sensitive.
+
+4. Add the feature to all app surfaces.
+
+   * Web app: add Sales Forecaster to the financial section.
+   * Desktop app: add the same feature to the desktop financial section.
+   * Mobile app: add the same feature to the mobile financial section with a mobile-friendly layout.
+   * Keep wording, calculations, and currency formatting consistent across platforms.
+
+5. Forecast weekly, monthly, and yearly sales.
+
+   * Weekly forecast:
+
+     * use week-to-date sales
+     * divide by elapsed Monday-Friday workdays in the current week
+     * multiply by total workdays in the week, normally 5
+   * Monthly forecast:
+
+     * use month-to-date sales
+     * divide by elapsed business days in the current month
+     * multiply by total business days in the month
+   * Yearly forecast:
+
+     * use year-to-date sales
+     * divide by elapsed business days in the current year
+     * multiply by total business days in the year
+
+6. Handle edge cases.
+
+   * Do not divide by zero.
+   * If no working days have elapsed, show `0` or an insufficient-data state.
+   * If today is Saturday or Sunday, do not count today as a worked day.
+   * Do not include future sales.
+   * Follow the app’s existing definition of sales, including how it handles refunds, voids, drafts, deleted sales, or unpaid orders.
+
+**Constraints and guardrails**
+
+* Feature must be owner-only across web, desktop, mobile, and backend/API access if applicable.
+* Use Monday-Friday as working days.
+* Use existing financial sales totals and filters where possible.
+* Use existing auth, role, date, and currency formatting utilities.
+* Avoid broad refactors.
+* Do not create three separate versions of the forecast math.
+* Mobile layout should be readable and compact, not just a squeezed desktop view.
+* Keep behavior consistent across all platforms.
+
+**Regression checks**
+
+Before finishing, verify:
+
+* Owner users can access Sales Forecaster in web, desktop, and mobile.
+* Non-owner users cannot access or fetch Sales Forecaster data.
+* Weekly, monthly, and yearly forecasts appear on all three platforms.
+* The monthly example works: `$10,000 / 10 workdays * 22 workdays = $22,000`.
+* Weekend dates do not incorrectly increase elapsed workdays.
+* First-day and no-sales states do not crash or divide by zero.
+* Forecast values use the same sales totals as existing financial reports.
+* Currency formatting matches the rest of the financial section.
+* Existing financial dashboards and reports still work normally.
+* Responsive/mobile UI does not overlap, truncate important values, or hide controls.
+
+Please explain any assumptions, especially around platform architecture, sales statuses included in totals, timezone/date handling, and whether the desktop/mobile apps share code with the web app.

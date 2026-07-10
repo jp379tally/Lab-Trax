@@ -1,0 +1,93 @@
+Here’s a copy-ready Replit prompt:
+
+```text
+Add an owner/admin-only Remakes stat to LabTracks Stats across all three platforms.
+
+Goal:
+Create a new stats/analytics section that shows all cases marked as remade, with remake reason breakdowns and recharge counts. This should be visible only to owners and admins across all three platforms where Stats or equivalent analytics are available.
+
+User-visible problem:
+The current Stats page shows production and sales metrics, but owners/admins cannot see remake volume, remake reasons, or whether remakes were recharged. They need this reporting to identify quality trends and financial impact.
+
+Likely root cause:
+The app already appears to have case-level remake-related data, but the Stats aggregation layer does not currently calculate or expose remake metrics. The UI also does not include a remakes card/table/chart, and role/platform visibility may not yet be enforced for this specific stat.
+
+Relevant product surface:
+- Existing Stats page, likely `/desktop/stats`
+- Any shared stats API/query/data aggregation used by desktop/mobile/tablet platforms
+- Case model/schema fields related to remakes, remake reasons, and recharge status
+- Role/permission checks for owner/admin-only features
+
+Implementation steps:
+1. Inspect the existing Stats page and shared stats data flow.
+   - Find the API route, query, loader, hook, or server function that powers current stats like total cases, total sales, top case type, category breakdown, and material breakdown.
+   - Reuse the existing date/category/material/platform filters where appropriate.
+
+2. Identify the canonical remake fields.
+   - Determine how a case is marked as remade.
+   - Determine where remake reason is stored.
+   - Determine how recharge status is stored, such as `recharged`, `isRecharged`, `remakeCharged`, invoice line status, price override, or similar.
+   - If the data model has multiple legacy forms, normalize them into one reporting shape.
+
+3. Add backend/stat aggregation for remakes.
+   Return a structure similar to:
+   - `totalRemakes`
+   - `rechargedRemakes`
+   - `nonRechargedRemakes`
+   - `remakeReasons: [{ reason: string, count: number }]`
+
+   The remake reason count must display the number to the right of the reason in the UI.
+
+4. Apply filters consistently.
+   - Remake stats should respect the same selected date range as the Stats page.
+   - Confirm whether category/material filters should apply. If they apply to other case stats, apply them here too unless there is a clear product reason not to.
+   - Include cases from all three platforms in the aggregate, not just the currently viewed platform, unless existing platform filters intentionally scope stats.
+
+5. Add the UI.
+   - Add a clear “Remakes” stat section/card to the Stats page.
+   - Show total remakes prominently.
+   - Show recharge summary:
+     - Recharged: X
+     - Not recharged: Y
+   - Show remake reasons in a readable list/table:
+     - Reason label on the left
+     - Count aligned on the right
+   - Include an empty state such as “No remakes in this period” when there are none.
+
+6. Enforce permissions.
+   - Only owners and admins can see this stat.
+   - Non-owner/non-admin users should not receive remake stats from the API if possible, not merely have the UI hidden.
+   - Verify this across all three platforms.
+
+Constraints and guardrails:
+- Do not change how cases are created, edited, invoiced, or marked as remakes.
+- Do not create duplicate remake fields if a canonical field already exists.
+- Do not count non-remake cases.
+- Avoid double-counting remakes that may have legacy or duplicated metadata.
+- Preserve existing Stats filters and behavior.
+- Keep the implementation shared where possible so all three platforms use the same logic.
+- If legacy data has missing remake reasons, group it as “Unspecified” rather than dropping the case.
+
+Acceptance criteria:
+- Owners/admins can see total remakes for the selected stats period.
+- Owners/admins can see remake reasons with the count displayed to the right of each reason.
+- Owners/admins can see how many remakes were recharged and how many were not.
+- The stat works across all three platforms.
+- Existing stats still work as before.
+- Non-owner/non-admin users cannot see or fetch the remakes stat.
+- Empty periods show a clean empty state instead of errors or blank UI.
+
+Regression checks:
+- Test Stats as owner/admin and confirm the Remakes section appears.
+- Test Stats as a non-admin user and confirm the Remakes section is hidden and protected server-side.
+- Test a period with no remakes.
+- Test a period with multiple remake reasons.
+- Test cases with missing remake reason and confirm they appear under “Unspecified.”
+- Test recharged vs not recharged counts against known sample cases.
+- Test that existing date/category/material filters still behave correctly.
+- Test all three platforms that expose Stats or analytics.
+- Confirm existing cards such as Total Cases, Total Sales, Top Case Type, and Material Breakdown are unchanged.
+
+Before finishing:
+Explain which fields were used to identify remake status, remake reason, and recharge status. If the codebase has conflicting or legacy fields, explain the tradeoff and choose the safest normalization approach.
+```
