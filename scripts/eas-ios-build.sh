@@ -167,8 +167,14 @@ if git remote get-url origin >/dev/null 2>&1; then
   branch="$(git rev-parse --abbrev-ref HEAD)"
   git push origin "$branch" \
     || echo "WARNING: git push failed — continuing (build number committed locally)."
+elif [ -n "${GITHUB_PUSH_TOKEN:-}" ]; then
+  # No git remote (Replit workspace): push via isomorphic-git, which talks to
+  # GitHub over HTTPS directly and needs no configured remote.
+  echo "No 'origin' remote — pushing via scripts/src/push-to-github.ts..."
+  (cd "$REPO_ROOT" && pnpm --filter @workspace/scripts run push-to-github) \
+    || echo "WARNING: push-to-github failed — continuing (build number committed locally)."
 else
-  echo "No 'origin' remote — skipping push (commit persisted locally / via checkpoint)."
+  echo "No 'origin' remote and GITHUB_PUSH_TOKEN not set — skipping push (commit persisted locally / via checkpoint)."
 fi
 
 echo ""
