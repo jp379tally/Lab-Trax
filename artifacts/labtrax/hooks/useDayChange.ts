@@ -58,16 +58,21 @@ export function useDayChange(): string {
     // When the app returns to the foreground, the midnight timer may not have
     // fired (background timers are unreliable / suspended on native). Re-check
     // the day and re-arm the timer so a resume on a later day rolls over.
-    const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
-      if (state === "active") {
-        refreshDay();
-        scheduleMidnight();
-      }
-    });
+    // Some native/runtime combinations may not expose the listener API.
+    // Keep the midnight timer working rather than crashing the dashboard.
+    const subscribe = AppState?.addEventListener;
+    const sub = typeof subscribe === "function"
+      ? subscribe.call(AppState, "change", (state: AppStateStatus) => {
+          if (state === "active") {
+            refreshDay();
+            scheduleMidnight();
+          }
+        })
+      : null;
 
     return () => {
       if (timer) clearTimeout(timer);
-      sub.remove();
+      if (sub && typeof sub.remove === "function") sub.remove();
     };
   }, []);
 
