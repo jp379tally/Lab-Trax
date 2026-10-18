@@ -34,18 +34,27 @@ const baseInvoice: Invoice = {
   notes: "Original notes",
   issuedAt: null,
   dueAt: null,
-  items: [],
-  displayMetadata: { patientName: "Jane Doe", billTo: "Dr. Smith" },
+  items: [{
+    id: "line-1",
+    description: "Custom charge",
+    quantity: 1,
+    unitPrice: 25,
+    subItems: [],
+  }],
+  displayMetadata: { patientName: "Jane Doe", billTo: "Dr. Synthetic063" },
 } as unknown as Invoice;
 
+let invoiceDetail = baseInvoice;
+
 beforeEach(() => {
+  invoiceDetail = baseInvoice;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       // Invoice detail drives the dirty-check baseline.
       if (url.includes(`/invoices/${INVOICE_ID}`)) {
-        return new Response(JSON.stringify(baseInvoice), {
+        return new Response(JSON.stringify(invoiceDetail), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
@@ -65,12 +74,13 @@ beforeEach(() => {
   );
 });
 
-function renderEditor() {
+function renderEditor(invoice: Invoice = baseInvoice) {
+  invoiceDetail = invoice;
   const onClose = vi.fn();
   const Wrapper = makeAuthWrapper("/invoices");
   render(
     <Wrapper>
-      <InvoiceEditor invoice={baseInvoice} doctorNames={[]} onClose={onClose} />
+      <InvoiceEditor invoice={invoice} doctorNames={[]} onClose={onClose} />
     </Wrapper>,
   );
   return { onClose };
@@ -86,6 +96,40 @@ async function waitForLoaded() {
 }
 
 describe("InvoiceEditor safe-exit", () => {
+  it("adds a blank line after the existing items and before totals", async () => {
+    renderEditor();
+    await waitForLoaded();
+
+    fireEvent.click(screen.getByTestId("button-add-line-bottom"));
+
+    const descriptions = await screen.findAllByPlaceholderText("Description");
+    expect(descriptions).toHaveLength(2);
+    expect(descriptions[1]).toHaveValue("");
+
+    const button = screen.getByTestId("button-add-line-bottom");
+    const table = button.closest("table");
+    const rows = Array.from(table!.querySelectorAll("tr"));
+    const addLineRow = button.closest("tr")!;
+    const subtotalRow = screen.getByText("Subtotal").closest("tr")!;
+    expect(addLineRow.querySelector("td")).toHaveAttribute("colspan", "7");
+    expect(rows.indexOf(addLineRow)).toBeLessThan(rows.indexOf(subtotalRow));
+    expect(Array.from(table!.querySelectorAll("tbody tr")).at(-1)).toBe(addLineRow);
+  });
+
+  it("shows the bottom add-line control when the invoice has no items", async () => {
+    const emptyInvoice = { ...baseInvoice, items: [] } as Invoice;
+    renderEditor(emptyInvoice);
+    await waitForLoaded();
+    expect(screen.getByText(/No line items/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("button-add-line-bottom"));
+
+    const descriptions = await screen.findAllByPlaceholderText("Description");
+    expect(descriptions).toHaveLength(1);
+    expect(descriptions[0]).toHaveValue("");
+    expect(screen.queryByText(/No line items/)).not.toBeInTheDocument();
+  });
+
   it("closes immediately on Close when there are no edits", async () => {
     const { onClose } = renderEditor();
     await waitForLoaded();
@@ -179,5 +223,16 @@ describe("InvoiceEditor safe-exit", () => {
     // Reverted form is clean, so Close skips the prompt and closes at once.
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Discard changes?")).not.toBeInTheDocument();
+  });
+
+  it("keeps blank price text visible and rejects it on save", async () => {
+    renderEditor();
+    await waitForLoaded();
+    const price = screen.getByDisplayValue("25");
+    fireEvent.change(price, { target: { value: "" } });
+    expect(price).toHaveValue(null);
+
+    fireEvent.click(screen.getByText("Save changes"));
+    expect(await screen.findByText(/Each line item needs a valid price/)).toBeInTheDocument();
   });
 });

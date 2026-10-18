@@ -189,6 +189,7 @@ maybe("material normalization on iTero ingest paths (db integration)", () => {
 
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
+    await (await import("./index.js")).labtraxRoutesReady;
     auth = await import("../lib/auth.js");
 
     const { db, organizations, users, organizationMemberships, pricingTiers } = dbMod as any;
@@ -280,7 +281,11 @@ maybe("material normalization on iTero ingest paths (db integration)", () => {
       .attach("file", rxFile, "iTero_Rx_555.pdf")
       .field("iteroOrderId", orderId)
       .field("labOrganizationId", labOrgId)
-      .field("providerOrganizationId", providerOrgId);
+      .field("providerOrganizationId", providerOrgId)
+      // This test exercises material canonicalization, not the doctor gate; the
+      // AI-extracted doctor is not on file for this practice, so confirm the new
+      // doctor to pass the strict "doctor not on file" gate (Task #2853).
+      .field("confirmNewDoctor", "true");
 
     expect(r.status).toBe(201);
     expect(r.body.ok).toBe(true);
@@ -389,6 +394,7 @@ describe("material normalization on POST /api/analyze-prescription", () => {
     process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"] = "https://example.invalid/v1";
     process.env["JWT_SECRET"] = process.env["JWT_SECRET"] ?? "labtrax-test-secret-material-norm";
     appMod = await import("../app.js");
+    await (await import("./index.js")).labtraxRoutesReady;
   });
 
   afterAll(() => {

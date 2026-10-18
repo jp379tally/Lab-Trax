@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell, SettingsSection } from "@/components/settings/SettingsRow";
+import { scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
 import { resilientFetch } from "@/lib/query-client";
 import { storePlatformAdminSession, clearPlatformAdminSession } from "@/lib/platform-admin-session";
 
@@ -33,8 +34,8 @@ function formatExpiry(iso: string | null | undefined) {
     return new Date(iso).toLocaleTimeString("en-US", {
       hour: "numeric",
       minute: "2-digit",
-      month: "short",
-      day: "numeric",
+      month: "2-digit",
+      day: "2-digit",
     });
   } catch { return iso ?? ""; }
 }
@@ -107,7 +108,11 @@ export default function PlatformAdminScreen() {
       onBack={() => router.back()}
       insetTop={insets.top}
     >
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView
+        contentContainerStyle={styles.body}
+        keyboardDismissMode={scrollKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
+      >
         {statusQuery.isLoading && <ActivityIndicator color={colors.tint} />}
         {statusQuery.error && (
           <Text style={[styles.errorText, { color: colors.error }]}>
@@ -212,6 +217,7 @@ export default function PlatformAdminScreen() {
             )}
 
             {status.sessionActive && (
+              <>
               <SettingsSection title="Session">
                 <Pressable
                   style={[styles.lockBtn, { borderColor: colors.error + "50" }]}
@@ -235,6 +241,7 @@ export default function PlatformAdminScreen() {
                   )}
                 </Pressable>
               </SettingsSection>
+              </>
             )}
 
             <SettingsSection title="About platform admin">
@@ -355,6 +362,7 @@ function makeStyles(c: ThemeColors) {
       paddingVertical: Spacing.md,
     },
     lockBtnText: { ...Typography.bodyMedium },
+    adminLink: { flexDirection: "row", alignItems: "center", gap: Spacing.md, padding: Spacing.lg, borderWidth: StyleSheet.hairlineWidth },
     howRow: { flexDirection: "row", alignItems: "flex-start", gap: Spacing.md, padding: Spacing.lg },
     howRowBorder: { borderTopWidth: StyleSheet.hairlineWidth },
     howIcon: {

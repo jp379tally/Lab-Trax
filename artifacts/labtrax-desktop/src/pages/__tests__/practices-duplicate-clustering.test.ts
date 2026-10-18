@@ -4,9 +4,9 @@
  * doctors".
  *
  * A lab can end up with two near-duplicate practices: one created manually
- * (e.g. "Family Dentistry at SouthWood") and one created from an iTero import
+ * (e.g. "Riverbend Family Dental") and one created from an iTero import
  * with a brand prefix + bracketed code
- * (e.g. "Heartland Dental - Family Dentistry at SouthWood [565]"). Before this
+ * (e.g. "Sample Dental Group - Riverbend Family Dental [101]"). Before this
  * fix the normalized names scored ~0.61 and never surfaced in the "Suggested
  * duplicates" banner, so the admin couldn't merge them.
  *
@@ -37,16 +37,16 @@ function provider(id: string, name: string): Organization {
 describe("normalizePracticeNameForCompare (Task #2474)", () => {
   it("strips a trailing bracketed code", () => {
     expect(
-      normalizePracticeNameForCompare("Family Dentistry at SouthWood [565]"),
-    ).toBe(normalizePracticeNameForCompare("Family Dentistry at SouthWood"));
+      normalizePracticeNameForCompare("Riverbend Family Dental [101]"),
+    ).toBe(normalizePracticeNameForCompare("Riverbend Family Dental"));
   });
 
   it("strips a leading brand prefix terminated by ' - '", () => {
     expect(
       normalizePracticeNameForCompare(
-        "Heartland Dental - Family Dentistry at SouthWood",
+        "Sample Dental Group - Riverbend Family Dental",
       ),
-    ).toBe(normalizePracticeNameForCompare("Family Dentistry at SouthWood"));
+    ).toBe(normalizePracticeNameForCompare("Riverbend Family Dental"));
   });
 
   it("does not strip a hyphen that is part of the real name", () => {
@@ -59,10 +59,10 @@ describe("normalizePracticeNameForCompare (Task #2474)", () => {
 describe("buildPracticeDuplicateClusters (Task #2474)", () => {
   const adminLabs = new Set([LAB_ID]);
 
-  it("clusters the brand-prefixed / bracketed-code SouthWood pair", () => {
+  it("clusters the brand-prefixed / bracketed-code Riverbend pair", () => {
     const practices = [
-      provider("p1", "Family Dentistry at SouthWood"),
-      provider("p2", "Heartland Dental - Family Dentistry at SouthWood [565]"),
+      provider("p1", "Riverbend Family Dental"),
+      provider("p2", "Sample Dental Group - Riverbend Family Dental [101]"),
     ];
     const clusters = buildPracticeDuplicateClusters(
       practices,
@@ -78,10 +78,10 @@ describe("buildPracticeDuplicateClusters (Task #2474)", () => {
     );
   });
 
-  it("clusters the Mahan Village pair", () => {
+  it("clusters the Summit pair", () => {
     const practices = [
-      provider("p1", "Mahan Village Dental Care"),
-      provider("p2", "Heartland Dental - Mahan Village Dental Care [985]"),
+      provider("p1", "Summit Dental Care"),
+      provider("p2", "Sample Dental Group - Summit Dental Care [202]"),
     ];
     const clusters = buildPracticeDuplicateClusters(
       practices,
@@ -96,9 +96,9 @@ describe("buildPracticeDuplicateClusters (Task #2474)", () => {
 
   it("does NOT cluster genuinely different practices under one lab", () => {
     const practices = [
-      provider("p1", "Family Dentistry at SouthWood"),
+      provider("p1", "Riverbend Family Dental"),
       provider("p2", "Bright Smiles Orthodontics"),
-      provider("p3", "Heartland Dental - Mahan Village Dental Care [985]"),
+      provider("p3", "Sample Dental Group - Summit Dental Care [202]"),
     ];
     const clusters = buildPracticeDuplicateClusters(
       practices,

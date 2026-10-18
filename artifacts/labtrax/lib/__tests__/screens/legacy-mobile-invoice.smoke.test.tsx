@@ -55,23 +55,23 @@ afterEach(() => {
 // ── 1. List navigation ────────────────────────────────────────────────────────
 
 describe("InvoicesScreen — legacy mobile invoice row", () => {
-  it("renders a legacy mobile invoice row and navigates to the editor on tap", () => {
+  it("renders a legacy mobile invoice row and navigates to the editor on tap", async () => {
     setMockAppState({ invoices: [legacyMobileInvoice] });
-    const { getByTestId } = render(<InvoicesScreen />);
+    const { getByTestId } = await render(<InvoicesScreen />);
 
     const row = getByTestId(`invoice-${legacyMobileInvoice.id}`);
     expect(row).toBeTruthy();
 
-    fireEvent.press(row);
+    await fireEvent.press(row);
 
     expect(router.push).toHaveBeenCalledWith(
       `/invoice-editor/${legacyMobileInvoice.id}`,
     );
   });
 
-  it("shows the invoice number in the list row", () => {
+  it("shows the invoice number in the list row", async () => {
     setMockAppState({ invoices: [legacyMobileInvoice] });
-    const { getByText } = render(<InvoicesScreen />);
+    const { getByText } = await render(<InvoicesScreen />);
     expect(getByText("M-5042")).toBeTruthy();
   });
 });
@@ -84,18 +84,18 @@ describe("InvoiceEditorScreen — legacy mobile id resolved to canonical invoice
   // it when the editor calls useInvoice("mobile:local-abc-123").  This mirrors
   // the server behaviour: GET /api/invoices/mobile:<id> returns the canonical
   // row that now exists for the same case.
-  function renderResolvedEditor() {
+  async function renderResolvedEditor() {
     const resolvedAsEntry = {
       ...canonicalInvoiceResolvedFromLegacy,
       id: legacyMobileInvoice.id, // mock lookup key must match the search param
     };
     setMockSearchParams({ id: legacyMobileInvoice.id });
     setMockAppState({ invoices: [resolvedAsEntry] });
-    return render(<InvoiceEditorScreen />);
+    return await render(<InvoiceEditorScreen />);
   }
 
-  it("opens the full editor form (not the error state) when the legacy id resolves", () => {
-    const { getByTestId, queryByTestId } = renderResolvedEditor();
+  it("opens the full editor form (not the error state) when the legacy id resolves", async () => {
+    const { getByTestId, queryByTestId } = await renderResolvedEditor();
 
     // The form body is the ScrollView path; the error container must be absent.
     expect(queryByTestId("invoice-editor-error")).toBeNull();
@@ -106,8 +106,8 @@ describe("InvoiceEditorScreen — legacy mobile id resolved to canonical invoice
     expect(getByTestId("invoice-editor-save")).toBeTruthy();
   });
 
-  it("hydrates the invoice number field from the resolved canonical data", () => {
-    const { getByTestId } = renderResolvedEditor();
+  it("hydrates the invoice number field from the resolved canonical data", async () => {
+    const { getByTestId } = await renderResolvedEditor();
     const field = getByTestId("invoice-editor-number");
     // RNTL exposes the value prop on TextInput as `value` in the instance.
     expect(field.props.value).toBe("INV-0042");
@@ -117,19 +117,19 @@ describe("InvoiceEditorScreen — legacy mobile id resolved to canonical invoice
 // ── 3. Editor — loading state for a legacy mobile id ─────────────────────────
 
 describe("InvoiceEditorScreen — loading state for a mobile: id", () => {
-  it("shows the 'Setting up your invoice…' hint while loading a mobile: id", () => {
+  it("shows the 'Setting up your invoice…' hint while loading a mobile: id", async () => {
     setMockSearchParams({ id: legacyMobileInvoice.id });
     setMockAppState({ invoices: [], invoiceIsLoading: true });
-    const { getByTestId, getByText } = render(<InvoiceEditorScreen />);
+    const { getByTestId, getByText } = await render(<InvoiceEditorScreen />);
 
     expect(getByTestId("invoice-editor-loading")).toBeTruthy();
     expect(getByText("Setting up your invoice…")).toBeTruthy();
   });
 
-  it("does not show the hint while loading a non-mobile invoice", () => {
+  it("does not show the hint while loading a non-mobile invoice", async () => {
     setMockSearchParams({ id: "inv-regular-123" });
     setMockAppState({ invoices: [], invoiceIsLoading: true });
-    const { getByTestId, queryByText } = render(<InvoiceEditorScreen />);
+    const { getByTestId, queryByText } = await render(<InvoiceEditorScreen />);
 
     expect(getByTestId("invoice-editor-loading")).toBeTruthy();
     expect(queryByText("Setting up your invoice…")).toBeNull();
@@ -139,23 +139,23 @@ describe("InvoiceEditorScreen — loading state for a mobile: id", () => {
 // ── 4. Editor — unresolved legacy id (no canonical invoice exists yet) ────────
 
 describe("InvoiceEditorScreen — legacy mobile id with no canonical invoice", () => {
-  function renderUnresolvedEditor() {
+  async function renderUnresolvedEditor() {
     // Seed invoices without any entry matching the mobile: id so useInvoice
     // returns null — this is what happens when the server can't resolve the id.
     setMockSearchParams({ id: legacyMobileInvoice.id });
     setMockAppState({ invoices: [] });
-    return render(<InvoiceEditorScreen />);
+    return await render(<InvoiceEditorScreen />);
   }
 
-  it("renders the error state (not the editor form) for an unresolved legacy id", () => {
-    const { getByTestId, queryByTestId } = renderUnresolvedEditor();
+  it("renders the error state (not the editor form) for an unresolved legacy id", async () => {
+    const { getByTestId, queryByTestId } = await renderUnresolvedEditor();
 
     expect(getByTestId("invoice-editor-error")).toBeTruthy();
     expect(queryByTestId("invoice-editor-number")).toBeNull();
   });
 
-  it("displays the friendly older-version message for a mobile: id", () => {
-    const { getByText } = renderUnresolvedEditor();
+  it("displays the friendly older-version message for a mobile: id", async () => {
+    const { getByText } = await renderUnresolvedEditor();
 
     // The tailored message from [id].tsx when isLegacyMobileInvoice is true.
     expect(
@@ -165,8 +165,8 @@ describe("InvoiceEditorScreen — legacy mobile id with no canonical invoice", (
     ).toBeTruthy();
   });
 
-  it("does not show the short generic 'couldn't be loaded' copy for a legacy id", () => {
-    const { queryByText } = renderUnresolvedEditor();
+  it("does not show the short generic 'couldn't be loaded' copy for a legacy id", async () => {
+    const { queryByText } = await renderUnresolvedEditor();
     // The legacy path shows a longer tailored message; the short generic form
     // ("This invoice couldn't be loaded." with nothing after) must not appear.
     expect(queryByText(/^This invoice couldn't be loaded\.$/)).toBeNull();

@@ -13,7 +13,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as SecureStore from "expo-secure-store";
 import { logAudit } from "./audit";
-import { getApiUrl, resilientFetch, saveTokens, clearTokens, loadTokens, getHasUsableToken, uploadCaseMedia, setReconnectingListener, createReconnectingTracker } from "./query-client";
+import { getApiUrl, resilientFetch, saveTokens, clearTokens, loadTokens, getHasUsableToken, uploadCaseMedia, setReconnectingListener, createReconnectingTracker, queryClient } from "./query-client";
+import { normalizeProfilePhotoUrl } from "./normalize-profile-photo-url";
+import { clearAuthedMediaCache } from "./authed-media-cache";
+import { clearProtectedShareCache } from "./open-attachment";
 
 interface StoredUser {
   id?: string;
@@ -44,11 +47,11 @@ interface AuthContextValue {
   currentUserId: string | null;
   userType: "provider" | "lab" | "master_admin" | null;
   profilePicUri: string | null;
-  setProfilePicUri: (uri: string | null) => void;
+  setProfilePicUri: (uri: string | null, expectedUserId?: string) => void | Promise<void>;
   login: (username: string, password: string, rememberMe?: boolean) => Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }>;
   completeTwoFactor: (pendingToken: string, code: string, trustDevice?: boolean) => Promise<{ success: boolean; error?: string }>;
   loginWithBiometric: () => Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }>;
-  register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string; joinOrganizationId?: string; createOrganization?: boolean; claimProvider?: { labId: string; accountNumber: string } }) => Promise<{ success: boolean; error?: string }>;
+  register: (data: { providerPlan?: import("@workspace/api-client-react").ProviderSignupTier; reuseSubscriptionCard?: boolean; username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; address?: { line1: string; city: string; state: string; zip: string }; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string; joinOrganizationId?: string; partnerLabSelections?: string[]; createOrganization?: boolean; claimProvider?: { labId: string; accountNumber: string } }) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   deleteAccount: () => Promise<{ success: boolean; error?: string }>;
   registeredUsers: StoredUser[];
@@ -70,8 +73,34 @@ const AUTH_PASSWORD_KEY = "@drivesync_auth_password";
 const BIOMETRIC_USER_KEY = "@drivesync_biometric_user";
 const TRUSTED_DEVICE_KEY = "@labtrax_trusted_device_v1";
 const REMEMBER_ME_KEY = "@labtrax_remember_me";
+const CACHED_BUSINESS_KEYS = [
+  "@drivesync_cases",
+  "@drivesync_notifs",
+  "@drivesync_clients",
+  "@drivesync_users",
+  "@drivesync_invoices",
+  "@drivesync_shipping",
+  "@drivesync_pricing_tiers",
+  "@drivesync_role",
+  "@drivesync_barcode_assignments",
+  "@drivesync_station_labels",
+  "@drivesync_deleted_client_invoices",
+  "@drivesync_pending_client",
+] as const;
 
-const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
+const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
+
+async function purgeAuthenticatedCaches() {
+  queryClient.clear();
+  await Promise.all([
+    AsyncStorage.multiRemove([...CACHED_BUSINESS_KEYS]),
+    clearAuthedMediaCache(),
+    clearProtectedShareCache(),
+    import("./video-thumbnail").then(({ clearVideoThumbnailCache }) =>
+      clearVideoThumbnailCache(),
+    ),
+  ]);
+}
 
 type SessionStore = {
   getItem: (key: string) => string | null;
@@ -172,6 +201,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const activeUserId = useRef(currentUserId);
+  activeUserId.current = currentUserId;
   const [userType, setUserType] = useState<"provider" | "lab" | "master_admin" | null>(null);
   const [registeredUsers, setRegisteredUsers] = useState<StoredUser[]>([]);
   const [profilePicUri, setProfilePicUriState] = useState<string | null>(null);
@@ -261,6 +292,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const rememberedMe = rememberMeRaw === null ? true : rememberMeRaw === "true";
       if (!rememberedMe) {
         await clearTokens();
+        await purgeAuthenticatedCaches();
         await AsyncStorage.removeItem(AUTH_KEY);
         await removeSensitiveItem(AUTH_PASSWORD_KEY);
         await removeSensitiveItem(BIOMETRIC_USER_KEY);
@@ -296,6 +328,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // empty legitimately — only gate native here.
           if (Platform.OS !== "web" && !getHasUsableToken()) {
             await clearTokens();
+            await purgeAuthenticatedCaches();
             await AsyncStorage.removeItem(AUTH_KEY);
             setProfilePicUriState(null);
             return;
@@ -323,15 +356,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                   await AsyncStorage.removeItem(legacyKey).catch(() => {});
                 }
               }
-              // Prefer server-stored URL (survives reinstalls) over local cache
-              const picUri = user.profilePhotoUrl || savedPic;
+              // Prefer server-stored URL (survives reinstalls) over local cache.
+              // Normalise the server's relative path to an absolute URL on native.
+              const normalizedServerPic = normalizeProfilePhotoUrl(user.profilePhotoUrl);
+              const picUri = normalizedServerPic;
               setProfilePicUriState(picUri);
-              if (user.profilePhotoUrl && savedPic !== user.profilePhotoUrl) {
-                await AsyncStorage.setItem(userPicKey, user.profilePhotoUrl).catch(() => {});
+              if (normalizedServerPic && savedPic !== normalizedServerPic) {
+                await AsyncStorage.setItem(userPicKey, normalizedServerPic).catch(() => {});
               }
             } else if (meRes.status === 401 || meRes.status === 403) {
               // Session truly invalid — wipe credentials and route to login.
               await clearTokens();
+              await purgeAuthenticatedCaches();
               await AsyncStorage.removeItem(AUTH_KEY);
               await removeSensitiveItem(AUTH_PASSWORD_KEY);
               setProfilePicUriState(null);
@@ -371,13 +407,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function setProfilePicUri(uri: string | null) {
+  async function setProfilePicUri(uri: string | null, expectedUserId?: string) {
+    if (expectedUserId && activeUserId.current !== expectedUserId) return;
     setProfilePicUriState(uri);
     const picKey = `${PROFILE_PIC_KEY}_${currentUserId || currentUser}`;
     if (uri) {
-      await AsyncStorage.setItem(picKey, uri);
+      await AsyncStorage.setItem(picKey, uri).catch(() => {});
     } else {
-      await AsyncStorage.removeItem(picKey);
+      await AsyncStorage.removeItem(picKey).catch(() => {});
     }
     // Upload to server so the photo persists across reinstalls / devices
     if (currentUserId && uri && (uri.startsWith("file://") || uri.startsWith("content://"))) {
@@ -392,8 +429,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         );
         if (res.ok) {
           const data = await res.json();
-          if (data.profilePhotoUrl) {
-            const serverUrl = data.profilePhotoUrl;
+          if (data.profilePhotoUrl && activeUserId.current === currentUserId) {
+            const serverUrl = normalizeProfilePhotoUrl(data.profilePhotoUrl) ?? data.profilePhotoUrl;
             setProfilePicUriState(serverUrl);
             await AsyncStorage.setItem(picKey, serverUrl).catch(() => {});
           }
@@ -405,6 +442,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function login(username: string, password: string, rememberMe = true): Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }> {
+    let sessionSetupStarted = false;
     try {
       // Include a stored trust token so a recognised device skips 2FA (Task #863).
       const storedTrustToken = await getSensitiveItem(TRUSTED_DEVICE_KEY).catch(() => null);
@@ -432,20 +470,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { success: false, error: data.message || data.error || "Invalid username or password." };
       }
 
-      if (data.accessToken && data.refreshToken) {
+      sessionSetupStarted = true;
+      const user = data.user;
+      if (!user || typeof user.username !== "string" || !user.username.trim()) {
+        throw new Error("Login response was incomplete.");
+      }
+
+      const hasTokenPair =
+        typeof data.accessToken === "string" &&
+        data.accessToken.length > 0 &&
+        typeof data.refreshToken === "string" &&
+        data.refreshToken.length > 0;
+      if (Platform.OS !== "web" && !hasTokenPair) {
+        throw new Error("The server did not return a usable mobile session.");
+      }
+
+      if (hasTokenPair) {
         await saveTokens(data.accessToken, data.refreshToken);
       }
 
       // Persist the user's preference so the next cold launch knows whether to
       // restore the session or return them to the login screen.
       await AsyncStorage.setItem(REMEMBER_ME_KEY, rememberMe ? "true" : "false");
-
-      const user = data.user;
-      setIsAuthenticated(true);
-      setCurrentUser(user.username);
-      setCurrentUserId(user.id);
-      setUserType(user.userType || "lab");
-      setCurrentPassword(password);
 
       if (rememberMe) {
         await setSensitiveItem(AUTH_PASSWORD_KEY, password);
@@ -466,7 +512,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       await fetchAllUsers();
       const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
-      let savedPic = await AsyncStorage.getItem(userPicKey);
+      let savedPic = await AsyncStorage.getItem(userPicKey).catch(() => null);
       if (!savedPic && user.id && user.username) {
         const legacyKey = `${PROFILE_PIC_KEY}_${user.username}`;
         const legacyPic = await AsyncStorage.getItem(legacyKey).catch(() => null);
@@ -476,15 +522,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await AsyncStorage.removeItem(legacyKey).catch(() => {});
         }
       }
-      const picUri = user.profilePhotoUrl || savedPic;
-      setProfilePicUriState(picUri);
-      if (user.profilePhotoUrl && savedPic !== user.profilePhotoUrl) {
-        await AsyncStorage.setItem(userPicKey, user.profilePhotoUrl).catch(() => {});
+      // Profile-photo state is optional and must not block an otherwise valid
+      // login if the stored or server-provided photo path is malformed.
+      let normalizedServerPic: string | null = null;
+      try {
+        normalizedServerPic = normalizeProfilePhotoUrl(user.profilePhotoUrl);
+      } catch {
+        normalizedServerPic = null;
       }
+      const picUri = normalizedServerPic;
+      if (normalizedServerPic && savedPic !== normalizedServerPic) {
+        await AsyncStorage.setItem(userPicKey, normalizedServerPic).catch(() => {});
+      }
+
+      // Publish authenticated state only after the session and required user
+      // setup above have succeeded. A navigation tree must never mount on a
+      // login attempt that is still capable of returning failure.
+      setProfilePicUriState(picUri);
+      setCurrentUser(user.username);
+      setCurrentUserId(user.id || null);
+      setUserType(user.userType || "lab");
+      setCurrentPassword(password);
+      setIsAuthenticated(true);
       logAudit("LOGIN", username, "User authenticated");
       return { success: true };
     } catch (e: any) {
       console.error("Login error:", e);
+      if (sessionSetupStarted) {
+        if (Platform.OS === "web") {
+          // Browser sessions are cookie-backed, so clearing native token
+          // storage alone cannot undo a session created by the login endpoint.
+          await resilientFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+        }
+        await clearTokens().catch(() => {});
+        await Promise.all([
+          AsyncStorage.removeItem(AUTH_KEY).catch(() => {}),
+          AsyncStorage.removeItem(REMEMBER_ME_KEY).catch(() => {}),
+          removeSensitiveItem(AUTH_PASSWORD_KEY).catch(() => {}),
+          removeSensitiveItem(BIOMETRIC_USER_KEY).catch(() => {}),
+        ]);
+      }
+      setIsAuthenticated(false);
+      setCurrentUser(null);
+      setCurrentUserId(null);
+      setUserType(null);
+      setCurrentPassword(null);
+      setProfilePicUriState(null);
       const apiUrl = getApiUrl();
       return { success: false, error: `Connection error: ${e?.message || "Network request failed"}. Server: ${apiUrl}` };
     }
@@ -546,10 +629,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             await AsyncStorage.removeItem(legacyKey).catch(() => {});
           }
         }
-        const picUri = user.profilePhotoUrl || savedPic;
+        // Normalise the server's relative path to an absolute URL on native.
+        const normalizedServerPic = normalizeProfilePhotoUrl(user.profilePhotoUrl);
+        const picUri = normalizedServerPic;
         setProfilePicUriState(picUri);
-        if (user.profilePhotoUrl && savedPic !== user.profilePhotoUrl) {
-          await AsyncStorage.setItem(userPicKey, user.profilePhotoUrl).catch(() => {});
+        if (normalizedServerPic && savedPic !== normalizedServerPic) {
+          await AsyncStorage.setItem(userPicKey, normalizedServerPic).catch(() => {});
         }
         logAudit("LOGIN_2FA", user.username, "User completed 2FA challenge");
       }
@@ -572,7 +657,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string; joinOrganizationId?: string; createOrganization?: boolean; claimProvider?: { labId: string; accountNumber: string } }): Promise<{ success: boolean; error?: string; message?: string; pendingJoinRequest?: boolean }> {
+  async function register(data: { providerPlan?: import("@workspace/api-client-react").ProviderSignupTier; reuseSubscriptionCard?: boolean; username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; address?: { line1: string; city: string; state: string; zip: string }; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string; joinOrganizationId?: string; partnerLabSelections?: string[]; createOrganization?: boolean; claimProvider?: { labId: string; accountNumber: string } }): Promise<{ success: boolean; error?: string; message?: string; pendingJoinRequest?: boolean }> {
     try {
       const res = await resilientFetch("/api/auth/register", {
         method: "POST",
@@ -590,7 +675,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await saveTokens(result.accessToken, result.refreshToken);
       }
 
-      const user = result.user;
+      // Registration returns a server-hydrated user, not the requested role.
+      // Warm the membership cache before opening the app. A failed refresh
+      // must not turn a committed signup into a duplicate-registration retry.
+      let user = result.user;
+      try {
+        const meRes = await resilientFetch("/api/auth/me");
+        if (!meRes.ok) throw new Error(`Membership refresh failed (${meRes.status}).`);
+        if (meRes.ok) {
+          const me = await meRes.json();
+          queryClient.setQueryData(["auth-me", user.id], me);
+          user = me.user ?? user;
+        }
+      } catch (error) {
+        console.warn("Account created; membership refresh will retry in the app.", error);
+      }
+      setRegisteredUsers((previous) => [...previous.filter((u) => u.id !== user.id), user]);
       setIsAuthenticated(true);
       setCurrentUser(user.username);
       setCurrentUserId(user.id);
@@ -627,6 +727,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       logAudit("LOGOUT", currentUser || "unknown", "User signed out"),
     ]);
     await clearTokens();
+    // React Query is process-wide. Purge relationship-scoped account and card
+    // projections before another user can authenticate on this device.
+    await purgeAuthenticatedCaches();
     setIsAuthenticated(false);
     setCurrentUser(null);
     setCurrentUserId(null);
@@ -638,22 +741,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await removeSensitiveItem(AUTH_PASSWORD_KEY);
     await removeSensitiveItem(BIOMETRIC_USER_KEY);
     await AsyncStorage.removeItem(AUTH_KEY);
-    // Clear all locally cached business data so the next user signing in on
-    // this device does not see prior-tenant data before the server reconciles.
-    await AsyncStorage.multiRemove([
-      "@drivesync_cases",
-      "@drivesync_notifs",
-      "@drivesync_clients",
-      "@drivesync_users",
-      "@drivesync_invoices",
-      "@drivesync_shipping",
-      "@drivesync_pricing_tiers",
-      "@drivesync_role",
-      "@drivesync_barcode_assignments",
-      "@drivesync_station_labels",
-      "@drivesync_deleted_client_invoices",
-      "@drivesync_pending_client",
-    ]);
   }
 
   async function deleteAccount(): Promise<{ success: boolean; error?: string }> {
@@ -666,6 +753,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (data.success) {
         logAudit("DELETE_ACCOUNT", currentUser || "unknown", "User deleted their account");
         await clearTokens();
+        await purgeAuthenticatedCaches();
         setIsAuthenticated(false);
         setCurrentUser(null);
         setCurrentUserId(null);

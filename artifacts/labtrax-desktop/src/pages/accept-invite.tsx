@@ -32,10 +32,14 @@ function formatExpiry(value: string | null): string | null {
   if (!value) return null;
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const timeStr = d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
   });
+  return `${mm}/${dd}/${yyyy}, ${timeStr}`;
 }
 
 const TERMINAL_COPY: Record<string, { title: string; body: string }> = {

@@ -15,10 +15,12 @@ import { resilientFetch } from "@/lib/query-client";
 // improves UX for users who pass the client-side gate but lack the server role.
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  body?: unknown;
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -59,14 +61,17 @@ export async function sendJson<T>(
   });
   if (!res.ok) {
     let message = `Request failed (${res.status}).`;
+    let errorBody: unknown;
     try {
-      const parsed = (await res.json()) as { error?: string; message?: string };
-      if (parsed?.error) message = parsed.error;
+      const parsed = (await res.json()) as { error?: string | { message?: string }; message?: string };
+      errorBody = parsed;
+      if (typeof parsed?.error === "string") message = parsed.error;
+      else if (parsed?.error?.message) message = parsed.error.message;
       else if (parsed?.message) message = parsed.message;
     } catch {
       // non-JSON error body — keep the generic message
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, errorBody);
   }
   const parsed = (await res.json().catch(() => null)) as unknown;
   if (

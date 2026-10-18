@@ -18,6 +18,10 @@ import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { FormSheet } from "@/components/ui/FormSheet";
 import { TextField } from "@/components/ui/TextField";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+} from "@/components/ui/DismissKeyboardView";
 import { getJson, sendJson, isForbiddenError, ApiError } from "@/lib/read-api";
 import { useMe, primaryLabOrgId, canEditAnyLab, canAdminAnyLab } from "@/lib/auth-me";
 import { titleCase } from "@/lib/format";
@@ -119,7 +123,10 @@ export default function ListsScreen() {
   const invalidateLabels = () => qc.invalidateQueries({ queryKey: ["item-labels", labOrgId ?? ""] });
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <DismissKeyboardView
+      style={[styles.screen, { paddingTop: insets.top }]}
+      testID="lists-keyboard-dismiss"
+    >
       <View style={styles.header}>
         <Pressable style={styles.backBtn} onPress={() => router.back()} hitSlop={8} testID="lists-back">
           <Ionicons name="chevron-back" size={26} color={colors.text} />
@@ -139,6 +146,8 @@ export default function ListsScreen() {
         </View>
       ) : (
         <ScrollView
+          keyboardDismissMode={scrollKeyboardDismissMode}
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.content}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refetchAll} tintColor={colors.tint} />}
         >
@@ -252,7 +261,7 @@ export default function ListsScreen() {
           }}
         />
       ) : null}
-    </View>
+    </DismissKeyboardView>
   );
 }
 

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -9,17 +9,27 @@ import {
   Pressable,
   ActivityIndicator,
   RefreshControl,
+  Modal,
+  Alert,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  TouchableOpacity,
 } from "react-native";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import * as DocumentPicker from "expo-document-picker";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
-import { getJson, isForbiddenError } from "@/lib/read-api";
-import { useMe, primaryLabOrgId } from "@/lib/auth-me";
+import { DismissKeyboardView, scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
+import { getJson, sendJson, isForbiddenError } from "@/lib/read-api";
+import { useMe, primaryLabOrgId, adminLabMemberships } from "@/lib/auth-me";
 import { toNumber, formatMoney, formatDate } from "@/lib/format";
+import { resilientFetch, getApiUrl, getAccessToken, getCsrfToken } from "@/lib/query-client";
+import { RegisterWebHeader, type RegisterWebFilters } from "@/components/register-analytics/RegisterWebHeader";
 
 interface BankAccount {
   id: string;
@@ -71,6 +81,9 @@ interface Section {
   data: BankTransaction[];
 }
 
+const EMPTY_WEB_FILTERS: RegisterWebFilters = { categoryId: "", dateFrom: "", dateTo: "", amountMin: "", amountMax: "" };
+type RegisterPage = { rows: BankTransaction[]; total: number; hasMore: boolean; nextCursor?: string | null };
+
 function groupByDate(txns: BankTransaction[]): Section[] {
   const map = new Map<string, BankTransaction[]>();
   for (const t of txns) {
@@ -96,11 +109,19 @@ export default function BankRegisterScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
-  const labOrgId = primaryLabOrgId(useMe().data);
+  const meData = useMe().data;
+  const labOrgId = primaryLabOrgId(meData);
+  const qc = useQueryClient();
+  const canImport = adminLabMemberships(meData).length > 0;
 
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilterKey>("all");
+  const [showImport, setShowImport] = useState(false);
+  const web = Platform.OS === "web";
+  const [webFilters, setWebFilters] = useState<RegisterWebFilters>(EMPTY_WEB_FILTERS);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState<{ key: string; rows: BankTransaction[]; total: number }>({ key: "", rows: [], total: 0 });
 
   const accountsQuery = useQuery<BankAccount[]>({
     queryKey: ["finance-accounts", labOrgId ?? ""],
@@ -152,21 +173,63 @@ export default function BankRegisterScreen() {
     });
     if (search.trim()) p.set("search", search.trim());
     if (statusFilter !== "all") p.set("status", statusFilter);
+    if (web) {
+      p.set("limit", "30");
+      if (webFilters.categoryId) p.set("categoryId", webFilters.categoryId);
+      if (webFilters.dateFrom) p.set("dateFrom", `${webFilters.dateFrom}T00:00:00.000Z`);
+      if (webFilters.dateTo) p.set("dateTo", `${webFilters.dateTo}T23:59:59.999Z`);
+      if (webFilters.amountMin !== "") p.set("amountMin", webFilters.amountMin);
+      if (webFilters.amountMax !== "") p.set("amountMax", webFilters.amountMax);
+    }
     return p.toString();
-  }, [labOrgId, effectiveAccountId, search, statusFilter]);
+  }, [labOrgId, effectiveAccountId, search, statusFilter, web, webFilters]);
 
-  const txnsQuery = useQuery<BankTransaction[]>({
-    queryKey: ["bank-transactions", txnParams ?? ""],
+  const [queryIdentity, setQueryIdentity] = useState(txnParams);
+  if (queryIdentity !== txnParams) {
+    setQueryIdentity(txnParams);
+    setCursor(null);
+  }
+  const requestParams = txnParams && cursor && web ? `${txnParams}&cursor=${encodeURIComponent(cursor)}` : txnParams;
+  // Existing finance writers invalidate this prefix. Restart the web cursor at
+  // the head before those refetches so stale accumulated rows cannot survive.
+  useEffect(() => {
+    if (!web) return;
+    return qc.getQueryCache().subscribe((event) => {
+      if (event.type === "updated" && event.action.type === "invalidate" &&
+          event.query.queryKey[0] === "bank-transactions") setCursor(null);
+    });
+  }, [qc, web]);
+  const txnsQuery = useQuery({
+    queryKey: ["bank-transactions", requestParams ?? ""],
     enabled: !!txnParams,
     staleTime: 30_000,
-    queryFn: () =>
-      getJson<BankTransaction[]>(`/api/finance/transactions?${txnParams}`),
+    queryFn: async () => {
+      const response = await getJson<BankTransaction[] | RegisterPage>(`/api/finance/transactions?${requestParams}`);
+      const page = Array.isArray(response) ? { rows: response, total: response.length, hasMore: false, nextCursor: null } : response;
+      return { ...page, identity: txnParams, cursor, requestParams };
+    },
   });
-
+  useEffect(() => {
+    const page = txnsQuery.data;
+    if (!web || !page || page.requestParams !== requestParams) return;
+    setLoaded((previous) => ({
+      key: page.identity ?? "",
+      rows: previous.key === page.identity && page.cursor
+        ? [...new Map([...previous.rows, ...page.rows].map((row) => [row.id, row])).values()]
+        : page.rows,
+      total: page.total,
+    }));
+  }, [web, txnsQuery.data, requestParams]);
+  const transactions = web ? loaded.key === txnParams ? loaded.rows : [] : txnsQuery.data?.rows ?? [];
   const sections = useMemo(
-    () => groupByDate(txnsQuery.data ?? []),
-    [txnsQuery.data]
+    () => groupByDate(transactions),
+    [transactions]
   );
+  function refreshWeb() {
+    setCursor(null);
+    void qc.invalidateQueries({ queryKey: ["bank-transactions"] });
+    void qc.invalidateQueries({ queryKey: ["finance-accounts"] });
+  }
 
   if (!labOrgId) {
     return (
@@ -219,22 +282,43 @@ export default function BankRegisterScreen() {
   const isForbidden = isError && isForbiddenError(txnsQuery.error);
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <DismissKeyboardView
+      style={[styles.screen, { paddingTop: web ? Math.max(67, insets.top) : insets.top }, web && { backgroundColor: "#f1f7fc" }]}
+      testID="bank-register-keyboard-dismiss"
+    >
       <ScreenHeader />
 
       <SectionList<BankTransaction, Section>
         sections={sections}
         keyExtractor={(t) => t.id}
         stickySectionHeadersEnabled
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={scrollKeyboardDismissMode}
         refreshControl={
           <RefreshControl
             refreshing={txnsQuery.isFetching && !txnsQuery.isLoading}
-            onRefresh={() => txnsQuery.refetch()}
+            onRefresh={() => web ? refreshWeb() : txnsQuery.refetch()}
             tintColor={colors.tint}
           />
         }
         ListHeaderComponent={
-          <ListHeader
+          web ? <RegisterWebHeader
+            organizationId={labOrgId}
+            accounts={accounts}
+            accountId={effectiveAccountId}
+            onSelectAccount={setSelectedAccountId}
+            search={search}
+            onSearchChange={setSearch}
+            status={statusFilter}
+            onStatusChange={(value) => setStatusFilter(value as StatusFilterKey)}
+            categories={catsQuery.data ?? []}
+            filters={webFilters}
+            onFiltersChange={setWebFilters}
+            onReset={() => { setSearch(""); setStatusFilter("all"); setWebFilters(EMPTY_WEB_FILTERS); }}
+            canImport={canImport}
+            onImport={() => setShowImport(true)}
+            onRefresh={refreshWeb}
+          /> : <ListHeader
             colors={colors}
             styles={styles}
             accounts={accounts}
@@ -246,8 +330,26 @@ export default function BankRegisterScreen() {
             statusFilter={statusFilter}
             onStatusChange={setStatusFilter}
             isLoading={isLoading}
+            canImport={canImport}
+            onImportFromStatement={() => setShowImport(true)}
           />
         }
+        ListFooterComponent={web && transactions.length > 0 ? (
+          <View style={{ padding: 16, gap: 8 }}>
+            <Text style={{ color: colors.textSecondary }}>Showing {transactions.length} of {loaded.total} entries</Text>
+            {txnsQuery.isFetching && <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <ActivityIndicator size="small" color={colors.tint} />
+              <Text style={{ color: colors.textSecondary }}>{cursor ? "Loading more entries…" : "Refreshing entries…"}</Text>
+            </View>}
+            {txnsQuery.isError && <Text style={{ color: colors.error }}>Couldn’t refresh register. Previously loaded entries are shown.</Text>}
+            {txnsQuery.isError && <Pressable onPress={() => txnsQuery.refetch()} accessibilityRole="button"><Text style={{ color: colors.tint, padding: 12 }}>Retry</Text></Pressable>}
+            {txnsQuery.data?.hasMore && txnsQuery.data.nextCursor && <Pressable
+              testID="bank-register-load-more" accessibilityRole="button" disabled={txnsQuery.isFetching}
+              onPress={() => setCursor(txnsQuery.data!.nextCursor!)} style={{ padding: 12, backgroundColor: colors.surfaceAlt, borderRadius: 8 }}>
+              <Text style={{ color: colors.tint }}>{txnsQuery.isFetching ? "Loading…" : "Load more"}</Text>
+            </Pressable>}
+          </View>
+        ) : null}
         renderSectionHeader={({ section }) => (
           <View style={styles.dateHeader}>
             <Text style={styles.dateHeaderText}>{section.title.toUpperCase()}</Text>
@@ -311,7 +413,24 @@ export default function BankRegisterScreen() {
         }
         contentContainerStyle={styles.listContent}
       />
-    </View>
+
+      {showImport && labOrgId && effectiveAccountId && (
+        <StatementImportModal
+          organizationId={labOrgId}
+          accountId={effectiveAccountId}
+          accountName={selectedAccount?.name}
+          onClose={() => setShowImport(false)}
+          onImported={() => {
+            setShowImport(false);
+            void qc.invalidateQueries({ queryKey: ["bank-transactions"] });
+            if (web) {
+              setCursor(null);
+              void qc.invalidateQueries({ queryKey: ["finance-accounts"] });
+            }
+          }}
+        />
+      )}
+    </DismissKeyboardView>
   );
 }
 
@@ -340,6 +459,8 @@ interface ListHeaderProps {
   statusFilter: StatusFilterKey;
   onStatusChange: (s: StatusFilterKey) => void;
   isLoading: boolean;
+  canImport?: boolean;
+  onImportFromStatement?: () => void;
 }
 
 function ListHeader({
@@ -354,6 +475,8 @@ function ListHeader({
   statusFilter,
   onStatusChange,
   isLoading,
+  canImport,
+  onImportFromStatement,
 }: ListHeaderProps) {
   const bookBalance = toNumber(selectedAccount?.bookBalance);
   const clearedBalance = toNumber(selectedAccount?.clearedBalance);
@@ -366,6 +489,7 @@ function ListHeader({
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.accountPicker}
         >
           {accounts.map((a) => {
@@ -437,7 +561,9 @@ function ListHeader({
             placeholderTextColor={colors.textTertiary}
             style={styles.searchInput}
             returnKeyType="search"
+            onSubmitEditing={() => Keyboard.dismiss()}
             clearButtonMode="while-editing"
+            testID="bank-register-search"
           />
         </View>
       </View>
@@ -445,6 +571,7 @@ function ListHeader({
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.filterRow}
       >
         {STATUS_FILTERS.map((f) => {
@@ -462,6 +589,19 @@ function ListHeader({
           );
         })}
       </ScrollView>
+
+      {canImport && onImportFromStatement && (
+        <View style={styles.importBtnRow}>
+          <TouchableOpacity
+            onPress={onImportFromStatement}
+            activeOpacity={0.75}
+            style={styles.importBtn}
+          >
+            <Ionicons name="document-text-outline" size={15} color={colors.tint} />
+            <Text style={styles.importBtnText}>Import from Statement</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {isLoading && (
         <View style={styles.loadingRow}>
@@ -506,6 +646,26 @@ function TxnRow({ t, catNameById, colors, styles }: TxnRowProps) {
   const typeLabel = t.type ? titleCase(t.type) : null;
 
   const rowMod = isVoid ? styles.rowVoid : isProjected ? styles.rowProjected : undefined;
+
+  if (Platform.OS === "web") return (
+    <View style={{ marginHorizontal: 16, marginBottom: 6, padding: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, borderRadius: 8, gap: 6 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, justifyContent: "space-between" }}>
+        <Text style={{ color: colors.text, fontWeight: "600", flexShrink: 1 }}>{t.payee || "Unspecified payee"}</Text>
+        <Text style={{ color: colors.textSecondary, fontSize: 12 }}>{t.txnDate ? formatDate(t.txnDate) : "Unknown date"}</Text>
+      </View>
+      <Text style={{ color: colors.textSecondary, fontSize: 11 }}>
+        {isVoid ? "Voided" : t.status !== "posted" ? "Projected / Pending" : t.reconciled ? "Reconciled" : t.cleared ? "Cleared" : "Uncleared"}
+        {typeLabel ? ` · ${typeLabel}` : ""}{t.checkNumber ? ` · #${t.checkNumber}` : ""}
+      </Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 14 }}>
+        <Text style={{ color: colors.text, fontSize: 12 }}>Payment {t.debitAmount == null ? "Unavailable" : formatMoney(debit)}</Text>
+        <Text style={{ color: "#087f5b", fontSize: 12 }}>Deposit {t.creditAmount == null ? "Unavailable" : formatMoney(credit)}</Text>
+        <Text style={{ color: colors.text, fontSize: 12, fontWeight: "600" }}>Balance {t.runningBalance == null ? "Unavailable" : formatMoney(toNumber(t.runningBalance))}</Text>
+      </View>
+      <Text style={{ color: colors.textSecondary, fontSize: 12 }}>Category: {catName || "Uncategorized"}</Text>
+      {t.memo && <Text style={{ color: colors.textSecondary, fontSize: 12 }}>{t.memo}</Text>}
+    </View>
+  );
 
   return (
     <View style={styles.txnRow}>
@@ -797,5 +957,755 @@ function makeStyles(c: ThemeColors) {
       backgroundColor: c.tint,
     },
     retryText: { ...Typography.bodySemibold, color: c.textInverse },
+
+    importBtnRow: {
+      paddingHorizontal: Spacing.lg,
+      paddingBottom: Spacing.sm,
+    },
+    importBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      alignSelf: "flex-start",
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+      borderColor: c.tint,
+      backgroundColor: c.tintLight,
+    },
+    importBtnText: { ...Typography.captionSemibold, color: c.tint },
+
+    modalBackdrop: {
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.5)",
+      justifyContent: "flex-end",
+    },
+    modalSheet: {
+      backgroundColor: c.backgroundSolid,
+      borderTopLeftRadius: Radius.xl,
+      borderTopRightRadius: Radius.xl,
+      maxHeight: "90%",
+    },
+    modalHandle: {
+      width: 36,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: c.border,
+      alignSelf: "center",
+      marginTop: Spacing.md,
+      marginBottom: Spacing.sm,
+    },
+    modalHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: Spacing.lg,
+      paddingBottom: Spacing.md,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    modalTitle: { ...Typography.h2, color: c.text, flex: 1 },
+    modalCloseBtn: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: c.surfaceAlt,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    modalBody: { padding: Spacing.lg, gap: Spacing.lg },
+    modalFooter: {
+      flexDirection: "row",
+      gap: Spacing.sm,
+      paddingHorizontal: Spacing.lg,
+      paddingBottom: Spacing.xl,
+      paddingTop: Spacing.md,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+    },
+
+    pickZone: {
+      borderWidth: 2,
+      borderStyle: "dashed",
+      borderColor: c.border,
+      borderRadius: Radius.lg,
+      padding: Spacing.xl,
+      alignItems: "center",
+      justifyContent: "center",
+      gap: Spacing.md,
+    },
+    pickTitle: { ...Typography.bodySemibold, color: c.text, textAlign: "center" },
+    pickSub: { ...Typography.caption, color: c.textSecondary, textAlign: "center" },
+    pickBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      paddingHorizontal: Spacing.xl,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.full,
+      backgroundColor: c.tint,
+    },
+    pickBtnText: { ...Typography.bodySemibold, color: c.textInverse },
+
+    infoRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    infoLabel: { ...Typography.caption, color: c.textSecondary },
+    infoValue: { ...Typography.captionSemibold, color: c.text },
+
+    reviewRow: {
+      borderRadius: Radius.md,
+      borderWidth: 1,
+      borderColor: c.border,
+      padding: Spacing.md,
+      gap: Spacing.xs,
+      backgroundColor: c.surface,
+    },
+    reviewRowRejected: { opacity: 0.45 },
+    reviewRowDup: { borderColor: c.warning, backgroundColor: c.warningSurface },
+    reviewRowTop: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+    reviewPayee: { ...Typography.bodySemibold, color: c.text, flex: 1 },
+    reviewDate: { ...Typography.caption, color: c.textSecondary },
+    reviewAmtRow: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+    reviewCredit: { ...Typography.bodySemibold, color: c.success },
+    reviewDebit: { ...Typography.bodySemibold, color: c.error },
+    reviewBadge: {
+      alignSelf: "flex-start",
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: 2,
+      borderRadius: Radius.xs,
+    },
+    reviewBadgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 0.3 },
+    reviewDupWarn: {
+      ...Typography.caption,
+      color: c.warning,
+      flexDirection: "row",
+      alignItems: "center",
+    },
+    reviewChkRow: { flexDirection: "row", alignItems: "center", gap: Spacing.xs },
+    reviewChkLabel: { ...Typography.caption, color: c.textSecondary },
+
+    rowActionBtn: {
+      padding: 4,
+      borderRadius: Radius.xs,
+    },
+
+    editForm: {
+      marginTop: Spacing.sm,
+      gap: Spacing.xs,
+      padding: Spacing.sm,
+      borderRadius: Radius.sm,
+      backgroundColor: c.backgroundSolid,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+    },
+    editFormRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+    },
+    editLabel: {
+      ...Typography.caption,
+      color: c.textSecondary,
+      width: 72,
+    },
+    editInput: {
+      ...Typography.caption,
+      color: c.text,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      borderRadius: Radius.xs,
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: 4,
+      minWidth: 100,
+      backgroundColor: c.surface,
+    },
+
+    dupCompare: {
+      marginTop: Spacing.sm,
+      padding: Spacing.sm,
+      borderRadius: Radius.sm,
+      backgroundColor: c.warningSurface,
+      gap: Spacing.xs,
+    },
+    dupCompareLabel: {
+      ...Typography.caption,
+      color: c.warning,
+      fontFamily: "Inter_600SemiBold",
+    },
+    dupCompareRow: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: Spacing.sm,
+    },
+    dupCompareKey: {
+      ...Typography.caption,
+      color: c.textSecondary,
+      width: 44,
+    },
+    dupCompareValue: {
+      ...Typography.caption,
+      color: c.text,
+      flex: 1,
+    },
+    dupActions: {
+      flexDirection: "row",
+      gap: Spacing.sm,
+      marginTop: Spacing.xs,
+    },
+    dupActionBtn: {
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.xs,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surfaceAlt,
+    },
+    dupActionBtnPrimary: {
+      borderColor: c.tint,
+      backgroundColor: c.tintLight,
+    },
+    dupActionBtnText: {
+      ...Typography.captionSemibold,
+      color: c.textSecondary,
+    },
+
+    approveAllBtn: {
+      alignSelf: "flex-start",
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.xs,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surfaceAlt,
+    },
+    approveAllText: { ...Typography.captionSemibold, color: c.text },
+
+    confirmBtn: {
+      flex: 1,
+      height: 44,
+      borderRadius: Radius.full,
+      backgroundColor: c.tint,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    confirmBtnDisabled: { opacity: 0.45 },
+    confirmBtnText: { ...Typography.bodySemibold, color: c.textInverse },
+    cancelBtn: {
+      height: 44,
+      paddingHorizontal: Spacing.xl,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surfaceAlt,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    cancelBtnText: { ...Typography.bodySemibold, color: c.text },
   });
+}
+
+// ─────────────────────────── Statement Import Modal ───────────────────────────
+
+type ImportPhase = "pick" | "parsing" | "review" | "confirming" | "done";
+
+interface ImportRow {
+  rowIndex: number;
+  txnDate: string;
+  description: string;
+  checkNumber: string | null;
+  debit: number;
+  credit: number;
+  confidence: "high" | "medium" | "low";
+  duplicateCandidateId: string | null;
+  duplicateCandidateDate: string | null;
+  duplicateCandidatePayee: string | null;
+  duplicateCandidateAmount: number | null;
+  duplicateScore: number;
+  approved: boolean;
+  markedDuplicate: boolean;
+}
+
+function StatementImportModal({
+  organizationId,
+  accountId,
+  accountName,
+  onClose,
+  onImported,
+}: {
+  organizationId: string;
+  accountId: string;
+  accountName?: string | null;
+  onClose: () => void;
+  onImported: () => void;
+}) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const insets = useSafeAreaInsets();
+
+  const [phase, setPhase] = useState<ImportPhase>("pick");
+  const [error, setError] = useState<string | null>(null);
+  const [filename, setFilename] = useState("");
+  const [previewToken, setPreviewToken] = useState("");
+  const [rows, setRows] = useState<ImportRow[]>([]);
+  const [editIdx, setEditIdx] = useState<number | null>(null);
+
+  async function pickAndUpload() {
+    setError(null);
+    let result: DocumentPicker.DocumentPickerResult;
+    try {
+      result = await DocumentPicker.getDocumentAsync({
+        type: ["application/pdf", "image/png", "image/jpeg", "image/webp"],
+        copyToCacheDirectory: true,
+      });
+    } catch {
+      setError("Could not open file picker. Please try again.");
+      return;
+    }
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    if (!asset.uri) return;
+
+    const name = asset.name ?? asset.uri.split("/").pop() ?? "statement";
+    const mime = asset.mimeType ?? "application/octet-stream";
+    const sizeBytes = asset.size ?? 0;
+    if (sizeBytes > 20 * 1024 * 1024) {
+      setError("File must be under 20 MB.");
+      return;
+    }
+
+    setFilename(name);
+    setPhase("parsing");
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        // Build an absolute URL so the request works on native (relative URLs
+        // resolve against the bundle, not the API server).
+        const apiBase = getApiUrl().replace(/\/+$/, "");
+        const url = `${apiBase}/api/finance/transactions/import/preview`;
+
+        // Attach the bearer token the same way uploadCaseMedia does — never
+        // rely on a cookie jar, which the server's CSRF guard will reject.
+        const accessToken = getAccessToken();
+
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", url);
+        xhr.setRequestHeader("Accept", "application/json");
+        if (accessToken) xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+        // On web, also forward the CSRF token (bearer requests are CSRF-exempt
+        // on native; on web the cookie jar is active so the token is required).
+        if (Platform.OS === "web") {
+          const csrf = getCsrfToken();
+          if (csrf) xhr.setRequestHeader("x-csrf-token", csrf);
+          xhr.withCredentials = true;
+        }
+        // Never set Content-Type manually — the runtime adds the multipart boundary.
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const body = JSON.parse(xhr.responseText) as {
+                ok?: boolean;
+                data?: { previewToken: string; rows: ImportRow[] };
+                previewToken?: string;
+                rows?: ImportRow[];
+              };
+              const data = body.data ?? body;
+              const token = data.previewToken ?? "";
+              const rawRows: ImportRow[] = (data.rows ?? []).map((r) => ({
+                ...r,
+                approved: r.duplicateScore < 0.7,
+                markedDuplicate: r.duplicateScore >= 0.7,
+              }));
+              setPreviewToken(token);
+              setRows(rawRows);
+              setPhase("review");
+              resolve();
+            } catch {
+              reject(new Error("Invalid server response."));
+            }
+          } else {
+            let msg = `Upload failed (${xhr.status}).`;
+            try {
+              const parsed = JSON.parse(xhr.responseText) as { error?: string };
+              if (parsed?.error) msg = parsed.error;
+            } catch { /* ignore */ }
+            reject(new Error(msg));
+          }
+        };
+        xhr.onerror = () => reject(new Error("Network error during upload."));
+
+        const formData = new FormData();
+        if (Platform.OS === "web") {
+          // On web, materialize the blob so FormData uses the standard Blob overload.
+          globalThis.fetch(asset.uri).then((r) => r.blob()).then((blob) => {
+            formData.append("file", blob, name);
+            formData.append("organizationId", organizationId);
+            formData.append("bankAccountId", accountId);
+            xhr.send(formData);
+          }).catch(() => reject(new Error("Could not read selected file.")));
+        } else {
+          // React Native's FormData runtime accepts the native file descriptor.
+          (formData as any).append("file", { uri: asset.uri, name, type: mime });
+          formData.append("organizationId", organizationId);
+          formData.append("bankAccountId", accountId);
+          xhr.send(formData);
+        }
+      });
+    } catch (e: any) {
+      setError(e?.message ?? "Upload failed. Please try again.");
+      setPhase("pick");
+    }
+  }
+
+  function toggleApprove(idx: number) {
+    setRows((prev) =>
+      prev.map((r, i) => i === idx ? { ...r, approved: !r.approved, markedDuplicate: false } : r)
+    );
+  }
+
+  function approveAll() {
+    setRows((prev) => prev.map((r) => ({ ...r, approved: true, markedDuplicate: false })));
+  }
+
+  function deleteRow(idx: number) {
+    setRows((prev) => prev.filter((_, i) => i !== idx));
+    if (editIdx === idx) setEditIdx(null);
+    else if (editIdx !== null && editIdx > idx) setEditIdx(editIdx - 1);
+  }
+
+  function updateRow(idx: number, patch: Partial<Pick<ImportRow, "txnDate" | "description" | "debit" | "credit" | "checkNumber">>) {
+    setRows((prev) => prev.map((r, i) => i === idx ? { ...r, ...patch } : r));
+  }
+
+  function markDuplicate(idx: number) {
+    setRows((prev) => prev.map((r, i) => i === idx ? { ...r, markedDuplicate: true, approved: false } : r));
+    if (editIdx === idx) setEditIdx(null);
+  }
+
+  function keepBoth(idx: number) {
+    setRows((prev) => prev.map((r, i) => i === idx ? { ...r, markedDuplicate: false, approved: true } : r));
+  }
+
+  async function confirmImport() {
+    const approvedRows = rows.filter((r) => r.approved && !r.markedDuplicate);
+    if (!approvedRows.length) {
+      setError("No approved rows to import.");
+      return;
+    }
+    setPhase("confirming");
+    setError(null);
+    try {
+      await sendJson<{ imported: number }>("POST", "/api/finance/transactions/import/confirm", {
+        previewToken,
+        organizationId,
+        bankAccountId: accountId,
+        sourceFilename: filename,
+        approvedRows: approvedRows.map((r) => ({
+          rowIndex: r.rowIndex,
+          txnDate: r.txnDate,
+          description: r.description,
+          checkNumber: r.checkNumber ?? null,
+          debit: r.debit,
+          credit: r.credit,
+        })),
+        skippedCount: rows.length - approvedRows.length,
+      });
+      setPhase("done");
+      onImported();
+    } catch (e: any) {
+      setError(e?.message ?? "Import failed. Please try again.");
+      setPhase("review");
+    }
+  }
+
+  const approvedCount = rows.filter((r) => r.approved && !r.markedDuplicate).length;
+
+  const CONF_COLOR: Record<string, string> = {
+    high: colors.success,
+    medium: colors.warning,
+    low: colors.error,
+  };
+  const CONF_BG: Record<string, string> = {
+    high: colors.successLight,
+    medium: colors.warningSurface,
+    low: colors.errorSurface ?? colors.warningSurface,
+  };
+
+  return (
+    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        style={styles.modalBackdrop}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <DismissKeyboardView
+          style={[styles.modalSheet, { paddingBottom: insets.bottom }]}
+          testID="bank-import-keyboard-dismiss"
+        >
+          <View style={styles.modalHandle} />
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Import from Statement</Text>
+            <TouchableOpacity style={styles.modalCloseBtn} onPress={onClose} hitSlop={8}>
+              <Ionicons name="close" size={16} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={{ maxHeight: 520 }}
+            contentContainerStyle={styles.modalBody}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={scrollKeyboardDismissMode}
+          >
+            {error ? (
+              <View style={{ flexDirection: "row", gap: Spacing.sm, padding: Spacing.md, borderRadius: Radius.md, backgroundColor: colors.errorSurface ?? colors.warningSurface }}>
+                <Ionicons name="warning-outline" size={16} color={colors.error} />
+                <Text style={{ ...Typography.caption, color: colors.error, flex: 1 }}>{error}</Text>
+              </View>
+            ) : null}
+
+            {phase === "pick" && (
+              <View style={styles.pickZone}>
+                <Ionicons name="document-text-outline" size={40} color={colors.textTertiary} />
+                <Text style={styles.pickTitle}>Choose your bank statement</Text>
+                <Text style={styles.pickSub}>PDF, PNG, JPG, or WEBP · Max 20 MB</Text>
+                <TouchableOpacity style={styles.pickBtn} onPress={() => void pickAndUpload()} activeOpacity={0.8}>
+                  <Ionicons name="cloud-upload-outline" size={16} color={colors.textInverse} />
+                  <Text style={styles.pickBtnText}>Choose File</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {phase === "parsing" && (
+              <View style={[styles.pickZone, { gap: Spacing.lg }]}>
+                <ActivityIndicator size="large" color={colors.tint} />
+                <Text style={styles.pickTitle}>Analyzing with AI…</Text>
+                <Text style={styles.pickSub}>This may take 10–30 seconds.</Text>
+              </View>
+            )}
+
+            {phase === "review" && (
+              <>
+                <View style={styles.infoRow}>
+                  <Text style={styles.infoLabel}>{filename}</Text>
+                  <Text style={styles.infoValue}>{rows.length} row{rows.length !== 1 ? "s" : ""}</Text>
+                </View>
+                {accountName ? (
+                  <View style={styles.infoRow}>
+                    <Text style={styles.infoLabel}>Account</Text>
+                    <Text style={styles.infoValue}>{accountName}</Text>
+                  </View>
+                ) : null}
+                <TouchableOpacity style={styles.approveAllBtn} onPress={approveAll} activeOpacity={0.8}>
+                  <Text style={styles.approveAllText}>Approve all</Text>
+                </TouchableOpacity>
+                {rows.map((r, idx) => {
+                  const confColor = CONF_COLOR[r.confidence] ?? colors.textSecondary;
+                  const confBg = CONF_BG[r.confidence] ?? colors.surfaceAlt;
+                  const hasDup = !!r.duplicateCandidateId;
+                  const isEditing = editIdx === idx;
+                  return (
+                    <View
+                      key={`${r.rowIndex}-${idx}`}
+                      style={[
+                        styles.reviewRow,
+                        r.markedDuplicate && styles.reviewRowRejected,
+                        hasDup && !r.markedDuplicate && styles.reviewRowDup,
+                      ]}
+                    >
+                      {/* ── Row header ── */}
+                      <View style={styles.reviewRowTop}>
+                        <TouchableOpacity onPress={() => toggleApprove(idx)} hitSlop={8}>
+                          <Ionicons
+                            name={r.approved && !r.markedDuplicate ? "checkmark-circle" : "ellipse-outline"}
+                            size={20}
+                            color={r.approved && !r.markedDuplicate ? colors.success : colors.textTertiary}
+                          />
+                        </TouchableOpacity>
+                        <Text style={styles.reviewPayee} numberOfLines={1}>{r.description || "—"}</Text>
+                        <Text style={styles.reviewDate}>{r.txnDate}</Text>
+                        <TouchableOpacity
+                          onPress={() => setEditIdx(isEditing ? null : idx)}
+                          hitSlop={8}
+                          style={styles.rowActionBtn}
+                        >
+                          <Ionicons name={isEditing ? "chevron-up" : "create-outline"} size={16} color={colors.textSecondary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => deleteRow(idx)}
+                          hitSlop={8}
+                          style={styles.rowActionBtn}
+                        >
+                          <Ionicons name="trash-outline" size={16} color={colors.error} />
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* ── Amount + badges ── */}
+                      <View style={styles.reviewAmtRow}>
+                        {r.credit > 0 ? (
+                          <Text style={styles.reviewCredit}>+{formatMoney(r.credit)}</Text>
+                        ) : r.debit > 0 ? (
+                          <Text style={styles.reviewDebit}>−{formatMoney(r.debit)}</Text>
+                        ) : null}
+                        {r.checkNumber ? (
+                          <Text style={styles.reviewDate}>#{r.checkNumber}</Text>
+                        ) : null}
+                        <View style={[styles.reviewBadge, { backgroundColor: confBg }]}>
+                          <Text style={[styles.reviewBadgeText, { color: confColor }]}>
+                            {r.confidence.toUpperCase()}
+                          </Text>
+                        </View>
+                        {hasDup && (
+                          <View style={[styles.reviewBadge, { backgroundColor: colors.warningSurface }]}>
+                            <Text style={[styles.reviewBadgeText, { color: colors.warning }]}>DUP?</Text>
+                          </View>
+                        )}
+                      </View>
+
+                      {/* ── Inline edit form ── */}
+                      {isEditing && (
+                        <View style={styles.editForm}>
+                          <View style={styles.editFormRow}>
+                            <Text style={styles.editLabel}>Date</Text>
+                            <TextInput
+                              style={styles.editInput}
+                              value={r.txnDate}
+                              onChangeText={(v) => updateRow(idx, { txnDate: v })}
+                              placeholder="YYYY-MM-DD"
+                              placeholderTextColor={colors.textTertiary}
+                            />
+                          </View>
+                          <View style={styles.editFormRow}>
+                            <Text style={styles.editLabel}>Description</Text>
+                            <TextInput
+                              style={[styles.editInput, { flex: 1 }]}
+                              value={r.description}
+                              onChangeText={(v) => updateRow(idx, { description: v })}
+                              placeholder="Payee / memo"
+                              placeholderTextColor={colors.textTertiary}
+                               autoCorrect={true}
+                               spellCheck={true}
+                               autoCapitalize="sentences"
+                            />
+                          </View>
+                          <View style={styles.editFormRow}>
+                            <Text style={styles.editLabel}>Debit</Text>
+                            <TextInput
+                              style={styles.editInput}
+                              value={r.debit > 0 ? String(r.debit) : ""}
+                              onChangeText={(v) => updateRow(idx, { debit: parseFloat(v) || 0, credit: v ? 0 : r.credit })}
+                              keyboardType="decimal-pad"
+                              placeholder="0.00"
+                              placeholderTextColor={colors.textTertiary}
+                            />
+                          </View>
+                          <View style={styles.editFormRow}>
+                            <Text style={styles.editLabel}>Credit</Text>
+                            <TextInput
+                              style={styles.editInput}
+                              value={r.credit > 0 ? String(r.credit) : ""}
+                              onChangeText={(v) => updateRow(idx, { credit: parseFloat(v) || 0, debit: v ? 0 : r.debit })}
+                              keyboardType="decimal-pad"
+                              placeholder="0.00"
+                              placeholderTextColor={colors.textTertiary}
+                            />
+                          </View>
+                          <View style={styles.editFormRow}>
+                            <Text style={styles.editLabel}>Check #</Text>
+                            <TextInput
+                              style={styles.editInput}
+                              value={r.checkNumber ?? ""}
+                              onChangeText={(v) => updateRow(idx, { checkNumber: v || null })}
+                              placeholder="Optional"
+                              placeholderTextColor={colors.textTertiary}
+                            />
+                          </View>
+                        </View>
+                      )}
+
+                      {/* ── Duplicate side-by-side comparison ── */}
+                      {hasDup && !r.markedDuplicate && (
+                        <View style={styles.dupCompare}>
+                          <Text style={styles.dupCompareLabel}>Possible duplicate already in register:</Text>
+                          <View style={styles.dupCompareRow}>
+                            <Text style={styles.dupCompareKey}>Existing</Text>
+                            <Text style={styles.dupCompareValue} numberOfLines={1}>
+                              {r.duplicateCandidateDate ?? "—"}
+                              {r.duplicateCandidatePayee ? `  ·  ${r.duplicateCandidatePayee}` : ""}
+                              {r.duplicateCandidateAmount != null ? `  ·  ${formatMoney(r.duplicateCandidateAmount)}` : ""}
+                            </Text>
+                          </View>
+                          <View style={styles.dupCompareRow}>
+                            <Text style={styles.dupCompareKey}>New</Text>
+                            <Text style={styles.dupCompareValue} numberOfLines={1}>
+                              {r.txnDate}
+                              {r.description ? `  ·  ${r.description}` : ""}
+                              {"  ·  "}{formatMoney(r.debit > 0 ? r.debit : r.credit)}
+                            </Text>
+                          </View>
+                          <View style={styles.dupActions}>
+                            <TouchableOpacity
+                              style={[styles.dupActionBtn]}
+                              onPress={() => markDuplicate(idx)}
+                              activeOpacity={0.8}
+                            >
+                              <Text style={styles.dupActionBtnText}>Skip (duplicate)</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={[styles.dupActionBtn, styles.dupActionBtnPrimary]}
+                              onPress={() => keepBoth(idx)}
+                              activeOpacity={0.8}
+                            >
+                              <Text style={[styles.dupActionBtnText, { color: colors.tint }]}>Keep both</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })}
+              </>
+            )}
+
+            {phase === "confirming" && (
+              <View style={[styles.pickZone, { gap: Spacing.lg }]}>
+                <ActivityIndicator size="large" color={colors.tint} />
+                <Text style={styles.pickTitle}>Importing transactions…</Text>
+              </View>
+            )}
+
+            {phase === "done" && (
+              <View style={[styles.pickZone, { gap: Spacing.lg }]}>
+                <Ionicons name="checkmark-circle" size={48} color={colors.success} />
+                <Text style={styles.pickTitle}>Import complete</Text>
+                <Text style={styles.pickSub}>Transactions have been added to the register.</Text>
+                <TouchableOpacity style={styles.pickBtn} onPress={onClose} activeOpacity={0.8}>
+                  <Text style={styles.pickBtnText}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </ScrollView>
+
+          {phase === "review" && (
+            <View style={styles.modalFooter}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={onClose} activeOpacity={0.8}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.confirmBtn, approvedCount === 0 && styles.confirmBtnDisabled]}
+                onPress={() => void confirmImport()}
+                disabled={approvedCount === 0}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.confirmBtnText}>
+                  Import {approvedCount} row{approvedCount !== 1 ? "s" : ""}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </DismissKeyboardView>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
 }

@@ -4,7 +4,7 @@ import { Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import { AuthContext, type AuthContextValue } from "@/lib/auth-context";
 
-function makeQueryClient() {
+export function makeQueryClient() {
   return new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0, staleTime: 0 },
@@ -27,14 +27,12 @@ export const MOCK_AUTH_DEFAULTS: AuthContextValue = {
   restoreNoticeDismissed: false,
   acknowledgeRestoreNotice: () => {},
   login: async () => {},
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   register: async () => ({ user: null as any, token: "" }),
   logout: async () => {},
   refresh: async () => {},
 };
 
-export function makeWrapper(initialPath = "/") {
-  const queryClient = makeQueryClient();
+export function makeWrapper(initialPath = "/", queryClient = makeQueryClient()) {
   const { hook } = memoryLocation({ path: initialPath });
   return function Wrapper({ children }: { children: ReactNode }) {
     return (

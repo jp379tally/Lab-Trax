@@ -1,6 +1,6 @@
 import React from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Alert } from "react-native";
 import {
@@ -77,25 +77,25 @@ afterEach(() => {
 });
 
 describe("OrganizationsScreen — Create lab button visibility", () => {
-  it("shows the Create lab button when userType is lab and no active lab membership", () => {
+  it("shows the Create lab button when userType is lab and no active lab membership", async () => {
     applyUseQueryMock(LAB_USER_NO_MEMBERSHIP);
-    const { getByTestId } = render(<OrganizationsScreen />, {
+    const { getByTestId } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
     expect(getByTestId("create-lab-open-btn")).toBeTruthy();
   });
 
-  it("hides the Create lab button when userType is provider (not lab)", () => {
+  it("hides the Create lab button when userType is provider (not lab)", async () => {
     applyUseQueryMock(PROVIDER_USER_NO_MEMBERSHIP);
-    const { queryByTestId } = render(<OrganizationsScreen />, {
+    const { queryByTestId } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
     expect(queryByTestId("create-lab-open-btn")).toBeNull();
   });
 
-  it("hides the Create lab button when the user already has an active lab membership", () => {
+  it("hides the Create lab button when the user already has an active lab membership", async () => {
     applyUseQueryMock(LAB_USER_WITH_ACTIVE_LAB);
-    const { queryByTestId } = render(<OrganizationsScreen />, {
+    const { queryByTestId } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
     expect(queryByTestId("create-lab-open-btn")).toBeNull();
@@ -111,11 +111,11 @@ describe("OrganizationsScreen — CreateLabSheet required-field guard", () => {
     setMockFetchHandler(() =>
       new Response(JSON.stringify({ error: "LAB_NAME_TAKEN" }), { status: 409 }),
     );
-    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+    const { getByTestId, getByText } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
 
-    fireEvent.press(getByTestId("form-save"));
+    await fireEvent.press(getByTestId("form-save"));
 
     await waitFor(() => {
       expect(
@@ -128,14 +128,14 @@ describe("OrganizationsScreen — CreateLabSheet required-field guard", () => {
     setMockFetchHandler(() =>
       new Response(JSON.stringify({ error: "UNEXPECTED" }), { status: 500 }),
     );
-    const { getByTestId, getByText, getAllByPlaceholderText } = render(
+    const { getByTestId, getByText, getAllByPlaceholderText } = await render(
       <OrganizationsScreen />,
       { wrapper: makeWrapper() },
     );
 
-    fireEvent.changeText(getAllByPlaceholderText("Acme Dental Lab")[0], "Test Lab");
+    await fireEvent.changeText(getAllByPlaceholderText("Acme Dental Lab")[0], "Test Lab");
 
-    fireEvent.press(getByTestId("form-save"));
+    await fireEvent.press(getByTestId("form-save"));
 
     await waitFor(() => {
       expect(
@@ -160,18 +160,18 @@ describe("OrganizationsScreen — CreateLabSheet server error surfacing", () => 
       return new Response(JSON.stringify({ data: null }), { status: 200 });
     });
 
-    const { getByTestId, getByText, getAllByPlaceholderText } = render(
+    const { getByTestId, getByText, getAllByPlaceholderText } = await render(
       <OrganizationsScreen />,
       { wrapper: makeWrapper() },
     );
 
-    fireEvent.changeText(getAllByPlaceholderText("Acme Dental Lab")[0], "Acme Lab");
-    fireEvent.changeText(getAllByPlaceholderText("Lab license number")[0], "LIC-123");
-    fireEvent.changeText(getAllByPlaceholderText("000-000-0000")[0], "555-000-1111");
-    fireEvent.changeText(getAllByPlaceholderText("lab@example.com")[0], "lab@example.com");
-    fireEvent.changeText(getAllByPlaceholderText("123 Main St")[0], "100 Elm St");
+    await fireEvent.changeText(getAllByPlaceholderText("Acme Dental Lab")[0], "Acme Lab");
+    await fireEvent.changeText(getAllByPlaceholderText("Lab license number")[0], "LIC-123");
+    await fireEvent.changeText(getAllByPlaceholderText("000-000-0000")[0], "555-000-1111");
+    await fireEvent.changeText(getAllByPlaceholderText("lab@example.com")[0], "lab@example.com");
+    await fireEvent.changeText(getAllByPlaceholderText("123 Main St")[0], "100 Elm St");
 
-    fireEvent.press(getByTestId("form-save"));
+    await fireEvent.press(getByTestId("form-save"));
 
     await waitFor(() => {
       expect(getByText("LAB_NAME_TAKEN")).toBeTruthy();
@@ -188,18 +188,18 @@ describe("OrganizationsScreen — CreateLabSheet server error surfacing", () => 
       return new Response(JSON.stringify({ data: null }), { status: 200 });
     });
 
-    const { getByTestId, getByText, getAllByPlaceholderText } = render(
+    const { getByTestId, getByText, getAllByPlaceholderText } = await render(
       <OrganizationsScreen />,
       { wrapper: makeWrapper() },
     );
 
-    fireEvent.changeText(getAllByPlaceholderText("Acme Dental Lab")[0], "Acme Lab");
-    fireEvent.changeText(getAllByPlaceholderText("Lab license number")[0], "LIC-123");
-    fireEvent.changeText(getAllByPlaceholderText("000-000-0000")[0], "555-000-1111");
-    fireEvent.changeText(getAllByPlaceholderText("lab@example.com")[0], "lab@example.com");
-    fireEvent.changeText(getAllByPlaceholderText("123 Main St")[0], "100 Elm St");
+    await fireEvent.changeText(getAllByPlaceholderText("Acme Dental Lab")[0], "Acme Lab");
+    await fireEvent.changeText(getAllByPlaceholderText("Lab license number")[0], "LIC-123");
+    await fireEvent.changeText(getAllByPlaceholderText("000-000-0000")[0], "555-000-1111");
+    await fireEvent.changeText(getAllByPlaceholderText("lab@example.com")[0], "lab@example.com");
+    await fireEvent.changeText(getAllByPlaceholderText("123 Main St")[0], "100 Elm St");
 
-    fireEvent.press(getByTestId("form-save"));
+    await fireEvent.press(getByTestId("form-save"));
 
     await waitFor(() => {
       expect(getByText("Internal server error")).toBeTruthy();
@@ -242,14 +242,14 @@ function providerAdminMe(role: string) {
 describe("OrganizationsScreen — provider practice editing", () => {
   it("shows an Edit affordance on provider cards for admins and pre-fills contact details", async () => {
     applyUseQueryMock(providerAdminMe("admin"));
-    const { getByText, getAllByText, getByDisplayValue } = render(
+    const { getByText, getAllByText, getByDisplayValue } = await render(
       <OrganizationsScreen />,
       { wrapper: makeWrapper() },
     );
 
     expect(getByText("Practice details")).toBeTruthy();
 
-    fireEvent.press(getAllByText("Edit")[0]);
+    await fireEvent.press(getAllByText("Edit")[0]);
 
     await waitFor(() => {
       expect(getByText("Edit practice details")).toBeTruthy();
@@ -260,9 +260,9 @@ describe("OrganizationsScreen — provider practice editing", () => {
     expect(getByDisplayValue("10 Market St")).toBeTruthy();
   });
 
-  it("does not show an Edit affordance for non-admin provider members", () => {
+  it("does not show an Edit affordance for non-admin provider members", async () => {
     applyUseQueryMock(providerAdminMe("user"));
-    const { getByText, queryByText } = render(<OrganizationsScreen />, {
+    const { getByText, queryByText } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
 
@@ -283,14 +283,14 @@ describe("OrganizationsScreen — provider practice editing", () => {
       return new Response(JSON.stringify({ data: null }), { status: 200 });
     });
 
-    const { getByText, getAllByText } = render(<OrganizationsScreen />, {
+    const { getByText, getAllByText } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
 
-    fireEvent.press(getAllByText("Edit")[0]);
+    await fireEvent.press(getAllByText("Edit")[0]);
     await waitFor(() => expect(getByText("Edit practice details")).toBeTruthy());
 
-    fireEvent.press(getByText("Save changes"));
+    await fireEvent.press(getByText("Save changes"));
 
     await waitFor(() => {
       expect(
@@ -355,9 +355,9 @@ function applyInviteUseQueryMock(meValue: unknown, sentInvites: unknown[] = []) 
 }
 
 describe("OrgCard — team invite form visibility (RBAC gate)", () => {
-  it("shows the invite form for lab admins", () => {
+  it("shows the invite form for lab admins", async () => {
     applyInviteUseQueryMock(labMe("admin"));
-    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+    const { getByTestId, getByText } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
     expect(getByText("Invite a team member")).toBeTruthy();
@@ -365,17 +365,17 @@ describe("OrgCard — team invite form visibility (RBAC gate)", () => {
     expect(getByTestId("invite-send-btn")).toBeTruthy();
   });
 
-  it("shows the invite form for lab owners", () => {
+  it("shows the invite form for lab owners", async () => {
     applyInviteUseQueryMock(labMe("owner"));
-    const { getByTestId } = render(<OrganizationsScreen />, {
+    const { getByTestId } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
     expect(getByTestId("invite-send-btn")).toBeTruthy();
   });
 
-  it("hides the invite form for non-admin lab members", () => {
+  it("hides the invite form for non-admin lab members", async () => {
     applyInviteUseQueryMock(labMe("user"));
-    const { queryByTestId, queryByText, getByText } = render(
+    const { queryByTestId, queryByText, getByText } = await render(
       <OrganizationsScreen />,
       { wrapper: makeWrapper() },
     );
@@ -398,12 +398,12 @@ describe("OrgCard — sending an invite", () => {
       if (init?.method === "POST") posted = true;
       return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
     });
-    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+    const { getByTestId, getByText } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
 
-    fireEvent.changeText(getByTestId("invite-email-input"), "not-an-email");
-    fireEvent.press(getByTestId("invite-send-btn"));
+    await fireEvent.changeText(getByTestId("invite-email-input"), "not-an-email");
+    await fireEvent.press(getByTestId("invite-send-btn"));
 
     await waitFor(() => {
       expect(getByText("Enter a valid email address.")).toBeTruthy();
@@ -435,13 +435,13 @@ describe("OrgCard — sending an invite", () => {
       return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
     });
 
-    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+    const { getByTestId, getByText } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
 
-    fireEvent.changeText(getByTestId("invite-email-input"), "New.Member@Example.com");
-    fireEvent.press(getByTestId("invite-role-billing"));
-    fireEvent.press(getByTestId("invite-send-btn"));
+    await fireEvent.changeText(getByTestId("invite-email-input"), "New.Member@Example.com");
+    await fireEvent.press(getByTestId("invite-role-billing"));
+    await fireEvent.press(getByTestId("invite-send-btn"));
 
     await waitFor(() => {
       expect(getByText("Invite sent.")).toBeTruthy();
@@ -471,12 +471,12 @@ describe("OrgCard — sending an invite", () => {
       return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
     });
 
-    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+    const { getByTestId, getByText } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
 
-    fireEvent.changeText(getByTestId("invite-email-input"), "member@example.com");
-    fireEvent.press(getByTestId("invite-send-btn"));
+    await fireEvent.changeText(getByTestId("invite-email-input"), "member@example.com");
+    await fireEvent.press(getByTestId("invite-send-btn"));
 
     await waitFor(() => {
       expect(
@@ -503,12 +503,12 @@ describe("OrgCard — sending an invite", () => {
       return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
     });
 
-    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+    const { getByTestId, getByText } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
 
-    fireEvent.changeText(getByTestId("invite-email-input"), "optout@example.com");
-    fireEvent.press(getByTestId("invite-send-btn"));
+    await fireEvent.changeText(getByTestId("invite-email-input"), "optout@example.com");
+    await fireEvent.press(getByTestId("invite-send-btn"));
 
     await waitFor(() => {
       expect(
@@ -531,12 +531,12 @@ describe("OrgCard — sending an invite", () => {
       return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
     });
 
-    const { getByTestId, getByText } = render(<OrganizationsScreen />, {
+    const { getByTestId, getByText } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
 
-    fireEvent.changeText(getByTestId("invite-email-input"), "dupe@example.com");
-    fireEvent.press(getByTestId("invite-send-btn"));
+    await fireEvent.changeText(getByTestId("invite-email-input"), "dupe@example.com");
+    await fireEvent.press(getByTestId("invite-send-btn"));
 
     await waitFor(() => {
       expect(
@@ -582,9 +582,9 @@ const SENT_INVITES = [
 ];
 
 describe("OrgCard — pending sent invites listing", () => {
-  it("lists pending invites with truthful delivery-problem labels (desktop parity)", () => {
+  it("lists pending invites with truthful delivery-problem labels (desktop parity)", async () => {
     applyInviteUseQueryMock(labMe("admin"), SENT_INVITES);
-    const { getByText, queryByTestId, getByTestId } = render(
+    const { getByText, queryByTestId, getByTestId } = await render(
       <OrganizationsScreen />,
       { wrapper: makeWrapper() },
     );
@@ -617,11 +617,11 @@ describe("OrgCard — pending sent invites listing", () => {
       return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
     });
 
-    const { getByTestId } = render(<OrganizationsScreen />, {
+    const { getByTestId } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
 
-    fireEvent.press(getByTestId("invite-resend-inv-failed"));
+    await fireEvent.press(getByTestId("invite-resend-inv-failed"));
 
     await waitFor(() => {
       expect(alertSpy).toHaveBeenCalledWith(
@@ -632,33 +632,78 @@ describe("OrgCard — pending sent invites listing", () => {
     expect(resendUrl).toBe("/api/organizations/invites/inv-failed/resend");
   });
 
-  it("surfaces the server message when a resend fails (recipient opted out)", async () => {
+  it("resend is non-fatal — refreshes the link and reports the email was not sent when the recipient opted out", async () => {
     applyInviteUseQueryMock(labMe("admin"), [SENT_INVITES[2]]);
     const alertSpy = vi.spyOn(Alert, "alert").mockImplementation(() => {});
     setMockFetchHandler((url, init) => {
       if (url.includes("/resend") && init?.method === "POST") {
+        // Resend is symmetric with create: 200 + a skipped emailDelivery,
+        // never a 409, when the recipient opted out.
         return new Response(
           JSON.stringify({
-            ok: false,
-            message:
-              "This recipient has opted out of invite emails, so no email was sent.",
+            ok: true,
+            data: {
+              id: "inv-optout",
+              emailDelivery: {
+                sent: false,
+                status: "skipped",
+                reason: "recipient_opted_out",
+              },
+            },
           }),
-          { status: 409 },
+          { status: 200 },
         );
       }
       return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
     });
 
-    const { getByTestId } = render(<OrganizationsScreen />, {
+    const { getByTestId } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
 
-    fireEvent.press(getByTestId("invite-resend-inv-optout"));
+    await fireEvent.press(getByTestId("invite-resend-inv-optout"));
 
     await waitFor(() => {
       expect(alertSpy).toHaveBeenCalledWith(
-        "Could not resend invite",
-        expect.stringMatching(/opted out of invite emails/i),
+        expect.stringMatching(/email not sent/i),
+        expect.stringMatching(/opted out/i),
+      );
+    });
+  });
+
+  it("resend is non-fatal — reports the email was not sent when the send fails", async () => {
+    applyInviteUseQueryMock(labMe("admin"), [SENT_INVITES[1]]);
+    const alertSpy = vi.spyOn(Alert, "alert").mockImplementation(() => {});
+    setMockFetchHandler((url, init) => {
+      if (url.includes("/resend") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              id: "inv-failed",
+              emailDelivery: {
+                sent: false,
+                status: "failed",
+                reason: "send_failed",
+              },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
+    });
+
+    const { getByTestId } = await render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+
+    await fireEvent.press(getByTestId("invite-resend-inv-failed"));
+
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/email was not sent/i),
+        expect.stringMatching(/failed to send/i),
       );
     });
   });
@@ -678,11 +723,11 @@ describe("OrgCard — pending sent invites listing", () => {
       return new Response(JSON.stringify({ ok: true, data: null }), { status: 200 });
     });
 
-    const { getByTestId } = render(<OrganizationsScreen />, {
+    const { getByTestId } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
 
-    fireEvent.press(getByTestId("invite-cancel-inv-ok"));
+    await fireEvent.press(getByTestId("invite-cancel-inv-ok"));
 
     // Confirmation dialog is shown; nothing POSTed yet.
     expect(alertSpy).toHaveBeenCalledTimes(1);
@@ -693,16 +738,18 @@ describe("OrgCard — pending sent invites listing", () => {
       | undefined;
     const confirm = buttons?.find((b) => b.text === "Cancel invite");
     expect(confirm).toBeTruthy();
-    confirm!.onPress?.();
+    await act(async () => {
+      await confirm!.onPress?.();
+    });
 
     await waitFor(() => {
       expect(cancelUrl).toBe("/api/organizations/invites/inv-ok/cancel");
     });
   });
 
-  it("does not show the pending-invites listing to non-admin members", () => {
+  it("does not show the pending-invites listing to non-admin members", async () => {
     applyInviteUseQueryMock(labMe("user"), SENT_INVITES);
-    const { queryByText } = render(<OrganizationsScreen />, {
+    const { queryByText } = await render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
     expect(queryByText("Pending invites")).toBeNull();

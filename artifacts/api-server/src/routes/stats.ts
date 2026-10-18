@@ -1,3 +1,4 @@
+import { finalizedInvoiceSql } from "../lib/recovery-billing-hold";
 /**
  * Read-only lab-scoped analytics endpoints for the desktop Stats dashboard
  * (Task: Admin stats & analytics).
@@ -49,7 +50,7 @@ import { Router } from "express";
 import { and, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
-import { caseRestorations, cases, invoices, labCases } from "@workspace/db";
+import { caseLocations, caseRestorations, cases, invoices, labCases, labClosedDays } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
 import { ADMIN_ROLES, BILLING_ROLES, OWNER_ROLES, requireAnyRole } from "../lib/rbac";
 import { notDeleted } from "../lib/soft-delete";
@@ -58,11 +59,23 @@ import { requireAuth } from "../middlewares/auth";
 import {
   CASE_CATEGORY_KEYS,
   CASE_CATEGORY_LABELS,
+  CASE_TAXONOMY,
   classifyCase,
   classifyLegacyCase,
+  deriveCaseHierarchy,
   type CaseCategory,
 } from "../lib/case-category";
 import { normalizeMaterialName } from "../lib/material-mapping";
+import { usHolidaySet } from "../lib/us-holidays";
+import { legacyUtcCalendarDate } from "../lib/legacy-case-list";
+import {
+  countBusinessDays,
+  lastCompletedBusinessDay,
+  listExcludedBusinessDays,
+  nthBusinessDay,
+  remakeReasonBucket,
+} from "../lib/stats-utils";
+export { remakeReasonBucket } from "../lib/stats-utils";
 
 const router = Router();
 router.use(requireAuth);
@@ -113,6 +126,34 @@ function tzFormatter(tz: string): Intl.DateTimeFormat {
   }
 }
 
+function calendarDateInTimezone(value: Date, timeZone: string): string {
+  const { yr, mo, day } = localYmd(tzFormatter(timeZone), value);
+  return `${yr}-${String(mo + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function calendarDateRange(
+  from: Date,
+  to: Date,
+  timeZone: string,
+): { fromDate: string; toDate: string } {
+  return {
+    fromDate: calendarDateInTimezone(from, timeZone),
+    toDate: calendarDateInTimezone(to, timeZone),
+  };
+}
+
+function shiftCalendarDate(value: string, days: number): string {
+  const [year, month, day] = value.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1, day + days));
+  return shifted.toISOString().slice(0, 10);
+}
+
+function calendarDaySpan(fromDate: string, toDate: string): number {
+  const from = Date.parse(`${fromDate}T00:00:00.000Z`);
+  const to = Date.parse(`${toDate}T00:00:00.000Z`);
+  return Math.round((to - from) / 86_400_000) + 1;
+}
+
 /** Local calendar date (Y/M/D) of an instant in the requested timezone. */
 function localYmd(fmt: Intl.DateTimeFormat, d: Date): {
   yr: number;
@@ -156,6 +197,38 @@ function localWeekday(fmt: Intl.DateTimeFormat, d: Date): number {
   return (new Date(Date.UTC(yr, mo, day)).getUTCDay() + 6) % 7;
 }
 
+function calendarBucketKey(
+  value: string,
+  groupBy: "day" | "week" | "month" | "year",
+): { key: string; start: Date } {
+  const [yr, month, day] = value.split("-").map(Number);
+  const mo = month - 1;
+  if (groupBy === "day") {
+    return { key: value, start: new Date(Date.UTC(yr, mo, day)) };
+  }
+  if (groupBy === "month") {
+    return {
+      key: `${yr}-${String(month).padStart(2, "0")}`,
+      start: new Date(Date.UTC(yr, mo, 1)),
+    };
+  }
+  if (groupBy === "year") {
+    return { key: String(yr), start: new Date(Date.UTC(yr, 0, 1)) };
+  }
+  const date = new Date(Date.UTC(yr, mo, day));
+  const mondayOffset = (date.getUTCDay() + 6) % 7;
+  const start = new Date(Date.UTC(yr, mo, day - mondayOffset));
+  return { key: start.toISOString().slice(0, 10), start };
+}
+
+function calendarWeekday(value: string): number {
+  const [yr, month, day] = value.split("-").map(Number);
+  return (
+    (new Date(Date.UTC(yr, month - 1, day)).getUTCDay() + 6) %
+    7
+  );
+}
+
 const WEEKDAY_LABELS = [
   "Monday",
   "Tuesday",
@@ -168,7 +241,7 @@ const WEEKDAY_LABELS = [
 
 interface CategorizedCase {
   id: string;
-  receivedAt: Date;
+  receivedDate: string;
   category: CaseCategory;
   source: "canonical" | "legacy";
   /** Normalized material names present on the case (see materialKey). */
@@ -194,8 +267,8 @@ function applyCaseFilters(
  */
 async function loadCategorizedCases(
   organizationId: string,
-  from: Date,
-  to: Date,
+  fromDate: string,
+  toDate: string,
 ): Promise<CategorizedCase[]> {
   const canonical = (await db
     .select({ id: cases.id, receivedAt: cases.receivedAt })
@@ -204,10 +277,10 @@ async function loadCategorizedCases(
       and(
         eq(cases.labOrganizationId, organizationId),
         notDeleted(cases),
-        gte(cases.receivedAt, from),
-        lte(cases.receivedAt, to),
+        gte(cases.receivedAt, fromDate),
+        lte(cases.receivedAt, toDate),
       ),
-    )) as Array<{ id: string; receivedAt: Date | string | null }>;
+    )) as Array<{ id: string; receivedAt: string | null }>;
 
   const ids = canonical.map((c) => c.id);
   const restoRows = ids.length
@@ -216,32 +289,33 @@ async function loadCategorizedCases(
           caseId: caseRestorations.caseId,
           restorationType: caseRestorations.restorationType,
           material: caseRestorations.material,
+          restorationSubtype: caseRestorations.restorationSubtype,
         })
         .from(caseRestorations)
         .where(inArray(caseRestorations.caseId, ids))) as Array<{
         caseId: string;
         restorationType: string | null;
         material: string | null;
+        restorationSubtype: string | null;
       }>)
     : [];
   const byCase = new Map<
     string,
-    Array<{ restorationType: string | null; material: string | null }>
+    Array<{ restorationType: string | null; material: string | null; restorationSubtype: string | null }>
   >();
   for (const r of restoRows) {
     const arr = byCase.get(r.caseId) ?? [];
-    arr.push({ restorationType: r.restorationType, material: r.material });
+    arr.push({ restorationType: r.restorationType, material: r.material, restorationSubtype: r.restorationSubtype });
     byCase.set(r.caseId, arr);
   }
 
   const out: CategorizedCase[] = [];
   for (const c of canonical) {
-    const receivedAt = c.receivedAt ? new Date(c.receivedAt) : null;
-    if (!receivedAt || Number.isNaN(receivedAt.getTime())) continue;
+    if (!c.receivedAt) continue;
     const restos = byCase.get(c.id) ?? [];
     out.push({
       id: c.id,
-      receivedAt,
+      receivedDate: c.receivedAt,
       category: classifyCase(restos),
       source: "canonical",
       materials: Array.from(new Set(restos.map((r) => materialKey(r.material)))),
@@ -254,12 +328,12 @@ async function loadCategorizedCases(
     .select({
       id: labCases.id,
       caseData: labCases.caseData,
-      updatedAt: labCases.updatedAt,
+      updatedAt: sql<string | null>`${labCases.updatedAt}::text`,
     })
     .from(labCases)
     .where(
       and(eq(labCases.organizationId, organizationId), isNull(labCases.deletedAt)),
-    )) as Array<{ id: string; caseData: unknown; updatedAt: Date | null }>;
+    )) as Array<{ id: string; caseData: unknown; updatedAt: string | null }>;
 
   for (const row of legacyRows) {
     let parsed: unknown = null;
@@ -274,14 +348,20 @@ async function loadCategorizedCases(
         ? (parsed as Record<string, unknown>)
         : null;
     const rawCreated = blob?.["createdAt"];
-    let receivedAt: Date | null = null;
+    let receivedDate: string | null = null;
     if (typeof rawCreated === "string" || typeof rawCreated === "number") {
-      const d = new Date(rawCreated);
-      if (!Number.isNaN(d.getTime())) receivedAt = d;
+      const numericCreated =
+        typeof rawCreated === "string" && /^\d+$/.test(rawCreated)
+          ? Number(rawCreated)
+          : rawCreated;
+      const d = new Date(numericCreated);
+      if (!Number.isNaN(d.getTime())) {
+        receivedDate = d.toISOString().slice(0, 10);
+      }
     }
-    if (!receivedAt && row.updatedAt) receivedAt = new Date(row.updatedAt);
-    if (!receivedAt || Number.isNaN(receivedAt.getTime())) continue;
-    if (receivedAt.getTime() < from.getTime() || receivedAt.getTime() > to.getTime()) {
+    receivedDate ??= legacyUtcCalendarDate(row.updatedAt);
+    if (!receivedDate) continue;
+    if (receivedDate < fromDate || receivedDate > toDate) {
       continue;
     }
     // Legacy material: the blob's free-form `material` string when present.
@@ -295,7 +375,7 @@ async function loadCategorizedCases(
         : [];
     out.push({
       id: row.id,
-      receivedAt,
+      receivedDate,
       category: classifyLegacyCase(parsed),
       source: "legacy",
       materials,
@@ -310,76 +390,130 @@ async function loadCategorizedCases(
  * reasons list always has a stable label (matching the materialKey
  * convention for blank materials).
  */
-function remakeReasonKey(raw: string | null | undefined): string {
+function remakeReasonLabel(raw: string | null | undefined): string {
   return (raw ?? "").trim() || "Unspecified";
 }
 
-interface RemakeCase {
-  /** Normalized remake reason ("Unspecified" for blank). */
+/** Reporting label for a reason; custom text remains on individual records. */
+interface RemakeRecord {
+  id: string;
+  caseNumber: string;
+  originalCaseId: string | null;
+  originalCaseNumber: string | null;
+  receivedDate: string;
+  /** Display label derived from remakeReason free-text (or "Unspecified"). */
   reason: string;
-  /** true when the remake was recharged to the provider. */
+  /** Structured key from the 18-key questionnaire, null for legacy or unstructured. */
+  reasonKey: string | null;
   recharged: boolean;
+  returnedToLab: boolean;
+  /** "crown_bridge" | "removable" | "implant" | null */
+  category: string | null;
+  source: "canonical" | "legacy";
+  /** Doctor name from the case, null for legacy blobs that don't carry it. */
+  doctorName: string | null;
 }
 
 /**
- * Load every remake (canonical + legacy) for one lab in [from, to].
+ * Load every remake record (canonical + legacy) for one lab in [from, to].
  *
  * A canonical case is a remake when `remakeOfCaseId` is set; it is scoped by
- * `receivedAt` and excludes soft-deletes (same window rules as
- * loadCategorizedCases). A legacy `lab_cases` blob is a remake when its
- * `isRemake` flag is true or it carries a `remakeOfCaseId`; it is scoped by
+ * `receivedAt` and excludes soft-deletes. A legacy `lab_cases` blob is a remake
+ * when its `isRemake` flag is true or it carries a `remakeOfCaseId`; scoped by
  * the blob's `createdAt` (falling back to the row's `updatedAt`). Canonical
- * and legacy ids live in separate spaces, so a case is never double-counted
- * — the same de-dup posture as the other stats loaders.
+ * and legacy ids live in separate spaces, so a case is never double-counted.
  */
-async function loadRemakeCases(
+async function loadRemakeRecords(
   organizationId: string,
-  from: Date,
-  to: Date,
-): Promise<RemakeCase[]> {
-  const out: RemakeCase[] = [];
+  from: Date | null,
+  to: Date | null,
+  timeZone: string,
+): Promise<RemakeRecord[]> {
+  const out: RemakeRecord[] = [];
+  const fromDate = from ? calendarDateInTimezone(from, timeZone) : null;
+  const toDate = to ? calendarDateInTimezone(to, timeZone) : null;
 
-  // Canonical remakes.
+  // Canonical remakes — select extended fields.
   const canonical = (await db
     .select({
+      id: cases.id,
+      caseNumber: cases.caseNumber,
+      remakeOfCaseId: cases.remakeOfCaseId,
       receivedAt: cases.receivedAt,
       remakeReason: cases.remakeReason,
+      remakeReasonKey: cases.remakeReasonKey,
       remakeCharged: cases.remakeCharged,
+      remakeReturnedToLab: cases.remakeReturnedToLab,
+      remakeCategory: cases.remakeCategory,
+      doctorName: cases.doctorName,
     })
     .from(cases)
     .where(
       and(
         eq(cases.labOrganizationId, organizationId),
         notDeleted(cases),
-        gte(cases.receivedAt, from),
-        lte(cases.receivedAt, to),
+        ...(fromDate ? [gte(cases.receivedAt, fromDate)] : []),
+        ...(toDate ? [lte(cases.receivedAt, toDate)] : []),
         sql`${cases.remakeOfCaseId} is not null`,
       ),
     )) as Array<{
-    receivedAt: Date | string | null;
+    id: string;
+    caseNumber: string | null;
+    remakeOfCaseId: string | null;
+    receivedAt: string | null;
     remakeReason: string | null;
+    remakeReasonKey: string | null;
     remakeCharged: boolean | null;
+    remakeReturnedToLab: boolean | null;
+    remakeCategory: string | null;
+    doctorName: string | null;
   }>;
 
+  // Batch-lookup original case numbers for all canonical originals.
+  const originalIds = [
+    ...new Set(canonical.map((c) => c.remakeOfCaseId).filter((id): id is string => !!id)),
+  ];
+  const originalRows =
+    originalIds.length > 0
+      ? ((await db
+          .select({ id: cases.id, caseNumber: cases.caseNumber })
+          .from(cases)
+          .where(inArray(cases.id, originalIds))) as Array<{
+          id: string;
+          caseNumber: string | null;
+        }>)
+      : [];
+  const originalMap = new Map(originalRows.map((r) => [r.id, r.caseNumber ?? ""]));
+
   for (const c of canonical) {
-    const receivedAt = c.receivedAt ? new Date(c.receivedAt) : null;
-    if (!receivedAt || Number.isNaN(receivedAt.getTime())) continue;
+    if (!c.receivedAt) continue;
     out.push({
-      reason: remakeReasonKey(c.remakeReason),
+      id: c.id,
+      caseNumber: c.caseNumber ?? c.id,
+      originalCaseId: c.remakeOfCaseId,
+      originalCaseNumber: c.remakeOfCaseId ? (originalMap.get(c.remakeOfCaseId) ?? null) : null,
+      receivedDate: c.receivedAt,
+      reason: remakeReasonLabel(c.remakeReason),
+      reasonKey: c.remakeReasonKey ?? null,
       recharged: c.remakeCharged === true,
+      returnedToLab: c.remakeReturnedToLab === true,
+      category: c.remakeCategory ?? null,
+      source: "canonical",
+      doctorName: c.doctorName ?? null,
     });
   }
 
   // Legacy remakes from lab_cases blobs.
   const legacyRows = (await db
     .select({
+      id: labCases.id,
       caseData: labCases.caseData,
-      updatedAt: labCases.updatedAt,
+      updatedAt: sql<string | null>`${labCases.updatedAt}::text`,
     })
     .from(labCases)
     .where(
       and(eq(labCases.organizationId, organizationId), isNull(labCases.deletedAt)),
-    )) as Array<{ caseData: unknown; updatedAt: Date | null }>;
+    )) as Array<{ id: string; caseData: unknown; updatedAt: string | null }>;
 
   for (const row of legacyRows) {
     let parsed: unknown = null;
@@ -400,20 +534,41 @@ async function loadRemakeCases(
     if (!isRemake) continue;
 
     const rawCreated = blob["createdAt"];
-    let receivedAt: Date | null = null;
+    let receivedDate: string | null = null;
     if (typeof rawCreated === "string" || typeof rawCreated === "number") {
-      const d = new Date(rawCreated);
-      if (!Number.isNaN(d.getTime())) receivedAt = d;
+      const numericCreated =
+        typeof rawCreated === "string" && /^\d+$/.test(rawCreated)
+          ? Number(rawCreated)
+          : rawCreated;
+      const d = new Date(numericCreated);
+      if (!Number.isNaN(d.getTime())) {
+        receivedDate = d.toISOString().slice(0, 10);
+      }
     }
-    if (!receivedAt && row.updatedAt) receivedAt = new Date(row.updatedAt);
-    if (!receivedAt || Number.isNaN(receivedAt.getTime())) continue;
-    if (receivedAt.getTime() < from.getTime() || receivedAt.getTime() > to.getTime()) {
-      continue;
-    }
+    receivedDate ??= legacyUtcCalendarDate(row.updatedAt);
+    if (!receivedDate) continue;
+    if (fromDate && receivedDate < fromDate) continue;
+    if (toDate && receivedDate > toDate) continue;
     const rawReason = blob["remakeReason"];
     out.push({
-      reason: remakeReasonKey(typeof rawReason === "string" ? rawReason : null),
+      id: row.id,
+      caseNumber:
+        typeof blob["caseNumber"] === "string" && blob["caseNumber"]
+          ? blob["caseNumber"]
+          : row.id,
+      originalCaseId:
+        typeof blob["remakeOfCaseId"] === "string" && blob["remakeOfCaseId"]
+          ? blob["remakeOfCaseId"]
+          : null,
+      originalCaseNumber: null,
+      receivedDate,
+      reason: remakeReasonLabel(typeof rawReason === "string" ? rawReason : null),
+      reasonKey: null,
       recharged: blob["remakeCharged"] === true,
+      returnedToLab: false,
+      category: null,
+      source: "legacy",
+      doctorName: typeof blob["doctorName"] === "string" && blob["doctorName"] ? blob["doctorName"] : null,
     });
   }
 
@@ -444,6 +599,7 @@ async function loadRevenueInvoices(
         eq(invoices.labOrganizationId, organizationId),
         isNull(invoices.deletedAt),
         sql`${invoices.status} <> 'void'`,
+        finalizedInvoiceSql(),
         gte(issued, from),
         lte(issued, to),
       ),
@@ -526,22 +682,118 @@ router.get(
   "/summary",
   asyncHandler(async (req, res) => {
     const q = baseQuerySchema.parse(req.query);
-    await requireAnyRole((req as any).auth.userId, q.organizationId, BILLING_ROLES);
+    const callerMembership = await requireAnyRole((req as any).auth.userId, q.organizationId, BILLING_ROLES);
+    const callerIsAdmin = ADMIN_ROLES.includes(callerMembership.role as (typeof ADMIN_ROLES)[number]);
     const { from, to } = parseWindow(q.dateFrom, q.dateTo);
     const tz = q.timeZone ?? "UTC";
     const fmt = tzFormatter(tz);
+
+    // Time-aware formatter used to compute the UTC offset for end-of-day math.
+    let offsetFmt: Intl.DateTimeFormat;
+    try {
+      offsetFmt = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+        hour12: false,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    } catch {
+      throw new HttpError(400, `Invalid timeZone: ${tz}`);
+    }
+
+    // ── Business-day cutoff ────────────────────────────────────────────────
+    // Average daily sales uses completed Mon–Fri non-holiday business days only
+    // so that weekends, public holidays, and today's partial data do not dilute
+    // the denominator.
+    const now = new Date();
+    const periodStart = localYmd(fmt, from);
+    const periodEnd = localYmd(fmt, to);
+
+    // Build the holiday set covering the query window + a full prior period
+    // year in either direction to handle the previous-period comparison.
+    const holidayDetail = await buildHolidaysDetail(
+      q.organizationId,
+      Math.min(periodStart.yr, localYmd(fmt, new Date(from.getTime() - (to.getTime() - from.getTime()))).yr) - 1,
+      periodEnd.yr + 1,
+    );
+    const holidays = holidayDetail.all;
+
+    const rawCutoff = lastCompletedBusinessDay(now, fmt, holidays);
+    // Cap to period end when the period is entirely in the past.
+    const rawCutoffMs = Date.UTC(rawCutoff.yr, rawCutoff.mo, rawCutoff.day);
+    const periodEndMs = Date.UTC(periodEnd.yr, periodEnd.mo, periodEnd.day);
+    const effectiveCutoff = rawCutoffMs <= periodEndMs ? rawCutoff : periodEnd;
+    // End-of-day UTC for the cutoff — inclusive upper bound for invoice queries.
+    const cutoffEndUtc = new Date(
+      zonedMidnightToUtc(
+        offsetFmt,
+        effectiveCutoff.yr,
+        effectiveCutoff.mo,
+        effectiveCutoff.day + 1, // JS Date handles month-end overflow
+      ).getTime() - 1,
+    );
+    // The invoice window: never includes data after the last completed biz day.
+    const invoiceTo = new Date(Math.min(cutoffEndUtc.getTime(), to.getTime()));
+
+    const elapsedBusinessDays = Math.max(1, countBusinessDays(periodStart, effectiveCutoff, holidays));
+    const totalBusinessDays = Math.max(1, countBusinessDays(periodStart, periodEnd, holidays));
+
+    // Collect the individual Mon–Fri days excluded from the denominator.
+    const excludedDaysList = listExcludedBusinessDays(
+      periodStart,
+      effectiveCutoff,
+      holidayDetail.federal,
+      holidayDetail.custom,
+    );
+    const excludedDays = {
+      holidayCount: excludedDaysList.filter((d) => d.reason === "holiday").length,
+      customClosedCount: excludedDaysList.filter((d) => d.reason === "custom").length,
+      dates: excludedDaysList,
+    };
+    const salesCutoffDate =
+      `${effectiveCutoff.yr}-` +
+      `${String(effectiveCutoff.mo + 1).padStart(2, "0")}-` +
+      `${String(effectiveCutoff.day).padStart(2, "0")}`;
 
     // Previous period: the window of equal length immediately before.
     const spanMs = to.getTime() - from.getTime();
     const prevTo = new Date(from.getTime() - 1);
     const prevFrom = new Date(prevTo.getTime() - spanMs);
+    const currentCaseRange = calendarDateRange(from, to, tz);
+    const previousCaseTo = shiftCalendarDate(currentCaseRange.fromDate, -1);
+    const previousCaseFrom = shiftCalendarDate(
+      previousCaseTo,
+      -(calendarDaySpan(
+        currentCaseRange.fromDate,
+        currentCaseRange.toDate,
+      ) - 1),
+    );
 
-    const [curCasesAll, prevCasesAll, curInvoicesAll, prevInvoicesAll] =
+    // The cutoff-bounded query is separate so that totalRevenue, invoiceCount,
+    // averageCaseValue, and revenueChangePct always reflect the full period
+    // window. Only averageDailyRevenue uses the cutoff-bounded slice.
+    const needSeparateCutoffQuery = invoiceTo.getTime() < to.getTime();
+    const [curCasesAll, prevCasesAll, curInvoicesAll, prevInvoicesAll, cutoffInvoicesAll] =
       await Promise.all([
-        loadCategorizedCases(q.organizationId, from, to),
-        loadCategorizedCases(q.organizationId, prevFrom, prevTo),
+        loadCategorizedCases(
+          q.organizationId,
+          currentCaseRange.fromDate,
+          currentCaseRange.toDate,
+        ),
+        loadCategorizedCases(
+          q.organizationId,
+          previousCaseFrom,
+          previousCaseTo,
+        ),
         loadRevenueInvoices(q.organizationId, from, to),
         loadRevenueInvoices(q.organizationId, prevFrom, prevTo),
+        needSeparateCutoffQuery
+          ? loadRevenueInvoices(q.organizationId, from, invoiceTo)
+          : Promise.resolve(null),
       ]);
 
     const curCases = applyCaseFilters(curCasesAll, q.category, q.material);
@@ -552,9 +804,15 @@ router.get(
       q.category,
       q.material,
     );
+    // Cutoff-scoped invoices for avg daily calc: reuse curInvoices when the
+    // cutoff window covers the full period (past periods, non-Monday queries).
+    const cutoffInvoices = needSeparateCutoffQuery
+      ? await filterInvoices(cutoffInvoicesAll!, q.category, q.material)
+      : curInvoices;
 
     const curRevenue = curInvoices.reduce((a, r) => a + r.total, 0);
     const prevRevenue = prevInvoices.reduce((a, r) => a + r.total, 0);
+    const cutoffRevenue = cutoffInvoices.reduce((a, r) => a + r.total, 0);
 
     // Most common category of the FILTERED current window, so every card
     // follows the active filters. (Under a category filter this is
@@ -576,7 +834,7 @@ router.get(
     // Busiest weekday by case receipt (current filtered set).
     const weekdayCounts = new Array<number>(7).fill(0);
     for (const c of curCases) {
-      weekdayCounts[localWeekday(fmt, c.receivedAt)] += 1;
+      weekdayCounts[calendarWeekday(c.receivedDate)] += 1;
     }
     let busiestWeekday: number | null = null;
     for (let i = 0; i < 7; i++) {
@@ -592,8 +850,6 @@ router.get(
       if (prev === 0) return null;
       return Number((((cur - prev) / prev) * 100).toFixed(1));
     }
-
-    const daysInRange = Math.max(1, Math.ceil((to.getTime() - from.getTime()) / 86400000));
 
     // Average case value = revenue / distinct cases billed in the window
     // (each caseless manual invoice counts as its own "case" — it is
@@ -611,6 +867,99 @@ router.get(
     const curBilledCases = invoicedCaseCount(curInvoices);
     const prevBilledCases = invoicedCaseCount(prevInvoices);
 
+    // Average turnaround: admin/owner only, canonical cases from the already-
+    // filtered curCases set (honors category/material filters).
+    // Start = earliest case_locations.movedAt where locationCode = 'received'.
+    // End   = earliest case_locations.movedAt where locationCode = 'complete'.
+    // Cases that lack either anchor are excluded. Negative diffs are skipped.
+    let avgTurnaroundDays: number | null = null;
+    let eligibleTurnaroundCaseCount: number | null = null;
+    if (callerIsAdmin) {
+      const canonicalIds = curCases
+        .filter((c) => c.source === "canonical")
+        .map((c) => c.id);
+      if (canonicalIds.length > 0) {
+        // Earliest 'received' timestamp per case.
+        const receivedRows = (await db
+          .select({
+            caseId: caseLocations.caseId,
+            firstAt: sql<string>`MIN(${caseLocations.movedAt})`,
+          })
+          .from(caseLocations)
+          .where(
+            and(
+              inArray(caseLocations.caseId, canonicalIds),
+              eq(caseLocations.locationCode, "received"),
+            ),
+          )
+          .groupBy(caseLocations.caseId)) as Array<{ caseId: string; firstAt: string }>;
+
+        // Earliest 'complete' timestamp per case.
+        const completeRows = (await db
+          .select({
+            caseId: caseLocations.caseId,
+            firstAt: sql<string>`MIN(${caseLocations.movedAt})`,
+          })
+          .from(caseLocations)
+          .where(
+            and(
+              inArray(caseLocations.caseId, canonicalIds),
+              eq(caseLocations.locationCode, "complete"),
+            ),
+          )
+          .groupBy(caseLocations.caseId)) as Array<{ caseId: string; firstAt: string }>;
+
+        const receivedMap = new Map<string, Date>(
+          receivedRows.map((r) => [r.caseId, new Date(r.firstAt)]),
+        );
+        const completeMap = new Map<string, Date>(
+          completeRows.map((r) => [r.caseId, new Date(r.firstAt)]),
+        );
+
+        // Fallback for labs that don't use station scanning: use cases.receivedAt
+        // as start and cases.updatedAt (for status='complete') as end.
+        const caseReceivedFallbackMap = new Map<string, Date>(
+          curCases
+            .filter((c) => c.source === "canonical" && c.receivedDate)
+            .map((c) => [
+              c.id,
+              new Date(`${c.receivedDate}T12:00:00.000Z`),
+            ]),
+        );
+        const completedCaseRows = (await db
+          .select({ id: cases.id, updatedAt: cases.updatedAt })
+          .from(cases)
+          .where(
+            and(
+              inArray(cases.id, canonicalIds),
+              eq(cases.status, "complete"),
+            ),
+          )) as Array<{ id: string; updatedAt: Date | string | null }>;
+        const caseCompletedFallbackMap = new Map<string, Date>(
+          completedCaseRows
+            .filter((r) => r.updatedAt != null)
+            .map((r) => [r.id, r.updatedAt instanceof Date ? r.updatedAt : new Date(r.updatedAt as string)]),
+        );
+
+        let totalMs = 0;
+        let count = 0;
+        for (const id of canonicalIds) {
+          const start = receivedMap.get(id) ?? caseReceivedFallbackMap.get(id);
+          const end = completeMap.get(id) ?? caseCompletedFallbackMap.get(id);
+          if (!start || !end) continue;
+          const diff = end.getTime() - start.getTime();
+          if (diff >= 0) {
+            totalMs += diff;
+            count++;
+          }
+        }
+        if (count > 0) {
+          avgTurnaroundDays = Number((totalMs / count / 86_400_000).toFixed(2));
+          eligibleTurnaroundCaseCount = count;
+        }
+      }
+    }
+
     return ok(res, {
       from: from.toISOString(),
       to: to.toISOString(),
@@ -621,7 +970,11 @@ router.get(
       legacyCases: curCases.filter((c) => c.source === "legacy").length,
       totalRevenue: curRevenue.toFixed(2),
       invoiceCount: curInvoices.length,
-      averageDailyRevenue: (curRevenue / daysInRange).toFixed(2),
+      salesCutoffDate,
+      elapsedBusinessDays,
+      totalBusinessDays,
+      averageDailyRevenue: (cutoffRevenue / elapsedBusinessDays).toFixed(2),
+      excludedDays,
       averageCaseValue: curBilledCases
         ? (curRevenue / curBilledCases).toFixed(2)
         : "0.00",
@@ -631,6 +984,8 @@ router.get(
       busiestWeekday,
       busiestWeekdayLabel:
         busiestWeekday === null ? null : WEEKDAY_LABELS[busiestWeekday],
+      avgTurnaroundDays,
+      eligibleTurnaroundCaseCount,
       previousPeriod: {
         from: prevFrom.toISOString(),
         to: prevTo.toISOString(),
@@ -655,7 +1010,12 @@ router.get(
     await requireAnyRole((req as any).auth.userId, q.organizationId, BILLING_ROLES);
     const { from, to } = parseWindow(q.dateFrom, q.dateTo);
 
-    const unfiltered = await loadCategorizedCases(q.organizationId, from, to);
+    const caseRange = calendarDateRange(from, to, q.timeZone ?? "UTC");
+    const unfiltered = await loadCategorizedCases(
+      q.organizationId,
+      caseRange.fromDate,
+      caseRange.toDate,
+    );
     const all = applyCaseFilters(unfiltered, q.category, q.material);
     const counts = new Map<CaseCategory, { count: number; legacy: number }>();
     for (const c of all) {
@@ -708,6 +1068,81 @@ router.get(
       }))
       .sort((a, b) => b.units - a.units);
 
+    // CaseType breakdown (canonical restorations only) — derived via
+    // deriveCaseHierarchy which prefers the explicit restorationSubtype column
+    // and falls back to free-text inference from restorationType.
+    const caseTypeCounts = new Map<string, { label: string; count: number }>();
+    // Subtype breakdown — one per case (level-2 hierarchy key).
+    const caseSubtypeCounts = new Map<string, { label: string; caseTypeLabel: string; count: number }>();
+    // Material-subtype breakdown — one entry per restoration row (level-3 hierarchy key).
+    const materialSubtypeCounts = new Map<string, { label: string; count: number }>();
+    if (canonicalIds.length) {
+      const txRows = (await db
+        .select({
+          caseId: caseRestorations.caseId,
+          restorationSubtype: caseRestorations.restorationSubtype,
+          restorationType: caseRestorations.restorationType,
+        })
+        .from(caseRestorations)
+        .where(inArray(caseRestorations.caseId, canonicalIds))) as Array<{
+        caseId: string;
+        restorationSubtype: string | null;
+        restorationType: string | null;
+      }>;
+      // One caseType / caseSubtype entry per canonical case (first restoration wins).
+      const caseTypeByCase = new Map<string, string>();
+      const caseSubtypeByCase = new Map<string, string>();
+      for (const r of txRows) {
+        const hierarchy = deriveCaseHierarchy(r.restorationType, r.restorationSubtype, null);
+
+        // Level-1 caseType — one per case
+        if (!caseTypeByCase.has(r.caseId)) {
+          let label: string;
+          if (hierarchy.caseType === "restorative") label = CASE_TAXONOMY.restorative.label;
+          else if (hierarchy.caseType === "removable") label = CASE_TAXONOMY.removable.label;
+          else if (hierarchy.caseType === "ortho") label = CASE_TAXONOMY.ortho.label;
+          else label = "Other";
+          caseTypeByCase.set(r.caseId, label);
+        }
+
+        // Level-2 subtype — one per case
+        if (!caseSubtypeByCase.has(r.caseId) && hierarchy.caseType && hierarchy.subtype) {
+          const subtypeLabel =
+            CASE_TAXONOMY[hierarchy.caseType]?.subtypes[hierarchy.subtype]?.label ?? hierarchy.subtype;
+          const caseTypeLabel = CASE_TAXONOMY[hierarchy.caseType]?.label ?? hierarchy.caseType;
+          const key = `${hierarchy.caseType}/${hierarchy.subtype}`;
+          caseSubtypeByCase.set(r.caseId, key);
+          const cur = caseSubtypeCounts.get(key) ?? { label: subtypeLabel, caseTypeLabel, count: 0 };
+          cur.count += 1;
+          caseSubtypeCounts.set(key, cur);
+        }
+
+        // Level-3 materialSubtype — one per restoration row (not deduplicated per case)
+        if (hierarchy.caseType && hierarchy.subtype && hierarchy.materialSubtype) {
+          const msLabel =
+            CASE_TAXONOMY[hierarchy.caseType]?.subtypes[hierarchy.subtype]?.materialSubtypes[
+              hierarchy.materialSubtype
+            ]?.label ?? hierarchy.materialSubtype;
+          const key = `${hierarchy.caseType}/${hierarchy.subtype}/${hierarchy.materialSubtype}`;
+          const cur = materialSubtypeCounts.get(key) ?? { label: msLabel, count: 0 };
+          cur.count += 1;
+          materialSubtypeCounts.set(key, cur);
+        }
+      }
+      for (const label of caseTypeByCase.values()) {
+        const cur = caseTypeCounts.get(label) ?? { label, count: 0 };
+        cur.count += 1;
+        caseTypeCounts.set(label, cur);
+      }
+    }
+    const caseTypes = Array.from(caseTypeCounts.values()).sort((a, b) => b.count - a.count);
+    const caseSubtypes = Array.from(caseSubtypeCounts.entries())
+      .map(([key, v]) => ({ key, caseTypeLabel: v.caseTypeLabel, label: v.label, count: v.count }))
+      .sort((a, b) => b.count - a.count);
+    const caseMaterialSubtypes = Array.from(materialSubtypeCounts.entries())
+      .map(([key, v]) => ({ key, label: v.label, count: v.count }))
+      .sort((a, b) => b.count - a.count);
+
     return ok(res, {
       from: from.toISOString(),
       to: to.toISOString(),
@@ -716,6 +1151,9 @@ router.get(
       totalCases: all.length,
       categories,
       materials,
+      caseTypes,
+      caseSubtypes,
+      caseMaterialSubtypes,
     });
   }),
 );
@@ -790,13 +1228,18 @@ router.get(
     const tz = q.timeZone ?? "UTC";
     const fmt = tzFormatter(tz);
 
-    const all = await loadCategorizedCases(q.organizationId, from, to);
+    const caseRange = calendarDateRange(from, to, tz);
+    const all = await loadCategorizedCases(
+      q.organizationId,
+      caseRange.fromDate,
+      caseRange.toDate,
+    );
     const filtered = applyCaseFilters(all, q.category, q.material);
 
     const perDay: Array<{ total: number; byCategory: Record<string, number> }> =
       Array.from({ length: 7 }, () => ({ total: 0, byCategory: {} }));
     for (const c of filtered) {
-      const idx = localWeekday(fmt, c.receivedAt);
+      const idx = calendarWeekday(c.receivedDate);
       const slot = perDay[idx]!;
       slot.total += 1;
       slot.byCategory[c.category] = (slot.byCategory[c.category] ?? 0) + 1;
@@ -821,15 +1264,18 @@ router.get(
 
 // ─────────────────────── GET /stats/sales-forecast ───────────────────────
 //
-// Owner-only sales projection. Projects the current week, month, and year
-// sales from the pace so far, counting only Monday–Friday business days:
+// Admin+owner sales projection. Projects the current week, month, and year
+// sales from the pace so far, counting only Monday–Friday business days.
 //
-//   forecast = periodToDateSales / elapsedBusinessDays * totalBusinessDays
+// Week / month formula:
+//   forecast = avgPerDay × totalBusinessDaysInPeriod
+//
+// Year formula (correct projection from today forward):
+//   forecast = salesSoFar + (avgPerDay × remainingWorkdaysAfterCutoff)
 //
 // "Elapsed" business days are the Mon–Fri days from the period start through
-// today (inclusive) in the lab's timezone — a weekend "today" is never a
-// worked day, and the sales window's upper bound is `now` (never the future).
-// All arithmetic lives here so the desktop and mobile clients only render the
+// the last completed business day (inclusive) in the lab's timezone. All
+// arithmetic lives here so the desktop and mobile clients only render the
 // returned numbers.
 const forecastQuerySchema = z.object({
   organizationId: z.string().min(1),
@@ -871,65 +1317,55 @@ function zonedMidnightToUtc(
   return new Date(naive - offset);
 }
 
+/** Format a UTC Date as "YYYY-MM-DD". */
 /**
- * Count Monday–Friday days in the inclusive local-calendar range
- * [start, endInclusive]. Weekends are never counted. Returns 0 when the
- * range is empty (start after end).
+ * Load the full holidays set for a lab: US federal holidays for every year in
+ * [minYear, maxYear] plus any custom closed days stored in `lab_closed_days`.
  */
-function countBusinessDays(
-  start: { yr: number; mo: number; day: number },
-  endInclusive: { yr: number; mo: number; day: number },
-): number {
-  let cur = Date.UTC(start.yr, start.mo, start.day);
-  const end = Date.UTC(endInclusive.yr, endInclusive.mo, endInclusive.day);
-  let count = 0;
-  while (cur <= end) {
-    const dow = new Date(cur).getUTCDay(); // 0 = Sun … 6 = Sat
-    if (dow >= 1 && dow <= 5) count += 1;
-    cur += 86_400_000;
-  }
-  return count;
+async function buildHolidaysSet(
+  organizationId: string,
+  minYear: number,
+  maxYear: number,
+): Promise<Set<string>> {
+  const { all } = await buildHolidaysDetail(organizationId, minYear, maxYear);
+  return all;
 }
 
 /**
- * Local calendar date of the Nth Monday–Friday day (1-based) counting from
- * `start` (inclusive). Returns null when `n <= 0` or the search runs past a
- * two-year guard without reaching the Nth business day (only possible when a
- * caller asks for more business days than exist in the prior period, which the
- * caller then caps to that period's end).
+ * Like buildHolidaysSet but returns US federal holidays and lab-specific custom
+ * closed days as separate sets so callers can distinguish them.
  */
-export function nthBusinessDay(
-  start: { yr: number; mo: number; day: number },
-  n: number,
-  end?: { yr: number; mo: number; day: number },
-): { yr: number; mo: number; day: number } | null {
-  if (n <= 0) return null;
-  let cur = Date.UTC(start.yr, start.mo, start.day);
-  const endMs = end ? Date.UTC(end.yr, end.mo, end.day) : null;
-  let count = 0;
-  for (let guard = 0; guard < 366 * 2; guard += 1) {
-    // Stop if we have scanned past the (inclusive) end bound: the Nth business
-    // day does not exist within [start, end], so the caller should clamp.
-    if (endMs !== null && cur > endMs) return null;
-    const dow = new Date(cur).getUTCDay(); // 0 = Sun … 6 = Sat
-    if (dow >= 1 && dow <= 5) {
-      count += 1;
-      if (count === n) {
-        const d = new Date(cur);
-        return { yr: d.getUTCFullYear(), mo: d.getUTCMonth(), day: d.getUTCDate() };
-      }
-    }
-    cur += 86_400_000;
+async function buildHolidaysDetail(
+  organizationId: string,
+  minYear: number,
+  maxYear: number,
+): Promise<{ all: Set<string>; federal: Set<string>; custom: Set<string> }> {
+  const years: number[] = [];
+  for (let yr = minYear; yr <= maxYear; yr++) years.push(yr);
+  const federal = usHolidaySet(years);
+
+  // Custom lab-specific closed days.
+  const rows = (await db
+    .select({ date: labClosedDays.date })
+    .from(labClosedDays)
+    .where(eq(labClosedDays.labOrganizationId, organizationId))) as Array<{
+    date: string;
+  }>;
+  const custom = new Set<string>();
+  for (const r of rows) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(r.date)) custom.add(r.date);
   }
-  return null;
+
+  const all = new Set<string>([...federal, ...custom]);
+  return { all, federal, custom };
 }
 
 router.get(
   "/sales-forecast",
   asyncHandler(async (req, res) => {
     const q = forecastQuerySchema.parse(req.query);
-    // Stricter than the other stats endpoints: OWNER only, not BILLING_ROLES.
-    await requireAnyRole((req as any).auth.userId, q.organizationId, OWNER_ROLES);
+    // Admin+owner only (ADMIN_ROLES) — stricter than BILLING_ROLES.
+    await requireAnyRole((req as any).auth.userId, q.organizationId, ADMIN_ROLES);
 
     const tz = q.timeZone ?? "UTC";
     const dateFmt = tzFormatter(tz);
@@ -952,6 +1388,13 @@ router.get(
 
     const now = new Date();
     const today = localYmd(dateFmt, now);
+
+    // Load holidays for this year + surrounding years (prior week can straddle
+    // year boundaries; year forecast covers current + prior full year).
+    const holidays = await buildHolidaysSet(q.organizationId, today.yr - 2, today.yr + 1);
+
+    // Last completed Mon–Fri non-holiday business day — same cutoff logic as /stats/summary.
+    const cutoff = lastCompletedBusinessDay(now, dateFmt, holidays);
 
     // Period start/end (inclusive) in local calendar dates.
     const dowMon0 = (new Date(Date.UTC(today.yr, today.mo, today.day)).getUTCDay() + 6) % 7;
@@ -1022,19 +1465,57 @@ router.get(
     const results = await Promise.all(
       periods.map(async (p) => {
         const from = zonedMidnightToUtc(offsetFmt, p.start.yr, p.start.mo, p.start.day);
-        // Sales-to-date window ends at "now" — never projects future revenue.
-        const invoicesInWindow = await loadRevenueInvoices(q.organizationId, from, now);
+        // Sales-to-date window ends at the last completed business day, not
+        // "now". This excludes today's partial data, weekends, and Mondays
+        // (which would include the current unfinished day), keeping the
+        // denominator and numerator on the same completed-business-day basis.
+        const periodCutoff: { yr: number; mo: number; day: number } =
+          Date.UTC(cutoff.yr, cutoff.mo, cutoff.day) <=
+          Date.UTC(p.end.yr, p.end.mo, p.end.day)
+            ? cutoff
+            : p.end;
+        const cutoffEndUtc = new Date(
+          zonedMidnightToUtc(
+            offsetFmt,
+            periodCutoff.yr,
+            periodCutoff.mo,
+            periodCutoff.day + 1,
+          ).getTime() - 1,
+        );
+        const invoicesInWindow = await loadRevenueInvoices(
+          q.organizationId,
+          from,
+          cutoffEndUtc,
+        );
         const periodToDateSales = invoicesInWindow.reduce((a, r) => a + r.total, 0);
 
-        const elapsedBusinessDays = countBusinessDays(p.start, today);
-        const totalBusinessDays = countBusinessDays(p.start, p.end);
+        const elapsedBusinessDays = countBusinessDays(p.start, periodCutoff, holidays);
+        const totalBusinessDays = countBusinessDays(p.start, p.end, holidays);
 
         // Guard divide-by-zero: no elapsed business day yet (e.g. a period
         // that starts on a weekend), or no sales recorded so far.
         const insufficientData = elapsedBusinessDays === 0 || periodToDateSales <= 0;
         const averagePerBusinessDay =
           elapsedBusinessDays > 0 ? periodToDateSales / elapsedBusinessDays : 0;
-        const forecast = averagePerBusinessDay * totalBusinessDays;
+
+        // Year forecast: salesSoFar + (avgPerDay × remainingWorkdaysAfterCutoff).
+        // This correctly projects remaining revenue on top of what has already
+        // been earned. Week/month use the full-period formula because those
+        // periods may largely be in the future.
+        let forecast: number;
+        if (p.key === "year") {
+          const dacMs =
+            Date.UTC(periodCutoff.yr, periodCutoff.mo, periodCutoff.day) + 86_400_000;
+          const dac = new Date(dacMs);
+          const remainingBusinessDays = countBusinessDays(
+            { yr: dac.getUTCFullYear(), mo: dac.getUTCMonth(), day: dac.getUTCDate() },
+            p.end,
+            holidays,
+          );
+          forecast = periodToDateSales + averagePerBusinessDay * remainingBusinessDays;
+        } else {
+          forecast = averagePerBusinessDay * totalBusinessDays;
+        }
 
         // ── Pace trend vs the prior comparable period ──────────────────────
         // Compare the current per-business-day pace against the SAME number of
@@ -1055,7 +1536,7 @@ router.get(
           // capped to the prior period's end when it is shorter (e.g. a 20-day
           // prior month vs a 23-day current month).
           const priorCutoff =
-            nthBusinessDay(p.priorStart, elapsedBusinessDays, p.priorEnd) ??
+            nthBusinessDay(p.priorStart, elapsedBusinessDays, p.priorEnd, holidays) ??
             p.priorEnd;
           const priorFrom = zonedMidnightToUtc(
             offsetFmt,
@@ -1082,7 +1563,7 @@ router.get(
             priorTo,
           );
           const priorSales = priorInvoices.reduce((a, r) => a + r.total, 0);
-          const priorBusinessDays = countBusinessDays(p.priorStart, priorCutoff);
+          const priorBusinessDays = countBusinessDays(p.priorStart, priorCutoff, holidays);
           const priorAveragePerBusinessDay =
             priorBusinessDays > 0 ? priorSales / priorBusinessDays : 0;
           previousPeriod = {
@@ -1132,43 +1613,234 @@ router.get(
 // ───────────────────────── GET /stats/remakes ─────────────────────────
 // Owner/admin ONLY (ADMIN_ROLES) — intentionally narrower than the other
 // stats endpoints (which allow BILLING_ROLES). Billing members must not see
-// remake stats. Scoped by date range only; category/material filters do not
-// cleanly map to a quality/remake breakdown, so they are not accepted here.
+// remake stats.
+//
+// Optional filters: reasonKey, recharged (yes|no), returnedToLab (yes|no),
+// remakeCategory (crown_bridge|removable), groupBy (week|month).
+// All filter params apply to the records list, time series, AND summary counts.
 router.get(
   "/remakes",
   asyncHandler(async (req, res) => {
-    const q = baseQuerySchema
-      .pick({
-        organizationId: true,
-        dateFrom: true,
-        dateTo: true,
-        timeZone: true,
+    const q = z
+      .object({
+        organizationId: z.string().min(1),
+        dateFrom: z.string().min(1).optional(),
+        dateTo: z.string().min(1).optional(),
+        timeZone: z.string().min(1).max(64).optional(),
+        groupBy: z.enum(["week", "month"]).optional().default("week"),
+        reasonKey: z.string().min(1).max(64).optional(),
+        recharged: z.enum(["yes", "no"]).optional(),
+        returnedToLab: z.enum(["yes", "no"]).optional(),
+        remakeCategory: z.enum(["crown_bridge", "removable", "implant"]).optional(),
+        doctorName: z.string().min(1).max(200).optional(),
       })
       .parse(req.query);
+
     await requireAnyRole((req as any).auth.userId, q.organizationId, ADMIN_ROLES);
-    const { from, to } = parseWindow(q.dateFrom, q.dateTo);
+    const window =
+      q.dateFrom && q.dateTo ? parseWindow(q.dateFrom, q.dateTo) : null;
+    const from = window?.from ?? null;
+    const to = window?.to ?? null;
     const tz = q.timeZone ?? "UTC";
 
-    const remakes = await loadRemakeCases(q.organizationId, from, to);
-    const rechargedRemakes = remakes.filter((r) => r.recharged).length;
-    const nonRechargedRemakes = remakes.length - rechargedRemakes;
+    // Load all records, then apply optional filters.
+    let records = await loadRemakeRecords(
+      q.organizationId,
+      from,
+      to,
+      q.timeZone ?? "UTC",
+    );
 
+    if (q.reasonKey) {
+      records = records.filter((r) => r.reasonKey === q.reasonKey);
+    }
+    if (q.recharged === "yes") {
+      records = records.filter((r) => r.recharged);
+    } else if (q.recharged === "no") {
+      records = records.filter((r) => !r.recharged);
+    }
+    if (q.returnedToLab === "yes") {
+      records = records.filter((r) => r.returnedToLab);
+    } else if (q.returnedToLab === "no") {
+      records = records.filter((r) => !r.returnedToLab);
+    }
+    if (q.remakeCategory) {
+      records = records.filter((r) => r.category === q.remakeCategory);
+    }
+    if (q.doctorName) {
+      records = records.filter(
+        (r) => (r.doctorName?.trim() || "Unknown") === q.doctorName,
+      );
+    }
+
+    // Summary stats.
+    const rechargedRemakes = records.filter((r) => r.recharged).length;
+    const nonRechargedRemakes = records.length - rechargedRemakes;
+
+    // Structured custom reasons share one stable reporting bucket while the
+    // individual record keeps its typed free-text `reason`.
     const reasonCounts = new Map<string, number>();
-    for (const r of remakes) {
-      reasonCounts.set(r.reason, (reasonCounts.get(r.reason) ?? 0) + 1);
+    for (const r of records) {
+      const bucket = remakeReasonBucket(r.reason, r.reasonKey);
+      reasonCounts.set(bucket, (reasonCounts.get(bucket) ?? 0) + 1);
     }
     const remakeReasons = Array.from(reasonCounts.entries())
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
 
+    // By-doctor breakdown.
+    const doctorCounts = new Map<string, number>();
+    for (const r of records) {
+      const name = r.doctorName?.trim() || "Unknown";
+      doctorCounts.set(name, (doctorCounts.get(name) ?? 0) + 1);
+    }
+    const byDoctor = Array.from(doctorCounts.entries())
+      .map(([doctorName, count]) => ({ doctorName, count }))
+      .sort((a, b) => b.count - a.count || a.doctorName.localeCompare(b.doctorName));
+
+    // By-reason alias (same as remakeReasons, consistent naming).
+    const byReason = remakeReasons.map((r) => ({ reason: r.reason, count: r.count }));
+
+    // By-type breakdown — maps category to a display label.
+    function categoryToType(category: string | null): string {
+      if (category === "crown_bridge") return "Restorative";
+      if (category === "removable") return "Removable";
+      if (category === "implant") return "Implant";
+      return "Other";
+    }
+    const typeCounts = new Map<string, number>();
+    for (const r of records) {
+      const t = categoryToType(r.category);
+      typeCounts.set(t, (typeCounts.get(t) ?? 0) + 1);
+    }
+    const byType = Array.from(typeCounts.entries())
+      .map(([typeName, count]) => ({ typeName, count }))
+      .sort((a, b) => b.count - a.count || a.typeName.localeCompare(b.typeName));
+
+    // Received dates are calendar days, so timezone offsets must not move them
+    // into a neighboring bucket.
+    const buckets = new Map<string, { periodStart: string; count: number }>();
+    for (const r of records) {
+      const { key, start } = calendarBucketKey(r.receivedDate, q.groupBy);
+      if (!buckets.has(key)) {
+        buckets.set(key, { periodStart: start.toISOString(), count: 0 });
+      }
+      buckets.get(key)!.count++;
+    }
+    const timeSeries = Array.from(buckets.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([period, { periodStart, count }]) => ({ period, periodStart, count }));
+
+    // Serialised records (newest first).
+    const serialisedRecords = records
+      .sort((a, b) => b.receivedDate.localeCompare(a.receivedDate))
+      .map((r) => ({
+        id: r.id,
+        caseNumber: r.caseNumber,
+        originalCaseId: r.originalCaseId,
+        originalCaseNumber: r.originalCaseNumber,
+        receivedAt: r.receivedDate,
+        reason: r.reason,
+        reasonKey: r.reasonKey,
+        recharged: r.recharged,
+        returnedToLab: r.returnedToLab,
+        category: r.category,
+        source: r.source,
+        doctorName: r.doctorName,
+      }));
+
     return ok(res, {
-      from: from.toISOString(),
-      to: to.toISOString(),
+      from: from?.toISOString() ?? null,
+      to: to?.toISOString() ?? null,
       timeZone: tz,
-      totalRemakes: remakes.length,
+      totalRemakes: records.length,
       rechargedRemakes,
       nonRechargedRemakes,
       remakeReasons,
+      byDoctor,
+      byReason,
+      byType,
+      timeSeries,
+      records: serialisedRecords,
+    });
+  }),
+);
+
+// ─────────────────── GET /stats/revenue-by-doctor ───────────────────
+//
+// Per-doctor revenue breakdown for a given period. Left-joins cases to
+// pull doctorName; invoices with no linked case surface under
+// "Unlinked / Manual". Requires billing/admin/owner role on the lab.
+const revenuByDoctorSchema = z.object({
+  organizationId: z.string().min(1),
+  periodStart: z.string().min(1),
+  periodEnd: z.string().min(1),
+  timeZone: z.string().min(1).max(64).optional(),
+});
+
+router.get(
+  "/revenue-by-doctor",
+  asyncHandler(async (req, res) => {
+    const q = revenuByDoctorSchema.parse(req.query);
+    await requireAnyRole((req as any).auth.userId, q.organizationId, BILLING_ROLES);
+    const { from, to } = parseWindow(q.periodStart, q.periodEnd);
+
+    const issued = sql<Date>`COALESCE(${invoices.issuedAt}, ${invoices.createdAt})`;
+    const rows = (await db
+      .select({
+        caseId: invoices.caseId,
+        issued,
+        total: invoices.total,
+        doctorName: cases.doctorName,
+      })
+      .from(invoices)
+      .leftJoin(cases, eq(invoices.caseId, cases.id))
+      .where(
+        and(
+          eq(invoices.labOrganizationId, q.organizationId),
+          isNull(invoices.deletedAt),
+          sql`${invoices.status} <> 'void'`,
+          finalizedInvoiceSql(),
+          gte(issued, from),
+          lte(issued, to),
+        ),
+      )) as Array<{
+      caseId: string | null;
+      issued: string | Date;
+      total: string;
+      doctorName: string | null;
+    }>;
+
+    const UNLINKED_LABEL = "Unlinked / Manual";
+    const doctorMap = new Map<string, { revenue: number; invoiceCount: number }>();
+
+    for (const r of rows) {
+      const d = new Date(r.issued as string);
+      if (Number.isNaN(d.getTime())) continue;
+      const doctor = (r.doctorName ?? "").trim() || UNLINKED_LABEL;
+      const cur = doctorMap.get(doctor) ?? { revenue: 0, invoiceCount: 0 };
+      cur.revenue += Number(r.total || 0);
+      cur.invoiceCount += 1;
+      doctorMap.set(doctor, cur);
+    }
+
+    // Sort by revenue descending; "Unlinked / Manual" always last.
+    const doctors = Array.from(doctorMap.entries())
+      .map(([doctorName, v]) => ({
+        doctorName,
+        revenue: v.revenue.toFixed(2),
+        invoiceCount: v.invoiceCount,
+      }))
+      .sort((a, b) => {
+        if (a.doctorName === UNLINKED_LABEL) return 1;
+        if (b.doctorName === UNLINKED_LABEL) return -1;
+        return Number(b.revenue) - Number(a.revenue);
+      });
+
+    return ok(res, {
+      periodStart: from.toISOString(),
+      periodEnd: to.toISOString(),
+      doctors,
     });
   }),
 );

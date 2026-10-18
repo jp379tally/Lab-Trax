@@ -22,6 +22,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockFindManySchedules = vi.hoisted(() => vi.fn());
 const mockFindManyInvoices = vi.hoisted(() => vi.fn());
 const mockSelectWhereOrgs = vi.hoisted(() => vi.fn());
+const mockSelectWherePayments = vi.hoisted(() =>
+  vi.fn(() => {
+    const result = Promise.resolve([]) as unknown as Promise<any[]> & {
+      orderBy: () => Promise<any[]>;
+    };
+    result.orderBy = () => result;
+    return result;
+  })
+);
 
 // Tracks every call to db.update() so tests can assert "did the scheduler
 // attempt to claim the schedule?" (i.e. did it reach the DB update step).
@@ -34,12 +43,6 @@ const mockUpdateReturning = vi.hoisted(() => vi.fn());
 // ---------------------------------------------------------------------------
 
 vi.mock("@workspace/db", () => {
-  const selectChain = {
-    from: vi.fn().mockReturnValue({
-      where: mockSelectWhereOrgs,
-    }),
-  };
-
   const whereChain = {
     returning: mockUpdateReturning,
     catch: vi.fn().mockResolvedValue(undefined),
@@ -57,7 +60,13 @@ vi.mock("@workspace/db", () => {
       invoiceLineItems: { findMany: vi.fn().mockResolvedValue([]) },
     },
     update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue(setChain) }),
-    select: vi.fn().mockReturnValue(selectChain),
+    select: vi.fn(() => ({
+      from: vi.fn((table: { __name?: string }) => ({
+        where: table.__name === "payments"
+          ? mockSelectWherePayments
+          : mockSelectWhereOrgs,
+      })),
+    })),
     insert: vi.fn().mockReturnValue({
       values: vi.fn().mockResolvedValue(undefined),
     }),
@@ -67,6 +76,15 @@ vi.mock("@workspace/db", () => {
     db,
     invoices: { labOrganizationId: {}, createdAt: {}, providerOrganizationId: {} },
     invoiceLineItems: { invoiceId: {}, sortOrder: {} },
+    payments: {
+      __name: "payments",
+      id: {},
+      invoiceId: {},
+      amount: {},
+      paidAt: {},
+      paymentMethod: {},
+      referenceNumber: {},
+    },
     organizations: { id: {}, name: {}, displayName: {}, billingEmail: {} },
     statementSchedules: {
       id: {},
@@ -93,6 +111,7 @@ vi.mock("@workspace/db", () => {
 // ---------------------------------------------------------------------------
 
 vi.mock("drizzle-orm", () => ({
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values }),
   eq: () => ({}),
   and: () => ({}),
   or: () => ({}),
@@ -403,5 +422,46 @@ describe("buildPracticeStatements — includedOrgIds filter", () => {
     expect(result[0]!.invoiceCount).toBe(2);
     expect(result[0]!.totalBilled).toBeCloseTo(350);
     expect(result[0]!.totalPaid).toBeCloseTo(300);
+  });
+
+  it("hydrates all payments for the monthly statement builder", async () => {
+    mockFindManyInvoices.mockResolvedValue([
+      makeInvoice("org-a", {
+        id: "inv-org-a",
+        balanceDue: "50.00",
+      }),
+    ]);
+    mockSelectWhereOrgs.mockResolvedValue([makeOrg("org-a", "Practice A")]);
+    const payments = [
+      {
+        id: "payment-1",
+        invoiceId: "inv-org-a",
+        amount: "25.00",
+        paidAt: new Date("2025-04-20T00:00:00Z"),
+        paymentMethod: "check",
+        referenceNumber: "CHK-1",
+      },
+      {
+        id: "payment-2",
+        invoiceId: "inv-org-a",
+        amount: "25.00",
+        paidAt: new Date("2025-04-21T00:00:00Z"),
+        paymentMethod: "ach",
+        referenceNumber: null,
+      },
+    ];
+    mockSelectWherePayments.mockImplementation(() => {
+      const result = Promise.resolve(payments) as unknown as Promise<any[]> & {
+        orderBy: () => Promise<any[]>;
+      };
+      result.orderBy = () => result;
+      return result;
+    });
+
+    const [result] = await buildPracticeStatements("lab-1", periodStart, periodEnd);
+
+    expect(result?.payments).toEqual(payments);
+    expect(result?.paidAt).toEqual(payments[1]!.paidAt);
+    expect(result?.paymentMethod).toBe("ach");
   });
 });

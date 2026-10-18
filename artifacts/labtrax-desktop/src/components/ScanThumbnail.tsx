@@ -11,6 +11,8 @@ interface ScanThumbnailProps {
   fileUrl: string;
   format: ScanFormat;
   authToken?: string | null;
+  textureUrl?: string | null;
+  pendingTextureCandidates?: PendingTextureCandidate[];
   /** Displayed size in CSS pixels. Default 44. */
   size?: number;
   /** Optional rounded class — caller can override. */
@@ -18,6 +20,45 @@ interface ScanThumbnailProps {
 }
 
 type Status = "idle" | "loading" | "ready" | "error";
+
+export interface PendingTextureCandidate {
+  fileName: string;
+  fileUrl: string;
+  mimeType: string;
+}
+
+const MAX_PLY_HEADER_BYTES = 64 * 1024;
+const NO_PENDING_TEXTURES: PendingTextureCandidate[] = [];
+
+/** Read the PLY's bounded header; the returned name is data, never a URL. */
+export function plyDeclaredTextureFilename(buffer: ArrayBuffer): string | null {
+  const bytes = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, MAX_PLY_HEADER_BYTES));
+  const header = new TextDecoder("utf-8").decode(bytes);
+  const end = header.indexOf("end_header");
+  if (end < 0) return null;
+  const textureLines = header.slice(0, end).split(/\r?\n/).filter((line) =>
+    /^comment\s+TextureFile(?:\s+|$)/i.test(line.trim()),
+  );
+  if (textureLines.length !== 1) return null;
+  const declared = textureLines[0]?.trim().match(/^comment\s+TextureFile\s+(.+?)\s*$/i)?.[1]?.trim();
+  return declared && declared.length <= 255 &&
+    !/[\u0000-\u001f/:\\]/.test(declared) && !declared.includes("..")
+    ? declared
+    : null;
+}
+
+export function matchPendingPlyTexture(
+  buffer: ArrayBuffer,
+  candidates: PendingTextureCandidate[],
+): PendingTextureCandidate | null {
+  const declared = plyDeclaredTextureFilename(buffer);
+  if (!declared) return null;
+  const matches = candidates.filter((candidate) =>
+    candidate.fileName === declared &&
+    /^image\/(?:jpeg|jpg|png|webp|bmp|gif|avif)$/i.test(candidate.mimeType),
+  );
+  return matches.length === 1 ? matches[0]! : null;
+}
 
 // Module-level cache so re-mounting the row (or scrolling through a long
 // case) doesn't trigger a re-download / re-render of the same scan.
@@ -54,6 +95,8 @@ async function fetchAndRender(
   format: ScanFormat,
   authToken: string | null | undefined,
   size: number,
+  textureUrl?: string | null,
+  pendingTextureCandidates: PendingTextureCandidate[] = [],
 ): Promise<string> {
   const cached = thumbCache.get(cacheKey);
   if (cached) return cached;
@@ -69,7 +112,25 @@ async function fetchAndRender(
       if (!res.ok) throw new Error(`status ${res.status}`);
       const buffer = await res.arrayBuffer();
       const base64 = arrayBufferToBase64(buffer);
-      const html = buildThumbnailHtml(base64, format, { size });
+      let texture: { base64: string; mimeType: string } | undefined;
+      const matchedTexture =
+        format === "ply" ? matchPendingPlyTexture(buffer, pendingTextureCandidates) : null;
+      const selectedTextureUrl = textureUrl ?? matchedTexture?.fileUrl;
+      if (selectedTextureUrl) {
+        try {
+          const textureRes = await fetch(selectedTextureUrl, { headers });
+          if (textureRes.ok) {
+            texture = {
+              base64: arrayBufferToBase64(await textureRes.arrayBuffer()),
+              mimeType:
+                textureRes.headers.get("content-type") || matchedTexture?.mimeType || "image/jpeg",
+            };
+          }
+        } catch {
+          // A missing texture should still produce a neutral scan thumbnail.
+        }
+      }
+      const html = buildThumbnailHtml(base64, format, { size }, texture);
 
       const iframe = document.createElement("iframe");
       iframe.style.position = "absolute";
@@ -132,47 +193,64 @@ export default function ScanThumbnail({
   fileUrl,
   format,
   authToken,
+  textureUrl,
+  pendingTextureCandidates = NO_PENDING_TEXTURES,
   size = 44,
   className,
 }: ScanThumbnailProps) {
+  // Texture relinking must invalidate both successful and failed entries.
+  // Include the canonical texture identity rather than caching only by mesh id.
+  const cacheIdentity = `${cacheKey}|texture:${textureUrl ?? ""}|pending:${pendingTextureCandidates
+    .map((candidate) => `${candidate.fileName}:${candidate.fileUrl}:${candidate.mimeType}`)
+    .sort()
+    .join(",")}`;
   const initial = useMemo<Status>(() => {
-    if (thumbCache.has(cacheKey)) return "ready";
-    if (failed.has(cacheKey)) return "error";
+    if (thumbCache.has(cacheIdentity)) return "ready";
+    if (failed.has(cacheIdentity)) return "error";
     return "loading";
-  }, [cacheKey]);
+  }, [cacheIdentity]);
   const [status, setStatus] = useState<Status>(initial);
   const [dataUrl, setDataUrl] = useState<string | null>(
-    () => thumbCache.get(cacheKey) ?? null,
+    () => thumbCache.get(cacheIdentity) ?? null,
   );
   const cancelled = useRef(false);
 
   useEffect(() => {
     cancelled.current = false;
-    if (thumbCache.has(cacheKey)) {
-      setDataUrl(thumbCache.get(cacheKey)!);
+    if (thumbCache.has(cacheIdentity)) {
+      setDataUrl(thumbCache.get(cacheIdentity)!);
       setStatus("ready");
       return;
     }
-    if (failed.has(cacheKey)) {
+    if (failed.has(cacheIdentity)) {
       setStatus("error");
       return;
     }
     setStatus("loading");
-    fetchAndRender(cacheKey, fileUrl, format, authToken, Math.max(64, size * 2))
+    setDataUrl(null);
+    fetchAndRender(
+      cacheIdentity,
+      fileUrl,
+      format,
+      authToken,
+      Math.max(64, size * 2),
+      textureUrl,
+      pendingTextureCandidates,
+    )
       .then((url) => {
         if (cancelled.current) return;
         setDataUrl(url);
         setStatus("ready");
       })
       .catch(() => {
-        failed.add(cacheKey);
+        failed.add(cacheIdentity);
         if (cancelled.current) return;
         setStatus("error");
       });
     return () => {
       cancelled.current = true;
     };
-  }, [cacheKey, fileUrl, format, authToken, size]);
+  }, [cacheIdentity, fileUrl, format, authToken, size, textureUrl, pendingTextureCandidates]);
 
   const baseClass =
     className ??

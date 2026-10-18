@@ -1,9 +1,19 @@
 import React, { useMemo, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Alert, ActivityIndicator } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  Alert,
+  ActivityIndicator,
+} from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
+import { useLocalSearchParams } from "expo-router";
+import { SalesInvoicesSection } from "@/components/SalesInvoicesSection";
+import { isSalesPreset } from "@/lib/sales-range";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
@@ -27,35 +37,25 @@ function csvCell(value: unknown): string {
 }
 
 function buildCsv(rows: BilledRow[]): string {
-  const header = ["Restoration", "Material", "Units billed", "Cases", "Total revenue", "Avg price"];
-  const lines = [header.map(csvCell).join(",")];
-  for (const r of rows) {
-    lines.push(
-      [
-        r.restorationType ?? "",
-        r.material ?? "",
-        r.unitsBilled ?? 0,
-        r.caseCount ?? 0,
-        toNumber(r.totalRevenue).toFixed(2),
-        toNumber(r.avgPrice).toFixed(2),
-      ]
-        .map(csvCell)
-        .join(","),
-    );
-  }
-  return lines.join("\n");
+  const columns = ["Restoration", "Material", "Units billed", "Cases", "Total revenue", "Avg price"];
+  return [
+    columns.map(csvCell).join(","),
+    ...rows.map((r) => [
+      r.restorationType ?? "", r.material ?? "", r.unitsBilled ?? 0,
+      r.caseCount ?? 0, toNumber(r.totalRevenue).toFixed(2), toNumber(r.avgPrice).toFixed(2),
+    ].map(csvCell).join(",")),
+  ].join("\n");
 }
 
 export default function ReportsScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const me = useMe().data;
-  // The billed report (/api/pricing/billed) is admin-only on the server
-  // (resolveLabId → owner/admin), so gate the screen on admin to match.
   const labOrgId = primaryAdminLabOrgId(me);
   const canEdit = canAdminAnyLab(me);
   const [exporting, setExporting] = useState(false);
-
+  const params = useLocalSearchParams<{ preset?: string }>();
+  const initialPreset = isSalesPreset(params.preset) ? params.preset : "month";
   const query = useQuery<BilledRow[]>({
     queryKey: ["billed-report", labOrgId ?? ""],
     enabled: !!labOrgId && canEdit,
@@ -67,49 +67,59 @@ export default function ReportsScreen() {
       return data.rows ?? [];
     },
   });
-
   const rows = query.data ?? [];
-  const totalRevenue = useMemo(() => rows.reduce((sum, r) => sum + toNumber(r.totalRevenue), 0), [rows]);
-  const totalUnits = useMemo(() => rows.reduce((sum, r) => sum + (r.unitsBilled ?? 0), 0), [rows]);
+  const totalRevenue = rows.reduce((sum, r) => sum + toNumber(r.totalRevenue), 0);
+  const totalUnits = rows.reduce((sum, r) => sum + (r.unitsBilled ?? 0), 0);
 
   async function handleExport() {
     if (rows.length === 0 || exporting) return;
     setExporting(true);
     try {
-      const available = await Sharing.isAvailableAsync();
-      if (!available) {
-        Alert.alert("Sharing unavailable", "Exporting isn’t supported on this device.");
+      if (!(await Sharing.isAvailableAsync())) {
+        Alert.alert("Sharing unavailable", "Exporting isn't supported on this device.");
         return;
       }
       const stamp = new Date().toISOString().slice(0, 10);
       const uri = `${FileSystem.cacheDirectory ?? ""}billed-report-${stamp}.csv`;
       await FileSystem.writeAsStringAsync(uri, buildCsv(rows));
       await Sharing.shareAsync(uri, {
-        mimeType: "text/csv",
-        dialogTitle: "Export billed report",
-        UTI: "public.comma-separated-values-text",
+        mimeType: "text/csv", dialogTitle: "Export billed report", UTI: "public.comma-separated-values-text",
       });
     } catch {
-      Alert.alert("Couldn’t export", "Please try again.");
+      Alert.alert("Couldn't export", "Please try again.");
     } finally {
       setExporting(false);
     }
   }
 
+  const salesInvoices = canEdit && labOrgId ? (
+    <SalesInvoicesSection key={`${labOrgId}:${initialPreset}`} organizationId={labOrgId} initialPreset={initialPreset} />
+  ) : null;
+
   const header =
-    rows.length > 0 ? (
-      <Card style={styles.summary}>
-        <View style={styles.summaryCol}>
-          <Text style={styles.summaryValue}>{formatMoney(totalRevenue)}</Text>
-          <Text style={styles.summaryLabel}>Total billed</Text>
-        </View>
-        <View style={styles.summaryDivider} />
-        <View style={styles.summaryCol}>
-          <Text style={styles.summaryValue}>{totalUnits}</Text>
-          <Text style={styles.summaryLabel}>Units</Text>
-        </View>
-      </Card>
-    ) : null;
+    <>
+      {salesInvoices}
+      <Text style={styles.name}>Restoration breakdown · All dates</Text>
+      {query.isLoading && <ActivityIndicator color={colors.tint} />}
+      {query.isError && (
+        <Pressable onPress={() => query.refetch()} accessibilityRole="button" testID="restoration-report-retry">
+          <Text style={styles.meta}>Couldn't load restoration breakdown. Tap to retry.</Text>
+        </Pressable>
+      )}
+      {rows.length > 0 && (
+        <Card style={styles.summary}>
+          <View style={styles.summaryCol}>
+            <Text style={styles.summaryValue}>{formatMoney(totalRevenue)}</Text>
+            <Text style={styles.summaryLabel}>Restoration billed · All dates</Text>
+          </View>
+          <View style={styles.summaryDivider} />
+          <View style={styles.summaryCol}>
+            <Text style={styles.summaryValue}>{totalUnits}</Text>
+            <Text style={styles.summaryLabel}>Units</Text>
+          </View>
+        </Card>
+      )}
+    </>;
 
   const exportBtn =
     canEdit && labOrgId && rows.length > 0 ? (
@@ -125,15 +135,15 @@ export default function ReportsScreen() {
   return (
     <ListScreen<BilledRow>
       title="Reports"
-      subtitle="Billed revenue by restoration"
-      query={query}
+      subtitle="Sales invoices and restoration breakdown"
+      query={{ ...query, isLoading: false, isError: false }}
       keyExtractor={(r) => `${r.restorationType ?? "?"}:${r.material ?? "?"}`}
       ListHeader={header}
       headerRight={exportBtn}
       emptyIcon="bar-chart-outline"
-      emptyTitle="No billed data"
-      emptyBody="Billed revenue will appear here once invoices are created."
-      errorTitle="Couldn’t load report"
+      emptyTitle={query.isLoading || query.isError ? "" : "No restoration data"}
+      emptyBody={query.isLoading || query.isError ? "" : "The restoration breakdown will appear once restoration charges are billed."}
+      errorTitle="Couldn't load report"
       blocked={
         !canEdit
           ? {

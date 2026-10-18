@@ -1,0 +1,64 @@
+name: Desktop backup packaged Windows smoke
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-backup-windows-smoke.yml"
+      - "artifacts/labtrax-desktop/electron/**"
+      - "artifacts/labtrax-desktop/src/lib/local-backup-execution.ts"
+      - "artifacts/labtrax-desktop/scripts/backup-download-packaged-smoke.mjs"
+      - "artifacts/labtrax-desktop/scripts/backup-download-smoke.cjs"
+      - "artifacts/labtrax-desktop/package.json"
+      - "artifacts/labtrax-desktop/electron-builder.yml"
+      - "artifacts/labtrax-desktop/vite.electron.config.ts"
+      - "artifacts/labtrax-desktop/src/electron-pwa-register.ts"
+      - "pnpm-lock.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packaged-backup-smoke:
+    name: Exercise backup download in packaged Windows app
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and exercise a fresh packaged app
+        run: pnpm --filter @workspace/labtrax-desktop run electron:backup-smoke
+
+  installed-backup-smoke:
+    name: Exercise backup download in NSIS-installed Windows app
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build, install, and exercise the unsigned setup package
+        run: pnpm --filter @workspace/labtrax-desktop run electron:backup-installer-smoke

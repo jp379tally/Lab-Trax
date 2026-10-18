@@ -38,12 +38,16 @@ maybe("RevenueCat webhook → subscription transitions (db integration)", () => 
   beforeAll(async () => {
     process.env["JWT_SECRET"] =
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-rc-webhook";
+    process.env["REVENUECAT_WEBHOOK_SECRET"] = "revenuecat-test-webhook-secret";
     const dbMod = await import("@workspace/db");
     const appMod = await import("../app.js");
     db = dbMod.db;
     subs = dbMod.subscriptions;
     subEvents = dbMod.subscriptionEvents;
     app = appMod.default;
+    // Health is available before tenant routes mount. Wait for the actual
+    // router instead of racing the deliberate startup-503 gateway.
+    await (await import("./index.js")).labtraxRoutesReady;
   });
 
   afterAll(async () => {
@@ -121,6 +125,7 @@ maybe("RevenueCat webhook → subscription transitions (db integration)", () => 
   ) {
     return request(app)
       .post("/api/billing/webhook/revenuecat")
+      .set("Authorization", "Bearer revenuecat-test-webhook-secret")
       .send({
         event: {
           type: eventType,
@@ -232,7 +237,7 @@ maybe("RevenueCat webhook → subscription transitions (db integration)", () => 
     }
   });
 
-  it("CANCELLATION transitions active → grace and does NOT clear paymentMethodOnFile", async () => {
+  it("CANCELLATION preserves paid access until EXPIRATION", async () => {
     const appUserId = rid("rc");
     const subId = await insertSub({
       appUserId,
@@ -244,8 +249,8 @@ maybe("RevenueCat webhook → subscription transitions (db integration)", () => 
       expect(res.status).toBe(200);
 
       const row = await fetchSub(subId);
-      expect(row.status).toBe("grace");
-      expect(row.gracePeriodStartAt).not.toBeNull();
+      expect(row.status).toBe("active");
+      expect(row.gracePeriodStartAt).toBeNull();
       expect(row.paymentMethodOnFile).toBe(true);
     } finally {
       await deleteSubs([subId]);
@@ -350,6 +355,7 @@ maybe("RevenueCat webhook → subscription transitions (db integration)", () => 
   it("missing app_user_id returns 400", async () => {
     const res = await request(app)
       .post("/api/billing/webhook/revenuecat")
+      .set("Authorization", "Bearer revenuecat-test-webhook-secret")
       .send({ event: { type: "INITIAL_PURCHASE" } });
     expect(res.status).toBe(400);
     expect(res.body.ok).toBe(false);

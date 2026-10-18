@@ -22,6 +22,10 @@ export default defineConfig({
     runtimeErrorOverlay(),
     VitePWA({
       registerType: "autoUpdate",
+      // Registration lives in src/pwa-updater.ts so the running app can
+      // periodically check production for a fresh worker, rather than only
+      // discovering one when the user manually reloads the page.
+      injectRegister: false,
       strategies: "injectManifest",
       srcDir: "src",
       filename: "sw.ts",
@@ -65,9 +69,6 @@ export default defineConfig({
             m.cartographer({
               root: path.resolve(import.meta.dirname, ".."),
             }),
-          ),
-          await import("@replit/vite-plugin-dev-banner").then((m) =>
-            m.devBanner(),
           ),
         ]
       : []),

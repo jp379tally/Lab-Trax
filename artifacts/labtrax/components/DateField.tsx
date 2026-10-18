@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, Pressable, Modal, StyleSheet } from "react-native";
+import { View, Text, Pressable, Modal, StyleSheet, Keyboard } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { Ionicons } from "@expo/vector-icons";
+import { TypedCaseDateEntry } from "@/components/TypedCaseDateEntry";
+import { DismissKeyboardView } from "@/components/ui/DismissKeyboardView";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 
@@ -32,8 +35,7 @@ function parseYMD(v: string | null | undefined): { y: number; m: number; d: numb
 function formatDateInput(value: string | null | undefined): string | null {
   const p = parseYMD(value);
   if (!p) return null;
-  const d = new Date(p.y, p.m - 1, p.d);
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return `${String(p.m).padStart(2, "0")}/${String(p.d).padStart(2, "0")}/${p.y}`;
 }
 
 function todayYMD(): { y: number; m: number; d: number } {
@@ -65,6 +67,9 @@ export function DateField({
   placeholder = "Select a date",
   title = "Due date",
   error,
+  minDate,
+  maxDate,
+  allowTyping = false,
   testID,
 }: {
   /** Date-only string in "YYYY-MM-DD" form, or "" / null when unset. */
@@ -74,11 +79,21 @@ export function DateField({
   /** Heading shown at the top of the calendar sheet. */
   title?: string;
   error?: boolean;
+  /**
+   * Inclusive bounds as "YYYY-MM-DD". Days outside them are shown but cannot
+   * be picked — the equivalent of a web date input's min/max, which is how a
+   * from/to pair keeps itself from inverting.
+   */
+  minDate?: string | null;
+  maxDate?: string | null;
+  /** Offer strict MM/DD/YYYY entry in addition to the calendar. */
+  allowTyping?: boolean;
   testID?: string;
 }) {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [open, setOpen] = useState(false);
+  const [typing, setTyping] = useState(false);
   const [view, setView] = useState<{ y: number; m: number }>(() => {
     const p = parseYMD(value) ?? todayYMD();
     return { y: p.y, m: p.m };
@@ -106,7 +121,7 @@ export function DateField({
     <>
       <Pressable
         style={[styles.trigger, error && styles.triggerError]}
-        onPress={() => setOpen(true)}
+        onPress={() => { setTyping(false); setOpen(true); }}
         testID={testID}
       >
         <Text style={[styles.triggerText, !label && styles.triggerPlaceholder]}>
@@ -115,10 +130,23 @@ export function DateField({
         <Ionicons name="calendar-outline" size={18} color={colors.textSecondary} />
       </Pressable>
 
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
-          <Pressable style={styles.sheet} onPress={() => undefined}>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => { Keyboard.dismiss(); setOpen(false); }}>
+        <KeyboardAvoidingView style={styles.keyboardContainer} behavior="padding">
+        <Pressable style={styles.backdrop} onPress={() => { Keyboard.dismiss(); setOpen(false); }}>
+          <DismissKeyboardView style={styles.sheet}>
             <Text style={styles.sheetTitle}>{title}</Text>
+            {typing ? (
+              <TypedCaseDateEntry
+                value={value}
+                minDate={minDate}
+                maxDate={maxDate}
+                testID={testID ?? "cal"}
+                onBack={() => setTyping(false)}
+                onCancel={() => setOpen(false)}
+                onConfirm={(iso) => { onChange(iso); setOpen(false); }}
+              />
+            ) : (
+            <>
             <View style={styles.calHeader}>
               <Pressable
                 style={styles.calNav}
@@ -155,15 +183,33 @@ export function DateField({
                 const isSel =
                   !!selected && selected.y === view.y && selected.m === view.m && selected.d === d;
                 const isToday = today.y === view.y && today.m === view.m && today.d === d;
+                const iso = ymd(view.y, view.m, d);
+                const dayTestID = testID ? `${testID}-day-${d}` : `cal-day-${d}`;
+                // Out of range: shown for context but not a target at all, so
+                // no press path exists that could produce an invalid value.
+                if ((!!minDate && iso < minDate) || (!!maxDate && iso > maxDate)) {
+                  return (
+                    <View
+                      key={`d-${d}`}
+                      style={styles.calCell}
+                      accessibilityState={{ disabled: true }}
+                      testID={dayTestID}
+                    >
+                      <Text style={[styles.calCellText, styles.calCellTextDisabled]}>
+                        {d}
+                      </Text>
+                    </View>
+                  );
+                }
                 return (
                   <Pressable
                     key={`d-${d}`}
                     style={[styles.calCell, isSel && styles.calCellSelected]}
                     onPress={() => {
-                      onChange(ymd(view.y, view.m, d));
+                      onChange(iso);
                       setOpen(false);
                     }}
-                    testID={testID ? `${testID}-day-${d}` : `cal-day-${d}`}
+                    testID={dayTestID}
                   >
                     <Text
                       style={[
@@ -178,6 +224,16 @@ export function DateField({
                 );
               })}
             </View>
+            {allowTyping && <Pressable
+              style={styles.typeButton}
+              onPress={() => setTyping(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Type date in MM/DD/YYYY format"
+              testID={idFor("type")}
+            >
+              <Ionicons name="create-outline" size={18} color={colors.tint} />
+              <Text style={styles.footerBtnText}>Type date (MM/DD/YYYY)</Text>
+            </Pressable>}
             <View style={styles.calFooter}>
               <Pressable
                 style={styles.footerBtn}
@@ -193,8 +249,11 @@ export function DateField({
                 <Text style={styles.footerBtnText}>Cancel</Text>
               </Pressable>
             </View>
-          </Pressable>
+            </>
+            )}
+          </DismissKeyboardView>
         </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
     </>
   );
@@ -202,6 +261,7 @@ export function DateField({
 
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
+    keyboardContainer: { flex: 1 },
     trigger: {
       flexDirection: "row",
       alignItems: "center",
@@ -263,10 +323,12 @@ function makeStyles(c: ThemeColors) {
     },
     calCellTextToday: { color: c.tint, fontWeight: "700" },
     calCellTextSelected: { backgroundColor: c.tint, color: c.textInverse },
+    calCellTextDisabled: { color: c.textTertiary, opacity: 0.4 },
     calFooter: {
       flexDirection: "row",
       justifyContent: "space-between",
     },
+    typeButton: { flexDirection: "row", gap: Spacing.sm, alignItems: "center", alignSelf: "center", padding: Spacing.sm },
     footerBtn: { paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md },
     footerBtnText: { ...Typography.bodySemibold, color: c.tint },
   });

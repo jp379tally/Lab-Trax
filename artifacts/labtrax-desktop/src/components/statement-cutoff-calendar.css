@@ -1,0 +1,40 @@
+.statement-cutoff-popup .rdp-root {
+  --rdp-accent-color: hsl(var(--primary));
+  --rdp-accent-background-color: hsl(var(--primary) / 0.1);
+  --rdp-day-width: 44px;
+  --rdp-day-height: 40px;
+  --rdp-day_button-width: 40px;
+  --rdp-day_button-height: 38px;
+  width: 100%;
+}
+.statement-cutoff-popup .rdp-months,
+.statement-cutoff-popup .rdp-month,
+.statement-cutoff-popup .rdp-month_grid {
+  width: 100%;
+  max-width: none;
+}
+.statement-cutoff-popup .rdp-month_grid { table-layout: fixed; }
+.statement-cutoff-popup .rdp-day_button { margin: auto; }
+.statement-cutoff-popup .rdp-selected .rdp-day_button {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+.statement-cutoff-popup .rdp-day_button:focus-visible,
+.statement-cutoff-popup .rdp-button_previous:focus-visible,
+.statement-cutoff-popup .rdp-button_next:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 2px;
+}
+.statement-cutoff-popup .rdp-dropdown { background: hsl(var(--card)); color: hsl(var(--foreground)); }
+@media (max-width: 360px) {
+  .statement-cutoff-popup .rdp-root {
+    --rdp-day_button-width: 34px;
+    --rdp-day-width: 36px;
+  }
+}
+@media (max-height: 440px) {
+  .statement-cutoff-popup .rdp-root {
+    --rdp-day-height: 30px;
+    --rdp-day_button-height: 28px;
+  }
+}

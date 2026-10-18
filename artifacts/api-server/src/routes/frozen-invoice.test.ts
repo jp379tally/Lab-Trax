@@ -17,7 +17,7 @@
  * These tests are gated on DATABASE_URL and skip cleanly when it is not set.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
 
@@ -64,6 +64,37 @@ maybe("frozen-invoice (db integration)", () => {
       expiresAt,
     });
     return token;
+  }
+
+  async function waitForOrderedInvoiceLockChain(
+    blockerPid: number,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const result = await (dbMod as any).pool.query(
+        `WITH RECURSIVE blocked(pid) AS (
+           SELECT pid
+             FROM pg_stat_activity
+            WHERE $1 = ANY(pg_blocking_pids(pid))
+           UNION
+           SELECT activity.pid
+             FROM pg_stat_activity activity
+             JOIN blocked blocker
+               ON blocker.pid = ANY(pg_blocking_pids(activity.pid))
+         )
+         SELECT
+           (SELECT count(*)
+              FROM pg_stat_activity
+             WHERE $1 = ANY(pg_blocking_pids(pid)))::int AS direct_count,
+           (SELECT count(*) FROM blocked)::int AS total_count`,
+        [blockerPid],
+      );
+      const row = result.rows[0];
+      if (Number(row.direct_count) === 1 && Number(row.total_count) >= 2) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(
+      "Timed out waiting for single-case deletion behind the sorted invoice-lock chain",
+    );
   }
 
   beforeAll(async () => {
@@ -195,6 +226,137 @@ maybe("frozen-invoice (db integration)", () => {
     expect(inv.caseDeletedAt).toBeTruthy();
     expect(inv.caseDeletedByUserId).toBe(adminUserId);
   });
+
+  it("locks several linked invoices in stable order without deadlocking an overlapping writer", async () => {
+    const { db, cases, invoices, pool } = dbMod as any;
+    const multiInvoiceCaseId = rid("case-multilock");
+    await db.insert(cases).values({
+      id: multiInvoiceCaseId,
+      caseNumber: rid("FRZ-MULTILOCK"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      doctorName: "Dr. Test",
+      patientFirstName: "Pat",
+      patientLastName: "Multi Invoice",
+      status: "active",
+      createdByUserId: adminUserId,
+    });
+
+    const firstInvoiceId = rid("inv-multilock");
+    const secondInvoiceId = rid("inv-multilock");
+    await db.insert(invoices).values([
+      {
+        id: firstInvoiceId,
+        invoiceNumber: rid("FRZ-MULTILOCK-INV"),
+        caseId: multiInvoiceCaseId,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        status: "open",
+        subtotal: "131.00",
+        tax: "0.00",
+        discount: "0.00",
+        total: "131.00",
+        balanceDue: "131.00",
+        createdByUserId: adminUserId,
+      },
+      {
+        id: secondInvoiceId,
+        invoiceNumber: rid("FRZ-MULTILOCK-INV"),
+        caseId: multiInvoiceCaseId,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        status: "open",
+        subtotal: "247.00",
+        tax: "0.00",
+        discount: "0.00",
+        total: "247.00",
+        balanceDue: "247.00",
+        createdByUserId: adminUserId,
+      },
+    ]);
+
+    const [lowerInvoiceId, higherInvoiceId] = [
+      firstInvoiceId,
+      secondInvoiceId,
+    ].sort();
+    const holder = await pool.connect();
+    const writer = await pool.connect();
+    let writerHighLock: Promise<unknown> | undefined;
+    let deleteRequest: Promise<request.Response> | undefined;
+
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        [higherInvoiceId],
+      );
+      const holderPid = Number(
+        (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid,
+      );
+
+      await writer.query("BEGIN");
+      await writer.query(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        [lowerInvoiceId],
+      );
+      writerHighLock = writer.query(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        [higherInvoiceId],
+      );
+
+      deleteRequest = Promise.resolve(
+        request(appMod.default)
+          .delete(`/api/cases/${multiInvoiceCaseId}`)
+          .set("Authorization", `Bearer ${adminToken}`),
+      );
+
+      // The writer is the holder's only direct waiter. Single-case deletion
+      // must queue behind the writer's lower invoice lock, proving it requests
+      // every linked invoice lock in sorted order rather than query order.
+      await waitForOrderedInvoiceLockChain(holderPid);
+      await holder.query("COMMIT");
+      await writerHighLock;
+      await writer.query("COMMIT");
+
+      const response = await deleteRequest;
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.data?.deleted).toBe(true);
+
+      const rows = await db
+        .select({
+          id: invoices.id,
+          frozen: invoices.frozen,
+          balanceDue: invoices.balanceDue,
+          total: invoices.total,
+          deletedAt: invoices.deletedAt,
+          caseDeletedAt: invoices.caseDeletedAt,
+        })
+        .from(invoices)
+        .where(inArray(invoices.id, [firstInvoiceId, secondInvoiceId]));
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row.frozen).toBe(true);
+        expect(Number(row.balanceDue)).toBe(0);
+        expect(row.deletedAt).toBeNull();
+        expect(row.caseDeletedAt).not.toBeNull();
+      }
+      expect(
+        rows
+          .map((row: any) => Number(row.total))
+          .sort((a: number, b: number) => a - b),
+      ).toEqual([131, 247]);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      await writer.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+      writer.release();
+      await Promise.allSettled(
+        [writerHighLock, deleteRequest].filter(
+          (promise): promise is Promise<unknown> => promise !== undefined,
+        ),
+      );
+    }
+  }, 30_000);
 
   it("frozen invoice note uses actor initials derived from firstName+lastName", async () => {
     const { db, invoices } = dbMod as any;

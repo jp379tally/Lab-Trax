@@ -17,7 +17,7 @@
  * rendered output only.
  */
 
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, fireEvent, waitFor, act, screen } from "@testing-library/react";
 import { vi, describe, it, expect, beforeEach, beforeAll, afterAll, afterEach } from "vitest";
 import { DashboardDropZone } from "../DashboardDropZone";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
@@ -55,15 +55,16 @@ vi.mock("@/components/DoctorNamePicker", () => ({
 }));
 
 // PDF conversion depends on pdfjs-dist + canvas — mock both.
+const pdfFixture = vi.hoisted(() => ({ pages: 1, getPage: vi.fn() }));
 vi.mock("pdfjs-dist", () => ({
   getDocument: () => ({
     promise: Promise.resolve({
-      numPages: 1,
-      getPage: () =>
+      get numPages() { return pdfFixture.pages; },
+      getPage: pdfFixture.getPage.mockImplementation(() =>
         Promise.resolve({
           getViewport: () => ({ width: 800, height: 600 }),
           render: () => ({ promise: Promise.resolve() }),
-        }),
+        })),
     }),
   }),
   GlobalWorkerOptions: { workerSrc: "" },
@@ -201,6 +202,7 @@ function triggerFileInput(container: HTMLElement, files: File[]) {
 
 describe("DashboardDropZone — AI analyze path", () => {
   beforeEach(() => {
+  pdfFixture.pages = 1;
     vi.clearAllMocks();
     // Default stubs for the background queries.
     mockApiFetch.mockImplementation((path: string) => {
@@ -294,6 +296,19 @@ describe("DashboardDropZone — AI analyze path", () => {
     expect(capturedBody.imageBase64).toMatch(/^data:/);
   });
 
+  it("rejects an oversized PDF before rendering any page or submitting analysis", async () => {
+    pdfFixture.pages = 11;
+    const { container } = renderDropZone();
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+    await act(async () => {
+      triggerFileInput(container, [makePdfFile()]);
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    await waitFor(() => expect(screen.getByText(/at most 10 prescription pages/)).toBeTruthy());
+    expect(pdfFixture.getPage).not.toHaveBeenCalled();
+    expect(mockApiFetch.mock.calls.flat()).not.toContain("/analyze-prescription");
+  });
+
   it("calls /analyze-prescription for a PDF (PDF-to-image conversion path)", async () => {
     let analyzeCalled = false;
 
@@ -321,6 +336,43 @@ describe("DashboardDropZone — AI analyze path", () => {
     await waitFor(() => {
       expect(analyzeCalled).toBe(true);
     }, { timeout: 4000 });
+  });
+
+  it("shows accurate-reader progress while the analysis request is pending", async () => {
+    let resolveAnalyze!: (value: typeof VALID_RX_RESPONSE) => void;
+    let capturedBody: Record<string, unknown> | null = null;
+    mockApiFetch.mockImplementation((path: string, opts?: any) => {
+      if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
+      if (path.startsWith("/organizations"))
+        return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
+      if (path === "/cases/doctor-names") return Promise.resolve([]);
+      if (path === "/cases/doctor-directory") return Promise.resolve([]);
+      if (path === "/analyze-prescription") {
+        capturedBody = JSON.parse(opts?.body ?? "{}");
+        return new Promise((resolve) => {
+          resolveAnalyze = resolve;
+        });
+      }
+      return Promise.reject(new Error(`Unexpected: ${path}`));
+    });
+
+    const { container } = renderDropZone();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+      triggerFileInput(container, [makeJpegFile()]);
+    });
+
+    await waitFor(() =>
+      expect(capturedBody).not.toBeNull(),
+    );
+    expect(container.textContent).toMatch(/accurate AI reader/i);
+    expect(capturedBody).not.toHaveProperty("fast");
+    expect(capturedBody).toMatchObject({ desktopReader: true });
+
+    await act(async () => resolveAnalyze(VALID_RX_RESPONSE));
+    await waitFor(() =>
+      expect(container.textContent).toMatch(/AI read this prescription/i),
+    );
   });
 
   it("renders the doctorName from the fixture in rxConfirm state", async () => {

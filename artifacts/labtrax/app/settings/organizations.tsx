@@ -18,10 +18,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell, SettingsSection } from "@/components/settings/SettingsRow";
+import { scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
 import { FormSheet } from "@/components/ui/FormSheet";
 import { resilientFetch, getApiUrl } from "@/lib/query-client";
 import { ME_QUERY_KEY } from "@/lib/auth-me";
 import { formatPhone } from "@/lib/data";
+import { normalizeItemName } from "@workspace/item-name-match";
 
 interface OrgMembership {
   id: string;
@@ -44,6 +46,7 @@ interface OrgMembership {
     duplicateSuggestionThreshold?: number | null;
     defaultCaseDueDays?: number | null;
     capCaseDueToDefault?: boolean | null;
+    invoiceDueDayOfMonth?: number | null;
     logoUrl?: string | null;
     logoplacements?: string[] | null;
     logoPdfSize?: string | null;
@@ -101,6 +104,13 @@ const INVITE_ROLE_LABELS: Record<string, string> = {
 function inviteRoleLabel(role: string | null): string {
   if (!role) return "Team member";
   return INVITE_ROLE_LABELS[role] ?? role.replace(/_/g, " ");
+}
+
+/** Delivery outcome returned by the invite create/resend endpoints. */
+interface InviteEmailDelivery {
+  sent: boolean;
+  status: "sent" | "failed" | "skipped";
+  reason?: string | null;
 }
 
 /** A sender-side invite as returned by GET /api/organizations/:orgId/invites. */
@@ -198,6 +208,10 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
     !!(org as any)?.capCaseDueToDefault
   );
   const [capSaved, setCapSaved] = useState(false);
+  const [invoiceDay, setInvoiceDay] = useState<string>(
+    org?.invoiceDueDayOfMonth != null ? String(org.invoiceDueDayOfMonth) : ""
+  );
+  const [invoiceDaySaved, setInvoiceDaySaved] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
   const logoXhrRef = useRef<XMLHttpRequest | null>(null);
@@ -301,9 +315,28 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
           (body as any)?.message || (body as any)?.error || `Failed (${res.status})`,
         );
       }
+      return ((body as any)?.data ?? body) as { emailDelivery?: InviteEmailDelivery };
     },
-    onSuccess: () => {
-      Alert.alert("Invite email sent", "The invitation email was sent again.");
+    // Resend is non-fatal: it returns 200 with an `emailDelivery` outcome even
+    // when the email fails or is skipped. Read that outcome and report truthfully
+    // instead of always claiming the email was sent.
+    onSuccess: (resent) => {
+      const delivery = resent?.emailDelivery;
+      if (delivery && !delivery.sent) {
+        if (delivery.status === "skipped" || delivery.reason === "recipient_opted_out") {
+          Alert.alert(
+            "Invite link refreshed — email not sent",
+            "The recipient has opted out of invite emails. Share the invite with them directly.",
+          );
+        } else {
+          Alert.alert(
+            "Invite link refreshed, but the email was not sent",
+            "The invite was refreshed, but the email failed to send. Try again or contact them directly.",
+          );
+        }
+      } else {
+        Alert.alert("Invite email sent", "The invitation email was sent again.");
+      }
       qc.invalidateQueries({ queryKey: ["org-invites", orgId] });
     },
     onError: (err: Error) => {
@@ -395,34 +428,6 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
       qc.invalidateQueries({ queryKey: ["lab-team", orgId] });
     },
     onError: (err: Error) => Alert.alert("Could not remove member", err.message),
-  });
-
-  const transferOwnershipMutation = useMutation({
-    mutationFn: async ({ targetMembershipId, selfMembershipId }: { targetMembershipId: string; selfMembershipId: string }) => {
-      const r1 = await resilientFetch(`/api/organizations/memberships/${targetMembershipId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: "owner" }),
-      });
-      if (!r1.ok) {
-        const e = await r1.json().catch(() => ({}));
-        throw new Error((e as any)?.error || `Failed (${r1.status})`);
-      }
-      const r2 = await resilientFetch(`/api/organizations/memberships/${selfMembershipId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: "admin" }),
-      });
-      if (!r2.ok) {
-        const e = await r2.json().catch(() => ({}));
-        throw new Error((e as any)?.error || `Failed (${r2.status})`);
-      }
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["lab-team", orgId] });
-      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
-    },
-    onError: (err: Error) => Alert.alert("Could not transfer ownership", err.message),
   });
 
   const leaveMutation = useMutation({
@@ -527,6 +532,27 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
     onError: (err: Error) => Alert.alert("Could not save cap setting", err.message),
   });
 
+  const invoiceDayMutation = useMutation({
+    mutationFn: async (value: number | null) => {
+      if (!orgId) throw new Error("Unknown org ID.");
+      const res = await resilientFetch(`/api/organizations/${orgId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invoiceDueDayOfMonth: value }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Failed (${res.status})`);
+      }
+    },
+    onSuccess: () => {
+      setInvoiceDaySaved(true);
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      setTimeout(() => setInvoiceDaySaved(false), 2000);
+    },
+    onError: (err: Error) => Alert.alert("Could not save invoice due day", err.message),
+  });
+
   async function pickLogo() {
     if (!orgId) return;
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -616,6 +642,15 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
           </Text>
         </View>
       </View>
+
+      {m.role === "owner" && m.status === "active" && (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => router.push({ pathname: "/settings/owner/danger-zone", params: { organizationId: orgId, transferOnly: "1" } })}
+        >
+          <Text style={{ color: colors.tint, marginTop: Spacing.md }}>Transfer ownership…</Text>
+        </Pressable>
+      )}
 
       {type === "lab" && (
         <View style={[styles.detailsSection, { borderTopColor: colors.border }]}>
@@ -937,7 +972,7 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
             )}
           </View>
           <Text style={[styles.dupSub, { color: colors.textTertiary }]}>
-            Days after received date to set as due date on new cases. Leave blank for no default.
+            Days after the created date to set as due date on new cases. Leave blank for no default.
           </Text>
           <View style={styles.stepRow}>
             <TextInput
@@ -1030,6 +1065,62 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
         </View>
       )}
 
+      {/* Invoice due day of month — admin/owner, lab orgs only */}
+      {isAdmin && orgId && org?.type === "lab" && (
+        <View style={[styles.dupSection, { borderTopColor: colors.border }]}>
+          <View style={styles.dupHeader}>
+            <Text style={[styles.dupTitle, { color: colors.text }]}>Invoice due day</Text>
+            {invoiceDaySaved && (
+              <View style={[styles.dupSaved, { backgroundColor: colors.success + "20" }]}>
+                <Ionicons name="checkmark" size={12} color={colors.success} />
+                <Text style={[styles.dupSavedText, { color: colors.success }]}>Saved</Text>
+              </View>
+            )}
+          </View>
+          <Text style={[styles.dupSub, { color: colors.textTertiary }]}>
+            Day of the month (1–28) on which new invoices become due. Leave blank to use the default (10th).
+          </Text>
+          <View style={styles.stepRow}>
+            <TextInput
+              style={{
+                height: 34,
+                width: 72,
+                borderRadius: 8,
+                borderWidth: 1,
+                paddingHorizontal: 10,
+                fontSize: 14,
+                borderColor: colors.border,
+                backgroundColor: colors.surfaceAlt,
+                color: colors.text,
+              }}
+              value={invoiceDay}
+              onChangeText={setInvoiceDay}
+              keyboardType="number-pad"
+              placeholder="e.g. 10"
+              placeholderTextColor={colors.textTertiary}
+              maxLength={2}
+            />
+            <Text style={[styles.dupSub, { color: colors.textSecondary, marginLeft: 6 }]}>of month</Text>
+            <View style={styles.dupStepFill} />
+            <Pressable
+              style={[styles.dupSaveBtn, { backgroundColor: colors.tint }, invoiceDayMutation.isPending && { opacity: 0.6 }]}
+              onPress={() => {
+                const val = invoiceDay.trim();
+                const num = val === "" ? null : parseInt(val, 10);
+                if (num !== null && (isNaN(num) || num < 1 || num > 28)) {
+                  Alert.alert("Invalid value", "Enter a day between 1 and 28.");
+                  return;
+                }
+                invoiceDayMutation.mutate(num);
+              }}
+              disabled={invoiceDayMutation.isPending}
+            >
+              <Text style={styles.dupSaveBtnText}>{invoiceDayMutation.isPending ? "Saving…" : "Save"}</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
       {/* Members section — lab orgs; all members see the list, only admins get controls */}
       {org?.type === "lab" && orgId && (
         <View style={[styles.dupSection, { borderTopColor: colors.border }]}>
@@ -1048,7 +1139,7 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
             function showRolePicker() {
               if (!member.membershipId) return;
               const roles: Array<{ label: string; value: string }> = [
-                ...(isCallerOwner ? [{ label: "Owner", value: "owner" }] : []),
+                ...(isCallerOwner && member.status === "active" ? [{ label: "Owner", value: "owner" }] : []),
                 { label: "Admin", value: "admin" },
                 { label: "Billing", value: "billing" },
                 { label: "User", value: "user" },
@@ -1069,9 +1160,9 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
                           {
                             text: "Transfer ownership",
                             onPress: () =>
-                              transferOwnershipMutation.mutate({
-                                targetMembershipId: member.membershipId!,
-                                selfMembershipId: selfMember.membershipId!,
+                              router.push({
+                                pathname: "/settings/owner/danger-zone",
+                                params: { organizationId: orgId, newOwnerUserId: member.id, transferOnly: "1" },
                               }),
                           },
                         ]
@@ -1289,7 +1380,12 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
                           <Text style={[styles.dupLabel, { color: colors.textTertiary }]}>
                             {inviteRoleLabel(inv.roleToAssign)}
                             {inv.expiresAt
-                              ? ` · expires ${new Date(inv.expiresAt).toLocaleDateString()}`
+                              ? ` · expires ${(() => {
+                                  const d = new Date(inv.expiresAt as string);
+                                  const mm = String(d.getMonth() + 1).padStart(2, "0");
+                                  const dd = String(d.getDate()).padStart(2, "0");
+                                  return `${mm}/${dd}/${d.getFullYear()}`;
+                                })()}`
                               : ""}
                           </Text>
                           {problem && (
@@ -1865,15 +1961,15 @@ export default function OrganizationsScreen() {
 
   const filtered = useMemo(() => {
     if (!search.trim()) return memberships;
-    const q = search.trim().toLowerCase();
+    const q = normalizeItemName(search);
     return memberships.filter((m) => {
       const org = m.organization;
       return (
-        (org?.displayName || org?.name || "").toLowerCase().includes(q) ||
-        (org?.type || "").toLowerCase().includes(q) ||
-        (m.role || "").toLowerCase().includes(q) ||
-        (org?.city || "").toLowerCase().includes(q) ||
-        (org?.state || "").toLowerCase().includes(q)
+        normalizeItemName(org?.displayName || org?.name || "").includes(q) ||
+        normalizeItemName(org?.type || "").includes(q) ||
+        normalizeItemName(m.role || "").includes(q) ||
+        normalizeItemName(org?.city || "").includes(q) ||
+        normalizeItemName(org?.state || "").includes(q)
       );
     });
   }, [memberships, search]);
@@ -1912,7 +2008,11 @@ export default function OrganizationsScreen() {
         </Pressable>
       )}
 
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView
+        contentContainerStyle={styles.body}
+        keyboardDismissMode={scrollKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
+      >
         {meQuery.isLoading && <ActivityIndicator color={colors.tint} />}
         {!meQuery.isLoading && memberships.length === 0 && (
           <Text style={[styles.empty, { color: colors.textSecondary }]}>

@@ -23,16 +23,18 @@
  *   1. Walk line-by-line, tracking `{` / `}` depth.
  *   2. When a `beforeAll(` opener is detected, record the current depth and
  *      set a flag.
- *   3. Any `makeSession(` assignment found while that flag is active is a
- *      "makeSession-in-beforeAll" hit.
+ *   3. Any assignment to an already-declared shared variable found while that
+ *      flag is active is a "makeSession-in-beforeAll" hit. A `const` local
+ *      used only to create setup data is not a shared session token.
  *   4. Repeat the same walk for `beforeEach(` to see if makeSession is
  *      *also* called there.
  *   5. If makeSession appears in beforeAll but NOT in beforeEach → violation.
  *
- * ESCAPE HATCH
- * ────────────
- * Add `// session-guard:allow` anywhere on the beforeAll line or the
- * makeSession line to suppress the violation for a known-good exception.
+ * NARROW EXCEPTION
+ * ───────────────
+ * One verified organization-setup session is intentionally exempt: it is used
+ * only to create the organization in organizations-invite-delivery.test.ts.
+ * The exact source line is allowlisted below; annotations anywhere else fail.
  *
  * WIRE INTO CI
  * ────────────
@@ -56,6 +58,10 @@ const ROUTES_DIR = path.resolve(
 );
 
 const ESCAPE_HATCH = "// session-guard:allow";
+const APPROVED_EXCEPTION_FILE =
+  "artifacts/api-server/src/routes/organizations-invite-delivery.test.ts";
+const APPROVED_EXCEPTION_LINE =
+  /^\s*const \{ access \} = await makeSession\(ownerId\);\s*\/\/ session-guard:allow\s*$/;
 
 interface Violation {
   file: string;
@@ -121,13 +127,30 @@ interface BlockScan {
   makeSessionCallLines: number[];
 }
 
+export function isApprovedSessionGuardException(
+  relativeFile: string,
+  line: string,
+  blockKind: BlockKind,
+): boolean {
+  return (
+    relativeFile === APPROVED_EXCEPTION_FILE &&
+    blockKind === "beforeAll" &&
+    APPROVED_EXCEPTION_LINE.test(line)
+  );
+}
+
+interface ScannedBlocks extends Record<BlockKind, BlockScan> {
+  annotationBlockKinds: BlockKind[];
+}
+
 /**
  * Walk the file and collect the set of line numbers where makeSession is
  * called inside each block kind, using brace-depth tracking to identify
  * the enclosing block.
  */
-function scanBlocks(lines: string[]): Record<BlockKind, BlockScan> {
-  const result: Record<BlockKind, BlockScan> = {
+function scanBlocks(lines: string[]): ScannedBlocks {
+  const result: ScannedBlocks = {
+    annotationBlockKinds: [],
     beforeAll: { makeSessionAssignLines: [], makeSessionCallLines: [] },
     beforeEach: { makeSessionAssignLines: [], makeSessionCallLines: [] },
     afterAll: { makeSessionAssignLines: [], makeSessionCallLines: [] },
@@ -145,6 +168,9 @@ function scanBlocks(lines: string[]): Record<BlockKind, BlockScan> {
     const lineNo = i + 1;
 
     if (line.includes(ESCAPE_HATCH)) {
+      result.annotationBlockKinds.push(
+        stack.length > 0 ? stack[stack.length - 1].kind : "other",
+      );
       depth += braceCount(line);
       continue;
     }
@@ -170,7 +196,12 @@ function scanBlocks(lines: string[]): Record<BlockKind, BlockScan> {
         : "other";
       const scan = result[currentKind];
       scan.makeSessionCallLines.push(lineNo);
-      if (/=\s*(?:await\s+)?makeSession/.test(line) || /=\s*\(await\s+makeSession/.test(line)) {
+      const isLocalDeclaration = /^\s*(?:const|let|var)\b/.test(line);
+      if (
+        !isLocalDeclaration &&
+        (/=\s*(?:await\s+)?makeSession/.test(line) ||
+          /=\s*\(await\s+makeSession/.test(line))
+      ) {
         scan.makeSessionAssignLines.push(lineNo);
       }
     }
@@ -182,8 +213,26 @@ function scanBlocks(lines: string[]): Record<BlockKind, BlockScan> {
 function scan(file: string): Violation | null {
   const text = fs.readFileSync(file, "utf8");
   const lines = text.split(/\r?\n/);
-
+  const annotatedLines = lines.filter((line) => line.includes(ESCAPE_HATCH));
+  const relativeFile = path.relative(REPO_ROOT, file).split(path.sep).join("/");
   const blocks = scanBlocks(lines);
+
+  if (
+    annotatedLines.length > 0 &&
+    (annotatedLines.length !== 1 ||
+      !isApprovedSessionGuardException(
+        relativeFile,
+        annotatedLines[0],
+        blocks.annotationBlockKinds[0],
+      ) ||
+      blocks.annotationBlockKinds.length !== 1)
+  ) {
+    return {
+      file,
+      reason:
+        "`session-guard:allow` is permitted only on the verified one-time organization setup session line in organizations-invite-delivery.test.ts.",
+    };
+  }
 
   // A file is only vulnerable if makeSession is assigned inside beforeAll
   // (i.e., a shared token is minted once for all tests).
@@ -244,4 +293,9 @@ function main() {
   process.exit(1);
 }
 
-main();
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  main();
+}

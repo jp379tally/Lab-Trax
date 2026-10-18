@@ -52,18 +52,32 @@ AuthKey_*.p8
 
 # Build / output directories — never commit build artifacts
 static-build/
+/.production-api/
+/.production-runtime/
 **/static-build/
 **/electron-dist/
 **/build/
 **/out/
 **/.turbo/
 **/.next/
+/playwright-report/
+/test-results/
 
 # Server runtime data — uploaded case media is per-deployment, not source
 artifacts/api-server/uploads/
 
 # Migration / backup snapshots — these are throwaway working copies
 .migration-backup/
+
+# Database dumps — never commit these. A production dump carries the lab's
+# live records (users, cases, invoices, payments); keep it in restricted
+# storage and reference it from a text note instead.
+*.dump
+*.dump.sha256
+support/prod-export-*/
+support/prod-restored-*/
+# Row-level orphan reports list real records, for the same reason.
+support/owning-organization-orphans/*.csv
 
 # Archives, installers, and other large binaries
 *.tar.gz
@@ -87,3 +101,11 @@ exports/
 
 # Logs
 *.log
+
+# Patient-identifying operator reports are private runtime artifacts, never source.
+/attached_assets/*labtrax-backup*.enc
+/attached_assets/image_1791832841904.png
+/attached_assets/image_1791833262991.png
+/generated-artifacts/
+/.private-operator-reports/
+/support/rebuild-lost-cases-2026-10-06/created-at-repair-report.json

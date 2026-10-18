@@ -1,6 +1,9 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "./schema";
+import { instrumentPoolCheckout } from "./request-timing";
+export { withDbRequestTiming, type DbRequestTiming } from "./request-timing";
+export { instrumentPoolCheckout } from "./request-timing";
 
 const { Pool } = pg;
 
@@ -57,6 +60,7 @@ export const pool = new Pool({
     ? { max: parseInt(process.env.DB_POOL_MAX, 10) }
     : {}),
 });
+instrumentPoolCheckout(pool);
 
 // Without this handler, any error on an idle client (e.g. the database
 // briefly terminating a connection with "terminating connection due to

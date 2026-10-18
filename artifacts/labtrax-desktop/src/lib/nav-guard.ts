@@ -12,7 +12,16 @@ type Proceed = () => void;
 type NavBlocker = (proceed: Proceed) => void;
 
 let activeBlocker: NavBlocker | null = null;
+const ownedBlockers = new Map<symbol, NavBlocker>();
 let bypass = false;
+
+// Nested editing surfaces must release only their own guard. A clean parent
+// must not clear a dirty child's guard, and closing a child restores the parent.
+export function registerNavBlocker(blocker: NavBlocker): () => void {
+  const owner = Symbol();
+  ownedBlockers.set(owner, blocker);
+  return () => { ownedBlockers.delete(owner); };
+}
 
 // Register (or clear with `null`) the active navigation blocker. The most
 // recently registered blocker wins; callers must clear their own blocker on
@@ -37,7 +46,18 @@ export function runWithoutNavBlock(fn: () => void): void {
 // the active blocker (and therefore deferred), false when it should proceed
 // immediately. Used by the Router's `aroundNav` handler.
 export function guardNavigation(proceed: Proceed): boolean {
-  if (bypass || !activeBlocker) return false;
-  activeBlocker(proceed);
+  const blockers = [...(activeBlocker ? [activeBlocker] : []), ...ownedBlockers.values()];
+  if (bypass || blockers.length === 0) return false;
+  // Resolve each surface, newest first, before proceeding. Confirming one
+  // invoice must not implicitly discard staged edits in its containing case.
+  const resolve = (index: number) => {
+    if (index < 0) proceed();
+    else blockers[index](() => resolve(index - 1));
+  };
+  resolve(blockers.length - 1);
   return true;
+}
+
+export function hasNavigationBlockers(): boolean {
+  return !bypass && (activeBlocker !== null || ownedBlockers.size > 0);
 }

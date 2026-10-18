@@ -18,8 +18,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell } from "@/components/settings/SettingsRow";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+} from "@/components/ui/DismissKeyboardView";
 import { resilientFetch } from "@/lib/query-client";
 import { getPlatformAdminSessionHeaders } from "@/lib/platform-admin-session";
+import { normalizeItemName } from "@workspace/item-name-match";
 
 interface AdminUser {
   id: string;
@@ -38,7 +43,7 @@ const ROLE_OPTIONS = ["user", "admin", "billing", "owner"] as const;
 
 function formatDate(s: string | null | undefined) {
   if (!s) return "Never";
-  try { return new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); }
+  try { return new Date(s).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }); }
   catch { return s; }
 }
 
@@ -67,13 +72,13 @@ export default function UsersScreen() {
   const filtered = useMemo(() => {
     const users = query.data ?? [];
     if (!search.trim()) return users;
-    const q = search.trim().toLowerCase();
+    const q = normalizeItemName(search);
     return users.filter(
       (u) =>
-        u.username.toLowerCase().includes(q) ||
-        (u.email || "").toLowerCase().includes(q) ||
-        ([u.firstName, u.lastName].filter(Boolean).join(" ")).toLowerCase().includes(q) ||
-        (u.role || "").toLowerCase().includes(q),
+        normalizeItemName(u.username).includes(q) ||
+        normalizeItemName(u.email || "").includes(q) ||
+        normalizeItemName([u.firstName, u.lastName].filter(Boolean).join(" ")).includes(q) ||
+        normalizeItemName(u.role || "").includes(q),
     );
   }, [query.data, search]);
 
@@ -153,6 +158,8 @@ export default function UsersScreen() {
         data={filtered}
         keyExtractor={(u) => u.id}
         contentContainerStyle={styles.list}
+        keyboardDismissMode={scrollKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
         ListEmptyComponent={
           !query.isLoading ? (
             <Text style={[styles.empty, { color: colors.textSecondary }]}>
@@ -197,7 +204,10 @@ export default function UsersScreen() {
 
       <Modal visible={selected !== null} animationType="slide" presentationStyle="formSheet" onRequestClose={() => setSelected(null)}>
         {selected && (
-          <View style={[styles.sheet, { backgroundColor: colors.backgroundSolid }]}>
+          <DismissKeyboardView
+            style={[styles.sheet, { backgroundColor: colors.backgroundSolid }]}
+            testID="user-detail-keyboard-dismiss"
+          >
             <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
               <Pressable onPress={() => setSelected(null)} style={styles.closeBtn}>
                 <Ionicons name="close" size={22} color={colors.text} />
@@ -207,7 +217,11 @@ export default function UsersScreen() {
               </Text>
               <View style={{ width: 36 }} />
             </View>
-            <ScrollView contentContainerStyle={styles.sheetBody}>
+            <ScrollView
+              contentContainerStyle={styles.sheetBody}
+              keyboardDismissMode={scrollKeyboardDismissMode}
+              keyboardShouldPersistTaps="handled"
+            >
               <View style={[styles.infoCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                 {[
                   ["Username", selected.username],
@@ -263,7 +277,7 @@ export default function UsersScreen() {
                 </Pressable>
               )}
             </ScrollView>
-          </View>
+          </DismissKeyboardView>
         )}
       </Modal>
     </ScreenShell>

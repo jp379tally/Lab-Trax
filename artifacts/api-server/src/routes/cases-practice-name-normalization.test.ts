@@ -4,9 +4,9 @@
  *
  * iTero (and other brand-aggregator) imports produce practice names with a
  * leading brand/lab prefix and a trailing bracketed code, e.g.
- *   "Heartland Dental - Family Dentistry at SouthWood [565]"
+ *   "Sample Dental Group - Riverbend Family Dental [101]"
  * while the same practice created manually is just
- *   "Family Dentistry at SouthWood".
+ *   "Riverbend Family Dental".
  *
  * `_normalizePracticeForSim` / `_practiceBigramSimilarity` must strip that
  * import-specific noise before scoring so the iTero import matcher
@@ -22,23 +22,23 @@ import {
 
 describe("Task #2474 practice-name normalization", () => {
   it("strips a trailing bracketed code", () => {
-    expect(_normalizePracticeForSim("Family Dentistry at SouthWood [565]")).toBe(
-      _normalizePracticeForSim("Family Dentistry at SouthWood"),
+    expect(_normalizePracticeForSim("Riverbend Family Dental [101]")).toBe(
+      _normalizePracticeForSim("Riverbend Family Dental"),
     );
   });
 
   it("strips a leading brand/lab prefix terminated by ' - '", () => {
     expect(
-      _normalizePracticeForSim("Heartland Dental - Family Dentistry at SouthWood"),
-    ).toBe(_normalizePracticeForSim("Family Dentistry at SouthWood"));
+      _normalizePracticeForSim("Sample Dental Group - Riverbend Family Dental"),
+    ).toBe(_normalizePracticeForSim("Riverbend Family Dental"));
   });
 
   it("strips both a brand prefix and a bracketed code together", () => {
     expect(
       _normalizePracticeForSim(
-        "Heartland Dental - Family Dentistry at SouthWood [565]",
+        "Sample Dental Group - Riverbend Family Dental [101]",
       ),
-    ).toBe(_normalizePracticeForSim("Family Dentistry at SouthWood"));
+    ).toBe(_normalizePracticeForSim("Riverbend Family Dental"));
   });
 
   it("does NOT strip a descriptive bracketed qualifier with no digit", () => {
@@ -58,20 +58,20 @@ describe("Task #2474 practice-name normalization", () => {
 });
 
 describe("Task #2474 practice bigram similarity", () => {
-  it("scores the SouthWood import/manual pair at the top (>= 0.5)", () => {
+  it("scores the Riverbend import/manual pair at the top (>= 0.5)", () => {
     const sim = _practiceBigramSimilarity(
-      "Heartland Dental - Family Dentistry at SouthWood [565]",
-      "Family Dentistry at SouthWood",
+      "Sample Dental Group - Riverbend Family Dental [101]",
+      "Riverbend Family Dental",
     );
     expect(sim).toBeGreaterThanOrEqual(0.5);
     // After normalization both reduce to the same string → exact match.
     expect(sim).toBe(1);
   });
 
-  it("scores the Mahan Village import/manual pair above the import threshold", () => {
+  it("scores the Summit import/manual pair above the import threshold", () => {
     const sim = _practiceBigramSimilarity(
-      "Heartland Dental - Mahan Village Dental Care [985]",
-      "Mahan Village Dental Care",
+      "Sample Dental Group - Summit Dental Care [202]",
+      "Summit Dental Care",
     );
     expect(sim).toBeGreaterThanOrEqual(0.5);
   });
@@ -80,7 +80,7 @@ describe("Task #2474 practice bigram similarity", () => {
     // Two unrelated real practices: must stay below the 0.5 import threshold so
     // the matcher will not auto-link them.
     const sim = _practiceBigramSimilarity(
-      "Family Dentistry at SouthWood",
+      "Riverbend Family Dental",
       "Bright Smiles Orthodontics",
     );
     expect(sim).toBeLessThan(0.5);
@@ -103,8 +103,8 @@ describe("Task #2474 practice bigram similarity", () => {
     // Same brand prefix, different real practice — after stripping the prefix
     // the remaining names are distinct and must not cluster.
     const sim = _practiceBigramSimilarity(
-      "Heartland Dental - Family Dentistry at SouthWood [565]",
-      "Heartland Dental - Mahan Village Dental Care [985]",
+      "Sample Dental Group - Riverbend Family Dental [101]",
+      "Sample Dental Group - Summit Dental Care [202]",
     );
     expect(sim).toBeLessThan(0.5);
   });

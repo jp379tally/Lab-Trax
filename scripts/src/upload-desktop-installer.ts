@@ -31,7 +31,7 @@ import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Storage } from "@google-cloud/storage";
 import type { ExternalAccountClientOptions } from "google-auth-library";
-import { parseReleaseNotes } from "./lib/parse-release-notes.js";
+import { parseReleaseNotes } from "./lib/parse-release-notes.mjs";
 import {
   shouldUploadLatestYml,
   validateLatestYmlContent,

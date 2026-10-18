@@ -103,6 +103,7 @@ maybe("lab-inbox: object-storage-only file serve and assign", () => {
   async function insertInboxFile(opts: {
     storagePath: string;
     objectStorageKey: string | null;
+    assignedAt?: Date;
   }) {
     const { db, labInboxFiles } = dbMod as any;
     const [row] = await db
@@ -115,6 +116,7 @@ maybe("lab-inbox: object-storage-only file serve and assign", () => {
         sizeBytes: 1024,
         storagePath: opts.storagePath,
         objectStorageKey: opts.objectStorageKey,
+        assignedAt: opts.assignedAt,
       })
       .returning();
     createdInboxFileIds.push(row.id);
@@ -284,6 +286,60 @@ maybe("lab-inbox: object-storage-only file serve and assign", () => {
   });
 
   // ── POST /:fileId/assign ─────────────────────────────────────────────────
+
+  describe("PATCH /:fileId", () => {
+    it("updates and clears the note while the file is unassigned", async () => {
+      const inboxFile = await insertInboxFile({
+        storagePath: `nonexistent-disk-${rid("f")}.jpg`,
+        objectStorageKey: `obj-key-${rid("k")}.jpg`,
+      });
+
+      const updated = await request(appMod.default)
+        .patch(`/api/lab-inbox/${inboxFile.id}`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ note: "Updated context" });
+
+      expect(updated.status).toBe(200);
+      expect(updated.body.data.note).toBe("Updated context");
+
+      const cleared = await request(appMod.default)
+        .patch(`/api/lab-inbox/${inboxFile.id}`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ note: "" });
+
+      expect(cleared.status).toBe(200);
+      expect(cleared.body.data.note).toBeNull();
+    });
+
+    it("rejects notes longer than 2,000 characters", async () => {
+      const inboxFile = await insertInboxFile({
+        storagePath: `nonexistent-disk-${rid("f")}.jpg`,
+        objectStorageKey: `obj-key-${rid("k")}.jpg`,
+      });
+
+      const response = await request(appMod.default)
+        .patch(`/api/lab-inbox/${inboxFile.id}`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ note: "x".repeat(2001) });
+
+      expect(response.status).toBe(400);
+    });
+
+    it("rejects changes after the file has been assigned", async () => {
+      const inboxFile = await insertInboxFile({
+        storagePath: `nonexistent-disk-${rid("f")}.jpg`,
+        objectStorageKey: `obj-key-${rid("k")}.jpg`,
+        assignedAt: new Date(),
+      });
+
+      const response = await request(appMod.default)
+        .patch(`/api/lab-inbox/${inboxFile.id}`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ note: "Too late" });
+
+      expect(response.status).toBe(409);
+    });
+  });
 
   describe("POST /:fileId/assign", () => {
     it("returns 200 and creates an attachment when disk is missing but objectStorageKey resolves", async () => {

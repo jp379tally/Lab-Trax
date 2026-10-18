@@ -1,3 +1,4 @@
+import type React from "react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   computeShiftClickRange,
@@ -5,8 +6,19 @@ import {
   suppressShiftClickTextSelection,
 } from "@/lib/shift-click-range";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
+import { useInvoicePanelSize } from "@/hooks/useInvoicePanelSize";
+import { useBatchedListReset } from "@/hooks/useBatchedListReset";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useLocation } from "wouter";
+import {
+  filterAndSortInvoices,
+  FINANCE_INVOICES_QUERY_KEY,
+  invoiceStatusSelectionFromLegacy,
+  invoiceStatusSelectionToLegacy,
+  invoiceStatusSelectionValues,
+  transitionInvoiceStatusSelectionValues,
+  type InvoiceStatusFilter,
+} from "@workspace/api-client-react";
+import { useLocation, useSearch } from "wouter";
 import { useAuth } from "@/lib/auth-context";
 import {
   AlertCircle,
@@ -22,10 +34,14 @@ import {
   ExternalLink,
   Eye,
   FileText,
+  GitBranch,
+  GripVertical,
   Layers,
   Loader2,
   Lock,
   Mail,
+  Maximize2,
+  Minimize2,
   MoreHorizontal,
   Plus,
   Printer,
@@ -37,17 +53,28 @@ import {
   Stethoscope,
   Trash2,
   TrendingUp,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { apiFetch, ApiError, getApiOrigin, getAccessToken } from "@/lib/api";
 import { useBankAccounts } from "@/lib/finance";
-import { setNavBlocker } from "@/lib/nav-guard";
+import { registerNavBlocker } from "@/lib/nav-guard";
+import { InvoiceEditorPresentation } from "@/components/invoice-editor-presentation";
 import { DoctorNamePicker } from "@/components/DoctorNamePicker";
 import {
   ItemCombobox,
   type ItemComboboxOption,
 } from "@/components/ItemCombobox";
+import {
+  RemakeOriginalPicker,
+  blankQuestionnaire,
+  buildRemakeLinkPayload,
+  isRemakeQuestionnaireComplete,
+  remakeQuestionnaireError,
+  type RemakeQuestionnaireValue,
+  type RemakeCaseHit,
+} from "@/components/remake-questionnaire";
 import type {
   CaseAttachment,
   CaseRestoration,
@@ -58,7 +85,34 @@ import type {
   Organization,
   PracticeStatement,
 } from "@/lib/types";
-import { formatDate, formatMoney, statusLabel } from "@/lib/format";
+import {
+  formatDate,
+  formatDateTime,
+  formatInvoiceLineMoney,
+  formatMoney,
+  statusLabel,
+} from "@/lib/format";
+import {
+  fitInvoiceLineItemColumns,
+  INVOICE_LINE_ITEM_ACTION_COLUMN_WIDTH,
+  INVOICE_LINE_ITEM_COLUMN_DEFAULTS,
+  INVOICE_LINE_ITEM_COLUMN_MINIMUMS,
+  resizeInvoiceLineItemColumns,
+} from "@/lib/invoice-line-item-layout";
+const INVOICE_COLUMN_DEFAULTS = [...INVOICE_LINE_ITEM_COLUMN_DEFAULTS];
+import {
+  formatInvoiceDate,
+  hasInvoiceDateRepairChanges,
+  isLikelyLegacyShiftedInvoiceDate,
+  invoiceDateInputToTimestamp,
+  invoiceTimestampToDateInput,
+} from "@/lib/invoice-date";
+import {
+  computeInvoiceDateRange,
+  INVOICE_DATE_PRESET_LABELS,
+  type InvoiceDatePreset,
+} from "@/lib/invoice-date-filter";
+import { getLocalTimeZone, millisecondsUntilNextLocalMidnight } from "@workspace/api-client-react";
 import { toast } from "@/hooks/use-toast";
 import {
   deriveRxSummary,
@@ -66,6 +120,7 @@ import {
   formatRxTeethWithShades,
 } from "@/lib/rx-summary";
 import { StatusBadge } from "@/components/StatusBadge";
+import { MultiSelectFilter } from "@/components/MultiSelectFilter";
 import { ColumnTotal } from "@/components/ColumnTotal";
 import { PrescriptionPreview } from "@/components/PrescriptionPreview";
 import {
@@ -75,21 +130,81 @@ import {
   printInvoicePdf,
   type InvoicePdfOptions,
 } from "@/lib/export";
+import { fetchAllPages } from "@/lib/fetch-all-pages";
 import { useInvoiceTemplate } from "@/lib/use-invoice-template";
+import { refreshInvoiceSalesQueries } from "@/lib/refresh-case-finance";
+import { ReceivePaymentModal } from "@/components/receive-payment-modal";
+import { InvoicePreviewPanel, INVOICE_PREVIEW_QUERY_KEY } from "@/components/invoice-preview-panel";
 
-const STATUS_FILTERS = [
+const STATUS_FILTER_OPTIONS = [
   { value: "all", label: "All" },
-  { value: "draft", label: "Draft" },
   { value: "open", label: "Open" },
-  { value: "partially_paid", label: "Partial" },
+  { value: "outstanding", label: "Outstanding" },
   { value: "paid", label: "Paid" },
   { value: "void", label: "Void" },
-  { value: "frozen", label: "Frozen" },
   { value: "zero_balance", label: "$0 balance" },
+  { value: "frozen", label: "Frozen" },
 ];
 
+const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
+const DEFAULT_PAGE_SIZE = 25;
+const STATUS_TABS = [
+  { key: "all", label: "All Invoices" },
+  { key: "open", label: "Open" },
+  { key: "overdue", label: "Overdue" },
+  { key: "paid", label: "Paid" },
+  { key: "draft", label: "Draft" },
+  { key: "void", label: "Void" },
+] as const;
+type InvoiceStatusCounts = Record<(typeof STATUS_TABS)[number]["key"], number>;
+
+/** Condensed numbered pager: 1 ... 4 5 6 ... N */
+export function pagerItems(page: number, pageCount: number): (number | "gap")[] {
+  if (pageCount <= 7) return Array.from({ length: pageCount }, (_, i) => i + 1);
+  const items: (number | "gap")[] = [1];
+  const lo = Math.max(2, page - 1);
+  const hi = Math.min(pageCount - 1, page + 1);
+  if (lo > 2) items.push("gap");
+  for (let n = lo; n <= hi; n++) items.push(n);
+  if (hi < pageCount - 1) items.push("gap");
+  items.push(pageCount);
+  return items;
+}
+
+/** Spreadsheet-safe CSV cell: quotes, and neutralises formula triggers. */
+export function csvCell(value: unknown): string {
+  let text = value == null ? "" : String(value);
+  if (/^[\s\u0000-\u001f]*[=+\-@]/.test(text) || /^[\t\r]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+/** Stable identity so an unloaded batch never re-triggers downstream memos. */
+const EMPTY_INVOICES: Invoice[] = [];
+
+type InvoiceListSummary = {
+  openBalance: number;
+  openCount: number;
+  overdueBalance: number;
+  overdueCount: number;
+  sumTotal: number;
+  sumBalance: number;
+  paidThisMonth: number;
+  paidCount: number;
+  totalInvoices?: number;
+  statusCounts?: InvoiceStatusCounts;
+};
+
+type InvoiceListPage = {
+  rows: Invoice[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  nextCursor?: string | null;
+  summary?: InvoiceListSummary;
+};
+
 const EDITABLE_STATUSES = [
-  "draft",
   "open",
   "partially_paid",
   "paid",
@@ -107,12 +222,16 @@ type DraftLine = {
   item: string;
   description: string;
   quantity: number;
-  unitPrice: number;
+  unitPrice: string;
+  isDiscount?: boolean;
   toothNumber?: number | null;
   toothLabel?: string | null;
   subItems?: DraftLine[];
   catalogItemKey?: string | null;
   missingCatalogItem?: boolean;
+  /** true = price was explicitly set; false = alloy sub-item waiting for lab to price it */
+  priced?: boolean;
+  displayMetadata?: Record<string, unknown>;
 };
 
 function readDisplayMetadata(inv: Invoice | undefined | null): InvoiceDisplayMetadata {
@@ -123,6 +242,20 @@ function readDisplayMetadata(inv: Invoice | undefined | null): InvoiceDisplayMet
 function getUrlParam(name: string): string {
   if (typeof window === "undefined") return "";
   return new URLSearchParams(window.location.search).get(name) ?? "";
+}
+
+/**
+ * Read the persisted/deep-linked status filter into the multi-select's array
+ * shape. The Status filter used to be a single-value dropdown, so an existing
+ * bookmark or saved link can still carry `?status=paid` (or the old "all"
+ * sentinel) — those rehydrate as a one-item selection / empty selection
+ * respectively, and the new form is a comma-separated list.
+ */
+function readStatusFilters(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((v) => v.trim())
+    .filter((v) => v !== "" && v !== "all");
 }
 
 function setUrlParams(updates: Record<string, string | null>) {
@@ -140,40 +273,236 @@ function setUrlParams(updates: Record<string, string | null>) {
 type SortKey = "practice" | "issued" | "due";
 type SortDir = "asc" | "desc";
 
+const KPI_TONES = {
+  blue: { card: "bg-blue-50 border-blue-100 dark:bg-blue-950/30 dark:border-blue-900", block: "bg-blue-600", label: "text-blue-700 dark:text-blue-300", bar: "bg-blue-300/70" },
+  red: { card: "bg-red-50 border-red-100 dark:bg-red-950/30 dark:border-red-900", block: "bg-red-600", label: "text-red-600 dark:text-red-300", bar: "bg-red-300/70" },
+  green: { card: "bg-green-50 border-green-100 dark:bg-green-950/30 dark:border-green-900", block: "bg-green-600", label: "text-green-700 dark:text-green-300", bar: "bg-green-300/70" },
+  violet: { card: "bg-violet-50 border-violet-100 dark:bg-violet-950/30 dark:border-violet-900", block: "bg-violet-600", label: "text-violet-700 dark:text-violet-300", bar: "bg-violet-300/70" },
+} as const;
+
+function InvoiceKpiCard({ testId, tone, icon, label, value, sub, onClick }: {
+  testId: string;
+  tone: keyof typeof KPI_TONES;
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub: string;
+  onClick?: () => void;
+}) {
+  const t = KPI_TONES[tone];
+  const body = (
+    <>
+      <span className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white max-sm:absolute max-sm:top-3 max-sm:right-3 max-sm:h-6 max-sm:w-6 max-sm:rounded-lg max-sm:[&>svg]:h-3 max-sm:[&>svg]:w-3 ${t.block}`}>{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className={`block text-[11px] uppercase tracking-wide font-semibold max-sm:pr-7 max-sm:min-h-7 ${t.label}`}>{label}</span>
+        <span className="block text-xl sm:text-2xl font-bold tabular-nums [overflow-wrap:anywhere]">{value}</span>
+        <span className="block text-xs text-muted-foreground">{sub}</span>
+      </span>
+      <span aria-hidden="true" className="hidden sm:flex items-end gap-0.5 h-10 self-end">
+        {[4, 6, 5, 8, 10].map((h, n) => (
+          <span key={n} className={`w-1.5 rounded-sm ${t.bar}`} style={{ height: `${h * 4}px` }} />
+        ))}
+      </span>
+    </>
+  );
+  const cls = `relative min-w-0 flex max-sm:block items-center gap-3 rounded-xl border px-3 py-3 text-left ${t.card}`;
+  return onClick ? (
+    <button type="button" data-testid={testId} onClick={onClick} className={`${cls} cursor-pointer hover:brightness-95`}>{body}</button>
+  ) : (
+    <div data-testid={testId} className={cls}>{body}</div>
+  );
+}
+
+function isInvoiceOverdue(i: Invoice): boolean {
+  const due = i.dueAt ?? i.dueDate;
+  if (!due || i.frozen) return false;
+  if (i.status === "paid" || i.status === "void") return false;
+  if (Number(i.balanceDue ?? i.total ?? 0) <= 0) return false;
+  return new Date(due).getTime() < Date.now();
+}
+
+function restorationText(meta: InvoiceDisplayMetadata): string {
+  return [meta.caseType || meta.caseSubtype, meta.teeth ? `Tooth ${meta.teeth}` : ""].filter(Boolean).join(" - ");
+}
+
+function isReadonlyDraft(i: { status?: unknown }): boolean {
+  const st = String(i.status);
+  return st === "draft" || st === "recovery_draft";
+}
+
 export default function InvoicesPage() {
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
+  const urlSearch = useSearch();
 
   const [search, setSearch] = useState(() => getUrlParam("q"));
-  const [status, setStatus] = useState(() => getUrlParam("status") || "all");
-  const [openOnly, setOpenOnly] = useState(
-    () => getUrlParam("view") === "open",
+  const [statusSelection, setStatusSelection] = useState(() => {
+    const v = getUrlParam("view");
+    const view = v === "outstanding" || v === "open" ? v : "all";
+    return invoiceStatusSelectionFromLegacy(view, readStatusFilters(getUrlParam("status")));
+  });
+  const { view: viewMode, statuses: statusFilters } = useMemo(
+    () => invoiceStatusSelectionToLegacy(statusSelection),
+    [statusSelection],
   );
+  const unifiedStatusSelection = invoiceStatusSelectionValues(statusSelection);
+  const setUnifiedStatusSelection = (next: string[]) => {
+    setStatusSelection((current) => transitionInvoiceStatusSelectionValues(current, next));
+    const added = next.find((value) => !unifiedStatusSelection.includes(
+      value as (typeof unifiedStatusSelection)[number],
+    ));
+    if (added === "outstanding") {
+      setOverdueBucket("");
+      setCustomDueDateFrom("");
+      setCustomDueDateTo("");
+    }
+  };
   const [aiOnly, setAiOnly] = useState(() => getUrlParam("ai") === "1");
-  const [practiceId, setPracticeId] = useState(() => getUrlParam("practice"));
+  const [doctorName, setDoctorName] = useState(() => getUrlParam("doctor"));
   const [overdueBucket, setOverdueBucket] = useState(
     () => getUrlParam("overdue"),
   );
+  const [customDueDateFrom, setCustomDueDateFrom] = useState(
+    () => getUrlParam("date_from"),
+  );
+  const [customDueDateTo, setCustomDueDateTo] = useState(
+    () => getUrlParam("date_to"),
+  );
+  const [invoiceDatePreset, setInvoiceDatePreset] = useState<InvoiceDatePreset>(
+    () => (getUrlParam("issued_preset") as InvoiceDatePreset) || "all",
+  );
+  const [customIssuedFrom, setCustomIssuedFrom] = useState(
+    () => getUrlParam("issued_from"),
+  );
+  const [customIssuedTo, setCustomIssuedTo] = useState(
+    () => getUrlParam("issued_to"),
+  );
+  const [dateRefreshTick, setDateRefreshTick] = useState(0);
+  const localTimeZoneRef = useRef(getLocalTimeZone());
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      const nextTimeZone = getLocalTimeZone();
+      if (nextTimeZone === localTimeZoneRef.current) return;
+      localTimeZoneRef.current = nextTimeZone;
+      if (invoiceDatePreset === "today" || invoiceDatePreset === "yesterday") {
+        setPage(1);
+        setDateRefreshTick((tick) => tick + 1);
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [invoiceDatePreset]);
+  useEffect(() => {
+    if (invoiceDatePreset !== "today" && invoiceDatePreset !== "yesterday") return;
+    const timeout = window.setTimeout(
+      () => setDateRefreshTick((tick) => tick + 1),
+      millisecondsUntilNextLocalMidnight(new Date()),
+    );
+    return () => window.clearTimeout(timeout);
+  }, [invoiceDatePreset, dateRefreshTick]);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [editing, setEditing] = useState<Invoice | null>(null);
+  // Guards the invoiceId deep-link effect below against re-opening the same
+  // invoice on unrelated re-renders (mirrors lastProcessedCaseIdRef in cases.tsx).
+  const lastProcessedInvoiceIdRef = useRef<string | null>(null);
+  const [previewId, setPreviewId] = useState<string | null>(
+    () => getUrlParam("previewId") || null,
+  );
   const [createOpen, setCreateOpen] = useState(false);
   const [statementBuilderOpen, setStatementBuilderOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Row snapshots by id so bulk operations act on the WHOLE selection, not
+  // just the rows on the page currently rendered.
+  const selectedSnapshotsRef = useRef<Map<string, Invoice>>(new Map());
+  const [fullSelected, setFullSelected] = useState(false);
+  const [selectExcluded, setSelectExcluded] = useState(0);
+  const [selectProgress, setSelectProgress] = useState<{ loaded: number; total: number | null } | null>(null);
+  const [selectError, setSelectError] = useState<string | null>(null);
+  const selectAbortRef = useRef<AbortController | null>(null);
+  function clearSelection() {
+    selectAbortRef.current?.abort();
+    selectAbortRef.current = null;
+    selectedSnapshotsRef.current = new Map();
+    setSelected(new Set());
+    setFullSelected(false);
+    setSelectExcluded(0);
+    setSelectProgress(null);
+    setSelectError(null);
+  }
+  function getSelectedInvoices(): Invoice[] {
+    const live = new Map(data.map((i) => [i.id, i] as const));
+    return Array.from(selected)
+      .map((id) => live.get(id) ?? selectedSnapshotsRef.current.get(id))
+      .filter((i): i is Invoice => !!i && !isReadonlyDraft(i));
+  }
+  const [paymentChoice, setPaymentChoice] = useState<{
+    groups: { providerOrganizationId: string; name: string; invoices: Invoice[] }[];
+  } | null>(null);
+  function openReceivePaymentFor(invs: Invoice[], excluded: Invoice[]) {
+    const first = invs[0];
+    if (!first) return;
+    const meta = readDisplayMetadata(first);
+    const doctorValues = [...new Set(
+      invs.map((i) => i.doctorIdentity || i.doctorDisplayName || i.doctorName || "").filter(Boolean),
+    )];
+    if (excluded.length > 0) {
+      toast({
+        title: `${excluded.length} selected invoice${excluded.length === 1 ? "" : "s"} excluded`,
+        description: `Not included in this payment: ${excluded.map((i) => i.invoiceNumber).join(", ")}`,
+      });
+    }
+    setReceivePaymentModal({
+      practiceOrDoctorName: first.providerOrganization?.name || meta.billTo || "Unknown",
+      defaultAmount: invs.reduce((t, i) => t + Math.max(0, Number(i.balanceDue ?? 0)), 0),
+      invoiceIds: invs.map((i) => i.id),
+      providerOrganizationId: first.providerOrganizationId,
+      doctorName: doctorValues.length === 1 ? doctorValues[0] : null,
+    });
+  }
+  // Receive Payment acts on the WHOLE selection (all pages), one practice at a time.
+  function startBulkReceivePayment() {
+    const all = getSelectedInvoices();
+    if (all.length === 0) return;
+    const map = new Map<string, Invoice[]>();
+    for (const i of all) {
+      const list = map.get(i.providerOrganizationId) ?? [];
+      list.push(i);
+      map.set(i.providerOrganizationId, list);
+    }
+    if (map.size === 1) { openReceivePaymentFor(all, []); return; }
+    setPaymentChoice({
+      groups: Array.from(map, ([providerOrganizationId, invoices]) => ({
+        providerOrganizationId,
+        name: invoices[0].providerOrganization?.name || readDisplayMetadata(invoices[0]).billTo || "Unknown practice",
+        invoices,
+      })),
+    });
+  }
+  // Every editor entry goes through here: drafts are read-only previews.
+  function openEditorFor(inv: Invoice) {
+    if (isReadonlyDraft(inv)) { setPreviewId(inv.id); return; }
+    setEditing(inv);
+  }
   // Shift-click range selection for the invoice checkboxes. A normal click
   // toggles the single invoice and moves the anchor; a shift-click with a
   // valid anchor adds every invoice between the anchor and the clicked row
-  // (in the current filtered/sorted order) to the selection. If the anchor is
-  // no longer visible (filter/sort changed), fall back to a normal toggle.
+  // (in the current filtered/sorted order) to the selection. Draft invoices
+  // are read-only and can never join a selection.
   const selectionAnchorIdRef = useRef<string | null>(null);
   const handleInvoiceRowCheckboxChange = (
     invoiceId: string,
     checked: boolean,
     shiftKey: boolean,
   ) => {
+    const eligibleRows = filtered.filter((i) => !isReadonlyDraft(i));
+    if (!eligibleRows.some((i) => i.id === invoiceId)) return;
+    setFullSelected(false);
+    setSelectExcluded(0);
     if (shiftKey) {
       const rangeIds = computeShiftClickRange(
-        filtered.map((i) => i.id),
+        eligibleRows.map((i) => i.id),
         selectionAnchorIdRef.current,
         invoiceId,
       );
@@ -196,6 +525,7 @@ export default function InvoicesPage() {
     selectionAnchorIdRef.current = invoiceId;
   };
   const [bulkSendOpen, setBulkSendOpen] = useState(false);
+  const [bulkRemakeOpen, setBulkRemakeOpen] = useState(false);
   const [bulkConfirm, setBulkConfirm] = useState<{
     kind: "delete_selected" | "reset_selected" | "reset_all" | "status_change";
     count: number;
@@ -203,31 +533,239 @@ export default function InvoicesPage() {
     targetStatus?: (typeof BULK_EDITABLE_STATUSES)[number];
   } | null>(null);
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
+  // Bulk Paid→Open guard: shown when selected invoices have recorded payments.
+  const [bulkPaymentDeleteConfirm, setBulkPaymentDeleteConfirm] = useState<{
+    paidCount: number;
+    paidInvoiceIds: string[];
+    allInvoiceIds: string[];
+  } | null>(null);
+  // Bulk Open→Paid prompt: shown after the confirm dialog for "paid" status so
+  // admins can choose to record payments or just flip the status.
+  const [bulkRecordPaymentPrompt, setBulkRecordPaymentPrompt] = useState<{
+    count: number;
+    invoiceIds: string[];
+  } | null>(null);
+  const [receivePaymentModal, setReceivePaymentModal] = useState<{
+    practiceOrDoctorName: string;
+    defaultAmount: number;
+    invoiceIds: string[];
+    providerOrganizationId: string;
+    doctorName?: string | null;
+  } | null>(null);
 
   const { user } = useAuth();
   const isBillingUser =
     user?.role === "owner" ||
     user?.role === "admin" ||
     user?.role === "billing";
+  const isAdminOrOwner = user?.role === "owner" || user?.role === "admin";
 
-  const queryString = useMemo(() => {
+  // Numbered server offset paging. The page is part of the request; any
+  // change to the rest of the query identity (filters, sort, page size)
+  // resets to page 1 during render so no stale offset is ever requested.
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+  const [loaded, setLoaded] = useState<{
+    key: string;
+    rows: Invoice[];
+    total: number;
+    summary?: InvoiceListSummary;
+    legacy?: boolean;
+  }>({ key: "", rows: [], total: 0 });
+  const queryBase = useMemo(() => {
     const sp = new URLSearchParams();
-    if (openOnly && status !== "zero_balance") sp.set("status", "open");
-    else if (status && status !== "all" && status !== "frozen" && status !== "zero_balance")
-      sp.set("status", status);
-    if (practiceId) sp.set("practiceId", practiceId);
+    if (viewMode === "outstanding") {
+      sp.set("view", "outstanding");
+    } else if (viewMode === "open" && !statusFilters.includes("zero_balance")) {
+      sp.set("status", "open");
+    } else if (statusFilters.length > 0) {
+      sp.set("statuses", statusFilters.join(","));
+    }
+    if (doctorName) sp.set("doctorName", doctorName);
     if (aiOnly) sp.set("aiOnly", "true");
-    if (overdueBucket) sp.set("overdueBucket", overdueBucket);
+    if (viewMode !== "outstanding") {
+      if (overdueBucket) sp.set("overdueBucket", overdueBucket);
+      if (overdueBucket === "custom" && customDueDateFrom) sp.set("dueDateFrom", customDueDateFrom);
+      if (overdueBucket === "custom" && customDueDateTo) sp.set("dueDateTo", customDueDateTo);
+    }
+    const issuedRange = computeInvoiceDateRange(
+      invoiceDatePreset,
+      customIssuedFrom,
+      customIssuedTo,
+    );
+    if (issuedRange.startDate) sp.set("issuedFrom", issuedRange.startDate.toISOString());
+    if (issuedRange.endDate) sp.set("issuedTo", issuedRange.endDate.toISOString());
+    if (search.trim()) sp.set("search", search.trim());
+    if (sortKey) sp.set("sort", sortKey);
+    sp.set("sortDir", sortDir);
     return sp.toString();
-  }, [openOnly, status, practiceId, aiOnly, overdueBucket]);
+  }, [viewMode, statusFilters, doctorName, aiOnly, overdueBucket, customDueDateFrom, customDueDateTo, invoiceDatePreset, customIssuedFrom, customIssuedTo, search, sortKey, sortDir, dateRefreshTick]);
+  const queryBaseRef = useRef(queryBase);
+  queryBaseRef.current = queryBase;
+  const queryString = useMemo(() => {
+    const sp = new URLSearchParams(queryBase);
+    sp.set("limit", String(pageSize));
+    sp.set("offset", String((page - 1) * pageSize));
+    return sp.toString();
+  }, [queryBase, page, pageSize]);
+  const [pagedQueryBase, setPagedQueryBase] = useState(`${queryBase}|${pageSize}`);
+  if (pagedQueryBase !== `${queryBase}|${pageSize}`) {
+    setPagedQueryBase(`${queryBase}|${pageSize}`);
+    setPage(1);
+  }
+  // Confirmed invoice mutations invalidate ["invoices"]; the active page
+  // refetches itself and is clamped below if the set shrank.
+  const restartBatches = useCallback(() => { setPage(1); selectAbortRef.current?.abort(); }, []);
+  useBatchedListReset("invoices", restartBatches);
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["invoices", queryString],
-    queryFn: () =>
-      apiFetch<Invoice[]>(
-        `/invoices${queryString ? `?${queryString}` : ""}`,
-      ),
+  const listQuery = useQuery({
+    queryKey: [
+      ...FINANCE_INVOICES_QUERY_KEY,
+      queryString,
+      invoiceDatePreset === "today" || invoiceDatePreset === "yesterday"
+        ? dateRefreshTick
+        : 0,
+    ],
+    queryFn: async ({ signal }) => {
+      const query = queryString;
+      const response = await apiFetch<InvoiceListPage | Invoice[]>(
+        `/invoices?${query}`,
+        { signal },
+      );
+      const result: InvoiceListPage = Array.isArray(response)
+        ? {
+            rows: response,
+            total: response.length,
+            limit: response.length,
+            offset: 0,
+            hasMore: false,
+            nextCursor: null,
+          }
+        : response;
+      return { ...result, query, legacy: Array.isArray(response) };
+    },
   });
+  const { isLoading, error, isFetching } = listQuery;
+  const currentPageData =
+    listQuery.data?.query === queryString ? listQuery.data : undefined;
+  useEffect(() => {
+    const result = listQuery.data;
+    if (!result || result.query !== queryString) return;
+    setLoaded({
+      key: queryString,
+      rows: result.rows,
+      total: result.total,
+      summary: result.summary,
+      legacy: result.legacy,
+    });
+  }, [queryString, listQuery.data]);
+  const loadedRows = loaded.key === queryString ? loaded.rows : EMPTY_INVOICES;
+  const loadedTotal = loaded.key === queryString ? loaded.total : 0;
+  const loadedSummary = loaded.key === queryString ? loaded.summary : undefined;
+  const loadedLegacy = loaded.key === queryString && loaded.legacy === true;
+  const hasRegisterAggregates = Boolean(loadedSummary || loadedLegacy);
+  const data = loadedRows;
+  const pageCount = Math.max(1, Math.ceil(loadedTotal / pageSize));
+  // Clamp when a mutation or refresh left the requested page past the end.
+  useEffect(() => {
+    if (loaded.key === queryString && page > pageCount) setPage(pageCount);
+  }, [loaded.key, queryString, loadedTotal, page, pageCount]);
+  const rangeStart = loadedTotal === 0 ? 0 : (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(loadedTotal, page * pageSize, (page - 1) * pageSize + loadedRows.length);
+
+  const [exportState, setExportState] = useState<{ loaded: number; total: number | null } | null>(null);
+  const exportAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => exportAbortRef.current?.abort(), [queryBase]);
+  async function exportCsv() {
+    if (exportAbortRef.current) return;
+    const controller = new AbortController();
+    exportAbortRef.current = controller;
+    setExportState({ loaded: 0, total: null });
+    try {
+      const rows = await fetchAllPages<Invoice>({
+        fetchPage: async ({ limit, offset }) => {
+          if (controller.signal.aborted) throw new DOMException("Export cancelled", "AbortError");
+          const sp = new URLSearchParams(queryBase);
+          sp.set("limit", String(limit));
+          sp.set("offset", String(offset));
+          return apiFetch<InvoiceListPage | Invoice[]>(`/invoices?${sp.toString()}`, { signal: controller.signal });
+        },
+        onProgress: (p) => { if (!controller.signal.aborted) setExportState(p); },
+        getId: (i) => i.id,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      const header = ["Invoice #", "Practice", "Doctor", "Issued", "Due", "Status", "Total", "Balance"];
+      const lines = [header.map(csvCell).join(",")].concat(
+        rows.map((i) => {
+          const meta = readDisplayMetadata(i) as Record<string, unknown>;
+          return [
+            i.invoiceNumber,
+            i.providerOrganization?.name,
+            meta.billTo ?? meta.doctorName,
+            i.issuedAt ?? i.createdAt,
+            i.dueAt ?? i.dueDate,
+            i.status,
+            i.total,
+            i.balanceDue ?? i.total,
+          ].map(csvCell).join(",");
+        }),
+      );
+      const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `invoices-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: `Exported ${rows.length} invoices` });
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        toast({ title: "Export failed", description: err instanceof Error ? err.message : "No file was written.", variant: "destructive" });
+      }
+    } finally {
+      exportAbortRef.current = null;
+      setExportState(null);
+    }
+  }
+
+  // Deep-link: if the URL contains ?invoiceId=<id>, auto-open that invoice in
+  // the editor. Mirrors the ?caseId= deep-link in cases.tsx: useSearch() so
+  // the effect re-fires whenever the query string changes even while this
+  // component stays mounted, and lastProcessedInvoiceIdRef prevents
+  // re-opening the same invoice on unrelated re-renders. The target invoice
+  // may not be in the currently-loaded (filtered) list, so fall back to a
+  // direct fetch rather than leaving the user on a blank page.
+  useEffect(() => {
+    const params = new URLSearchParams(urlSearch);
+    setPreviewId(params.get("previewId"));
+  }, [urlSearch]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(urlSearch);
+    if (params.get("newInvoice") === "1" && (isBillingUser || isAdminOrOwner)) {
+      setCreateOpen(true);
+      params.delete("newInvoice");
+      const rest = params.toString();
+      window.history.replaceState(null, "", window.location.pathname + (rest ? `?${rest}` : ""));
+    }
+  }, [urlSearch, isBillingUser, isAdminOrOwner]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(urlSearch);
+    const targetId = params.get("invoiceId");
+    if (!targetId || isLoading) return;
+    if (targetId === lastProcessedInvoiceIdRef.current) return;
+    lastProcessedInvoiceIdRef.current = targetId;
+    const found = data.find((i) => i.id === targetId);
+    if (found) {
+      openEditorFor(found);
+    } else {
+      apiFetch<Invoice>(`/invoices/${targetId}`)
+        .then((fresh) => { openEditorFor(fresh); })
+        .catch(() => {/* invoice not found or inaccessible */});
+    }
+  }, [urlSearch, data, isLoading]);
 
   const doctorNamesQuery = useQuery({
     queryKey: ["case-doctor-names"],
@@ -253,15 +791,18 @@ export default function InvoicesPage() {
   useEffect(() => {
     setUrlParams({
       q: search || null,
-      status: openOnly ? null : status === "all" ? null : status,
-      view: openOnly ? "open" : null,
+      status: viewMode !== "all" || statusFilters.length === 0 ? null : statusFilters.join(","),
+      view: viewMode !== "all" ? viewMode : null,
       ai: aiOnly ? "1" : null,
-      practice: practiceId || null,
+      doctor: doctorName || null,
       overdue: overdueBucket || null,
+      issued_preset: invoiceDatePreset === "all" ? null : invoiceDatePreset,
+      issued_from: invoiceDatePreset === "custom" ? customIssuedFrom || null : null,
+      issued_to: invoiceDatePreset === "custom" ? customIssuedTo || null : null,
     });
-  }, [search, status, openOnly, aiOnly, practiceId, overdueBucket]);
+  }, [search, statusFilters, viewMode, aiOnly, doctorName, overdueBucket, invoiceDatePreset, customIssuedFrom, customIssuedTo]);
 
-  useEffect(() => { setSelected(new Set()); }, [search, status, openOnly, aiOnly, practiceId, overdueBucket]);
+  useEffect(() => { clearSelection(); }, [search, statusFilters, viewMode, aiOnly, doctorName, overdueBucket, invoiceDatePreset, customIssuedFrom, customIssuedTo, dateRefreshTick]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -272,64 +813,108 @@ export default function InvoicesPage() {
     }
   }
 
-  const filtered = useMemo(() => {
-    const rows = data ?? [];
-    const q = search.trim().toLowerCase();
-    const list = rows.filter((i) => {
-      if (status === "zero_balance") {
-        if (Number(i.balanceDue ?? i.total ?? 0) !== 0) return false;
-      } else if (openOnly) {
-        if (i.status !== "open" && i.status !== "partially_paid") return false;
-      } else if (status === "frozen") {
-        if (!i.frozen) return false;
-      } else if (status !== "all" && i.status !== status) {
-        return false;
-      }
-      if (!q) return true;
-      const meta = readDisplayMetadata(i);
-      return (
-        i.invoiceNumber.toLowerCase().includes(q) ||
-        (i.providerOrganization?.name || "").toLowerCase().includes(q) ||
-        (meta.patientName || "").toLowerCase().includes(q) ||
-        (meta.billTo || "").toLowerCase().includes(q)
-      );
+  const matchingRows = useMemo(() => {
+    if (!loadedLegacy) return data;
+    const { startDate, endDate } = computeInvoiceDateRange(
+      invoiceDatePreset,
+      customIssuedFrom,
+      customIssuedTo,
+    );
+    const issuedRange = startDate || endDate
+      ? { start: startDate, end: endDate }
+      : null;
+    return filterAndSortInvoices(data, {
+      view: viewMode,
+      statuses: statusFilters as InvoiceStatusFilter[],
+      search,
+      date: invoiceDatePreset,
+      issuedRange,
+      sort: sortKey ?? undefined,
+      sortDirection: sortDir,
     });
+  }, [data, loadedLegacy, search, statusFilters, viewMode, sortKey, sortDir, invoiceDatePreset, customIssuedFrom, customIssuedTo, dateRefreshTick]);
+  const filtered = useMemo(
+    () => loadedLegacy ? matchingRows.slice((page - 1) * pageSize, page * pageSize) : matchingRows,
+    [loadedLegacy, matchingRows, page, pageSize],
+  );
 
-    if (sortKey) {
-      const dir = sortDir === "asc" ? 1 : -1;
-      list.sort((a, b) => {
-        if (sortKey === "practice") {
-          return dir * (a.providerOrganization?.name || "").localeCompare(b.providerOrganization?.name || "");
-        }
-        if (sortKey === "issued") {
-          return dir * (a.issuedAt || "").localeCompare(b.issuedAt || "");
-        }
-        if (sortKey === "due") {
-          return dir * ((a.dueAt ?? a.dueDate) || "").localeCompare((b.dueAt ?? b.dueDate) || "");
-        }
-        return 0;
-      });
-    } else {
-      list.sort((a, b) =>
-        (b.createdAt || b.issuedAt || "").localeCompare(a.createdAt || a.issuedAt || ""),
-      );
+  useEffect(() => {
+    for (const i of data) if (selected.has(i.id)) selectedSnapshotsRef.current.set(i.id, i);
+  }, [data, selected]);
+  const eligibleVisible = filtered.filter((i) => !isReadonlyDraft(i));
+  const headerChecked = selected.size > 0 && (
+    loadedLegacy
+      ? matchingRows.filter((i) => !isReadonlyDraft(i)).every((i) => selected.has(i.id))
+      : fullSelected || (loadedTotal <= filtered.length && eligibleVisible.length > 0 && eligibleVisible.every((i) => selected.has(i.id)))
+  );
+  async function selectAllMatching() {
+    selectAbortRef.current?.abort();
+    setSelectError(null);
+    if (loadedLegacy) {
+      // Whole set is already in memory: synchronous.
+      const eligible = matchingRows.filter((i) => !isReadonlyDraft(i));
+      selectedSnapshotsRef.current = new Map(eligible.map((i) => [i.id, i] as const));
+      setSelected(new Set(eligible.map((i) => i.id)));
+      setSelectExcluded(matchingRows.length - eligible.length);
+      setFullSelected(true);
+      return;
     }
-
-    return list;
-  }, [data, search, status, openOnly, sortKey, sortDir]);
+    const controller = new AbortController();
+    selectAbortRef.current = controller;
+    const base = queryBase;
+    setSelectProgress({ loaded: 0, total: null });
+    try {
+      const rows = await fetchAllPages<Invoice>({
+        fetchPage: async ({ limit, offset }) => {
+          if (controller.signal.aborted) throw new DOMException("Selection cancelled", "AbortError");
+          const sp = new URLSearchParams(base);
+          sp.set("limit", String(limit));
+          sp.set("offset", String(offset));
+          return apiFetch<InvoiceListPage | Invoice[]>(`/invoices?${sp.toString()}`, { signal: controller.signal });
+        },
+        onProgress: (p) => { if (!controller.signal.aborted) setSelectProgress(p); },
+        getId: (i) => i.id,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted || selectAbortRef.current !== controller || queryBaseRef.current !== base) return;
+      const eligible = rows.filter((i) => !isReadonlyDraft(i));
+      selectedSnapshotsRef.current = new Map(eligible.map((i) => [i.id, i] as const));
+      setSelected(new Set(eligible.map((i) => i.id)));
+      setSelectExcluded(rows.length - eligible.length);
+      setFullSelected(true);
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        setSelectError(err instanceof Error ? err.message : "Could not select all matching invoices.");
+      }
+    } finally {
+      if (selectAbortRef.current === controller) {
+        selectAbortRef.current = null;
+        setSelectProgress(null);
+      }
+    }
+  }
 
   const stats = useMemo(() => {
-    const rows = data ?? [];
+    if (loadedSummary) return loadedSummary;
     const today = new Date();
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+
+    // Mirror the exact same rows + per-row value as the Balance column total
+    // below (`filtered`, `i.balanceDue ?? i.total`) so this card and the
+    // column total can never disagree for the current view (status, doctor,
+    // aging, search, date range all flow through `filtered`). Frozen
+    // invoices are explicitly excluded — their case was deleted, so any
+    // balance is not real outstanding money — matching the convention used
+    // for open-balance figures elsewhere (e.g. the practice summary).
     let openBalance = 0, openCount = 0;
     let overdueBalance = 0, overdueCount = 0;
-    let paidThisMonth = 0, paidCount = 0;
-    for (const inv of rows) {
-      const isOpen = inv.status === "open" || inv.status === "partially_paid";
-      if (isOpen) {
-        const bal = Number(inv.balanceDue ?? inv.total ?? 0);
-        openBalance += bal;
+    // Legacy/test array responses contain no aggregate metadata. Recompute
+    // from that complete response rather than from a paginated subset.
+    for (const inv of data) {
+      if (inv.frozen) continue;
+      const bal = Number(inv.balanceDue ?? inv.total ?? 0);
+      openBalance += bal;
+      if (bal !== 0) {
         openCount++;
         const due = inv.dueAt ?? inv.dueDate;
         if (due && new Date(due) < today) {
@@ -337,18 +922,39 @@ export default function InvoicesPage() {
           overdueCount++;
         }
       }
-      if (inv.status === "paid") {
-        const ts = inv.updatedAt || inv.issuedAt || inv.createdAt;
-        if (ts && new Date(ts) >= monthStart) {
-          paidThisMonth += Number(inv.total ?? 0);
-          paidCount++;
-        }
+    }
+
+    let paidThisMonth = 0, paidCount = 0;
+    for (const inv of matchingRows) {
+      if (inv.status !== "paid") continue;
+      const ts = inv.updatedAt || inv.issuedAt || inv.createdAt;
+      if (ts && new Date(ts) >= monthStart) {
+        paidThisMonth += Number(inv.total ?? 0);
+        paidCount++;
       }
     }
-    return { openBalance, openCount, overdueBalance, overdueCount, paidThisMonth, paidCount };
-  }, [data]);
 
-  const labOrganizationId = data?.[0]?.labOrganizationId ?? "";
+    return {
+      openBalance,
+      openCount,
+      overdueBalance,
+      overdueCount,
+      sumTotal: matchingRows.reduce((sum, invoice) => sum + Number(invoice.total ?? 0), 0),
+      sumBalance: matchingRows.reduce(
+        (sum, invoice) => sum + Number(invoice.balanceDue ?? invoice.total ?? 0),
+        0,
+      ),
+      paidThisMonth,
+      paidCount,
+      totalInvoices: undefined as number | undefined,
+      statusCounts: undefined as InvoiceStatusCounts | undefined,
+    };
+  }, [matchingRows, data, loadedSummary]);
+
+  const metricMoney = (value: number) => hasRegisterAggregates ? formatMoney(value) : "—";
+  const metricCount = (value: number) => hasRegisterAggregates ? `${value.toLocaleString("en-US")} invoice${value !== 1 ? "s" : ""}` : "—";
+
+  const labOrganizationId = data[0]?.labOrganizationId ?? "";
 
   const bulkDeleteMutation = useMutation({
     mutationFn: ({ expected: _expected, ...payload }: { invoiceIds?: string[]; all?: boolean; expected: number }) =>
@@ -364,14 +970,15 @@ export default function InvoicesPage() {
         setBulkFeedback("No invoices were deleted. Please try again or refresh.");
         return;
       }
+      void refreshInvoiceSalesQueries(queryClient);
       if (!variables.all && affected < variables.expected) {
-        setSelected(new Set());
+        clearSelection();
         setBulkFeedback(
           `Only ${affected} of ${variables.expected} selected invoice${variables.expected !== 1 ? "s" : ""} could be deleted.`,
         );
         return;
       }
-      setSelected(new Set());
+      clearSelection();
       setBulkConfirm(null);
       setBulkFeedback(null);
     },
@@ -379,7 +986,7 @@ export default function InvoicesPage() {
 
   const bulkResetMutation = useMutation({
     mutationFn: ({ expected: _expected, ...payload }: { invoiceIds?: string[]; all?: boolean; expected: number }) =>
-      apiFetch<{ resetCount: number; legacyResetCount?: number; skippedCount?: number }>("/invoices/bulk-reset", {
+      apiFetch<{ resetCount: number; legacyResetCount?: number; skippedCount?: number; skippedDraftCount?: number }>("/invoices/bulk-reset", {
         method: "POST",
         body: JSON.stringify({ ...(labOrganizationId ? { labOrganizationId } : {}), ...payload }),
       }),
@@ -387,20 +994,29 @@ export default function InvoicesPage() {
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
       const affected = result?.resetCount ?? 0;
+      const skippedDrafts = result?.skippedDraftCount ?? 0;
+      if (skippedDrafts > 0) {
+        if (affected > 0) void refreshInvoiceSalesQueries(queryClient);
+        clearSelection();
+        setBulkConfirm(null);
+        setBulkFeedback(`Reset ${affected} invoice${affected !== 1 ? "s" : ""}. ${skippedDrafts} Draft invoice${skippedDrafts !== 1 ? "s are" : " is"} read-only and ${skippedDrafts !== 1 ? "were" : "was"} left unchanged.`);
+        return;
+      }
       if (affected === 0) {
         setBulkFeedback("No invoices were reset. Please try again or refresh.");
         return;
       }
+      void refreshInvoiceSalesQueries(queryClient);
       if (!variables.all && affected < variables.expected) {
         const skipped = result?.skippedCount ?? variables.expected - affected;
-        setSelected(new Set());
+        clearSelection();
         setBulkFeedback(
           `Only ${affected} of ${variables.expected} selected invoice${variables.expected !== 1 ? "s" : ""} could be reset. ` +
             `${skipped} invoice${skipped !== 1 ? "s were" : " was"} skipped — likely already deleted or no longer available.`,
         );
         return;
       }
-      setSelected(new Set());
+      clearSelection();
       setBulkConfirm(null);
       setBulkFeedback(null);
     },
@@ -412,9 +1028,29 @@ export default function InvoicesPage() {
       if (!(err instanceof ApiError) || err.status !== 0) return;
       try {
         await queryClient.refetchQueries({ queryKey: ["invoices"] });
-        const rows = queryClient
-          .getQueriesData<Invoice[]>({ queryKey: ["invoices"] })
-          .flatMap(([, d]) => d ?? []);
+        // The list is batched, so the cache holds only the pages the user has
+        // loaded. A target that is not in it has not been checked — reporting
+        // that as a confirmed reset would be a lie.
+        const cached = queryClient.getQueriesData<
+          (InvoiceListPage & { query: string }) | Invoice[]
+        >({ queryKey: ["invoices"] });
+        const rows = cached.flatMap(([, result]) =>
+          Array.isArray(result) ? result : (result?.rows ?? []),
+        );
+        const wholeSetCached = cached.some(([, result]) =>
+          Array.isArray(result) ? true : !!result && result.rows.length >= result.total,
+        );
+        const cachedIds = new Set(rows.map((r) => r.id));
+        const unverifiable = variables.all
+          ? !wholeSetCached
+          : (variables.invoiceIds ?? []).some((id) => !cachedIds.has(id));
+        if (unverifiable) {
+          bulkResetMutation.reset();
+          setBulkFeedback(
+            "The connection dropped before the server confirmed the reset. Refresh the page to see whether it went through before trying again.",
+          );
+          return;
+        }
         const targets = variables.all
           ? rows.filter((r) => !labOrganizationId || r.labOrganizationId === labOrganizationId)
           : rows.filter((r) => variables.invoiceIds?.includes(r.id));
@@ -424,7 +1060,7 @@ export default function InvoicesPage() {
         if (remaining.length === 0) {
           // The reset landed even though the response was lost.
           bulkResetMutation.reset();
-          setSelected(new Set());
+          clearSelection();
           setBulkConfirm(null);
           setBulkFeedback(null);
           toast({
@@ -446,7 +1082,7 @@ export default function InvoicesPage() {
 
   const bulkStatusMutation = useMutation({
     mutationFn: ({ expected: _expected, ...payload }: { invoiceIds: string[]; status: (typeof BULK_EDITABLE_STATUSES)[number]; expected: number }) =>
-      apiFetch<{ updatedCount: number; skippedFrozenCount: number; status: string }>("/invoices/bulk-status", {
+      apiFetch<{ updatedCount: number; skippedFrozenCount: number; skippedDraftCount?: number; skippedReadOnlyCount?: number; status: string }>("/invoices/bulk-status", {
         method: "POST",
         body: JSON.stringify({ ...(labOrganizationId ? { labOrganizationId } : {}), ...payload }),
       }),
@@ -457,29 +1093,70 @@ export default function InvoicesPage() {
       const label = statusLabel(variables.status);
       if (affected === 0) {
         setBulkFeedback(
-          result?.skippedFrozenCount
+          result?.skippedDraftCount
+            ? "No invoices were updated — Draft invoices are read-only."
+            : result?.skippedFrozenCount
             ? "No invoices were updated — frozen invoices cannot change status."
             : "No invoices were updated. Please try again or refresh.",
         );
         return;
       }
-      setSelected(new Set());
+      void refreshInvoiceSalesQueries(queryClient);
+      clearSelection();
       setBulkConfirm(null);
       setBulkFeedback(null);
-      const skipped = result?.skippedFrozenCount ?? 0;
+      const skipped = result?.skippedReadOnlyCount ?? (result?.skippedFrozenCount ?? 0) + (result?.skippedDraftCount ?? 0);
       toast({
         title: `Updated ${affected} invoice${affected !== 1 ? "s" : ""} to ${label}`,
         description:
           skipped > 0
-            ? `${skipped} frozen invoice${skipped !== 1 ? "s were" : " was"} skipped.`
+            ? `${skipped} frozen or Draft invoice${skipped !== 1 ? "s were" : " was"} skipped.`
             : undefined,
       });
+    },
+  });
+
+  // Deletes all payment rows for the given invoices (used by the bulk Paid→Open guard).
+  // After all deletions succeed, fires the bulk-status mutation for the full selection.
+  const bulkDeletePaymentsMutation = useMutation({
+    mutationFn: async ({ paidInvoiceIds, allInvoiceIds }: { paidInvoiceIds: string[]; allInvoiceIds: string[] }) => {
+      await Promise.all(
+        paidInvoiceIds.map((id) =>
+          apiFetch(`/invoices/${id}/payments`, { method: "DELETE" }),
+        ),
+      );
+      return { allInvoiceIds };
+    },
+    onSuccess: ({ allInvoiceIds }) => {
+      void refreshInvoiceSalesQueries(queryClient);
+      setBulkPaymentDeleteConfirm(null);
+      bulkStatusMutation.mutate({ invoiceIds: allInvoiceIds, status: "open", expected: allInvoiceIds.length });
+    },
+    onError: (err: Error) => {
+      setBulkFeedback(err.message || "Failed to delete payments. Please try again.");
     },
   });
 
   function applyBulkStatus(target: (typeof BULK_EDITABLE_STATUSES)[number]) {
     if (!labOrganizationId || selected.size === 0) return;
     setBulkFeedback(null);
+    if (target === "open") {
+      // Guard: detect selected invoices that are paid/partially_paid and may have payments.
+      const selectedInvoices = getSelectedInvoices();
+      const paidInvoices = selectedInvoices.filter(
+        (i) => i.status === "paid" || i.status === "partially_paid",
+      );
+      if (paidInvoices.length > 0) {
+        setBulkPaymentDeleteConfirm({
+          paidCount: paidInvoices.length,
+          paidInvoiceIds: paidInvoices.map((i) => i.id),
+          allInvoiceIds: Array.from(selected),
+        });
+        return;
+      }
+      bulkStatusMutation.mutate({ invoiceIds: Array.from(selected), status: target, expected: selected.size });
+      return;
+    }
     if (target === "paid" || target === "void") {
       setBulkConfirm({ kind: "status_change", count: selected.size, labOrganizationId, targetStatus: target });
       return;
@@ -497,60 +1174,175 @@ export default function InvoicesPage() {
     } else if (bulkConfirm.kind === "reset_all") {
       bulkResetMutation.mutate({ all: true, expected: bulkConfirm.count });
     } else if (bulkConfirm.kind === "status_change" && bulkConfirm.targetStatus) {
-      bulkStatusMutation.mutate({ invoiceIds: Array.from(selected), status: bulkConfirm.targetStatus, expected: selected.size });
+      if (bulkConfirm.targetStatus === "paid") {
+        // For Open→Paid, ask whether to record payments before applying the status change.
+        const ids = Array.from(selected);
+        setBulkConfirm(null);
+        setBulkRecordPaymentPrompt({ count: ids.length, invoiceIds: ids });
+      } else {
+        bulkStatusMutation.mutate({ invoiceIds: Array.from(selected), status: bulkConfirm.targetStatus, expected: selected.size });
+      }
     }
   }
 
-  return (
-    <div className="px-8 py-7">
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Invoices</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Open balances, payments, and statements.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setCreateOpen(true)}
-          className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90"
-        >
-          <Plus size={14} /> New Invoice
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 767px)").matches,
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(max-width: 767px)");
+    const onChange = () => setNarrow(mq.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
+  const [moreOpenId, setMoreOpenId] = useState<string | null>(null);
+  const canEditInvoice = isBillingUser || isAdminOrOwner;
+  function renderRowActions(i: Invoice) {
+    const balance = Number(i.balanceDue ?? i.total ?? 0);
+    const btn = "inline-flex h-11 w-11 md:h-8 md:w-8 items-center justify-center rounded-md border border-border bg-card hover:bg-secondary";
+    return (
+      <div className="relative flex items-center justify-center gap-1.5" data-testid={`invoice-actions-${i.id}`}>
+        <button type="button" className={btn} aria-label={`View invoice ${i.invoiceNumber}`} data-testid={`invoice-view-${i.id}`}
+          onClick={(e) => { e.stopPropagation(); setPreviewId(i.id); }}>
+          <Eye size={14} />
         </button>
+        {canEditInvoice && !isReadonlyDraft(i) && (
+          <button type="button" className={btn} aria-label={`Edit invoice ${i.invoiceNumber}`} data-testid={`invoice-edit-${i.id}`}
+            onClick={(e) => { e.stopPropagation(); openEditorFor(i); }}>
+            <FileText size={14} />
+          </button>
+        )}
+        <button type="button" className={btn} aria-label={`More actions for invoice ${i.invoiceNumber}`} aria-haspopup="menu"
+          aria-expanded={moreOpenId === i.id} data-testid={`invoice-more-${i.id}`}
+          onClick={(e) => { e.stopPropagation(); setMoreOpenId((cur) => (cur === i.id ? null : i.id)); }}>
+          <MoreHorizontal size={14} />
+        </button>
+        {moreOpenId === i.id && (
+          <div role="menu" className="absolute right-0 top-full z-30 mt-1 w-48 rounded-md border border-border bg-card py-1 text-sm shadow-lg"
+            onClick={(e) => e.stopPropagation()} onMouseLeave={() => setMoreOpenId(null)}>
+            <button type="button" role="menuitem" className="w-full px-3 py-1.5 text-left hover:bg-secondary inline-flex items-center gap-2"
+              onClick={() => { setMoreOpenId(null); void navigator.clipboard?.writeText(i.invoiceNumber); toast({ title: "Invoice number copied" }); }}>
+              <Copy size={13} /> Copy invoice number
+            </button>
+            {isBillingUser && balance > 0 && i.status !== "void" && !isReadonlyDraft(i) && !i.frozen && (
+              <button type="button" role="menuitem" data-testid={`invoice-more-payment-${i.id}`}
+                className="w-full px-3 py-1.5 text-left hover:bg-secondary inline-flex items-center gap-2"
+                onClick={() => {
+                  setMoreOpenId(null);
+                  setReceivePaymentModal({
+                    practiceOrDoctorName: i.providerOrganization?.name ?? "",
+                    defaultAmount: balance,
+                    invoiceIds: [i.id],
+                    providerOrganizationId: i.providerOrganizationId ?? "",
+                  });
+                }}>
+                <CreditCard size={13} /> Record payment
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 sm:px-8 py-7 xl:flex xl:items-start xl:gap-5 max-md:[&_button]:min-h-11 max-md:[&_select]:min-h-11 max-md:[&_input:not([type=checkbox])]:min-h-11">
+    <div className="min-w-0 flex-1">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
+        <div className="flex items-start gap-3">
+          <span data-testid="invoices-heading-icon" className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white">
+            <FileText size={22} />
+          </span>
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Invoices</h1>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Open balances, payments, and statements.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 min-w-0 max-w-full">
+          {exportState ? (
+            <button
+              type="button"
+              data-testid="invoices-export-cancel"
+              onClick={() => exportAbortRef.current?.abort()}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium border border-border bg-card hover:bg-secondary"
+            >
+              <Loader2 size={14} className="animate-spin" />
+              Exporting {exportState.loaded}{exportState.total != null ? ` of ${exportState.total}` : ""} - Cancel
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid="invoices-export"
+              onClick={() => void exportCsv()}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium border border-border bg-card hover:bg-secondary"
+            >
+              <Download size={14} /> Export
+            </button>
+          )}
+          <button
+            type="button"
+            data-testid="invoices-statements"
+            onClick={() => setLocation("/statements")}
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium border border-border bg-card hover:bg-secondary"
+          >
+            <FileText size={14} /> Statements
+          </button>
+          {canEditInvoice && <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="inline-flex items-center gap-1.5 h-10 px-4 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700"
+          >
+            <Plus size={14} /> New Invoice
+          </button>}
+        </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        <div className="bg-card border border-border rounded-xl px-5 py-4">
-          <div className="flex items-center gap-1.5 text-muted-foreground text-[11px] uppercase tracking-wide font-medium mb-1.5">
-            <TrendingUp size={12} /> Open Balance
-          </div>
-          <div className="text-2xl font-semibold tabular-nums">{formatMoney(stats.openBalance)}</div>
-          <div className="text-xs text-muted-foreground mt-0.5">
-            {stats.openCount} invoice{stats.openCount !== 1 ? "s" : ""}
-          </div>
-        </div>
-        <div className="bg-card border border-border rounded-xl px-5 py-4">
-          <div className={`flex items-center gap-1.5 text-[11px] uppercase tracking-wide font-medium mb-1.5 ${stats.overdueCount > 0 ? "text-destructive" : "text-muted-foreground"}`}>
-            <AlertCircle size={12} /> Overdue
-          </div>
-          <div className={`text-2xl font-semibold tabular-nums ${stats.overdueCount > 0 ? "text-destructive" : ""}`}>
-            {formatMoney(stats.overdueBalance)}
-          </div>
-          <div className="text-xs text-muted-foreground mt-0.5">
-            {stats.overdueCount} invoice{stats.overdueCount !== 1 ? "s" : ""}
-          </div>
-        </div>
-        <div className="bg-card border border-border rounded-xl px-5 py-4">
-          <div className="flex items-center gap-1.5 text-muted-foreground text-[11px] uppercase tracking-wide font-medium mb-1.5">
-            <CheckCircle2 size={12} /> Paid This Month
-          </div>
-          <div className="text-2xl font-semibold tabular-nums">{formatMoney(stats.paidThisMonth)}</div>
-          <div className="text-xs text-muted-foreground mt-0.5">
-            {stats.paidCount} invoice{stats.paidCount !== 1 ? "s" : ""}
-          </div>
-        </div>
+      <div data-testid="invoice-summary-cards" className="grid grid-cols-1 min-[360px]:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
+        <InvoiceKpiCard
+          testId="invoice-open-card"
+          tone="blue"
+          icon={<FileText size={20} />}
+          label="Open Balance"
+          value={metricMoney(stats.openBalance)}
+          sub={metricCount(stats.openCount)}
+        />
+        <InvoiceKpiCard
+          testId="invoice-overdue-card"
+          tone="red"
+          icon={<AlertCircle size={20} />}
+          label="Overdue"
+          value={metricMoney(stats.overdueBalance)}
+          sub={metricCount(stats.overdueCount)}
+          onClick={() => {
+            setStatusSelection({ kind: "view", view: "outstanding" });
+            setOverdueBucket("");
+            setCustomDueDateFrom("");
+            setCustomDueDateTo("");
+          }}
+        />
+        <InvoiceKpiCard
+          testId="invoice-paid-card"
+          tone="green"
+          icon={<CheckCircle2 size={20} />}
+          label="Paid This Month"
+          value={metricMoney(stats.paidThisMonth)}
+          sub={metricCount(stats.paidCount)}
+        />
+        <InvoiceKpiCard
+          testId="invoice-total-card"
+          tone="violet"
+          icon={<FileText size={20} />}
+          label="Total Invoices"
+          value={stats.totalInvoices != null ? stats.totalInvoices.toLocaleString("en-US") : "\u2014"}
+          sub="All time"
+        />
       </div>
 
+      {!isLoading && !error && loaded.key === queryString && !hasRegisterAggregates && (
+        <p role="status" className="mb-3 text-xs text-muted-foreground">Invoice totals are unavailable. Refresh to try again.</p>
+      )}
       <div className="bg-card border border-border rounded-xl">
         <div data-testid="invoice-controls" className="sticky top-0 z-20 bg-card rounded-t-xl">
         <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
@@ -563,42 +1355,46 @@ export default function InvoicesPage() {
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search invoice # or client…"
-              className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+              placeholder="Search invoice #, patient, doctor, or practice..."
+              className="w-full h-10 pl-8 pr-3 rounded-lg bg-card text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-border focus:border-primary"
             />
           </div>
-          <div className="inline-flex rounded-md border border-border overflow-hidden">
-            <button
-              type="button"
-              onClick={() => setOpenOnly(true)}
-              className={`h-9 px-3 text-xs font-medium ${openOnly ? "bg-primary text-primary-foreground" : "bg-secondary hover:bg-secondary/70"}`}
-            >
-              Open
-            </button>
-            <button
-              type="button"
-              onClick={() => setOpenOnly(false)}
-              className={`h-9 px-3 text-xs font-medium border-l border-border ${!openOnly ? "bg-primary text-primary-foreground" : "bg-secondary hover:bg-secondary/70"}`}
-            >
-              All
-            </button>
-          </div>
-          {!openOnly && (
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
-            >
-              {STATUS_FILTERS.map((f) => (
-                <option key={f.value} value={f.value}>
-                  {f.label}
-                </option>
-              ))}
-            </select>
-          )}
+          <MultiSelectFilter
+            label="Status"
+            options={STATUS_FILTER_OPTIONS}
+            selected={unifiedStatusSelection}
+            onChange={setUnifiedStatusSelection}
+            data-testid="invoices-status-filter"
+          />
+          <select
+            value={invoiceDatePreset}
+            onChange={(e) => {
+              const val = e.target.value as InvoiceDatePreset;
+              setInvoiceDatePreset(val);
+              if (val !== "custom") {
+                setCustomIssuedFrom("");
+                setCustomIssuedTo("");
+              }
+            }}
+            className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+            title="Invoice date"
+          >
+            {(Object.keys(INVOICE_DATE_PRESET_LABELS) as InvoiceDatePreset[]).map((key) => (
+              <option key={key} value={key}>
+                {INVOICE_DATE_PRESET_LABELS[key]}
+              </option>
+            ))}
+          </select>
+          {viewMode !== "outstanding" && (
           <select
             value={overdueBucket}
-            onChange={(e) => setOverdueBucket(e.target.value)}
+            onChange={(e) => {
+              setOverdueBucket(e.target.value);
+              if (e.target.value !== "custom") {
+                setCustomDueDateFrom("");
+                setCustomDueDateTo("");
+              }
+            }}
             className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
             title="Overdue bucket"
           >
@@ -607,16 +1403,18 @@ export default function InvoicesPage() {
             <option value="31_60">31–60 days overdue</option>
             <option value="61_90">61–90 days overdue</option>
             <option value="90_plus">90+ days overdue</option>
+            {isAdminOrOwner && <option value="custom">Custom date range…</option>}
           </select>
+          )}
           <select
-            value={practiceId}
-            onChange={(e) => setPracticeId(e.target.value)}
+            value={doctorName}
+            onChange={(e) => setDoctorName(e.target.value)}
             className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
-            title="Filter by practice"
+            title="Filter by doctor"
           >
-            <option value="">All practices</option>
-            {practiceOptions.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
+            <option value="">All doctors</option>
+            {distinctDoctorNames.map((name) => (
+              <option key={name} value={name}>{name}</option>
             ))}
           </select>
           <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground select-none">
@@ -631,16 +1429,123 @@ export default function InvoicesPage() {
           </label>
           <button
             type="button"
+            data-testid="sort-issued"
+            onClick={() => toggleSort("issued")}
+            className="inline-flex items-center gap-1 h-9 px-2.5 rounded-md bg-secondary text-xs font-medium hover:bg-secondary/70"
+            title="Sort by issued date"
+          >
+            Issued
+            {sortKey === "issued" ? (sortDir === "asc" ? <ArrowUp size={10} /> : <ArrowDown size={10} />) : <span className="opacity-30"><ArrowUp size={10} /></span>}
+          </button>
+          <button
+            type="button"
+            data-testid="invoices-clear-filters"
+            onClick={() => {
+              setSearch("");
+              setStatusSelection({ kind: "all" });
+              setAiOnly(false);
+              setDoctorName("");
+              setOverdueBucket("");
+              setCustomDueDateFrom("");
+              setCustomDueDateTo("");
+              setInvoiceDatePreset("all");
+              setCustomIssuedFrom("");
+              setCustomIssuedTo("");
+            }}
+            className="ml-auto inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-xs font-medium text-blue-600 hover:bg-secondary"
+          >
+            <RotateCcw size={13} /> Clear Filters
+          </button>
+          <button
+            type="button"
             onClick={() => setStatementBuilderOpen(true)}
-            className="ml-auto inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-xs font-medium hover:bg-secondary"
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-xs font-medium hover:bg-secondary"
             title="Build a multi-practice statement"
           >
-            <FileText size={14} /> Statements
+            <FileText size={14} /> Multi-practice statement
           </button>
         </div>
 
+        {overdueBucket === "custom" && isAdminOrOwner && (
+          <div className="px-4 py-2.5 flex items-center gap-3 border-b border-border flex-wrap bg-muted/40">
+            <span className="text-xs font-medium text-muted-foreground">Invoice date range:</span>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-muted-foreground">From</label>
+              <input
+                type="date"
+                value={customDueDateFrom}
+                onChange={(e) => setCustomDueDateFrom(e.target.value)}
+                className="h-8 px-2 rounded-md bg-card text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-muted-foreground">to</label>
+              <input
+                type="date"
+                value={customDueDateTo}
+                onChange={(e) => setCustomDueDateTo(e.target.value)}
+                min={customDueDateFrom || undefined}
+                className="h-8 px-2 rounded-md bg-card text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+            {customDueDateFrom && customDueDateTo && customDueDateTo < customDueDateFrom && (
+              <span className="text-xs text-destructive">End must be on or after start</span>
+            )}
+          </div>
+        )}
+
+        {invoiceDatePreset === "custom" && (
+          <div className="px-4 py-2.5 flex items-center gap-3 border-b border-border flex-wrap bg-muted/40">
+            <span className="text-xs font-medium text-muted-foreground">Invoice date:</span>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-muted-foreground">From</label>
+              <input
+                type="date"
+                value={customIssuedFrom}
+                onChange={(e) => setCustomIssuedFrom(e.target.value)}
+                className="h-8 px-2 rounded-md bg-card text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-muted-foreground">to</label>
+              <input
+                type="date"
+                value={customIssuedTo}
+                onChange={(e) => setCustomIssuedTo(e.target.value)}
+                min={customIssuedFrom || undefined}
+                className="h-8 px-2 rounded-md bg-card text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+            {customIssuedFrom && customIssuedTo && customIssuedTo < customIssuedFrom && (
+              <span className="text-xs text-destructive">End must be on or after start</span>
+            )}
+          </div>
+        )}
+
+        {(selectProgress || selectError || selectExcluded > 0) && (
+          <div data-testid="invoice-select-all-status" role="status" aria-live="polite"
+            className={`flex flex-wrap items-center gap-3 px-5 py-2 rounded-md mb-2 text-xs border ${selectError ? "border-destructive/40 text-destructive" : "border-border text-muted-foreground"}`}>
+            {selectProgress && (
+              <>
+                <span>Selecting matching invoices: {selectProgress.loaded}{selectProgress.total != null ? ` of ${selectProgress.total}` : ""}</span>
+                <button type="button" className="underline" data-testid="invoice-select-all-cancel" onClick={() => { selectAbortRef.current?.abort(); selectAbortRef.current = null; setSelectProgress(null); }}>Cancel</button>
+              </>
+            )}
+            {selectError && (
+              <>
+                <span>Could not select all matching invoices: {selectError}</span>
+                <button type="button" className="underline" data-testid="invoice-select-all-retry" onClick={() => void selectAllMatching()}>Retry</button>
+              </>
+            )}
+            {!selectProgress && !selectError && selectExcluded > 0 && (
+              <span data-testid="invoice-select-all-excluded">
+                {selectExcluded} draft invoice{selectExcluded !== 1 ? "s were" : " was"} not selected: drafts are read-only and cannot be bulk edited, reset, paid or sent.
+              </span>
+            )}
+          </div>
+        )}
         {selected.size > 0 && (
-          <div className="flex items-center gap-3 px-5 py-2 bg-primary/5 border border-primary/20 rounded-md mb-2 text-sm">
+          <div data-testid="invoice-bulk-controls" className="flex flex-wrap items-center gap-3 px-5 py-2 bg-primary/5 border border-primary/20 rounded-md mb-2 text-sm [&>button]:shrink-0 [&>span]:shrink-0">
             <span className="font-medium text-primary">{selected.size} invoice{selected.size !== 1 ? "s" : ""} selected</span>
             <button
               type="button"
@@ -667,7 +1572,7 @@ export default function InvoicesPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setBulkFeedback(null); setBulkConfirm({ kind: "reset_all", count: filtered.length, labOrganizationId }); }}
+                  onClick={() => { setBulkFeedback(null); setBulkConfirm({ kind: "reset_all", count: loadedTotal || filtered.length, labOrganizationId }); }}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-warning/10 text-warning border border-warning/20 text-xs font-medium hover:bg-warning/20"
                 >
                   <RotateCcw size={12} /> Reset all to $0
@@ -688,6 +1593,23 @@ export default function InvoicesPage() {
                     <option key={s} value={s}>{statusLabel(s)}</option>
                   ))}
                 </select>
+                <button
+                  type="button"
+                  onClick={() => { setBulkFeedback(null); setBulkRemakeOpen(true); }}
+                  title="Step through the selected invoices and link each one's case as a remake of an earlier case"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-secondary text-foreground border border-border text-xs font-medium hover:bg-secondary/70"
+                >
+                  <GitBranch size={12} /> Mark as remakes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    startBulkReceivePayment();
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 text-xs font-medium hover:bg-emerald-500/20"
+                >
+                  <CreditCard size={12} /> Receive Payment
+                </button>
               </>
             )}
             <button
@@ -701,22 +1623,75 @@ export default function InvoicesPage() {
         )}
         </div>
 
+        <div role="tablist" aria-label="Invoice status" data-testid="invoice-status-tabs" className="flex flex-wrap gap-2 px-5 py-3 border-b border-border">
+          {STATUS_TABS.map((tab) => {
+            const active = tab.key === "all"
+              ? unifiedStatusSelection.length === 0
+              : unifiedStatusSelection.length === 1 && unifiedStatusSelection[0] === (tab.key === "overdue" ? "outstanding" : tab.key);
+            const count = loadedSummary?.statusCounts?.[tab.key];
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                data-testid={`invoice-tab-${tab.key}`}
+                onClick={() => {
+                  if (tab.key === "all") setUnifiedStatusSelection([]);
+                  else setUnifiedStatusSelection([tab.key === "overdue" ? "outstanding" : tab.key]);
+                }}
+                className={`inline-flex items-center gap-2 h-8 px-3 rounded-lg text-sm font-medium border ${active ? "bg-primary text-primary-foreground border-primary" : "bg-card border-border hover:bg-secondary"}`}
+              >
+                {tab.label}
+                <span className={`text-xs tabular-nums rounded-full px-1.5 ${active ? "bg-primary-foreground/20" : "bg-secondary"}`}>
+                  {count != null ? count.toLocaleString("en-US") : "\u2014"}
+                </span>
+              </button>
+            );
+          })}
+          {unifiedStatusSelection.length > 1 || (unifiedStatusSelection.length === 1 && !STATUS_TABS.some((t) => (t.key === "overdue" ? "outstanding" : t.key) === unifiedStatusSelection[0])) ? (
+            <span data-testid="invoice-tab-custom" className="inline-flex items-center h-8 px-3 rounded-lg text-sm border border-primary text-primary">
+              Custom ({unifiedStatusSelection.length})
+            </span>
+          ) : null}
+        </div>
+        <div
+          data-testid="invoices-loaded-count"
+          className="flex flex-wrap items-center justify-between gap-2 px-5 py-2 text-xs text-muted-foreground border-b border-border"
+        >
+          <span>Showing {rangeStart}-{rangeEnd} of {loadedTotal.toLocaleString("en-US")} invoices</span>
+          <label className="inline-flex items-center gap-2">
+            <span className="sr-only">Rows per page</span>
+            <select
+              data-testid="invoices-page-size"
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="h-8 px-2 rounded-md bg-secondary text-xs border border-border"
+            >
+              {PAGE_SIZE_OPTIONS.map((n) => <option key={n} value={n}>{n} per page</option>)}
+            </select>
+          </label>
+        </div>
         <div className="overflow-x-auto rounded-b-xl">
-          <table className="w-full text-sm">
+          {!narrow && <table className="w-full text-sm">
             <thead>
-              <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+              <tr className="bg-sky-50 dark:bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
                 <th className="w-10 px-3 py-2.5">
                   <input
                     type="checkbox"
                     className="h-3.5 w-3.5"
-                    checked={filtered.length > 0 && filtered.every((i) => selected.has(i.id))}
+                    checked={headerChecked}
+                    disabled={selectProgress !== null}
                     ref={(el) => {
-                      if (el) el.indeterminate = selected.size > 0 && !filtered.every((i) => selected.has(i.id));
+                      if (el) el.indeterminate = selected.size > 0 && !headerChecked;
                     }}
                     onChange={(e) => {
-                      setSelected(e.target.checked ? new Set(filtered.map((i) => i.id)) : new Set());
+                      if (e.target.checked) void selectAllMatching();
+                      else clearSelection();
                     }}
-                    title={selected.size > 0 && !filtered.every((i) => selected.has(i.id)) ? "Deselect all" : "Select all"}
+                    aria-label={selected.size > 0 ? "Deselect all matching invoices" : `Select all ${loadedTotal || filtered.length} matching invoices`}
+                    data-testid="invoice-select-all"
+                    title={selected.size > 0 && !headerChecked ? "Select all matching invoices" : headerChecked ? "Deselect all" : "Select all matching invoices"}
                   />
                 </th>
                 <th className="text-left font-medium px-2 py-2.5">Invoice #</th>
@@ -726,7 +1701,7 @@ export default function InvoicesPage() {
                     onClick={() => toggleSort("practice")}
                     className="inline-flex items-center gap-1 hover:text-foreground"
                   >
-                    Practice
+                    Practice / Patient
                     {sortKey === "practice" ? (
                       sortDir === "asc" ? <ArrowUp size={10} /> : <ArrowDown size={10} />
                     ) : (
@@ -734,29 +1709,14 @@ export default function InvoicesPage() {
                     )}
                   </button>
                 </th>
-                <th className="text-left font-medium py-2.5">Patient</th>
-                <th className="text-left font-medium py-2.5">Bill to</th>
-                <th className="text-left font-medium py-2.5">
-                  <button
-                    type="button"
-                    onClick={() => toggleSort("issued")}
-                    className="inline-flex items-center gap-1 hover:text-foreground"
-                  >
-                    Issued
-                    {sortKey === "issued" ? (
-                      sortDir === "asc" ? <ArrowUp size={10} /> : <ArrowDown size={10} />
-                    ) : (
-                      <span className="opacity-30"><ArrowUp size={10} /></span>
-                    )}
-                  </button>
-                </th>
+                <th className="text-left font-medium py-2.5">Restoration</th>
                 <th className="text-left font-medium py-2.5">
                   <button
                     type="button"
                     onClick={() => toggleSort("due")}
                     className="inline-flex items-center gap-1 hover:text-foreground"
                   >
-                    Due
+                    Due Date
                     {sortKey === "due" ? (
                       sortDir === "asc" ? <ArrowUp size={10} /> : <ArrowDown size={10} />
                     ) : (
@@ -768,25 +1728,26 @@ export default function InvoicesPage() {
                 <th className="text-right font-medium py-2.5">
                   Total
                   <ColumnTotal
-                    values={filtered.map((i) => i.total)}
-                    loading={isLoading}
+                    values={[stats.sumTotal]}
+                    loading={isLoading || !hasRegisterAggregates}
                     testId="column-total-total"
                   />
                 </th>
                 <th className="text-right font-medium px-5 py-2.5">
                   Balance
                   <ColumnTotal
-                    values={filtered.map((i) => i.balanceDue ?? i.total)}
-                    loading={isLoading}
+                    values={[stats.sumBalance]}
+                    loading={isLoading || !hasRegisterAggregates}
                     testId="column-total-balance"
                   />
                 </th>
+                <th className="text-center font-medium px-3 py-2.5">Actions</th>
               </tr>
             </thead>
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={10} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={9} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading invoices…
                   </td>
@@ -794,32 +1755,42 @@ export default function InvoicesPage() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={10} className="px-5 py-12 text-center text-destructive">
+                  <td colSpan={9} className="px-5 py-12 text-center text-destructive">
                     {(error as Error).message}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={9} className="px-5 py-12 text-center text-muted-foreground">
                     No invoices match the current filters.
                   </td>
                 </tr>
               )}
               {filtered.map((i) => {
                 const meta = readDisplayMetadata(i);
+                const hasDateDriftWarning =
+                  isLikelyLegacyShiftedInvoiceDate(i.issuedAt, i.createdAt) ||
+                  isLikelyLegacyShiftedInvoiceDate(i.dueAt ?? i.dueDate, i.createdAt);
                 return (
                 <tr
                   key={i.id}
-                  onClick={() => setEditing(i)}
-                  className={`border-t border-border cursor-pointer hover:bg-secondary/40 ${selected.has(i.id) ? "bg-primary/5" : ""}`}
+                  onClick={(event) => {
+                    event.currentTarget.querySelector<HTMLButtonElement>("button")?.focus();
+                    setPreviewId(i.id);
+                  }}
+                  data-testid={`invoice-row-${i.id}`}
+                  aria-selected={previewId === i.id}
+                  className={`border-t border-border/60 cursor-pointer ${previewId === i.id ? "bg-primary/10 hover:bg-primary/10" : "hover:bg-secondary/40"}`}
                 >
                   <td className="w-10 px-3 py-3" onClick={(e) => e.stopPropagation()}>
                     <input
                       type="checkbox"
                       className="h-3.5 w-3.5"
                       aria-label={`Select invoice ${i.invoiceNumber}`}
-                      checked={selected.has(i.id)}
+                      checked={selected.has(i.id) && !isReadonlyDraft(i)}
+                      disabled={isReadonlyDraft(i)}
+                      title={isReadonlyDraft(i) ? "Draft invoices are read-only and cannot be selected" : undefined}
                       onMouseDown={suppressShiftClickTextSelection}
                       onChange={(e) =>
                         handleInvoiceRowCheckboxChange(
@@ -832,39 +1803,65 @@ export default function InvoicesPage() {
                   </td>
                   <td className="px-2 py-3 font-mono text-xs">
                     <span className="inline-flex items-center gap-1.5">
-                      {i.invoiceNumber}
+                      <button
+                        type="button"
+                        aria-label={`Preview invoice ${i.invoiceNumber}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setPreviewId(i.id);
+                        }}
+                        className="rounded text-blue-600 font-semibold hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                      >
+                        {i.invoiceNumber}
+                      </button>
                       {i.aiGenerated && !i.aiReviewedAt && (
                         <span title="AI-imported — needs review">
                           <Sparkles size={11} className="text-amber-500" />
                         </span>
                       )}
+                      {isAdminOrOwner && hasDateDriftWarning && (
+                        <span title="One or more dates may have shifted under the former timezone handling">
+                          <TriangleAlert size={11} className="text-amber-500" />
+                        </span>
+                      )}
                     </span>
                   </td>
-                  <td className="py-3">
-                    {i.providerOrganization?.name || (
-                      <span className="text-muted-foreground">—</span>
-                    )}
+                  <td className="py-3 pr-2 max-w-[260px]">
+                    <div className="truncate font-medium">
+                      {i.providerOrganization?.name || <span className="text-muted-foreground">{"\u2014"}</span>}
+                    </div>
+                    <div className="truncate text-xs text-muted-foreground">{meta.patientName || "\u2014"}</div>
                   </td>
-                  <td className="py-3">
-                    {meta.patientName || <span className="text-muted-foreground">—</span>}
+                  <td className="py-3 pr-2 text-xs text-muted-foreground max-w-[220px]">
+                    <div className="truncate" title={[meta.caseType, meta.caseSubtype, meta.material, meta.billTo].filter(Boolean).join(" / ")}>
+                      {restorationText(meta) || "\u2014"}
+                    </div>
                   </td>
-                  <td className="py-3 text-muted-foreground">
-                    {meta.billTo || <span className="text-muted-foreground">—</span>}
-                  </td>
-                  <td className="py-3 text-muted-foreground">{formatDate(i.issuedAt)}</td>
-                  <td className="py-3 text-muted-foreground">
-                    {formatDate(i.dueAt ?? i.dueDate)}
+                  <td
+                    data-testid={`invoice-due-${i.id}`}
+                    className={`py-3 ${isInvoiceOverdue(i) ? "text-red-600 font-medium dark:text-red-400" : "text-muted-foreground"}`}
+                  >
+                    {formatInvoiceDate(i.dueAt ?? i.dueDate)}
                   </td>
                   <td className="py-3">
                     <span className="inline-flex items-center flex-wrap gap-1.5">
                       <StatusBadge status={i.status} />
                       {i.frozen && (
                         <span
-                          title="Invoice is frozen — the linked case was deleted"
+                          title={String(i.status) === "recovery_draft" ? "Current-rate replacement held for charge and historical-payment review; not collectible" : "Invoice is frozen — the linked case was deleted"}
                           className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-full uppercase tracking-wide bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-300/60 dark:border-amber-700/40"
                         >
                           <Lock size={9} />
-                          Frozen
+                          {String(i.status) === "recovery_draft" ? "Review hold" : "Frozen"}
+                        </span>
+                      )}
+                      {i.hasUnpricedAlloy && (
+                        <span
+                          title="One or more alloy sub-items still need a unit price"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-full uppercase tracking-wide bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-300/60 dark:border-amber-700/40"
+                        >
+                          <TriangleAlert size={9} />
+                          Alloy unpriced
                         </span>
                       )}
                     </span>
@@ -875,20 +1872,138 @@ export default function InvoicesPage() {
                   <td className="px-5 py-3 text-right tabular-nums">
                     {formatMoney(i.balanceDue ?? i.total)}
                   </td>
+                  <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                    {renderRowActions(i)}
+                  </td>
                 </tr>
                 );
               })}
             </tbody>
-          </table>
+          </table>}
+          {narrow && <ul data-testid="invoice-mobile-list" className="divide-y divide-border">
+            {isLoading && <li className="px-4 py-8 text-center text-muted-foreground">Loading invoices...</li>}
+            {error && <li className="px-4 py-8 text-center text-destructive">{(error as Error).message}</li>}
+            {!isLoading && !error && filtered.length === 0 && (
+              <li className="px-4 py-8 text-center text-muted-foreground">No invoices match the current filters.</li>
+            )}
+            {filtered.map((i) => {
+              const meta = readDisplayMetadata(i);
+              return (
+                <li
+                  key={i.id}
+                  data-testid={`invoice-card-${i.id}`}
+                  onClick={() => setPreviewId(i.id)}
+                  className={`px-4 py-3 flex flex-col gap-2 ${previewId === i.id ? "bg-primary/10" : ""}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                      <label className="inline-flex h-11 w-11 shrink-0 items-center justify-center">
+                      <input
+                        type="checkbox"
+                        className="h-5 w-5"
+                        aria-label={`Select invoice ${i.invoiceNumber}`}
+                        checked={selected.has(i.id) && !isReadonlyDraft(i)}
+                        disabled={isReadonlyDraft(i)}
+                        title={isReadonlyDraft(i) ? "Draft invoices are read-only and cannot be selected" : undefined}
+                        onMouseDown={suppressShiftClickTextSelection}
+                        onChange={(e) => handleInvoiceRowCheckboxChange(i.id, e.target.checked, shiftKeyFromChangeEvent(e))}
+                      />
+                      </label>
+                      <button type="button" aria-label={`Preview invoice ${i.invoiceNumber}`} onClick={() => setPreviewId(i.id)}
+                        className="font-semibold text-blue-600 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">
+                        {i.invoiceNumber}
+                      </button>
+                      {i.aiGenerated && !i.aiReviewedAt && <Sparkles size={12} className="text-amber-500" aria-label="AI-imported, needs review" />}
+                      {i.frozen && <Lock size={12} className="text-amber-600" aria-label="Frozen" />}
+                      {i.hasUnpricedAlloy && <TriangleAlert size={12} className="text-amber-500" aria-label="Alloy unpriced" />}
+                    </span>
+                    <StatusBadge status={i.status} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">{i.providerOrganization?.name || "\u2014"}</div>
+                    <div className="truncate text-xs text-muted-foreground">{meta.patientName || "\u2014"}</div>
+                    {restorationText(meta) && <div className="truncate text-xs text-muted-foreground">{restorationText(meta)}</div>}
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className={isInvoiceOverdue(i) ? "text-red-600 font-medium" : "text-muted-foreground"}>
+                      Due {formatInvoiceDate(i.dueAt ?? i.dueDate)}
+                    </span>
+                    <span className="tabular-nums text-right">
+                      <span className="text-xs text-muted-foreground">Total {formatMoney(i.total)} - Balance </span>
+                      <span className="font-semibold">{formatMoney(i.balanceDue ?? i.total)}</span>
+                    </span>
+                  </div>
+                  <div onClick={(e) => e.stopPropagation()}>{renderRowActions(i)}</div>
+                </li>
+              );
+            })}
+          </ul>}
         </div>
+        {pageCount > 1 && (
+          <nav aria-label="Pagination" data-testid="invoices-pager" className="flex flex-wrap items-center justify-end gap-1 px-5 py-3 border-t border-border max-md:[&_button]:min-w-11">
+            <button type="button" data-testid="invoices-page-prev" aria-label="Previous page" disabled={page <= 1 || isFetching} onClick={() => setPage((p) => Math.max(1, p - 1))} className="h-8 min-w-8 px-2 rounded-md border border-border text-sm hover:bg-secondary disabled:opacity-40">&lt;</button>
+            {pagerItems(page, pageCount).map((item, idx) =>
+              item === "gap" ? (
+                <span key={`gap-${idx}`} className="px-1 text-muted-foreground">...</span>
+              ) : (
+                <button key={item} type="button" aria-label={`Page ${item}`} data-testid={`invoices-page-${item}`} aria-current={item === page ? "page" : undefined} disabled={isFetching} onClick={() => setPage(item)} className={`h-8 min-w-8 px-2 rounded-md text-sm tabular-nums ${item === page ? "bg-primary text-primary-foreground" : "border border-border hover:bg-secondary"}`}>{item}</button>
+              ),
+            )}
+            <button type="button" data-testid="invoices-page-next" aria-label="Next page" disabled={page >= pageCount || isFetching} onClick={() => setPage((p) => Math.min(pageCount, p + 1))} className="h-8 min-w-8 px-2 rounded-md border border-border text-sm hover:bg-secondary disabled:opacity-40">&gt;</button>
+          </nav>
+        )}
       </div>
 
+    </div>
+    {previewId && (
+      <InvoicePreviewPanel
+        key={previewId}
+        invoiceId={previewId}
+        refreshToken={listQuery.dataUpdatedAt}
+        canRecordPayment={isBillingUser}
+        canEdit={canEditInvoice}
+        suppressEscape={!!editing || !!receivePaymentModal || createOpen}
+        onClose={() => {
+          const params = new URLSearchParams(urlSearch);
+          const returnTo = params.get("returnTo");
+          if (returnTo === "/reports" || returnTo?.startsWith("/reports?")) {
+            setLocation(returnTo);
+            return;
+          }
+          setPreviewId(null);
+          params.delete("previewId");
+          params.delete("returnTo");
+          const query = params.toString();
+          setLocation(`/invoices${query ? `?${query}` : ""}`);
+        }}
+        onEdit={(inv) => openEditorFor(inv)}
+        onRecordPayment={(inv) => {
+          const m = readDisplayMetadata(inv);
+          setReceivePaymentModal({
+            practiceOrDoctorName: inv.providerOrganization?.name || m.billTo || "Unknown",
+            defaultAmount: Math.max(0, Number(inv.balanceDue ?? 0)),
+            invoiceIds: [inv.id],
+            providerOrganizationId: inv.providerOrganizationId,
+            doctorName: inv.doctorIdentity || inv.doctorDisplayName || inv.doctorName || null,
+          });
+        }}
+      />
+    )}
       {editing && (
         <InvoiceEditor
           key={editing.id}
           invoice={editing}
           doctorNames={distinctDoctorNames}
-          onClose={() => setEditing(null)}
+          onClose={() => {
+            setEditing(null);
+            void queryClient.invalidateQueries({ queryKey: INVOICE_PREVIEW_QUERY_KEY });
+            const params = new URLSearchParams(window.location.search);
+            if (params.has("invoiceId")) {
+              params.delete("invoiceId");
+              const newSearch = params.toString();
+              setLocation(`/invoices${newSearch ? `?${newSearch}` : ""}`);
+            }
+          }}
           onGoToCase={() => {
             const caseId = editing.caseId;
             if (caseId) {
@@ -902,14 +2017,49 @@ export default function InvoicesPage() {
           }}
         />
       )}
+      {paymentChoice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="Choose practice for payment" data-testid="payment-practice-choice">
+          <div className="w-full max-w-md rounded-xl border border-border bg-background p-5 shadow-xl">
+            <h2 className="text-base font-semibold">Receive payment for one practice</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Your selection spans {paymentChoice.groups.length} practices. A payment applies to one practice; the others are left out.
+            </p>
+            <ul className="mt-3 space-y-2">
+              {paymentChoice.groups.map((g) => {
+                const excluded = paymentChoice.groups.filter((o) => o !== g).flatMap((o) => o.invoices);
+                const total = g.invoices.reduce((t, i) => t + Math.max(0, Number(i.balanceDue ?? 0)), 0);
+                return (
+                  <li key={g.providerOrganizationId}>
+                    <button
+                      type="button"
+                      data-testid={`payment-choice-${g.providerOrganizationId}`}
+                      onClick={() => { setPaymentChoice(null); openReceivePaymentFor(g.invoices, excluded); }}
+                      className="w-full rounded-md border border-border px-3 py-2 text-left text-sm hover:bg-secondary"
+                    >
+                      <span className="font-medium">{g.name}</span>
+                      <span className="block text-xs text-muted-foreground">
+                        {g.invoices.length} invoice{g.invoices.length === 1 ? "" : "s"} - {formatMoney(total)} balance
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        Excludes {excluded.length}: {excluded.map((i) => i.invoiceNumber).join(", ")}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <button type="button" onClick={() => setPaymentChoice(null)} className="mt-3 text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
       {createOpen && (
         <CreateInvoiceDialog
           knownLabOrgId={data?.[0]?.labOrganizationId}
           onClose={() => setCreateOpen(false)}
           onCreated={(inv) => {
-            queryClient.invalidateQueries({ queryKey: ["invoices"] });
+            void refreshInvoiceSalesQueries(queryClient, inv.id, inv.caseId);
             setCreateOpen(false);
-            setEditing(inv);
+            openEditorFor(inv);
           }}
         />
       )}
@@ -921,9 +2071,41 @@ export default function InvoicesPage() {
       )}
       {bulkSendOpen && (
         <BulkSendDialog
-          invoices={filtered.filter((i) => selected.has(i.id))}
+          invoices={getSelectedInvoices()}
           onClose={() => setBulkSendOpen(false)}
-          onSent={() => { setSelected(new Set()); setBulkSendOpen(false); }}
+          onSent={() => { clearSelection(); setBulkSendOpen(false); }}
+        />
+      )}
+      {bulkRemakeOpen && (
+        <BulkMarkRemakeWizard
+          invoices={getSelectedInvoices()}
+          isAdmin={isAdminOrOwner}
+          onClose={(anyLinked) => {
+            setBulkRemakeOpen(false);
+            if (anyLinked) {
+              clearSelection();
+              queryClient.invalidateQueries({ queryKey: ["invoices"] });
+              queryClient.invalidateQueries({ queryKey: ["cases"] });
+            }
+          }}
+        />
+      )}
+      {receivePaymentModal && labOrganizationId && (
+        <ReceivePaymentModal
+          open={true}
+          onClose={() => {
+            setReceivePaymentModal(null);
+            void queryClient.invalidateQueries({ queryKey: INVOICE_PREVIEW_QUERY_KEY });
+            window.requestAnimationFrame(() => {
+              document.querySelector<HTMLButtonElement>('[data-testid="invoice-preview-record-payment"]')?.focus();
+            });
+          }}
+          practiceOrDoctorName={receivePaymentModal.practiceOrDoctorName}
+          defaultAmount={receivePaymentModal.defaultAmount}
+          invoiceIds={receivePaymentModal.invoiceIds}
+          providerOrganizationId={receivePaymentModal.providerOrganizationId}
+          labOrganizationId={labOrganizationId}
+          doctorName={receivePaymentModal.doctorName ?? null}
         />
       )}
       {bulkConfirm && (
@@ -945,6 +2127,373 @@ export default function InvoicesPage() {
           onConfirm={handleBulkConfirm}
         />
       )}
+      {/* Bulk Paid→Open guard: some selected invoices have recorded payments */}
+      {bulkPaymentDeleteConfirm && (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
+            <h3 className="text-base font-semibold">Some invoices have recorded payments</h3>
+            <p className="text-sm text-muted-foreground">
+              {bulkPaymentDeleteConfirm.paidCount} of the {bulkPaymentDeleteConfirm.allInvoiceIds.length} selected invoice{bulkPaymentDeleteConfirm.allInvoiceIds.length !== 1 ? "s are" : " is"} currently Paid or Partially Paid and {bulkPaymentDeleteConfirm.paidCount !== 1 ? "have" : "has"} recorded payments. Deleting {bulkPaymentDeleteConfirm.paidCount !== 1 ? "them" : "it"} will clear those ledger entries and mark all selected invoices as Open.
+            </p>
+            {bulkDeletePaymentsMutation.error instanceof Error && (
+              <p className="text-sm text-destructive bg-destructive/10 rounded-md px-3 py-2">
+                {bulkDeletePaymentsMutation.error.message}
+              </p>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setBulkPaymentDeleteConfirm(null)}
+                disabled={bulkDeletePaymentsMutation.isPending}
+                className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  bulkDeletePaymentsMutation.mutate({
+                    paidInvoiceIds: bulkPaymentDeleteConfirm.paidInvoiceIds,
+                    allInvoiceIds: bulkPaymentDeleteConfirm.allInvoiceIds,
+                  })
+                }
+                disabled={bulkDeletePaymentsMutation.isPending}
+                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md text-sm font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+              >
+                {bulkDeletePaymentsMutation.isPending && <Loader2 size={14} className="animate-spin" />}
+                Delete payments & mark Open
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Bulk Open→Paid prompt: ask whether to record payments */}
+      {bulkRecordPaymentPrompt && (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
+            <h3 className="text-base font-semibold">
+              Mark {bulkRecordPaymentPrompt.count} invoice{bulkRecordPaymentPrompt.count !== 1 ? "s" : ""} as Paid
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              Do you want to record a payment entry for {bulkRecordPaymentPrompt.count !== 1 ? "these invoices" : "this invoice"}? This keeps the financial ledger accurate.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const ids = bulkRecordPaymentPrompt.invoiceIds;
+                  const cnt = bulkRecordPaymentPrompt.count;
+                  setBulkRecordPaymentPrompt(null);
+                  bulkStatusMutation.mutate({ invoiceIds: ids, status: "paid", expected: cnt });
+                }}
+                className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+              >
+                No, just mark as paid
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const ids = bulkRecordPaymentPrompt.invoiceIds;
+                  setBulkRecordPaymentPrompt(null);
+                  // Open ReceivePaymentModal pre-seeded with the selected invoices.
+                  const idSet = new Set(ids);
+                  const selectedInvs = getSelectedInvoices().filter((i) => idSet.has(i.id));
+                  const first = selectedInvs[0];
+                  if (!first || !labOrganizationId) return;
+                  const defaultAmount = selectedInvs.reduce(
+                    (sum, inv) => sum + Math.max(0, Number(inv.balanceDue ?? inv.total ?? 0)),
+                    0,
+                  );
+                  setReceivePaymentModal({
+                    practiceOrDoctorName: first.providerOrganization?.name ?? "",
+                    defaultAmount,
+                    invoiceIds: ids,
+                    providerOrganizationId: first.providerOrganizationId,
+                    doctorName: (() => {
+                      const names = [...new Set(selectedInvs.map(i => i.doctorIdentity || i.doctorDisplayName || i.doctorName || "").filter(Boolean))];
+                      return names.length === 1 ? names[0] : null;
+                    })(),
+                  });
+                }}
+                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                <CreditCard size={14} /> Yes, record payment
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Bulk "Mark as remakes" wizard ────────────────────────────────────────────
+// Steps through the selected invoices one at a time, collecting the same
+// original-case + questionnaire answers as the single-invoice "Mark as remake"
+// action inside the Invoice Editor, and submits each one through the exact
+// same PATCH /cases/:caseId/mark-as-remake endpoint — so suffix assignment,
+// history events, no-charge invoice zeroing, and remake-stat counting are
+// identical to the single flow. Invoices without a linked case (or whose case
+// is already a remake) can only be skipped.
+type BulkRemakeResult = {
+  invoiceId: string;
+  invoiceNumber: string;
+  status: "linked" | "skipped";
+  detail?: string;
+};
+
+function BulkMarkRemakeWizard({
+  invoices,
+  isAdmin,
+  onClose,
+}: {
+  invoices: Invoice[];
+  isAdmin: boolean;
+  onClose: (anyLinked: boolean) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [index, setIndex] = useState(0);
+  const [results, setResults] = useState<BulkRemakeResult[]>([]);
+  const [remakeSelected, setRemakeSelected] = useState<RemakeCaseHit | null>(null);
+  const [questionnaire, setQuestionnaire] = useState<RemakeQuestionnaireValue>(
+    blankQuestionnaire(),
+  );
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const finished = index >= invoices.length;
+  const current = finished ? null : invoices[index]!;
+  const caseId = current?.caseId ?? null;
+  const meta = readDisplayMetadata(current);
+
+  // Fetch the current invoice's linked case so we can show its case number
+  // and detect "already a remake" up front instead of via a submit error.
+  // Reuses the Invoice Editor's query key so the cache is shared.
+  const linkedCaseQuery = useQuery({
+    queryKey: ["case-number-for-invoice", caseId],
+    queryFn: () =>
+      apiFetch<LabCase & { restorations?: CaseRestoration[] }>(`/cases/${caseId}`),
+    enabled: !!caseId && !finished,
+    staleTime: 300_000,
+  });
+  const linkedCase = caseId ? linkedCaseQuery.data ?? null : null;
+  const alreadyRemake = !!linkedCase?.remakeOfCaseId;
+
+  const linkedCount = results.filter((r) => r.status === "linked").length;
+
+  function advance(result: BulkRemakeResult) {
+    setResults((prev) => [...prev, result]);
+    setRemakeSelected(null);
+    setQuestionnaire(blankQuestionnaire());
+    setSubmitError(null);
+    setIndex((i) => i + 1);
+  }
+
+  function skipCurrent(detail?: string) {
+    if (!current) return;
+    advance({
+      invoiceId: current.id,
+      invoiceNumber: current.invoiceNumber,
+      status: "skipped",
+      ...(detail ? { detail } : {}),
+    });
+  }
+
+  const linkMutation = useMutation({
+    mutationFn: () => {
+      if (!caseId || !remakeSelected) {
+        return Promise.reject(new Error("Select the original case being remade."));
+      }
+      return apiFetch<{ caseId: string; caseNumber: string }>(
+        `/cases/${caseId}/mark-as-remake`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(buildRemakeLinkPayload(remakeSelected, questionnaire)),
+        },
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["case-number-for-invoice", caseId] });
+      queryClient.invalidateQueries({ queryKey: ["case-remake-chain", caseId] });
+      queryClient.invalidateQueries({ queryKey: ["case", caseId] });
+      if (current) {
+        queryClient.invalidateQueries({ queryKey: ["invoice", current.id] });
+        advance({
+          invoiceId: current.id,
+          invoiceNumber: current.invoiceNumber,
+          status: "linked",
+        });
+      }
+    },
+    onError: (err: Error) => {
+      setSubmitError(err.message || "Could not mark this case as a remake.");
+    },
+  });
+
+  const closeWizard = () => {
+    if (!linkMutation.isPending) onClose(linkedCount > 0);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={closeWizard} />
+      <div className="relative z-10 w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl bg-card border border-border shadow-2xl p-6 mx-4">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-semibold flex items-center gap-2">
+            <GitBranch size={15} className="text-muted-foreground" />
+            {finished
+              ? "Mark as remakes — done"
+              : `Mark as remakes (${index + 1} of ${invoices.length})`}
+          </h2>
+          <button
+            type="button"
+            onClick={closeWizard}
+            disabled={linkMutation.isPending}
+            className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+          >
+            <X size={15} />
+          </button>
+        </div>
+
+        {finished ? (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              {linkedCount} of {invoices.length} invoice
+              {invoices.length !== 1 ? "s" : ""} linked as remakes.
+            </p>
+            <ul className="max-h-64 overflow-y-auto rounded-md border border-border divide-y divide-border text-sm">
+              {results.map((r) => (
+                <li key={r.invoiceId} className="flex items-center gap-2 px-3 py-2">
+                  {r.status === "linked" ? (
+                    <CheckCircle2 size={14} className="text-success shrink-0" />
+                  ) : (
+                    <Ban size={14} className="text-muted-foreground shrink-0" />
+                  )}
+                  <span className="font-medium">{r.invoiceNumber}</span>
+                  <span className="text-xs text-muted-foreground truncate">
+                    {r.status === "linked"
+                      ? "Marked as remake"
+                      : r.detail || "Skipped"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={closeWizard}
+                className="h-8 px-4 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="mb-3 rounded-md bg-secondary/50 px-3 py-2 text-sm">
+              <span className="font-medium">{current!.invoiceNumber}</span>
+              {meta.patientName ? (
+                <span className="text-muted-foreground"> — {meta.patientName}</span>
+              ) : null}
+              {current!.providerOrganization?.name ? (
+                <span className="text-muted-foreground">
+                  {" "}· {current!.providerOrganization.name}
+                </span>
+              ) : null}
+              {linkedCase?.caseNumber ? (
+                <span className="text-muted-foreground"> · Case #{linkedCase.caseNumber}</span>
+              ) : null}
+            </div>
+
+            {!caseId ? (
+              <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <AlertCircle size={14} className="text-warning shrink-0" />
+                This invoice isn't linked to a case, so it can't be marked as a remake.
+              </p>
+            ) : linkedCaseQuery.isLoading ? (
+              <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <Loader2 size={14} className="animate-spin" /> Loading case…
+              </p>
+            ) : linkedCaseQuery.isError ? (
+              <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <AlertCircle size={14} className="text-warning shrink-0" />
+                Couldn't load the linked case for this invoice.
+              </p>
+            ) : alreadyRemake ? (
+              <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <AlertCircle size={14} className="text-warning shrink-0" />
+                Case #{linkedCase?.caseNumber} is already linked as a remake.
+              </p>
+            ) : (
+              <RemakeOriginalPicker
+                labOrganizationId={current!.labOrganizationId}
+                selected={remakeSelected}
+                onSelect={(hit) => {
+                  setRemakeSelected(hit);
+                  setSubmitError(null);
+                }}
+                onClear={() => {
+                  setRemakeSelected(null);
+                  setQuestionnaire(blankQuestionnaire());
+                }}
+                questionnaire={questionnaire}
+                onQuestionnaireChange={setQuestionnaire}
+                isAdmin={isAdmin}
+                excludeCaseId={caseId}
+              />
+            )}
+
+            {submitError && (
+              <p className="mt-3 text-sm text-destructive">{submitError}</p>
+            )}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeWizard}
+                disabled={linkMutation.isPending}
+                className="h-8 px-4 rounded-md text-sm bg-secondary hover:bg-secondary/80 text-muted-foreground disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  skipCurrent(
+                    !caseId
+                      ? "No linked case"
+                      : alreadyRemake
+                        ? "Already a remake"
+                        : undefined,
+                  )
+                }
+                disabled={linkMutation.isPending}
+                className="h-8 px-4 rounded-md text-sm bg-secondary hover:bg-secondary/80 disabled:opacity-50"
+              >
+                Skip
+              </button>
+              <button
+                type="button"
+                onClick={() => linkMutation.mutate()}
+                disabled={
+                  linkMutation.isPending ||
+                  !caseId ||
+                  alreadyRemake ||
+                  !remakeSelected ||
+                  !isRemakeQuestionnaireComplete(questionnaire)
+                }
+                className="h-8 px-4 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {linkMutation.isPending && <Loader2 size={12} className="animate-spin" />}
+                {linkMutation.isPending
+                  ? "Saving…"
+                  : index + 1 < invoices.length
+                    ? "Mark & next"
+                    : "Mark as remake"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -982,10 +2531,10 @@ function BulkInvoiceConfirmModal({
   const description = isDelete
     ? `This will permanently void and hide ${count} invoice${count !== 1 ? "s" : ""}. They will no longer appear in the invoices list or statement rollups. This cannot be undone.`
     : isResetAll
-    ? `This will zero out all invoice totals and line items across every practice. Invoices will show $0.00 total and $0.00 balance due and their status will be reset to draft. This cannot be undone.`
+    ? `This will zero out all invoice totals and line items across every practice. Invoices will show $0.00 total and $0.00 balance due. This cannot be undone.`
     : isStatus
     ? `This will change the status of ${count} selected invoice${count !== 1 ? "s" : ""} to ${statusName}. Frozen invoices will be skipped.`
-    : `This will zero out the totals and line items for ${count} selected invoice${count !== 1 ? "s" : ""}. Each will show $0.00 total and $0.00 balance due and its status will be reset to draft. This cannot be undone.`;
+    : `This will zero out the totals and line items for ${count} selected invoice${count !== 1 ? "s" : ""}. Each will show $0.00 total and $0.00 balance due. This cannot be undone.`;
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
@@ -1275,6 +2824,7 @@ function BulkSendDialog({
 // that the Save action actually persists are included; provider reassignment
 // is saved independently and is intentionally excluded.
 function serializeInvoiceForm(f: {
+  providerId?: string;
   invoiceNumber: string;
   statusValue: string;
   issuedAt: string;
@@ -1293,6 +2843,7 @@ function serializeInvoiceForm(f: {
   items: DraftLine[];
 }): string {
   return JSON.stringify({
+    providerId: f.providerId,
     invoiceNumber: f.invoiceNumber,
     statusValue: f.statusValue,
     issuedAt: f.issuedAt,
@@ -1312,15 +2863,18 @@ function serializeInvoiceForm(f: {
       item: it.item,
       description: it.description,
       quantity: Number(it.quantity || 0),
-      unitPrice: Number(it.unitPrice || 0),
+      unitPrice: it.unitPrice,
+      isDiscount: !!it.isDiscount,
       toothNumber: it.toothNumber ?? null,
       toothLabel: it.toothLabel ?? null,
       subItems: (it.subItems ?? []).map((sub) => ({
         item: sub.item,
         description: sub.description,
         quantity: Number(sub.quantity || 0),
-        unitPrice: Number(sub.unitPrice || 0),
+        unitPrice: sub.unitPrice,
         toothNumber: sub.toothNumber ?? null,
+        toothLabel: sub.toothLabel ?? null,
+        isDiscount: !!sub.isDiscount,
       })),
     })),
   });
@@ -1582,6 +3136,30 @@ export function InvoiceEditor({
   onClose: () => void;
   onGoToCase?: () => void;
 }) {
+  return <InvoiceEditingSurface key={invoice.id} invoice={invoice} doctorNames={doctorNames} onClose={onClose} onGoToCase={onGoToCase} />;
+}
+
+export function InlineInvoiceEditor({
+  invoice, doctorNames, onOpenEditor, onClose,
+}: {
+  invoice: Invoice;
+  doctorNames?: string[];
+  onOpenEditor: () => void;
+  onClose: () => void;
+}) {
+  return <InvoiceEditingSurface key={invoice.id} invoice={invoice} doctorNames={doctorNames} onClose={onClose} inline onOpenEditor={onOpenEditor} />;
+}
+
+function InvoiceEditingSurface({
+  invoice, doctorNames, onClose, onGoToCase, inline = false, onOpenEditor,
+}: {
+  invoice: Invoice;
+  doctorNames?: string[];
+  onClose: () => void;
+  onGoToCase?: () => void;
+  inline?: boolean;
+  onOpenEditor?: () => void;
+}) {
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
   const { user } = useAuth();
@@ -1589,49 +3167,55 @@ export function InvoiceEditor({
     user?.role === "owner" ||
     user?.role === "admin" ||
     user?.role === "billing";
+  const canEditInline = isAdmin && user?.userType !== "provider";
   // POST /cases/:caseId/restore requires ADMIN_ROLES (owner | admin), not billing
   const canRestoreCase = user?.role === "owner" || user?.role === "admin";
+  const isAdminOrOwner = user?.role === "owner" || user?.role === "admin";
 
-  // Column widths for the line-items table (Item, Tooth #, Desc, Qty, Unit price, Total)
-  const COL_DEFAULTS = [176, 112, 220, 64, 112, 96] as const;
-  const ACTION_COL_WIDTH = 80;
   const {
     widths: colWidths,
-    totalWidth: colTotalWidth,
     resizingCol,
     startResize,
     resetColumn,
+    fitColumn,
     resetAll: resetAllColWidths,
-  } =
-    useColumnWidths([...COL_DEFAULTS], user?.id);
+  } = useColumnWidths(INVOICE_COLUMN_DEFAULTS, user?.id);
 
-  // Resizable panel width — drag the left edge to expand/shrink.
-  const PANEL_WIDTH_KEY = "labtrax_invoice_panel_width_v1";
-  const PANEL_MIN = 480;
-  const PANEL_MAX = Math.round(window.innerWidth * 0.95);
-  const [panelWidth, setPanelWidth] = useState<number>(() => {
-    const stored = parseInt(localStorage.getItem(PANEL_WIDTH_KEY) ?? "", 10);
-    return isNaN(stored) ? 768 : Math.min(Math.max(stored, PANEL_MIN), PANEL_MAX);
-  });
-  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const onResizeMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragRef.current = { startX: e.clientX, startWidth: panelWidth };
-    function onMove(ev: MouseEvent) {
-      if (!dragRef.current) return;
-      const delta = dragRef.current.startX - ev.clientX;
-      const next = Math.min(Math.max(dragRef.current.startWidth + delta, PANEL_MIN), Math.round(window.innerWidth * 0.95));
-      setPanelWidth(next);
+  const {
+    panelWidth,
+    isMaximized: invoicePanelIsMaximized,
+    toggleMaximized: toggleInvoicePanelMaximized,
+    onResizeMouseDown,
+  } = useInvoicePanelSize();
+  const lineItemsTableRef = useRef<HTMLTableElement>(null);
+  const lineItemsTableContainerRef = useRef<HTMLDivElement>(null);
+  const [lineItemsContainerWidth, setLineItemsContainerWidth] = useState(0);
+  useEffect(() => {
+    const container = lineItemsTableContainerRef.current;
+    if (!container) return;
+    const measure = () => setLineItemsContainerWidth(container.clientWidth);
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
     }
-    function onUp() {
-      setPanelWidth((w) => { localStorage.setItem(PANEL_WIDTH_KEY, String(w)); return w; });
-      dragRef.current = null;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [panelWidth, PANEL_MIN]);
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+  const fittedColumnWidths = useMemo(
+    () =>
+      fitInvoiceLineItemColumns(
+        colWidths,
+        lineItemsContainerWidth ||
+          colWidths.reduce((total, width) => total + width, 0) +
+            INVOICE_LINE_ITEM_ACTION_COLUMN_WIDTH,
+      ),
+    [colWidths, lineItemsContainerWidth],
+  );
+  const fittedTableWidth =
+    fittedColumnWidths.reduce((total, width) => total + width, 0) +
+    INVOICE_LINE_ITEM_ACTION_COLUMN_WIDTH;
 
   // Layout preset selection (per-invoice override of the lab's default template).
   const [layoutPresetId, setLayoutPresetId] = useState<string | null>(
@@ -1747,6 +3331,28 @@ export function InvoiceEditor({
   });
   const linkedCase = linkedCaseQuery.data ?? null;
   const linkedCaseNumber = linkedCase?.caseNumber ?? null;
+
+  // Only fetched once the linked case is known to be a remake, to show which
+  // original it remakes without a second bespoke lookup — reuses the same
+  // chain endpoint the case-detail "Remake history" timeline already relies on.
+  const remakeChainQuery = useQuery({
+    queryKey: ["case-remake-chain", caseIdForPricing],
+    queryFn: () =>
+      apiFetch<{
+        chain: Array<{
+          id: string;
+          caseNumber: string;
+          status: string | null;
+          remakeReason: string | null;
+          remakeCharged: boolean | null;
+        }>;
+      }>(`/cases/${caseIdForPricing}/remake-chain`),
+    enabled: !!caseIdForPricing && !!linkedCase?.remakeOfCaseId,
+    staleTime: 60_000,
+  });
+  const remakeOriginal =
+    remakeChainQuery.data?.chain.find((c) => c.id === linkedCase?.remakeOfCaseId) ?? null;
+
   const linkedRxSummary = useMemo(
     () => deriveRxSummary(linkedCase?.restorations),
     [linkedCase?.restorations],
@@ -1801,10 +3407,36 @@ export function InvoiceEditor({
   });
   const pricedItems = pricedItemsQuery.data?.items ?? [];
 
+  const discountItemsQuery = useQuery({
+    queryKey: [
+      "pricing-discount-items",
+      invoice.labOrganizationId,
+      caseIdForPricing ?? null,
+    ],
+    queryFn: () =>
+      apiFetch<{
+        items: Array<{ key: string; label: string; unitPrice: number; isDiscount: true }>;
+      }>(
+        `/pricing/discount-items?labOrganizationId=${encodeURIComponent(invoice.labOrganizationId)}${
+          caseIdForPricing ? `&caseId=${encodeURIComponent(caseIdForPricing)}` : ""
+        }`,
+      ),
+    enabled: !!invoice.labOrganizationId,
+    staleTime: 60_000,
+  });
+  const discountItems = discountItemsQuery.data?.items ?? [];
+
   const billableItemsQuery = useQuery({
     queryKey: ["finance", "vendors", invoice.labOrganizationId, "items"],
     queryFn: () =>
-      apiFetch<Array<{ id: string; name: string; unitPrice: string | null }>>(
+      apiFetch<
+        Array<{
+          id: string;
+          name: string;
+          unitPrice: string | null;
+          priceKey?: string | null;
+        }>
+      >(
         `/finance/vendors?organizationId=${encodeURIComponent(invoice.labOrganizationId)}&vendorType=item`,
       ),
     enabled: !!invoice.labOrganizationId,
@@ -1812,13 +3444,14 @@ export function InvoiceEditor({
   });
   const billableItems = billableItemsQuery.data ?? [];
 
-  // Unified options for the ITEM typeahead: priced catalog items first, then
-  // the lab's custom billable items, de-duped by (case-insensitive) name.
+  // Unified options: case-priced charges, custom charges, then explicit
+  // discount items. Charge and discount names are deduped separately.
   const itemOptions = useMemo<ItemComboboxOption[]>(() => {
     const seen = new Set<string>();
+    const discountPriceKeys = new Set(discountItems.map((item) => item.key));
     const opts: ItemComboboxOption[] = [];
     for (const p of pricedItems) {
-      const key = p.label.toLowerCase();
+      const key = `charge:${p.label.toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
       opts.push({
@@ -1829,7 +3462,8 @@ export function InvoiceEditor({
       });
     }
     for (const b of billableItems) {
-      const key = b.name.toLowerCase();
+      if (b.priceKey && discountPriceKeys.has(b.priceKey)) continue;
+      const key = `charge:${b.name.toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
       opts.push({
@@ -1839,8 +3473,20 @@ export function InvoiceEditor({
         group: "custom",
       });
     }
+    for (const item of discountItems) {
+      const key = `discount:${item.label.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      opts.push({
+        key: `d:${item.key}`,
+        name: item.label,
+        unitPrice: item.unitPrice,
+        group: "custom",
+        isDiscount: true,
+      });
+    }
     return opts;
-  }, [pricedItems, billableItems]);
+  }, [pricedItems, billableItems, discountItems]);
 
   const caseAttachmentsQuery = useQuery({
     queryKey: ["case-attachments-for-invoice", caseIdForPricing],
@@ -1879,9 +3525,16 @@ export function InvoiceEditor({
     targetId: string;
     targetName: string;
   } | null>(null);
-  const [issuedAt, setIssuedAt] = useState<string>(toInputDate(invoice.issuedAt));
+  const [issuedAt, setIssuedAt] = useState<string>(invoiceTimestampToDateInput(invoice.issuedAt));
   const [dueAt, setDueAt] = useState<string>(
-    toInputDate(invoice.dueAt ?? invoice.dueDate),
+    invoiceTimestampToDateInput(invoice.dueAt ?? invoice.dueDate),
+  );
+  const [dateRepairOpen, setDateRepairOpen] = useState(false);
+  const [repairIssuedAt, setRepairIssuedAt] = useState(
+    invoiceTimestampToDateInput(invoice.issuedAt),
+  );
+  const [repairDueAt, setRepairDueAt] = useState(
+    invoiceTimestampToDateInput(invoice.dueAt ?? invoice.dueDate),
   );
   const [tax, setTax] = useState<number>(0);
   const [discount, setDiscount] = useState<number>(0);
@@ -1897,6 +3550,9 @@ export function InvoiceEditor({
   const [error, setError] = useState<string | null>(null);
   // Baseline snapshot of the form (set when detail loads) for the dirty check.
   const baselineRef = useRef<string | null>(null);
+  const draftDirtyRef = useRef(false);
+  const [resetVersion, setResetVersion] = useState(0);
+  const [savedAwaitingRefresh, setSavedAwaitingRefresh] = useState(false);
   // When unsaved edits would be lost (close, route navigation, etc.) we stash
   // the action to run if the user confirms; a non-null value shows the
   // "Discard changes?" confirmation.
@@ -1909,13 +3565,15 @@ export function InvoiceEditor({
     if (!d) return;
     // Guard: reject stale cache entries keyed to a different invoice.
     if (d.id !== invoice.id) return;
+    if (draftDirtyRef.current) return;
+    setSavedAwaitingRefresh(false);
     const nextStatus = EDITABLE_STATUSES.includes(
       d.status as (typeof EDITABLE_STATUSES)[number],
     )
       ? d.status
       : "open";
-    const nextIssuedAt = toInputDate(d.issuedAt);
-    const nextDueAt = toInputDate(d.dueAt ?? d.dueDate);
+    const nextIssuedAt = invoiceTimestampToDateInput(d.issuedAt);
+    const nextDueAt = invoiceTimestampToDateInput(d.dueAt ?? d.dueDate);
     const nextTax = Number(d.tax ?? 0);
     const nextDiscount = Number(d.discount ?? 0);
     const nextNotes = d.notes ?? "";
@@ -1932,21 +3590,29 @@ export function InvoiceEditor({
     const nextItems: DraftLine[] = (d.items ?? []).map(
       (it: InvoiceLineItem, idx: number) => ({
         id: it.id,
+        displayMetadata: { ...(metaItems[idx] ?? {}) },
         item: metaItems[idx]?.item ?? "",
         description: it.description,
         quantity: Number(it.quantity ?? 0),
-        unitPrice: Number(it.unitPrice ?? 0),
+        unitPrice: String(
+          it.isDiscount ? Math.abs(Number(it.unitPrice ?? 0)) : it.unitPrice ?? "",
+        ),
+        isDiscount: !!it.isDiscount,
         toothNumber: (it as any).toothNumber ?? null,
         toothLabel: (it as any).toothLabel ?? null,
         catalogItemKey: (metaItems[idx] as any)?.catalogItemKey ?? null,
         missingCatalogItem: (metaItems[idx] as any)?.missingCatalogItem ?? false,
         subItems: ((it as any).subItems ?? []).map((sub: any, sidx: number) => ({
           id: sub.id,
+          displayMetadata: { ...((metaItems[idx]?.subItems as Record<string, unknown>[] | undefined)?.[sidx] ?? {}) },
           item: (metaItems[idx]?.subItems as any[])?.[sidx]?.item ?? "",
           description: sub.description,
           quantity: Number(sub.quantity ?? 0),
-          unitPrice: Number(sub.unitPrice ?? 0),
+          unitPrice: String(sub.unitPrice ?? ""),
           toothNumber: sub.toothNumber ?? null,
+          toothLabel: sub.toothLabel ?? null,
+          isDiscount: !!sub.isDiscount,
+          priced: sub.priced,
         })),
       }),
     );
@@ -1969,6 +3635,7 @@ export function InvoiceEditor({
     setItems(nextItems);
     // Record the loaded state as the dirty-check baseline.
     baselineRef.current = serializeInvoiceForm({
+      providerId: inline ? d.providerOrganizationId : undefined,
       invoiceNumber: d.invoiceNumber,
       statusValue: nextStatus,
       issuedAt: nextIssuedAt,
@@ -1986,12 +3653,13 @@ export function InvoiceEditor({
       layoutPresetId: nextLayoutPresetId,
       items: nextItems,
     });
-  }, [detailQuery.data]);
+  }, [detailQuery.data, invoice.id, inline, resetVersion]);
 
   const subtotal = useMemo(
     () =>
       items.reduce((sum, it) => {
-        const lineAmt = Number(it.quantity || 0) * Number(it.unitPrice || 0);
+        const lineMagnitude = Number(it.quantity || 0) * Number(it.unitPrice || 0);
+        const lineAmt = it.isDiscount ? -Math.abs(lineMagnitude) : lineMagnitude;
         const subAmt = (it.subItems ?? []).reduce(
           (s, sub) => s + Number(sub.quantity || 0) * Number(sub.unitPrice || 0),
           0,
@@ -2000,6 +3668,15 @@ export function InvoiceEditor({
       }, 0),
     [items],
   );
+  /** True when any sub-item still carries priced===false (alloy not yet quoted). */
+  const hasUnpricedLines = useMemo(
+    () =>
+      items.some((it) =>
+        (it.subItems ?? []).some((sub) => sub.priced === false),
+      ),
+    [items],
+  );
+
   // Credits behave like a discount applied to the invoice (e.g. a
   // patient/practice deposit or store credit). They reduce the final
   // total just like the Discount field, and are shown as their own
@@ -2013,6 +3690,9 @@ export function InvoiceEditor({
 
   const saveMutation = useMutation({
     mutationFn: async () => {
+      if (savedAwaitingRefresh) throw new Error("This invoice was saved. Reload its confirmed data before editing again.");
+      if (inline && !canEditInline) throw new Error("You do not have permission to edit invoices.");
+      if ((detailQuery.data ?? invoice).frozen) throw new Error("Invoice is frozen — billing edits are not allowed.");
       if (!invoiceNumber.trim()) {
         throw new Error("Invoice number is required.");
       }
@@ -2023,6 +3703,7 @@ export function InvoiceEditor({
           "Invoice data mismatch — please close and reopen this invoice.",
         );
       }
+      if (detailQuery.isLoading || !baselineRef.current) throw new Error("Wait for the invoice to finish loading.");
       const trimmedItems = items.map((it) => ({
         ...it,
         item: it.item.trim(),
@@ -2042,12 +3723,28 @@ export function InvoiceEditor({
       ) {
         throw new Error("Each line item needs a description.");
       }
+      const invalidDiscountAmount = trimmedItems.some(
+        (it) => it.isDiscount && Number(it.unitPrice) <= 0,
+      );
+      if (invalidDiscountAmount) {
+        throw new Error("Discount amounts must be greater than 0.");
+      }
+      const invalidPrice = trimmedItems.some((it) => {
+        const values = [it.unitPrice, ...(it.subItems ?? []).map((sub) => sub.unitPrice)];
+        return values.some((value) => value.trim() === "" || !Number.isFinite(Number(value)) || Number(value) < 0);
+      });
+      if (invalidPrice) {
+        throw new Error("Each line item needs a valid price. Enter 0 for a no-charge item.");
+      }
       const existingMeta = readDisplayMetadata(detailQuery.data) as Record<
         string,
         unknown
       >;
       const displayMetadata: Record<string, unknown> = {
         ...existingMeta,
+        reviewedCharges: true,
+        reviewedChargesNeedsReview: false,
+        ...(existingMeta.legacyChargesNeedsReview === true ? { legacyChargesNeedsReview: false } : {}),
         patientName: patientName.trim(),
         billTo: billTo.trim(),
         teeth: teeth.trim(),
@@ -2056,15 +3753,20 @@ export function InvoiceEditor({
         caseNotes: caseNotes.trim(),
         credits: Number(credits) || 0,
         lineItems: trimmedItems.map((it) => ({
+          ...it.displayMetadata,
           item: it.item,
           description: it.description,
+          catalogItemKey: it.catalogItemKey ?? null,
+          missingCatalogItem: !!it.missingCatalogItem,
           subItems: (it.subItems ?? []).map((sub) => ({
+            ...sub.displayMetadata,
             item: sub.item,
             description: sub.description,
           })),
         })),
       };
       const payload: Record<string, unknown> = {
+        ...(inline ? { providerOrganizationId: providerId } : {}),
         status: statusValue,
         invoiceNumber: invoiceNumber.trim(),
         tax,
@@ -2073,35 +3775,154 @@ export function InvoiceEditor({
         displayMetadata,
         layoutPresetId: layoutPresetId ?? null,
         items: trimmedItems.map((it, idx) => ({
+          ...(it.id ? { id: it.id } : {}),
           toothNumber: it.toothNumber ?? null,
           toothLabel: it.toothLabel ?? null,
           description: it.description,
           quantity: it.quantity,
-          unitPrice: it.unitPrice,
+          unitPrice: it.isDiscount
+            ? -Math.abs(Number(it.unitPrice))
+            : Number(it.unitPrice),
+          isDiscount: !!it.isDiscount,
           sortOrder: idx,
           subItems: (it.subItems ?? []).map((sub, sidx) => ({
+            ...(sub.id ? { id: sub.id } : {}),
             toothNumber: sub.toothNumber ?? null,
+            toothLabel: sub.toothLabel ?? null,
+            isDiscount: !!sub.isDiscount,
             description: sub.description,
             quantity: sub.quantity,
-            unitPrice: sub.unitPrice,
+            unitPrice: Number(sub.unitPrice),
             sortOrder: sidx,
           })),
         })),
       };
-      payload.dueAt = dueAt ? new Date(dueAt).toISOString() : null;
-      payload.issuedAt = issuedAt ? new Date(issuedAt).toISOString() : null;
+      const loadedInvoice = detailQuery.data ?? invoice;
+      if (
+        !isLikelyLegacyShiftedInvoiceDate(
+          loadedInvoice.dueAt ?? loadedInvoice.dueDate,
+          loadedInvoice.createdAt,
+        )
+      ) {
+        payload.dueAt = invoiceDateInputToTimestamp(dueAt);
+      }
+      if (
+        !isLikelyLegacyShiftedInvoiceDate(
+          loadedInvoice.issuedAt,
+          loadedInvoice.createdAt,
+        )
+      ) {
+        payload.issuedAt = invoiceDateInputToTimestamp(issuedAt);
+      }
       return apiFetch<Invoice>(`/invoices/${invoice.id}`, {
         method: "PATCH",
         body: JSON.stringify(payload),
       });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
-      onClose();
+    onSuccess: async () => {
+      if (!inline) {
+        void refreshInvoiceSalesQueries(queryClient, invoice.id, invoice.caseId);
+        onClose();
+        return;
+      }
+      // PATCH returns a header row, not the complete detail. Reload persisted
+      // line IDs before enabling another edit (particularly for newly added rows).
+      setSavedAwaitingRefresh(true);
+      try {
+        const confirmed = await apiFetch<Invoice>(`/invoices/${invoice.id}`);
+        draftDirtyRef.current = false;
+        baselineRef.current = null;
+        setError(null);
+        queryClient.setQueryData(["invoice", invoice.id], confirmed);
+        setResetVersion((v) => v + 1);
+      } catch {
+        draftDirtyRef.current = false;
+        baselineRef.current = null;
+        setError("Invoice saved, but confirmed data could not be reloaded. Retry loading before making more edits.");
+      }
+      void refreshInvoiceSalesQueries(queryClient, invoice.id, invoice.caseId);
     },
     onError: (err: Error) => setError(err.message || "Save failed."),
   });
+
+  const dateRepairMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<Invoice>(`/invoices/${invoice.id}/repair-dates`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          issuedAt: invoiceDateInputToTimestamp(repairIssuedAt),
+          dueAt: invoiceDateInputToTimestamp(repairDueAt),
+        }),
+      }),
+    onSuccess: async (updated) => {
+      draftDirtyRef.current = false;
+      baselineRef.current = null;
+      setIssuedAt(invoiceTimestampToDateInput(updated.issuedAt));
+      setDueAt(invoiceTimestampToDateInput(updated.dueAt ?? updated.dueDate));
+      setDateRepairOpen(false);
+      await refreshInvoiceSalesQueries(queryClient, invoice.id, invoice.caseId);
+      toast({ title: "Invoice dates repaired" });
+    },
+    onError: (err: Error) => setError(err.message || "Date repair failed."),
+  });
+
+  // Deletes all payment rows on this invoice before reverting its status to open.
+  // Used by the Paid→Open payment-guard dialog ("Delete payment & mark Open").
+  const deletePaymentsMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ deletedCount: number; invoice: Invoice }>(`/invoices/${invoice.id}/payments`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      void refreshInvoiceSalesQueries(queryClient, invoice.id, invoice.caseId);
+      setPaymentDeleteConfirm(false);
+      saveMutation.mutate();
+    },
+    onError: (err: Error) => {
+      setPaymentDeleteConfirm(false);
+      setError(err.message || "Failed to delete payments.");
+    },
+  });
+
+  /**
+   * Pre-save gate that intercepts status transitions needing user input:
+   *   • paid/partially_paid → open  when payments exist  → payment-delete guard
+   *   • * → paid                    when no payments yet  → "record payment?" prompt
+   * All other transitions fall through to saveMutation directly.
+   */
+  function handleSaveRequest() {
+    setError(null);
+    if (saveMutation.isPending || deletePaymentsMutation.isPending || savedAwaitingRefresh) return;
+    if (pendingDiscard || reassignConfirm || dateRepairOpen) return;
+    if (inline && !canEditInline) return;
+    if ((detailQuery.data ?? invoice).frozen || detailQuery.isLoading || detailQuery.isError) return;
+
+    const currentStatus = detailQuery.data?.status ?? invoice.status;
+    const existingPayments = detailQuery.data?.payments ?? [];
+
+    // Paid/PartiallyPaid → Open: warn if there are recorded payments.
+    if (
+      (currentStatus === "paid" || currentStatus === "partially_paid") &&
+      statusValue === "open" &&
+      existingPayments.length > 0
+    ) {
+      setPaymentDeleteConfirm(true);
+      return;
+    }
+
+    // Any status → Paid: offer to record a payment if none exist yet.
+    // Skip when the existing status is already paid (user just editing other fields).
+    if (
+      currentStatus !== "paid" &&
+      statusValue === "paid" &&
+      existingPayments.length === 0
+    ) {
+      setRecordPaymentPrompt(true);
+      return;
+    }
+
+    saveMutation.mutate();
+  }
 
   function updateItem(idx: number, patch: Partial<DraftLine>) {
     setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
@@ -2124,11 +3945,24 @@ export function InvoiceEditor({
   function addItem() {
     setItems((prev) => [
       ...prev,
-      { item: "", description: "", quantity: 1, unitPrice: 0 },
+      { item: "", description: "", quantity: 1, unitPrice: "" },
     ]);
   }
 
-  // Persist a brand-new billable item to the lab's Lists → Billable Items
+  function addDiscountLine() {
+    setItems((prev) => [
+      ...prev,
+      {
+        item: "",
+        description: "",
+        quantity: 1,
+        unitPrice: "",
+        isDiscount: true,
+      },
+    ]);
+  }
+
+  // Persist a brand-new billable item to the lab's custom billable items
   // (vendors, vendorType "item") so it shows up there and in future
   // typeaheads. Returns the created item (to select it) or null on failure.
   async function createBillableItem(
@@ -2170,7 +4004,7 @@ export function InvoiceEditor({
               ...it,
               subItems: [
                 ...(it.subItems ?? []),
-                { item: "", description: "", quantity: 1, unitPrice: 0 },
+                { item: "", description: "", quantity: 1, unitPrice: "" },
               ],
             }
           : it,
@@ -2212,8 +4046,7 @@ export function InvoiceEditor({
     onSuccess: (updated) => {
       setProviderId(updated.providerOrganizationId);
       setReassignConfirm(null);
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
+      void refreshInvoiceSalesQueries(queryClient, invoice.id, invoice.caseId);
     },
     onError: (err: Error) => {
       setReassignConfirm(null);
@@ -2225,6 +4058,10 @@ export function InvoiceEditor({
   const [recordPaymentOpen, setRecordPaymentOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [voidDialog, setVoidDialog] = useState<null | "void" | "writeoff">(null);
+  // Paid→Open guard: shown when the invoice has recorded payments.
+  const [paymentDeleteConfirm, setPaymentDeleteConfirm] = useState(false);
+  // Open→Paid prompt: shown when the invoice is being marked paid with no existing payments.
+  const [recordPaymentPrompt, setRecordPaymentPrompt] = useState(false);
   const [showAddLineMenu, setShowAddLineMenu] = useState(false);
   const [showCreateItemModal, setShowCreateItemModal] = useState(false);
   const addLineMenuRef = useRef<HTMLDivElement>(null);
@@ -2264,6 +4101,53 @@ export function InvoiceEditor({
     },
   });
 
+  // ── Mark as remake ─────────────────────────────────────────────────────
+  // Links the invoice's underlying case as a remake of an earlier case via
+  // the shared questionnaire, so it counts toward remake stats like any
+  // other remake (instead of the old hand-edited-case-number workaround).
+  const [markRemakeOpen, setMarkRemakeOpen] = useState(false);
+  const [remakeSelected, setRemakeSelected] = useState<RemakeCaseHit | null>(null);
+  const [remakeQuestionnaire, setRemakeQuestionnaire] = useState<RemakeQuestionnaireValue>(
+    blankQuestionnaire(),
+  );
+  const [remakeSubmitError, setRemakeSubmitError] = useState<string | null>(null);
+
+  function closeMarkRemake() {
+    setMarkRemakeOpen(false);
+    setRemakeSelected(null);
+    setRemakeQuestionnaire(blankQuestionnaire());
+    setRemakeSubmitError(null);
+  }
+
+  const markAsRemakeMutation = useMutation({
+    mutationFn: () => {
+      if (!caseIdForPricing || !remakeSelected) {
+        return Promise.reject(new Error("Select the original case being remade."));
+      }
+      const questionnaireError = remakeQuestionnaireError(remakeQuestionnaire);
+      if (questionnaireError) return Promise.reject(new Error(questionnaireError));
+      return apiFetch<{ caseId: string; caseNumber: string }>(
+        `/cases/${caseIdForPricing}/mark-as-remake`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(buildRemakeLinkPayload(remakeSelected, remakeQuestionnaire)),
+        },
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["case-number-for-invoice", caseIdForPricing] });
+      queryClient.invalidateQueries({ queryKey: ["case-remake-chain", caseIdForPricing] });
+      queryClient.invalidateQueries({ queryKey: ["case", caseIdForPricing] });
+      queryClient.invalidateQueries({ queryKey: ["cases"] });
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      closeMarkRemake();
+    },
+    onError: (err: Error) => {
+      setRemakeSubmitError(err.message || "Could not mark this case as a remake.");
+    },
+  });
+
   const duplicateMutation = useMutation({
     mutationFn: () =>
       apiFetch<Invoice>(`/invoices/${invoice.id}/duplicate`, {
@@ -2271,7 +4155,7 @@ export function InvoiceEditor({
         body: JSON.stringify({}),
       }),
     onSuccess: (created) => {
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      void refreshInvoiceSalesQueries(queryClient, created.id, created.caseId);
       onClose();
       // Brief alert: the user can find the duplicate at the top of the list.
       window.alert(`Created duplicate ${created.invoiceNumber}`);
@@ -2291,8 +4175,7 @@ export function InvoiceEditor({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
+      void refreshInvoiceSalesQueries(queryClient, invoice.id, invoice.caseId);
       setVoidDialog(null);
       onClose();
     },
@@ -2301,10 +4184,9 @@ export function InvoiceEditor({
 
   // Whether the form has unsaved edits compared to the loaded invoice. Until
   // the baseline is captured (detail still loading) we treat it as clean.
-  const isDirty = useMemo(() => {
-    if (baselineRef.current == null) return false;
-    return (
+  const isDirty = baselineRef.current != null && (
       serializeInvoiceForm({
+        providerId: inline ? providerId : undefined,
         invoiceNumber,
         statusValue,
         issuedAt,
@@ -2323,44 +4205,41 @@ export function InvoiceEditor({
         items,
       }) !== baselineRef.current
     );
-  }, [
-    invoiceNumber,
-    statusValue,
-    issuedAt,
-    dueAt,
-    tax,
-    discount,
-    credits,
-    notes,
-    patientName,
-    billTo,
-    teeth,
-    shade,
-    material,
-    caseNotes,
-    layoutPresetId,
-    items,
-  ]);
+  draftDirtyRef.current = isDirty;
+  const saving = saveMutation.isPending || deletePaymentsMutation.isPending || reassignMutation.isPending || dateRepairMutation.isPending;
+
+  function resetDraft() {
+    draftDirtyRef.current = false;
+    baselineRef.current = null;
+    setError(null);
+    setResetVersion((v) => v + 1);
+  }
+
+  function requestAction(proceed: () => void) {
+    if (saving) return;
+    if (isDirty) setPendingDiscard(() => proceed);
+    else proceed();
+  }
 
   // Close the editor. If there are unsaved edits, ask for confirmation first
   // so the user can intentionally discard or keep editing.
   const requestClose = useCallback(() => {
+    if (saveMutation.isPending || deletePaymentsMutation.isPending) return;
+    if (inline) { onClose(); return; }
     if (isDirty) {
       setPendingDiscard(() => onClose);
     } else {
       onClose();
     }
-  }, [isDirty, onClose]);
+  }, [isDirty, inline, onClose, saveMutation.isPending, deletePaymentsMutation.isPending]);
 
   // While the form has unsaved edits, intercept in-app route navigations (the
   // sidebar links, programmatic redirects, etc.) so the user can confirm before
   // losing work, and warn on a native window close/reload via beforeunload.
   useEffect(() => {
-    if (!isDirty) {
-      setNavBlocker(null);
-      return;
-    }
-    setNavBlocker((proceed) => {
+    if (!isDirty && !saving) return;
+    const unregister = registerNavBlocker((proceed) => {
+      if (saving) return;
       setPendingDiscard(() => proceed);
     });
     function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -2369,10 +4248,10 @@ export function InvoiceEditor({
     }
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
-      setNavBlocker(null);
+      unregister();
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
-  }, [isDirty]);
+  }, [isDirty, saving]);
 
   // Keyboard shortcuts: Cmd/Ctrl+S = save, Cmd/Ctrl+P = print, Esc = close
   useEffect(() => {
@@ -2380,11 +4259,11 @@ export function InvoiceEditor({
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        if (!saveMutation.isPending) saveMutation.mutate();
+        if (!saveMutation.isPending && !deletePaymentsMutation.isPending) handleSaveRequest();
       } else if (meta && e.key.toLowerCase() === "p") {
         e.preventDefault();
-        printInvoicePdf(buildPdfOptions());
-      } else if (meta && e.shiftKey && e.key.toLowerCase() === "e") {
+        handlePrintPdf();
+      } else if (!inline && meta && e.shiftKey && e.key.toLowerCase() === "e") {
         e.preventDefault();
         setEmailOpen(true);
       } else if (e.key === "Escape") {
@@ -2423,8 +4302,8 @@ export function InvoiceEditor({
       shade,
       material: material.trim() || null,
       caseNotes,
-      issuedAt: issuedAt ? new Date(issuedAt).toISOString() : null,
-      dueAt: dueAt ? new Date(dueAt).toISOString() : null,
+      issuedAt: invoiceDateInputToTimestamp(issuedAt),
+      dueAt: invoiceDateInputToTimestamp(dueAt),
       status: statusValue.replace(/_/g, " "),
       items: items.map((it) => ({
         item: it.item,
@@ -2432,8 +4311,9 @@ export function InvoiceEditor({
         toothLabel: it.toothLabel ?? null,
         description: it.description,
         quantity: it.quantity,
-        unitPrice: it.unitPrice,
-        lineTotal: Number(it.quantity || 0) * Number(it.unitPrice || 0),
+        unitPrice: it.isDiscount ? -Math.abs(Number(it.unitPrice || 0)) : it.unitPrice,
+        isDiscount: !!it.isDiscount,
+        lineTotal: (it.isDiscount ? -1 : 1) * Number(it.quantity || 0) * Number(it.unitPrice || 0),
         subItems: (it.subItems ?? []).map((sub) => ({
           item: sub.item,
           toothNumber: sub.toothNumber ?? null,
@@ -2461,10 +4341,12 @@ export function InvoiceEditor({
   }
 
   function handleDownloadPdf() {
+    if (isDirty) { setError("Save or cancel your changes before downloading the confirmed invoice."); return; }
     downloadInvoicePdf(buildPdfOptions());
   }
 
   function handlePreviewPdf() {
+    if (isDirty) { setError("Save or cancel your changes before previewing the confirmed invoice."); return; }
     const opened = previewInvoicePdf(buildPdfOptions());
     if (!opened) {
       setError(
@@ -2474,52 +4356,69 @@ export function InvoiceEditor({
   }
 
   function handlePrintPdf() {
+    if (saving || savedAwaitingRefresh || detailQuery.isLoading || detailQuery.isError) return;
+    if (isDirty) { setError("Save or cancel your changes before printing the confirmed invoice."); return; }
     printInvoicePdf(buildPdfOptions());
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-foreground/30">
-      <div
-        className="relative bg-card border-l border-border h-full overflow-y-auto scrollbar-thin"
-        style={{ width: panelWidth, maxWidth: "95vw", minWidth: PANEL_MIN }}
-      >
+    <InvoiceEditorPresentation inline={inline} width={invoicePanelIsMaximized ? "100vw" : panelWidth}>
         {/* Drag handle on the left edge */}
-        <div
+        {!inline && <div
           onMouseDown={onResizeMouseDown}
-          className="group absolute left-0 top-0 h-full w-3 cursor-col-resize z-20"
+          className="group absolute left-0 top-0 h-full w-4 cursor-col-resize z-20"
           title="Drag to resize panel width"
+          aria-label="Drag to resize invoice panel"
         >
-          <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 bg-transparent group-hover:bg-primary/50 group-active:bg-primary transition-colors duration-100" />
-        </div>
-        <header className="sticky top-0 z-10 bg-card border-b border-border px-6 py-4 flex items-start gap-3">
+          <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-primary/35 group-hover:bg-primary/70 group-active:bg-primary transition-colors duration-100" />
+          <GripVertical
+            aria-hidden="true"
+            size={16}
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded bg-card text-muted-foreground group-hover:text-primary"
+          />
+        </div>}
+        <header className={inline ? "bg-card border-b border-border px-3 py-3 flex flex-wrap items-start gap-2" : "sticky top-0 z-10 bg-card border-b border-border px-6 py-4 flex items-start gap-3"}>
           <div className="shrink-0">
             <div className="text-xs text-muted-foreground">Invoice</div>
             <div className="flex items-center gap-2">
               <div className="font-mono text-sm font-semibold">{invoice.invoiceNumber}</div>
               {invoice.frozen && (
                 <span
-                  title="Invoice is frozen — the linked case was deleted"
+                  title={String(invoice.status) === "recovery_draft" ? "Current-rate replacement held for charge and historical-payment review; not collectible" : "Invoice is frozen — the linked case was deleted"}
                   className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-full uppercase tracking-wide bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-300/60 dark:border-amber-700/40"
                 >
                   <Lock size={9} />
-                  Frozen
+                  {String(invoice.status) === "recovery_draft" ? "Review hold" : "Frozen"}
                 </span>
               )}
             </div>
           </div>
           <div className="flex flex-1 min-w-0 flex-wrap items-center justify-end gap-2">
-            <button
+            {hasUnpricedLines && (
+              <span
+                title="One or more alloy sub-items still need a unit price — you can still save, but the total may be incomplete."
+                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-300/60 dark:border-amber-700/40 select-none"
+              >
+                <TriangleAlert size={11} />
+                Unpriced alloy lines
+              </span>
+            )}
+            {(!inline || canEditInline) && <button
               type="button"
-              onClick={() => {
-                setError(null);
-                saveMutation.mutate();
-              }}
-              disabled={saveMutation.isPending || detailQuery.isLoading || !!invoice.frozen}
+              onClick={handleSaveRequest}
+              disabled={saving || savedAwaitingRefresh || detailQuery.isLoading || detailQuery.isError || !!(detailQuery.data ?? invoice).frozen}
               title={invoice.frozen ? "Invoice is frozen — the linked case was deleted" : undefined}
               className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
             >
-              {saveMutation.isPending ? "Saving…" : "Save changes"}
-            </button>
+              {saveMutation.isPending || deletePaymentsMutation.isPending ? "Saving…" : "Save changes"}
+            </button>}
+            {inline && <>
+              <button type="button" onClick={resetDraft} disabled={!isDirty || saving} className="h-9 px-3 rounded-md border border-border text-sm disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={() => requestAction(() => onOpenEditor?.())} disabled={saving || savedAwaitingRefresh} className="h-9 px-3 rounded-md bg-secondary text-xs font-medium">Open in editor</button>
+              <button type="button" onClick={handlePrintPdf} disabled={saving || savedAwaitingRefresh || detailQuery.isLoading || detailQuery.isError} className="h-9 px-3 rounded-md bg-secondary text-xs font-medium"><Printer size={12} className="inline mr-1" />Print</button>
+              {isDirty && <span role="status" className="text-xs text-amber-700">Unsaved changes</span>}
+            </>}
+            {!inline && <>
             <button
               type="button"
               onClick={() => setRecordPaymentOpen(true)}
@@ -2553,6 +4452,19 @@ export function InvoiceEditor({
               className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
             >
               <ExternalLink size={14} /> Go to case
+            </button>
+            <button
+              type="button"
+              onClick={toggleInvoicePanelMaximized}
+              className="inline-flex items-center justify-center h-9 w-9 rounded-md hover:bg-secondary"
+              aria-label={
+                invoicePanelIsMaximized
+                  ? "Restore invoice panel width"
+                  : "Expand invoice panel to full width"
+              }
+              title={invoicePanelIsMaximized ? "Restore panel width" : "Expand to full width"}
+            >
+              {invoicePanelIsMaximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
             </button>
             <div className="relative">
               <button
@@ -2613,6 +4525,19 @@ export function InvoiceEditor({
                       className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2"
                     >
                       <Stethoscope size={14} /> Preview prescription
+                    </button>
+                  )}
+                  {caseIdForPricing && linkedCase && !linkedCase.remakeOfCaseId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMoreOpen(false);
+                        setMarkRemakeOpen(true);
+                      }}
+                      title="Link this case as a remake of an earlier case"
+                      className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2"
+                    >
+                      <GitBranch size={14} /> Mark as remake
                     </button>
                   )}
                   {rxAttachments.length === 1 && (
@@ -2685,7 +4610,9 @@ export function InvoiceEditor({
                 </div>
               )}
             </div>
+            </>}
           </div>
+          {!inline &&
           <button
             type="button"
             onClick={requestClose}
@@ -2694,10 +4621,10 @@ export function InvoiceEditor({
             title="Close without saving (Esc)"
           >
             <X size={16} /> Close
-          </button>
+          </button>}
         </header>
 
-        <div className="px-6 py-6 space-y-6">
+        <div className="invoice-fields px-6 py-6 space-y-6">
           {detailQuery.isLoading && (
             <div className="flex items-center text-sm text-muted-foreground">
               <Loader2 size={16} className="animate-spin mr-2" />
@@ -2706,8 +4633,18 @@ export function InvoiceEditor({
           )}
 
           {error && (
-            <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+            <div role="alert" className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
               {error}
+            </div>
+          )}
+          {detailQuery.isError && <div role="alert" className="text-sm text-destructive">Could not load invoice. <button type="button" onClick={() => void detailQuery.refetch()}>Retry</button></div>}
+          {savedAwaitingRefresh && !saving && <button type="button" onClick={() => void detailQuery.refetch()} className="text-sm underline">Retry loading confirmed invoice</button>}
+          <fieldset disabled={saving || savedAwaitingRefresh || detailQuery.isLoading || detailQuery.isError || (inline && (!canEditInline || !!(detailQuery.data ?? invoice).frozen))} className="min-w-0 space-y-6">
+          {(detailQuery.data?.displayMetadata as Record<string, unknown> | undefined)?.reviewedChargesNeedsReview === true && (
+            <div role="alert" className="text-sm text-amber-900 bg-amber-100 px-3 py-2 rounded-md">
+              {(detailQuery.data?.displayMetadata as Record<string, unknown> | undefined)?.legacyChargesNeedsReview === true
+                ? "Some legacy charges have missing ownership information. Charges and totals have been left unchanged. Check each charge against the case, remove any obsolete charges, then save to confirm your review."
+                : "The case changed after these invoice charges were reviewed. Check the lines against the case before saving; new case charges are not added automatically."}
             </div>
           )}
 
@@ -2735,6 +4672,32 @@ export function InvoiceEditor({
             </div>
           )}
 
+          {linkedCase?.remakeOfCaseId && (
+            <div className="flex items-start gap-3 px-3 py-2.5 rounded-md border border-sky-300/60 bg-sky-50 dark:bg-sky-950/30">
+              <GitBranch size={16} className="text-sky-500 mt-0.5 shrink-0" />
+              <div className="flex-1 text-sm">
+                <div className="font-medium text-sky-900 dark:text-sky-200">
+                  This case is a remake
+                  {remakeOriginal?.caseNumber && (
+                    <>
+                      {" "}
+                      of case{" "}
+                      <span className="font-mono">{remakeOriginal.caseNumber}</span>
+                    </>
+                  )}
+                </div>
+                {(linkedCase.remakeReason || linkedCase.remakeCharged !== null) && (
+                  <div className="text-xs text-sky-800 dark:text-sky-300/90 mt-0.5">
+                    {linkedCase.remakeReason && <>Reason: {linkedCase.remakeReason}</>}
+                    {linkedCase.remakeReason && linkedCase.remakeCharged !== null && " · "}
+                    {linkedCase.remakeCharged === true && "Charged"}
+                    {linkedCase.remakeCharged === false && "No charge"}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {invoice.frozen && (
             <div className="flex flex-col gap-1.5 px-3 py-2.5 rounded-md border border-amber-400/60 bg-amber-50 dark:bg-amber-950/30 text-sm">
               <div className="flex items-center gap-2 flex-wrap">
@@ -2747,7 +4710,7 @@ export function InvoiceEditor({
                 </span>
                 {invoice.caseDeletedAt && (
                   <span className="text-muted-foreground text-xs">
-                    · {new Date(invoice.caseDeletedAt).toLocaleDateString()}
+                    · {formatDate(invoice.caseDeletedAt)}
                   </span>
                 )}
                 {invoice.caseId && (
@@ -2807,6 +4770,7 @@ export function InvoiceEditor({
               <input
                 type="text"
                 value={invoiceNumber}
+                aria-label="Invoice number"
                 onChange={(e) => setInvoiceNumber(e.target.value)}
                 className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm font-mono"
               />
@@ -2817,6 +4781,7 @@ export function InvoiceEditor({
               </label>
               <select
                 value={statusValue}
+                aria-label="Status"
                 onChange={(e) => setStatusValue(e.target.value)}
                 className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
               >
@@ -2834,6 +4799,7 @@ export function InvoiceEditor({
               {isAdmin ? (
                 <select
                   value={providerId}
+                  aria-label="Client / Provider"
                   onChange={(e) => {
                     const targetId = e.target.value;
                     if (targetId === providerId) return;
@@ -2885,9 +4851,41 @@ export function InvoiceEditor({
               <input
                 type="date"
                 value={issuedAt}
+                aria-label="Issued"
                 onChange={(e) => setIssuedAt(e.target.value)}
+                disabled={isLikelyLegacyShiftedInvoiceDate(
+                  detailQuery.data?.issuedAt ?? invoice.issuedAt,
+                  detailQuery.data?.createdAt ?? invoice.createdAt,
+                )}
                 className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
               />
+              {isAdminOrOwner &&
+                (isLikelyLegacyShiftedInvoiceDate(
+                  detailQuery.data?.issuedAt ?? invoice.issuedAt,
+                  detailQuery.data?.createdAt ?? invoice.createdAt,
+                ) ||
+                  isLikelyLegacyShiftedInvoiceDate(
+                    detailQuery.data?.dueAt ??
+                      detailQuery.data?.dueDate ??
+                      invoice.dueAt ??
+                      invoice.dueDate,
+                    detailQuery.data?.createdAt ?? invoice.createdAt,
+                  )) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRepairIssuedAt(issuedAt);
+                      setRepairDueAt(dueAt);
+                      setDateRepairOpen(true);
+                    }}
+                    disabled={isDirty}
+                    title={isDirty ? "Save or discard other invoice edits before repairing dates" : undefined}
+                    className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 hover:underline disabled:opacity-50 disabled:no-underline"
+                  >
+                    <TriangleAlert size={12} />
+                    Review possible date shift
+                  </button>
+                )}
             </div>
             <div>
               <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
@@ -2896,17 +4894,21 @@ export function InvoiceEditor({
               <input
                 type="date"
                 value={dueAt}
+                aria-label="Due"
                 onChange={(e) => setDueAt(e.target.value)}
+                disabled={isLikelyLegacyShiftedInvoiceDate(
+                  detailQuery.data?.dueAt ??
+                    detailQuery.data?.dueDate ??
+                    invoice.dueAt ??
+                    invoice.dueDate,
+                  detailQuery.data?.createdAt ?? invoice.createdAt,
+                )}
                 className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
               />
               {issuedAt && (
                 <p className="mt-1 text-[11px] text-muted-foreground leading-snug">
                   Will be included on the{" "}
-                  {new Date(issuedAt).toLocaleString("en-US", {
-                    month: "long",
-                    year: "numeric",
-                    timeZone: "UTC",
-                  })}{" "}
+                  {(() => { const _d = new Date(issuedAt); return `${String(_d.getUTCMonth() + 1).padStart(2, "0")}/${_d.getUTCFullYear()}`; })()}{" "}
                   statement, generated at end of month.
                 </p>
               )}
@@ -2931,13 +4933,11 @@ export function InvoiceEditor({
                     ? "Deleted preset (using lab default)"
                     : (matchedPreset?.name ?? "Lab default");
                   return (
-                    <input
-                      type="text"
-                      value={displayValue}
-                      disabled
-                      readOnly
-                      className="w-full h-9 px-2.5 rounded-md bg-secondary/40 border border-input text-sm text-muted-foreground cursor-not-allowed"
-                    />
+                    <select aria-label="Layout preset" value={layoutPresetId ?? ""} onChange={(e) => setLayoutPresetId(e.target.value || null)} className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm">
+                      <option value="">Lab default</option>
+                      {isDeleted && <option value={layoutPresetId!}>{displayValue}</option>}
+                      {availablePresets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
                   );
                 })()}
               </div>
@@ -3006,6 +5006,7 @@ export function InvoiceEditor({
                   <input
                     type="text"
                     value={patientName}
+                    aria-label="Patient name"
                     onChange={(e) => setPatientName(e.target.value)}
                     placeholder="Patient name"
                     className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
@@ -3029,6 +5030,7 @@ export function InvoiceEditor({
                   <input
                     type="text"
                     value={teeth}
+                    aria-label="Teeth"
                     onChange={(e) => setTeeth(e.target.value)}
                     placeholder="e.g. 8, 9, 10"
                     className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
@@ -3041,6 +5043,7 @@ export function InvoiceEditor({
                   <input
                     type="text"
                     value={shade}
+                    aria-label="Shade"
                     onChange={(e) => setShade(e.target.value)}
                     placeholder="e.g. A2"
                     className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
@@ -3053,6 +5056,7 @@ export function InvoiceEditor({
                   <input
                     type="text"
                     value={material}
+                    aria-label="Material"
                     onChange={(e) => setMaterial(e.target.value)}
                     placeholder="e.g. Zirconia"
                     className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
@@ -3064,6 +5068,7 @@ export function InvoiceEditor({
                   </label>
                   <textarea
                     value={caseNotes}
+                    aria-label="Case notes"
                     onChange={(e) => setCaseNotes(e.target.value)}
                     rows={2}
                     placeholder="Case notes from the originating case"
@@ -3079,6 +5084,7 @@ export function InvoiceEditor({
                     min={0}
                     step="0.01"
                     value={credits}
+                    aria-label="Credits"
                     onChange={(e) => setCredits(Number(e.target.value) || 0)}
                     className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm text-right tabular-nums"
                   />
@@ -3119,6 +5125,14 @@ export function InvoiceEditor({
                       </button>
                       <button
                         type="button"
+                        onClick={() => { addDiscountLine(); setShowAddLineMenu(false); }}
+                        className="w-full text-left px-3 py-2.5 text-sm hover:bg-secondary"
+                      >
+                        <div className="font-medium">Discount line</div>
+                        <div className="text-xs text-muted-foreground">Enter a positive amount to deduct</div>
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => { setShowCreateItemModal(true); setShowAddLineMenu(false); }}
                         className="w-full text-left px-3 py-2.5 text-sm hover:bg-secondary"
                       >
@@ -3130,36 +5144,43 @@ export function InvoiceEditor({
                 </div>
               </div>
             </div>
-            <div className="border border-border rounded-md overflow-x-auto relative">
+            <div
+              ref={lineItemsTableContainerRef}
+              className="min-w-0 border border-border rounded-md overflow-x-auto relative"
+            >
               {resizingCol !== null && (
                 <div
                   className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
                   style={{
-                    left: colWidths.slice(0, resizingCol + 1).reduce((a, b) => a + b, 0) - 1,
+                    left: fittedColumnWidths.slice(0, resizingCol + 1).reduce((a, b) => a + b, 0) - 1,
                     width: 2,
                   }}
                 />
               )}
               <table
-                className="text-sm"
+                ref={lineItemsTableRef}
+                className="invoice-lines text-sm"
                 style={{
                   tableLayout: "fixed",
-                  width: colTotalWidth + ACTION_COL_WIDTH,
+                  width: fittedTableWidth,
                   userSelect: "none",
                 }}
               >
                 <colgroup>
-                  {colWidths.map((w, i) => (
+                  {inline && <col style={{ width: 28 }} />}
+                  {fittedColumnWidths.map((w, i) => (
                     <col key={i} style={{ width: w }} />
                   ))}
-                  <col style={{ width: ACTION_COL_WIDTH }} />
+                  <col style={{ width: INVOICE_LINE_ITEM_ACTION_COLUMN_WIDTH }} />
                 </colgroup>
                 <thead>
                   <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
-                    {(["Item", "Tooth #", "Description", "Qty", "Unit price", "Total"] as const).map(
+                    {inline && <th aria-label="Remove line" />}
+                    {(["Item", "Tooth #", "Description", "Qty", "Amount", "Total"] as const).map(
                       (label, i) => (
                         <th
                           key={label}
+                          data-col-id={`col-${i}`}
                           className={`font-medium px-3 py-2 relative${
                             i === 0 || i === 2 ? " text-left" : " text-right"
                           }`}
@@ -3167,8 +5188,22 @@ export function InvoiceEditor({
                         >
                           {label}
                           <div
-                            onMouseDown={(e) => startResize(i, e)}
-                            onDoubleClick={() => resetColumn(i)}
+                            onMouseDown={(e) =>
+                              startResize(i, e, {
+                                widths: fittedColumnWidths,
+                                minimums: [...INVOICE_LINE_ITEM_COLUMN_MINIMUMS],
+                                neighborIndex: i === 2 ? 0 : 2,
+                                resize: resizeInvoiceLineItemColumns,
+                              })
+                            }
+                            onDoubleClick={() => {
+                              const table = lineItemsTableRef.current;
+                              if (!table) { resetColumn(i); return; }
+                              const cells = table.querySelectorAll<HTMLElement>(`[data-col-id="col-${i}"]`);
+                              let max = 0;
+                              cells.forEach((el) => { max = Math.max(max, el.scrollWidth); });
+                              fitColumn(i, max + 8);
+                            }}
                             className="group/resize"
                             style={{
                               position: "absolute",
@@ -3213,7 +5248,8 @@ export function InvoiceEditor({
                       </tr>
                     )}
                     <tr className="border-t border-border">
-                      <td className="px-3 py-1.5 align-top">
+                      {inline && <td className="line-trash"><button type="button" onClick={() => removeItem(idx)} aria-label={`Remove line ${idx + 1}`} className="h-7 w-7 flex items-center justify-center rounded hover:bg-destructive/10"><Trash2 size={13} /></button></td>}
+                      <td data-col-id="col-0" data-label="Item" className="px-3 py-1.5 align-top">
                         <ItemCombobox
                           value={it.item}
                           options={itemOptions}
@@ -3221,8 +5257,9 @@ export function InvoiceEditor({
                             updateItem(idx, {
                               item: o.name,
                               description: o.name,
+                              isDiscount: !!o.isDiscount,
                               ...(o.unitPrice != null
-                                ? { unitPrice: o.unitPrice }
+                                ? { unitPrice: String(o.unitPrice) }
                                 : {}),
                             })
                           }
@@ -3230,16 +5267,32 @@ export function InvoiceEditor({
                             updateItem(
                               idx,
                               t.trim() === ""
-                                ? { item: "", description: "", unitPrice: 0 }
+                                ? { item: "", description: "", unitPrice: "" }
                                 : { item: t },
                             )
                           }
                           placeholder="Item"
+                          onAddNew={
+                            isAdminOrOwner
+                              ? (typedName) => {
+                                  const sp = new URLSearchParams();
+                                  sp.set("addItem", "1");
+                                  if (typedName) sp.set("name", typedName);
+                                  setLocation(`/pricing?${sp.toString()}`);
+                                }
+                              : undefined
+                          }
                         />
+                        {it.isDiscount && (
+                          <span className="mt-1 inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                            Discount
+                          </span>
+                        )}
                       </td>
-                      <td className="px-3 py-1.5">
+                      <td data-col-id="col-1" data-label="Tooth #" className="px-3 py-1.5">
                         <input
                           type="text"
+                          aria-label={`Tooth for line ${idx + 1}`}
                           value={it.toothLabel ?? (it.toothNumber != null ? String(it.toothNumber) : "")}
                           onChange={(e) => {
                             const v = e.target.value;
@@ -3252,9 +5305,10 @@ export function InvoiceEditor({
                           className="w-full h-8 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
                         />
                       </td>
-                      <td className="px-3 py-1.5 align-top">
+                      <td data-col-id="col-2" data-label="Description" className="px-3 py-1.5 align-top">
                         <textarea
                           value={it.description}
+                          aria-label={`Description for line ${idx + 1}`}
                           onChange={(e) =>
                             updateItem(idx, { description: e.target.value })
                           }
@@ -3274,9 +5328,10 @@ export function InvoiceEditor({
                           className="w-full min-h-[3.5rem] px-2 py-1.5 rounded bg-background border border-input text-sm resize-none overflow-hidden"
                         />
                       </td>
-                      <td className="px-3 py-1.5">
+                      <td data-col-id="col-3" data-label="Qty" className="px-3 py-1.5">
                         <input
                           type="number"
+                          aria-label={`Quantity for line ${idx + 1}`}
                           min={0}
                           step={1}
                           value={it.quantity}
@@ -3286,22 +5341,27 @@ export function InvoiceEditor({
                           className="w-full h-8 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
                         />
                       </td>
-                      <td className="px-3 py-1.5">
+                      <td data-col-id="col-4" data-label="Unit price" className="px-3 py-1.5">
                         <input
                           type="number"
                           min={0}
                           step="0.01"
                           value={it.unitPrice}
+                          aria-label={it.isDiscount ? "Discount amount" : "Unit price"}
                           onChange={(e) =>
-                            updateItem(idx, { unitPrice: Number(e.target.value) || 0 })
+                            updateItem(idx, { unitPrice: e.target.value })
                           }
                           className="w-full h-8 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
                         />
                       </td>
-                      <td className="px-3 py-1.5 text-right tabular-nums font-medium">
-                        {formatMoney(Number(it.quantity || 0) * Number(it.unitPrice || 0))}
+                      <td data-col-id="col-5" data-label="Total" className="px-3 py-1.5 text-right tabular-nums font-medium">
+                        {formatInvoiceLineMoney(
+                          it.isDiscount
+                            ? -Math.abs(Number(it.quantity || 0) * Number(it.unitPrice || 0))
+                            : Number(it.quantity || 0) * Number(it.unitPrice || 0),
+                        )}
                       </td>
-                      <td className="px-2 py-1.5 align-top">
+                      <td className="line-actions px-2 py-1.5 align-top">
                         <div className="flex items-center gap-0.5 justify-end">
                           <button
                             type="button"
@@ -3321,30 +5381,43 @@ export function InvoiceEditor({
                           >
                             <ArrowDown size={12} />
                           </button>
-                          <button
+                          {!inline && <button
                             type="button"
                             onClick={() => removeItem(idx)}
                             className="h-7 w-7 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex items-center justify-center"
                             aria-label="Remove line"
                           >
                             <Trash2 size={13} />
-                          </button>
+                          </button>}
                         </div>
                       </td>
                     </tr>
-                    {(it.subItems ?? []).map((sub, sidx) => (
-                      <tr key={`sub-${sidx}`} className="border-t border-border/50 bg-muted/20">
-                        <td className="py-1.5 pl-8 pr-3 align-top">
+                    {(it.subItems ?? []).map((sub, sidx) => {
+                      const needsPrice = sub.priced === false;
+                      return (
+                      <tr
+                        key={`sub-${sidx}`}
+                        className={`border-t border-border/50 ${needsPrice ? "bg-amber-50/70 dark:bg-amber-950/30" : "bg-muted/20"}`}
+                        onClick={needsPrice ? (e) => {
+                          const row = e.currentTarget;
+                          const input = row.querySelector<HTMLInputElement>('[data-col-id="col-4"] input');
+                          input?.focus();
+                          input?.select();
+                        } : undefined}
+                        style={needsPrice ? { cursor: "pointer" } : undefined}
+                      >
+                        {inline && <td className="line-trash"><button type="button" onClick={(e) => { e.stopPropagation(); removeSubItem(idx, sidx); }} aria-label={`Remove sub-item ${idx + 1}.${sidx + 1}`} className="h-7 w-7 flex items-center justify-center rounded hover:bg-destructive/10"><Trash2 size={11} /></button></td>}
+                        <td data-col-id="col-0" data-label="Sub-item" className="py-1.5 pl-8 pr-3 align-top">
                           <ItemCombobox
                             size="sm"
                             value={sub.item}
-                            options={itemOptions}
+                            options={itemOptions.filter((option) => !option.isDiscount)}
                             onPick={(o) =>
                               updateSubItem(idx, sidx, {
                                 item: o.name,
                                 description: o.name,
                                 ...(o.unitPrice != null
-                                  ? { unitPrice: o.unitPrice }
+                                  ? { unitPrice: String(o.unitPrice) }
                                   : {}),
                               })
                             }
@@ -3353,16 +5426,27 @@ export function InvoiceEditor({
                                 idx,
                                 sidx,
                                 t.trim() === ""
-                                  ? { item: "", description: "", unitPrice: 0 }
+                                  ? { item: "", description: "", unitPrice: "" }
                                   : { item: t },
                               )
                             }
                             placeholder="Sub-item"
+                            onAddNew={
+                              isAdminOrOwner
+                                ? (typedName) => {
+                                    const sp = new URLSearchParams();
+                                    sp.set("addItem", "1");
+                                    if (typedName) sp.set("name", typedName);
+                                    setLocation(`/pricing?${sp.toString()}`);
+                                  }
+                                : undefined
+                            }
                           />
                         </td>
-                        <td className="px-3 py-1.5">
+                        <td data-col-id="col-1" data-label="Tooth #" className="px-3 py-1.5">
                           <input
                             type="text"
+                            aria-label={`Tooth for sub-item ${idx + 1}.${sidx + 1}`}
                             value={sub.toothLabel ?? (sub.toothNumber != null ? String(sub.toothNumber) : "")}
                             onChange={(e) => {
                               const v = e.target.value;
@@ -3375,18 +5459,20 @@ export function InvoiceEditor({
                             className="w-full h-7 px-2 rounded bg-background border border-input text-xs text-right tabular-nums"
                           />
                         </td>
-                        <td className="px-3 py-1.5 align-top">
+                        <td data-col-id="col-2" data-label="Description" className="px-3 py-1.5 align-top">
                           <input
                             type="text"
+                            aria-label={`Description for sub-item ${idx + 1}.${sidx + 1}`}
                             value={sub.description}
                             onChange={(e) => updateSubItem(idx, sidx, { description: e.target.value })}
                             placeholder="Description"
                             className="w-full h-7 px-2 rounded bg-background border border-input text-xs"
                           />
                         </td>
-                        <td className="px-3 py-1.5">
+                        <td data-col-id="col-3" data-label="Qty" className="px-3 py-1.5">
                           <input
                             type="number"
+                            aria-label={`Quantity for sub-item ${idx + 1}.${sidx + 1}`}
                             min={0}
                             step={1}
                             value={sub.quantity}
@@ -3394,31 +5480,40 @@ export function InvoiceEditor({
                             className="w-full h-7 px-2 rounded bg-background border border-input text-xs text-right tabular-nums"
                           />
                         </td>
-                        <td className="px-3 py-1.5">
+                        <td data-col-id="col-4" data-label="Unit price" className="px-3 py-1.5">
+                          {needsPrice && (
+                            <div className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
+                              <TriangleAlert size={10} />
+                              Needs price
+                            </div>
+                          )}
                           <input
                             type="number"
+                            aria-label={`Unit price for sub-item ${idx + 1}.${sidx + 1}`}
                             min={0}
                             step="0.01"
                             value={sub.unitPrice}
-                            onChange={(e) => updateSubItem(idx, sidx, { unitPrice: Number(e.target.value) || 0 })}
-                            className="w-full h-7 px-2 rounded bg-background border border-input text-xs text-right tabular-nums"
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => updateSubItem(idx, sidx, { unitPrice: e.target.value })}
+                            className={`w-full h-7 px-2 rounded border text-xs text-right tabular-nums ${needsPrice ? "bg-amber-50 border-amber-300 dark:bg-amber-950/40 dark:border-amber-700" : "bg-background border-input"}`}
                           />
                         </td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground">
+                        <td data-col-id="col-5" data-label="Total" className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground">
                           {formatMoney(Number(sub.quantity || 0) * Number(sub.unitPrice || 0))}
                         </td>
-                        <td className="px-2 py-1.5 align-top">
+                        {!inline && <td className="px-2 py-1.5 align-top">
                           <button
                             type="button"
-                            onClick={() => removeSubItem(idx, sidx)}
+                            onClick={(e) => { e.stopPropagation(); removeSubItem(idx, sidx); }}
                             className="h-6 w-6 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex items-center justify-center"
                             aria-label="Remove sub-item"
                           >
                             <Trash2 size={11} />
                           </button>
-                        </td>
+                        </td>}
                       </tr>
-                    ))}
+                      );
+                    })}
                     {(it.subItems ?? []).length > 0 && (
                       <tr className="border-t border-border/50 bg-muted/30">
                         <td colSpan={5} className="py-1.5 pr-3 text-right text-xs italic text-muted-foreground">
@@ -3450,6 +5545,20 @@ export function InvoiceEditor({
                     </tr>
                     </Fragment>
                   ))}
+                  <tr className="border-t border-border/30">
+                    <td colSpan={7} className="px-3 py-1">
+                      <button
+                        type="button"
+                        onClick={addItem}
+                        aria-label="Add a blank line"
+                        data-testid="button-add-line-bottom"
+                        className="w-full flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                      >
+                        <Plus size={10} />
+                        Add line
+                      </button>
+                    </td>
+                  </tr>
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-border">
@@ -3471,8 +5580,9 @@ export function InvoiceEditor({
                         min={0}
                         step="0.01"
                         value={tax}
+                        aria-label="Tax"
                         onChange={(e) => setTax(Number(e.target.value) || 0)}
-                        className="w-24 h-7 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
+                        className="w-full max-w-24 h-7 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
                       />
                     </td>
                     <td />
@@ -3487,8 +5597,9 @@ export function InvoiceEditor({
                         min={0}
                         step="0.01"
                         value={discount}
+                        aria-label="Invoice discount"
                         onChange={(e) => setDiscount(Number(e.target.value) || 0)}
-                        className="w-24 h-7 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
+                        className="w-full max-w-24 h-7 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
                       />
                     </td>
                     <td />
@@ -3521,10 +5632,18 @@ export function InvoiceEditor({
             </div>
           </section>
 
+          {inline && <div className="flex items-center justify-between gap-3 text-sm border-t border-border pt-3">
+            <span className="text-muted-foreground">{isDirty ? "Balance due (draft)" : "Balance due"}</span>
+            <output className="font-semibold tabular-nums" aria-label="Calculated balance due">
+              {formatMoney(statusValue === "void" ? 0 : total - (detailQuery.data?.payments ?? []).reduce((sum, payment) => sum + Number(payment.amount || 0), 0))}
+            </output>
+          </div>}
+
           <section>
             <label className="block text-sm font-semibold mb-2">Notes</label>
             <textarea
               value={notes}
+              aria-label="Notes"
               onChange={(e) => setNotes(e.target.value)}
               rows={4}
               placeholder="Internal notes for this invoice (optional)"
@@ -3622,14 +5741,257 @@ export function InvoiceEditor({
               </div>
             </section>
           )}
+          {detailQuery.data?.dateRepairLogs &&
+            detailQuery.data.dateRepairLogs.length > 0 && (
+              <section>
+                <h3 className="text-sm font-semibold mb-2">Date repair history</h3>
+                <div className="border border-border rounded-md divide-y divide-border">
+                  {detailQuery.data.dateRepairLogs.map((entry) => {
+                    const actorName =
+                      [entry.actorFirstName, entry.actorLastName]
+                        .filter(Boolean)
+                        .join(" ")
+                        .trim() ||
+                      entry.actorInitials ||
+                      entry.actorUsername ||
+                      entry.userId ||
+                      "Unknown user";
+                    const oldDates = entry.beforeJson ?? {};
+                    const correctedDates = entry.afterJson ?? {};
+                    const displayDate = (value: string | null | undefined) =>
+                      value ? formatInvoiceDate(value) : "Not set";
+                    return (
+                      <div key={entry.id} className="px-3 py-2 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="font-medium flex items-center gap-1.5">
+                            <RotateCcw size={12} className="shrink-0 text-muted-foreground" />
+                            Invoice dates repaired
+                          </div>
+                          <span className="text-[11px] text-muted-foreground whitespace-nowrap shrink-0">
+                            {formatDateTime(entry.createdAt)}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground space-y-0.5">
+                          <div>
+                            Issue date: {displayDate(oldDates.issuedAt)}
+                            {" → "}
+                            <span className="text-foreground">
+                              {displayDate(correctedDates.issuedAt)}
+                            </span>
+                          </div>
+                          <div>
+                            Due date: {displayDate(oldDates.dueAt)}
+                            {" → "}
+                            <span className="text-foreground">
+                              {displayDate(correctedDates.dueAt)}
+                            </span>
+                          </div>
+                          <div>By {actorName}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+          {(detailQuery.data as any)?.doctorIdentityRepairLogs &&
+            ((detailQuery.data as any).doctorIdentityRepairLogs as Array<{
+              id: string;
+              userId: string | null;
+              beforeJson: Record<string, unknown> | null;
+              afterJson: Record<string, unknown> | null;
+              metadataJson: Record<string, unknown> | null;
+              createdAt: string;
+              actorUsername: string | null;
+              actorFirstName: string | null;
+              actorLastName: string | null;
+              actorInitials: string | null;
+            }>).length > 0 && (
+            <section>
+              <h3 className="text-sm font-semibold mb-2">Doctor identity repair history</h3>
+              <div className="border border-border rounded-md divide-y divide-border">
+                {((detailQuery.data as any).doctorIdentityRepairLogs as Array<{
+                  id: string;
+                  userId: string | null;
+                  beforeJson: Record<string, unknown> | null;
+                  afterJson: Record<string, unknown> | null;
+                  metadataJson: Record<string, unknown> | null;
+                  createdAt: string;
+                  actorUsername: string | null;
+                  actorFirstName: string | null;
+                  actorLastName: string | null;
+                  actorInitials: string | null;
+                }>).map((entry) => {
+                  const actorName =
+                    [entry.actorFirstName, entry.actorLastName]
+                      .filter(Boolean)
+                      .join(" ")
+                      .trim() ||
+                    entry.actorInitials ||
+                    entry.actorUsername ||
+                    entry.userId ||
+                    "Unknown user";
+                  const before = entry.beforeJson ?? {};
+                  const after = entry.afterJson ?? {};
+                  const beforeName = typeof before.doctorDisplayName === "string"
+                    ? before.doctorDisplayName
+                    : "Unclassified legacy invoice";
+                  const afterName = typeof after.doctorDisplayName === "string"
+                    ? after.doctorDisplayName
+                    : "Doctor profile";
+                  return (
+                    <div key={entry.id} className="px-3 py-2 text-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-medium flex items-center gap-1.5">
+                          <Stethoscope size={12} className="shrink-0 text-muted-foreground" />
+                          Doctor identity assigned
+                        </div>
+                        <span className="text-[11px] text-muted-foreground whitespace-nowrap shrink-0">
+                          {formatDateTime(entry.createdAt)}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground space-y-0.5">
+                        <div>
+                          {beforeName}{" → "}
+                          <span className="text-foreground">{afterName}</span>
+                        </div>
+                        <div>By {actorName}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+          {(detailQuery.data as any)?.paymentDeleteLogs &&
+            ((detailQuery.data as any).paymentDeleteLogs as Array<{
+              id: string;
+              userId: string | null;
+              userInitials: string | null;
+              metadataJson: Record<string, unknown>;
+              createdAt: string;
+            }>).length > 0 && (
+            <section>
+              <h3 className="text-sm font-semibold mb-2">Payment history</h3>
+              <div className="border border-border rounded-md divide-y divide-border">
+                {((detailQuery.data as any).paymentDeleteLogs as Array<{
+                  id: string;
+                  userId: string | null;
+                  userInitials: string | null;
+                  metadataJson: Record<string, unknown>;
+                  createdAt: string;
+                }>).map((entry) => {
+                  const meta = entry.metadataJson ?? {};
+                  const count = typeof meta.deletedCount === "number" ? meta.deletedCount : null;
+                  const prevStatus = typeof meta.previousStatus === "string" ? meta.previousStatus : null;
+                  return (
+                    <div key={entry.id} className="px-3 py-2 text-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-medium text-destructive/80 flex items-center gap-1.5">
+                          <Trash2 size={12} className="shrink-0" />
+                          {count === 1 ? "1 payment cleared" : count != null ? `${count} payments cleared` : "Payments cleared"}
+                        </div>
+                        <span className="text-[11px] text-muted-foreground whitespace-nowrap shrink-0">
+                          {formatDateTime(entry.createdAt)}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-xs text-muted-foreground space-y-0.5">
+                        {prevStatus && (
+                          <div>
+                            Was{" "}
+                            <span className="capitalize">
+                              {prevStatus.replace(/_/g, " ")}
+                            </span>
+                            {" → "}
+                            <span className="capitalize">Open</span>
+                          </div>
+                        )}
+                        {(entry.userInitials || entry.userId) && (
+                          <div>By {entry.userInitials || entry.userId}</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+          </fieldset>
         </div>
-      </div>
       {prescriptionPreviewOpen && caseIdForPricing && (
         <PrescriptionPreview
           caseId={caseIdForPricing}
           invoiceCaseId={caseIdForPricing}
           onClose={() => setPrescriptionPreviewOpen(false)}
         />
+      )}
+      {markRemakeOpen && caseIdForPricing && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={() => !markAsRemakeMutation.isPending && closeMarkRemake()}
+          />
+          <div className="relative z-10 w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl bg-card border border-border shadow-2xl p-6 mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <GitBranch size={15} className="text-muted-foreground" />
+                Mark as remake{linkedCaseNumber ? ` — #${linkedCaseNumber}` : ""}
+              </h2>
+              <button
+                type="button"
+                onClick={() => !markAsRemakeMutation.isPending && closeMarkRemake()}
+                className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                disabled={markAsRemakeMutation.isPending}
+              >
+                <X size={15} />
+              </button>
+            </div>
+            <RemakeOriginalPicker
+              labOrganizationId={invoice.labOrganizationId}
+              selected={remakeSelected}
+              onSelect={(hit) => {
+                setRemakeSelected(hit);
+                setRemakeSubmitError(null);
+              }}
+              onClear={() => {
+                setRemakeSelected(null);
+                setRemakeQuestionnaire(blankQuestionnaire());
+              }}
+              questionnaire={remakeQuestionnaire}
+              onQuestionnaireChange={setRemakeQuestionnaire}
+              isAdmin={isAdmin}
+              excludeCaseId={caseIdForPricing}
+            />
+            {remakeSubmitError && (
+              <p className="mt-3 text-sm text-destructive">{remakeSubmitError}</p>
+            )}
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeMarkRemake}
+                disabled={markAsRemakeMutation.isPending}
+                className="h-8 px-4 rounded-md text-sm bg-secondary hover:bg-secondary/80 text-muted-foreground disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => markAsRemakeMutation.mutate()}
+                disabled={
+                  markAsRemakeMutation.isPending ||
+                  !remakeSelected ||
+                  !isRemakeQuestionnaireComplete(remakeQuestionnaire)
+                }
+                className="h-8 px-4 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {markAsRemakeMutation.isPending && (
+                  <Loader2 size={12} className="animate-spin" />
+                )}
+                {markAsRemakeMutation.isPending ? "Saving…" : "Mark as remake"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {emailOpen && (
         <EmailInvoiceDialog
@@ -3639,13 +6001,77 @@ export function InvoiceEditor({
           onClose={() => setEmailOpen(false)}
         />
       )}
+      {/* Paid→Open guard: invoice has recorded payments that must be deleted first */}
+      {paymentDeleteConfirm && (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
+            <h3 className="text-base font-semibold">This invoice has a recorded payment</h3>
+            <p className="text-sm text-muted-foreground">
+              {detailQuery.data?.inStatement
+                ? "This invoice was included in a statement that has a recorded payment. Reverting to Open without removing the payment will leave the ledger out of balance."
+                : "This invoice has a recorded payment. Delete it before marking the invoice as Open?"}
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setPaymentDeleteConfirm(false)}
+                disabled={deletePaymentsMutation.isPending}
+                className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => deletePaymentsMutation.mutate()}
+                disabled={deletePaymentsMutation.isPending}
+                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md text-sm font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+              >
+                {deletePaymentsMutation.isPending && <Loader2 size={14} className="animate-spin" />}
+                Delete payment &amp; mark Open
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Open→Paid prompt: no existing payments — offer to record one */}
+      {recordPaymentPrompt && (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
+            <h3 className="text-base font-semibold">Record a payment?</h3>
+            <p className="text-sm text-muted-foreground">
+              Do you want to record a payment for this invoice? This keeps the financial ledger accurate.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setRecordPaymentPrompt(false);
+                  saveMutation.mutate();
+                }}
+                className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+              >
+                No, just mark as paid
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setRecordPaymentPrompt(false);
+                  setRecordPaymentOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                <CreditCard size={14} /> Yes, record payment
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {recordPaymentOpen && (
         <RecordPaymentDialog
           invoice={detailQuery.data ?? invoice}
           onClose={() => setRecordPaymentOpen(false)}
           onRecorded={() => {
-            queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
-            queryClient.invalidateQueries({ queryKey: ["invoices"] });
+            void refreshInvoiceSalesQueries(queryClient, invoice.id, invoice.caseId);
             setRecordPaymentOpen(false);
           }}
         />
@@ -3669,7 +6095,7 @@ export function InvoiceEditor({
               <span className="font-medium text-foreground">
                 {reassignConfirm.targetName}
               </span>
-              . The change is saved immediately and logged in the audit trail.
+              . {inline ? "The change will be included when you save this invoice and logged in the audit trail." : "The change is saved immediately and logged in the audit trail."}
             </p>
             <div className="flex justify-end gap-2 pt-1">
               <button
@@ -3682,7 +6108,12 @@ export function InvoiceEditor({
               </button>
               <button
                 type="button"
-                onClick={() => reassignMutation.mutate(reassignConfirm.targetId)}
+                onClick={() => {
+                  if (inline) {
+                    setProviderId(reassignConfirm.targetId);
+                    setReassignConfirm(null);
+                  } else reassignMutation.mutate(reassignConfirm.targetId);
+                }}
                 disabled={reassignMutation.isPending}
                 className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-2"
               >
@@ -3690,6 +6121,113 @@ export function InvoiceEditor({
                   <Loader2 size={14} className="animate-spin" />
                 )}
                 Reassign
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {dateRepairOpen && (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-lg w-full max-w-lg p-5 space-y-4">
+            <div>
+              <h3 className="text-base font-semibold">Review invoice date repair</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                This invoice has a non-standard historical timestamp that may have shifted
+                its calendar day. Confirm the intended dates below. No totals, status,
+                statement rules, or other invoice fields will change.
+              </p>
+            </div>
+            <div className="rounded-md border border-border overflow-hidden text-sm">
+              <div className="grid grid-cols-3 gap-3 bg-secondary/40 px-3 py-2 text-xs font-medium text-muted-foreground">
+                <span>Date</span>
+                <span>Currently shown</span>
+                <span>Corrected date</span>
+              </div>
+              <div className="grid grid-cols-3 gap-3 items-center px-3 py-3 border-t border-border">
+                <span className="font-medium">Issue date</span>
+                <span>{formatInvoiceDate(detailQuery.data?.issuedAt ?? invoice.issuedAt)}</span>
+                <input
+                  type="date"
+                  value={repairIssuedAt}
+                  onChange={(e) => setRepairIssuedAt(e.target.value)}
+                  disabled={!isLikelyLegacyShiftedInvoiceDate(
+                    detailQuery.data?.issuedAt ?? invoice.issuedAt,
+                    detailQuery.data?.createdAt ?? invoice.createdAt,
+                  )}
+                  className="h-9 px-2 rounded-md bg-background border border-input"
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-3 items-center px-3 py-3 border-t border-border">
+                <span className="font-medium">Due date</span>
+                <span>
+                  {formatInvoiceDate(
+                    detailQuery.data?.dueAt ??
+                      detailQuery.data?.dueDate ??
+                      invoice.dueAt ??
+                      invoice.dueDate,
+                  )}
+                </span>
+                <input
+                  type="date"
+                  value={repairDueAt}
+                  onChange={(e) => setRepairDueAt(e.target.value)}
+                  disabled={!isLikelyLegacyShiftedInvoiceDate(
+                    detailQuery.data?.dueAt ??
+                      detailQuery.data?.dueDate ??
+                      invoice.dueAt ??
+                      invoice.dueDate,
+                    detailQuery.data?.createdAt ?? invoice.createdAt,
+                  )}
+                  className="h-9 px-2 rounded-md bg-background border border-input"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Saving creates a dedicated audit record with the previous and corrected dates.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDateRepairOpen(false)}
+                disabled={dateRepairMutation.isPending}
+                className="h-9 px-4 rounded-md bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => dateRepairMutation.mutate()}
+                disabled={
+                  dateRepairMutation.isPending ||
+                  (isLikelyLegacyShiftedInvoiceDate(
+                    detailQuery.data?.issuedAt ?? invoice.issuedAt,
+                    detailQuery.data?.createdAt ?? invoice.createdAt,
+                  ) &&
+                    !repairIssuedAt) ||
+                  (isLikelyLegacyShiftedInvoiceDate(
+                    detailQuery.data?.dueAt ??
+                      detailQuery.data?.dueDate ??
+                      invoice.dueAt ??
+                      invoice.dueDate,
+                    detailQuery.data?.createdAt ?? invoice.createdAt,
+                  ) &&
+                    !repairDueAt) ||
+                  !hasInvoiceDateRepairChanges({
+                    issuedAt: detailQuery.data?.issuedAt ?? invoice.issuedAt,
+                    dueAt:
+                      detailQuery.data?.dueAt ??
+                      detailQuery.data?.dueDate ??
+                      invoice.dueAt ??
+                      invoice.dueDate,
+                    createdAt: detailQuery.data?.createdAt ?? invoice.createdAt,
+                    repairedIssuedAt: repairIssuedAt,
+                    repairedDueAt: repairDueAt,
+                  })
+                }
+                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                {dateRepairMutation.isPending && <Loader2 size={14} className="animate-spin" />}
+                Confirm and save dates
               </button>
             </div>
           </div>
@@ -3716,6 +6254,7 @@ export function InvoiceEditor({
                 onClick={() => {
                   const proceed = pendingDiscard;
                   setPendingDiscard(null);
+                  if (inline) resetDraft();
                   proceed();
                 }}
                 className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90"
@@ -3738,14 +6277,14 @@ export function InvoiceEditor({
                 item: newItem.name,
                 description: newItem.description,
                 quantity: 1,
-                unitPrice: newItem.unitPrice,
+                unitPrice: String(newItem.unitPrice),
               },
             ]);
             setShowCreateItemModal(false);
           }}
         />
       )}
-    </div>
+    </InvoiceEditorPresentation>
   );
 }
 
@@ -3884,6 +6423,21 @@ export function StatementBuilderDialog({
   const practiceOrgs = useMemo(
     () => (orgsQuery.data ?? []).filter((o) => o.type === "provider"),
     [orgsQuery.data],
+  );
+
+  // Fetch the full org record for the selected practice so we can read
+  // additionalEmails (not returned by the list endpoint).
+  const practiceOrgQuery = useQuery({
+    queryKey: ["organizations", providerOrgId],
+    queryFn: () => apiFetch<Organization>(`/organizations/${providerOrgId}`),
+    enabled: !!providerOrgId,
+  });
+  const billingCcEmails = useMemo(
+    () =>
+      (practiceOrgQuery.data?.additionalEmails ?? []).filter(
+        (e) => e.type === "billing",
+      ),
+    [practiceOrgQuery.data],
   );
 
   const practiceName = useMemo(() => {
@@ -4088,6 +6642,19 @@ export function StatementBuilderDialog({
                     <Mail size={14} /> Email
                   </button>
                 </div>
+                {billingCcEmails.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                    <span className="text-[11px] text-muted-foreground">Auto-CC:</span>
+                    {billingCcEmails.map((e) => (
+                      <span
+                        key={e.id}
+                        className="inline-flex items-center h-5 px-2 rounded-full bg-secondary border border-border text-[11px] text-muted-foreground"
+                      >
+                        {e.email}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
@@ -4227,7 +6794,7 @@ function EmailInvoiceDialog({
             <div className="rounded-md border border-success/40 bg-success/10 px-3 py-3 text-sm">
               <div className="font-medium text-success">Invoice sent.</div>
               <div className="text-xs text-muted-foreground mt-1">
-                Delivered to {to} at {new Date(sentAt).toLocaleString("en-US")}.
+                Delivered to {to} at {formatDateTime(sentAt)}.
               </div>
             </div>
           ) : (
@@ -4304,16 +6871,6 @@ function EmailInvoiceDialog({
       </div>
     </div>
   );
-}
-
-function toInputDate(value?: string | null): string {
-  if (!value) return "";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
 }
 
 const PAYMENT_METHODS = [
@@ -4534,7 +7091,7 @@ export function CreateInvoiceDialog({
   const [labOrgId, setLabOrgId] = useState(defaultLabId);
   const [providerOrgId, setProviderOrgId] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
-  const [issuedAt, setIssuedAt] = useState(toInputDate(new Date().toISOString()));
+  const [issuedAt, setIssuedAt] = useState(invoiceTimestampToDateInput(new Date().toISOString()));
   const [dueAt, setDueAt] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -4586,8 +7143,8 @@ export function CreateInvoiceDialog({
           invoiceNumber: invoiceNumber.trim(),
           labOrganizationId: labOrgId,
           providerOrganizationId: providerOrgId,
-          issuedAt: issuedAt ? new Date(issuedAt).toISOString() : undefined,
-          dueAt: dueAt ? new Date(dueAt).toISOString() : undefined,
+          issuedAt: invoiceDateInputToTimestamp(issuedAt) ?? undefined,
+          dueAt: invoiceDateInputToTimestamp(dueAt) ?? undefined,
         }),
       });
       onCreated(inv);
@@ -4678,7 +7235,7 @@ export function CreateInvoiceDialog({
             </div>
           )}
           <p className="text-xs text-muted-foreground">
-            The invoice opens as a draft. Add line items in the editor.
+            Add line items in the editor.
           </p>
         </div>
         <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border">

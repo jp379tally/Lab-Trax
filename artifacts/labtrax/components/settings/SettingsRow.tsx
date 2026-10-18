@@ -3,6 +3,7 @@ import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
+import { DismissKeyboardView } from "@/components/ui/DismissKeyboardView";
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -133,6 +134,12 @@ export function SettingsSection({ title, children, footer }: SettingsSectionProp
   );
 }
 
+/**
+ * testID of the shell-wide tap-to-dismiss layer. Shared so any settings screen
+ * test can press the screen background without hard-coding the string.
+ */
+export const SCREEN_SHELL_DISMISS_TEST_ID = "screen-keyboard-dismiss";
+
 export interface ScreenShellProps {
   title: string;
   subtitle?: string;
@@ -144,7 +151,14 @@ export interface ScreenShellProps {
 export function ScreenShell({ title, subtitle, onBack, children, insetTop = 0 }: ScreenShellProps) {
   const { colors } = useTheme();
   return (
-    <View style={[styles.screen, { backgroundColor: colors.backgroundSolid, paddingTop: insetTop }]}>
+    // Every settings screen shares this shell, so the tap-to-dismiss layer
+    // lives here once: tapping the header, a section heading, or the space
+    // around a form closes the keyboard. The layer is inert while no keyboard
+    // is up, and child rows/inputs still claim their own taps.
+    <DismissKeyboardView
+      style={[styles.screen, { backgroundColor: colors.backgroundSolid, paddingTop: insetTop }]}
+      testID={SCREEN_SHELL_DISMISS_TEST_ID}
+    >
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Pressable onPress={onBack} style={styles.backBtn} hitSlop={12}>
           <Ionicons name="chevron-back" size={22} color={colors.tint} />
@@ -163,7 +177,7 @@ export function ScreenShell({ title, subtitle, onBack, children, insetTop = 0 }:
         <View style={styles.backBtn} />
       </View>
       {children}
-    </View>
+    </DismissKeyboardView>
   );
 }
 

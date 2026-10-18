@@ -36,6 +36,34 @@
  */
 
 import { normalizeMaterialName, CANONICAL_ZIRCONIA } from "./material-mapping";
+import { deriveCaseHierarchy, hierarchyToCaseCategory } from "@workspace/case-taxonomy";
+
+// Re-export taxonomy helpers so consumers only need one import.
+export {
+  deriveCaseHierarchy,
+  encodeRestorationSubtype,
+  encodeCustomToken,
+  isCustomToken,
+  parseCustomToken,
+  normalizeCaseHierarchy,
+  hierarchyToCaseCategory,
+  isValidCaseType,
+  isValidSubtype,
+  isValidMaterialSubtype,
+  caseTypeForSubtype,
+  getSubtypes,
+  getMaterialSubtypes,
+  getTaxonomyTree,
+  getTaxonomyVocab,
+  CASE_TAXONOMY,
+  CASE_TYPES,
+  type CaseType,
+  type CaseSubtype,
+  type MaterialSubtype,
+  type CaseHierarchy,
+  type TaxonomyVocabEntry,
+  type TaxonomyTree,
+} from "@workspace/case-taxonomy";
 
 export const CASE_CATEGORY_KEYS = [
   "implants",
@@ -69,18 +97,30 @@ const CATEGORY_PRIORITY: Exclude<CaseCategory, "uncategorized">[] = [
 const IMPLANT_RE = /\bimplant|\babutment|screw[- ]?retained|all[- ]?on[- ]?(4|6|x)/i;
 const CROWN_BRIDGE_RE =
   /\bcrown|\bbridge|\bveneer|\binlay|\bonlay|\bmaryland|\bpontic|\bcoping/i;
-const REMOVABLE_RE = /\bdenture|\bpartial|\bflipper|\bflexible|\bvalplast/i;
+const REMOVABLE_RE = /\bdenture|\bpartial|\bflipper|\bflexible|\bvalplast|\bremovable/i;
 const CROWN_BRIDGE_MATERIAL_RE =
   /lithium disilicate|\bpfm\b|\bgold\b|full cast|cast metal|semi precious/i;
 
 /**
  * Classify a single restoration row. Returns "uncategorized" only when both
  * fields are blank; any non-empty text that matches no rule is "other".
+ *
+ * When `restorationSubtype` is present (the structured column value stored by
+ * new pickers), the hierarchy is decoded via `deriveCaseHierarchy` and
+ * bridged through `hierarchyToCaseCategory` before falling back to regex.
  */
 export function classifyRestoration(
   restorationType?: string | null,
   material?: string | null,
+  restorationSubtype?: string | null,
 ): CaseCategory {
+  // Prefer the explicit taxonomy hierarchy when a structured subtype key exists.
+  if (restorationSubtype) {
+    const hierarchy = deriveCaseHierarchy(restorationType, restorationSubtype, material);
+    const bridged = hierarchyToCaseCategory(hierarchy);
+    if (bridged) return bridged;
+  }
+
   const rt = (restorationType ?? "").trim();
   const rawMaterial = (material ?? "").trim();
   if (!rt && !rawMaterial) return "uncategorized";
@@ -107,16 +147,20 @@ export function classifyRestoration(
  * Classify a whole case from its restoration rows. Highest-priority
  * category present wins; a case with no rows (or only fully blank rows)
  * is "uncategorized".
+ *
+ * Pass `restorationSubtype` per restoration to enable hierarchy-first
+ * classification for rows that have the structured column populated.
  */
 export function classifyCase(
   restorations: Array<{
     restorationType?: string | null;
     material?: string | null;
+    restorationSubtype?: string | null;
   }>,
 ): CaseCategory {
   const present = new Set<CaseCategory>();
   for (const r of restorations) {
-    present.add(classifyRestoration(r.restorationType, r.material));
+    present.add(classifyRestoration(r.restorationType, r.material, r.restorationSubtype));
   }
   for (const cat of CATEGORY_PRIORITY) {
     if (present.has(cat)) return cat;

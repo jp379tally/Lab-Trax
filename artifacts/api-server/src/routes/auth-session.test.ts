@@ -22,6 +22,8 @@ import request from "supertest";
 import * as path from "node:path";
 import * as os from "node:os";
 
+const sendMailMock = vi.hoisted(() => vi.fn().mockResolvedValue({ sent: true }));
+
 vi.mock("../lib/backup.js", () => ({
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
 }));
@@ -32,6 +34,10 @@ vi.mock("../lib/case-media.js", () => ({
   caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-auth"),
   extractMediaFileName: () => null,
 }));
+vi.mock("../lib/mail.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/mail.js")>();
+  return { ...actual, sendMail: sendMailMock };
+});
 
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
 const maybe = SHOULD_RUN ? describe : describe.skip;
@@ -56,6 +62,8 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
   const userBId = rid("ub");
   const userWithAcctId = rid("uc");
   const softDeletedMemberUserId = rid("usd");
+  const passwordChangeUserId = rid("upc");
+  const passwordResetUserId = rid("upr");
 
   // Helper: manually create a session and return a valid access + refresh token pair.
   // The refresh token is SHA-256 hashed before storing so the /refresh endpoint can
@@ -112,6 +120,17 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
         username: `usd_${softDeletedMemberUserId}`,
         password: hashedPassword,
       },
+      {
+        id: passwordChangeUserId,
+        username: `upc_${passwordChangeUserId}`,
+        password: hashedPassword,
+      },
+      {
+        id: passwordResetUserId,
+        username: `upr_${passwordResetUserId}`,
+        password: hashedPassword,
+        email: `${passwordResetUserId}@example.test`,
+      },
     ]);
 
     await db.insert(organizations).values([
@@ -158,21 +177,43 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
     await db.delete(auditLogs).where(
       inArray(auditLogs.organizationId, [labOrgId, otherLabOrgId])
     );
+    await db.delete(auditLogs).where(
+      inArray(auditLogs.userId, [passwordChangeUserId, passwordResetUserId])
+    );
     await db.delete(invoices).where(
       inArray(invoices.labOrganizationId, [labOrgId, otherLabOrgId, providerOrgId])
     );
     await db.delete(userSessions).where(
-      inArray(userSessions.userId, [userAId, userBId, userWithAcctId, softDeletedMemberUserId])
+      inArray(userSessions.userId, [
+        userAId,
+        userBId,
+        userWithAcctId,
+        softDeletedMemberUserId,
+        passwordChangeUserId,
+        passwordResetUserId,
+      ])
     );
     await db.delete(organizationMemberships).where(
-      inArray(organizationMemberships.userId, [userAId, userBId, userWithAcctId, softDeletedMemberUserId])
+      inArray(organizationMemberships.userId, [
+        userAId,
+        userBId,
+        userWithAcctId,
+        softDeletedMemberUserId,
+        passwordChangeUserId,
+        passwordResetUserId,
+      ])
     );
     await db.delete(organizations).where(
       inArray(organizations.id, [labOrgId, otherLabOrgId, providerOrgId])
     );
-    await db.delete(users).where(
-      inArray(users.id, [userAId, userBId, userWithAcctId, softDeletedMemberUserId])
-    );
+    await db.delete(users).where(inArray(users.id, [
+      userAId,
+      userBId,
+      userWithAcctId,
+      softDeletedMemberUserId,
+      passwordChangeUserId,
+      passwordResetUserId,
+    ]));
   });
 
   // ── POST /api/auth/login ──────────────────────────────────────────────────
@@ -313,6 +354,62 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
     expect(reuse.status).toBe(401);
   });
 
+  it("password change revokes every active session for the account", async () => {
+    const first = await makeSession(passwordChangeUserId);
+    const second = await makeSession(passwordChangeUserId);
+
+    const changed = await request(appMod.default)
+      .put(`/api/auth/users/${passwordChangeUserId}/password`)
+      .set("Authorization", `Bearer ${first.access}`)
+      .send({ currentPassword: USER_PASSWORD, newPassword: "NewSecurePassword456!" });
+
+    expect(changed.status).toBe(200);
+
+    for (const session of [first, second]) {
+      const access = await request(appMod.default)
+        .get("/api/auth/me")
+        .set("Authorization", `Bearer ${session.access}`);
+      const refresh = await request(appMod.default)
+        .post("/api/auth/refresh")
+        .send({ refreshToken: session.refresh });
+      expect(access.status).toBe(401);
+      expect(refresh.status).toBe(401);
+    }
+  });
+
+  it("password reset revokes every active session for the account", async () => {
+    const first = await makeSession(passwordResetUserId);
+    const second = await makeSession(passwordResetUserId);
+
+    sendMailMock.mockClear();
+    const forgot = await request(appMod.default)
+      .post("/api/forgot-password")
+      .send({ email: `${passwordResetUserId}@example.test` });
+    expect(forgot.status).toBe(200);
+
+    const mail = sendMailMock.mock.calls.at(-1)?.[0];
+    const resetLink = mail?.html.match(/href="([^"]*reset-password\?token=[^"]+)"/)?.[1];
+    expect(resetLink).toBeTruthy();
+    const token = new URL(resetLink as string).searchParams.get("token");
+    expect(token).toBeTruthy();
+
+    const reset = await request(appMod.default)
+      .post("/api/reset-password")
+      .send({ token, newPassword: "ResetSecurePassword456!" });
+    expect(reset.status).toBe(200);
+
+    for (const session of [first, second]) {
+      const access = await request(appMod.default)
+        .get("/api/auth/me")
+        .set("Authorization", `Bearer ${session.access}`);
+      const refresh = await request(appMod.default)
+        .post("/api/auth/refresh")
+        .send({ refreshToken: session.refresh });
+      expect(access.status).toBe(401);
+      expect(refresh.status).toBe(401);
+    }
+  });
+
   // ── GET /api/auth/me ──────────────────────────────────────────────────────
 
   it("GET /api/auth/me returns the correct user", async () => {
@@ -412,5 +509,54 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
       db.delete(casesTable).where(eq(casesTable.id, caseId)),
       db.delete(userSessions).where(eq(userSessions.id, p.sid)),
     ]);
+  });
+
+  it("account deletion blocks login, access tokens, refresh tokens, and tenant memberships", async () => {
+    const { db, users, userSessions, organizationMemberships } = dbMod as any;
+    const { access, refresh } = await makeSession(userAId);
+    const sessionPayload = authLib.verifyRefreshToken(refresh);
+
+    const deletion = await request(appMod.default)
+      .delete(`/api/auth/users/${userAId}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(deletion.status).toBe(200);
+
+    const deletedUser = await db.query.users.findFirst({
+      where: eq(users.id, userAId),
+    });
+    expect(deletedUser.isActive).toBe(false);
+    expect(deletedUser.deletedAt).toBeInstanceOf(Date);
+
+    const membership = await db.query.organizationMemberships.findFirst({
+      where: eq(organizationMemberships.userId, userAId),
+    });
+    expect(membership.status).toBe("inactive");
+    expect(membership.deletedAt).toBeInstanceOf(Date);
+    expect(membership.deletedByUserId).toBe(userAId);
+
+    const sessions = await db.query.userSessions.findMany({
+      where: eq(userSessions.userId, userAId),
+    });
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(sessions.every((session: any) => session.revokedAt instanceof Date)).toBe(true);
+    expect(
+      sessions.find((session: any) => session.id === sessionPayload.sid)?.revokedAt,
+    ).toBeInstanceOf(Date);
+
+    const accessDenied = await request(appMod.default)
+      .get("/api/auth/me")
+      .set("Authorization", `Bearer ${access}`);
+    expect(accessDenied.status).toBe(401);
+
+    const refreshDenied = await request(appMod.default)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: refresh });
+    expect(refreshDenied.status).toBe(401);
+
+    const loginDenied = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ identifier: `ua_${userAId}`, password: USER_PASSWORD, clientType: "mobile" });
+    expect(loginDenied.status).toBe(401);
   });
 });

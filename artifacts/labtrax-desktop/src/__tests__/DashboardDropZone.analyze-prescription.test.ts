@@ -75,6 +75,10 @@ const PRESCRIPTION_TEST_USER = {
   labOrganizationId: null,
 } as unknown as SessionUser;
 
+vi.mock("@/components/ui/use-toast", () => ({
+  useToast: () => ({ toast: vi.fn() }),
+}));
+
 // ── Static regression guards ──────────────────────────────────────────────────
 
 describe("DashboardDropZone — /analyze-prescription endpoint wiring (static)", () => {
@@ -113,6 +117,38 @@ describe("DashboardDropZone — /analyze-prescription endpoint wiring (static)",
     expect(content, "DashboardDropZone must send imageBase64 field").toContain(
       "imageBase64"
     );
+  });
+});
+
+// ── Alloy pre-create warning (static) ────────────────────────────────────────
+
+describe("DashboardDropZone — alloy pre-create warning (static)", () => {
+  const src = () =>
+    fs.readFileSync(
+      path.resolve(__dirname, "../components/DashboardDropZone.tsx"),
+      "utf-8",
+    );
+
+  it("renders an alloy-warning-banner when preview contains unpriced alloy sub-items", () => {
+    expect(src()).toContain("alloy-warning-banner");
+  });
+
+  it("has an alloy-acknowledge-btn that the user must click before creating", () => {
+    expect(src()).toContain("alloy-acknowledge-btn");
+  });
+
+  it("gates the Create Case button on alloyAcknowledged when unpriced alloy exists", () => {
+    const content = src();
+    expect(content).toContain("alloyAcknowledged");
+    expect(content).toContain("hasUnpricedAlloy");
+    // The Create Case button must be disabled when not acknowledged.
+    expect(content).toContain("hasUnpricedAlloy && !alloyAcknowledged");
+  });
+
+  it("detects alloy sub-items by priced===false and description starting with 'Alloy'", () => {
+    const content = src();
+    expect(content).toContain("priced === false");
+    expect(content).toContain("startsWith(\"Alloy\")");
   });
 });
 

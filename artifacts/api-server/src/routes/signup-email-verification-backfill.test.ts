@@ -56,6 +56,7 @@ maybe("POST /api/auth/register — pre-registration email verification backfill"
     process.env["JWT_SECRET"] = process.env["JWT_SECRET"] ?? "labtrax-test-secret-backfill";
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
+    await (await import("./index.js")).labtraxRoutesReady;
     verifyLib = await import("../lib/verification.js");
   });
 

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import StatementsPage from "@/pages/statements";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
 
@@ -37,6 +37,38 @@ const INVOICES = PRACTICES.map((p, i) => ({
   createdAt: "2026-06-01T10:00:00.000Z",
 }));
 
+const ACCOUNT_SUMMARIES = PRACTICES.map((p, index) => ({
+  practiceId: p.id,
+  practiceName: p.name,
+  billingEmail: index === 0 ? "billing@alpha.test" : null,
+  phone: null,
+  openInvoiceCount: 1,
+  openInvoiceTotal: p.balance,
+  unpaidStatements:
+    index === 0
+      ? [
+          {
+            id: "statement-new",
+            date: "2026-08-31T12:00:00.000Z",
+            periodStart: "2026-08-01T00:00:00.000Z",
+            periodEnd: "2026-09-01T00:00:00.000Z",
+            remainingBalance: 120,
+            overdue: false,
+          },
+          {
+            id: "statement-old",
+            date: "2026-07-31T12:00:00.000Z",
+            periodStart: "2026-07-01T00:00:00.000Z",
+            periodEnd: "2026-08-01T00:00:00.000Z",
+            remainingBalance: 80,
+            overdue: true,
+          },
+        ]
+      : [],
+  totalOpenBalance: p.balance,
+  overdueBalance: index === 0 ? 80 : 0,
+}));
+
 beforeEach(() => {
   vi.stubGlobal(
     "fetch",
@@ -49,6 +81,8 @@ beforeEach(() => {
           headers: { "Content-Type": "application/json" },
         });
       if (path.endsWith("/invoices")) return json(INVOICES);
+      if (path.endsWith("/statements/account-summaries"))
+        return json(ACCOUNT_SUMMARIES);
       if (path.endsWith("/organizations")) return json([LAB_ORG]);
       if (path.endsWith("/statement-schedule")) return json({});
       if (path.endsWith("/admin/templates/statement-email"))
@@ -70,7 +104,6 @@ async function renderPage() {
       username: "admin",
       role: "admin",
       userType: "lab",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
     status: "authed",
     restoreStatus: "ok",
@@ -102,6 +135,33 @@ function selectedPractices(): number[] {
 }
 
 describe("Statements practice table shift-click range selection", () => {
+  it("shows the shared account-summary columns, email fallback, and aligned statements", async () => {
+    await renderPage();
+
+    for (const heading of [
+      "Open Invoices",
+      "Open Invoices Total",
+      "Recent Statement Date",
+      "Recent Statement Amount",
+      "Total Open Balance",
+      "Overdue",
+    ]) {
+      expect(screen.getByRole("columnheader", { name: heading })).toBeTruthy();
+    }
+    expect(screen.getByText("billing@alpha.test")).toBeTruthy();
+    expect(screen.getAllByText("No email on file.")).toHaveLength(4);
+
+    const firstRow = checkbox(1).closest("tr");
+    expect(firstRow).not.toBeNull();
+    const row = within(firstRow!);
+    const augustDate = row.getByText("08/31/2026");
+    const julyDate = row.getByText("07/31/2026");
+    const newAmount = row.getByText("$120.00");
+    const oldAmount = row.getAllByText("$80.00")[0];
+    expect(augustDate.compareDocumentPosition(julyDate) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(newAmount.compareDocumentPosition(oldAmount) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("selects the range downward (anchor above the shift-clicked row)", async () => {
     await renderPage();
 
@@ -137,7 +197,8 @@ describe("Statements practice table shift-click range selection", () => {
     fireEvent.change(screen.getByPlaceholderText("Search practice…"), {
       target: { value: "Alpha" },
     });
-    expect(queryCheckbox(2)).toBeNull();
+    await waitFor(() => expect(queryCheckbox(2)).toBeNull());
+    await screen.findByLabelText(`Select practice ${PRACTICES[0].name}`);
 
     fireEvent.click(checkbox(1));
     fireEvent.click(checkbox(5), { shiftKey: true });
@@ -148,7 +209,7 @@ describe("Statements practice table shift-click range selection", () => {
     fireEvent.change(screen.getByPlaceholderText("Search practice…"), {
       target: { value: "" },
     });
-    expect(selectedPractices()).toEqual([1, 3, 5]);
+    await waitFor(() => expect(selectedPractices()).toEqual([1, 3, 5]));
   });
 
   it("falls back to a single toggle and resets the anchor when the anchor is filtered out", async () => {
@@ -159,7 +220,8 @@ describe("Statements practice table shift-click range selection", () => {
     fireEvent.change(screen.getByPlaceholderText("Search practice…"), {
       target: { value: "Alpha" },
     });
-    expect(queryCheckbox(2)).toBeNull();
+    await waitFor(() => expect(queryCheckbox(2)).toBeNull());
+    await screen.findByLabelText(`Select practice ${PRACTICES[4].name}`);
 
     // Shift-click with a stale anchor: only the clicked practice toggles…
     fireEvent.click(checkbox(5), { shiftKey: true });

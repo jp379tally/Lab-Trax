@@ -1,17 +1,19 @@
 /**
  * Cross-lab doctor account linking routes (Task #320).
  *
- * Two routers are exported:
- *   - `default` (auth-required): mounted at /api/account-links. Used by the
- *     mobile provider portal's "Link Labs" screen.
- *   - `smsInboundRouter` (no auth): mounted at /api/sms. Receives inbound
- *     SMS replies (YES → link). The provider cannot send a CSRF header /
- *     bearer token; the request is verified by phone match.
+ * The authenticated router is mounted at /api/account-links. Account links
+ * are created only after the invited account accepts through /respond.
  */
 import { Router } from "express";
-import { and, asc, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
+import {
+  classifyAccountNumber,
+  normalizeAccountNumberInput,
+  ACCOUNT_NUMBER_NEW_INVALID,
+  ACCOUNT_NUMBER_NEW_VALID,
+} from "@workspace/account-number";
 import {
   accountLinkInvites,
   doctorAccountLinks,
@@ -22,7 +24,6 @@ import {
 import { writeAuditLog } from "../lib/audit";
 import { HttpError, ok } from "../lib/http";
 import { canonicalLinkPair } from "../lib/cross-lab-doctor";
-import { normalizePhoneE164 } from "../lib/account-link-sms";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 
@@ -36,7 +37,7 @@ router.use(requireAuth);
 async function insertLinkIfMissing(
   userIdA: string,
   userIdB: string,
-  linkedVia: "sms_yes" | "manual" | "admin_backfill"
+  linkedVia: "manual" | "admin_backfill"
 ): Promise<boolean> {
   const pair = canonicalLinkPair(userIdA, userIdB);
   if (!pair) return false;
@@ -68,7 +69,9 @@ async function hydrateLinkedUserCards(userIds: string[]) {
   const userRows = await db
     .select()
     .from(users)
-    .where(inArray(users.id, userIds));
+    // Accounts retired by a duplicate consolidation (Task #4373) are
+    // soft-deleted; never surface them as a linked account.
+    .where(and(inArray(users.id, userIds), isNull(users.deletedAt)));
   const memberships = await db.query.organizationMemberships.findMany({
     where: and(
       inArray(organizationMemberships.userId, userIds),
@@ -99,6 +102,108 @@ async function hydrateLinkedUserCards(userIds: string[]) {
     platformAccountNumber: u.platformAccountNumber,
     labs: labsByUser.get(u.id) ?? [],
   }));
+}
+
+export type LinkedLabInfo = {
+  labId: string;
+  labName: string;
+  status: "active" | "pending";
+  linkedUserId: string;
+  linkedUsername: string;
+};
+
+/**
+ * Resolve every OTHER lab a given user's doctor identity is connected to —
+ * via a confirmed doctor_account_links row ("active") or an outstanding
+ * account_link_invites row in either direction ("pending"). Used by the
+ * platform-admin Accounts directory (UserDetailDrawer) so an admin can see
+ * cross-lab relationships for a specific provider account without exposing
+ * the full mobile "Link Labs" self-service surface.
+ */
+export async function getLinkedLabsForUser(userId: string): Promise<LinkedLabInfo[]> {
+  const links = await db
+    .select()
+    .from(doctorAccountLinks)
+    .where(
+      or(
+        eq(doctorAccountLinks.userIdLow, userId),
+        eq(doctorAccountLinks.userIdHigh, userId)
+      )
+    );
+  const activeOtherUserIds = new Set(
+    links.map((l: any) => (l.userIdLow === userId ? l.userIdHigh : l.userIdLow))
+  );
+
+  const [pendingSent, pendingReceived] = await Promise.all([
+    db
+      .select()
+      .from(accountLinkInvites)
+      .where(
+        and(
+          eq(accountLinkInvites.newUserId, userId),
+          eq(accountLinkInvites.status, "pending")
+        )
+      ),
+    db
+      .select()
+      .from(accountLinkInvites)
+      .where(
+        and(
+          eq(accountLinkInvites.existingUserId, userId),
+          eq(accountLinkInvites.status, "pending")
+        )
+      ),
+  ]);
+  const pendingOtherUserIds = new Set([
+    ...pendingSent.map((i: any) => i.existingUserId),
+    ...pendingReceived.map((i: any) => i.newUserId),
+  ]);
+
+  const allOtherUserIds = Array.from(
+    new Set([...activeOtherUserIds, ...pendingOtherUserIds])
+  );
+  if (allOtherUserIds.length === 0) return [];
+
+  const [otherUsers, memberships] = await Promise.all([
+    db.select().from(users).where(inArray(users.id, allOtherUserIds)),
+    db.query.organizationMemberships.findMany({
+      where: and(
+        inArray(organizationMemberships.userId, allOtherUserIds),
+        eq(organizationMemberships.status, "active"),
+        isNull(organizationMemberships.deletedAt)
+      ),
+    }),
+  ]);
+  const usersById = new Map(otherUsers.map((u: any) => [u.id, u]));
+  const orgIds = Array.from(new Set(memberships.map((m: any) => m.labId)));
+  const orgRows = orgIds.length
+    ? await db.select().from(organizations).where(inArray(organizations.id, orgIds))
+    : [];
+  const orgsById = new Map(orgRows.map((o: any) => [o.id, o]));
+
+  const rows: LinkedLabInfo[] = [];
+  const seen = new Set<string>();
+  for (const m of memberships) {
+    const org: any = orgsById.get((m as any).labId);
+    if (!org || org.type !== "lab") continue;
+    const otherUser: any = usersById.get((m as any).userId);
+    if (!otherUser) continue;
+    const key = `${(m as any).labId}|${otherUser.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({
+      labId: (m as any).labId,
+      labName: org.displayName || org.name,
+      status: activeOtherUserIds.has(otherUser.id) ? "active" : "pending",
+      linkedUserId: otherUser.id,
+      linkedUsername: otherUser.username,
+    });
+  }
+  rows.sort((a, b) => {
+    if (a.status !== b.status) return a.status === "active" ? -1 : 1;
+    return a.labName.localeCompare(b.labName);
+  });
+  return rows;
 }
 
 router.get(
@@ -184,10 +289,14 @@ router.post(
       where: eq(accountLinkInvites.id, input.inviteId),
     });
     if (!invite) throw new HttpError(404, "Invite not found.");
-    // Only the two parties on the invite may respond. We accept either side
-    // so a doctor who is the "new" copy can also confirm from the in-app
-    // banner the second lab admin sees.
-    if (invite.newUserId !== userId && invite.existingUserId !== userId) {
+    // Only the account being invited may accept. The initiating account may
+    // still withdraw its request, but cannot accept on the target's behalf.
+    const isInviteParticipant =
+      invite.newUserId === userId || invite.existingUserId === userId;
+    if (
+      (input.accept && invite.existingUserId !== userId) ||
+      (!input.accept && !isInviteParticipant)
+    ) {
       throw new HttpError(403, "You cannot respond to this invite.");
     }
     if (invite.status !== "pending") {
@@ -224,7 +333,15 @@ router.post(
   asyncHandler(async (req, res) => {
     const input = manualLinkSchema.parse(req.body);
     const userId = (req as any).auth.userId;
-    const trimmed = input.otherPlatformAccountNumber.trim().toUpperCase();
+    const trimmedInput = input.otherPlatformAccountNumber.trim();
+    const classification = classifyAccountNumber(trimmedInput);
+    if (classification === ACCOUNT_NUMBER_NEW_INVALID) {
+      throw new HttpError(400, "That account number doesn't look right.");
+    }
+    const trimmed =
+      classification === ACCOUNT_NUMBER_NEW_VALID
+        ? normalizeAccountNumberInput(trimmedInput)
+        : trimmedInput.toUpperCase();
     if (!trimmed) throw new HttpError(400, "Account number is required.");
     const target = await db.query.users.findFirst({
       where: eq(users.platformAccountNumber, trimmed),
@@ -238,16 +355,55 @@ router.post(
     if (target.id === userId) {
       throw new HttpError(400, "That is your own account number.");
     }
-    const inserted = await insertLinkIfMissing(userId, target.id, "manual");
+    const pair = canonicalLinkPair(userId, target.id)!;
+    const existingLink = await db.query.doctorAccountLinks.findFirst({
+      where: and(
+        eq(doctorAccountLinks.userIdLow, pair.low),
+        eq(doctorAccountLinks.userIdHigh, pair.high)
+      ),
+    });
+    if (existingLink) {
+      return ok(res, { ok: true, alreadyLinked: true, invitePending: false });
+    }
+
+    const existingInvite = await db.query.accountLinkInvites.findFirst({
+      where: and(
+        eq(accountLinkInvites.newUserId, userId),
+        eq(accountLinkInvites.existingUserId, target.id)
+      ),
+    });
+    if (existingInvite?.status === "pending") {
+      return ok(res, { ok: true, alreadyLinked: false, invitePending: true });
+    }
+    if (existingInvite) {
+      throw new HttpError(409, "This account link invitation has already been resolved.");
+    }
+
+    const [invite] = await db
+      .insert(accountLinkInvites)
+      .values({
+        newUserId: userId,
+        existingUserId: target.id,
+        matchedOn: "account_number",
+        sentToPhone: null,
+        sentAt: null,
+        status: "pending",
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (!invite) {
+      // A concurrent request may have created the same invite.
+      return ok(res, { ok: true, alreadyLinked: false, invitePending: true });
+    }
     await writeAuditLog({
       req,
       userId,
-      action: "account_link_manual",
+      action: "account_link_invite_created",
       entityType: "user",
       entityId: target.id,
-      metadataJson: { newLink: inserted },
+      metadataJson: { inviteId: invite.id },
     });
-    return ok(res, { ok: true, alreadyLinked: !inserted });
+    return ok(res, { ok: true, alreadyLinked: false, invitePending: true });
   })
 );
 
@@ -278,78 +434,3 @@ router.delete(
 );
 
 export default router;
-
-// ---------------------------------------------------------------------------
-// Inbound SMS webhook (separate router — no requireAuth).
-// ---------------------------------------------------------------------------
-
-export const smsInboundRouter: Router = Router();
-
-const YES_TOKENS = new Set([
-  "YES",
-  "Y",
-  "YEAH",
-  "YEP",
-  "OK",
-  "OKAY",
-  "CONFIRM",
-  "CONFIRMED",
-  "LINK",
-]);
-
-smsInboundRouter.post(
-  "/sms-inbound",
-  asyncHandler(async (req, res) => {
-    const body = (req.body ?? {}) as Record<string, string>;
-    const from = normalizePhoneE164(body["msisdn"] ?? body["from"] ?? body["From"] ?? "");
-    const text = String(body["text"] ?? body["Body"] ?? body["body"] ?? "")
-      .trim()
-      .toUpperCase()
-      .split(/\s+/)[0];
-    if (!from || !text) {
-      // Always 200 so the provider does not retry — but record nothing.
-      res.set("Content-Type", "text/xml").send("<Response/>");
-      return;
-    }
-    if (!YES_TOKENS.has(text)) {
-      res.set("Content-Type", "text/xml").send("<Response/>");
-      return;
-    }
-    // Find the most recent pending invite addressed to this phone.
-    const candidates = await db
-      .select()
-      .from(accountLinkInvites)
-      .where(
-        and(
-          eq(accountLinkInvites.sentToPhone, from),
-          eq(accountLinkInvites.status, "pending")
-        )
-      )
-      .orderBy(asc(accountLinkInvites.createdAt));
-    if (candidates.length === 0) {
-      res.set("Content-Type", "text/xml").send("<Response/>");
-      return;
-    }
-    const now = new Date();
-    for (const invite of candidates) {
-      await insertLinkIfMissing(
-        (invite as any).newUserId,
-        (invite as any).existingUserId,
-        "sms_yes"
-      );
-      await db
-        .update(accountLinkInvites)
-        .set({ status: "accepted", respondedAt: now })
-        .where(eq(accountLinkInvites.id, (invite as any).id));
-    }
-    req.log?.info?.(
-      { invites: candidates.length },
-      "Linked account(s) via inbound SMS YES"
-    );
-    res
-      .set("Content-Type", "text/xml")
-      .send(
-        "<Response><Message>Thanks — your LabTrax accounts are now linked.</Message></Response>"
-      );
-  })
-);

@@ -11,8 +11,18 @@ export type UseColumnWidths = {
   widths: number[];
   totalWidth: number;
   resizingCol: number | null;
-  startResize: (colIdx: number, e: React.MouseEvent) => void;
+  startResize: (
+    colIdx: number,
+    e: React.MouseEvent,
+    fittedResize?: {
+      widths: number[];
+      minimums: number[];
+      neighborIndex: number;
+      resize: (widths: readonly number[], colIdx: number, delta: number, minimums: readonly number[], neighborIndex: number) => number[];
+    },
+  ) => void;
   resetColumn: (colIdx: number) => void;
+  fitColumn: (colIdx: number, width: number) => void;
   resetAll: () => void;
 };
 
@@ -66,10 +76,16 @@ export function useColumnWidths(
   }, []);
 
   const startResize = useCallback(
-    (colIdx: number, e: React.MouseEvent) => {
+    (colIdx: number, e: React.MouseEvent, fittedResize?: {
+      widths: number[];
+      minimums: number[];
+      neighborIndex: number;
+      resize: (widths: readonly number[], colIdx: number, delta: number, minimums: readonly number[], neighborIndex: number) => number[];
+    }) => {
       e.preventDefault();
       const startX = e.clientX;
-      const startWidth = widths[colIdx];
+      const initialWidths = fittedResize?.widths ?? widths;
+      const startWidth = initialWidths[colIdx];
 
       setResizingCol(colIdx);
 
@@ -78,10 +94,25 @@ export function useColumnWidths(
 
       const onMouseMove = (ev: MouseEvent) => {
         const delta = ev.clientX - startX;
-        const next = Math.max(MIN_WIDTH, startWidth + delta);
+        if (fittedResize) {
+          const nextWidths = fittedResize.resize(
+              initialWidths,
+              colIdx,
+              delta,
+              fittedResize.minimums,
+              fittedResize.neighborIndex,
+          );
+          setWidths(() => {
+            persist(nextWidths);
+            return nextWidths;
+          });
+          return;
+        }
+
+        const nextWidth = Math.max(MIN_WIDTH, startWidth + delta);
         setWidths((prev) => {
           const updated = [...prev];
-          updated[colIdx] = next;
+          updated[colIdx] = nextWidth;
           persist(updated);
           return updated;
         });
@@ -113,6 +144,19 @@ export function useColumnWidths(
     [defaults, persist],
   );
 
+  const fitColumn = useCallback(
+    (colIdx: number, width: number) => {
+      const clamped = Math.max(MIN_WIDTH, width);
+      setWidths((prev) => {
+        const updated = [...prev];
+        updated[colIdx] = clamped;
+        persist(updated);
+        return updated;
+      });
+    },
+    [persist],
+  );
+
   const resetAll = useCallback(() => {
     if (debounceTimer.current !== null) {
       clearTimeout(debounceTimer.current);
@@ -128,5 +172,5 @@ export function useColumnWidths(
 
   const totalWidth = widths.reduce((a, b) => a + b, 0);
 
-  return { widths, totalWidth, resizingCol, startResize, resetColumn, resetAll };
+  return { widths, totalWidth, resizingCol, startResize, resetColumn, fitColumn, resetAll };
 }

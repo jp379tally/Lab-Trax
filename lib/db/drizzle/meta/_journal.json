@@ -1,0 +1,223 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1786633131151,
+      "tag": "0000_rainy_manta",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786633131152,
+      "tag": "0001_customer_credit_applications",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786633131153,
+      "tag": "0002_statement_payment_reversals",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786633131154,
+      "tag": "0003_provider_autopay_authorizations",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786633131155,
+      "tag": "0004_lab_authorizations",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786633131156,
+      "tag": "0005_support_report_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786633131157,
+      "tag": "0006_authorization_templates_documents",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786633131158,
+      "tag": "0007_provider_autopay_requests_and_card_addresses",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789132377624,
+      "tag": "0008_retire_lab_authorization_signing",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789133000000,
+      "tag": "0009_practice_authorization_supersession",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789133131159,
+      "tag": "0010_scan_reconstruction_pipeline",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789133131160,
+      "tag": "0011_case_worklist_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789133131161,
+      "tag": "0012_bank_deposit_batch_members",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789133131162,
+      "tag": "0013_deposit_batch_release",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789133131163,
+      "tag": "0014_statement_invoice_amount_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1789133131164,
+      "tag": "0015_inline_payment_drafts",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1789133131165,
+      "tag": "0016_statement_payment_doctor_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1789133131166,
+      "tag": "0017_statement_invoice_detail_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789133131167,
+      "tag": "0018_invoice_doctor_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789133131168,
+      "tag": "0019_legacy_case_search_document",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789574400000,
+      "tag": "0020_case_received_calendar_date",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1789574400001,
+      "tag": "0021_deposit_batch_member_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1789660800000,
+      "tag": "0022_case_insensitive_user_lookup_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1789660800002,
+      "tag": "0023_saved_card_setup_analytics",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1789660800003,
+      "tag": "0025_case_attachment_texture_link",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1790797057569,
+      "tag": "0026_case_exception_note_attachments",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1790985600000,
+      "tag": "0027_monthly_statement_format",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1791676800000,
+      "tag": "0028_backup_run_archive_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1791676800001,
+      "tag": "0029_invoice_discount_line_flags",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1791849600000,
+      "tag": "0030_case_rx_note_history",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1791936000000,
+      "tag": "0031_case_saved_views",
+      "breakpoints": true
+    }
+  ]
+}

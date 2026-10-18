@@ -1,7 +1,8 @@
 /**
  * FieldCombobox — type-ahead string combobox for vocabulary-backed fields
  * (material, shade, restoration type). Mirrors the portal-rendering pattern
- * of ItemCombobox so dropdowns escape clipping containers.
+ * of ItemCombobox so dropdowns escape clipping containers, and shares its
+ * punctuation-insensitive matcher so "ema" finds "E.max".
  *
  * Keyboard navigation:
  *   ArrowDown / ArrowUp — move cursor through list + "Add new" row
@@ -27,6 +28,10 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Loader2, Plus } from "lucide-react";
+import {
+  filterNamesByQuery,
+  findExactNameMatch,
+} from "@workspace/item-name-match";
 
 interface Props {
   value: string;
@@ -40,6 +45,7 @@ interface Props {
   addNewLabel?: string;
   size?: "sm" | "md";
   disabled?: boolean;
+  inputId?: string;
   /** Additional className applied to the underlying input element. */
   inputClassName?: string;
 }
@@ -53,10 +59,19 @@ export function FieldCombobox({
   addNewLabel = "Add new item",
   size = "md",
   disabled = false,
+  inputId,
   inputClassName,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [inputVal, setInputVal] = useState(value);
+  /**
+   * filterText tracks what the user has *actively typed* since the dropdown was
+   * opened. It starts empty on every open/focus so that a programmatically
+   * pre-filled value (e.g. from AI prescription analysis) never narrows the
+   * suggestion list — the full list is always shown on first open. Only
+   * keystrokes inside the <input> advance filterText.
+   */
+  const [filterText, setFilterText] = useState("");
   const [creating, setCreating] = useState(false);
   /** Index into the virtual list: 0…filtered.length-1 are suggestion rows;
    *  filtered.length is the "Add new" row (if visible). -1 means none. */
@@ -75,13 +90,16 @@ export function FieldCombobox({
     setInputVal(value);
   }, [value]);
 
-  const trimmed = inputVal.trim();
-  const lower = trimmed.toLowerCase();
-  const filtered = trimmed
-    ? suggestions.filter((s) => s.toLowerCase().includes(lower))
-    : suggestions;
-  const hasExactMatch = suggestions.some((s) => s.toLowerCase() === lower);
-  const showAddOption = !!onCreate && trimmed.length > 0 && !hasExactMatch;
+  const filterTrimmed = filterText.trim();
+  /**
+   * Matching ignores case, punctuation and spacing (shared with ItemCombobox),
+   * so "ema" surfaces "E.max"; exact/prefix matches still rank first.
+   */
+  const filtered = filterNamesByQuery(suggestions, filterTrimmed);
+  /** The existing suggestion the typed text names, ignoring punctuation. */
+  const exactMatch = findExactNameMatch(suggestions, filterTrimmed);
+  const showAddOption =
+    !!onCreate && filterTrimmed.length > 0 && !exactMatch;
   const dropdownVisible =
     open && !disabled && (filtered.length > 0 || showAddOption);
   /** Total navigable rows (suggestions + optional "Add new" row). */
@@ -90,7 +108,7 @@ export function FieldCombobox({
   // Reset cursor when list contents change.
   useEffect(() => {
     setCursor(-1);
-  }, [inputVal, open]);
+  }, [filterText, open]);
 
   const updateCoords = useCallback(() => {
     const el = inputRef.current;
@@ -118,6 +136,7 @@ export function FieldCombobox({
       if (wrapRef.current?.contains(t)) return;
       if (dropdownRef.current?.contains(t)) return;
       setOpen(false);
+      setFilterText("");
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -127,28 +146,31 @@ export function FieldCombobox({
     setInputVal(val);
     onChange(val);
     setOpen(false);
+    setFilterText("");
     setCursor(-1);
   }
 
   const create = useCallback(async () => {
-    if (!onCreate || !trimmed || creating) return;
+    if (!onCreate || !filterTrimmed || creating) return;
     setCreating(true);
     try {
-      const canonical = await onCreate(trimmed);
+      const canonical = await onCreate(filterTrimmed);
       if (canonical != null) {
         setInputVal(canonical);
         onChange(canonical);
         setOpen(false);
+        setFilterText("");
         setCursor(-1);
       }
     } finally {
       setCreating(false);
     }
-  }, [onCreate, trimmed, creating, onChange]);
+  }, [onCreate, filterTrimmed, creating, onChange]);
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Escape") {
       setOpen(false);
+      setFilterText("");
       setCursor(-1);
       inputRef.current?.blur();
       return;
@@ -184,8 +206,9 @@ export function FieldCombobox({
       // No cursor — fall back to single-match / exact-match / add-new.
       if (filtered.length === 1) {
         pick(filtered[0]);
-      } else if (hasExactMatch) {
-        pick(trimmed);
+      } else if (exactMatch) {
+        // Prefer the stored spelling over the punctuation the user typed.
+        pick(exactMatch);
       } else if (showAddOption) {
         void create();
       }
@@ -204,15 +227,20 @@ export function FieldCombobox({
   return (
     <div ref={wrapRef} className="relative">
       <input
+        id={inputId}
         ref={inputRef}
         type="text"
         value={inputVal}
         onChange={(e) => {
           setInputVal(e.target.value);
+          setFilterText(e.target.value);
           onChange(e.target.value);
           setOpen(true);
         }}
-        onFocus={() => setOpen(true)}
+        onFocus={() => {
+          setFilterText("");
+          setOpen(true);
+        }}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         disabled={disabled}
@@ -228,6 +256,7 @@ export function FieldCombobox({
           tabIndex={-1}
           onMouseDown={(e) => {
             e.preventDefault();
+            setFilterText("");
             setOpen((v) => !v);
             inputRef.current?.focus();
           }}
@@ -293,7 +322,7 @@ export function FieldCombobox({
                   <Plus size={13} className="shrink-0" />
                 )}
                 <span className="truncate">
-                  {addNewLabel}: &ldquo;{trimmed}&rdquo;
+                  {addNewLabel}: &ldquo;{filterTrimmed}&rdquo;
                 </span>
               </button>
             )}

@@ -15,6 +15,7 @@ import * as Haptics from "expo-haptics";
 import * as LocalAuthentication from "expo-local-authentication";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
+import { DismissKeyboardView } from "@/components/ui/DismissKeyboardView";
 
 export default function LockScreen() {
   const insets = useSafeAreaInsets();
@@ -80,7 +81,10 @@ export default function LockScreen() {
 
   return (
     <LinearGradient colors={["#08111D", "#122033", "#08111D"]} style={styles.container}>
-      <View style={[styles.content, { paddingTop: Platform.OS === "web" ? 100 : insets.top + 60 }]}>
+      <DismissKeyboardView
+        style={[styles.content, { paddingTop: Platform.OS === "web" ? 100 : insets.top + 60 }]}
+        testID="lock-screen-keyboard-dismiss"
+      >
         <View style={styles.lockIcon}>
           <Ionicons name="lock-closed" size={44} color={Colors.light.tint} />
         </View>
@@ -167,7 +171,7 @@ export default function LockScreen() {
           <Ionicons name="log-out-outline" size={16} color="#64748B" />
           <Text style={styles.logoutText}>Sign Out</Text>
         </Pressable>
-      </View>
+      </DismissKeyboardView>
     </LinearGradient>
   );
 }

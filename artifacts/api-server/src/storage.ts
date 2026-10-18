@@ -1,12 +1,11 @@
 import { type User, type InsertUser, users, labCases } from "@workspace/db";
 import { db } from "@workspace/db";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
-  createUser(user: Partial<User> & { username: string; password: string }): Promise<User>;
   getAllUsers(): Promise<User[]>;
   updateUser(id: string, data: Partial<User>): Promise<User | undefined>;
   deleteUser(id: string): Promise<boolean>;
@@ -22,32 +21,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
-    const allUsers = await db.select().from(users);
-    return allUsers.find(u => u.username.toLowerCase() === username.toLowerCase());
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(sql`lower(${users.username}) = ${username.toLowerCase()}`)
+      .limit(1);
+    return user;
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
-    const allUsers = await db.select().from(users);
-    return allUsers.find(u => u.email?.toLowerCase() === email.toLowerCase());
-  }
-
-  async createUser(userData: Partial<User> & { username: string; password: string }): Promise<User> {
-    const [user] = await db.insert(users).values({
-      username: userData.username,
-      password: userData.password,
-      email: userData.email || null,
-      phone: userData.phone || null,
-      userType: userData.userType || "lab",
-      role: userData.role || "user",
-      licenseNumber: userData.licenseNumber || null,
-      practiceName: userData.practiceName || null,
-      doctorName: userData.doctorName || null,
-      practiceAddress: userData.practiceAddress || null,
-      practicePhone: userData.practicePhone || null,
-      phoneContactName: userData.phoneContactName || null,
-      accountNumber: userData.accountNumber || null,
-      wantsUpdates: userData.wantsUpdates || false,
-    }).returning();
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(sql`lower(trim(${users.email})) = ${email.trim().toLowerCase()}`)
+      .limit(1);
     return user;
   }
 

@@ -2,7 +2,6 @@ import { Router } from "express";
 import express from "express";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { subscriptions, subscriptionEvents } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth";
 import { asyncHandler } from "../middlewares/async-handler";
 import { HttpError } from "../lib/http";
@@ -22,8 +21,61 @@ import {
 } from "../lib/stripeClient";
 import { logger } from "../lib/logger";
 import { writeAuditLog } from "../lib/audit";
+import {
+  completeProviderAutoPayAttempt,
+  markProviderPaymentCheckoutFailed,
+  settleProviderPaymentCheckout,
+} from "../lib/provider-invoice-payments";
+import { applySubscriptionRenewalAnchor } from "../lib/billing-jobs";
+import { providerPaymentCustomers, subscriptions, subscriptionEvents } from "@workspace/db";
+import { randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  providerSignupPlans, findProviderSignup, onboarding, selectProviderSignup,
+  startProviderSignupCheckout, verifyProviderSignupCheckout, assertProviderReturnUrl,
+  providerSignupReturnOrigin,
+  providerPriceId,
+} from "../lib/provider-signup-billing";
+import { isProviderPlan } from "../lib/entitlement";
+import {
+  getActiveProviderOrganizations,
+  chooseProviderOrganization,
+} from "../lib/provider-selection";
 
 const router = Router();
+router.get("/provider-plans", (_req, res) => res.json({ ok: true, plans: providerSignupPlans() }));
+
+router.post("/provider-plan", requireAuth, asyncHandler(async (req, res) => {
+  const userId = (req as any).auth.userId;
+  if ((req as any).user?.userType !== "provider") throw new HttpError(400, "A provider account is required.");
+  const subject = await resolveBillingSubject(req, userId);
+  await requireBillingAdmin(userId, subject);
+  const row = await findProviderSignup(subject.subjectType, subject.subjectId);
+  if (!row || !onboarding(row)) throw new HttpError(409, "This account is not in provider signup.");
+  if (!isProviderPlan(req.body?.providerPlan) || typeof req.body?.reuseSubscriptionCard !== "boolean") throw new HttpError(400, "Select a provider plan and card reuse preference.");
+  const stripe = onboarding(row)?.attempt ? await getUncachableStripeClient() : null;
+  await selectProviderSignup(row, req.body.providerPlan, req.body.reuseSubscriptionCard, userId, stripe);
+  return res.json({ ok: true });
+}));
+
+// Stripe requires HTTPS return URLs. This public bridge carries no payment
+// state and only returns the mobile browser to the registered app scheme.
+router.get("/mobile-return", (req, res) => {
+  const checkout = req.query.checkout === "success" ? "success" : "cancel";
+  const webPath = process.env.PROVIDER_SUBSCRIPTION_WEB_RETURN_PATH === "/settings/subscriptions"
+    ? "/settings/subscriptions" : "/app/settings/subscriptions";
+  const target = req.query.platform === "web"
+    ? `${webPath}?checkout=${checkout}`
+    : `labtrax://settings/subscriptions?checkout=${checkout}`;
+  const attributeTarget = target.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
+  res
+    .status(200)
+    .type("html")
+    .send(`<!doctype html>
+<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="0;url=${attributeTarget}"><title>Return to LabTrax</title></head>
+<body><p>Returning to LabTrax…</p><p><a href="${attributeTarget}">Open LabTrax</a></p>
+</body></html>`);
+});
 
 /**
  * Returns the four configured Stripe price IDs from environment variables.
@@ -45,6 +97,99 @@ function getAllowedPriceIds(): Set<string> {
     if (v) ids.add(v);
   }
   return ids;
+}
+
+export function configuredPlanTypeForPrice(
+  priceId: string,
+): "lab" | "provider" | null {
+  if (
+    priceId === process.env.STRIPE_PRICE_ID_LAB_MONTHLY ||
+    priceId === process.env.STRIPE_PRICE_ID_LAB_ANNUAL
+  ) {
+    return "lab";
+  }
+  if (
+    priceId === process.env.STRIPE_PRICE_ID_PROVIDER_MONTHLY ||
+    priceId === process.env.STRIPE_PRICE_ID_PROVIDER_ANNUAL
+  ) {
+    return "provider";
+  }
+  // STRIPE_PRICE_ID is the legacy single-plan fallback and has no encoded
+  // subject type. Explicit lab/provider price variables are always scoped.
+  return null;
+}
+
+function assertPriceMatchesSubject(
+  priceId: string,
+  subject: BillingSubject,
+  userType?: string | null,
+) {
+  const configuredType = configuredPlanTypeForPrice(priceId);
+  const hasTypedPrices = Boolean(
+    process.env.STRIPE_PRICE_ID_LAB_MONTHLY ||
+      process.env.STRIPE_PRICE_ID_LAB_ANNUAL ||
+      process.env.STRIPE_PRICE_ID_PROVIDER_MONTHLY ||
+      process.env.STRIPE_PRICE_ID_PROVIDER_ANNUAL,
+  );
+  if (
+    !configuredType &&
+    hasTypedPrices &&
+    priceId === process.env.STRIPE_PRICE_ID
+  ) {
+    throw new HttpError(
+      400,
+      "The legacy unscoped subscription price is unavailable when account-specific plans are configured.",
+    );
+  }
+  if (!configuredType) return;
+  const subjectType =
+    subject.subjectType === "provider_org" ||
+    subject.subjectType === "provider_user" ||
+    (subject.subjectType === "user" && userType === "provider")
+      ? "provider"
+      : "lab";
+  if (configuredType !== subjectType) {
+    throw new HttpError(
+      400,
+      `Select a ${subjectType} subscription plan for this account.`,
+    );
+  }
+}
+
+async function resolveBillingSubject(
+  req: any,
+  userId: string,
+): Promise<BillingSubject> {
+  const requestedProviderId = req.header("x-provider-organization-id");
+  // A practice approval does not replace an account's explicit signup plan.
+  if (req.user?.userType === "provider") {
+    const personal = await findProviderSignup("user", userId);
+    if (personal && onboarding(personal)) return { subjectType: "user", subjectId: userId };
+  }
+  if (requestedProviderId || req.user?.userType === "provider") {
+    const providerOrganizations = await getActiveProviderOrganizations(userId);
+    if (providerOrganizations.length === 0 && !requestedProviderId) {
+      return getSubjectForUser(userId);
+    }
+    const selected = chooseProviderOrganization(
+      providerOrganizations,
+      requestedProviderId,
+    );
+    return { subjectType: "provider_org", subjectId: selected.id };
+  }
+  return getSubjectForUser(userId);
+}
+
+function hasValidRevenueCatAuthorization(header: string | undefined): boolean {
+  const expected = process.env.REVENUECAT_WEBHOOK_SECRET;
+  if (!expected || !header) return false;
+  const supplied = header.replace(/^Bearer\s+/i, "");
+  const expectedBytes = Buffer.from(expected);
+  const suppliedBytes = Buffer.from(supplied);
+  return (
+    expectedBytes.length === suppliedBytes.length &&
+    timingSafeEqual(expectedBytes, suppliedBytes)
+  );
 }
 
 /**
@@ -72,8 +217,14 @@ router.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const userId = (req as any).auth.userId;
-    const subject = await getSubjectForUser(userId);
+    const subject = await resolveBillingSubject(req, userId);
     await requireBillingAdmin(userId, subject);
+
+    const signupRow = await findProviderSignup(subject.subjectType, subject.subjectId);
+    if (signupRow && onboarding(signupRow)?.attempt?.sessionId && !onboarding(signupRow)?.attempt?.verifiedAt) {
+      const stripe = await getUncachableStripeClient();
+      if (stripe) await verifyProviderSignupCheckout(signupRow, stripe);
+    }
     const entitlement = await getEntitlement(subject);
 
     const [subRow] = await db
@@ -82,6 +233,9 @@ router.get(
         billingInterval: subscriptions.billingInterval,
         stripePriceId: subscriptions.stripePriceId,
         stripeSubscriptionId: subscriptions.stripeSubscriptionId,
+        providerOnboardingJson: subscriptions.providerOnboardingJson,
+        trialStartAt: subscriptions.trialStartAt,
+        trialEndAt: subscriptions.trialEndAt,
         cancelAtPeriodEnd: subscriptions.cancelAtPeriodEnd,
       })
       .from(subscriptions)
@@ -102,6 +256,9 @@ router.get(
         stripePriceId: subRow?.stripePriceId ?? null,
         cancelAtPeriodEnd: subRow?.cancelAtPeriodEnd ?? false,
         hasStripeSubscription: !!subRow?.stripeSubscriptionId,
+        reuseSubscriptionCard: (subRow?.providerOnboardingJson as any)?.reuseCard === true,
+        trialStartAt: subRow?.trialStartAt?.toISOString() ?? null,
+        trialEndAt: subRow?.trialEndAt?.toISOString() ?? null,
       },
     });
   })
@@ -125,8 +282,24 @@ router.post(
       );
     }
 
-    const subject = await getSubjectForUser(userId);
+    const subject = await resolveBillingSubject(req, userId);
     await requireBillingAdmin(userId, subject);
+
+    const signupRow = await findProviderSignup(subject.subjectType, subject.subjectId);
+    if (signupRow && onboarding(signupRow) && ["free", "onboarding_pending"].includes(signupRow.status)) {
+      if (req.body?.priceId && req.body.priceId !== providerPriceId(onboarding(signupRow)!.selectedPlan)) {
+        throw new HttpError(400, "The requested price does not match the selected fixed provider plan.");
+      }
+      if (req.body?.purchaseChannel === "native" && process.env.PROVIDER_NATIVE_SUBSCRIPTION_CHECKOUT_APPROVED !== "true") {
+        throw new HttpError(403, "Native subscription purchases are not approved for this distribution. Free signup remains available.");
+      }
+      const origin = providerSignupReturnOrigin(`${req.protocol}://${req.get("host")}`);
+      return res.json(await startProviderSignupCheckout({
+        row: signupRow, stripe, actorUserId: userId,
+        successUrl: assertProviderReturnUrl(req.body?.successUrl, origin, "/desktop/billing?checkout=success"),
+        cancelUrl: assertProviderReturnUrl(req.body?.cancelUrl, origin, "/desktop/billing?checkout=cancel"),
+      }));
+    }
 
     const entitlement = await getEntitlement(subject);
 
@@ -144,6 +317,7 @@ router.post(
     if (allowedPriceIds.size > 0 && !allowedPriceIds.has(priceId)) {
       throw new HttpError(400, "Invalid plan selected. Please choose an available plan.");
     }
+    assertPriceMatchesSubject(priceId, subject, (req as any).user?.userType);
 
     const origin =
       req.body?.successUrl
@@ -244,11 +418,11 @@ router.post(
       throw new HttpError(503, "Stripe billing is not configured.");
     }
 
-    const subject = await getSubjectForUser(userId);
+    const subject = await resolveBillingSubject(req, userId);
     await requireBillingAdmin(userId, subject);
 
     const [subRow] = await db
-      .select()
+      .select({ stripeCustomerId: subscriptions.stripeCustomerId })
       .from(subscriptions)
       .where(
         and(
@@ -350,7 +524,7 @@ router.get(
       return res.json({ ok: true, invoices: [] });
     }
 
-    const subject = await getSubjectForUser(userId);
+    const subject = await resolveBillingSubject(req, userId);
     await requireBillingAdmin(userId, subject);
 
     const [subRow] = await db
@@ -406,11 +580,11 @@ router.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const userId = (req as any).auth.userId;
-    const subject = await getSubjectForUser(userId);
+    const subject = await resolveBillingSubject(req, userId);
     await requireBillingAdmin(userId, subject);
 
     const [subRow] = await db
-      .select({ id: subscriptions.id })
+      .select()
       .from(subscriptions)
       .where(
         and(
@@ -478,8 +652,9 @@ router.post(
       throw new HttpError(400, "Invalid plan selected. Please choose an available plan.");
     }
 
-    const subject = await getSubjectForUser(userId);
+    const subject = await resolveBillingSubject(req, userId);
     await requireBillingAdmin(userId, subject);
+    assertPriceMatchesSubject(priceId, subject, (req as any).user?.userType);
 
     const [subRow] = await db
       .select()
@@ -584,7 +759,7 @@ router.post(
 
     const immediately = req.body?.immediately === true;
 
-    const subject = await getSubjectForUser(userId);
+    const subject = await resolveBillingSubject(req, userId);
     await requireBillingAdmin(userId, subject);
 
     const [subRow] = await db
@@ -606,7 +781,7 @@ router.post(
       await stripe.subscriptions.cancel(subRow.stripeSubscriptionId);
       await transitionSubscription(
         subRow.id,
-        "canceled",
+        "deactivated",
         { canceledAt: new Date() },
         { reason: "user_canceled_immediately", userId }
       );
@@ -661,7 +836,7 @@ router.post(
       throw new HttpError(503, "Stripe billing is not configured.");
     }
 
-    const subject = await getSubjectForUser(userId);
+    const subject = await resolveBillingSubject(req, userId);
     await requireBillingAdmin(userId, subject);
 
     const [subRow] = await db
@@ -698,6 +873,60 @@ router.post(
 
     return res.json({ ok: true, message: "Cancellation reversed." });
   })
+);
+
+/**
+ * POST /api/billing/decline-renewal
+ * Records the expired subscriber's decision and moves the subject immediately
+ * to durable read-only access. It never deletes data or blocks sign-in.
+ */
+router.post(
+  "/decline-renewal",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId;
+    const subject = await resolveBillingSubject(req, userId);
+    await requireBillingAdmin(userId, subject);
+    const [subRow] = await db
+      .select()
+      .from(subscriptions)
+      .where(
+        and(
+          eq(subscriptions.subjectType, subject.subjectType),
+          eq(subscriptions.subjectId, subject.subjectId),
+          isNull(subscriptions.deletedAt),
+        ),
+      );
+    if (!subRow) throw new HttpError(409, "This account does not require renewal.");
+
+    const expiredTrial =
+      subRow.status === "trialing" &&
+      !!subRow.trialEndAt &&
+      subRow.trialEndAt.getTime() <= Date.now();
+    if (
+      !expiredTrial &&
+      !["grace", "locked", "canceled", "deactivated"].includes(subRow.status)
+    ) {
+      throw new HttpError(409, "This account does not require a renewal decision.");
+    }
+
+    if (subRow.status !== "deactivated") {
+      await transitionSubscription(
+        subRow.id,
+        "deactivated",
+        undefined,
+        { reason: "renewal_declined", userId },
+      );
+    }
+    await writeAuditLog({
+      req,
+      userId,
+      action: "billing_renewal_declined",
+      entityType: "subscription",
+      entityId: subRow.id,
+    });
+    return res.json({ ok: true, status: "deactivated", accessLevel: "read_only" });
+  }),
 );
 
 /**
@@ -747,7 +976,9 @@ async function derivePlanMeta(
   return { planType, billingInterval };
 }
 
-async function processStripeEvent(event: import("stripe").default.Event) {
+// Exported for focused regression tests. Production callers should continue
+// using handleStripeWebhook so signature verification remains mandatory.
+export async function processStripeEvent(event: import("stripe").default.Event) {
   logger.info({ eventType: event.type }, "[billing] Processing Stripe event");
 
   const stripe = await getUncachableStripeClient();
@@ -755,6 +986,75 @@ async function processStripeEvent(event: import("stripe").default.Event) {
   switch (event.type) {
     case "checkout.session.completed": {
       const session = event.data.object as import("stripe").default.Checkout.Session;
+      if (session.metadata?.providerSignupAttempt) {
+        if (!stripe) throw new HttpError(503, "Stripe is unavailable for signup verification.");
+        const row = await findProviderSignup(session.metadata.subjectType!, session.metadata.subjectId!);
+        if (!row || !await verifyProviderSignupCheckout(row, stripe, session.id)) {
+          throw new HttpError(409, "Provider checkout card setup is not yet verified.");
+        }
+        break;
+      }
+      if (session.mode === "setup" && session.metadata?.providerLabCardSetup === "true") {
+        const providerOrganizationId = session.metadata.providerOrganizationId;
+        const customerId = typeof session.customer === "string"
+          ? session.customer
+          : session.customer?.id;
+        const setupIntentId = typeof session.setup_intent === "string"
+          ? session.setup_intent
+          : session.setup_intent?.id;
+        if (!stripe || !providerOrganizationId || !customerId || !setupIntentId) break;
+        const [customer] = await db
+          .select({ stripeCustomerId: providerPaymentCustomers.stripeCustomerId })
+          .from(providerPaymentCustomers)
+          .where(and(
+            eq(providerPaymentCustomers.providerOrganizationId, providerOrganizationId),
+            eq(providerPaymentCustomers.stripeCustomerId, customerId),
+          ))
+          .limit(1);
+        // Do not trust only Checkout metadata: the customer must be the one
+        // durably associated with this provider organization.
+        if (!customer) break;
+        const setupIntent = await stripe.setupIntents.retrieve(setupIntentId);
+        const paymentMethodId = typeof setupIntent.payment_method === "string"
+          ? setupIntent.payment_method
+          : setupIntent.payment_method?.id;
+        if (!paymentMethodId || setupIntent.status !== "succeeded") break;
+        await stripe.customers.update(customerId, {
+          invoice_settings: { default_payment_method: paymentMethodId },
+        });
+        await db.update(providerPaymentCustomers).set({ authorizedPaymentMethodId: paymentMethodId })
+          .where(eq(providerPaymentCustomers.providerOrganizationId, providerOrganizationId));
+        const [subscriptionCustomer] = await db.select({ id: subscriptions.id }).from(subscriptions)
+          .where(and(eq(subscriptions.stripeCustomerId, customerId), isNull(subscriptions.deletedAt))).limit(1);
+        if (!subscriptionCustomer) try {
+          const methods = await stripe.paymentMethods.list({
+            customer: customerId,
+            type: "card",
+            limit: 100,
+          });
+          await Promise.all(methods.data
+            .filter((method) => method.id !== paymentMethodId)
+            .map((method) => stripe.paymentMethods.detach(method.id)));
+        } catch {
+          // The new default is already durable. Old-method cleanup is best effort.
+        }
+        break;
+      }
+      const providerPaymentCheckoutId =
+        session.metadata?.providerPaymentCheckoutId;
+      if (providerPaymentCheckoutId) {
+        if (session.payment_status === "paid") {
+          const paymentIntentId =
+            typeof session.payment_intent === "string"
+              ? session.payment_intent
+              : session.payment_intent?.id ?? null;
+          await settleProviderPaymentCheckout(
+            providerPaymentCheckoutId,
+            paymentIntentId,
+          );
+        }
+        break;
+      }
       const subjectType = session.metadata?.subjectType;
       const subjectId = session.metadata?.subjectId;
       if (!subjectType || !subjectId) break;
@@ -772,7 +1072,6 @@ async function processStripeEvent(event: import("stripe").default.Event) {
 
       if (sub) {
         const updates: Record<string, unknown> = {
-          paymentMethodOnFile: true,
           provider: "stripe",
         };
         if (session.subscription) {
@@ -800,13 +1099,97 @@ async function processStripeEvent(event: import("stripe").default.Event) {
           .set(updates as any)
           .where(eq(subscriptions.id, sub.id));
 
-        if (sub.status !== "active") {
-          await transitionSubscription(sub.id, "active", undefined, {
-            reason: "checkout_completed",
-            stripeSessionId: session.id,
-          });
+        // Checkout completion only proves that a subscription was created.
+        // It is not authoritative payment confirmation (async payments and
+        // failed first invoices are possible). invoice.payment_succeeded is
+        // the only Stripe event that restores full access.
+      }
+      break;
+    }
+
+    case "checkout.session.async_payment_succeeded": {
+      const session = event.data.object as import("stripe").default.Checkout.Session;
+      const checkoutId = session.metadata?.providerPaymentCheckoutId;
+      if (!checkoutId) break;
+      const paymentIntentId =
+        typeof session.payment_intent === "string"
+          ? session.payment_intent
+          : session.payment_intent?.id ?? null;
+      await settleProviderPaymentCheckout(checkoutId, paymentIntentId);
+      break;
+    }
+
+    case "checkout.session.async_payment_failed": {
+      const session = event.data.object as import("stripe").default.Checkout.Session;
+      const checkoutId = session.metadata?.providerPaymentCheckoutId;
+      if (!checkoutId) break;
+      const paymentIntentId =
+        typeof session.payment_intent === "string"
+          ? session.payment_intent
+          : session.payment_intent?.id ?? null;
+      await markProviderPaymentCheckoutFailed(
+        checkoutId,
+        "failed",
+        "stripe_async_payment_failed",
+        paymentIntentId,
+      );
+      break;
+    }
+
+    case "checkout.session.expired": {
+      const session = event.data.object as import("stripe").default.Checkout.Session;
+      const checkoutId = session.metadata?.providerPaymentCheckoutId;
+      if (!checkoutId) break;
+      await markProviderPaymentCheckoutFailed(
+        checkoutId,
+        "expired",
+        "checkout_expired",
+      );
+      break;
+    }
+
+    case "payment_intent.succeeded": {
+      const paymentIntent = event.data.object as import("stripe").default.PaymentIntent;
+      const checkoutId = paymentIntent.metadata?.providerPaymentCheckoutId;
+      const chargeId =
+        typeof paymentIntent.latest_charge === "string"
+          ? paymentIntent.latest_charge
+          : paymentIntent.latest_charge?.id ?? null;
+      if (checkoutId) {
+        const { finalizeInlinePaymentIntentFromWebhook } = await import("./payment-sessions");
+        const inlineResult = await finalizeInlinePaymentIntentFromWebhook(
+          checkoutId,
+          paymentIntent.id,
+        );
+        if (inlineResult == null) {
+          await settleProviderPaymentCheckout(checkoutId, paymentIntent.id, chargeId);
         }
       }
+      const autoPayAttemptId =
+        paymentIntent.metadata?.providerAutoPayAttemptId;
+      if (autoPayAttemptId) {
+        await completeProviderAutoPayAttempt({
+          attemptId: autoPayAttemptId,
+          status: "succeeded",
+          stripePaymentIntentId: paymentIntent.id,
+        });
+      }
+      break;
+    }
+
+    case "payment_intent.canceled": {
+      const paymentIntent = event.data.object as import("stripe").default.PaymentIntent;
+      const checkoutId = paymentIntent.metadata?.providerPaymentCheckoutId;
+      if (!checkoutId) break;
+      // Stripe has authoritatively canceled the processor intent, so releasing
+      // the local reservation is safe. The pending-only update preserves a
+      // concurrent success that won the checkout row first.
+      await markProviderPaymentCheckoutFailed(
+        checkoutId,
+        "expired",
+        "stripe_payment_intent_canceled",
+        paymentIntent.id,
+      );
       break;
     }
 
@@ -829,7 +1212,7 @@ async function processStripeEvent(event: import("stripe").default.Event) {
           : stripeSub.status === "past_due"
             ? "past_due"
             : stripeSub.status === "canceled"
-              ? "canceled"
+              ? "deactivated"
               : stripeSub.status === "trialing"
                 ? "trialing"
                 : null;
@@ -855,12 +1238,28 @@ async function processStripeEvent(event: import("stripe").default.Event) {
         .set({
           currentPeriodEnd: periodEnd ?? undefined,
           cancelAtPeriodEnd,
-          paymentMethodOnFile: true,
+          // subscription.updated is metadata/state synchronization only.
+          // Do not restore access here; invoice.payment_succeeded is the
+          // authoritative immediate-payment signal.
           ...planUpdates,
         } as any)
         .where(eq(subscriptions.id, sub.id));
 
-      if (newStatus && newStatus !== sub.status) {
+      // A subscription.updated event is not proof that the latest invoice
+      // settled. In particular, Stripe emits active here before an
+      // asynchronous/failed first payment is known. Only invoice payment
+      // success below may restore active/full access.
+      if (
+        newStatus &&
+        newStatus !== "active" &&
+        newStatus !== sub.status &&
+        // A deactivated subject remains read-only until authoritative payment
+        // success, even if Stripe sends an intermediate past_due/canceled
+        // synchronization event.
+        sub.status !== "deactivated" &&
+        sub.status !== "locked" &&
+        sub.status !== "canceled"
+      ) {
         await transitionSubscription(sub.id, newStatus as any, undefined, {
           reason: "stripe_subscription_updated",
           stripeStatus: stripeSub.status,
@@ -893,20 +1292,51 @@ async function processStripeEvent(event: import("stripe").default.Event) {
       if (!sub) break;
       await transitionSubscription(
         sub.id,
-        "canceled",
+        "deactivated",
         { canceledAt: new Date() },
         { reason: "stripe_subscription_deleted" }
       );
       break;
     }
 
+    case "charge.refunded":
+    case "refund.updated":
+    case "refund.created": {
+      const object = event.data.object as any;
+      if (event.livemode !== true || !stripe) break;
+      const charge = event.type === "charge.refunded" ? object
+        : object.charge ? await stripe.charges.retrieve(typeof object.charge === "string" ? object.charge : object.charge.id) : null;
+      if (charge) {
+        const { ingestStripeRefunds } = await import("../lib/subscription-evidence");
+        await ingestStripeRefunds(stripe, charge);
+      }
+      break;
+    }
     case "invoice.payment_succeeded": {
       const invoice = event.data.object as import("stripe").default.Invoice;
       const invoiceAny = invoice as any;
-      const stripeSubId =
-        typeof invoiceAny.subscription === "string"
-          ? invoiceAny.subscription
-          : null;
+      if (invoiceAny.livemode === true) {
+        const { ingestStripeInvoice } = await import("../lib/subscription-evidence");
+        await ingestStripeInvoice(invoiceAny);
+      }
+      const autoPayAttemptId = invoice.metadata?.providerAutoPayAttemptId;
+      if (autoPayAttemptId) {
+        await completeProviderAutoPayAttempt({
+          attemptId: autoPayAttemptId,
+          status: "succeeded",
+          failureReason: "anchor_pending",
+        });
+        await applySubscriptionRenewalAnchor(autoPayAttemptId, stripe);
+      }
+      const checkoutId = invoice.metadata?.providerPaymentCheckoutId;
+      if (checkoutId && typeof invoiceAny.payment_intent === "string") {
+        await settleProviderPaymentCheckout(
+          checkoutId,
+          typeof invoiceAny.payment_intent === "string" ? invoiceAny.payment_intent : null,
+        );
+      }
+      const { stripeSubscriptionId } = await import("../lib/subscription-evidence-normalize");
+      const stripeSubId = stripeSubscriptionId(invoiceAny);
       if (!stripeSubId) break;
 
       const [sub] = await db
@@ -920,6 +1350,12 @@ async function processStripeEvent(event: import("stripe").default.Event) {
         );
       if (!sub) break;
 
+      if (onboarding(sub)) {
+        // Trial invoices are often zero-dollar and may arrive after checkout.
+        // They must not relabel a verified trial as an immediately paid plan.
+        if (!onboarding(sub)?.attempt?.verifiedAt) break;
+        if (sub.trialEndAt && sub.trialEndAt.getTime() > Date.now() && invoice.amount_paid === 0) break;
+      }
       const periodEnd =
         (invoice as any).lines?.data?.[0]?.period?.end
           ? new Date((invoice as any).lines.data[0].period.end * 1000)
@@ -955,10 +1391,19 @@ async function processStripeEvent(event: import("stripe").default.Event) {
     case "invoice.payment_failed": {
       const invoice = event.data.object as import("stripe").default.Invoice;
       const invoiceFailedAny = invoice as any;
+      const autoPayAttemptId = invoice.metadata?.providerAutoPayAttemptId;
+      if (autoPayAttemptId) {
+        await completeProviderAutoPayAttempt({
+          attemptId: autoPayAttemptId,
+          status: "failed",
+          failureReason: "stripe_invoice_payment_failed",
+        });
+      }
       const stripeSubId =
         typeof invoiceFailedAny.subscription === "string"
           ? invoiceFailedAny.subscription
-          : null;
+          : invoiceFailedAny.subscription?.id ?? invoiceFailedAny.parent?.subscription_details?.subscription?.id ??
+            (typeof invoiceFailedAny.parent?.subscription_details?.subscription === "string" ? invoiceFailedAny.parent.subscription_details.subscription : null);
       if (!stripeSubId) break;
 
       const [sub] = await db
@@ -991,6 +1436,15 @@ async function processStripeEvent(event: import("stripe").default.Event) {
 router.post(
   "/webhook/revenuecat",
   asyncHandler(async (req, res) => {
+    if (
+      !hasValidRevenueCatAuthorization(
+        typeof req.headers.authorization === "string"
+          ? req.headers.authorization
+          : undefined,
+      )
+    ) {
+      return res.status(401).json({ ok: false, message: "Unauthorized" });
+    }
     const payload = req.body;
     const eventType: string = payload?.event?.type ?? "unknown";
     const appUserId: string | undefined = payload?.event?.app_user_id;
@@ -1041,6 +1495,11 @@ async function handleRevenueCatEvent(
     ? new Date(payload.expiration_at_ms as number)
     : null;
 
+  if (payload.environment === "PRODUCTION") {
+    const { ingestRevenueCat } = await import("../lib/subscription-evidence");
+    await ingestRevenueCat(sub.id, { ...payload, type: eventType });
+  }
+
   switch (eventType) {
     case "INITIAL_PURCHASE":
     case "RENEWAL":
@@ -1072,8 +1531,15 @@ async function handleRevenueCatEvent(
     }
 
     case "CANCELLATION": {
-      await transitionSubscription(sub.id, "grace", undefined, {
-        reason: "rc_cancellation",
+      // Cancellation disables future renewal but the already-paid entitlement
+      // remains active until RevenueCat sends EXPIRATION.
+      await appendSubscriptionEvent({
+        subscriptionId: sub.id,
+        subjectType: sub.subjectType,
+        subjectId: sub.subjectId,
+        eventType: "rc_cancellation",
+        provider: "revenuecat",
+        rawPayloadJson: payload,
       });
       break;
     }
@@ -1110,20 +1576,16 @@ async function handleRevenueCatEvent(
 
 /**
  * POST /api/billing/link-revenuecat
- * Links a RevenueCat App User ID to the caller's billing subject.
- * Called from the mobile app after a purchase.
+ * Allocates an opaque, server-controlled RevenueCat App User ID to the
+ * caller's billing subject. The client cannot choose another tenant's ID.
  */
 router.post(
   "/link-revenuecat",
   requireAuth,
   asyncHandler(async (req, res) => {
     const userId = (req as any).auth.userId;
-    const { appUserId } = req.body;
-    if (!appUserId || typeof appUserId !== "string") {
-      throw new HttpError(400, "appUserId is required");
-    }
-
-    const subject = await getSubjectForUser(userId);
+    const subject = await resolveBillingSubject(req, userId);
+    await requireBillingAdmin(userId, subject);
     let [sub] = await db
       .select()
       .from(subscriptions)
@@ -1143,10 +1605,13 @@ router.post(
       );
     }
 
-    await db
-      .update(subscriptions)
-      .set({ revenueCatAppUserId: appUserId, provider: "revenuecat" })
-      .where(eq(subscriptions.id, sub.id));
+    const appUserId = sub.revenueCatAppUserId ?? `rc_${randomUUID()}`;
+    if (!sub.revenueCatAppUserId) {
+      await db
+        .update(subscriptions)
+        .set({ revenueCatAppUserId: appUserId, provider: "revenuecat" })
+        .where(eq(subscriptions.id, sub.id));
+    }
 
     await appendSubscriptionEvent({
       subscriptionId: sub.id,
@@ -1157,7 +1622,7 @@ router.post(
       rawPayloadJson: { appUserId, userId },
     });
 
-    return res.json({ ok: true });
+    return res.json({ ok: true, appUserId });
   })
 );
 

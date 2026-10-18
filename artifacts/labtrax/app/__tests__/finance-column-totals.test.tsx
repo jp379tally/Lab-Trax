@@ -16,7 +16,11 @@
 import React from "react";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, fireEvent, cleanup } from "@testing-library/react-native";
-import { resetMockAppState, setMockAppState } from "../../vitest.setup";
+import {
+  mockStatementSummaryLabIds,
+  resetMockAppState,
+  setMockAppState,
+} from "../../vitest.setup";
 
 import InvoicesScreen from "@/app/finance/invoices";
 import StatementsScreen from "@/app/finance/statements";
@@ -29,26 +33,26 @@ afterEach(() => {
 });
 
 describe("sumAmounts", () => {
-  it("sums numbers and numeric strings", () => {
+  it("sums numbers and numeric strings", async () => {
     expect(sumAmounts([100, "200.50", 0.5])).toBe(301);
   });
 
-  it("treats null, undefined, and non-numeric strings as 0", () => {
+  it("treats null, undefined, and non-numeric strings as 0", async () => {
     expect(sumAmounts([null, undefined, "abc", "", 25])).toBe(25);
   });
 
-  it("includes negative amounts", () => {
+  it("includes negative amounts", async () => {
     expect(sumAmounts(["-50.25", 100])).toBe(49.75);
   });
 
-  it("returns 0 for an empty list", () => {
+  it("returns 0 for an empty list", async () => {
     expect(sumAmounts([])).toBe(0);
   });
 });
 
 describe("ColumnTotals component", () => {
-  it("shows a placeholder while loading instead of a partial sum", () => {
-    const { getByTestId } = render(
+  it("shows a placeholder while loading instead of a partial sum", async () => {
+    const { getByTestId } = await render(
       <ColumnTotals
         loading
         items={[{ label: "Total", values: [100], testID: "ct-loading" }]}
@@ -57,8 +61,8 @@ describe("ColumnTotals component", () => {
     expect(getByTestId("ct-loading").props.children).toBe("—");
   });
 
-  it("formats the sum as money when loaded", () => {
-    const { getByTestId } = render(
+  it("formats the sum as money when loaded", async () => {
+    const { getByTestId } = await render(
       <ColumnTotals
         items={[{ label: "Total", values: ["1000", null, "234.56"], testID: "ct-loaded" }]}
       />,
@@ -112,42 +116,42 @@ function seedInvoices() {
 }
 
 describe("InvoicesScreen — column totals", () => {
-  it("shows the Total and Balance sums of all displayed invoices", () => {
+  it("shows the Total and Balance sums of all displayed invoices", async () => {
     seedInvoices();
-    const { getByTestId } = render(<InvoicesScreen />);
+    const { getByTestId } = await render(<InvoicesScreen />);
     // Total: 100 + 200 + 300 + 50 = 650
     expect(getByTestId("column-total-total").props.children).toBe("$650.00");
     // Balance: 100 + 150 + 0 + 50 (null balanceDue falls back to total) = 300
     expect(getByTestId("column-total-balance").props.children).toBe("$300.00");
   });
 
-  it("recomputes totals from only the filtered rows", () => {
+  it("recomputes totals from only the filtered rows", async () => {
     seedInvoices();
-    const { getByTestId } = render(<InvoicesScreen />);
-    fireEvent.press(getByTestId("filter-open"));
+    const { getByTestId } = await render(<InvoicesScreen />);
+    await fireEvent.press(getByTestId("view-open"));
     // Open invoices: totals 100 + 200 = 300; balances 100 + 150 = 250
     expect(getByTestId("column-total-total").props.children).toBe("$300.00");
     expect(getByTestId("column-total-balance").props.children).toBe("$250.00");
   });
 
-  it("shows $0.00 when no invoices are displayed", () => {
+  it("shows $0.00 when no invoices are displayed", async () => {
     setMockAppState({ invoices: [] });
-    const { getByTestId } = render(<InvoicesScreen />);
+    const { getByTestId } = await render(<InvoicesScreen />);
     expect(getByTestId("column-total-total").props.children).toBe("$0.00");
     expect(getByTestId("column-total-balance").props.children).toBe("$0.00");
   });
 
-  it("shows a placeholder instead of stale totals during a background refetch", () => {
+  it("shows a placeholder instead of stale totals during a background refetch", async () => {
     seedInvoices();
     setMockAppState({ invoicesIsFetching: true });
-    const { getByTestId } = render(<InvoicesScreen />);
+    const { getByTestId } = await render(<InvoicesScreen />);
     expect(getByTestId("column-total-total").props.children).toBe("—");
     expect(getByTestId("column-total-balance").props.children).toBe("—");
   });
 });
 
 describe("StatementsScreen — column totals", () => {
-  it("shows the Total sum of all displayed statement runs", () => {
+  it("requests paged statement account summaries for the selected lab", async () => {
     setMockAppState({
       meMemberships: [
         {
@@ -157,17 +161,12 @@ describe("StatementsScreen — column totals", () => {
           organization: { id: "lab-1", type: "lab", name: "Main Lab" },
         },
       ],
-      statementRuns: [
-        { id: "run-1", practiceName: "Zenith Dental", totalAmount: "1200.00", status: "sent" },
-        { id: "run-2", practiceName: "Acme Dental", totalAmount: 800.5, status: "sent" },
-        { id: "run-3", practiceName: "Midtown Ortho", totalAmount: null, status: "failed" },
-      ],
     });
-    const { getByTestId } = render(<StatementsScreen />);
-    expect(getByTestId("column-total-total").props.children).toBe("$2,000.50");
+    await render(<StatementsScreen />);
+    expect(mockStatementSummaryLabIds.calls.at(-1)).toBe("lab-1");
   });
 
-  it("shows $0.00 when there are no statement runs", () => {
+  it("shows the total open balance of all displayed practice summaries", async () => {
     setMockAppState({
       meMemberships: [
         {
@@ -177,13 +176,35 @@ describe("StatementsScreen — column totals", () => {
           organization: { id: "lab-1", type: "lab", name: "Main Lab" },
         },
       ],
-      statementRuns: [],
+      statementAccountSummaries: [
+        { practiceId: "p-1", practiceName: "Zenith Dental", billingEmail: "billing@zenith.test", openInvoiceCount: 1, openInvoiceTotal: 200, unpaidStatements: [{ id: "s-1", date: "2026-08-01T00:00:00.000Z", remainingBalance: 1000 }], totalOpenBalance: 1200, overdueBalance: 1000 },
+        { practiceId: "p-2", practiceName: "Acme Dental", billingEmail: null, openInvoiceCount: 2, openInvoiceTotal: 800.5, unpaidStatements: [], totalOpenBalance: 800.5, overdueBalance: 0 },
+      ],
     });
-    const { getByTestId } = render(<StatementsScreen />);
+    const { getByTestId, getByText, getAllByText } = await render(<StatementsScreen />);
+    expect(getByTestId("column-total-total").props.children).toBe("$2,000.50");
+    expect(getByText("billing@zenith.test")).toBeTruthy();
+    expect(getByText("No email on file.")).toBeTruthy();
+    expect(getAllByText("$1,000.00")).toHaveLength(2);
+  });
+
+  it("shows $0.00 when there are no statement runs", async () => {
+    setMockAppState({
+      meMemberships: [
+        {
+          organizationId: "lab-1",
+          role: "owner",
+          status: "active",
+          organization: { id: "lab-1", type: "lab", name: "Main Lab" },
+        },
+      ],
+      statementAccountSummaries: [],
+    });
+    const { getByTestId } = await render(<StatementsScreen />);
     expect(getByTestId("column-total-total").props.children).toBe("$0.00");
   });
 
-  it("shows a placeholder instead of stale totals during a background refetch", () => {
+  it("shows a placeholder instead of stale totals during a background refetch", async () => {
     setMockAppState({
       meMemberships: [
         {
@@ -193,12 +214,12 @@ describe("StatementsScreen — column totals", () => {
           organization: { id: "lab-1", type: "lab", name: "Main Lab" },
         },
       ],
-      statementRuns: [
-        { id: "run-1", practiceName: "Zenith Dental", totalAmount: "1200.00", status: "sent" },
+      statementAccountSummaries: [
+        { practiceId: "p-1", practiceName: "Zenith Dental", billingEmail: null, openInvoiceCount: 0, openInvoiceTotal: 0, unpaidStatements: [], totalOpenBalance: 1200, overdueBalance: 0 },
       ],
-      statementRunsIsFetching: true,
+      statementAccountSummariesIsFetching: true,
     });
-    const { getByTestId } = render(<StatementsScreen />);
+    const { getByTestId } = await render(<StatementsScreen />);
     expect(getByTestId("column-total-total").props.children).toBe("—");
   });
 });

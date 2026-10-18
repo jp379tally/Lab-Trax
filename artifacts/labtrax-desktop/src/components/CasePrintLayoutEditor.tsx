@@ -59,6 +59,7 @@ import {
   isTextKind,
   makeImageElement,
   makeDoctorInfoElement,
+  makeProviderPreferencesElement,
   makeInvoiceLineItemsElement,
   makeInvoiceScalarElement,
   PAGE_H,
@@ -98,6 +99,7 @@ interface DragState {
 }
 
 const MAX_IMAGES = 8;
+const MAX_ELEMENTS = 40;
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
@@ -295,10 +297,10 @@ function applyDrag(start: Box, h: Handle, dx: number, dy: number): Box {
 interface CasePrintLayoutEditorProps {
   onClose: () => void;
   /**
-   * Called with the active template after save so the parent renderer can
-   * immediately use it for the next print. Null = reset to defaults.
+   * Called with the server-confirmed template after save so the parent
+   * renderer can immediately use it for the next print.
    */
-  onTemplateSaved?: (template: CasePrintTemplate | null) => void;
+  onTemplateSaved?: (saved: TemplateApi) => void;
 }
 
 export function CasePrintLayoutEditor({
@@ -339,6 +341,11 @@ export function CasePrintLayoutEditor({
   const dirty = !isSameTemplate(draft, cleanTemplateRef.current);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [previewPage, setPreviewPage] = useState(1);
+  useEffect(() => {
+    const selected = draft.elements.find((el) => el.id === selectedId);
+    if (selected) setPreviewPage(selected.page ?? 1);
+  }, [selectedId, draft.elements]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [askKeep, setAskKeep] = useState(false);
@@ -431,20 +438,33 @@ export function CasePrintLayoutEditor({
   }, [orgId, draft.elements]);
 
   const saveMutation = useMutation({
-    mutationFn: async (template: CasePrintTemplate | null) => {
-      await apiFetch(`/organizations/${orgId}/case-print-template`, {
+    mutationFn: async (template: CasePrintTemplate | null): Promise<TemplateApi> => {
+      const response = await apiFetch<{ data: TemplateApi } | TemplateApi>(
+        `/organizations/${orgId}/case-print-template`,
+        {
         method: "PUT",
         body: JSON.stringify({ template }),
-      });
-      return template;
+        },
+      );
+      return (
+        (response as { data?: TemplateApi }).data ??
+        (response as TemplateApi)
+      );
     },
-    onSuccess: async (template) => {
-      await qc.invalidateQueries({ queryKey: ["casePrintTemplate", orgId] });
-      cleanTemplateRef.current = template ?? DEFAULT_CASE_PRINT_TEMPLATE;
+    onSuccess: (saved) => {
+      const authoritative: TemplateApi = {
+        ...saved,
+        template: coerceCasePrintTemplate(saved.template),
+      };
+      // This query key is also read by the case detail's Print action. Writing
+      // the server-confirmed response avoids a stale-query race after save.
+      qc.setQueryData(["casePrintTemplate", orgId], authoritative);
+      setDraft(authoritative.template);
+      cleanTemplateRef.current = authoritative.template;
       setUndoStack([]);
       setRedoStack([]);
       setSaveError(null);
-      onTemplateSaved?.(template);
+      onTemplateSaved?.(authoritative);
     },
     onError: (e) => {
       setSaveError(e instanceof Error ? e.message : "Failed to save layout.");
@@ -472,9 +492,7 @@ export function CasePrintLayoutEditor({
         w: 160,
         h: 80,
       });
-      pushUndo(draftRef.current);
-      setDraft((d) => ({ ...d, elements: [...d.elements, el] }));
-      setSelectedId(el.id);
+      addElement(el);
     },
     onError: (e) => {
       setUploadError(e instanceof Error ? e.message : "Upload failed.");
@@ -501,6 +519,19 @@ export function CasePrintLayoutEditor({
   function pushUndo(snapshot: CasePrintTemplate) {
     setUndoStack((prev) => [...prev.slice(-(MAX_UNDO - 1)), snapshot]);
     setRedoStack([]);
+  }
+
+  function addElement(element: CasePrintElement): void {
+    if (draftRef.current.elements.length >= MAX_ELEMENTS) {
+      setSaveError(`A layout can contain at most ${MAX_ELEMENTS} elements.`);
+      return;
+    }
+    pushUndo(draftRef.current);
+    setDraft((previous) => {
+      if (previous.elements.length >= MAX_ELEMENTS) return previous;
+      return { ...previous, elements: [...previous.elements, element] };
+    });
+    setSelectedId(element.id);
   }
 
   function undo() {
@@ -653,6 +684,10 @@ export function CasePrintLayoutEditor({
 
   function handleFile(file: File | null | undefined) {
     if (!file) return;
+    if (draftRef.current.elements.length >= MAX_ELEMENTS) {
+      setUploadError(`A layout can contain at most ${MAX_ELEMENTS} elements.`);
+      return;
+    }
     if (imageElements.length >= MAX_IMAGES) {
       setUploadError(`Maximum of ${MAX_IMAGES} images per layout.`);
       return;
@@ -818,6 +853,7 @@ export function CasePrintLayoutEditor({
                     (el) =>
                       el.kind !== "image" &&
                       el.kind !== "doctorInfo" &&
+                      el.kind !== "providerPreferences" &&
                       !(INVOICE_ELEMENT_KINDS as readonly string[]).includes(el.kind),
                   )
                   .map((el) => {
@@ -879,6 +915,7 @@ export function CasePrintLayoutEditor({
                 disabled={
                   uploadMutation.isPending ||
                   imageElements.length >= MAX_IMAGES ||
+                  draft.elements.length >= MAX_ELEMENTS ||
                   !isAdmin
                 }
                 className="w-full h-8 rounded-md border border-dashed border-border bg-card hover:bg-secondary/40 inline-flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
@@ -955,13 +992,9 @@ export function CasePrintLayoutEditor({
                 type="button"
                 onClick={() => {
                   const el = makeDoctorInfoElement();
-                  setDraft((prev) => ({
-                    ...prev,
-                    elements: [...prev.elements, el],
-                  }));
-                  setSelectedId(el.id);
+                  addElement(el);
                 }}
-                disabled={!isAdmin}
+                disabled={!isAdmin || draft.elements.length >= MAX_ELEMENTS}
                 className="w-full h-8 rounded-md border border-dashed border-border bg-card hover:bg-secondary/40 inline-flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
                 title={isAdmin ? "Add a Doctor Info block to the label" : "Admin only"}
               >
@@ -1010,6 +1043,86 @@ export function CasePrintLayoutEditor({
                     );
                   })}
                 {draft.elements.filter((el) => el.kind === "doctorInfo")
+                  .length === 0 && (
+                  <p className="text-[10px] text-muted-foreground italic px-1 py-1">
+                    Not on this label.
+                  </p>
+                )}
+              </div>
+            </section>
+
+            {/* Provider Preferences elements */}
+            <section>
+              <div className="flex items-center justify-between mb-2 px-1">
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  Provider Preferences
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const el = makeProviderPreferencesElement();
+                  addElement(el);
+                }}
+                disabled={!isAdmin || draft.elements.length >= MAX_ELEMENTS}
+                className="w-full h-8 rounded-md border border-dashed border-border bg-card hover:bg-secondary/40 inline-flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+                title={isAdmin ? "Add provider preferences to the label" : "Admin only"}
+              >
+                + Add Provider Preferences
+              </button>
+              <div className="space-y-1 mt-2">
+                {draft.elements
+                  .filter((el) => el.kind === "providerPreferences")
+                  .map((el) => {
+                    const isSelected = selectedId === el.id;
+                    return (
+                      <div
+                        key={el.id}
+                        className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md border text-xs transition-colors cursor-pointer ${
+                          isSelected
+                            ? "bg-primary/10 border-primary/40"
+                            : "bg-card border-border hover:bg-secondary/40"
+                        } ${!el.visible ? "opacity-60" : ""}`}
+                        onClick={() => setSelectedId(el.id)}
+                      >
+                        <span
+                          className="w-2.5 h-2.5 rounded-sm shrink-0"
+                          style={{ background: ELEMENT_COLORS["providerPreferences"] }}
+                        />
+                        <span className="flex-1 truncate font-medium">
+                          Provider Preferences
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            patchElement(el.id, { visible: !el.visible });
+                          }}
+                          className="text-muted-foreground hover:text-foreground"
+                          title={el.visible ? "Hide" : "Show"}
+                        >
+                          {el.visible ? <Eye size={12} /> : <EyeOff size={12} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            pushUndo(draftRef.current);
+                            setDraft((prev) => ({
+                              ...prev,
+                              elements: prev.elements.filter((x) => x.id !== el.id),
+                            }));
+                            if (selectedId === el.id) setSelectedId(null);
+                          }}
+                          className="text-muted-foreground hover:text-destructive"
+                          title="Remove Provider Preferences"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                {draft.elements.filter((el) => el.kind === "providerPreferences")
                   .length === 0 && (
                   <p className="text-[10px] text-muted-foreground italic px-1 py-1">
                     Not on this label.
@@ -1081,7 +1194,7 @@ export function CasePrintLayoutEditor({
                     <button
                       key={kind}
                       type="button"
-                      disabled={!isAdmin}
+                      disabled={!isAdmin || draft.elements.length >= MAX_ELEMENTS}
                       onClick={() => {
                         const bottomY =
                           draft.elements.reduce(
@@ -1089,11 +1202,7 @@ export function CasePrintLayoutEditor({
                             0,
                           ) + 8;
                         const el = makeInvoiceScalarElement(kind, bottomY);
-                        setDraft((prev) => ({
-                          ...prev,
-                          elements: [...prev.elements, el],
-                        }));
-                        setSelectedId(el.id);
+                        addElement(el);
                       }}
                       className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md border border-dashed border-border bg-card hover:bg-secondary/40 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                       title={isAdmin ? `Add ${ELEMENT_LABELS[kind]}` : "Admin only"}
@@ -1159,7 +1268,7 @@ export function CasePrintLayoutEditor({
                   return (
                     <button
                       type="button"
-                      disabled={!isAdmin}
+                      disabled={!isAdmin || draft.elements.length >= MAX_ELEMENTS}
                       onClick={() => {
                         const bottomY =
                           draft.elements.reduce(
@@ -1167,11 +1276,7 @@ export function CasePrintLayoutEditor({
                             0,
                           ) + 8;
                         const el = makeInvoiceLineItemsElement(bottomY);
-                        setDraft((prev) => ({
-                          ...prev,
-                          elements: [...prev.elements, el],
-                        }));
-                        setSelectedId(el.id);
+                        addElement(el);
                       }}
                       className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md border border-dashed border-border bg-card hover:bg-secondary/40 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                       title={isAdmin ? "Add Invoice Line Items table" : "Admin only"}
@@ -1257,6 +1362,11 @@ export function CasePrintLayoutEditor({
                   minW={selectedEl.kind === "image" ? 10 : 20}
                   minH={selectedEl.kind === "image" ? 10 : 14}
                 />
+                <label className="block text-xs">Template page
+                  <select aria-label="Template page" value={selectedEl.page ?? 1} onChange={(e) => patchElement(selectedEl.id, { page: Number(e.target.value) })} className="block w-full bg-card border rounded p-1">
+                    <option value={1}>Page 1</option><option value={2}>Page 2</option>
+                  </select>
+                </label>
                 <label className="flex items-center gap-2 text-xs">
                   <input
                     type="checkbox"
@@ -1390,7 +1500,10 @@ export function CasePrintLayoutEditor({
           </aside>
 
           {/* Canvas */}
-          <main className="flex-1 overflow-auto bg-secondary/30 p-6 flex items-start justify-center">
+          <main className="flex-1 overflow-auto bg-secondary/30 p-6 flex flex-col items-center">
+            <div className="flex gap-2 mb-3">
+              {[1, 2].map((page) => <button key={page} type="button" aria-pressed={previewPage === page} className="rounded border px-3 py-1 text-xs" onClick={() => { setSelectedId(null); setPreviewPage(page); }}>Page {page}</button>)}
+            </div>
             <div
               ref={canvasRef}
               onClick={() => setSelectedId(null)}
@@ -1402,7 +1515,7 @@ export function CasePrintLayoutEditor({
               }}
             >
               {draft.elements.map((el) => {
-                if (!el.visible) return null;
+                if (!el.visible || (el.page ?? 1) !== previewPage) return null;
                 const isSelected = selectedId === el.id;
                 const isImage = el.kind === "image";
                 return (
@@ -2033,11 +2146,15 @@ function CasePreviewPicker({ draft, onClose }: CasePreviewPickerProps) {
 // canvas's actual render width.
 
 const SAMPLE_VALUES: Record<string, string> = {
+  implantRetention: "Line 1 · Tooth 14 · Implant: Screw retained",
+  implantManufacturer: "Line 1 · Tooth 14 · Implant: Straumann",
+  implantPlatformNotes: "Line 1 · Tooth 14 · Implant: RC, 4.1 mm",
   caseNumber: "Case LAB-2024-001",
   patient: "Smith, John",
   doctor: "Dr. Patel",
   dueDate: "06/12/2024",
   priority: "Rush",
+  step: "Wax Setup · Shade: A2",
   restorativeType: "PFM Crown",
   teeth: "#14, #15",
   material: "Zirconia",
@@ -2045,6 +2162,7 @@ const SAMPLE_VALUES: Record<string, string> = {
   rxNotes:
     "Please verify shade with photo on file. Light occlusal contacts. Deliver by Friday.",
   doctorInfo: "Patel Dental Group\n123 Smile Ave, Suite 200\nSpringfield, IL 62701\n(555) 123-4567",
+  providerPreferences: "Preferred material: Zirconia\nPreferred shade: A2\nOcclusal contacts: Light",
   invoiceNumber: "INV-2024-0042",
   invoiceDate: "06/12/2024",
   invoiceStatus: "open",
@@ -2228,7 +2346,10 @@ function ElementPreview({
   const capPx = Math.max(5, Math.round(8 * scale));
   const showCap = el.kind !== "caseNumber" && el.kind !== "doctorInfo";
   const value = SAMPLE_VALUES[el.kind] ?? "";
-  const isNotes = el.kind === "rxNotes" || el.kind === "doctorInfo";
+  const isNotes =
+    el.kind === "rxNotes" ||
+    el.kind === "doctorInfo" ||
+    el.kind === "providerPreferences";
 
   return (
     <div

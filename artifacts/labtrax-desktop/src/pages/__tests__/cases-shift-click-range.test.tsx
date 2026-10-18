@@ -1,9 +1,11 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import CasesPage from "@/pages/cases";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
 import { AiPanelContext } from "@/lib/ai-panel-context";
+import { prepareSelectedLabSlips } from "@/lib/selected-case-documents";
+import { printBatchInWindow } from "@/lib/batch-print-window";
 
 // Task #2796: shift-click range selection on the Cases list. After a normal
 // checkbox click sets the anchor, shift-clicking another row's checkbox
@@ -29,6 +31,14 @@ vi.mock("react-pdf", () => ({
   pdfjs: { GlobalWorkerOptions: {} },
 }));
 vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({ default: "" }));
+vi.mock("@/lib/selected-case-documents", () => ({
+  prepareSelectedInvoices: vi.fn(),
+  prepareSelectedLabSlips: vi.fn(),
+}));
+vi.mock("@/lib/batch-print-window", () => ({
+  reserveBatchPrintWindow: vi.fn(() => ({ close: vi.fn() })),
+  printBatchInWindow: vi.fn(async () => {}),
+}));
 
 // Five cases. Default sort is createdAt desc, so the on-screen order is
 // 26-1 (newest) → 26-5 (oldest). Doctor names alternate so a search filter
@@ -48,13 +58,31 @@ const CASES = [1, 2, 3, 4, 5].map((n) => ({
 }));
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       const path = new URL(url, "http://localhost").pathname;
-      if (path.endsWith("/cases")) {
-        return new Response(JSON.stringify(CASES), {
+      if (path.endsWith("/cases/overview")) {
+        return new Response(JSON.stringify({ data: {
+          totalCases: 0, dueToday: 0, conflicts: 0, rushCases: 0,
+          processingCases: 0, inTransitCases: 0, completedCases: 0, overdueCases: 0,
+          receivedCases: 0, inDesignCases: 0, modelRoomCases: 0, shippedCases: 0,
+          scanCases: 0, millingCases: 0, postMillCases: 0, sinteringFurnaceCases: 0,
+          porcelainCases: 0, qualityCheckCases: 0, onHoldCases: 0, remakeCases: 0,
+        } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (path.endsWith("/cases/worklist")) {
+        const search = new URL(url, "http://localhost").searchParams.get("search")?.toLowerCase() ?? "";
+        const rows = CASES.filter((labCase) =>
+          !search || [labCase.caseNumber, labCase.patientFirstName, labCase.patientLastName, labCase.doctorName]
+            .some((value) => value.toLowerCase().includes(search)),
+        );
+        return new Response(JSON.stringify({ rows, total: rows.length, page: 1, pageSize: 50, hasMore: false }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
@@ -80,8 +108,15 @@ afterEach(() => {
 async function renderCasesList() {
   const Wrapper = makeAuthWrapper("/cases");
   render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
-  // Wait for the rows to render.
-  await screen.findByLabelText("Select case 26-1");
+  // A meaningful search activates the on-demand worklist without narrowing it.
+  fireEvent.change(screen.getByPlaceholderText("Search case #, doctor, patient…"), {
+    target: { value: "Pat" },
+  });
+  await screen.findByLabelText(
+    "Select case 26-1",
+    undefined,
+    { timeout: 5_000 },
+  );
 }
 
 function checkbox(caseNumber: string): HTMLInputElement {
@@ -97,10 +132,30 @@ function selectedNumbers(): string[] {
 }
 
 describe("Cases list shift-click range selection", () => {
+  it("keeps a captured print job alive when the user clears the checkbox selection during preparation", async () => {
+    await renderCasesList();
+    fireEvent.click(checkbox("26-1"));
+    fireEvent.click(checkbox("26-3"));
+    let release!: (value: Array<{ title: string; body: string }>) => void;
+    vi.mocked(prepareSelectedLabSlips).mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    fireEvent.click(screen.getByRole("button", { name: "Print Lab Slips" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(selectedNumbers()).toEqual([]);
+    expect(screen.getByRole("button", { name: "Print Lab Slips" })).toBeDisabled();
+    expect(screen.getAllByRole("status").some((element) => element.textContent?.includes("Preparing"))).toBe(true);
+    release([{ title: "1", body: "Case 1" }, { title: "3", body: "Case 3" }]);
+    await waitFor(() => expect(printBatchInWindow).toHaveBeenCalledOnce());
+    expect(prepareSelectedLabSlips).toHaveBeenCalledWith(["case-1", "case-3"], false, expect.any(Function));
+    await waitFor(() => expect(screen.queryAllByRole("status").some((element) => element.textContent?.includes("Preparing"))).toBe(false));
+    expect(selectedNumbers()).toEqual([]);
+  });
   it("selects the range downward (anchor above the shift-clicked row)", async () => {
     await renderCasesList();
 
     fireEvent.click(checkbox("26-1"));
+    expect(screen.getByRole("button", { name: "Print Invoices" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Print Lab Slips" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Print Invoices" }).parentElement?.className).toContain("flex-wrap");
     fireEvent.click(checkbox("26-4"), { shiftKey: true });
 
     expect(selectedNumbers()).toEqual(["26-1", "26-2", "26-3", "26-4"]);
@@ -134,6 +189,7 @@ describe("Cases list shift-click range selection", () => {
       screen.getByPlaceholderText("Search case #, doctor, patient…"),
       { target: { value: "Alpha" } },
     );
+    await screen.findByLabelText("Select case 26-1");
     expect(screen.queryByLabelText("Select case 26-2")).toBeNull();
 
     fireEvent.click(checkbox("26-1"));
@@ -156,6 +212,7 @@ describe("Cases list shift-click range selection", () => {
       screen.getByPlaceholderText("Search case #, doctor, patient…"),
       { target: { value: "Alpha" } },
     );
+    await screen.findByLabelText("Select case 26-5");
     expect(screen.queryByLabelText("Select case 26-2")).toBeNull();
 
     // Shift-click with a stale anchor: only the clicked case toggles…
@@ -195,5 +252,18 @@ describe("Cases list shift-click range selection", () => {
     ]);
     fireEvent.click(selectAll);
     expect(selectedNumbers()).toEqual([]);
+  });
+
+  it("keeps a double-clicked selection checkbox in bulk-selection mode", async () => {
+    await renderCasesList();
+
+    const firstCheckbox = checkbox("26-1");
+    fireEvent.click(firstCheckbox);
+    expect(firstCheckbox.checked).toBe(true);
+    fireEvent.doubleClick(firstCheckbox);
+
+    expect(firstCheckbox.checked).toBe(true);
+    expect(screen.getByText("1 case selected")).toBeInTheDocument();
+    expect(screen.queryByTestId("case-drawer")).not.toBeInTheDocument();
   });
 });

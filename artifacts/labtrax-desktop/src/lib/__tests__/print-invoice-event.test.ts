@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { eventMetaLine } from "../print";
+import {
+  eventAuthorName,
+  eventMetaLine,
+  eventNoteBody,
+  formatEventTitle,
+} from "../print";
 import type { CaseEvent } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -73,5 +78,100 @@ describe("eventMetaLine — invoice events", () => {
       }),
     );
     expect(line).toBe("Open → Void");
+  });
+
+  it("labels date repairs separately with old and corrected dates", () => {
+    const repair = event("invoice_dates_repaired", {
+      invoiceNumber: "INV-REPAIR",
+      authorName: "Olive Owner",
+      previousIssuedAt: "2026-01-15T05:00:00.000Z",
+      previousDueAt: "2026-02-15T05:00:00.000Z",
+      correctedIssuedAt: "2026-01-15T00:00:00.000Z",
+      correctedDueAt: "2026-02-15T00:00:00.000Z",
+    });
+
+    expect(formatEventTitle(repair.eventType)).toBe("Invoice Dates Repaired");
+    expect(eventAuthorName(repair)).toBe("Olive Owner");
+    expect(eventMetaLine(repair)).toBe(
+      "Invoice INV-REPAIR · Issued: 2026-01-15T05:00:00Z (UTC) → 2026-01-15T00:00:00Z (UTC) · Due: 2026-02-15T05:00:00Z (UTC) → 2026-02-15T00:00:00Z (UTC)",
+    );
+  });
+
+  it("labels cleared-payment corrections with retained audit details", () => {
+    const correction = event("invoice_payments_deleted", {
+      invoiceNumber: "INV-CLEAR",
+      authorName: "Olive Owner",
+      deletedCount: 2,
+      reversedDepositCount: 1,
+      previousStatus: "paid",
+    });
+
+    expect(formatEventTitle(correction.eventType)).toBe(
+      "Invoice Payments Deleted",
+    );
+    expect(eventAuthorName(correction)).toBe("Olive Owner");
+    expect(eventMetaLine(correction)).toBe(
+      "Invoice INV-CLEAR · 2 cleared payments deleted · Previous status: Paid · 1 linked deposit reversed",
+    );
+  });
+
+  it("labels doctor identity repairs separately with actor and both identities", () => {
+    const repair = event("invoice_doctor_identity_repaired", {
+      invoiceNumber: "INV-DOCTOR",
+      authorName: "Olive Owner",
+      previousDoctorIdentity: null,
+      previousDoctorDisplayName: "Dr. Legacy",
+      correctedDoctorIdentity: "doctor-profile-corrected",
+      correctedDoctorDisplayName: "Dr. Corrected",
+    });
+
+    expect(formatEventTitle(repair.eventType)).toBe(
+      "Invoice Doctor Identity Repaired",
+    );
+    expect(eventAuthorName(repair)).toBe("Olive Owner");
+    expect(eventMetaLine(repair)).toBe(
+      "Invoice INV-DOCTOR · Doctor: Dr. Legacy → Dr. Corrected [doctor-profile-corrected]",
+    );
+  });
+});
+
+describe("printCaseHistory — internal exception notes", () => {
+  it("puts internal exception labels, bodies, and responsible lab members in the printed history", () => {
+    const historyEvents = [
+      event("internal_exception_opened_note", {
+        authorName: "Olive Owner",
+        noteText: "Margin requires an internal review.",
+      }),
+      {
+        ...event("internal_exception_note_added", {
+          authorName: "Tina Tech",
+          noteText: "Model checked and re-articulated.",
+        }),
+        id: "evt-2",
+      },
+      {
+        ...event("internal_exception_resolution_note_added", {
+          authorName: "Olive Owner",
+          noteText: "Margin corrected before release.",
+        }),
+        id: "evt-3",
+      },
+    ];
+
+    expect(historyEvents.map((e) => formatEventTitle(e.eventType))).toEqual([
+      "Internal Exception — Issue",
+      "Internal Exception Note",
+      "Internal Exception — Resolution Note",
+    ]);
+    expect(historyEvents.map(eventNoteBody)).toEqual([
+      "Margin requires an internal review.",
+      "Model checked and re-articulated.",
+      "Margin corrected before release.",
+    ]);
+    expect(historyEvents.map(eventAuthorName)).toEqual([
+      "Olive Owner",
+      "Tina Tech",
+      "Olive Owner",
+    ]);
   });
 });

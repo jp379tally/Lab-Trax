@@ -1,0 +1,28 @@
+{
+  "minimumRetainedFraction": 0.9,
+  "production": {
+    "recordedAt": "2025-01-04T00:00:00.000Z",
+    "labOrganizationId": "00000000-0000-4000-8000-000000000001",
+    "activeCaseCount": 10,
+    "invoiceCount": 11,
+    "userCount": 12,
+    "organizationCount": 13,
+    "doctorProfileCount": 14,
+    "paymentCount": 15,
+    "caseAttachmentCount": 16,
+    "auditHistoryCount": 17,
+    "oldestCaseCreatedAt": "2025-01-02T03:04:05.123456Z"
+  },
+  "development": {
+    "recordedAt": "2025-01-03T00:00:00.000Z",
+    "activeCaseCount": 8,
+    "invoiceCount": 9,
+    "userCount": 10,
+    "organizationCount": 11,
+    "doctorProfileCount": 12,
+    "paymentCount": 13,
+    "caseAttachmentCount": 14,
+    "auditHistoryCount": 15,
+    "oldestCaseCreatedAt": "2024-12-31T23:59:59.654321Z"
+  }
+}

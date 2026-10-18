@@ -7,6 +7,11 @@
 // permission check fall back to "no access".
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { resilientFetch } from "@/lib/query-client";
+import { useCallback, useEffect } from "react";
+import { AppState, Platform } from "react-native";
+import { useFocusEffect } from "expo-router";
+import { useAuth } from "./auth-context";
+import { normalizeProfilePhotoUrl } from "./normalize-profile-photo-url";
 
 export interface MeOrganization {
   id?: string;
@@ -39,21 +44,62 @@ export function roleCanEdit(role: string | null | undefined): boolean {
 
 export const ME_QUERY_KEY = ["auth-me"] as const;
 
-export function useMe(): UseQueryResult<MeResponse> {
-  return useQuery<MeResponse>({
-    queryKey: ME_QUERY_KEY,
+export function useMe(syncPhoto = false): UseQueryResult<MeResponse> {
+  const { currentUserId, isAuthenticated, setProfilePicUri, userType } = useAuth();
+  const result = useQuery<MeResponse>({
+    queryKey: [...ME_QUERY_KEY, currentUserId],
+    enabled: isAuthenticated,
     queryFn: async () => {
-      const res = await resilientFetch("/api/auth/me");
-      if (!res.ok) throw new Error(`Could not load your profile (${res.status}).`);
-      const body = (await res.json()) as Partial<MeResponse>;
-      return {
-        success: body.success,
-        user: body.user,
-        memberships: Array.isArray(body.memberships) ? body.memberships : [],
-      };
+      const controller = new AbortController();
+      const timer = userType === "provider" ? setTimeout(() => controller.abort(), 20_000) : null;
+      try {
+        const res = await resilientFetch("/api/auth/me", userType === "provider" ? { signal: controller.signal } : undefined);
+        if (!res.ok) throw new Error(`Could not load your profile (${res.status}).`);
+        const body = (await res.json()) as Partial<MeResponse>;
+        if (currentUserId && (body.user as { id?: string } | undefined)?.id !== currentUserId) {
+          throw new Error("Profile account changed. Please try again.");
+        }
+        return {
+          success: body.success,
+          user: body.user,
+          memberships: Array.isArray(body.memberships) ? body.memberships : [],
+        };
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     },
     staleTime: 60_000,
+    refetchOnMount: syncPhoto ? "always" : true,
   });
+  const refetch = result.refetch;
+  useFocusEffect(useCallback(() => {
+    if (syncPhoto && isAuthenticated) void refetch();
+  }, [syncPhoto, isAuthenticated, refetch]));
+  useEffect(() => {
+    if (!syncPhoto || !isAuthenticated) return;
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") void refetch();
+    });
+    const onFocus = () => { void refetch(); };
+    // Native defines window = global, but it is not a browser EventTarget.
+    // Keep native resume refresh on AppState and browser focus refresh on web.
+    const browserWindow = Platform.OS === "web" &&
+      typeof window !== "undefined" &&
+      typeof window.addEventListener === "function" &&
+      typeof window.removeEventListener === "function" ? window : null;
+    browserWindow?.addEventListener("focus", onFocus);
+    return () => {
+      subscription.remove();
+      browserWindow?.removeEventListener("focus", onFocus);
+    };
+  }, [syncPhoto, isAuthenticated, refetch]);
+  const serverUser = result.data?.user as { id?: string; profilePhotoUrl?: string | null } | undefined;
+  useEffect(() => {
+    if (syncPhoto && serverUser?.id && serverUser.id === currentUserId) {
+      void Promise.resolve(setProfilePicUri(normalizeProfilePhotoUrl(serverUser.profilePhotoUrl), currentUserId)).catch(() => {});
+    }
+  }, [syncPhoto, serverUser?.id, serverUser?.profilePhotoUrl, currentUserId, setProfilePicUri]);
+  return result;
 }
 
 // Active lab memberships the user can create/edit cases in (editing role only).
@@ -73,6 +119,22 @@ export function canEditOrg(me: MeResponse | undefined, caseOrgId: string | null 
     (m) => m.status === "active" && m.organizationId === caseOrgId,
   );
   return roleCanEdit(membership?.role);
+}
+
+// Whether the user is an ACTIVE member of `orgId` in any role.
+//
+// Deliberately weaker than `canEditOrg`: features the server opens to every
+// internal lab member (the exception workflow) must not be gated on an edit
+// role, or `user`/`read_only` members see no affordance for something the API
+// would happily let them do.
+export function isActiveMemberOfOrg(
+  me: MeResponse | undefined,
+  orgId: string | null | undefined,
+): boolean {
+  if (!orgId) return false;
+  return (me?.memberships ?? []).some(
+    (m) => m.status === "active" && m.organizationId === orgId,
+  );
 }
 
 // All active memberships, regardless of org type or role.
@@ -100,6 +162,23 @@ export function primaryProviderOrgId(me: MeResponse | undefined): string | null 
     (m) => (m.organization?.type ?? "").toLowerCase() !== "lab",
   );
   return provider?.organizationId ?? null;
+}
+
+// Active provider/practice memberships where the user is an owner/admin.
+export function adminProviderMemberships(me: MeResponse | undefined): MeMembership[] {
+  return activeMemberships(me).filter(
+    (m) =>
+      (m.organization?.type ?? "").toLowerCase() !== "lab" &&
+      roleIsAdmin(m.role),
+  );
+}
+
+export function canAdminAnyProvider(me: MeResponse | undefined): boolean {
+  return adminProviderMemberships(me).length > 0;
+}
+
+export function primaryAdminProviderOrgId(me: MeResponse | undefined): string | null {
+  return adminProviderMemberships(me)[0]?.organizationId ?? null;
 }
 
 // Mobile equivalent of the desktop `billingOnly` gate: the user owns/admins or

@@ -1,160 +1,145 @@
-# Submitting LabTrax to the App Store via EAS
+# LabTrax iOS build and submission
 
-All commands run on **your local machine**, not inside Replit.
+This guide describes the repository's **existing, separately approved EAS route**.
+It is not a fix for Replit's App Store publishing button. Replit Expo Launch and
+the repository's `EAS iOS Build + Submit` workflow are different entry points.
+Do not use either to bypass a failing release gate.
 
----
+## Verified identity — October 9, 2026
 
-## Current state (confirmed from App Store Connect)
-
-| Field | Value |
+| Field | Verified value / source |
 |---|---|
-| Bundle ID | `com.allieddl.labtrax` |
-| App Store Connect App ID | `6760672646` (the original LabTrax listing — **not** the duplicate `6767755163`) |
-| Last uploaded build (accepted) | `1.0.8 (102)` — May 6 |
-| Last failed attempt | `1.0.7 (104)` — May 8 (rejected: marketing version regressed below 1.0.8) |
-| Next build (in this repo) | `1.0.9 (105)` |
-| ASC API key ID | `R6PFFXT9TN` (file: `AuthKey_R6PFFXT9TN.p8`, must sit next to `eas.json` at submit time; gitignored) |
-| ASC API key issuer ID | `1d2faabc-3d66-4e64-b514-c234043e143a` |
-| EAS project ID in app.json | `a22db9d5-6925-4348-9827-3455a22d2ca0` |
+| iOS bundle ID | `app.replit.labtrax` — `app.json`, resolved Expo config, and live App Store Connect |
+| App Store Connect app ID | `6760672646` — `eas.json` and successful read-only Apple lookup |
+| Local marketing version / build | `1.0.13 (333)` — `app.json`; not an instruction to reuse build 333 |
+| Latest queried EAS iOS store build | `1.0.13 (333)`, finished September 23, 2026 |
+| Latest queried Apple upload | `1.0.13 (333)`, processing state `VALID`, September 23, 2026 |
+| Latest queried public App Store version | `1.0.12`, state `READY_FOR_SALE` |
+| EAS project | `a22db9d5-6925-4348-9827-3455a22d2ca0`, configured owner `jp379` |
+| Share extension | Target `LabTraxShare`, bundle ID `app.replit.labtrax.share-extension` |
+| App Group | `group.app.replit.labtrax.sdr` — resolved config and active main/share provisioning entitlements |
+| Apple team | `2D9XT8L3D2` — active main/share provisioning entitlements match script configuration |
+| ASC key metadata | Key ID `RV23AJ8V62`; issuer `1d2faabc-3d66-4e64-b514-c234043e143a` |
+| Temporary credential path | `/tmp/AuthKey_RV23AJ8V62.p8` — `eas.json` and credential writer |
+| API origin | `https://lab-trax.replit.app` — verified public deployment; native builds use the existing application configuration |
 
----
+These are dated observations, not permanent claims. Re-check Apple/EAS immediately
+before an approved release. A successful build is not an upload; a `VALID` upload
+is not App Store review approval. The queried version list did **not** show an
+App Store review record for `1.0.13`.
 
-## Step 1 — Install EAS CLI
+## Prerequisites
+
+1. Run the Required Pre-Release Checklist in `REGRESSION_GUARDRAILS.md`, starting
+   with `check-test-harness:collect`. Every automated gate must pass. The
+   diagnostic `bash scripts/run-workspace-audit.sh` records checks in that order
+   and continues after failures for investigation; its output is **not release
+   approval**. Raw logs are private/ignored under `generated-artifacts/`.
+2. Complete the protected real-device/TestFlight checklist. Web screenshots,
+   TypeScript, mocked tests and configuration introspection do not prove native
+   camera, scanner, share extension, printing, depth or device authentication.
+3. Confirm current App Store Connect version/build history and choose the
+   intended release version. `appVersionSource` is `local`; no automatic EAS
+   version increment is configured. The approved workflow reserves the next
+   local build number. Starting from this snapshot that would be 334, but
+   **do not assume 334 is still unused at release time**.
+4. The operator environment needs `pnpm`, Node, Python 3, OpenSSL, `flock`,
+   the installed EAS CLI, and (only for the IPA-download retry) `curl` and `unzip`.
+   Existing `EXPO_TOKEN` and `ASC_API_KEY_P8` secrets must be available. Never
+   paste them into chat, logs, source, an approval token, or a shell argument.
+5. Keep the existing EAS project and Apple listing. Do not run project
+   initialization, create a replacement listing, change bundle IDs, or rotate
+   credentials to work around the Replit button error.
+6. Active App Store profiles were found for the main app and share extension,
+   with matching App Group entitlements. Older invalid main profiles also exist.
+   This audit did not change them or inspect which cached profile EAS will
+   select in a future build. A real authorized build is the final signing check.
+
+## Credential handling
+
+`artifacts/labtrax/scripts/write-asc-key.py` reads the saved `ASC_API_KEY_P8`
+secret. It validates an EC P-256 PKCS#8 key and atomically writes the configured
+temporary file with owner-only permissions. It supports real, escaped, CRLF,
+and space-separated PEM newlines. Release scripts remove the file on exit.
+
+The key does **not** belong next to `eas.json`, and the old key/file instructions
+are obsolete. The API key authenticated the audit's read-only Apple calls.
+The saved Expo token also authenticated a read-only identity query and read the
+linked project with an owner matching the configuration. Neither check
+establishes the status of Replit's separate publishing authentication.
+Apple ID/password secrets are not used by this API-key upload route.
+
+## After separate approval: build and upload
+
+Do not run these steps during an audit. Obtain explicit approval for both the
+paid cloud build and the upload first:
+
+1. Ensure all release gates and the protected device checklist pass.
+2. From the repository root, create the one-shot approval:
+   `touch .local/.eas-build-approved`.
+3. Restart **EAS iOS Build + Submit** in the workflow pane.
+
+The token is consumed once. The script serializes release operations, snapshots
+the current app configuration, increments the build number, builds the production
+iOS profile, and uploads **the exact completed build ID**, not whichever build
+another operator made most recently. It records a retry ID before submission.
+
+A credential/pre-build failure restores the exact pre-bump worktree file,
+including uncommitted configuration. Once the remote build command has started,
+an ambiguous failure retains the reserved number: inspect the remote result
+before retrying. Never lower a reserved or uploaded build number. The completed
+build number remains reserved even if committing or uploading subsequently fails.
+Conflicting build/submit-only approvals are refused. A recorded pending upload
+also blocks a new paid build: reconcile that existing artifact first rather than
+overwriting its retry ID. The blocked build approval is consumed and must be
+explicitly renewed after reconciliation.
+
+## After separate approval: retry an existing build upload
+
+First confirm the exact build is the intended iOS production artifact and has
+not already uploaded successfully. An upload retry must not launch another build.
+
+The existing submit-only helper requires explicit approval and an exact build ID:
 
 ```bash
-npm install -g eas-cli
-eas --version   # confirm
+EAS_SUBMIT_APPROVED=1 EAS_BUILD_ID=<approved-build-uuid> bash scripts/eas-ios-submit-only.sh
 ```
 
----
+On successful upload, the helper clears pending retry metadata only if it belongs
+to that same build ID. Failed uploads and different-build metadata are retained.
 
-## Step 2 — Pull the latest code
+Alternatively, save that UUID in `.local/.eas-submit-build-id`, create the
+one-shot `.local/.eas-submit-only` token, and restart **EAS iOS Build + Submit**.
+No build number is incremented in this mode. A failed attempt consumes its
+approval but retains the retry metadata. Re-approve only after inspecting the
+failure and checking whether Apple received the upload.
 
-Make sure you have the latest repo — it now includes `eas.json` with
-`ascAppId` pre-filled.
+For the existing expired-artifact-link workaround, `.local/.eas-submit-ipa-url`
+may contain the matching HTTPS `expo.dev` artifact URL. Keep it private. The
+workflow first fetches read-only EAS build metadata and requires the URL to match
+the exact approved completed production/store iOS build in this configured
+project. A stale/mismatched URL or failed metadata lookup stops before download
+or upload. It then checks HTTP success, ZIP integrity and an iOS app payload;
+it never sends the Expo bearer credential to an arbitrary URL host.
+This branch is optional; prefer the exact build ID route when it works.
 
----
+## What happens after upload
 
-## Step 3 — Log in to Expo
+The workflow uploads to **App Store Connect/TestFlight**. It does **not** submit
+the app for App Store review or release it publicly.
 
-```bash
-eas login
-```
+After Apple finishes processing, verify the intended version/build in App Store
+Connect and complete TestFlight/device checks. For an App Store release, the
+owner separately creates/selects the intended version, chooses the processed
+build, checks screenshots/metadata/privacy information and actual encryption
+compliance, then explicitly submits for review in App Store Connect. Do not
+answer compliance questions from an old guide without checking the app's use.
 
-Use your expo.dev credentials (same account that was used for the
-"Team (Expo)" TestFlight tester group).
+## Replit button fails immediately
 
----
-
-## Step 4 — Link this repo to your Expo project
-
-```bash
-cd artifacts/labtrax
-eas init
-```
-
-This writes `extra.eas.projectId` into `app.json` and links this codebase
-to your existing expo.dev project. If asked whether to create a new project
-or link to an existing one, choose **link to existing** and select `labtrax`.
-
----
-
-## Step 5 — Build for the App Store
-
-```bash
-eas build --platform ios --profile production
-```
-
-On first run EAS will ask about Apple Developer credentials.
-Choose **"Let EAS handle credentials"** — it generates the signing certificate
-and provisioning profile automatically. No Xcode required.
-
-Build runs on EAS servers (~15–30 min). Monitor at:
-expo.dev → your account → Projects → labtrax → Builds
-
----
-
-## Step 7 — Submit to App Store Review
-
-Once the build is complete:
-
-```bash
-eas submit --platform ios --latest
-```
-
-`eas.json` already has the App Store Connect App ID pre-filled (`6760672646`).
-You'll only be prompted for:
-
-- **Apple ID**: your Apple Developer account email
-- **Apple Team ID**: 10-character string from developer.apple.com → Membership
-
-EAS uploads the `.ipa` to App Store Connect automatically.
-
----
-
-## Step 8 — Finalize in App Store Connect
-
-Go to appstoreconnect.apple.com → LabTrax → your version → confirm:
-
-- Screenshots are present
-- Description and keywords are filled in
-- Export compliance answered (choose **No** — standard HTTPS, no custom encryption)
-- Privacy policy URL set
-
-Then click **Submit for Review**.
-
----
-
-## Subsequent releases
-
-1. Increment `buildNumber` in `app.json` (must always exceed last uploaded build)
-2. Increment `version` for a user-visible App Store version bump — and **never** set it lower than a version already accepted on the same train, even if the build number is higher
-3. Re-run steps 6 and 7
-
----
-
-## If submit fails
-
-Three regressions have caused failed submissions before. Check these first
-before re-submitting:
-
-1. **Marketing version regressed below an accepted build.** Apple rejects
-   any upload whose `expo.version` (`CFBundleShortVersionString`) is lower
-   than a version already accepted on the same train, even if
-   `buildNumber` is higher. Bump `version` in `app.json` past the highest
-   accepted version. (This is what killed `1.0.7 (104)` on May 8 — 1.0.8
-   was already accepted.)
-2. **`ascAppId` points at the wrong App Store Connect record.** The real
-   LabTrax listing is `6760672646`. A duplicate listing `6767755163` was
-   accidentally created and should not be used. Confirm
-   `submit.production.ios.ascAppId` in `eas.json` is `6760672646`.
-3. **`.p8` ASC API key file missing or revoked.** `eas.json` references
-   `./AuthKey_R6PFFXT9TN.p8`. The file is gitignored, so it must sit next
-   to `eas.json` on the machine running `eas submit`. If the key ID was
-   revoked or rotated in App Store Connect (Users and Access →
-   Integrations → App Store Connect API), generate a new key, drop the
-   new `.p8` next to `eas.json`, and update `ascApiKeyPath` /
-   `ascApiKeyId` in `eas.json` to match.
-
----
-
-## Troubleshooting
-
-**"Build number already in use"** — Increment `buildNumber` past whatever
-is currently in App Store Connect and rebuild.
-
-**"Bundle ID not found"** — Register `com.allieddl.labtrax` at
-developer.apple.com → Identifiers first.
-
-**"No distribution certificate"** — Choose "Generate new certificate" at
-the EAS prompt. Fully automated.
-
-**"Missing compliance"** — Answer the export compliance question in App Store
-Connect: No (standard HTTPS, not custom encryption).
-
----
-
-## Production API
-
-Backend is already wired: `https://lab-trax.replit.app/`  
-EAS builds use this automatically — no extra environment variables needed.
+See `docs/ios-publishing-escalation.md`. The October 9 audit found **no Expo
+Launch session**, despite the reported immediate “Something unexpected happened”
+message. No retained workflow means there is no build log to blame on Apple or
+EAS. Browser request details were requested but were not provided. The precise
+cause remains unconfirmed; documentation and local dependency repairs do not
+establish that this platform-entry error is fixed.

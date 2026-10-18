@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import ReceivePaymentsPage from "@/pages/finance/receive-payments";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
 
@@ -35,6 +35,13 @@ const OPEN_INVOICES = [1, 2, 3, 4, 5].map((n) => ({
   total: "100.00",
   balanceDue: "100.00",
 }));
+const STATEMENT = {
+  id: "statement-prov-1",
+  periodStart: "2026-06-01T00:00:00.000Z",
+  periodEnd: "2026-06-30T00:00:00.000Z",
+  savedBalanceDue: "500.00",
+  invoiceCount: OPEN_INVOICES.length,
+};
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -47,8 +54,38 @@ beforeEach(() => {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
-      if (path.endsWith("/invoices/open")) return json(OPEN_INVOICES);
+      if (path.endsWith("/billing/lab-1/accounts/prov-1/statements")) {
+        return json([STATEMENT]);
+      }
+      if (path.includes("/eligible-statement-accounts")) {
+        return json([{
+          providerOrganizationId: "prov-1",
+          providerName: "Alpha Dental",
+          statementId: STATEMENT.id,
+          periodEnd: STATEMENT.periodEnd,
+          sentAt: "2026-07-01T00:00:00.000Z",
+          invoiceCount: STATEMENT.invoiceCount,
+          currentBalanceDue: STATEMENT.savedBalanceDue,
+        }]);
+      }
+      if (path.endsWith("/billing/statements/statement-prov-1")) {
+        return json({
+          ...STATEMENT,
+          invoices: OPEN_INVOICES.map((invoice) => ({
+            ...invoice,
+            currentBalanceDue: invoice.balanceDue,
+            eligibleForPayment: true,
+          })),
+        });
+      }
       if (path.endsWith("/invoices")) return json(ALL_INVOICES);
+      // Receive Payments is gated on the user's role in the selected lab.
+      if (path.endsWith("/auth/me")) {
+        return json({
+          user: { id: "u1", username: "admin", role: "admin", userType: "lab" },
+          memberships: [{ organizationId: LAB_ORG.id, role: "admin", status: "active", organization: LAB_ORG }],
+        });
+      }
       if (path.endsWith("/organizations")) return json([LAB_ORG]);
       if (path.endsWith("/finance/accounts")) return json([]);
       if (path.endsWith("/finance/undeposited-funds"))
@@ -70,7 +107,6 @@ async function renderPage() {
       username: "admin",
       role: "admin",
       userType: "lab",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
     status: "authed",
     restoreStatus: "ok",
@@ -81,7 +117,18 @@ async function renderPage() {
       <ReceivePaymentsPage />
     </Wrapper>,
   );
+  fireEvent.click(await screen.findByRole("checkbox", { name: "Select Alpha Dental" }));
+  await waitFor(() => expect(screen.getByTestId("expected-payments")).toHaveTextContent("$500.00"));
+  fireEvent.click(screen.getByTestId("receive-continue"));
   await screen.findByLabelText("Select invoice INV-1");
+  // The completed customer-payment workflow now defaults the full open
+  // balance and auto-applies it oldest-first. Clear those required defaults
+  // without clicking a checkbox so these tests begin with no shift anchor.
+  for (const invoice of OPEN_INVOICES) {
+    fireEvent.change(amountInput(invoice.invoiceNumber), {
+      target: { value: "" },
+    });
+  }
 }
 
 function checkbox(invoiceNumber: string): HTMLInputElement {

@@ -8,6 +8,7 @@ export type BodyType<T> = T;
 
 export type AuthTokenGetter = () => Promise<string | null> | string | null;
 export type AuthTokenRefresher = () => Promise<string | null>;
+export type RequestHeadersProvider = () => Record<string, string | null | undefined> | null | undefined;
 
 const NO_BODY_STATUS = new Set([204, 205, 304]);
 const DEFAULT_JSON_ACCEPT = "application/json, application/problem+json";
@@ -19,6 +20,7 @@ const DEFAULT_JSON_ACCEPT = "application/json, application/problem+json";
 let _baseUrl: string | null = null;
 let _authTokenGetter: AuthTokenGetter | null = null;
 let _authRefresher: AuthTokenRefresher | null = null;
+let _requestHeadersProvider: RequestHeadersProvider | null = null;
 
 /**
  * Set a base URL that is prepended to every relative request URL
@@ -54,6 +56,23 @@ export function setAuthTokenGetter(getter: AuthTokenGetter | null): void {
  */
 export function setAuthRefresher(fn: AuthTokenRefresher | null): void {
   _authRefresher = fn;
+}
+
+/**
+ * Register a provider of ambient request headers — headers that identify the
+ * caller's current context rather than the individual request, such as the
+ * active provider practice a tenant-scoped endpoint is resolved against.
+ *
+ * The provider is invoked before every fetch and its headers are applied only
+ * where the caller has not set that header explicitly, so a per-request header
+ * always wins. Pass `null` to clear it.
+ *
+ * Without this, hand-written request paths (a client's own fetch/XHR helper)
+ * and the generated hooks drift apart: the same endpoint would be scoped on
+ * one path and unscoped on the other.
+ */
+export function setRequestHeadersProvider(fn: RequestHeadersProvider | null): void {
+  _requestHeadersProvider = fn;
 }
 
 function isRequest(input: RequestInfo | URL): input is Request {
@@ -359,6 +378,17 @@ export async function customFetch<T = unknown>(
 
   if (responseType === "json" && !headers.has("accept")) {
     headers.set("accept", DEFAULT_JSON_ACCEPT);
+  }
+
+  // Ambient context headers (e.g. the active provider practice). Explicit
+  // per-request headers win.
+  if (_requestHeadersProvider) {
+    const ambient = _requestHeadersProvider();
+    if (ambient) {
+      for (const [name, value] of Object.entries(ambient)) {
+        if (value && !headers.has(name)) headers.set(name, value);
+      }
+    }
   }
 
   // Attach bearer token when an auth getter is configured and no

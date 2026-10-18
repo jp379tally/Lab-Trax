@@ -57,7 +57,7 @@ function seedEditableLabWithDoctor() {
     cases: [
       {
         id: "c1",
-        doctorName: "Dr. Smith",
+        doctorName: "Dr. Synthetic063",
         providerOrganizationId: ORG_ID,
         patientFirstName: "Jane",
         patientLastName: "Doe",
@@ -66,22 +66,50 @@ function seedEditableLabWithDoctor() {
   });
 }
 
+function seedCustomRemovableCatalog() {
+  setMockAppState({
+    catalogTree: {
+      labOrganizationId: "lab-1",
+      caseTypes: [
+        { key: "restorative", label: "Restorative", subtypes: [] },
+        {
+          key: "removable",
+          label: "Removable",
+          subtypes: [
+            {
+              id: "custom-subtype-1",
+              key: "custom:custom-subtype-1",
+              label: "Digital Valplast Appliance",
+              isCustom: true,
+              isActive: true,
+              sortOrder: 0,
+              priceKey: null,
+              materials: [],
+            },
+          ],
+        },
+        { key: "ortho", label: "Ortho / Appliances", subtypes: [] },
+      ],
+    },
+  });
+}
+
 /** Fill the required fields and bind a doctor via the past-doctor dropdown. */
-async function fillFormAndSelectDoctor(screen: ReturnType<typeof render>) {
+async function fillFormAndSelectDoctor(screen: Awaited<ReturnType<typeof render>>) {
   await act(async () => {
     await new Promise((r) => setTimeout(r, 20));
   });
 
-  fireEvent.changeText(screen.getByTestId("new-case-number"), "26-42");
-  fireEvent.changeText(screen.getByTestId("new-case-patient-first"), "John");
-  fireEvent.changeText(screen.getByTestId("new-case-patient-last"), "Roe");
+  await fireEvent.changeText(screen.getByTestId("new-case-number"), "26-42");
+  await fireEvent.changeText(screen.getByTestId("new-case-patient-first"), "John");
+  await fireEvent.changeText(screen.getByTestId("new-case-patient-last"), "Roe");
 
   // Focus (no typing) surfaces the past-doctor dropdown built from seeded cases.
-  fireEvent(screen.getByTestId("new-case-doctor"), "focus");
+  await fireEvent(screen.getByTestId("new-case-doctor"), "focus");
   await waitFor(() => {
     expect(screen.getByTestId("past-doctor-result-0")).toBeTruthy();
   });
-  fireEvent.press(screen.getByTestId("past-doctor-result-0"));
+  await fireEvent.press(screen.getByTestId("past-doctor-result-0"));
 }
 
 function doctorConfirm409(candidates: unknown[]) {
@@ -98,6 +126,36 @@ afterEach(() => {
 });
 
 describe("NewCaseScreen — doctor confirmation", () => {
+  it("submits a custom removable subtype without requiring a tooth number", async () => {
+    seedEditableLabWithDoctor();
+    seedCustomRemovableCatalog();
+
+    const screen = await render(<NewCaseScreen />);
+    await fillFormAndSelectDoctor(screen);
+    await fireEvent.changeText(screen.getByTestId("resto-category-0"), "Removable");
+    await fireEvent.changeText(
+      screen.getByTestId("resto-type-0"),
+      "Digital Valplast Appliance",
+    );
+
+    await fireEvent.press(screen.getByTestId("new-case-save"));
+
+    await waitFor(() => {
+      expect(mockCreateCaseMutateAsync).toHaveBeenCalledTimes(1);
+    });
+    const submission = mockCreateCaseMutateAsync.mock.calls[0][0] as {
+      data: { restorations?: Array<Record<string, unknown>> };
+    };
+    expect(submission.data.restorations).toEqual([
+      {
+        toothNumber: "",
+        restorationType: "Digital Valplast Appliance",
+        restorationSubtype: "removable/custom:custom-subtype-1",
+        quantity: 1,
+      },
+    ]);
+  });
+
   it("opens the confirmation sheet (not the generic alert) on a 409 DOCTOR_CONFIRMATION_REQUIRED", async () => {
     seedEditableLabWithDoctor();
     mockCreateCaseMutateAsync.mockImplementationOnce(async () => {
@@ -111,10 +169,10 @@ describe("NewCaseScreen — doctor confirmation", () => {
       ]);
     });
 
-    const screen = render(<NewCaseScreen />);
+    const screen = await render(<NewCaseScreen />);
     await fillFormAndSelectDoctor(screen);
 
-    fireEvent.press(screen.getByTestId("new-case-save"));
+    await fireEvent.press(screen.getByTestId("new-case-save"));
 
     await waitFor(() => {
       expect(screen.getAllByTestId("doctor-confirm-candidate")).toHaveLength(1);
@@ -133,10 +191,10 @@ describe("NewCaseScreen — doctor confirmation", () => {
       throw { status: 500, data: { details: { code: "INTERNAL" } } };
     });
 
-    const screen = render(<NewCaseScreen />);
+    const screen = await render(<NewCaseScreen />);
     await fillFormAndSelectDoctor(screen);
 
-    fireEvent.press(screen.getByTestId("new-case-save"));
+    await fireEvent.press(screen.getByTestId("new-case-save"));
 
     await waitFor(() => {
       expect(Alert.alert).toHaveBeenCalledWith(
@@ -160,15 +218,15 @@ describe("NewCaseScreen — doctor confirmation", () => {
       ]);
     });
 
-    const screen = render(<NewCaseScreen />);
+    const screen = await render(<NewCaseScreen />);
     await fillFormAndSelectDoctor(screen);
-    fireEvent.press(screen.getByTestId("new-case-save"));
+    await fireEvent.press(screen.getByTestId("new-case-save"));
 
     await waitFor(() => {
       expect(screen.getByTestId("doctor-confirm-candidate")).toBeTruthy();
     });
 
-    fireEvent.press(screen.getByTestId("doctor-confirm-candidate"));
+    await fireEvent.press(screen.getByTestId("doctor-confirm-candidate"));
 
     await waitFor(() => {
       expect(mockCreateCaseMutateAsync).toHaveBeenCalledTimes(2);
@@ -194,16 +252,16 @@ describe("NewCaseScreen — doctor confirmation", () => {
       ]);
     });
 
-    const screen = render(<NewCaseScreen />);
+    const screen = await render(<NewCaseScreen />);
     await fillFormAndSelectDoctor(screen);
-    fireEvent.press(screen.getByTestId("new-case-save"));
+    await fireEvent.press(screen.getByTestId("new-case-save"));
 
     await waitFor(() => {
       expect(screen.getByTestId("doctor-confirm-candidate")).toBeTruthy();
     });
 
     // The FormSheet primary action ("Create as new doctor") is form-save.
-    fireEvent.press(screen.getByTestId("form-save"));
+    await fireEvent.press(screen.getByTestId("form-save"));
 
     await waitFor(() => {
       expect(mockCreateCaseMutateAsync).toHaveBeenCalledTimes(2);
@@ -213,7 +271,7 @@ describe("NewCaseScreen — doctor confirmation", () => {
     };
     expect(resubmit.data.confirmNewDoctor).toBe(true);
     // Keeps the originally-typed/bound doctor, not a candidate.
-    expect(resubmit.data.doctorName).toBe("Dr. Smith");
+    expect(resubmit.data.doctorName).toBe("Dr. Synthetic063");
     expect(resubmit.data.providerOrganizationId).toBe(ORG_ID);
   });
 });

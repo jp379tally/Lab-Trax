@@ -27,6 +27,10 @@ import {
   AI_STREAM_SERVER_EVENT_FALLBACK_MESSAGE,
   extractAiStreamHttpError,
 } from "@workspace/api-client-react";
+// Keep the client parser tied to the shared server wire contract. The mobile
+// package does not publish api-zod as a runtime dependency, so use its source
+// type directly (type-only; no mobile bundle impact).
+import type { AiAgentStreamEvent } from "../../../lib/api-zod/src/ai-agent-stream";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch, getApiUrl, refreshAndGetAccessToken, getCsrfToken, logDebugEvent } from "@/lib/query-client";
@@ -37,8 +41,33 @@ import {
   generateSessionId,
   type StoredChatSession,
 } from "@/lib/ai-chat-session";
+import { uploadAudioForTranscript } from "@/lib/audio-transcription";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+} from "@/components/ui/DismissKeyboardView";
 
 const AI_VOICE_MODE_KEY = "labtrax_ai_voice_mode_v1";
+const AI_VOICE_KEY = "labtrax_ai_voice_v1";
+
+// ─── Voice catalogue ──────────────────────────────────────────────────────────
+// Mirrors the server-side catalogue in ai-tts-voices.ts.
+// Note: OpenAI does not officially assign genders; labels are user-reported descriptions.
+
+type TtsVoiceId = "alloy" | "ash" | "ballad" | "coral" | "echo" | "sage" | "shimmer" | "verse";
+
+const TTS_DEFAULT_VOICE: TtsVoiceId = "alloy";
+
+const TTS_VOICES: { value: TtsVoiceId; label: string }[] = [
+  { value: "alloy",   label: "Alloy (Neutral 1)" },
+  { value: "ash",     label: "Ash (Masculine 1)" },
+  { value: "ballad",  label: "Ballad (Masculine 2)" },
+  { value: "coral",   label: "Coral (Feminine 1)" },
+  { value: "echo",    label: "Echo (Neutral 2)" },
+  { value: "sage",    label: "Sage (Feminine 2)" },
+  { value: "shimmer", label: "Shimmer (Feminine 3)" },
+  { value: "verse",   label: "Verse (Neutral 3)" },
+];
 
 /** Decode the payload of a JWT (no signature check — just for reading claims). */
 function getJwtUserId(token: string | null): string | null {
@@ -234,47 +263,16 @@ function bytesToBase64(bytes: Uint8Array): string {
   return out;
 }
 
-/** Upload audio blob/URI to /api/ai-stt via XHR (supports native file descriptors). */
-async function uploadAudioForTranscript(fileUri: string, mimeType: string): Promise<string> {
-  const token = await refreshAndGetAccessToken();
-  const baseUrl = getApiUrl();
-  const url = new URL("api/ai-stt", baseUrl).toString();
-
-  const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  if (Platform.OS === "web") {
-    const csrf = getCsrfToken();
-    if (csrf) headers["x-csrf-token"] = csrf;
-  }
-
-  const formData = new FormData();
-  if (Platform.OS === "web") {
-    const blob = await globalThis.fetch(fileUri).then((r) => r.blob());
-    formData.append("audio", blob, "audio.webm");
-  } else {
-    (formData as any).append("audio", { uri: fileUri, name: "audio.m4a", type: mimeType });
-  }
-
-  return new Promise<string>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", url);
-    if (Platform.OS === "web") xhr.withCredentials = true;
-    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
-    xhr.onload = () => {
-      try {
-        const body = JSON.parse(xhr.responseText) as { ok?: boolean; transcript?: string; error?: string };
-        if (xhr.status >= 200 && xhr.status < 300 && body.transcript != null) {
-          resolve(body.transcript);
-        } else {
-          reject(new Error(body.error || "STT failed"));
-        }
-      } catch {
-        reject(new Error("STT parse error"));
-      }
-    };
-    xhr.onerror = () => reject(new Error("Network error"));
-    xhr.send(formData as any);
-  });
+function readToolOutputs(value: unknown): ToolOutput[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const outputs = value.filter(
+    (item): item is ToolOutput =>
+      !!item &&
+      typeof item === "object" &&
+      typeof (item as { name?: unknown }).name === "string" &&
+      "result" in item,
+  );
+  return outputs.length === value.length ? outputs : undefined;
 }
 
 // ─── Waveform animation ───────────────────────────────────────────────────────
@@ -366,7 +364,7 @@ const WELCOME_MSG: ChatMessage = {
   id: "welcome",
   role: "assistant",
   content:
-    "Hi! I'm Maynard. I can help you look up cases and invoices, check due dates, draft messages, and more. What can I help you with?",
+    "Hi! I'm LabTrax Assistant. I can help you look up cases and invoices, check due dates, draft messages, and more. What can I help you with?",
 };
 
 const SUGGESTED_PROMPTS = [
@@ -482,7 +480,7 @@ function ConfirmCard({ action, colors, onConfirm, onReject, onTryAgain, sending 
       >
         <View style={[confirmStyles.row, { marginBottom: 4 }]}>
           <Ionicons name="flash-outline" size={14} color="#b7791f" />
-          <Text style={[confirmStyles.label, { color: "#b7791f" }]}>Proposed action</Text>
+            <Text style={[confirmStyles.label, { color: "#b7791f" }]}>Review</Text>
         </View>
         <Text style={[confirmStyles.summaryText, { color: "#744210" }]}>{action.summary}</Text>
         <View style={[confirmStyles.row, { marginTop: 8 }]}>
@@ -537,7 +535,7 @@ function ConfirmCard({ action, colors, onConfirm, onReject, onTryAgain, sending 
       <View style={[confirmStyles.row, { marginBottom: 4, justifyContent: "space-between" }]}>
         <View style={confirmStyles.row}>
           <Ionicons name="flash-outline" size={14} color="#b7791f" />
-          <Text style={[confirmStyles.label, { color: "#b7791f" }]}>Proposed action</Text>
+          <Text style={[confirmStyles.label, { color: "#b7791f" }]}>Review</Text>
         </View>
         <View style={confirmStyles.row}>
           <Ionicons name="time-outline" size={11} color="#b7791f" />
@@ -712,6 +710,7 @@ function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending, 
     | { draft?: string }
     | undefined;
   const [copied, setCopied] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
 
   // Determine disclaimer callouts for assistant messages.
   // For the retention disclaimer: prefer the structured field from the API (reliable,
@@ -830,6 +829,25 @@ function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending, 
           )}
         </View>
         )}
+        {!isUser && msg.toolOutputs && msg.toolOutputs.length > 0 && (
+          <View style={[styles.detailsBox, { borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}>
+            <Pressable
+              onPress={() => setDetailsExpanded((open) => !open)}
+              accessibilityLabel={detailsExpanded ? "Hide details" : "Show details"}
+              style={styles.detailsHeader}
+            >
+              <Text style={[styles.detailsLabel, { color: colors.textSecondary }]}>
+                {detailsExpanded ? "Hide details" : "Details and sources"}
+              </Text>
+              <Ionicons name={detailsExpanded ? "chevron-up" : "chevron-down"} size={14} color={colors.textSecondary} />
+            </Pressable>
+            {detailsExpanded && msg.toolOutputs.map((output, index) => (
+              <Text key={`${output.name}-${index}`} style={[styles.detailsText, { color: colors.textSecondary }]}>
+                {output.name}: {typeof output.result === "string" ? output.result : JSON.stringify(output.result)}
+              </Text>
+            ))}
+          </View>
+        )}
         {draftTool?.draft && (
           <View style={[styles.draftBox, { borderColor: colors.tint + "40", backgroundColor: colors.tint + "0D" }]}>
             <View style={styles.draftHeader}>
@@ -873,7 +891,6 @@ export default function AiAssistantScreen() {
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MSG]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [autoExecute, setAutoExecute] = useState(false);
 
   // ─── Session list state ──────────────────────────────────────────────────────
   const [allSessions, setAllSessions] = useState<StoredChatSession<ChatMessage>[]>([]);
@@ -883,6 +900,7 @@ export default function AiAssistantScreen() {
   // written once it has at least one real (non-welcome) message.
   const currentSessionIdRef = useRef<string | null>(null);
   const [streamingToolCall, setStreamingToolCall] = useState<string | null>(null);
+  const [streamProgress, setStreamProgress] = useState<string | null>(null);
   const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const messagesRef = useRef<ChatMessage[]>([WELCOME_MSG]);
@@ -898,6 +916,12 @@ export default function AiAssistantScreen() {
   const [voiceMode, setVoiceMode] = useState(false);
   const voiceModeRef = useRef(false);
   voiceModeRef.current = voiceMode;
+  const [ttsVoice, setTtsVoice] = useState<TtsVoiceId>(TTS_DEFAULT_VOICE);
+  const ttsVoiceRef = useRef<TtsVoiceId>(TTS_DEFAULT_VOICE);
+  const voicePrefsLoadedRef = useRef(false);
+  const [showVoicePicker, setShowVoicePicker] = useState(false);
+  const [previewingVoice, setPreviewingVoice] = useState<TtsVoiceId | null>(null);
+  const previewSoundRef = useRef<Audio.Sound | null>(null);
   // When the screen mounts with voice mode remembered as ON (AsyncStorage),
   // we never start the mic without a user tap — so the mode would sit in a
   // confusing half-on state (headphones lit, nothing listening). Track that
@@ -908,6 +932,8 @@ export default function AiAssistantScreen() {
   const [micState, setMicState] = useState<MicState>("idle");
   const [micErrorMsg, setMicErrorMsg] = useState<string | null>(null);
   const [micErrorKind, setMicErrorKind] = useState<"permission" | "other">("other");
+  // VAD phase shown below the conversation button while recording in voice mode.
+  const [vadPhase, setVadPhase] = useState<"waiting" | "speaking">("waiting");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [speakErrorMsg, setSpeakErrorMsg] = useState<string | null>(null);
   const recordingRef = useRef<Audio.Recording | null>(null);
@@ -924,6 +950,15 @@ export default function AiAssistantScreen() {
   const sessionLoadedRef = useRef(false);
   // Tracks isSpeaking transition for auto-listen in voice mode.
   const prevIsSpeakingRef = useRef(false);
+  // VAD (voice activity detection) refs — conversation mode only.
+  const vadIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const vadNoSpeechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speechDetectedRef = useRef(false);
+  const silenceStartRef = useRef<number | null>(null);
+  // Guards the auto-listen effect against the iOS audio-session race: when
+  // Audio.Sound.unloadAsync() is still in flight, opening the mic too early
+  // can leave the audio session in a conflicted state.
+  const audioSessionSettlingRef = useRef(false);
 
   // ─── Chat history persistence ───────────────────────────────────────────────
   // The signed-in user id, resolved on mount and used to scope the stored
@@ -1078,20 +1113,30 @@ export default function AiAssistantScreen() {
     [deletingSessionId],
   );
 
-  // Load voice mode preference from AsyncStorage on mount.
+  // Load voice mode AND voice preference from AsyncStorage on mount.
   useEffect(() => {
-    AsyncStorage.getItem(AI_VOICE_MODE_KEY)
-      .then((val) => {
+    Promise.all([
+      AsyncStorage.getItem(AI_VOICE_MODE_KEY),
+      AsyncStorage.getItem(AI_VOICE_KEY),
+    ])
+      .then(([modeVal, voiceVal]) => {
         voiceModeLoadedRef.current = true;
-        if (val === "true") {
+        voicePrefsLoadedRef.current = true;
+        if (modeVal === "true") {
           setVoiceMode(true);
           // Remembered-on: don't start the mic without a tap — show the
           // "tap to resume" affordance instead.
           setVoiceResumePending(true);
         }
+        if (voiceVal && TTS_VOICES.some((v) => v.value === voiceVal)) {
+          const id = voiceVal as TtsVoiceId;
+          setTtsVoice(id);
+          ttsVoiceRef.current = id;
+        }
       })
       .catch(() => {
         voiceModeLoadedRef.current = true;
+        voicePrefsLoadedRef.current = true;
       });
   }, []);
 
@@ -1100,6 +1145,13 @@ export default function AiAssistantScreen() {
     if (!voiceModeLoadedRef.current) return;
     AsyncStorage.setItem(AI_VOICE_MODE_KEY, voiceMode ? "true" : "false").catch(() => {});
   }, [voiceMode]);
+
+  // Keep ttsVoiceRef in sync and persist voice selection.
+  useEffect(() => {
+    ttsVoiceRef.current = ttsVoice;
+    if (!voicePrefsLoadedRef.current) return;
+    AsyncStorage.setItem(AI_VOICE_KEY, ttsVoice).catch(() => {});
+  }, [ttsVoice]);
 
   // Clear the "tap to resume" affordance once the voice loop is actually
   // running again via some other user gesture (dictation tap, sending a
@@ -1110,13 +1162,25 @@ export default function AiAssistantScreen() {
     }
   }, [voiceResumePending, micState, isSpeaking, sending]);
 
-  // Auto-listen after Maynard finishes speaking (voice mode only, idle mic only).
+  // Auto-listen after the assistant finishes speaking (voice mode only, idle mic only).
   // Skipped when speech playback failed (speakErrorMsg set): silently re-opening
   // the mic after a failed reply made the flow feel like "voice → text only".
+  // Also guarded against the iOS audio-session race: if the previous Sound
+  // unloadAsync is still in flight, defer the mic open by 120 ms.
   useEffect(() => {
     if (prevIsSpeakingRef.current && !isSpeaking && voiceMode && !sending && micState === "idle" && !speakErrorMsg) {
       recordingIntentRef.current = "conversation";
-      startRecording();
+      if (audioSessionSettlingRef.current) {
+        // Audio session is still releasing — retry once after 120 ms.
+        setTimeout(() => {
+          if (!audioSessionSettlingRef.current && voiceModeRef.current && micState === "idle") {
+            recordingIntentRef.current = "conversation";
+            void startRecording();
+          }
+        }, 120);
+      } else {
+        void startRecording();
+      }
     }
     prevIsSpeakingRef.current = isSpeaking;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1124,7 +1188,7 @@ export default function AiAssistantScreen() {
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
-      listRef.current?.scrollToEnd({ animated: true });
+      listRef.current?.scrollToEnd?.({ animated: true });
     }, 80);
   }, []);
 
@@ -1184,11 +1248,11 @@ export default function AiAssistantScreen() {
 
       // Every failure is logged with a stage tag (visible via debug events) and
       // surfaced in the UI. The old implementation swallowed all errors, which
-      // made "Maynard never speaks on my iPhone" undiagnosable.
+      // made voice playback failures on iPhone undiagnosable.
       const failSpeech = (stage: string, detail: Record<string, unknown> = {}) => {
         logDebugEvent("ai_tts_error", { stage, platform: Platform.OS, ...detail });
         setSpeakErrorMsg(
-          "Maynard couldn't speak that reply. Check your volume, then tap the headset button to try again.",
+          "LabTrax Assistant couldn't speak that reply. Check your volume, then tap Voice mode to try again.",
         );
         setIsSpeaking(false);
       };
@@ -1200,7 +1264,7 @@ export default function AiAssistantScreen() {
           const res = await resilientFetch("/api/ai-tts", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: stripped, voice: "alloy" }),
+            body: JSON.stringify({ text: stripped, voice: ttsVoiceRef.current }),
           });
           if (!res.ok) { failSpeech("http", { status: res.status }); return; }
           const blob = await res.blob();
@@ -1231,7 +1295,7 @@ export default function AiAssistantScreen() {
           res = await expoFetch(url, {
             method: "POST",
             headers,
-            body: JSON.stringify({ text: stripped, voice: "alloy" }),
+            body: JSON.stringify({ text: stripped, voice: ttsVoiceRef.current }),
             signal: abort.signal,
           });
         } catch (netErr) {
@@ -1309,7 +1373,15 @@ export default function AiAssistantScreen() {
             }
             if (status.didJustFinish) {
               sound.unloadAsync().catch(() => {});
-              if (soundRef.current === sound) { soundRef.current = null; setIsSpeaking(false); }
+              if (soundRef.current === sound) {
+                soundRef.current = null;
+                // Set the settling flag BEFORE flipping isSpeaking so the
+                // auto-listen effect sees it synchronously and can defer the
+                // mic open until the iOS audio session has fully released.
+                audioSessionSettlingRef.current = true;
+                setIsSpeaking(false);
+                setTimeout(() => { audioSessionSettlingRef.current = false; }, 100);
+              }
             }
           });
           await sound.playAsync();
@@ -1328,6 +1400,75 @@ export default function AiAssistantScreen() {
     [stopSpeaking],
   );
 
+  /**
+   * Play a short sample clip for a given voice so users can evaluate it
+   * before committing. Works independently of voice mode — no state changes
+   * to isSpeaking or the main soundRef.
+   */
+  const previewVoiceSample = useCallback(async (voice: TtsVoiceId) => {
+    // Stop any running preview first.
+    if (previewSoundRef.current) {
+      try { await previewSoundRef.current.stopAsync(); } catch {}
+      try { await previewSoundRef.current.unloadAsync(); } catch {}
+      previewSoundRef.current = null;
+    }
+    // Toggle off when tapping the same voice again.
+    if (previewingVoice === voice) {
+      setPreviewingVoice(null);
+      return;
+    }
+    setPreviewingVoice(voice);
+    try {
+      if (Platform.OS === "web") {
+        const res = await resilientFetch("/api/ai-tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: "Hi, I'm LabTrax Assistant.", voice }),
+        });
+        if (!res.ok) { setPreviewingVoice(null); return; }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new (globalThis as any).Audio(url) as HTMLAudioElement;
+        audio.onended = () => { URL.revokeObjectURL(url); setPreviewingVoice(null); };
+        audio.onerror = () => { URL.revokeObjectURL(url); setPreviewingVoice(null); };
+        await audio.play();
+        return;
+      }
+      // Native (iOS/Android)
+      const token = await refreshAndGetAccessToken();
+      const url = new URL("api/ai-tts", getApiUrl()).toString();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const res = await expoFetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ text: "Hi, I'm LabTrax Assistant.", voice }),
+      });
+      if (!res.ok) { setPreviewingVoice(null); return; }
+      const buf = await res.arrayBuffer();
+      if (!buf.byteLength) { setPreviewingVoice(null); return; }
+      const base64 = bytesToBase64(new Uint8Array(buf));
+      const tmpUri = `${FileSystem.cacheDirectory}tts-preview-${Date.now()}.mp3`;
+      await FileSystem.writeAsStringAsync(tmpUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+      const { sound } = await Audio.Sound.createAsync({ uri: tmpUri }, { shouldPlay: false, volume: 1.0 });
+      previewSoundRef.current = sound;
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) return;
+        if (status.didJustFinish) {
+          sound.unloadAsync().catch(() => {});
+          if (previewSoundRef.current === sound) {
+            previewSoundRef.current = null;
+            setPreviewingVoice(null);
+          }
+        }
+      });
+      await sound.playAsync();
+    } catch {
+      setPreviewingVoice(null);
+    }
+  }, [previewingVoice]);
+
   const startRecording = useCallback(async () => {
     setMicErrorMsg(null);
     try {
@@ -1339,11 +1480,79 @@ export default function AiAssistantScreen() {
           return;
         }
         await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-        const { recording } = await Audio.Recording.createAsync(
-          Audio.RecordingOptionsPresets.HIGH_QUALITY,
-        );
+        // Conversation mode uses metering-enabled options so VAD can read dB levels.
+        // Dictation mode uses the standard preset (no metering overhead needed).
+        const isConversation = recordingIntentRef.current === "conversation";
+        const recordingOptions: Audio.RecordingOptions = isConversation
+          ? { ...Audio.RecordingOptionsPresets.HIGH_QUALITY, isMeteringEnabled: true }
+          : Audio.RecordingOptionsPresets.HIGH_QUALITY;
+        const { recording } = await Audio.Recording.createAsync(recordingOptions);
         recordingRef.current = recording;
         setMicState("listening");
+
+        if (isConversation) {
+          // Reset VAD state for a fresh session.
+          speechDetectedRef.current = false;
+          silenceStartRef.current = null;
+          setVadPhase("waiting");
+
+          // Clear any lingering VAD timers from a previous session.
+          if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+          if (vadNoSpeechTimerRef.current) { clearTimeout(vadNoSpeechTimerRef.current); vadNoSpeechTimerRef.current = null; }
+
+          // 5 s no-speech watchdog: if the user never speaks, close the mic and
+          // surface a "tap to resume" prompt rather than keeping it open forever.
+          vadNoSpeechTimerRef.current = setTimeout(() => {
+            if (!speechDetectedRef.current && recordingRef.current) {
+              setMicErrorMsg("No speech detected — tap the headset button to resume.");
+              void (async () => {
+                const rec = recordingRef.current;
+                recordingRef.current = null;
+                if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+                if (rec) {
+                  try { await (rec as Audio.Recording).stopAndUnloadAsync(); } catch {}
+                  try { await Audio.setAudioModeAsync({ allowsRecordingIOS: false }); } catch {}
+                }
+                setMicState("idle");
+              })();
+            }
+            vadNoSpeechTimerRef.current = null;
+          }, 5000);
+
+          // 200 ms polling loop: read metering dB and auto-stop on silence.
+          vadIntervalRef.current = setInterval(() => {
+            const rec = recordingRef.current;
+            if (!rec) {
+              if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+              if (vadNoSpeechTimerRef.current) { clearTimeout(vadNoSpeechTimerRef.current); vadNoSpeechTimerRef.current = null; }
+              return;
+            }
+            void (rec as Audio.Recording).getStatusAsync().then((st) => {
+              if (!st.isRecording) return;
+              const db = (st as any).metering ?? -160;
+              if (db > -45) {
+                // Speech onset.
+                if (!speechDetectedRef.current) {
+                  speechDetectedRef.current = true;
+                  // Cancel the no-speech watchdog once real speech begins.
+                  if (vadNoSpeechTimerRef.current) { clearTimeout(vadNoSpeechTimerRef.current); vadNoSpeechTimerRef.current = null; }
+                  setVadPhase("speaking");
+                }
+                silenceStartRef.current = null;
+              } else if (db < -50 && speechDetectedRef.current) {
+                // Silence after speech: start or check the 1 500 ms silence window.
+                if (!silenceStartRef.current) {
+                  silenceStartRef.current = Date.now();
+                } else if (Date.now() - silenceStartRef.current > 1500) {
+                  // Silence threshold exceeded → auto-stop.
+                  if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+                  if (vadNoSpeechTimerRef.current) { clearTimeout(vadNoSpeechTimerRef.current); vadNoSpeechTimerRef.current = null; }
+                  void stopRecording();
+                }
+              }
+            }).catch(() => {});
+          }, 200);
+        }
       } else {
         // Web — use MediaRecorder
         const stream = await (navigator as any).mediaDevices.getUserMedia({ audio: true });
@@ -1396,6 +1605,12 @@ export default function AiAssistantScreen() {
   }, []);
 
   const stopRecording = useCallback(async () => {
+    // Always tear down VAD timers first so they can't fire after stop.
+    if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+    if (vadNoSpeechTimerRef.current) { clearTimeout(vadNoSpeechTimerRef.current); vadNoSpeechTimerRef.current = null; }
+    speechDetectedRef.current = false;
+    silenceStartRef.current = null;
+
     const rec = recordingRef.current;
     recordingRef.current = null;
     if (!rec) { setMicState("idle"); return; }
@@ -1476,7 +1691,9 @@ export default function AiAssistantScreen() {
         if (token) headers["Authorization"] = `Bearer ${token}`;
 
         const activeCaseId = caseIdRef.current;
-        const streamBody: Record<string, unknown> = { messages: buildHistory(currentMessages), auto_execute: autoExecute };
+        // Actions always require an explicit confirmation. Do not expose or send
+        // an auto-execute preference from the mobile composer.
+        const streamBody: Record<string, unknown> = { messages: buildHistory(currentMessages), auto_execute: false };
         if (activeCaseId) streamBody.caseId = activeCaseId;
 
         let resp: Awaited<ReturnType<typeof expoFetch>>;
@@ -1538,6 +1755,7 @@ export default function AiAssistantScreen() {
         let buf = "";
         let fullContent = "";
         let finalDisclaimer: string | undefined;
+        let finalToolOutputs: ToolOutput[] | undefined;
         let proposedActionHandled = false;
         let sawTerminalEvent = false;
         let streamReadFailed = false;
@@ -1585,6 +1803,25 @@ export default function AiAssistantScreen() {
               setStreamingToolCall(tc.name ?? null);
             }
 
+            // The shared wire contract is { progress: { phase, message } }.
+            // Keep accepting the older flat progress variants for deployed
+            // servers that have not yet migrated.
+            const typedEvent = evt as {
+              progress?: Extract<AiAgentStreamEvent, { progress: unknown }>["progress"];
+            };
+            if (
+              typedEvent.progress &&
+              typeof typedEvent.progress === "object" &&
+              typeof typedEvent.progress.message === "string"
+            ) {
+              setStreamProgress(typedEvent.progress.message);
+            } else if (
+              (evt.type === "progress" || evt.event === "progress") &&
+              typeof (evt.message ?? evt.label ?? evt.status) === "string"
+            ) {
+              setStreamProgress(String(evt.message ?? evt.label ?? evt.status));
+            }
+
             if (typeof evt.token === "string") {
               if (!fullContent) setStreamingToolCall(null);
               fullContent += evt.token;
@@ -1610,14 +1847,11 @@ export default function AiAssistantScreen() {
             } else if (evt.done) {
               sawTerminalEvent = true;
               if (typeof evt.disclaimer === "string") finalDisclaimer = evt.disclaimer;
-            } else if (evt.auto_executed && typeof evt.auto_executed === "object") {
-              const ae = evt.auto_executed as { toolName?: string; summary?: string; result?: unknown };
-              const indicator = `\n✅ *Auto-executed: ${ae.summary || ae.toolName || "action"}*\n`;
-              fullContent += indicator;
-              setMessages((prev) =>
-                prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
-              );
-              scrollToBottom();
+              finalToolOutputs = readToolOutputs(evt.toolOutputs);
+            } else if (evt.auto_executed) {
+              // Never present a server-side auto-execution event as success:
+              // mobile confirmation is intentionally non-bypassable.
+              setStreamProgress("Action requires confirmation");
             } else if (evt.proposed_action && typeof evt.proposed_action === "object") {
               const pa = evt.proposed_action as { actionId?: string; toolName?: string; summary?: string };
               if (pa.actionId && pa.summary) {
@@ -1668,6 +1902,7 @@ export default function AiAssistantScreen() {
           id: streamingId,
           role: "assistant",
           content: fullContent,
+          ...(finalToolOutputs ? { toolOutputs: finalToolOutputs } : {}),
           ...(finalDisclaimer ? { disclaimer: finalDisclaimer } : {}),
         };
         setMessages((prev) => prev.map((m) => m.id === streamingId ? finalMsg : m));
@@ -1691,6 +1926,7 @@ export default function AiAssistantScreen() {
         scrollToBottom();
       } finally {
         setSending(false);
+        setStreamProgress(null);
         setStreamingToolCall(null);
         setStreamingMsgId(null);
       }
@@ -1797,6 +2033,15 @@ export default function AiAssistantScreen() {
     [messages, sending, dispatchAiStream, scrollToBottom],
   );
 
+  // Unmount cleanup: clear any VAD timers so they can't fire after the screen
+  // is gone. The recording itself is cleaned up separately.
+  useEffect(() => {
+    return () => {
+      if (vadIntervalRef.current) { clearInterval(vadIntervalRef.current); vadIntervalRef.current = null; }
+      if (vadNoSpeechTimerRef.current) { clearTimeout(vadNoSpeechTimerRef.current); vadNoSpeechTimerRef.current = null; }
+    };
+  }, []);
+
   // Keep the ref current so stopRecording (defined earlier) can always call
   // the latest sendMessage without needing it in its dependency array.
   useEffect(() => {
@@ -1841,7 +2086,10 @@ export default function AiAssistantScreen() {
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
 
   return (
-    <View style={[s.screen, { paddingTop: insets.top }]}>
+    <DismissKeyboardView
+      style={[s.screen, { paddingTop: insets.top }]}
+      testID="ai-assistant-keyboard-dismiss"
+    >
       {/* Header */}
       <View style={s.header}>
         <Pressable onPress={() => router.back()} hitSlop={10} style={s.backBtn}>
@@ -1852,7 +2100,7 @@ export default function AiAssistantScreen() {
             <Ionicons name="sparkles" size={14} color={colors.tint} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={[s.headerTitle, { color: colors.text }]}>AI Assistant</Text>
+              <Text style={[s.headerTitle, { color: colors.text }]}>LabTrax Assistant</Text>
             {caseId ? (
               <View style={s.contextPill}>
                 <Ionicons name="document-text-outline" size={10} color={colors.tint} />
@@ -1885,6 +2133,15 @@ export default function AiAssistantScreen() {
               <Ionicons name="time-outline" size={20} color={colors.textSecondary} />
             </Pressable>
           )}
+          <Pressable
+            onPress={() => setShowVoicePicker(true)}
+            hitSlop={10}
+            style={s.clearBtn}
+            accessibilityLabel="Assistant settings"
+            accessibilityHint="Choose the assistant voice"
+          >
+            <Ionicons name="ellipsis-horizontal" size={20} color={colors.textSecondary} />
+          </Pressable>
           <Pressable
             onPress={startNewChat}
             hitSlop={10}
@@ -1923,6 +2180,8 @@ export default function AiAssistantScreen() {
             <FlatList
               data={allSessions}
               keyExtractor={(item) => item.id}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={scrollKeyboardDismissMode}
               style={{ maxHeight: 360 }}
               ListEmptyComponent={
                 <Text style={[s.sessionsEmpty, { color: colors.textSecondary }]}>
@@ -1974,6 +2233,74 @@ export default function AiAssistantScreen() {
         </Pressable>
       </Modal>
 
+      {/* Voice picker modal */}
+      <Modal
+        visible={showVoicePicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowVoicePicker(false)}
+      >
+        <Pressable style={s.sessionsBackdrop} onPress={() => setShowVoicePicker(false)}>
+          <Pressable
+            style={[s.sessionsSheet, { backgroundColor: colors.surface, borderColor: colors.border, marginTop: insets.top + 56 }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={[s.sessionsHeader, { borderBottomColor: colors.border }]}>
+              <Text style={[s.sessionsTitle, { color: colors.text }]}>Voice settings</Text>
+            </View>
+            <Text style={{ fontSize: 11, color: colors.textSecondary, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 4, lineHeight: 16 }}>
+              OpenAI does not officially assign genders; labels are user-reported descriptions only.
+            </Text>
+            {TTS_VOICES.map((v) => {
+              const isSelected = v.value === ttsVoice;
+              const isPreviewing = previewingVoice === v.value;
+              return (
+                <Pressable
+                  key={v.value}
+                  onPress={() => {
+                    setTtsVoice(v.value);
+                    setShowVoicePicker(false);
+                  }}
+                  style={[
+                    s.sessionRow,
+                    { borderBottomColor: colors.border },
+                    isSelected && { backgroundColor: colors.tint + "0D" },
+                  ]}
+                  accessibilityLabel={`Select voice: ${v.label}`}
+                >
+                  <Text style={[s.sessionPreview, { color: isSelected ? colors.tint : colors.text, flex: 1 }]}>
+                    {v.label}
+                  </Text>
+                  <Pressable
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      void previewVoiceSample(v.value);
+                    }}
+                    hitSlop={8}
+                    style={[
+                      voicePreviewBtnStyle.btn,
+                      isPreviewing
+                        ? { backgroundColor: colors.tint }
+                        : { backgroundColor: colors.surfaceSecondary, borderColor: colors.border },
+                    ]}
+                    accessibilityLabel={isPreviewing ? `Stop preview for ${v.label}` : `Play sample for ${v.label}`}
+                  >
+                    <Ionicons
+                      name={isPreviewing ? "stop" : "play"}
+                      size={11}
+                      color={isPreviewing ? "#fff" : colors.textSecondary}
+                    />
+                  </Pressable>
+                  {isSelected && (
+                    <Ionicons name="checkmark" size={16} color={colors.tint} style={{ marginLeft: 6 }} />
+                  )}
+                </Pressable>
+              );
+            })}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       {/* Messages */}
       <KeyboardAvoidingView
         style={s.flex}
@@ -1985,6 +2312,9 @@ export default function AiAssistantScreen() {
           data={messages}
           keyExtractor={keyExtractor}
           renderItem={renderItem}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={scrollKeyboardDismissMode}
+          testID="ai-assistant-messages"
           contentContainerStyle={s.messageList}
           onLayout={scrollToBottom}
           maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
@@ -2070,19 +2400,29 @@ export default function AiAssistantScreen() {
               </Text>
             </View>
           ) : null}
-          {/* Auto-execute toggle */}
-          <View style={s.autoExecuteRow}>
-            <Pressable
-              onPress={() => setAutoExecute((prev) => !prev)}
-              style={[s.autoExecuteChip, { borderColor: autoExecute ? "#d97706" : colors.border, backgroundColor: autoExecute ? "#fef3c7" : colors.surfaceSecondary }]}
-            >
-              <Ionicons name={autoExecute ? "flash" : "flash-outline"} size={10} color={autoExecute ? "#b45309" : colors.textSecondary} />
-              <Text style={[s.autoExecuteText, { color: autoExecute ? "#b45309" : colors.textSecondary }]}>Auto-execute</Text>
-            </Pressable>
-            <Text style={[s.autoExecuteHint, { color: colors.textSecondary }]}>
-              {autoExecute ? "Maynard will run actions without asking" : "Maynard will ask before changing data"}
-            </Text>
-          </View>
+          {voiceMode && !voiceResumePending ? (
+            <View accessibilityLabel={`Voice mode: ${speakErrorMsg ? "Error" : isSpeaking ? "Speaking" : micState === "listening" ? "Listening" : micState === "processing" || sending ? "Thinking" : "Paused"}`} style={[s.voiceStatus, { borderColor: colors.tint + "33", backgroundColor: colors.tint + "0D" }]}>
+              <Ionicons name={isSpeaking ? "volume-high-outline" : micState === "listening" ? "radio-outline" : "pause-outline"} size={14} color={speakErrorMsg ? "#c53030" : colors.tint} />
+              <Text style={[s.voiceStatusText, { color: speakErrorMsg ? "#c53030" : colors.tint }]}>
+                {speakErrorMsg ? "Error" : isSpeaking ? "Speaking" : micState === "listening" ? "Listening" : micState === "processing" || sending ? "Thinking" : "Paused"}
+              </Text>
+              <Pressable
+                accessibilityLabel="Exit voice mode"
+                onPress={() => { setVoiceMode(false); setVoiceResumePending(false); if (isSpeaking) stopSpeaking(); if (micState === "listening") void stopRecording(); }}
+                hitSlop={8}
+              >
+                <Text style={[s.voiceExitText, { color: colors.textSecondary }]}>Exit</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {sending && (
+            <View accessibilityLabel="Assistant progress" accessibilityLiveRegion="polite" style={s.progressRow}>
+              <ActivityIndicator size="small" color={colors.tint} />
+              <Text style={[s.progressText, { color: colors.textSecondary }]}>
+                {streamProgress || "Thinking…"}
+              </Text>
+            </View>
+          )}
           <View style={s.inputRow}>
             <TextInput
               style={[s.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}
@@ -2091,6 +2431,9 @@ export default function AiAssistantScreen() {
               placeholder="Ask me anything…"
               placeholderTextColor={colors.textSecondary}
               multiline
+              autoCorrect={true}
+              spellCheck={true}
+              autoCapitalize="sentences"
               maxLength={800}
               returnKeyType="send"
               blurOnSubmit={false}
@@ -2141,40 +2484,59 @@ export default function AiAssistantScreen() {
             </Pressable>
             {/* Voice conversation push-to-talk */}
             {(() => {
-              const convListening = micState === "listening" && recordingIntentRef.current === "conversation";
+              const isConvMode = recordingIntentRef.current === "conversation";
+              const convListening = micState === "listening" && isConvMode;
+              // VAD phase label shown below the ring while conversation is active.
+              // Split across two conditions because TypeScript narrows micState
+              // to "listening" inside convListening's true branch, making a
+              // micState === "processing" check there a type error.
+              const vadLabel = convListening
+                ? vadPhase === "speaking"
+                  ? "Got it…"
+                  : "Listening…"
+                : micState === "processing" && isConvMode
+                ? "Processing…"
+                : null;
               return (
-                <View style={{ position: "relative", alignItems: "center", justifyContent: "center" }}>
-                  {(convListening || voiceResumePending) && <ConvListeningRing color={colors.tint} />}
-                  <Pressable
-                    onPress={() => {
-                      if (micState === "listening") {
-                        void stopRecording();
-                      } else if (micState !== "processing") {
-                        // A resume tap (voice mode remembered as on) and a
-                        // fresh start both do the same thing: this tap is the
-                        // user gesture that starts the mic and the speak →
-                        // auto-listen loop takes over from there.
-                        setVoiceResumePending(false);
-                        recordingIntentRef.current = "conversation";
-                        if (!voiceMode) setVoiceMode(true);
-                        if (isSpeaking) stopSpeaking();
-                        void startRecording();
-                      }
-                    }}
-                    disabled={sending || micState === "processing"}
-                    style={[
-                      s.micBtn,
-                      convListening && { backgroundColor: colors.tint + "1A", borderColor: colors.tint + "66" },
-                      !convListening && voiceMode && { backgroundColor: colors.tint + "0D", borderColor: colors.tint + "33" },
-                    ]}
-                    accessibilityLabel={voiceResumePending ? "Resume voice conversation" : "Talk with Maynard"}
-                  >
-                    <Ionicons
-                      name={convListening ? "radio-outline" : "headset-outline"}
-                      size={18}
-                      color={convListening || voiceMode ? colors.tint : colors.textSecondary}
-                    />
-                  </Pressable>
+                <View style={{ alignItems: "center", justifyContent: "center" }}>
+                  <View style={{ position: "relative", alignItems: "center", justifyContent: "center" }}>
+                    {(convListening || voiceResumePending) && <ConvListeningRing color={colors.tint} />}
+                    <Pressable
+                      onPress={() => {
+                        if (micState === "listening") {
+                          void stopRecording();
+                        } else if (micState !== "processing") {
+                          // A resume tap (voice mode remembered as on) and a
+                          // fresh start both do the same thing: this tap is the
+                          // user gesture that starts the mic and the speak →
+                          // auto-listen loop takes over from there.
+                          setVoiceResumePending(false);
+                          recordingIntentRef.current = "conversation";
+                          if (!voiceMode) setVoiceMode(true);
+                          if (isSpeaking) stopSpeaking();
+                          void startRecording();
+                        }
+                      }}
+                      disabled={sending || micState === "processing"}
+                      style={[
+                        s.micBtn,
+                        convListening && { backgroundColor: colors.tint + "1A", borderColor: colors.tint + "66" },
+                        !convListening && voiceMode && { backgroundColor: colors.tint + "0D", borderColor: colors.tint + "33" },
+                      ]}
+                      accessibilityLabel={voiceResumePending ? "Resume voice conversation" : "Enter voice mode"}
+                    >
+                      <Ionicons
+                        name={convListening ? "radio-outline" : "headset-outline"}
+                        size={18}
+                        color={convListening || voiceMode ? colors.tint : colors.textSecondary}
+                      />
+                    </Pressable>
+                  </View>
+                  {vadLabel ? (
+                    <Text style={{ fontSize: 9, color: colors.tint, marginTop: 2, lineHeight: 11 }}>
+                      {vadLabel}
+                    </Text>
+                  ) : null}
                 </View>
               );
             })()}
@@ -2189,7 +2551,7 @@ export default function AiAssistantScreen() {
           </View>
         </View>
       </KeyboardAvoidingView>
-    </View>
+    </DismissKeyboardView>
   );
 }
 
@@ -2268,6 +2630,25 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
   },
+  detailsBox: {
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    padding: 8,
+    gap: 5,
+  },
+  detailsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  detailsLabel: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  detailsText: {
+    fontSize: 11,
+    lineHeight: 16,
+  },
   copyBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -2303,6 +2684,18 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#92400e",
     lineHeight: 18,
+  },
+});
+
+const voicePreviewBtnStyle = StyleSheet.create({
+  btn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 6,
   },
 });
 
@@ -2521,26 +2914,33 @@ function makeStyles(colors: ThemeColors) {
       justifyContent: "center",
       flexShrink: 0,
     },
-    autoExecuteRow: {
+    progressRow: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 6,
-    },
-    autoExecuteChip: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 4,
-      paddingHorizontal: 8,
+      gap: 8,
       paddingVertical: 4,
-      borderRadius: Radius.full,
+    },
+    progressText: {
+      fontSize: Typography.tiny.fontSize,
+    },
+    voiceStatus: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 7,
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+      borderRadius: Radius.md,
       borderWidth: 1,
+      marginBottom: 2,
     },
-    autoExecuteText: {
-      fontSize: 10,
-      fontWeight: "500",
+    voiceStatusText: {
+      flex: 1,
+      fontSize: Typography.tiny.fontSize,
+      fontWeight: "600",
     },
-    autoExecuteHint: {
-      fontSize: 10,
+    voiceExitText: {
+      fontSize: Typography.tiny.fontSize,
+      fontWeight: "600",
     },
     micErrorBanner: {
       flexDirection: "row",

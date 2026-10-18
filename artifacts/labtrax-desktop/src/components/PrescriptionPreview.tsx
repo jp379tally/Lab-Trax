@@ -14,11 +14,15 @@ import { toast } from "@/hooks/use-toast";
 import {
   AuthedImage,
   AuthedVideo,
+  buildCaseMediaGallery,
   MediaLightbox,
   isSameApiOrigin,
+  type LightboxItem,
 } from "@/components/AuthedMedia";
+import { classifyMediaKind } from "@/lib/media-kind";
 import { StatusBadge } from "@/components/StatusBadge";
 import { formatDateTime, statusLabel } from "@/lib/format";
+import { historyEventCaseId } from "@/lib/history-event-case";
 import {
   deriveRxSummary,
   formatRxTeethLabel,
@@ -51,7 +55,7 @@ type RemakeChainEntry = {
 };
 
 type Lightbox =
-  | { url: string; kind: "image" | "video"; mimeType?: string }
+  | (LightboxItem & { gallery?: LightboxItem[] })
   | null;
 
 function formatEventType(eventType: string | undefined | null): string {
@@ -111,21 +115,37 @@ export function AttachmentThumb({
   caseId,
   attachment,
   onLightbox,
+  gallery,
 }: {
   caseId: string;
   attachment: CaseAttachment;
   onLightbox: (lb: Lightbox) => void;
+  gallery?: LightboxItem[];
 }) {
   const fileType = attachment.fileType || "";
-  const isImg = fileType.startsWith("image/");
-  const isVid = fileType.startsWith("video/");
+  const mediaKind = classifyMediaKind(fileType, attachment.fileName);
+  const isImg = mediaKind === "image";
+  const isVid = mediaKind === "video";
   const src = `${getApiOrigin()}/api/cases/${caseId}/attachments/${attachment.id}/file`;
+  const galleryItem = gallery?.find((item) => item.attachmentId === attachment.id);
+  const openMedia = () => {
+    const item =
+      galleryItem ??
+      ({
+        attachmentId: attachment.id,
+        url: src,
+        kind: isImg ? "image" : "video",
+        mimeType: fileType || undefined,
+        fileName: attachment.fileName,
+      } satisfies LightboxItem);
+    onLightbox(gallery ? { ...item, gallery } : item);
+  };
 
   if (isImg) {
     return (
       <button
         type="button"
-        onClick={() => onLightbox({ url: src, kind: "image" })}
+        onClick={openMedia}
         className="block group"
         title={`View ${attachment.fileName}`}
       >
@@ -148,7 +168,7 @@ export function AttachmentThumb({
       <button
         type="button"
         onClick={() =>
-          onLightbox({ url: src, kind: "video", mimeType: fileType || "video/mp4" })
+          openMedia()
         }
         className="block group relative"
         title={`Play ${attachment.fileName}`}
@@ -184,6 +204,9 @@ export function AttachmentThumb({
 }
 
 // Renders an attachment referenced inline from a history event's metadata.
+// `caseId` is the case that OWNS the event (see historyEventCaseId) — on a
+// merged remake timeline that is not always the case being viewed, and the
+// protected /file route is scoped to the case in its URL.
 // Exported for the regression guard in
 // components/__tests__/AuthedMedia.attachment.test.tsx, which mounts this real
 // history-timeline thumbnail surface to prove image attachments render through
@@ -192,15 +215,22 @@ export function HistoryEventMedia({
   caseId,
   metadata,
   onLightbox,
+  gallery,
 }: {
   caseId: string;
   metadata: Record<string, unknown>;
   onLightbox: (lb: Lightbox) => void;
+  gallery?: LightboxItem[];
 }) {
   const fileType = String(metadata.fileType ?? "");
   const mediaKind = String(metadata.mediaKind ?? "");
-  const isImg = fileType.startsWith("image/") || mediaKind === "photo";
-  const isVid = fileType.startsWith("video/") || mediaKind === "video";
+  const classifiedKind = classifyMediaKind(
+    fileType,
+    String(metadata.fileName ?? ""),
+    mediaKind,
+  );
+  const isImg = classifiedKind === "image";
+  const isVid = classifiedKind === "video";
   const directSrc = metadata.imageUri ? String(metadata.imageUri) : null;
   const apiSrc = metadata.attachmentId
     ? `${getApiOrigin()}/api/cases/${caseId}/attachments/${String(metadata.attachmentId)}/file`
@@ -216,12 +246,28 @@ export function HistoryEventMedia({
     ) : null;
   }
   const mime = fileType || (isVid ? "video/mp4" : isImg ? "image/jpeg" : undefined);
+  const galleryItem =
+    metadata.attachmentId && gallery
+      ? gallery.find((item) => item.attachmentId === String(metadata.attachmentId))
+      : undefined;
+  const openMedia = () => {
+    const item = galleryItem ?? {
+      url: src,
+      kind: isVid ? ("video" as const) : ("image" as const),
+      mimeType: mime,
+      fileName: metadata.fileName ? String(metadata.fileName) : undefined,
+      ...(metadata.attachmentId
+        ? { attachmentId: String(metadata.attachmentId) }
+        : {}),
+    };
+    onLightbox(galleryItem && gallery ? { ...item, gallery } : item);
+  };
   return (
     <div className="mt-1.5">
       {isImg ? (
         <button
           type="button"
-          onClick={() => onLightbox({ url: src, kind: "image" })}
+           onClick={openMedia}
           className="block group"
           title={`View ${metadata.fileName ?? "image"}`}
         >
@@ -240,7 +286,7 @@ export function HistoryEventMedia({
       ) : isVid ? (
         <button
           type="button"
-          onClick={() => onLightbox({ url: src, kind: "video", mimeType: mime })}
+           onClick={openMedia}
           className="block group relative"
           title={`Play ${metadata.fileName ?? "video"}`}
         >
@@ -324,6 +370,10 @@ export function PrescriptionPreview({
   );
 
   const attachments = data?.attachments ?? [];
+  const mediaGallery = useMemo(
+    () => buildCaseMediaGallery(selectedCaseId, attachments),
+    [selectedCaseId, attachments],
+  );
   const images = attachments.filter((a) => (a.fileType || "").startsWith("image/"));
   const videos = attachments.filter((a) => (a.fileType || "").startsWith("video/"));
   const others = attachments.filter((a) => {
@@ -473,6 +523,12 @@ export function PrescriptionPreview({
                       summary.shades.length > 0 ? summary.shades.join(", ") : "—"
                     }
                   />
+                  {(data as { gingivialShade?: string | null }).gingivialShade ? (
+                    <Field
+                      label="Gingival Shade"
+                      value={(data as { gingivialShade?: string | null }).gingivialShade}
+                    />
+                  ) : null}
                   <Field
                     label={
                       summary.isFullArch ? "Tooth Coverage" : "Tooth Number(s)"
@@ -541,6 +597,7 @@ export function PrescriptionPreview({
                               caseId={selectedCaseId}
                               attachment={a}
                               onLightbox={setLightbox}
+                              gallery={mediaGallery}
                             />
                           ))}
                         </div>
@@ -558,6 +615,7 @@ export function PrescriptionPreview({
                               caseId={selectedCaseId}
                               attachment={a}
                               onLightbox={setLightbox}
+                              gallery={mediaGallery}
                             />
                           ))}
                         </div>
@@ -575,6 +633,7 @@ export function PrescriptionPreview({
                               caseId={selectedCaseId}
                               attachment={a}
                               onLightbox={setLightbox}
+                              gallery={mediaGallery}
                             />
                           ))}
                         </div>
@@ -667,9 +726,14 @@ export function PrescriptionPreview({
                               )}
                             {isAttachment && (
                               <HistoryEventMedia
-                                caseId={selectedCaseId}
+                                // The owning case, not the case on screen: this
+                                // block also renders entries merged in from a
+                                // linked original/remake case, and the /file
+                                // route is scoped to the case in its URL.
+                                caseId={historyEventCaseId(e, selectedCaseId)}
                                 metadata={metadata}
                                 onLightbox={setLightbox}
+                                gallery={mediaGallery}
                               />
                             )}
                           </div>

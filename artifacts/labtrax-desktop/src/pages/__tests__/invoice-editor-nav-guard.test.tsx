@@ -32,7 +32,7 @@ const baseInvoice: Invoice = {
   issuedAt: null,
   dueAt: null,
   items: [],
-  displayMetadata: { patientName: "Jane Doe", billTo: "Dr. Smith" },
+  displayMetadata: { patientName: "Jane Doe", billTo: "Dr. Synthetic063" },
 } as unknown as Invoice;
 
 beforeEach(() => {

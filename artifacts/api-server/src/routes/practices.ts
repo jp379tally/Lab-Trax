@@ -48,6 +48,7 @@ import {
   pricingOverrides,
 } from "@workspace/db";
 import { HttpError, ok, wrapDbError } from "../lib/http";
+import { broadcastCaseUpdated } from "../lib/case-events-ws";
 import { ADMIN_ROLES, requireAnyRole } from "../lib/rbac";
 import { notDeleted } from "../lib/soft-delete";
 import { asyncHandler } from "../middlewares/async-handler";
@@ -253,6 +254,7 @@ router.post(
     const targetId = target.id;
     const targetName = target.displayName || target.name;
 
+    const allMovedCaseIds: string[] = [];
     const result = await db.transaction(async (tx) => {
       let totalCasesMoved = 0;
       let totalInvoicesMoved = 0;
@@ -288,6 +290,7 @@ router.post(
             .update(cases)
             .set({ providerOrganizationId: targetId })
             .where(inArray(cases.id, movedCaseIds));
+          allMovedCaseIds.push(...movedCaseIds);
         }
 
         // 2. Invoices.
@@ -478,6 +481,8 @@ router.post(
       };
     });
 
+    for (const caseId of allMovedCaseIds) broadcastCaseUpdated(caseId, "practice_merged");
+
     return ok(res, {
       ...result,
       // For convenience, also expose the first audit id at the top
@@ -621,6 +626,8 @@ router.post(
     }).catch((err: unknown): never => wrapDbError(err, {
       fallback: "Failed to record merge undo in audit log.",
     }));
+
+    for (const caseId of movedCaseIds) broadcastCaseUpdated(caseId, "practice_merge_undone");
 
     return ok(res, {
       ...result,

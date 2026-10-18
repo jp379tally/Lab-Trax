@@ -87,6 +87,7 @@ vi.mock("@workspace/api-client-react", () => ({
   useAssignLabInboxFile: () => ({ mutate: vi.fn(), isPending: false }),
   useDeleteLabInboxFile: () => ({ mutate: vi.fn(), isPending: false }),
   useBulkDeleteLabInboxFiles: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateLabInboxFileNote: () => ({ mutate: vi.fn(), isPending: false }),
   getListLabInboxFilesQueryKey: (params: unknown) => [
     "lab-inbox-files",
     params,
@@ -157,6 +158,9 @@ let origRevoke: typeof URL.revokeObjectURL | undefined;
 
 beforeEach(() => {
   authedMediaFetch.mockReset();
+  apiFetch.mockReset();
+  createUploadSession.mockReset();
+  sendUploadChunk.mockReset();
   toast.mockReset();
   windowOpen.mockReset();
   inboxFiles = [];
@@ -200,7 +204,7 @@ describe("UnassignedDocumentsCard — View opens an in-app preview window", () =
     windowOpen.mockReturnValue(makePreviewWindow());
 
     renderCard();
-    await clickView(file.originalFilename);
+    await clickView(file.originalFilename!);
 
     await waitFor(() => expect(authedMediaFetch).toHaveBeenCalledTimes(1));
     expect(authedMediaFetch.mock.calls[0]?.[0]).toBe(
@@ -228,7 +232,7 @@ describe("UnassignedDocumentsCard — View opens an in-app preview window", () =
     windowOpen.mockReturnValue(win);
 
     renderCard();
-    await clickView(file.originalFilename);
+    await clickView(file.originalFilename!);
 
     await waitFor(() => expect(win.document.write).toHaveBeenCalled());
     const html = writtenHtml(win);
@@ -251,7 +255,7 @@ describe("UnassignedDocumentsCard — View opens an in-app preview window", () =
     windowOpen.mockReturnValue(win);
 
     renderCard();
-    await clickView(file.originalFilename);
+    await clickView(file.originalFilename!);
 
     await waitFor(() => expect(win.document.write).toHaveBeenCalled());
     const html = writtenHtml(win);
@@ -273,7 +277,7 @@ describe("UnassignedDocumentsCard — View opens an in-app preview window", () =
     windowOpen.mockReturnValue(win);
 
     renderCard();
-    await clickView(file.originalFilename);
+    await clickView(file.originalFilename!);
 
     await waitFor(() => expect(win.document.write).toHaveBeenCalled());
     const html = writtenHtml(win);
@@ -297,7 +301,7 @@ describe("UnassignedDocumentsCard — View opens an in-app preview window", () =
     windowOpen.mockReturnValue(null);
 
     renderCard();
-    await clickView(file.originalFilename);
+    await clickView(file.originalFilename!);
 
     // First attempt is the blank preview window; the fallback opens the blob
     // URL directly in a new tab.
@@ -315,7 +319,7 @@ describe("UnassignedDocumentsCard — View opens an in-app preview window", () =
     windowOpen.mockReturnValue(makePreviewWindow());
 
     renderCard();
-    await clickView(file.originalFilename);
+    await clickView(file.originalFilename!);
 
     await waitFor(() =>
       expect(toast).toHaveBeenCalledWith(
@@ -327,5 +331,72 @@ describe("UnassignedDocumentsCard — View opens an in-app preview window", () =
     );
     expect(windowOpen).not.toHaveBeenCalled();
     expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+});
+
+describe("UnassignedDocumentsCard — per-file upload notes", () => {
+  function setupUploadMocks() {
+    createUploadSession.mockResolvedValue({
+      sessionId: "upload-session",
+      uploadedBytes: 0,
+    });
+    sendUploadChunk.mockResolvedValue({
+      uploadedBytes: 3,
+      complete: true,
+      filename: "stored-file.pdf",
+    });
+    apiFetch.mockResolvedValue({ ok: true });
+  }
+
+  it("uploads a picked file with its optional note", async () => {
+    setupUploadMocks();
+    renderCard();
+
+    const file = new File(["pdf"], "margin-check.pdf", { type: "application/pdf" });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [file] } });
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Please check tooth 14." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload with note" }));
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(apiFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body).toMatchObject({
+      originalFilename: "margin-check.pdf",
+      note: "Please check tooth 14.",
+      labOrganizationId: LAB_ORG_ID,
+    });
+  });
+
+  it("confirms multi-file batches one at a time with distinct notes and supports skipping a note", async () => {
+    setupUploadMocks();
+    renderCard();
+
+    const first = new File(["a"], "first.pdf", { type: "application/pdf" });
+    const second = new File(["b"], "second.pdf", { type: "application/pdf" });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [first, second] } });
+
+    expect(await screen.findByText("1 of 2 files. Notes are optional.")).toBeTruthy();
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "First note" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload with note" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("2 of 2 files. Notes are optional.")).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Skip note & upload" }));
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+    const firstBody = JSON.parse(apiFetch.mock.calls[0]?.[1]?.body as string);
+    const secondBody = JSON.parse(apiFetch.mock.calls[1]?.[1]?.body as string);
+    expect(firstBody.originalFilename).toBe("first.pdf");
+    expect(firstBody.note).toBe("First note");
+    expect(secondBody.originalFilename).toBe("second.pdf");
+    expect(secondBody).not.toHaveProperty("note");
   });
 });

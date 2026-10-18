@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { reloadAppAsync } from "expo";
+import * as Clipboard from "expo-clipboard";
 import {
   StyleSheet,
   View,
@@ -12,13 +13,19 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
+import { createSafeErrorDiagnostic } from "@/lib/safe-error-diagnostic";
 
 export type ErrorFallbackProps = {
   error: Error;
+  componentStack?: string | null;
   resetError: () => void;
 };
 
-export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
+export function ErrorFallback({
+  error,
+  componentStack,
+  resetError,
+}: ErrorFallbackProps) {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === "dark";
   const insets = useSafeAreaInsets();
@@ -33,6 +40,8 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
   };
 
   const [isModalVisible, setIsModalVisible] = useState(false);
+  const [diagnosticCopied, setDiagnosticCopied] = useState(false);
+  const [diagnosticCopyFailed, setDiagnosticCopyFailed] = useState(false);
 
   const handleRestart = async () => {
     try {
@@ -40,6 +49,23 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
     } catch (restartError) {
       console.error("Failed to restart app:", restartError);
       resetError();
+    }
+  };
+
+  const handleCopyDiagnostic = async () => {
+    try {
+      const diagnostic = createSafeErrorDiagnostic(
+        error?.name,
+        componentStack,
+        error?.message,
+        error?.stack,
+      );
+      await Clipboard.setStringAsync(diagnostic);
+      setDiagnosticCopied(true);
+      setDiagnosticCopyFailed(false);
+    } catch {
+      setDiagnosticCopied(false);
+      setDiagnosticCopyFailed(true);
     }
   };
 
@@ -101,6 +127,29 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
             Try Again
           </Text>
         </Pressable>
+        <Pressable
+          onPress={() => void handleCopyDiagnostic()}
+          accessibilityLabel="Copy safe error diagnostic"
+          accessibilityRole="button"
+          style={({ pressed }) => [
+            styles.diagnosticButton,
+            { opacity: pressed ? 0.65 : 1 },
+          ]}
+        >
+          <Text style={[styles.diagnosticButtonText, { color: theme.link }]}>
+            {diagnosticCopied
+              ? "Diagnostic copied"
+              : "Copy diagnostic for support"}
+          </Text>
+        </Pressable>
+        {diagnosticCopyFailed ? (
+          <Text
+            accessibilityLiveRegion="polite"
+            style={[styles.diagnosticStatus, { color: theme.textSecondary }]}
+          >
+            Couldn’t copy the diagnostic. Please try again.
+          </Text>
+        ) : null}
       </View>
 
       {__DEV__ ? (
@@ -235,6 +284,21 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     textAlign: "center",
     fontSize: 16,
+  },
+  diagnosticButton: {
+    minHeight: 44,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  diagnosticButtonText: {
+    fontSize: 14,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  diagnosticStatus: {
+    fontSize: 12,
+    textAlign: "center",
   },
   modalOverlay: {
     flex: 1,

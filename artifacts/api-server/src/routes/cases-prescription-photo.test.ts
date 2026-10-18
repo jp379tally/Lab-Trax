@@ -164,7 +164,7 @@ maybe(
         id: caseId,
         caseNumber,
         patientName: "Yasmin Newsom",
-        doctorName: "Dr. Chinara Garraway",
+        doctorName: "Dr. Synthetic020 Provider020",
         toothIndices: "#8, #9",
         shade: "A1",
         material: "Zirconia",

@@ -1,65 +1,60 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Link, useLocation } from "wouter";
 import {
-  AlertCircle,
   AlertTriangle,
-  ArrowRight,
-  Ban,
+  Calendar,
+  CalendarOff,
+  Check,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
+  FileText,
+  ChevronsUpDown,
   Clock,
-  HardDrive,
   Loader2,
-  Play,
   Plus,
   Sparkles,
   Upload,
-  X,
   XCircle,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAiPanel } from "@/lib/ai-panel-context";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
 import { retryUnlessForbidden, haltPollingIfForbidden } from "@/lib/platform-admin-query";
-import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
-import { TriggeredByBadge } from "@/components/TriggeredByBadge";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { LabCase, MeResponse } from "@/lib/types";
-import { formatDate, formatDateTime, formatDueDate, isDueToday, relativeTime } from "@/lib/format";
+import { compareDueDateTime, formatDate, formatDateTime, formatDueDate, getLocalDayRange, hasUsableDueDate, isDueToday, isPastDue, relativeTime, statusLabel } from "@/lib/format";
+import { deriveCaseTypeIndicator } from "@/lib/case-date-filter";
 import { useDayChange } from "@/hooks/useDayChange";
+import {
+  getLocalCalendarDateParts,
+} from "@workspace/calendar-date";
 import { StatusBadge } from "@/components/StatusBadge";
 import { DashboardDropZone } from "@/components/DashboardDropZone";
 import { UnassignedDocumentsCard } from "@/components/UnassignedDocumentsCard";
-import { NewCaseModal, CaseDrawer } from "./cases";
+import { ExceptionCasesCard } from "@/components/ExceptionCasesCard";
+import { NewCaseModal, CaseDrawer, stepLabel } from "./cases";
 import { useAuth } from "@/lib/auth-context";
 import { DashboardSubscriptionBanner } from "@/components/TrialBanner";
+import {
+  DUE_TOMORROW_SORT_LABELS,
+  sortDueTomorrowCases as sortSharedDueTomorrowCases,
+  type DueTomorrowSort,
+  useListLabInboxFiles,
+  getListLabInboxFilesQueryKey,
+} from "@workspace/api-client-react";
 
-interface MediaCleanupRun {
-  id: string;
-  startedAt: string;
-  finishedAt: string | null;
-  dryRun: boolean;
-  status: string;
-  errorMessage: string | null;
-  scannedFiles: number;
-  referencedFiles: number;
-  orphanCount: number;
-  removedCount: number;
-  freedBytes: number;
-  errorCount: number;
-  triggeredBy: string;
-  createdAt: string;
-}
+export { DUE_TOMORROW_SORT_LABELS };
+export type { DueTomorrowSort };
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / Math.pow(1024, i);
-  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
-}
 
 interface LabLookupResult {
   id: string;
@@ -76,7 +71,14 @@ interface MyJoinRequest {
   id: string;
   organizationId: string;
   status: string;
-  organization?: { id: string; name: string; displayName?: string | null } | null;
+  organization?: {
+    id: string;
+    name: string;
+    displayName?: string | null;
+    // "lab" or "provider" — providers joining an existing practice see
+    // practice-flavored copy on the waiting card.
+    type?: string | null;
+  } | null;
 }
 
 // Self-serve "request to join a lab" card shown to signed-up users who are not
@@ -162,10 +164,11 @@ export function JoinLabCard() {
   });
 
   if (approvedRequest) {
+    const isPractice = approvedRequest.organization?.type === "provider";
     const labName =
       approvedRequest.organization?.displayName ||
       approvedRequest.organization?.name ||
-      "the lab";
+      (isPractice ? "the practice" : "the lab");
     return (
       <div className="max-w-md w-full text-center bg-card border border-border rounded-xl shadow-sm p-8">
         <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-emerald-500/10 flex items-center justify-center">
@@ -185,10 +188,11 @@ export function JoinLabCard() {
   }
 
   if (pendingRequest) {
+    const isPractice = pendingRequest.organization?.type === "provider";
     const labName =
       pendingRequest.organization?.displayName ||
       pendingRequest.organization?.name ||
-      "the lab";
+      (isPractice ? "the practice" : "the lab");
     return (
       <div className="max-w-md w-full text-center bg-card border border-border rounded-xl shadow-sm p-8">
         <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-amber-500/10 flex items-center justify-center">
@@ -198,7 +202,7 @@ export function JoinLabCard() {
         <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
           Your request to join{" "}
           <span className="font-medium text-foreground">{labName}</span> has been
-          sent. You'll get access as soon as a lab admin approves it.
+          sent. You'll get access as soon as {isPractice ? "a practice admin or its lab" : "a lab admin"} approves it.
         </p>
         <button
           type="button"
@@ -213,10 +217,11 @@ export function JoinLabCard() {
   }
 
   if (declinedRequest) {
+    const isPractice = declinedRequest.organization?.type === "provider";
     const labName =
       declinedRequest.organization?.displayName ||
       declinedRequest.organization?.name ||
-      "the lab";
+      (isPractice ? "the practice" : "the lab");
     return (
       <div className="max-w-md w-full text-center bg-card border border-border rounded-xl shadow-sm p-8">
         <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-destructive/10 flex items-center justify-center">
@@ -334,10 +339,6 @@ export function JoinLabCard() {
   );
 }
 
-interface CleanupScheduleSettings {
-  hourUtc: number;
-}
-
 interface BackupScheduleSettings {
   hourUtc: number;
   lastSuccessfulBackupAt?: string | null;
@@ -353,696 +354,21 @@ function isBackupStale(lastSuccessfulBackupAt: string | null | undefined, staleD
   return Date.now() - last > staleDays * 24 * 60 * 60 * 1000;
 }
 
-interface RunNowResult {
-  ok: boolean;
-  status: string;
-  errorMessage: string | null;
-  removedCount: number;
-  freedBytes: number;
-}
-
-type CleanupStage = "idle" | "scanning" | "checking-references" | "removing" | "finishing";
-
-interface CleanupProgress {
-  stage: CleanupStage;
-  scannedFiles?: number;
-  orphanCount?: number;
-}
-
-function stageBadgeLabel(progress: CleanupProgress | null | undefined): string {
-  if (!progress || progress.stage === "idle") return "Running\u2026";
-  switch (progress.stage) {
-    case "scanning":           return "Scanning\u2026";
-    case "checking-references": return "Checking\u2026";
-    case "removing":           return "Removing\u2026";
-    case "finishing":          return "Finishing\u2026";
-    default:                   return "Running\u2026";
-  }
-}
-
-const CLEANUP_STAGES: CleanupStage[] = ["scanning", "checking-references", "removing", "finishing"];
-const STAGE_LABELS: Record<CleanupStage, string> = {
-  idle: "Starting",
-  scanning: "Scan",
-  "checking-references": "Check",
-  removing: "Remove",
-  finishing: "Finish",
-};
-
-function stageIndex(stage: CleanupStage): number {
-  const idx = CLEANUP_STAGES.indexOf(stage);
-  return idx === -1 ? -1 : idx;
-}
-
-function CleanupProgressBar({ progress }: { progress: CleanupProgress | null | undefined }) {
-  const stage = progress?.stage ?? "idle";
-  const activeIdx = stageIndex(stage);
-
-  return (
-    <div className="space-y-2">
-      <div className="flex gap-1">
-        {CLEANUP_STAGES.map((s, i) => {
-          const isCompleted = activeIdx > i;
-          const isActive = activeIdx === i;
-          const isPending = activeIdx < i && activeIdx !== -1;
-          const isIndeterminate = activeIdx === -1;
-          return (
-            <div key={s} className="flex-1 flex flex-col gap-1 items-start">
-              <div
-                className={`w-full h-1.5 rounded-full overflow-hidden ${
-                  isCompleted
-                    ? "bg-primary"
-                    : isActive
-                    ? "bg-primary/30"
-                    : "bg-border"
-                }`}
-              >
-                {(isActive || isIndeterminate) && (
-                  <div
-                    className="h-full rounded-full bg-primary origin-left animate-[cleanup-pulse_1.4s_ease-in-out_infinite]"
-                    style={{ width: "60%" }}
-                  />
-                )}
-                {isCompleted && <div className="h-full w-full bg-primary" />}
-              </div>
-              <span
-                className={`text-[10px] leading-none font-medium transition-colors ${
-                  isCompleted
-                    ? "text-primary"
-                    : isActive || isIndeterminate
-                    ? "text-foreground"
-                    : isPending
-                    ? "text-muted-foreground/50"
-                    : "text-muted-foreground/40"
-                }`}
-              >
-                {STAGE_LABELS[s]}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function stageDetailLabel(progress: CleanupProgress | null | undefined): string {
-  if (!progress || progress.stage === "idle") return "Starting\u2026";
-  switch (progress.stage) {
-    case "scanning":
-      return "Scanning files on disk\u2026";
-    case "checking-references":
-      return progress.scannedFiles != null
-        ? `Checking ${progress.scannedFiles.toLocaleString()} file${progress.scannedFiles === 1 ? "" : "s"} against the database\u2026`
-        : "Checking references in database\u2026";
-    case "removing":
-      return progress.orphanCount != null && progress.orphanCount > 0
-        ? `Removing ${progress.orphanCount.toLocaleString()} orphan${progress.orphanCount === 1 ? "" : "s"}\u2026`
-        : "No orphans found — finishing\u2026";
-    case "finishing":
-      return "Saving results\u2026";
-    default:
-      return "Running\u2026";
-  }
-}
-
-function ElapsedTimer({ startedAt }: { startedAt: string | null }) {
-  const [elapsed, setElapsed] = useState<number | null>(() => {
-    if (!startedAt) return null;
-    return Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
-  });
-
-  useEffect(() => {
-    if (!startedAt) {
-      setElapsed(null);
-      return;
-    }
-    const start = new Date(startedAt).getTime();
-    setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
-    const id = setInterval(() => {
-      setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [startedAt]);
-
-  if (elapsed === null) return null;
-
-  const display =
-    elapsed < 60
-      ? `${elapsed} s`
-      : elapsed < 3600
-      ? `${Math.floor(elapsed / 60)} m ${elapsed % 60} s`
-      : `${Math.floor(elapsed / 3600)} h ${Math.floor((elapsed % 3600) / 60)} m`;
-
-  return (
-    <p className="text-[11px] text-muted-foreground/70">Running for {display}</p>
-  );
-}
-
-type ManualRunFeedback =
-  | { kind: "success"; removedCount: number; freedBytes: number }
-  | { kind: "error"; message: string };
-
-
-const HISTORY_LIMIT = 20;
-
-
-function RunHistoryTable({ runs }: { runs: MediaCleanupRun[] }) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="text-[10px] uppercase tracking-wide text-muted-foreground border-b border-border/60">
-            <th className="text-left font-medium py-2 pr-3 whitespace-nowrap">When</th>
-            <th className="text-left font-medium py-2 pr-3 whitespace-nowrap">Source</th>
-            <th className="text-right font-medium py-2 pr-3 whitespace-nowrap">Removed</th>
-            <th className="text-right font-medium py-2 pr-3 whitespace-nowrap">Freed</th>
-            <th className="text-left font-medium py-2 whitespace-nowrap">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map((run) => {
-            const isError = run.status === "error";
-            const isRunningRow = run.status === "running";
-            const isCancelled = run.status === "cancelled";
-            const isDash = isRunningRow || isCancelled;
-            return (
-              <tr key={run.id} className="border-b border-border/40 last:border-0 hover:bg-secondary/30">
-                <td className="py-1.5 pr-3 text-muted-foreground whitespace-nowrap" title={formatDateTime(run.startedAt)}>
-                  {relativeTime(run.startedAt)}
-                </td>
-                <td className="py-1.5 pr-3 whitespace-nowrap">
-                  <TriggeredByBadge triggeredBy={run.triggeredBy} run={run} />
-                </td>
-                <td className="py-1.5 pr-3 text-right tabular-nums">
-                  {isDash ? "—" : run.removedCount.toLocaleString()}
-                </td>
-                <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">
-                  {isDash ? "—" : formatBytes(run.freedBytes)}
-                </td>
-                <td className="py-1.5">
-                  {isRunningRow ? (
-                    <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                      <Loader2 size={11} className="animate-spin" />
-                      Running
-                    </span>
-                  ) : isCancelled ? (
-                    <span className="inline-flex items-center gap-1 text-muted-foreground">
-                      <XCircle size={11} />
-                      Cancelled
-                    </span>
-                  ) : isError && run.errorMessage?.toLowerCase().includes("interrupted") ? (
-                    <div>
-                      <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                        <AlertTriangle size={11} />
-                        <span>Interrupted</span>
-                      </span>
-                      <div className="mt-0.5 text-[10px] text-amber-600/80 dark:text-amber-400/80 leading-tight">
-                        {run.errorMessage}
-                      </div>
-                    </div>
-                  ) : isError ? (
-                    <div>
-                      <span className="inline-flex items-center gap-1 text-destructive">
-                        <AlertCircle size={11} />
-                        <span>Error</span>
-                      </span>
-                      {run.errorMessage && (
-                        <div className="mt-0.5 text-[10px] text-destructive/70 leading-tight">
-                          {run.errorMessage}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
-                      <CheckCircle2 size={11} />
-                      OK
-                    </span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function MediaCleanupCard() {
-  const qc = useQueryClient();
-  const [feedback, setFeedback] = useState<ManualRunFeedback | null>(null);
-  const [showHistory, setShowHistory] = useState(false);
-  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
-  const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const scheduleDismiss = () => {
-    if (dismissTimer.current) clearTimeout(dismissTimer.current);
-    dismissTimer.current = setTimeout(() => setFeedback(null), 6000);
-  };
-
-  const dismissFeedback = () => {
-    if (dismissTimer.current) clearTimeout(dismissTimer.current);
-    setFeedback(null);
-  };
-
-  useEffect(() => () => {
-    if (dismissTimer.current) clearTimeout(dismissTimer.current);
-  }, []);
-
-  const runsQuery = useQuery({
-    queryKey: ["admin", "cleanup", "runs", HISTORY_LIMIT],
-    queryFn: () =>
-      apiFetch<{ runs: MediaCleanupRun[] }>(
-        `/admin/cleanup/orphaned-media/runs?limit=${HISTORY_LIMIT}`,
-      ),
-    retry: retryUnlessForbidden,
-    refetchInterval: haltPollingIfForbidden((query) => {
-      const latest = query.state.data?.runs?.[0];
-      return latest?.status === "running" ? 5_000 : 5 * 60 * 1000;
-    }),
-  });
-
-  const scheduleQuery = useQuery({
-    queryKey: ["admin", "cleanup-schedule"],
-    queryFn: () => apiFetch<CleanupScheduleSettings>("/admin/settings/cleanup-schedule"),
-    retry: retryUnlessForbidden,
-    staleTime: 5 * 60 * 1000,
-  });
-
-  const runNowMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<RunNowResult>("/admin/cleanup/orphaned-media/run", {
-        method: "POST",
-      }),
-    onMutate: () => {
-      dismissFeedback();
-    },
-    onSuccess: (data) => {
-      void qc.invalidateQueries({ queryKey: ["admin", "cleanup", "runs"] });
-      if (data.status === "cancelled") {
-        setFeedback({ kind: "error", message: "Cleanup run was cancelled." });
-        scheduleDismiss();
-      } else if (data.status === "error" || !data.ok) {
-        setFeedback({
-          kind: "error",
-          message: data.errorMessage ?? "Cleanup run failed.",
-        });
-        scheduleDismiss();
-      } else {
-        setFeedback({
-          kind: "success",
-          removedCount: data.removedCount,
-          freedBytes: data.freedBytes,
-        });
-        scheduleDismiss();
-      }
-    },
-    onError: (err: Error) => {
-      setFeedback({
-        kind: "error",
-        message: err.message || "Cleanup run failed.",
-      });
-      scheduleDismiss();
-    },
-  });
-
-  const cancelMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ ok: boolean; message: string }>("/admin/cleanup/orphaned-media/cancel", {
-        method: "POST",
-      }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["admin", "cleanup"] });
-    },
-    onError: () => {
-      // Silently ignore cancel errors — the run may have finished already.
-    },
-  });
-
-  const backupScheduleQuery = useQuery({
-    queryKey: ["admin", "backup-schedule"],
-    queryFn: () => apiFetch<BackupScheduleSettings>("/admin/settings/backup-schedule"),
-    retry: retryUnlessForbidden,
-    staleTime: 5 * 60 * 1000,
-  });
-
-  const allRuns = runsQuery.data?.runs ?? [];
-  const lastRun = allRuns[0] ?? null;
-  const isRunningFromQuery = lastRun?.status === "running";
-
-  const cleanupStatusQuery = useQuery({
-    queryKey: ["admin", "cleanup", "status"],
-    queryFn: () => apiFetch<CleanupProgress>("/admin/cleanup/orphaned-media/status"),
-    retry: retryUnlessForbidden,
-    refetchInterval: haltPollingIfForbidden((query) => {
-      const stage = query.state.data?.stage;
-      return runNowMutation.isPending || isRunningFromQuery || (stage && stage !== "idle")
-        ? 1500
-        : 5_000;
-    }),
-  });
-
-  const isRunningFromProgress =
-    cleanupStatusQuery.data != null && cleanupStatusQuery.data.stage !== "idle";
-
-  const isAlreadyRunning =
-    runNowMutation.error instanceof ApiError && runNowMutation.error.status === 409;
-
-  const hasError = lastRun?.status === "error";
-  const nextRunLabel =
-    scheduleQuery.data != null ? formatNextCleanupTime(scheduleQuery.data.hourUtc) : null;
-  const isRunning = runNowMutation.isPending || isRunningFromQuery || isRunningFromProgress;
-
-  useEffect(() => {
-    if (!isRunning) setShowCancelConfirm(false);
-  }, [isRunning]);
-
-  const nextBackupLabel =
-    backupScheduleQuery.data != null ? formatNextBackupTime(backupScheduleQuery.data.hourUtc) : null;
-
-  const gate = usePlatformAdminGate([
-    runsQuery.error,
-    scheduleQuery.error,
-    backupScheduleQuery.error,
-    cleanupStatusQuery.error,
-    runNowMutation.error,
-  ]);
-
-  return (
-    <section className="bg-card border border-border rounded-xl">
-      <header className="flex items-center gap-2 px-5 py-3.5 border-b border-border">
-        <HardDrive size={14} className="text-muted-foreground" />
-        <div className="flex-1 min-w-0">
-          <h2 className="text-sm font-semibold">Media Cleanup</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Last nightly orphaned-media run
-          </p>
-        </div>
-        {isRunning ? (
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-secondary text-foreground opacity-60">
-              <Loader2 size={11} className="animate-spin" />
-              {stageBadgeLabel(cleanupStatusQuery.data)}
-            </span>
-            <button
-              type="button"
-              onClick={() => setShowCancelConfirm(true)}
-              disabled={cancelMutation.isPending}
-              title="Cancel cleanup run"
-              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-destructive/40 bg-destructive/10 hover:bg-destructive/20 text-destructive disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-            >
-              <XCircle size={11} />
-              {cancelMutation.isPending ? "Cancelling…" : "Cancel"}
-            </button>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => runNowMutation.mutate()}
-            title="Run cleanup now"
-            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-secondary hover:bg-secondary/80 text-foreground transition-colors shrink-0"
-          >
-            <Play size={11} />
-            Run now
-          </button>
-        )}
-      </header>
-
-      <div className="px-5 py-4 space-y-3 text-sm">
-        {showCancelConfirm && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-3 space-y-2.5">
-            <div className="flex items-start gap-2">
-              <AlertTriangle size={13} className="shrink-0 mt-0.5 text-destructive" />
-              <div className="space-y-0.5">
-                <p className="text-xs font-medium text-destructive">
-                  {cleanupStatusQuery.data?.stage === "removing"
-                    ? "Cancel while removing?"
-                    : "Cancel this cleanup run?"}
-                </p>
-                <p className="text-xs text-muted-foreground leading-snug">
-                  {cleanupStatusQuery.data?.stage === "removing"
-                    ? "Files are being deleted right now. Stopping mid-run may leave some orphans removed and others not — any files already removed will not be restored."
-                    : "Are you sure you want to stop this run? Any files already removed will not be restored."}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 justify-end">
-              <button
-                type="button"
-                onClick={() => setShowCancelConfirm(false)}
-                className="inline-flex items-center h-6 px-2.5 rounded text-xs font-medium border border-border bg-secondary hover:bg-secondary/80 text-foreground transition-colors"
-              >
-                Keep running
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowCancelConfirm(false);
-                  cancelMutation.mutate();
-                }}
-                disabled={cancelMutation.isPending}
-                className="inline-flex items-center h-6 px-2.5 rounded text-xs font-medium border border-destructive/40 bg-destructive/10 hover:bg-destructive/20 text-destructive disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-              >
-                {cancelMutation.isPending ? "Cancelling…" : "Cancel run"}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {feedback && (
-          <div
-            className={`flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs ${
-              feedback.kind === "success"
-                ? "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400"
-                : "border-destructive/30 bg-destructive/5 text-destructive"
-            }`}
-          >
-            {feedback.kind === "success" ? (
-              <CheckCircle2 size={13} className="shrink-0 mt-px" />
-            ) : (
-              <AlertCircle size={13} className="shrink-0 mt-px" />
-            )}
-            <span className="flex-1">
-              {feedback.kind === "success"
-                ? feedback.removedCount === 0
-                  ? "No orphaned files found — nothing to remove."
-                  : `Removed ${feedback.removedCount} orphan${feedback.removedCount === 1 ? "" : "s"}, freed ${formatBytes(feedback.freedBytes)}.`
-                : feedback.message}
-            </span>
-            <button
-              type="button"
-              onClick={dismissFeedback}
-              className="shrink-0 opacity-60 hover:opacity-100 transition-opacity"
-              aria-label="Dismiss"
-            >
-              <X size={12} />
-            </button>
-          </div>
-        )}
-
-        {isRunning && (
-          <div className="space-y-2">
-            <CleanupProgressBar progress={cleanupStatusQuery.data} />
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Loader2 size={11} className="animate-spin shrink-0" />
-              <span>{stageDetailLabel(cleanupStatusQuery.data)}</span>
-            </div>
-            {isRunningFromQuery && (() => {
-              return (
-                <div className="flex items-center gap-2">
-                  <ElapsedTimer startedAt={lastRun.startedAt} />
-                  {lastRun.triggeredBy && (
-                    <TriggeredByBadge triggeredBy={lastRun.triggeredBy} run={lastRun} />
-                  )}
-                </div>
-              );
-            })()}
-          </div>
-        )}
-
-        {gate.blocked && <PlatformAdminSetupNotice />}
-
-        {runsQuery.isLoading && !gate.blocked && (
-          <p className="text-muted-foreground text-xs">Loading…</p>
-        )}
-
-        {runsQuery.isError && !gate.blocked && (
-          <div className="flex items-center gap-2 text-destructive text-xs">
-            <AlertCircle size={13} className="shrink-0" />
-            Failed to load cleanup history.
-          </div>
-        )}
-
-        {isAlreadyRunning && (
-          <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-xs">
-            <AlertTriangle size={13} className="shrink-0" />
-            Cleanup already in progress — please wait for it to finish.
-          </div>
-        )}
-
-        {runNowMutation.isError && !isAlreadyRunning && !gate.blocked && (
-          <div className="flex items-center gap-2 text-destructive text-xs">
-            <AlertCircle size={13} className="shrink-0" />
-            {runNowMutation.error instanceof Error
-              ? runNowMutation.error.message
-              : "Failed to start cleanup."}
-          </div>
-        )}
-
-        {!runsQuery.isLoading && !runsQuery.isError && !lastRun && (
-          <div className="flex items-center gap-2 text-muted-foreground text-xs">
-            <Clock size={13} />
-            Not yet run — no cleanup has completed yet.
-          </div>
-        )}
-
-        {lastRun && !isRunningFromQuery && !isRunningFromProgress && (
-          <>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              {hasError ? (
-                <AlertCircle size={13} className="text-destructive shrink-0" />
-              ) : (
-                <CheckCircle2 size={13} className="text-green-600 dark:text-green-400 shrink-0" />
-              )}
-              <span>
-                Ran {relativeTime(lastRun.startedAt)}{" "}
-                <span className="text-foreground/50">·</span>{" "}
-                {formatDateTime(lastRun.startedAt)}
-              </span>
-              {lastRun.triggeredBy && (
-                <TriggeredByBadge triggeredBy={lastRun.triggeredBy} run={lastRun} />
-              )}
-            </div>
-
-            <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-md bg-secondary/50 px-3 py-2.5">
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
-                  Scanned
-                </div>
-                <div className="font-semibold text-base tabular-nums">
-                  {lastRun.scannedFiles.toLocaleString()}
-                </div>
-                <div className="text-[11px] text-muted-foreground">files</div>
-              </div>
-              <div className="rounded-md bg-secondary/50 px-3 py-2.5">
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
-                  Removed
-                </div>
-                <div className="font-semibold text-base tabular-nums">
-                  {lastRun.removedCount.toLocaleString()}
-                </div>
-                <div className="text-[11px] text-muted-foreground">orphans</div>
-              </div>
-              <div className="rounded-md bg-secondary/50 px-3 py-2.5">
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
-                  Freed
-                </div>
-                <div className="font-semibold text-base tabular-nums">
-                  {formatBytes(lastRun.freedBytes)}
-                </div>
-                <div className="text-[11px] text-muted-foreground">disk space</div>
-              </div>
-            </div>
-
-            {(hasError || lastRun.errorCount > 0) && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-xs space-y-1">
-                <div className="font-medium text-destructive flex items-center gap-1.5">
-                  <AlertCircle size={12} />
-                  {hasError
-                    ? "Cleanup run failed"
-                    : `${lastRun.errorCount} error${lastRun.errorCount === 1 ? "" : "s"} during cleanup`}
-                </div>
-                {lastRun.errorMessage && (
-                  <p className="text-muted-foreground truncate">{lastRun.errorMessage}</p>
-                )}
-              </div>
-            )}
-          </>
-        )}
-
-        {allRuns.length > 0 && (
-          <div className="pt-1 border-t border-border/60">
-            <button
-              type="button"
-              onClick={() => setShowHistory((v) => !v)}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors w-full py-1"
-            >
-              {showHistory ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-              <span className="font-medium">
-                {showHistory ? "Hide" : "Show"} run history
-              </span>
-              <span className="ml-auto text-[10px]">
-                {allRuns.length} run{allRuns.length === 1 ? "" : "s"}
-              </span>
-            </button>
-
-            {showHistory && (
-              <div className="mt-2">
-                <RunHistoryTable runs={allRuns} />
-              </div>
-            )}
-          </div>
-        )}
-
-        {backupScheduleQuery.isSuccess && isBackupStale(backupScheduleQuery.data?.lastSuccessfulBackupAt, backupScheduleQuery.data?.staleAfterDays) && !gate.blocked && (
-          <div className="flex items-start gap-2 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2.5 text-amber-800 dark:text-amber-300">
-            <AlertTriangle size={13} className="shrink-0 mt-px" />
-            <div className="text-xs leading-snug">
-              <span className="font-semibold">
-                {backupScheduleQuery.data?.lastSuccessfulBackupAt ? "Backup overdue — " : "No backup on record — "}
-              </span>
-              {backupScheduleQuery.data?.lastSuccessfulBackupAt
-                ? `last successful backup was ${Math.floor((Date.now() - new Date(backupScheduleQuery.data.lastSuccessfulBackupAt).getTime()) / (24 * 60 * 60 * 1000))} day(s) ago.`
-                : "no successful backup has been recorded."}
-              {" "}
-              <Link
-                to="/settings?tab=backup"
-                className="underline underline-offset-2 hover:opacity-80"
-              >
-                Go to Backup settings
-              </Link>
-            </div>
-          </div>
-        )}
-
-        {(nextRunLabel || nextBackupLabel || (backupScheduleQuery.isSuccess && backupScheduleQuery.data?.lastSuccessfulBackupAt && !isBackupStale(backupScheduleQuery.data.lastSuccessfulBackupAt, backupScheduleQuery.data?.staleAfterDays))) && (
-          <div className="pt-1 border-t border-border/60 space-y-1">
-            {nextRunLabel && (
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Clock size={11} className="shrink-0" />
-                Next cleanup: <span className="text-foreground font-medium">{nextRunLabel}</span>
-              </div>
-            )}
-            {nextBackupLabel && (
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Clock size={11} className="shrink-0" />
-                Next backup: <span className="text-foreground font-medium">{nextBackupLabel}</span>
-              </div>
-            )}
-            {backupScheduleQuery.isSuccess && backupScheduleQuery.data?.lastSuccessfulBackupAt && !isBackupStale(backupScheduleQuery.data.lastSuccessfulBackupAt, backupScheduleQuery.data?.staleAfterDays) && (
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <CheckCircle2 size={11} className="shrink-0 text-green-600 dark:text-green-400" />
-                Last backup: <span className="text-foreground font-medium">{relativeTime(backupScheduleQuery.data.lastSuccessfulBackupAt)}</span>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function isToday(d?: string | null): boolean {
-  if (!d) return false;
-  const date = new Date(d);
-  if (Number.isNaN(date.getTime())) return false;
-  const today = new Date();
-  return (
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate()
-  );
+/**
+ * Returns the number of calendar days from today to the next Monday–Friday
+ * business day. Saturdays and Sundays are skipped — no holidays.
+ *   Mon–Thu → 1  (tomorrow is already a weekday)
+ *   Fri     → 3  (skip Sat+Sun, reach Monday)
+ *   Sat     → 2  (skip Sun, reach Monday)
+ *   Sun     → 1  (tomorrow Mon is a weekday)
+ * Accepts an optional `now` argument so tests can freeze time via
+ * vi.useFakeTimers() and still exercise the correct branch.
+ */
+function nextBizDayOffset(now: Date = new Date()): number {
+  const dow = now.getDay(); // 0=Sun,1=Mon,...,5=Fri,6=Sat
+  if (dow === 5) return 3;
+  if (dow === 6) return 2;
+  return 1;
 }
 
 const IN_PROGRESS_STATUSES = new Set([
@@ -1053,77 +379,405 @@ const IN_PROGRESS_STATUSES = new Set([
   "qc",
 ]);
 
-const COMPLETED_STATUSES = new Set(["delivered", "cancelled"]);
+const COMPLETED_STATUSES = new Set(["delivered", "cancelled", "complete"]);
 
-function CaseRow({ c, onSelect }: { c: LabCase; onSelect: (c: LabCase) => void }) {
+/**
+ * Predicate used by the pastDueCases memo. Past Due uses the same effective
+ * date precedence and paired-time behavior as Due Today: dueDate first, then
+ * expectedDeliveryDate only when dueDate is absent.
+ */
+export function caseIsPastDue(
+  c: Pick<LabCase, "status" | "dueDate" | "dueTime" | "expectedDeliveryDate">,
+): boolean {
+  if (COMPLETED_STATUSES.has(c.status)) return false;
+  const usingDueDate = c.dueDate != null && c.dueDate !== "";
+  const effectiveDate = c.dueDate ?? c.expectedDeliveryDate;
+  const effectiveTime = usingDueDate ? c.dueTime : null;
+  return isPastDue(effectiveDate, effectiveTime);
+}
+
+/**
+ * Predicate used by the dueTodayCases memo.
+ * Exported so regression tests can call the real production logic directly.
+ * Uses dueDate as the primary field (matching what the lab slip displays);
+ * falls back to expectedDeliveryDate only when dueDate is absent.
+ *
+ * A due-today case whose due time has already passed is excluded here and
+ * appears in Past Due instead.
+ */
+export function caseIsDueTodayFn(c: Pick<LabCase, "status" | "dueDate" | "dueTime" | "expectedDeliveryDate">): boolean {
+  const usingDueDate = c.dueDate != null && c.dueDate !== "";
+  const effectiveDate = c.dueDate ?? c.expectedDeliveryDate;
+  const effectiveTime = usingDueDate ? c.dueTime : null;
+  if (COMPLETED_STATUSES.has(c.status)) return false;
+  return isDueToday(effectiveDate) && !isPastDue(effectiveDate, effectiveTime);
+}
+
+/**
+ * Predicate used by the dueTomorrowCases memo.
+ * Exported so regression tests can call the real production logic directly.
+ *
+ * "Due tomorrow" means due on the next Monday–Friday business day (Saturdays
+ * and Sundays are skipped — no holidays). On a Friday the target is Monday;
+ * on any Mon–Thu the target is the following calendar day.
+ *
+ * Uses expectedDeliveryDate as the primary field (the doctor-requested delivery
+ * date shown on the lab slip), falling back to dueDate only when
+ * expectedDeliveryDate is absent. This matches mobile's caseIsDueTomorrow so
+ * both platforms show the same cases in the Due Tomorrow section.
+ * Completed cases are excluded.
+ */
+export function caseIsDueTomorrowFn(c: Pick<LabCase, "status" | "dueDate" | "expectedDeliveryDate">): boolean {
+  if (COMPLETED_STATUSES.has(c.status)) return false;
+  const effectiveDate = c.expectedDeliveryDate ?? c.dueDate;
+  if (!effectiveDate) return false;
+  const now = new Date();
+  const offset = nextBizDayOffset(now);
+  const target = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+  // Parse "YYYY-MM-DD" (or ISO UTC string) as a UTC-midnight Date, then compare
+  // its UTC components against the local calendar date of the target day — the
+  // same strategy isDueToday / isPastDue in format.ts use.
+  const d = new Date(effectiveDate);
+  if (isNaN(d.getTime())) return false;
+  return (
+    d.getUTCFullYear() === target.getFullYear() &&
+    d.getUTCMonth() === target.getMonth() &&
+    d.getUTCDate() === target.getDate()
+  );
+}
+
+function comparableDate(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+function comparableText(value: unknown): string | null {
+  const normalized = typeof value === "string" ? value.trim().toLocaleLowerCase() : null;
+  return normalized ? normalized : null;
+}
+
+function compareNullable(
+  a: string | number | null,
+  b: string | number | null,
+  direction: "asc" | "desc" = "asc",
+): number {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  const result =
+    typeof a === "number" && typeof b === "number"
+      ? a - b
+      : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+  return direction === "desc" ? -result : result;
+}
+
+function caseTypeIndicatorKey(c: Pick<LabCase, "restorationTypes" | "restorationMaterials" | "firstRestorationSubtype">): string | null {
+  return comparableText(
+    deriveCaseTypeIndicator(c.restorationTypes, c.restorationMaterials, c.firstRestorationSubtype),
+  );
+}
+
+function caseSortTieBreak(a: LabCase, b: LabCase): number {
+  return (a.id ?? "").localeCompare(b.id ?? "", undefined, { numeric: true, sensitivity: "base" });
+}
+
+/**
+ * Shared C/D/O case-type comparison for every dashboard section that offers a
+ * Case Type sort. The displayed indicator is compared, so crowns sort first,
+ * then removables, then ortho/appliances ("C" < "D" < "O"), cases with no
+ * derivable indicator sort last, and equal rows fall back to the deterministic
+ * id tie-break so the table does not reshuffle as fresh data arrives.
+ */
+export function compareCaseTypeIndicator(a: LabCase, b: LabCase): number {
+  return compareNullable(caseTypeIndicatorKey(a), caseTypeIndicatorKey(b)) || caseSortTieBreak(a, b);
+}
+
+export function sortDueTomorrowCases(
+  cases: LabCase[],
+  sort: DueTomorrowSort,
+  locations: Array<{ id: string; value: string; label: string }> = [],
+): LabCase[] {
+  return sortSharedDueTomorrowCases(cases, sort, {
+    getLocationLabel: (caseItem) =>
+      caseLocationLabel(caseItem, locations),
+    getTypeIndicator: (caseItem) =>
+      deriveCaseTypeIndicator(
+        caseItem.restorationTypes,
+        caseItem.restorationMaterials,
+        caseItem.firstRestorationSubtype,
+      ),
+  });
+}
+
+/** Prefer the station identity/name returned on the case.  A status is only a
+ * fallback: multiple physical stations may intentionally share one status. */
+export function caseLocationLabel(
+  c: Pick<LabCase, "status" | "labLocationId" | "labLocationName">,
+  locations: Array<{ id: string; value: string; label: string }> = [],
+): string {
+  if (c.labLocationName?.trim()) return c.labLocationName;
+  if (c.labLocationId) {
+    const station = locations.find((location) => location.id === c.labLocationId);
+    if (station?.label) return station.label;
+  }
+  return c.status ? statusLabel(c.status) : "—";
+}
+
+/**
+ * Sort choices shared by the Past Due and Due Today sections. Both sections
+ * offer the same menu (and the mobile dashboard mirrors it), while each keeps
+ * its own default selection and its own comparator details.
+ */
+export type SectionSort =
+  | "due_date"
+  | "entered"
+  | "case_number"
+  | "patient"
+  | "doctor"
+  | "status"
+  | "priority"
+  | "type";
+
+export const SECTION_SORT_LABELS: Record<SectionSort, string> = {
+  due_date: "Due date",
+  entered: "Entered date",
+  case_number: "Case #",
+  patient: "Patient name",
+  doctor: "Doctor",
+  status: "Location / Status",
+  priority: "Priority",
+  type: "Case Type",
+};
+
+function compareCaseNumber(a: LabCase, b: LabCase): number {
+  const na = parseInt(a.caseNumber ?? "", 10);
+  const nb = parseInt(b.caseNumber ?? "", 10);
+  if (!isNaN(na) && !isNaN(nb)) return na - nb;
+  return (a.caseNumber ?? "").localeCompare(b.caseNumber ?? "");
+}
+
+function comparePatientName(a: LabCase, b: LabCase): number {
+  const pa = `${a.patientLastName ?? ""} ${a.patientFirstName ?? ""}`.trim().toLowerCase();
+  const pb = `${b.patientLastName ?? ""} ${b.patientFirstName ?? ""}`.trim().toLowerCase();
+  return pa.localeCompare(pb);
+}
+
+function compareEnteredDate(a: LabCase, b: LabCase): number {
+  return (a.createdAt || "").localeCompare(b.createdAt || "");
+}
+
+function compareRushFirst(a: LabCase, b: LabCase): number {
+  const rushA = a.priority === "rush" ? 0 : 1;
+  const rushB = b.priority === "rush" ? 0 : 1;
+  return rushA - rushB;
+}
+
+/** Sort the already-filtered Past Due bucket. */
+export function sortPastDueCases(
+  cases: LabCase[],
+  sort: SectionSort,
+  locations: Array<{ id: string; value: string; label: string }> = [],
+): LabCase[] {
+  return [...cases].sort((a, b) => {
+    switch (sort) {
+      case "due_date":
+        return compareDueDateTime(a.dueDate, a.dueTime, b.dueDate, b.dueTime); // oldest first
+      case "case_number":
+        return compareCaseNumber(a, b);
+      case "patient":
+        return comparePatientName(a, b);
+      case "doctor":
+        return (a.doctorName ?? "").toLowerCase().localeCompare((b.doctorName ?? "").toLowerCase());
+      case "status":
+        return caseLocationLabel(a, locations).toLowerCase().localeCompare(caseLocationLabel(b, locations).toLowerCase());
+      case "priority":
+        return (
+          compareRushFirst(a, b) ||
+          compareDueDateTime(a.dueDate, a.dueTime, b.dueDate, b.dueTime)
+        );
+      case "type":
+        return compareCaseTypeIndicator(a, b);
+      default:
+        return compareEnteredDate(a, b);
+    }
+  });
+}
+
+/** Sort the already-filtered Due Today bucket. */
+export function sortDueTodayCases(
+  cases: LabCase[],
+  sort: SectionSort,
+  locations: Array<{ id: string; value: string; label: string }> = [],
+): LabCase[] {
+  return [...cases].sort((a, b) => {
+    switch (sort) {
+      case "due_date":
+        return compareDueDateTime(a.dueDate, a.dueTime, b.dueDate, b.dueTime);
+      case "case_number":
+        return compareCaseNumber(a, b);
+      case "patient":
+        return comparePatientName(a, b);
+      case "doctor":
+        return (a.doctorName ?? "").toLowerCase().localeCompare((b.doctorName ?? "").toLowerCase());
+      case "status":
+        return caseLocationLabel(a, locations).toLowerCase().localeCompare(caseLocationLabel(b, locations).toLowerCase());
+      case "priority":
+        return compareRushFirst(a, b) || compareEnteredDate(a, b);
+      case "type":
+        return compareCaseTypeIndicator(a, b);
+      default:
+        return compareEnteredDate(a, b);
+    }
+  });
+}
+
+type RecentLabCase = LabCase & { latestEvent?: { eventType: string; summary: string } | null };
+
+export function dashboardStepLabel(
+  c: Pick<LabCase, "step" | "restorationTypes" | "restorationMaterials" | "firstRestorationSubtype">,
+): string {
+  return deriveCaseTypeIndicator(
+    c.restorationTypes,
+    c.restorationMaterials,
+    c.firstRestorationSubtype,
+  ) === "D"
+    ? stepLabel(c.step)
+    : "—";
+}
+
+function CaseRow({
+  c,
+  locations,
+  onSelect,
+  showTypeIndicator,
+  showActivity,
+  showStep,
+}: {
+  c: LabCase;
+  locations?: Array<{ id: string; value: string; label: string }>;
+  onSelect: (c: LabCase) => void;
+  showTypeIndicator?: boolean;
+  showActivity?: boolean;
+  showStep?: boolean;
+}) {
+  const isRush = c.priority === "rush";
+  const typeIndicator = showTypeIndicator ? deriveCaseTypeIndicator(c.restorationTypes, c.restorationMaterials, c.firstRestorationSubtype) : null;
+  const activitySummary = showActivity ? (c as RecentLabCase).latestEvent?.summary ?? null : null;
+  const step = showStep ? dashboardStepLabel(c) : null;
+  const pan = c.casePanBarcode
+    ? c.casePanBarcode.length > 12 ? c.casePanBarcode.slice(0, 12) + "…" : c.casePanBarcode
+    : null;
+  // Operational fields that do not fit the six reference columns stay readable
+  // as a secondary line under the patient name.
+  const details: string[] = [];
+  details.push(`Entered ${formatDate(c.createdAt)}`);
+  if (step && step !== "—") details.push(`Step ${step}`);
+  if (pan) details.push(`Pan ${pan}`);
+  if (activitySummary) details.push(activitySummary);
   return (
     <tr
-      className="border-t border-border hover:bg-secondary/40 cursor-pointer"
+      data-testid={`row-case-${c.id}`}
+      className={`border-t border-border hover:bg-secondary/40 cursor-pointer align-top${isRush ? " bg-destructive/5" : ""}`}
       onClick={() => onSelect(c)}
     >
-      <td className="px-5 py-3 text-muted-foreground whitespace-nowrap">{formatDate(c.createdAt)}</td>
-      <td className="py-3 font-mono text-xs">{c.caseNumber}</td>
-      <td className="py-3">
-        {c.patientFirstName} {c.patientLastName}
+      <td className="pl-4 pr-2 py-2 font-mono text-xs">{c.caseNumber}</td>
+      <td className="px-2 py-2 min-w-0">
+        <span className={`block font-medium ${isRush ? "text-destructive" : ""}`}>{c.patientFirstName} {c.patientLastName}</span>
+        <span className="block text-[11px] text-muted-foreground leading-snug break-words">{details.join(" · ")}</span>
       </td>
-      <td className="py-3 text-muted-foreground">{c.doctorName}</td>
-      <td className="py-3">
-        <StatusBadge status={c.status} />
+      <td className="px-2 py-2 text-muted-foreground">{c.doctorName}</td>
+      <td className="px-2 py-2">
+        <StatusBadge status={c.status} label={statusLabel(c.status)} />
       </td>
-      <td className="py-3 font-mono text-xs text-muted-foreground">
-        {c.casePanBarcode
-          ? c.casePanBarcode.length > 12
-            ? c.casePanBarcode.slice(0, 12) + "…"
-            : c.casePanBarcode
-          : "—"}
-      </td>
-      <td className="py-3 text-muted-foreground pr-5">{formatDueDate(c.dueDate)}</td>
+      <td className="px-2 py-2 text-muted-foreground">{caseLocationLabel(c, locations)}</td>
+      <td className={`pl-2 ${showTypeIndicator ? "pr-2" : "pr-4"} py-2 ${isRush ? "text-destructive" : "text-muted-foreground"}`}>{formatDueDate(c.dueDate, c.dueTime)}</td>
+      {showTypeIndicator && (
+        <td className="pl-1 pr-3 py-2">
+          {typeIndicator === "C" && (
+            <span className="inline-flex items-center justify-center h-5 w-5 rounded text-[10px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">C</span>
+          )}
+          {typeIndicator === "D" && (
+            <span className="inline-flex items-center justify-center h-5 w-5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">D</span>
+          )}
+          {typeIndicator === "O" && (
+            <span className="inline-flex items-center justify-center h-5 w-5 rounded text-[10px] font-bold bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">O</span>
+          )}
+          {typeIndicator === null && <span className="text-muted-foreground">—</span>}
+        </td>
+      )}
     </tr>
   );
 }
 
-function CasesTable({
+export function CasesTable({
   cases,
+  locations,
   loading,
   emptyText,
   onSelect,
+  showTypeIndicator,
+  showActivity,
+  showStep,
 }: {
   cases: LabCase[];
+  locations?: Array<{ id: string; value: string; label: string }>;
   loading: boolean;
   emptyText: string;
   onSelect: (c: LabCase) => void;
+  showTypeIndicator?: boolean;
+  showActivity?: boolean;
+  showStep?: boolean;
 }) {
+  const colSpan = showTypeIndicator ? 7 : 6;
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+    <div className="dash-table-wrap">
+      <table className="w-full text-sm table-fixed" data-testid="cases-table">
+        <colgroup>
+          <col style={{ width: "14%" }} />
+          <col style={{ width: showTypeIndicator ? "22%" : "23%" }} />
+          <col style={{ width: showTypeIndicator ? "12%" : "14%" }} />
+          <col style={{ width: "16%" }} />
+          <col style={{ width: showTypeIndicator ? "12%" : "15%" }} />
+          <col style={{ width: "18%" }} />
+          {showTypeIndicator && <col style={{ width: "6%" }} />}
+        </colgroup>
         <thead>
-          <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
-            <th className="text-left font-medium px-5 py-2.5">Entered</th>
-            <th className="text-left font-medium py-2.5">Case #</th>
-            <th className="text-left font-medium py-2.5">Patient</th>
-            <th className="text-left font-medium py-2.5">Doctor</th>
-            <th className="text-left font-medium py-2.5">Location</th>
-            <th className="text-left font-medium py-2.5">Pan</th>
-            <th className="text-left font-medium py-2.5 pr-5">Due</th>
+          <tr className="text-[11px] text-muted-foreground">
+            <th className="text-left font-medium pl-4 pr-2 py-2">Case #</th>
+            <th className="text-left font-medium px-2 py-2">Patient</th>
+            <th className="text-left font-medium px-2 py-2">Doctor</th>
+            <th className="text-left font-medium px-2 py-2">Status</th>
+            <th className="text-left font-medium px-2 py-2">Location</th>
+            <th className={`text-left font-medium pl-2 ${showTypeIndicator ? "pr-2" : "pr-4"} py-2`}>Due date</th>
+            {showTypeIndicator && <th className="text-left font-medium pl-1 pr-3 py-2">Type</th>}
           </tr>
         </thead>
         <tbody>
           {loading && (
             <tr>
-              <td colSpan={7} className="px-5 py-8 text-center text-sm text-muted-foreground">
+              <td colSpan={colSpan} className="px-5 py-8 text-center text-sm text-muted-foreground">
                 Loading…
               </td>
             </tr>
           )}
           {!loading && cases.length === 0 && (
             <tr>
-              <td colSpan={7} className="px-5 py-8 text-center text-sm text-muted-foreground">
+              <td colSpan={colSpan} className="px-5 py-8 text-center text-sm text-muted-foreground">
                 {emptyText}
               </td>
             </tr>
           )}
           {cases.map((c) => (
-            <CaseRow key={c.id} c={c} onSelect={onSelect} />
+            <CaseRow
+              key={c.id}
+              c={c}
+              locations={locations}
+              onSelect={onSelect}
+              showTypeIndicator={showTypeIndicator}
+              showActivity={showActivity}
+              showStep={showStep}
+            />
           ))}
         </tbody>
       </table>
@@ -1147,9 +801,18 @@ export default function DashboardPage() {
 
   const [showNewCase, setShowNewCase] = useState(false);
   const [selectedCase, setSelectedCase] = useState<LabCase | null>(null);
+  const [recentCasesOpen, setRecentCasesOpen] = useState(true);
+  const [pastDueOpen, setPastDueOpen] = useState(true);
+  const [pastDueRevealed, setPastDueRevealed] = useState(false);
+  const [pastDueSort, setPastDueSort] = useState<SectionSort>("due_date");
+
   const [dueTodayOpen, setDueTodayOpen] = useState(true);
+  const [dueTomorrowOpen, setDueTomorrowOpen] = useState(true);
+  const [dueTomorrowSort, setDueTomorrowSort] = useState<DueTomorrowSort>("entered");
+  const [dueTodaySort, setDueTodaySort] = useState<SectionSort>("entered");
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const isAdminOrOwner = user?.role === "admin" || user?.role === "owner";
   const { openPanel: openAiPanel } = useAiPanel();
 
   const casesQuery = useQuery({
@@ -1177,8 +840,51 @@ export default function DashboardPage() {
   // waiting state for members during the initial fetch.
   const noActiveLabMembership = meQuery.isSuccess && !hasActiveLabMembership;
 
+  // The org ID scoping the Today's Sales query — first active lab membership
+  // where the user is admin or owner. null while /auth/me is loading.
+  const adminOrgId = useMemo(
+    () =>
+      (meQuery.data?.memberships ?? []).find(
+        (m) =>
+          m.status === "active" &&
+          m.organization?.type === "lab" &&
+          (m.role === "admin" || m.role === "owner"),
+      )?.organizationId ?? null,
+    [meQuery.data],
+  );
+
+  const locationsQuery = useQuery<Array<{ id: string; value: string; label: string }>>({
+    queryKey: ["locations", adminOrgId, "active"],
+    enabled: !!adminOrgId,
+    queryFn: () =>
+      apiFetch<Array<{ id: string; code: string; name: string; status: string }>>(
+        `/locations?organizationId=${adminOrgId}&activeOnly=true`,
+      ).then((rows) => rows.map((row) => ({ id: row.id, value: row.status, label: row.name }))),
+    staleTime: 60_000,
+  });
+  const locations = locationsQuery.data ?? [];
+
   const cases = casesQuery.data ?? [];
   const loading = casesQuery.isLoading;
+
+  // Keep the drawer open while following remake links. Dashboard cases are
+  // usually already in the ["cases"] cache, but older generations may fall
+  // outside that list, so fetch a missing sibling before replacing the
+  // current selection. A failed or out-of-scope lookup must not clear the
+  // case that is currently displayed.
+  async function handleOpenCaseId(id: string) {
+    const found = casesQuery.data?.find((c) => c.id === id);
+    if (found) {
+      setSelectedCase(found);
+      return;
+    }
+    try {
+      const fresh = await apiFetch<LabCase>(`/cases/${id}`);
+      setSelectedCase(fresh);
+    } catch {
+      /* ignore — case may be soft-deleted or out of scope */
+    }
+  }
 
   // Recomputes relative/due date labels when the local calendar day rolls over
   // (midnight timer) or the window wakes on a later day, so "Due today" and
@@ -1186,41 +892,149 @@ export default function DashboardPage() {
   // manual refresh. Referenced in the date-derived memos below.
   const dayKey = useDayChange();
 
-  const todayCases = useMemo(
-    () => cases.filter((c) => isToday(c.createdAt)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cases, dayKey],
-  );
+  interface TodaySalesData {
+    totalSales: string;
+    openBalance: string;
+    invoices: number;
+    paidInvoices: number;
+    openInvoices: number;
+  }
+
+  // Polls today's invoiced sales total every 60 s. Only fires for admin/owner
+  // users with an active lab membership. dayKey in the query key ensures the
+  // date string is recalculated when the local calendar day rolls over.
+  const todaySalesQuery = useQuery({
+    queryKey: ["invoices", "reports", "sales", "today", adminOrgId, dayKey],
+    queryFn: () => {
+      const { dateFrom, dateTo } = getLocalDayRange();
+      const params = new URLSearchParams({
+        organizationId: adminOrgId!,
+        dateFrom,
+        dateTo,
+      });
+      return apiFetch<TodaySalesData>(`/invoices/reports/sales?${params}`);
+    },
+    enabled: isAdminOrOwner && !!adminOrgId,
+    refetchInterval: 60_000,
+  });
+
   const inProgressCount = cases.filter((c) =>
     IN_PROGRESS_STATUSES.has(c.status),
   ).length;
   const rushCount = cases.filter((c) => c.priority === "rush").length;
 
-  const recentCases = useMemo(
-    () =>
-      [...cases]
-        .filter((c) => !COMPLETED_STATUSES.has(c.status))
-        .sort((a, b) =>
-          (b.updatedAt || b.createdAt || "").localeCompare(
-            a.updatedAt || a.createdAt || "",
-          ),
-        )
-        .slice(0, 6),
-    [cases],
-  );
+  const recentCasesQuery = useQuery({
+    queryKey: ["cases", "recent"],
+    queryFn: () => apiFetch<RecentLabCase[]>("/cases/recent"),
+    staleTime: 30_000,
+  });
 
-  const dueTodayCases = useMemo(
-    () =>
-      [...cases]
-        .filter((c) => isDueToday(c.dueDate) && !COMPLETED_STATUSES.has(c.status))
-        .sort((a, b) =>
-          (a.updatedAt || a.createdAt || "").localeCompare(
-            b.updatedAt || b.createdAt || "",
-          ),
-        ),
+  const pastDueCases = useMemo(() => {
+    return sortPastDueCases(
+      cases.filter(caseIsPastDue),
+      pastDueSort,
+      locations,
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cases, dayKey],
+  }, [cases, dayKey, pastDueSort, locations]);
+
+  const noDueDateCases = useMemo(() => {
+    return [...cases]
+      .filter((c) => {
+        if (COMPLETED_STATUSES.has(c.status)) return false;
+        return !hasUsableDueDate(c.dueDate);
+      })
+      .sort((a, b) =>
+        (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""),
+      );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cases, dayKey]);
+
+  const [noDueDateOpen, setNoDueDateOpen] = useState(true);
+  const dueTomorrowRef = useRef<HTMLElement>(null);
+  const recentCasesRef = useRef<HTMLElement>(null);
+  const pastDueRef = useRef<HTMLElement>(null);
+  const dueTodayRef = useRef<HTMLElement>(null);
+  const noDueDateRef = useRef<HTMLElement>(null);
+
+  const dueTomorrowCases = useMemo(() => {
+    return sortDueTomorrowCases(cases.filter(caseIsDueTomorrowFn), dueTomorrowSort, locations);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cases, dayKey, dueTomorrowSort, locations]);
+
+  // Same query key/options as UnassignedDocumentsCard, so React Query shares
+  // one request between the summary count and the card.
+  const inboxLabId = user?.practiceOrganizationId ?? "";
+  const inboxQuery = useListLabInboxFiles(
+    { labOrganizationId: inboxLabId },
+    {
+      query: {
+        queryKey: getListLabInboxFilesQueryKey({ labOrganizationId: inboxLabId }),
+        enabled: !!inboxLabId,
+        refetchInterval: 60_000,
+      },
+    },
   );
+  const unassignedRef = useRef<HTMLDivElement>(null);
+
+  function revealQueue(
+    ref: RefObject<HTMLElement | null>,
+    setOpen?: (v: boolean) => void,
+  ) {
+    setOpen?.(true);
+    if (ref === unassignedRef) window.dispatchEvent(new Event("labtrax:reveal-unassigned"));
+    setTimeout(() => ref.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+
+  const dueTodayCases = useMemo(() => {
+    return sortDueTodayCases(cases.filter(caseIsDueTodayFn), dueTodaySort, locations);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cases, dayKey, dueTodaySort, locations]);
+
+  function scrollToFirstRushSection() {
+    const sections: Array<{
+      ref: RefObject<HTMLElement | null>;
+      hasRush: boolean;
+      isOpen: boolean;
+      setOpen: (v: boolean) => void;
+    }> = [
+      {
+        ref: recentCasesRef,
+        hasRush: (recentCasesQuery.data ?? []).some((c) => c.priority === "rush"),
+        isOpen: recentCasesOpen,
+        setOpen: setRecentCasesOpen,
+      },
+      {
+        ref: pastDueRef,
+        hasRush: pastDueCases.some((c) => c.priority === "rush"),
+        isOpen: pastDueOpen,
+        setOpen: setPastDueOpen,
+      },
+      {
+        ref: dueTodayRef,
+        hasRush: dueTodayCases.some((c) => c.priority === "rush"),
+        isOpen: dueTodayOpen,
+        setOpen: setDueTodayOpen,
+      },
+      {
+        ref: dueTomorrowRef,
+        hasRush: dueTomorrowCases.some((c) => c.priority === "rush"),
+        isOpen: dueTomorrowOpen,
+        setOpen: setDueTomorrowOpen,
+      },
+      {
+        ref: noDueDateRef,
+        hasRush: noDueDateCases.some((c) => c.priority === "rush"),
+        isOpen: noDueDateOpen,
+        setOpen: setNoDueDateOpen,
+      },
+    ];
+
+    const target = sections.find((s) => s.hasRush);
+    if (!target) return;
+    if (!target.isOpen) target.setOpen(true);
+    target.ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   if (noActiveLabMembership) {
     return (
@@ -1233,123 +1047,274 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="px-8 py-7 max-w-[1400px] mx-auto">
+    <div className="lab-dash px-4 py-5 sm:py-7 max-w-[1400px] mx-auto bg-[hsl(214_40%_96%)] min-h-full" data-testid="dashboard-root">
       <DashboardSubscriptionBanner />
-      <div className="flex items-end justify-between mb-7">
-        <div>
-          <div className="flex items-center gap-3">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="min-w-0">
+          <h1 className="tracking-tight" data-testid="text-dashboard-title">Dashboard</h1>
+          <p className="text-sm text-muted-foreground">Your lab at a glance</p>
+        </div>
+          <button
+            type="button"
+            onClick={() => setShowNewCase(true)}
+            data-testid="button-add-case"
+            className="inline-flex items-center gap-2 h-10 px-5 rounded-md bg-[#1d5fd8] text-white text-sm font-semibold hover:bg-[#1850b8] transition-colors shadow-sm"
+          >
+            <Plus size={15} />
+            Add case
+          </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4" data-testid="dashboard-secondary-strip">
             <button
               type="button"
               onClick={() => openAiPanel()}
-              className="inline-flex items-center gap-2 h-12 px-5 rounded-xl bg-primary text-primary-foreground text-base font-semibold hover:bg-primary/90 transition-colors shadow-sm"
+              className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors shadow-sm"
             >
-              <Sparkles size={20} />
-              Maynard
+              <Sparkles size={16} />
+              LabTrax Assistant
             </button>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Dashboard
-              {user?.practiceName && (
-                <span className="ml-2 text-muted-foreground font-normal">
-                  — {user.practiceName}
+          {isAdminOrOwner && adminOrgId && (
+            <Link
+              href="/reports?tab=sales&preset=today"
+              className="flex flex-col items-end gap-0.5 border border-border rounded-lg px-3 py-2 bg-card min-w-[120px] cursor-pointer hover:bg-muted/50 transition-colors no-underline"
+            >
+              {todaySalesQuery.isLoading ? (
+                <div className="h-5 w-20 bg-muted animate-pulse rounded" />
+              ) : todaySalesQuery.isError ? (
+                <span className="text-sm font-semibold text-muted-foreground">—</span>
+              ) : (
+                <span className="text-sm font-semibold tabular-nums">
+                  {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
+                    Number(todaySalesQuery.data?.totalSales ?? 0),
+                  )}
                 </span>
               )}
-            </h1>
-          </div>
-          <p className="text-sm text-muted-foreground mt-1">
-            Your lab at a glance.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-4">
+              <span className="text-[10px] text-muted-foreground leading-none">Today's sales</span>
+              {!todaySalesQuery.isLoading && !todaySalesQuery.isError && todaySalesQuery.dataUpdatedAt ? (
+                <span className="text-[9px] text-muted-foreground/50 leading-none mt-0.5">
+                  Updated {new Date(todaySalesQuery.dataUpdatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              ) : null}
+            </Link>
+          )}
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <Clock size={12} />
               {inProgressCount} in progress
             </span>
             {rushCount > 0 && (
-              <span className="flex items-center gap-1.5 text-destructive font-medium">
+              <button
+                type="button"
+                className="flex items-center gap-1.5 text-destructive font-medium hover:text-destructive/80 transition-colors cursor-pointer"
+                onClick={scrollToFirstRushSection}
+              >
                 <AlertTriangle size={12} />
                 {rushCount} rush
-              </span>
+              </button>
+            )}
+            {dueTomorrowCases.length > 0 && (
+              <button
+                type="button"
+                className="flex items-center gap-1.5 hover:text-foreground transition-colors cursor-pointer"
+                onClick={() => {
+                  if (!dueTomorrowOpen) setDueTomorrowOpen(true);
+                  dueTomorrowRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                }}
+              >
+                <Calendar size={12} />
+                {dueTomorrowCases.length} due tomorrow
+              </button>
             )}
           </div>
-          <button
-            type="button"
-            onClick={() => setShowNewCase(true)}
-            className="inline-flex items-center gap-2 h-9 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors shadow-sm"
-          >
-            <Plus size={15} />
-            Add case
-          </button>
-        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-1 flex flex-col gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5" data-testid="dashboard-summary">
+        {([
+          { id: "past-due", title: "Past due", sub: "Cases past their due date require attention.", color: "text-red-600", chip: "bg-red-100 text-red-600", border: "border-red-200", icon: AlertTriangle, loading: loading, error: casesQuery.isError, count: pastDueCases.length, retry: () => void casesQuery.refetch(), onClick: () => { setPastDueRevealed(true); revealQueue(pastDueRef, setPastDueOpen); } },
+          { id: "due-today", title: "Due today", sub: "Cases due today for completion.", color: "text-blue-700", chip: "bg-blue-100 text-blue-700", border: "border-blue-200", icon: Clock, loading: loading, error: casesQuery.isError, count: dueTodayCases.length, retry: () => void casesQuery.refetch(), onClick: () => revealQueue(dueTodayRef, setDueTodayOpen) },
+          { id: "unassigned", title: "Unassigned documents", sub: "Documents waiting to be assigned.", color: "text-slate-900", chip: "bg-amber-100 text-amber-600", border: "border-slate-200", icon: FileText, loading: meQuery.isLoading || (!!inboxLabId && inboxQuery.isLoading), error: meQuery.isError || inboxQuery.isError, count: inboxQuery.data?.data?.length ?? 0, retry: () => void (meQuery.isError ? meQuery.refetch() : inboxQuery.refetch()), onClick: () => revealQueue(unassignedRef) },
+        ] as const).map((c) => {
+          const Icon = c.icon;
+          return (
+            <button
+              key={c.id}
+              type="button"
+              onClick={c.error ? c.retry : c.onClick}
+              data-testid={`summary-card-${c.id}`}
+              className={`flex items-center gap-3 text-left rounded-lg border ${c.border} bg-white px-4 py-3 hover:shadow-sm transition-shadow`}
+            >
+              <span className={`h-10 w-10 shrink-0 rounded-full inline-flex items-center justify-center ${c.chip}`}><Icon size={18} /></span>
+              <span className="min-w-0 flex-1">
+                <span className={`block text-sm font-semibold ${c.color}`}>
+                  {c.title}{" "}
+                  <span data-testid={`summary-count-${c.id}`} data-state={c.loading ? "loading" : c.error ? "error" : "ready"}>
+                    {c.loading ? "…" : c.error ? "—" : c.count}
+                  </span>
+                </span>
+                <span className="block text-xs text-slate-500 truncate">{c.error ? "Could not load. Tap to retry." : c.sub}</span>
+              </span>
+              <ChevronRight size={16} className="text-slate-400 shrink-0" />
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[250px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)] gap-4">
+        <div className="flex flex-col gap-4 min-w-0">
           <div>
             <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
               <Upload size={14} className="text-muted-foreground" />
-              Drop zone
+              RX Drop Zone
             </h2>
             <DashboardDropZone />
           </div>
 
-          <UnassignedDocumentsCard />
+          <div ref={unassignedRef} data-testid="section-unassigned"><UnassignedDocumentsCard /></div>
 
-          <section className="bg-card border border-border rounded-xl">
-            <header className="px-5 py-3.5 border-b border-border">
-              <h2 className="text-sm font-semibold">Logged today</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {loading
-                  ? "Loading…"
-                  : todayCases.length === 0
-                    ? "No cases yet today"
-                    : `${todayCases.length} case${todayCases.length === 1 ? "" : "s"} received`}
-              </p>
-            </header>
-            <CasesTable
-              cases={todayCases}
-              loading={loading}
-              emptyText="No cases logged today."
-              onSelect={setSelectedCase}
-            />
-          </section>
-
-          {isAdmin && <MediaCleanupCard />}
+          {/* Replaces the former Media Cleanup box. The cleanup job, history
+              and settings still exist under Settings — only this dashboard
+              surface changed. Available to every internal lab member, not
+              just admins, because anyone can open an exception. */}
+          <ExceptionCasesCard
+            onSelectCase={handleOpenCaseId}
+          />
         </div>
 
-        <div className="lg:col-span-2 flex flex-col gap-6">
-          <section className="bg-card border border-border rounded-xl self-start">
-            <header className="flex items-center justify-between px-5 py-3.5 border-b border-border">
+        <div className="flex flex-col gap-4 min-w-0" data-testid="dashboard-main-column">
+          <section ref={recentCasesRef} data-testid="section-recent-cases" className="dash-section bg-card border border-slate-200 rounded-lg self-start w-full">
+            <header
+              className="flex items-center justify-between px-5 py-3.5 border-b border-border cursor-pointer select-none hover:bg-secondary/30 transition-colors rounded-t-xl"
+              onClick={() => setRecentCasesOpen((v) => !v)}
+            >
               <div>
                 <h2 className="text-sm font-semibold">Recent cases</h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   Most recently active, excluding completed.
                 </p>
               </div>
-              <Link
-                href="/cases"
-                className="text-xs font-medium text-primary inline-flex items-center gap-1 hover:underline"
-              >
-                View all <ArrowRight size={12} />
-              </Link>
+              <div className="flex items-center gap-2">
+                <Link
+                  href="/cases"
+                  data-testid="link-view-all-recent"
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-xs font-medium text-[#1d5fd8] hover:underline"
+                >
+                  View all
+                </Link>
+                <button
+                  type="button"
+                  aria-label={recentCasesOpen ? "Collapse recent cases" : "Expand recent cases"}
+                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={(e) => { e.stopPropagation(); setRecentCasesOpen((v) => !v); }}
+                >
+                  {recentCasesOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                </button>
+              </div>
             </header>
-            <CasesTable
-              cases={recentCases}
-              loading={loading}
-              emptyText="No active cases."
-              onSelect={setSelectedCase}
-            />
+            {recentCasesOpen && (
+              <CasesTable
+                cases={recentCasesQuery.data ?? []}
+                locations={locations}
+                loading={recentCasesQuery.isLoading}
+                emptyText="No active cases."
+                onSelect={setSelectedCase}
+                showActivity
+              />
+            )}
           </section>
 
-          <section className="bg-card border border-border rounded-xl">
+          {/* ── Past due ────────────────────────────────────────────────── */}
+          {(loading || pastDueCases.length > 0 || pastDueRevealed) && (
+            <section ref={pastDueRef} data-testid="section-past-due" className="dash-section dash-section-danger bg-card border border-red-300 rounded-lg">
+              <header
+                className="flex items-center justify-between px-5 py-3.5 border-b border-destructive/30 cursor-pointer select-none hover:bg-destructive/5 transition-colors rounded-t-xl"
+                onClick={() => setPastDueOpen((v) => !v)}
+              >
+                <div className="flex items-center gap-2.5">
+                  <AlertTriangle size={15} className="text-destructive shrink-0" />
+                  <div>
+                    <h2 className="text-sm font-semibold flex items-center gap-2 text-destructive">
+                      Past due
+                      {!loading && pastDueCases.length > 0 && (
+                        <span
+                          data-testid="dashboard-past-due-count"
+                          className="inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-[10px] font-semibold bg-destructive text-destructive-foreground tabular-nums"
+                        >
+                          {pastDueCases.length}
+                        </span>
+                      )}
+                    </h2>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {loading
+                        ? "Loading…"
+                        : pastDueCases.length === 0
+                          ? "No active cases past due."
+                          : `${pastDueCases.length} active case${pastDueCases.length === 1 ? "" : "s"} past due.`}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={`Sort past due cases by ${SECTION_SORT_LABELS[pastDueSort]}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
+                      >
+                        <ChevronsUpDown size={11} />
+                        Sort
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                      {(Object.keys(SECTION_SORT_LABELS) as SectionSort[]).map((key) => (
+                        <DropdownMenuItem
+                          key={key}
+                          onSelect={() => setPastDueSort(key)}
+                          className="flex items-center gap-2"
+                        >
+                          <span className="w-3.5 shrink-0">
+                            {pastDueSort === key && <Check size={13} />}
+                          </span>
+                          {SECTION_SORT_LABELS[key]}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <button
+                    type="button"
+                    aria-label={pastDueOpen ? "Collapse past due" : "Expand past due"}
+                    className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    onClick={(e) => { e.stopPropagation(); setPastDueOpen((v) => !v); }}
+                  >
+                    {pastDueOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                  </button>
+                </div>
+              </header>
+              {pastDueOpen && (
+                <CasesTable
+                  cases={pastDueCases}
+                  locations={locations}
+                  loading={loading}
+                  emptyText="No active cases past due."
+                  onSelect={setSelectedCase}
+                  showTypeIndicator
+                  showStep
+                />
+              )}
+            </section>
+          )}
+
+          <section ref={dueTodayRef} data-testid="section-due-today" className="dash-section dash-section-info bg-card border border-blue-200 rounded-lg">
             <header
               className="flex items-center justify-between px-5 py-3.5 border-b border-border cursor-pointer select-none hover:bg-secondary/30 transition-colors rounded-t-xl"
               onClick={() => setDueTodayOpen((v) => !v)}
             >
               <div className="flex items-center gap-2.5">
+                <Clock size={15} className="text-blue-700 shrink-0" />
                 <div>
-                  <h2 className="text-sm font-semibold flex items-center gap-2">
+                  <h2 className="text-sm font-semibold flex items-center gap-2 text-blue-800">
                     Due today
                     {!loading && dueTodayCases.length > 0 && (
                       <span className="inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-[10px] font-semibold bg-primary text-primary-foreground tabular-nums">
@@ -1366,24 +1331,176 @@ export default function DashboardPage() {
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                aria-label={dueTodayOpen ? "Collapse due today" : "Expand due today"}
-                className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
-                onClick={(e) => { e.stopPropagation(); setDueTodayOpen((v) => !v); }}
-              >
-                {dueTodayOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-              </button>
+              <div className="flex items-center gap-2">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={`Sort due today cases by ${SECTION_SORT_LABELS[dueTodaySort]}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
+                    >
+                      <ChevronsUpDown size={11} />
+                      Sort
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                    {(Object.keys(SECTION_SORT_LABELS) as SectionSort[]).map((key) => (
+                      <DropdownMenuItem
+                        key={key}
+                        onSelect={() => setDueTodaySort(key)}
+                        className="flex items-center gap-2"
+                      >
+                        <span className="w-3.5 shrink-0">
+                          {dueTodaySort === key && <Check size={13} />}
+                        </span>
+                        {SECTION_SORT_LABELS[key]}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <button
+                  type="button"
+                  aria-label={dueTodayOpen ? "Collapse due today" : "Expand due today"}
+                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={(e) => { e.stopPropagation(); setDueTodayOpen((v) => !v); }}
+                >
+                  {dueTodayOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                </button>
+              </div>
             </header>
             {dueTodayOpen && (
               <CasesTable
                 cases={dueTodayCases}
+                  locations={locations}
                 loading={loading}
                 emptyText="No active cases due today."
                 onSelect={setSelectedCase}
+                showTypeIndicator
+                showStep
               />
             )}
           </section>
+
+          {/* ── Due tomorrow ─────────────────────────────────────────────── */}
+          {(loading || dueTomorrowCases.length > 0) && (
+            <section ref={dueTomorrowRef} data-testid="section-due-tomorrow" className="dash-section bg-card border border-slate-200 rounded-lg">
+              <header
+                className="flex items-center justify-between px-5 py-3.5 border-b border-border cursor-pointer select-none hover:bg-secondary/30 transition-colors rounded-t-xl"
+                onClick={() => setDueTomorrowOpen((v) => !v)}
+              >
+                <div className="flex items-center gap-2.5">
+                  <div>
+                    <h2 className="text-sm font-semibold flex items-center gap-2">
+                      Due tomorrow
+                      {!loading && dueTomorrowCases.length > 0 && (
+                        <span className="inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-[10px] font-semibold bg-secondary text-secondary-foreground tabular-nums">
+                          {dueTomorrowCases.length}
+                        </span>
+                      )}
+                    </h2>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {loading
+                        ? "Loading…"
+                        : dueTomorrowCases.length === 0
+                          ? "No cases due on the next business day."
+                          : `${dueTomorrowCases.length} case${dueTomorrowCases.length === 1 ? "" : "s"} due on the next business day.`}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={`Sort due tomorrow cases by ${DUE_TOMORROW_SORT_LABELS[dueTomorrowSort]}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
+                      >
+                        <ChevronsUpDown size={11} />
+                        Sort
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                      {(Object.keys(DUE_TOMORROW_SORT_LABELS) as DueTomorrowSort[]).map((key) => (
+                        <DropdownMenuItem
+                          key={key}
+                          onSelect={() => setDueTomorrowSort(key)}
+                          className="flex items-center gap-2"
+                        >
+                          <span className="w-3.5 shrink-0">
+                            {dueTomorrowSort === key && <Check size={13} />}
+                          </span>
+                          {DUE_TOMORROW_SORT_LABELS[key]}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <button
+                    type="button"
+                    aria-label={dueTomorrowOpen ? "Collapse due tomorrow" : "Expand due tomorrow"}
+                    className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    onClick={(e) => { e.stopPropagation(); setDueTomorrowOpen((v) => !v); }}
+                  >
+                    {dueTomorrowOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                  </button>
+                </div>
+              </header>
+              {dueTomorrowOpen && (
+                <CasesTable
+                  cases={dueTomorrowCases}
+                  locations={locations}
+                  loading={loading}
+                  emptyText="No cases due on the next business day."
+                  onSelect={setSelectedCase}
+                  showTypeIndicator
+                  showStep
+                />
+              )}
+            </section>
+          )}
+
+          {/* ── No due date ─────────────────────────────────────────────── */}
+          {noDueDateCases.length > 0 && (
+            <section ref={noDueDateRef} data-testid="section-no-due-date" className="dash-section bg-card border border-slate-200 rounded-lg">
+              <header
+                className="flex items-center justify-between px-5 py-3.5 border-b border-border cursor-pointer select-none hover:bg-secondary/30 transition-colors rounded-t-xl"
+                onClick={() => setNoDueDateOpen((v) => !v)}
+              >
+                <div className="flex items-center gap-2.5">
+                  <CalendarOff size={15} className="text-muted-foreground shrink-0" />
+                  <div>
+                    <h2 className="text-sm font-semibold flex items-center gap-2">
+                      No due date
+                      <span className="inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-[10px] font-semibold bg-secondary text-secondary-foreground tabular-nums">
+                        {noDueDateCases.length}
+                      </span>
+                    </h2>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Active cases with no expected delivery date set.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  aria-label={noDueDateOpen ? "Collapse no due date" : "Expand no due date"}
+                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={(e) => { e.stopPropagation(); setNoDueDateOpen((v) => !v); }}
+                >
+                  {noDueDateOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                </button>
+              </header>
+              {noDueDateOpen && (
+                <CasesTable
+                  cases={noDueDateCases}
+                  locations={locations}
+                  loading={loading}
+                  emptyText="No active cases without a due date."
+                  onSelect={setSelectedCase}
+                />
+              )}
+            </section>
+          )}
         </div>
       </div>
 
@@ -1392,6 +1509,7 @@ export default function DashboardPage() {
         <CaseDrawer
           labCase={selectedCase}
           onClose={() => setSelectedCase(null)}
+          onOpenCaseId={handleOpenCaseId}
         />
       )}
     </div>

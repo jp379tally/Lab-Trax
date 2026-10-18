@@ -14,6 +14,11 @@ interface TextFieldProps extends Omit<TextInputProps, "style"> {
 /**
  * TextField — labeled text input matching the new-case form styling, used by the
  * editable management screens (Lists, Pricing). Keeps input styling in one place.
+ *
+ * Return-key behaviour is pinned rather than left to the platform default so it
+ * stays predictable next to the app-wide tap-to-dismiss layer: a single-line
+ * field closes the keyboard from return/Done, a multi-line field inserts a
+ * newline instead. Callers can still override with `submitBehavior`.
  */
 export function TextField({
   label,
@@ -21,6 +26,10 @@ export function TextField({
   error,
   hint,
   multiline,
+  submitBehavior,
+  autoCorrect,
+  spellCheck,
+  autoCapitalize,
   ...inputProps
 }: TextFieldProps) {
   const { colors } = useTheme();
@@ -37,6 +46,10 @@ export function TextField({
         style={[styles.input, multiline && styles.textArea, error && styles.inputError]}
         placeholderTextColor={colors.textTertiary}
         multiline={multiline}
+        submitBehavior={submitBehavior ?? (multiline ? "newline" : "blurAndSubmit")}
+        autoCorrect={autoCorrect ?? (multiline ? true : undefined)}
+        spellCheck={spellCheck ?? (multiline ? true : undefined)}
+        autoCapitalize={autoCapitalize ?? (multiline ? "sentences" : undefined)}
         {...inputProps}
       />
       {hint ? <Text style={styles.hint}>{hint}</Text> : null}

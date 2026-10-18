@@ -4,7 +4,7 @@
 // (or a placeholder while loading, so a stale sum is never shown).
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { ColumnTotal, sumAmounts } from "@/components/ColumnTotal";
+import { ColumnTotal, FilteredSalesTotal, sumAmounts } from "@/components/ColumnTotal";
 
 describe("sumAmounts", () => {
   it("returns 0 for an empty list", () => {
@@ -59,5 +59,22 @@ describe("ColumnTotal", () => {
       <ColumnTotal values={[100]} loading testId="column-total-x" />,
     );
     expect(screen.getByTestId("column-total-x").textContent).toBe("—");
+  });
+});
+
+describe("FilteredSalesTotal", () => {
+  it("renders a labeled currency-formatted server aggregate", () => {
+    render(<FilteredSalesTotal amount="1234.50" />);
+    expect(screen.getByTestId("filtered-case-sales-total")).toHaveTextContent(
+      "Filtered sales total$1,234.50",
+    );
+  });
+
+  it("does not expose the previous amount while loading", () => {
+    render(<FilteredSalesTotal amount="1234.50" loading />);
+    expect(screen.getByTestId("filtered-case-sales-total")).toHaveTextContent(
+      "Filtered sales total—",
+    );
+    expect(screen.queryByText("$1,234.50")).not.toBeInTheDocument();
   });
 });

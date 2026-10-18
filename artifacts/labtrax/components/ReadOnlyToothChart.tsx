@@ -17,8 +17,15 @@ interface Props {
   ponticTeeth?: Set<ToothId>;
   /** Teeth marked as missing — rendered with ✕ glyph. */
   missingTeeth?: Set<ToothId>;
+  /** Teeth already billed on this case, shown with a green dashed halo. */
+  billedTeeth?: Set<ToothId>;
+  selected?: Set<ToothId>;
   /** Legacy fallback: all highlighted teeth rendered in the brand tint. */
   highlighted?: Set<ToothId>;
+  connectedPairs?: Set<string>;
+  connectorSuggestions?: Set<string>;
+  connectorIssue?: string | null;
+  summaryText?: string;
 }
 
 export function ReadOnlyToothChart(props: Props) {

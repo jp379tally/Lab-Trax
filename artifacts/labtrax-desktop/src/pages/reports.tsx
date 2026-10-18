@@ -1,15 +1,30 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  Cell,
+} from "recharts";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   BarChart3,
+  ClipboardList,
   Clock,
+  Cog,
   DollarSign,
   Download,
+  FileText,
+  Landmark,
   Loader2,
   Minus,
-  TrendingDown,
+  Percent,
+  Scale,
   TrendingUp,
+  TrendingDown,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
@@ -17,22 +32,27 @@ import { formatMoney, statusLabel } from "@/lib/format";
 import { downloadCsv } from "@/lib/export";
 import {
   DateRangePicker,
-  defaultRange,
   rangeLabel,
   type DateRange,
 } from "@/components/reports/DateRangePicker";
-
+import { SalesInvoicesPanel } from "@/components/reports/SalesInvoicesPanel";
+import { StatsTab } from "@/components/reports/StatsTab";
+import { useReportFilters, type SalesGrouping } from "@/components/reports/useReportFilters";
+import {
+  useGetInvoiceDiscountsReport,
+  useGetInvoiceSalesSeries,
+} from "@workspace/api-client-react";
 const BILLING_ROLES = new Set(["owner", "admin", "billing"]);
 
 const TABS = [
-  { key: "summary", label: "Summary" },
-  { key: "production", label: "Production" },
-  { key: "sales", label: "Sales" },
-  { key: "forecast", label: "Forecast", ownerOnly: true },
-  { key: "pnl", label: "Profit & Loss" },
-  { key: "balance-sheet", label: "Balance Sheet" },
+  { key: "summary", label: "Summary", icon: ClipboardList },
+  { key: "production", label: "Production", icon: Cog },
+  { key: "sales", label: "Sales", icon: BarChart3 },
+  { key: "forecast", label: "Forecast", icon: TrendingUp, adminOnly: true },
+  { key: "pnl", label: "Profit & Loss", icon: Scale },
+  { key: "balance-sheet", label: "Balance Sheet", icon: Landmark },
+  { key: "stats", label: "Stats", icon: Activity },
 ] as const;
-type TabKey = (typeof TABS)[number]["key"];
 
 export default function ReportsPage() {
   const meQuery = useQuery({
@@ -53,49 +73,53 @@ export default function ReportsPage() {
         .filter(Boolean) as Organization[],
     [memberships],
   );
-  // Labs the caller OWNS — the Forecast tab is stricter than billing.
-  const ownerLabs = useMemo(
+  // Labs where the caller is an admin or owner — matches the server's ADMIN_ROLES gate.
+  const adminLabs = useMemo(
     () =>
       memberships
         .filter(
           (m) =>
             m.status === "active" &&
             m.organization?.type === "lab" &&
-            m.role === "owner",
+            (m.role === "admin" || m.role === "owner"),
         )
         .map((m) => m.organization!)
         .filter(Boolean) as Organization[],
     [memberships],
   );
 
-  const [tab, setTab] = useState<TabKey>("summary");
-  const [orgId, setOrgId] = useState<string | null>(null);
-  const [range, setRange] = useState<DateRange>(() => defaultRange());
-
-  useEffect(() => {
-    if (!orgId && billingLabs.length > 0) {
-      setOrgId(billingLabs[0]!.id);
-    }
-  }, [billingLabs, orgId]);
+  const {
+    tab, setTab, orgId, setOrgId, range, setRange, groupBy, setGroupBy,
+    statsRange, setStatsRange, statsGroupBy, setStatsGroupBy,
+    forecastOrgId, setForecastOrgId,
+    summaryGroupBy, setSummaryGroupBy,
+  } = useReportFilters(billingLabs[0]?.id ?? null, adminLabs);
 
   const isBilling = billingLabs.length > 0;
-  const isOwner = ownerLabs.length > 0;
+  const isAdmin = adminLabs.length > 0;
 
   return (
-    <div className="px-8 py-7 max-w-[1500px] mx-auto">
-      <div className="flex items-start justify-between mb-5 gap-3">
+    <div className="reports-frame @container mx-auto max-w-[1500px] px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Reports</h1>
+          <h1 className="text-[1.7rem] font-bold tracking-tight leading-tight">Reports</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Production, sales, and financial statements for your lab.
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap justify-end">
-          {tab !== "forecast" && isBilling && billingLabs.length > 1 && (
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+          {/*
+            The Stats tab renders its own filter bar (lab, category, material,
+            group-by and its own date range), so the shared header controls
+            step aside for it. The forecast is now-based, so neither the lab
+            picker nor the date range applies there.
+          */}
+          {tab !== "forecast" && tab !== "stats" && isBilling && billingLabs.length > 1 && (
             <select
               value={orgId || ""}
               onChange={(e) => setOrgId(e.target.value || null)}
-              className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+              aria-label="Report lab"
+              className="reports-date-control h-9 min-w-0 max-w-full rounded-lg border border-border/70 bg-card px-2.5 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {billingLabs.map((o) => (
                 <option key={o.id} value={o.id}>
@@ -104,32 +128,34 @@ export default function ReportsPage() {
               ))}
             </select>
           )}
-          {/* The forecast is now-based; the date range does not apply. */}
-          {tab !== "forecast" && (
+          {tab !== "forecast" && tab !== "stats" && (
             <DateRangePicker value={range} onChange={setRange} />
           )}
         </div>
       </div>
 
-      <div className="border-b border-border mb-5">
-        <nav className="flex gap-1 -mb-px overflow-x-auto">
+      <div className="mb-5 rounded-xl border border-border/70 bg-card p-1.5 shadow-sm">
+        <nav aria-label="Report sections" className="flex gap-1 overflow-x-auto">
           {TABS.filter(
             (t) =>
               (isBilling || t.key === "summary") &&
-              (!("ownerOnly" in t && t.ownerOnly) || isOwner),
+              (!("adminOnly" in t && t.adminOnly) || isAdmin),
           ).map((t) => {
             const active = tab === t.key;
+            const Icon = t.icon;
             return (
               <button
                 key={t.key}
                 type="button"
                 onClick={() => setTab(t.key)}
-                className={`px-3.5 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+                aria-current={active ? "page" : undefined}
+                className={`inline-flex shrink-0 items-center gap-2 rounded-lg border-b-2 px-3 py-2.5 text-sm font-medium transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                   active
-                    ? "border-primary text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
+                    ? "border-primary bg-primary/5 text-primary"
+                    : "border-transparent text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
                 }`}
               >
+                <Icon size={15} aria-hidden="true" />
                 {t.label}
               </button>
             );
@@ -138,7 +164,10 @@ export default function ReportsPage() {
       </div>
 
       {!isBilling && (
-        <div className="bg-card border border-border rounded-xl p-12 text-center">
+        <div
+          className="bg-card border border-border rounded-xl p-12 text-center"
+          data-testid="reports-restricted"
+        >
           <div className="text-base font-medium mb-1">Reports are restricted</div>
           <p className="text-sm text-muted-foreground max-w-md mx-auto">
             You need an admin, owner, or billing role on a lab organization to
@@ -152,9 +181,13 @@ export default function ReportsPage() {
           billingLabs={billingLabs}
           memberships={memberships}
           range={range}
+          chartGroupBy={summaryGroupBy}
+          onGroupChange={setSummaryGroupBy}
         />
       )}
-      {tab === "forecast" && isOwner && <ForecastTab ownerLabs={ownerLabs} />}
+      {tab === "forecast" && isAdmin && (
+        <ForecastTab adminLabs={adminLabs} orgId={forecastOrgId ?? ""} onOrgChange={setForecastOrgId} />
+      )}
 
       {tab !== "summary" && tab !== "forecast" && isBilling && orgId && (
         <>
@@ -162,11 +195,24 @@ export default function ReportsPage() {
             <ProductionTab organizationId={orgId} range={range} />
           )}
           {tab === "sales" && (
-            <SalesTab organizationId={orgId} range={range} />
+            <SalesTab organizationId={orgId} range={range} groupBy={groupBy} onGroupChange={setGroupBy} />
           )}
           {tab === "pnl" && <PnlTab organizationId={orgId} range={range} />}
           {tab === "balance-sheet" && (
             <BalanceSheetTab organizationId={orgId} range={range} />
+          )}
+          {tab === "stats" && (
+            <StatsTab
+              billingLabs={billingLabs}
+              memberships={memberships}
+              orgId={orgId}
+              onOrgChange={setOrgId}
+              range={statsRange}
+              onRangeChange={setStatsRange}
+              groupBy={statsGroupBy}
+              onGroupChange={setStatsGroupBy}
+              onViewForecast={isAdmin ? () => setTab("forecast") : undefined}
+            />
           )}
         </>
       )}
@@ -176,7 +222,7 @@ export default function ReportsPage() {
 
 // ─────────────────────────── Forecast tab ───────────────────────────
 //
-// Owner-only sales pace projection. The server (GET /stats/sales-forecast)
+// Admin+owner sales pace projection. The server (GET /stats/sales-forecast)
 // does ALL the math — this component only picks the lab + timezone and
 // renders the numbers it returns.
 interface ForecastPreviousPeriod {
@@ -213,12 +259,15 @@ function localTimeZone(): string {
   }
 }
 
-function ForecastTab({ ownerLabs }: { ownerLabs: Organization[] }) {
-  const [orgId, setOrgId] = useState<string>(() => ownerLabs[0]?.id ?? "");
+function ForecastTab({ adminLabs, orgId, onOrgChange }: {
+  adminLabs: Organization[];
+  orgId: string;
+  onOrgChange: (orgId: string) => void;
+}) {
   const activeOrgId =
-    orgId && ownerLabs.some((o) => o.id === orgId)
+    orgId && adminLabs.some((o) => o.id === orgId)
       ? orgId
-      : (ownerLabs[0]?.id ?? "");
+      : (adminLabs[0]?.id ?? "");
   const timeZone = useMemo(() => localTimeZone(), []);
 
   const q = useQuery({
@@ -236,14 +285,14 @@ function ForecastTab({ ownerLabs }: { ownerLabs: Organization[] }) {
 
   return (
     <>
-      {ownerLabs.length > 1 && (
+      {adminLabs.length > 1 && (
         <div className="mb-5">
           <select
             value={activeOrgId}
-            onChange={(e) => setOrgId(e.target.value)}
+            onChange={(e) => onOrgChange(e.target.value)}
             className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
           >
-            {ownerLabs.map((o) => (
+            {adminLabs.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.displayName || o.name}
               </option>
@@ -253,9 +302,9 @@ function ForecastTab({ ownerLabs }: { ownerLabs: Organization[] }) {
       )}
 
       <p className="text-xs text-muted-foreground mb-5">
-        Projected from the current sales pace using Monday–Friday business days
-        only. Forecast = sales so far ÷ business days elapsed × total business
-        days in the period.
+        Based on saved invoice totals through the last completed business day.
+        Today's invoices enter the forecast after that day closes. The projection
+        uses Monday–Friday business days and your lab's closed-day calendar.
       </p>
 
       {q.isLoading && (
@@ -271,8 +320,8 @@ function ForecastTab({ ownerLabs }: { ownerLabs: Organization[] }) {
             Couldn’t load the forecast
           </div>
           <p className="text-sm text-muted-foreground max-w-md mx-auto">
-            The sales forecaster is available to lab owners only. Refresh to try
-            again.
+            The sales forecaster is available to lab admins and owners only.
+            Refresh to try again.
           </p>
         </div>
       )}
@@ -404,6 +453,12 @@ interface SalesReport {
   openInvoices: number;
 }
 
+interface SummaryResult {
+  totalCases: number;
+  avgTurnaroundDays: number | null;
+  eligibleTurnaroundCaseCount: number | null;
+}
+
 const STATUS_ORDER: Array<LabCase["status"]> = [
   "received",
   "in_design",
@@ -421,10 +476,14 @@ function SummaryTab({
   billingLabs,
   memberships,
   range,
+  chartGroupBy,
+  onGroupChange,
 }: {
   billingLabs: Organization[];
   memberships: MeResponse["memberships"];
   range: DateRange;
+  chartGroupBy: SalesGrouping;
+  onGroupChange: (groupBy: SalesGrouping) => void;
 }) {
   const allLabOrgs = useMemo(
     () =>
@@ -476,6 +535,34 @@ function SummaryTab({
     },
   });
 
+  const summaryQuery = useQuery({
+    queryKey: [
+      "reports",
+      "summary",
+      queryOrgs.map((o) => o.id),
+      range.from,
+      range.to,
+    ],
+    enabled: queryOrgs.length > 0,
+    queryFn: async () => {
+      const results = await Promise.all(
+        queryOrgs.map(async (org) => {
+          const params = new URLSearchParams({
+            organizationId: org.id,
+            dateFrom: range.from,
+            dateTo: range.to,
+          });
+          try {
+            return await apiFetch<SummaryResult>(`/stats/summary?${params}`);
+          } catch {
+            return null;
+          }
+        }),
+      );
+      return results.filter(Boolean) as SummaryResult[];
+    },
+  });
+
   const fromMs = new Date(range.from).getTime();
   const toMs = new Date(range.to).getTime();
   const filteredCases = (casesQuery.data ?? []).filter((c) => {
@@ -483,6 +570,10 @@ function SummaryTab({
     return t >= fromMs && t <= toMs;
   });
   const filteredInvoices = (invoicesQuery.data ?? []).filter((i) => {
+    // Exclude voided invoices so the revenue chart below always agrees with
+    // the "Total sales" KPI card, which is computed server-side by
+    // /invoices/reports/sales using the same exclusion.
+    if (i.status === "void") return false;
     const ts = i.issuedAt || i.createdAt;
     if (!ts) return false;
     const t = new Date(ts).getTime();
@@ -498,6 +589,29 @@ function SummaryTab({
   }, [filteredCases]);
   const maxStatusCount = Math.max(1, ...statusCounts.map((s) => s.count));
 
+  const isAdminOrOwner = useMemo(
+    () =>
+      memberships.some(
+        (m) =>
+          m.status === "active" &&
+          m.organization?.type === "lab" &&
+          (m.role === "admin" || m.role === "owner"),
+      ),
+    [memberships],
+  );
+
+  const rangeSpanDays = useMemo(() => {
+    const from = new Date(range.from).getTime();
+    const to = new Date(range.to).getTime();
+    if (Number.isNaN(from) || Number.isNaN(to)) return 9999;
+    return Math.abs(to - from) / 86_400_000;
+  }, [range.from, range.to]);
+
+  const showGroupByToggle = isAdminOrOwner && rangeSpanDays <= 62;
+
+
+  const activeGroupBy: "day" | "week" | "month" = showGroupByToggle ? chartGroupBy : "month";
+
   const monthly = useMemo(() => {
     const map = new Map<string, { label: string; revenue: number }>();
     for (const i of filteredInvoices) {
@@ -506,10 +620,9 @@ function SummaryTab({
       const d = new Date(ts);
       if (Number.isNaN(d.getTime())) continue;
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      const label = d.toLocaleDateString("en-US", {
-        month: "short",
-        year: "2-digit",
-      });
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const yyyy = d.getFullYear();
+      const label = `${mm}/${yyyy}`;
       const cur = map.get(key) ?? { label, revenue: 0 };
       cur.revenue += Number(i.total ?? 0);
       map.set(key, cur);
@@ -519,22 +632,67 @@ function SummaryTab({
       .slice(-12)
       .map(([_, v]) => v);
   }, [filteredInvoices]);
-  const maxRevenue = Math.max(1, ...monthly.map((m) => m.revenue));
 
-  const turnaround = useMemo(() => {
-    const SHIPPED = new Set(["shipped", "delivered"]);
-    const eligible = filteredCases.filter(
-      (c) => SHIPPED.has(c.status) && c.createdAt && c.updatedAt,
+  const daily = useMemo(() => {
+    const map = new Map<string, { label: string; revenue: number }>();
+    for (const i of filteredInvoices) {
+      const ts = i.issuedAt || i.createdAt;
+      if (!ts) continue;
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) continue;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      const label = `${mm}/${dd}`;
+      const cur = map.get(key) ?? { label, revenue: 0 };
+      cur.revenue += Number(i.total ?? 0);
+      map.set(key, cur);
+    }
+    return Array.from(map.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([_, v]) => v);
+  }, [filteredInvoices]);
+
+  const weekly = useMemo(() => {
+    const map = new Map<string, { label: string; revenue: number; weekStart: Date }>();
+    for (const i of filteredInvoices) {
+      const ts = i.issuedAt || i.createdAt;
+      if (!ts) continue;
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) continue;
+      const dow = d.getDay();
+      const weekStart = new Date(d);
+      weekStart.setDate(d.getDate() - dow);
+      weekStart.setHours(0, 0, 0, 0);
+      const key = weekStart.toISOString().slice(0, 10);
+      const wsMm = String(weekStart.getMonth() + 1).padStart(2, "0");
+      const wsDd = String(weekStart.getDate()).padStart(2, "0");
+      const label = `${wsMm}/${wsDd}`;
+      const cur = map.get(key) ?? { label, revenue: 0, weekStart };
+      cur.revenue += Number(i.total ?? 0);
+      map.set(key, cur);
+    }
+    return Array.from(map.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([_, v]) => v);
+  }, [filteredInvoices]);
+
+  const chartBars = activeGroupBy === "day" ? daily : activeGroupBy === "week" ? weekly : monthly;
+
+  const avgTurnaround = useMemo((): { days: number; count: number } | null => {
+    const rows = (summaryQuery.data ?? []).filter(
+      (r): r is SummaryResult & { avgTurnaroundDays: number; eligibleTurnaroundCaseCount: number } =>
+        r.avgTurnaroundDays != null && r.eligibleTurnaroundCaseCount != null && r.eligibleTurnaroundCaseCount > 0,
     );
-    if (eligible.length === 0) return null;
-    const totalMs = eligible.reduce(
-      (sum, c) =>
-        sum +
-        (new Date(c.updatedAt!).getTime() - new Date(c.createdAt!).getTime()),
+    if (rows.length === 0) return null;
+    const totalEligible = rows.reduce((sum, r) => sum + r.eligibleTurnaroundCaseCount, 0);
+    if (totalEligible === 0) return null;
+    const weighted = rows.reduce(
+      (sum, r) => sum + r.avgTurnaroundDays * r.eligibleTurnaroundCaseCount,
       0,
     );
-    return totalMs / eligible.length / 86400_000;
-  }, [filteredCases]);
+    return { days: weighted / totalEligible, count: totalEligible };
+  }, [summaryQuery.data]);
 
   const aggregateSales = useMemo(() => {
     const rows = salesQuery.data ?? [];
@@ -618,7 +776,8 @@ function SummaryTab({
         />
         <KpiCard
           label="Avg turnaround"
-          value={turnaround ? `${turnaround.toFixed(1)} days` : "—"}
+          value={avgTurnaround != null ? `${avgTurnaround.days.toFixed(1)} days` : "—"}
+          sub={avgTurnaround != null ? `${avgTurnaround.count} eligible case${avgTurnaround.count === 1 ? "" : "s"}` : undefined}
           icon={Clock}
           tone="neutral"
         />
@@ -627,11 +786,37 @@ function SummaryTab({
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-6">
         <section className="lg:col-span-2 bg-card border border-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold">Monthly revenue</h2>
+            <div className="flex items-center gap-3">
+              <h2 className="text-sm font-semibold">
+                {activeGroupBy === "day"
+                  ? "Daily revenue"
+                  : activeGroupBy === "week"
+                    ? "Weekly revenue"
+                    : "Monthly revenue"}
+              </h2>
+              {showGroupByToggle && (
+                <div className="inline-flex rounded-md border border-border text-xs overflow-hidden">
+                  {(["day", "week", "month"] as const).map((g) => (
+                    <button
+                      key={g}
+                      type="button"
+                      onClick={() => onGroupChange(g)}
+                      className={`px-2.5 py-1 font-medium transition-colors ${
+                        activeGroupBy === g
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:bg-secondary"
+                      }`}
+                    >
+                      {g === "day" ? "Day" : g === "week" ? "Week" : "Month"}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               type="button"
               onClick={exportMonthlyRevenueCsv}
-              disabled={monthly.length === 0}
+              disabled={chartBars.length === 0}
               className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md text-xs font-medium hover:bg-secondary disabled:opacity-50"
             >
               <Download size={12} /> CSV
@@ -643,36 +828,51 @@ function SummaryTab({
               Loading…
             </div>
           )}
-          {!isLoading && monthly.length === 0 && (
+          {!isLoading && chartBars.length === 0 && (
             <div className="text-sm text-muted-foreground py-10 text-center">
               No invoices in this range.
             </div>
           )}
-          {monthly.length > 0 && (
-            <div className="flex items-end gap-3 h-48">
-              {monthly.map((m) => (
-                <div
-                  key={m.label}
-                  className="flex-1 flex flex-col items-center gap-1.5 min-w-0"
-                >
-                  <div className="text-[10px] text-muted-foreground tabular-nums">
-                    {m.revenue >= 1000
-                      ? `${(m.revenue / 1000).toFixed(1)}k`
-                      : m.revenue.toFixed(0)}
-                  </div>
-                  <div
-                    className="w-full bg-primary/70 hover:bg-primary/90 rounded-t-md transition-colors"
-                    style={{
-                      height: `${Math.max(2, (m.revenue / maxRevenue) * 100)}%`,
-                    }}
-                    title={`${m.label}: ${formatMoney(m.revenue)}`}
-                  />
-                  <div className="text-[10px] text-muted-foreground">
-                    {m.label}
-                  </div>
-                </div>
-              ))}
-            </div>
+          {chartBars.length > 0 && (
+            <ResponsiveContainer width="100%" height={192}>
+              <BarChart
+                data={chartBars}
+                margin={{ top: 4, right: 8, left: 8, bottom: 0 }}
+              >
+                <XAxis
+                  dataKey="label"
+                  tick={{ fontSize: 10 }}
+                  tickLine={false}
+                  axisLine={false}
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  tickFormatter={(v: number) => {
+                    if (v >= 1_000_000)
+                      return `$${(v / 1_000_000).toFixed(1)}M`;
+                    if (v >= 1_000) return `$${(v / 1_000).toFixed(0)}k`;
+                    return `$${v.toFixed(0)}`;
+                  }}
+                  tick={{ fontSize: 10 }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={48}
+                />
+                <Tooltip
+                  formatter={(value: number) => [formatMoney(value), "Revenue"]}
+                  cursor={{ fill: "hsl(var(--muted))" }}
+                />
+                <Bar dataKey="revenue" radius={[4, 4, 0, 0]}>
+                  {chartBars.map((entry) => (
+                    <Cell
+                      key={entry.label}
+                      fill="hsl(var(--primary))"
+                      fillOpacity={0.75}
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
           )}
         </section>
 
@@ -832,6 +1032,12 @@ function ProductionTab({
         `/cases/reports/production-by-type?${params}`,
       ),
   });
+  const billed = useQuery({
+    queryKey: ["reports", "production-billed-total", organizationId, range.from, range.to],
+    queryFn: () => apiFetch<{ totalSales: string }>(
+      `/invoices/reports/sales?${params}`,
+    ),
+  });
   const data = q.data;
   const maxRevenue = Math.max(
     1,
@@ -841,33 +1047,38 @@ function ProductionTab({
   const dateStamp = new Date().toISOString().slice(0, 10);
 
   function exportCsv() {
-    if (!data) return;
-    const rows: Array<Record<string, string | number>> = data.items.map(
+    if (!data && !billed.data) return;
+    const rows: Array<Record<string, string | number>> = (data?.items ?? []).map(
       (i) => ({
         "Restoration type": i.restorationType,
         Count: i.count,
         Units: i.units,
         Cases: i.cases,
-        Revenue: i.revenue,
+        "Estimated production value": i.revenue,
         Filters: filterDesc,
       }),
     );
-    if (data.crownsRollup) {
+    if (data?.crownsRollup) {
       rows.push({
         "Restoration type": "Crowns (rollup)",
         Count: data.crownsRollup.count,
         Units: data.crownsRollup.units,
         Cases: data.crownsRollup.cases,
-        Revenue: data.crownsRollup.revenue,
+        "Estimated production value": data.crownsRollup.revenue,
         Filters: filterDesc,
       });
     }
-    rows.push({
-      "Restoration type": "TOTAL",
+    if (data) rows.push({
+      "Restoration type": "PRODUCTION TOTAL",
       Count: data.totals.count,
       Units: data.totals.units,
       Cases: data.totals.cases,
-      Revenue: data.totals.revenue,
+      "Estimated production value": data.totals.revenue,
+      Filters: filterDesc,
+    });
+    if (billed.data) rows.push({
+      "Restoration type": "BILLED INVOICES (issued in range; not allocated by type)",
+      "Billed total": billed.data.totalSales,
       Filters: filterDesc,
     });
     downloadCsv(`production-by-type-${dateStamp}.csv`, rows);
@@ -876,7 +1087,7 @@ function ProductionTab({
   return (
     <>
       <p className="text-xs text-muted-foreground -mt-2 mb-5">{filterDesc}</p>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         <KpiCard
           label="Restorations"
           value={data ? String(data.totals.count) : "—"}
@@ -896,20 +1107,31 @@ function ProductionTab({
           tone="neutral"
         />
         <KpiCard
-          label="Revenue"
+          label="Estimated production value"
           value={data ? formatMoney(data.totals.revenue) : "—"}
           icon={DollarSign}
           tone="success"
+        />
+        <KpiCard
+          label="Billed invoices"
+          value={billed.data ? formatMoney(billed.data.totalSales) : billed.isError ? "Unavailable" : "—"}
+          icon={DollarSign}
+          tone="primary"
         />
       </div>
 
       <section className="bg-card border border-border rounded-xl overflow-hidden">
         <header className="px-5 py-3 border-b border-border flex items-center justify-between">
-          <h2 className="text-sm font-semibold">By restoration type</h2>
+          <div>
+            <h2 className="text-sm font-semibold">By restoration type</h2>
+            <p className="text-xs text-muted-foreground">
+              Estimated values use case received dates and restoration prices. Billed invoices use issue dates and include saved rush, manual, and nested charges; those fees are not assigned to a restoration type.
+            </p>
+          </div>
           <button
             type="button"
             onClick={exportCsv}
-            disabled={!data || data.items.length === 0}
+            disabled={!data && !billed.data}
             className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md text-xs font-medium hover:bg-secondary disabled:opacity-50"
           >
             <Download size={12} /> CSV
@@ -922,7 +1144,7 @@ function ProductionTab({
               <th className="text-right font-medium py-2.5">Count</th>
               <th className="text-right font-medium py-2.5">Units</th>
               <th className="text-right font-medium py-2.5">Cases</th>
-              <th className="text-right font-medium px-5 py-2.5">Revenue</th>
+              <th className="text-right font-medium px-5 py-2.5">Estimated value</th>
               <th className="text-right font-medium pr-5 py-2.5 w-1/4">
                 Share
               </th>
@@ -999,87 +1221,67 @@ function ProductionTab({
     </>
   );
 }
+export function formatSalesPeriod(
+  iso: string,
+  groupBy: "day" | "week" | "month",
+): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(iso);
+  if (!match) return iso;
 
-// ─────────────────────────── Sales tab ───────────────────────────
-interface SalesSeriesPoint {
-  periodStart: string;
-  gross: string;
-  discounts: string;
-  net: string;
-  tax: string;
-  count: number;
-  avg: string;
-}
-interface SalesSeriesResponse {
-  from: string;
-  to: string;
-  groupBy: "day" | "week" | "month";
-  series: SalesSeriesPoint[];
-  totals: {
-    gross: string;
-    discounts: string;
-    net: string;
-    tax: string;
-    count: number;
-    avg: string;
-  };
+  const [, yyyy, mm, dd] = match;
+  if (groupBy === "month") return `${mm}/${yyyy}`;
+  return `${mm}/${dd}/${yyyy}`;
 }
 
 function SalesTab({
   organizationId,
   range,
+  groupBy,
+  onGroupChange,
 }: {
   organizationId: string;
   range: DateRange;
+  groupBy: SalesGrouping;
+  onGroupChange: (groupBy: SalesGrouping) => void;
 }) {
-  const [groupBy, setGroupBy] = useState<"day" | "week" | "month">("month");
+
   // Send the user's local IANA time zone so day/week/month buckets line
   // up with the lab's calendar instead of UTC.
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const params = new URLSearchParams({
+  const params = {
     organizationId,
     dateFrom: range.from,
     dateTo: range.to,
     groupBy,
     timeZone,
+  } as const;
+  const q = useGetInvoiceSalesSeries(params, {
+    query: {
+      queryKey: ["reports", "sales-series", organizationId, range.from, range.to, groupBy, timeZone],
+    },
   });
-  const q = useQuery({
-    queryKey: [
-      "reports",
-      "sales-series",
-      organizationId,
-      range.from,
-      range.to,
-      groupBy,
-      timeZone,
-    ],
-    queryFn: () =>
-      apiFetch<SalesSeriesResponse>(
-        `/invoices/reports/sales-series?${params}`,
-      ),
+  const discountParams = {
+    ...params,
+  };
+  const discountsQuery = useGetInvoiceDiscountsReport(discountParams, {
+    query: {
+      queryKey: ["reports", "discounts", organizationId, range.from, range.to, groupBy, timeZone],
+    },
   });
-  const data = q.data;
-  const maxNet = Math.max(1, ...(data?.series ?? []).map((p) => Number(p.net)));
+  const data = q.data?.data;
+  const discounts = discountsQuery.data?.data;
   const filterDesc = `Range: ${rangeLabel(range)} · grouped by ${groupBy}`;
   const dateStamp = new Date().toISOString().slice(0, 10);
 
   function fmtPeriod(iso: string): string {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    if (groupBy === "month") {
-      return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
-    }
-    return d.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "2-digit",
-    });
+    return formatSalesPeriod(iso, groupBy);
   }
 
   function exportCsv() {
     if (!data) return;
     const rows = data.series.map((p) => ({
       Period: fmtPeriod(p.periodStart),
+      "Billed total": p.billedTotal,
       Gross: p.gross,
       Discounts: p.discounts,
       Net: p.net,
@@ -1090,6 +1292,7 @@ function SalesTab({
     }));
     rows.push({
       Period: "TOTAL",
+      "Billed total": data.totals.billedTotal,
       Gross: data.totals.gross,
       Discounts: data.totals.discounts,
       Net: data.totals.net,
@@ -1101,20 +1304,72 @@ function SalesTab({
     downloadCsv(`sales-${groupBy}-${dateStamp}.csv`, rows);
   }
 
+  function exportDiscountsCsv() {
+    if (!discounts) return;
+    const rows: Array<Record<string, string | number>> = [
+      ...discounts.series.map((p) => ({
+        Section: "Period",
+        Period: fmtPeriod(p.periodStart),
+        Item: "",
+        Practice: "",
+        Doctor: "",
+        Amount: p.amount,
+        Count: p.count,
+        Filters: filterDesc,
+      })),
+      ...discounts.items.map((item) => ({
+        Section: "Item",
+        Period: "",
+        Item: item.item,
+        Practice: "",
+        Doctor: "",
+        Amount: item.amount,
+        Count: item.count,
+        Filters: filterDesc,
+      })),
+      ...discounts.practices.map((practice) => ({
+        Section: "Practice",
+        Period: "",
+        Item: "",
+        Practice: practice.practiceName ?? "Unassigned practice",
+        Doctor: practice.doctorName ?? "",
+        Amount: practice.amount,
+        Count: practice.count,
+        Filters: filterDesc,
+      })),
+      {
+        Section: "Total",
+        Period: "",
+        Item: "",
+        Practice: "",
+        Doctor: "",
+        Amount: discounts.totals.amount,
+        Count: discounts.totals.count,
+        Filters: filterDesc,
+      },
+    ];
+    downloadCsv(`discounts-${groupBy}-${dateStamp}.csv`, rows);
+  }
+
   return (
     <>
-      <div className="flex items-center justify-between mb-3 -mt-2">
-        <p className="text-xs text-muted-foreground">{filterDesc}</p>
-        <div className="inline-flex rounded-md border border-border overflow-hidden text-xs">
+      <div className="mb-3 -mt-2 flex flex-wrap items-center justify-between gap-3">
+          <p className="min-w-0 text-xs text-muted-foreground">{filterDesc}</p>
+        <div
+          className="inline-flex shrink-0 overflow-hidden rounded-lg border border-border bg-card text-xs shadow-sm"
+          role="group"
+          aria-label="Sales grouping"
+        >
           {(["day", "week", "month"] as const).map((g) => (
             <button
               key={g}
               type="button"
-              onClick={() => setGroupBy(g)}
-              className={`px-3 py-1.5 capitalize ${
+              onClick={() => onGroupChange(g)}
+              aria-pressed={groupBy === g}
+              className={`px-3 py-2 capitalize transition-colors focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 groupBy === g
                   ? "bg-primary text-primary-foreground"
-                  : "bg-card hover:bg-secondary"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
               }`}
             >
               {g}
@@ -1123,75 +1378,212 @@ function SalesTab({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <KpiCard
+      <div className="sales-metric-grid mb-6 grid grid-cols-1 gap-3">
+        <SalesMetricCard
+          label="Billed total"
+          value={data ? formatMoney(data.totals.billedTotal) : "—"}
+          series={data?.series.map((point) => point.billedTotal) ?? []}
+          metric="billedTotal"
+          icon={DollarSign}
+          tone="green"
+        />
+        <SalesMetricCard
           label="Net sales"
           value={data ? formatMoney(data.totals.net) : "—"}
+          series={data?.series.map((point) => point.net) ?? []}
+          metric="net"
           icon={DollarSign}
-          tone="success"
+          tone="blue"
         />
-        <KpiCard
+        <SalesMetricCard
           label="Gross"
           value={data ? formatMoney(data.totals.gross) : "—"}
-          icon={Activity}
-          tone="primary"
+          series={data?.series.map((point) => point.gross) ?? []}
+          metric="gross"
+          icon={TrendingUp}
+          tone="purple"
         />
-        <KpiCard
+        <SalesMetricCard
           label="Discounts"
           value={data ? formatMoney(data.totals.discounts) : "—"}
-          icon={Activity}
-          tone="warning"
+          series={data?.series.map((point) => point.discounts) ?? []}
+          metric="discounts"
+          icon={Percent}
+          tone="amber"
         />
-        <KpiCard
+        <SalesMetricCard
           label="Avg invoice"
           value={data ? formatMoney(data.totals.avg) : "—"}
-          icon={BarChart3}
-          tone="neutral"
+          series={data?.series.map((point) => point.avg) ?? []}
+          metric="avg"
+          icon={FileText}
+          tone="slate"
+          className="sales-metric-average"
         />
       </div>
 
-      <section className="bg-card border border-border rounded-xl p-5 mb-5">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold">Net sales over time</h2>
-        </div>
-        {q.isLoading && (
-          <div className="text-sm text-muted-foreground py-10 text-center">
-            <Loader2 size={16} className="inline animate-spin mr-2" />
-            Loading…
-          </div>
-        )}
-        {!q.isLoading && (!data || data.series.length === 0) && (
-          <div className="text-sm text-muted-foreground py-10 text-center">
-            No invoiced sales in this range.
-          </div>
-        )}
-        {data && data.series.length > 0 && (
-          <div className="flex items-end gap-2 h-56 overflow-x-auto">
-            {data.series.map((p) => (
-              <div
-                key={p.periodStart}
-                className="flex flex-col items-center gap-1.5 min-w-[40px]"
+      <SalesInvoicesPanel
+        organizationId={organizationId}
+        dateFrom={range.from}
+        dateTo={range.to}
+        datePreset={range.preset}
+      />
+
+      <section className="bg-card border border-border rounded-xl overflow-hidden mb-6">
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Discounts given</h2>
+          <button
+            type="button"
+            onClick={exportDiscountsCsv}
+            disabled={!discounts}
+            aria-label="Export discounts CSV"
+            className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md text-xs font-medium hover:bg-secondary disabled:opacity-50"
+          >
+            <Download size={12} /> CSV
+          </button>
+        </header>
+        <div className="p-5">
+          {discountsQuery.isError ? (
+            <div className="mb-4 text-sm text-destructive" role="alert">
+              Couldn't load discounts.{" "}
+              <button
+                type="button"
+                onClick={() => discountsQuery.refetch()}
+                className="underline"
               >
-                <div className="text-[10px] text-muted-foreground tabular-nums">
-                  {Number(p.net) >= 1000
-                    ? `${(Number(p.net) / 1000).toFixed(1)}k`
-                    : Number(p.net).toFixed(0)}
+                Retry
+              </button>
+            </div>
+          ) : discountsQuery.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading discounts…</p>
+          ) : discounts ? (
+            <>
+              <div className="mb-5">
+                <p className="text-xs text-muted-foreground">Total discounts</p>
+                <p className="text-2xl font-semibold tabular-nums">
+                  {formatMoney(discounts.totals.amount)}
+                </p>
+              </div>
+              {discounts.totals.count === 0 ? (
+                <p className="mb-5 text-sm text-muted-foreground">
+                  No discounts were given in this range.
+                </p>
+              ) : null}
+              <div className="grid gap-6 lg:grid-cols-2">
+                <div>
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    By period
+                  </h3>
+                  {discounts.series.length ? (
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                          <th className="py-2 text-left font-medium">Period</th>
+                          <th className="py-2 text-right font-medium">Amount</th>
+                          <th className="py-2 text-right font-medium">Invoices</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {discounts.series.map((period) => (
+                          <tr key={period.periodStart} className="border-t border-border">
+                            <td className="py-2">{fmtPeriod(period.periodStart)}</td>
+                            <td className="py-2 text-right tabular-nums">
+                              {formatMoney(period.amount)}
+                            </td>
+                            <td className="py-2 text-right tabular-nums">
+                              {period.count}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No period totals.</p>
+                  )}
                 </div>
-                <div
-                  className="w-8 bg-primary/30 hover:bg-primary/50 rounded-t-md transition-colors"
-                  style={{
-                    height: `${Math.max(2, (Number(p.net) / maxNet) * 100)}%`,
-                  }}
-                  title={`${fmtPeriod(p.periodStart)}: ${formatMoney(p.net)}`}
-                />
-                <div className="text-[10px] text-muted-foreground whitespace-nowrap">
-                  {fmtPeriod(p.periodStart)}
+                <div>
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    By discount item
+                  </h3>
+                  {discounts.items.length ? (
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                          <th className="py-2 text-left font-medium">Item</th>
+                          <th className="py-2 text-right font-medium">Amount</th>
+                          <th className="py-2 text-right font-medium">Count</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {discounts.items.map((item) => (
+                          <tr key={item.item} className="border-t border-border">
+                            <td className="py-2">{item.item}</td>
+                            <td className="py-2 text-right tabular-nums">
+                              {formatMoney(item.amount)}
+                            </td>
+                            <td className="py-2 text-right tabular-nums">
+                              {item.count}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No discount items.</p>
+                  )}
+                </div>
+                <div className="lg:col-span-2">
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    By practice and doctor
+                  </h3>
+                  {discounts.practices.length ? (
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                          <th className="py-2 text-left font-medium">Practice</th>
+                          <th className="py-2 text-left font-medium">Doctor</th>
+                          <th className="py-2 text-right font-medium">Amount</th>
+                          <th className="py-2 text-right font-medium">Invoices</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {discounts.practices.map((practice) => (
+                          <tr
+                            key={`${practice.practiceId ?? "none"}-${practice.doctorName ?? "none"}`}
+                            className="border-t border-border"
+                          >
+                            <td className="py-2">
+                              {practice.practiceName ?? "Unassigned practice"}
+                            </td>
+                            <td className="py-2">
+                              {practice.doctorName ?? "—"}
+                            </td>
+                            <td className="py-2 text-right tabular-nums">
+                              {formatMoney(practice.amount)}
+                            </td>
+                            <td className="py-2 text-right tabular-nums">
+                              {practice.count}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No practice totals.</p>
+                  )}
                 </div>
               </div>
-            ))}
-          </div>
-        )}
+            </>
+          ) : null}
+        </div>
       </section>
+
+      {q.isError && (
+        <div className="mb-4 text-sm text-destructive" role="alert">
+          Couldn't load the sales metrics and breakdown.{" "}
+          <button type="button" onClick={() => q.refetch()} className="underline">Retry</button>
+        </div>
+      )}
 
       <section className="bg-card border border-border rounded-xl overflow-hidden">
         <header className="px-5 py-3 border-b border-border flex items-center justify-between">
@@ -1209,6 +1601,7 @@ function SalesTab({
           <thead>
             <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
               <th className="text-left font-medium px-5 py-2.5">Period</th>
+              <th className="text-right font-semibold py-2.5">Billed total</th>
               <th className="text-right font-medium py-2.5">Gross</th>
               <th className="text-right font-medium py-2.5">Discounts</th>
               <th className="text-right font-medium py-2.5">Net</th>
@@ -1222,6 +1615,9 @@ function SalesTab({
               <tr key={p.periodStart} className="border-t border-border">
                 <td className="px-5 py-2.5 font-medium">
                   {fmtPeriod(p.periodStart)}
+                </td>
+                <td className="py-2.5 text-right tabular-nums font-semibold">
+                  {formatMoney(p.billedTotal)}
                 </td>
                 <td className="py-2.5 text-right tabular-nums">
                   {formatMoney(p.gross)}
@@ -1244,6 +1640,9 @@ function SalesTab({
             {data && data.series.length > 0 && (
               <tr className="border-t border-border bg-secondary/30">
                 <td className="px-5 py-2.5 font-semibold">Total</td>
+                <td className="py-2.5 text-right tabular-nums font-semibold">
+                  {formatMoney(data.totals.billedTotal)}
+                </td>
                 <td className="py-2.5 text-right tabular-nums font-semibold">
                   {formatMoney(data.totals.gross)}
                 </td>
@@ -1283,6 +1682,7 @@ interface PnlBlock {
   opexTotal: string;
   netIncome: string;
   netMargin: number;
+  basis?: string;
 }
 interface PnlResponse extends PnlBlock {
   from: string;
@@ -1318,9 +1718,11 @@ function PnlTab({
   });
   const data = q.data;
   const prev = data?.previous ?? null;
+  // Revenue is recognized when an invoice is issued and expense when a bill is
+  // entered, so say which basis the reader is looking at.
   const filterDesc = `Range: ${rangeLabel(range)}${
     comparePrev ? " · vs previous period" : ""
-  }`;
+  }${data?.basis ? ` · ${data.basis} basis` : ""}`;
   const dateStamp = new Date().toISOString().slice(0, 10);
 
   function exportCsv() {
@@ -1630,6 +2032,7 @@ function PnlLine({
 // ──────────────────────── Balance sheet tab ────────────────────────
 interface BalanceSheetResponse {
   asOf: string;
+  basis?: string;
   assets: {
     cashAccounts: Array<{ accountId: string; name: string; balance: string }>;
     cashTotal: string;
@@ -1639,6 +2042,7 @@ interface BalanceSheetResponse {
   liabilities: {
     items: Array<{ name: string; amount: string }>;
     customerCredits?: string;
+    accountsPayable?: string;
     total: string;
   };
   equity: {
@@ -1646,6 +2050,7 @@ interface BalanceSheetResponse {
     ownerContributions?: string;
     total: string;
   };
+  limitations?: Array<{ code: string; message: string }>;
 }
 
 function BalanceSheetTab({
@@ -1679,7 +2084,8 @@ function BalanceSheetTab({
   });
   const data = q.data;
   const dateStamp = new Date().toISOString().slice(0, 10);
-  const filterDesc = `As of ${asOfDate}`;
+  const [asOfY, asOfM, asOfD] = asOfDate.split("-");
+  const filterDesc = `As of ${asOfM}/${asOfD}/${asOfY}`;
 
   function exportCsv() {
     if (!data) return;
@@ -1706,7 +2112,10 @@ function BalanceSheetTab({
   return (
     <>
       <div className="flex items-center justify-between mb-5 -mt-2">
-        <p className="text-xs text-muted-foreground">{filterDesc}</p>
+        <p className="text-xs text-muted-foreground">
+          {filterDesc}
+          {data?.basis ? ` · ${data.basis} basis` : ""}
+        </p>
         <button
           type="button"
           onClick={exportCsv}
@@ -1721,6 +2130,17 @@ function BalanceSheetTab({
         <div className="text-sm text-muted-foreground py-12 text-center">
           <Loader2 size={16} className="inline animate-spin mr-2" />
           Loading…
+        </div>
+      )}
+
+      {!!data?.limitations?.length && (
+        <div className="mb-5 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs space-y-1">
+          <p className="font-medium">What this report can't tell you</p>
+          {data.limitations.map((limitation) => (
+            <p key={limitation.code} className="text-muted-foreground">
+              {limitation.message}
+            </p>
+          ))}
         </div>
       )}
 
@@ -1790,7 +2210,8 @@ function BalanceSheetTab({
                 {data.liabilities.items.length === 0 && (
                   <tr>
                     <td colSpan={2} className="px-10 py-2 text-xs text-muted-foreground italic">
-                      No outstanding liabilities tracked. Loans and AP aren't yet modelled.
+                      No outstanding liabilities. Unpaid vendor bills appear here as
+                      accounts payable; loans and fixed assets aren't modelled.
                     </td>
                   </tr>
                 )}
@@ -1851,6 +2272,108 @@ function BalanceSheetTab({
 }
 
 // ─────────────────────────── Shared bits ───────────────────────────
+type SalesMetricKey = "billedTotal" | "net" | "gross" | "discounts" | "avg";
+type SalesMetricTone = "green" | "blue" | "purple" | "amber" | "slate";
+
+export function buildSalesSparklinePoints(
+  values: readonly (number | string)[],
+): string | null {
+  if (values.length < 2) return null;
+  const numbers = values.map((value) => Number(value));
+  if (numbers.some((value) => !Number.isFinite(value))) return null;
+  const min = Math.min(...numbers);
+  const max = Math.max(...numbers);
+  const spread = max - min || 1;
+  return numbers
+    .map((value, index) => {
+      const x = (index / (numbers.length - 1)) * 100;
+      const y = 21 - ((value - min) / spread) * 18;
+      return `${x},${y}`;
+    })
+    .join(" ");
+}
+
+function SalesMetricCard({
+  label,
+  value,
+  series,
+  metric,
+  icon: Icon,
+  tone,
+  className = "",
+}: {
+  label: string;
+  value: string;
+  series: readonly (number | string)[];
+  metric: SalesMetricKey;
+  icon: React.ComponentType<{ size?: number; className?: string }>;
+  tone: SalesMetricTone;
+  className?: string;
+}) {
+  const points = buildSalesSparklinePoints(series);
+  const toneClasses: Record<SalesMetricTone, { icon: string; line: string }> = {
+    green: {
+      icon: "bg-emerald-600 text-white",
+      line: "text-emerald-600 dark:text-emerald-400",
+    },
+    blue: {
+      icon: "bg-blue-600 text-white",
+      line: "text-blue-600 dark:text-blue-400",
+    },
+    purple: {
+      icon: "bg-violet-600 text-white",
+      line: "text-violet-600 dark:text-violet-400",
+    },
+    amber: {
+      icon: "bg-amber-500 text-white",
+      line: "text-amber-600 dark:text-amber-400",
+    },
+    slate: {
+      icon: "bg-slate-600 text-white",
+      line: "text-slate-600 dark:text-slate-300",
+    },
+  };
+  return (
+    <div
+      className={`relative flex min-h-[112px] min-w-0 gap-3 rounded-xl border border-border/80 bg-card p-4 shadow-sm sm:p-5 ${className}`}
+      data-testid={`sales-metric-${metric}`}
+    >
+      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${toneClasses[tone].icon}`}>
+        <Icon size={19} aria-hidden="true" />
+      </div>
+      <div className="min-w-0 flex-1 pb-5">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.09em] text-muted-foreground">
+          {label}
+        </div>
+        <div
+          className="mt-1 break-words text-[clamp(1.25rem,2vw,1.7rem)] font-bold leading-tight tabular-nums tracking-tight text-foreground"
+          data-testid={`sales-metric-value-${metric}`}
+        >
+          {value}
+        </div>
+      </div>
+      {points && (
+        <svg
+          className={`absolute bottom-3 right-4 h-7 w-24 ${toneClasses[tone].line}`}
+          viewBox="0 0 100 24"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          data-testid={`sales-sparkline-${metric}`}
+        >
+          <polyline
+            points={points}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      )}
+    </div>
+  );
+}
+
 function KpiCard({
   label,
   value,

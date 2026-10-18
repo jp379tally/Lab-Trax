@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createSingleFlight } from "@/lib/single-flight";
 import {
   Dialog,
   DialogContent,
@@ -6,7 +7,6 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { MessengerDock } from "./messenger/MessengerDock";
 import { UpdateBanner } from "./UpdateBanner";
 import { Link, useLocation } from "wouter";
 import {
@@ -24,6 +24,7 @@ import {
   List,
   Loader2,
   LogOut,
+  MessageSquare,
   MonitorDown,
   Receipt,
   Settings,
@@ -37,34 +38,33 @@ import {
   HardDrive,
   Zap,
   ExternalLink,
+  Crown,
+  Menu,
+  X,
 } from "lucide-react";
 import { AiChatPanel } from "./AiChatPanel";
 import { AiPanelContext, type AiCaseContext } from "@/lib/ai-panel-context";
 import { toast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
+import { customerRequestLabs, useCustomerRequestCounts } from "@/lib/customer-requests";
 import { useUploads } from "@/lib/uploads-context";
 import { Logo } from "./Logo";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { headerRoleLabel } from "@/lib/membership-roles";
 import {
   useGetDoctorDuplicateClusters,
   getGetDoctorDuplicateClustersQueryKey,
 } from "@workspace/api-client-react";
-import { apiFetch } from "@/lib/api";
-import { retryUnlessForbidden } from "@/lib/platform-admin-query";
+import { apiFetch, apiFetchArrayBuffer, apiDownloadBackupToFolder, serverAssetUrl } from "@/lib/api";
+import { Avatar, AvatarImage, AvatarFallback } from "./ui/avatar";
+import { startLocalBackupScheduler } from "@/lib/local-backup-scheduler";
+import type { LocalBackupLiveStatus } from "@/lib/local-backup-execution";
+import { setScheduledLocalBackupProgress } from "@/lib/local-backup-progress";
+import { BackupStalenessBanner, useBackupFreshness } from "./BackupStalenessBanner";
 import type { MeResponse } from "@/lib/types";
-
-interface BackupScheduleShape {
-  lastSuccessfulBackupAt?: string | null;
-}
-
-const BACKUP_STALE_DAYS = 7;
-
-function isBackupStale(lastSuccessfulBackupAt: string | null | undefined): boolean {
-  if (!lastSuccessfulBackupAt) return true;
-  const last = new Date(lastSuccessfulBackupAt).getTime();
-  if (Number.isNaN(last)) return true;
-  return Date.now() - last > BACKUP_STALE_DAYS * 24 * 60 * 60 * 1000;
-}
+import { useCreatorAccess } from "@/lib/creator";
+import { canReportIssueRole, ReportIssueAction, FeedbackAction } from "./ReportIssueDialog";
+import { ScheduledBackupIndicator } from "./ScheduledBackupIndicator";
 
 interface NavItem {
   label: string;
@@ -73,6 +73,11 @@ interface NavItem {
   badge?: string;
   adminOnly?: boolean;
   billingOnly?: boolean;
+  recoveryBillingOnly?: boolean;
+  ownerOnly?: boolean;
+  creatorOnly?: boolean;
+  /** Visible only to billing-role members of this specific lab. */
+  labId?: string;
 }
 
 interface NavGroup {
@@ -83,11 +88,14 @@ interface NavGroup {
   children: (NavItem | NavGroup)[];
   adminOnly?: boolean;
   billingOnly?: boolean;
+  ownerOnly?: boolean;
+  creatorOnly?: boolean;
 }
 
 export const NAV: (NavItem | NavGroup)[] = [
   { label: "Dashboard", path: "/", icon: LayoutDashboard },
   { label: "Cases", path: "/cases", icon: FileText },
+  { label: "Messages", path: "/messages", icon: MessageSquare },
 ];
 
 function isGroup(item: NavItem | NavGroup): item is NavGroup {
@@ -148,15 +156,31 @@ export const SECONDARY: (NavItem | NavGroup)[] = [
           { label: "Invoices", path: "/invoices", icon: Receipt },
           { label: "Statements", path: "/statements", icon: CreditCard },
           { label: "Bank Register", path: "/finance", icon: Wallet },
+          { label: "Recovery Billing", path: "/recovery-billing", icon: Receipt, billingOnly: true, recoveryBillingOnly: true },
         ],
       },
       { label: "Pricing", path: "/pricing", icon: Tag },
       { label: "Lists", path: "/lists", icon: List, billingOnly: true },
       { label: "Reports", path: "/reports", icon: FileBarChart2, billingOnly: true },
-      { label: "Stats", path: "/stats", icon: BarChart3, billingOnly: true },
+      { label: "Maintenance", path: "/maintenance", icon: HardDrive, adminOnly: true },
     ],
   },
-  { label: "Maintenance", path: "/maintenance", icon: HardDrive, adminOnly: true },
+  {
+    label: "Creator",
+    path: "/creator",
+    icon: Crown,
+    creatorOnly: true,
+    children: [
+      { label: "Revenue", path: "/creator?tab=revenue", icon: BarChart3, creatorOnly: true },
+      { label: "Feedback inbox", path: "/creator?tab=feedback", icon: FileText, creatorOnly: true },
+      { label: "Subscriptions", path: "/creator?tab=subscriptions", icon: CreditCard, creatorOnly: true },
+      { label: "Lab Profile", path: "/creator?tab=lab-owner&ownerTab=lab-profile", icon: Building2, ownerOnly: true },
+      { label: "Team & Roles", path: "/creator?tab=lab-owner&ownerTab=team", icon: Users, ownerOnly: true },
+      { label: "Lab Revenue Reports", path: "/creator?tab=lab-owner&ownerTab=revenue", icon: BarChart3, ownerOnly: true },
+      { label: "Billing", path: "/billing", icon: CreditCard, ownerOnly: true },
+      { label: "Danger Zone", path: "/creator?tab=lab-owner&ownerTab=danger-zone", icon: AlertTriangle, ownerOnly: true },
+    ],
+  },
   { label: "Download Desktop App", path: "/download", icon: MonitorDown },
 ];
 
@@ -197,6 +221,9 @@ export function getNotificationDestination(notif: Notification): string | null {
   const data = notif.dataJson as Record<string, unknown> | null | undefined;
 
   if (
+    notif.type === "case_created" ||
+    notif.type === "rush_case_created" ||
+    notif.type === "case_exception_created" ||
     notif.type === "case_imported_from_itero" ||
     (notif.type === "alert" && data?.caseId)
   ) {
@@ -220,25 +247,95 @@ export function getNotificationDestination(notif: Notification): string | null {
     return "/";
   }
 
+  if (notif.type === "join_request_pending") {
+    return "/settings?tab=profile";
+  }
+
+  if (notif.type === "backup_local_error" || notif.type === "backup_offsite_failure") {
+    return "/settings?tab=backup";
+  }
+
+  if (notif.type === "provider_payment_received" || notif.type === "payment_reversed") {
+    const providerOrganizationId = data?.providerOrganizationId as string | undefined;
+    return providerOrganizationId
+      ? `/accounts?providerOrganizationId=${encodeURIComponent(providerOrganizationId)}`
+      : "/accounts";
+  }
+
+  if (
+    notif.type === "provider_note_added" ||
+    notif.type === "provider_attachment_added" ||
+    notif.type === "shared_note_added" ||
+    notif.type === "shared_attachment_added"
+  ) {
+    const caseId = data?.caseId as string | undefined;
+    if (caseId) return `/cases?caseId=${encodeURIComponent(caseId)}`;
+  }
+
   return null;
+}
+
+export function getProviderCaseActivityId(notif: Notification): string | null {
+  if (
+    notif.type !== "provider_note_added" &&
+    notif.type !== "provider_attachment_added"
+  ) {
+    return null;
+  }
+  const data = notif.dataJson as Record<string, unknown> | null | undefined;
+  return typeof data?.caseId === "string" && data.caseId.length > 0
+    ? data.caseId
+    : null;
 }
 
 const POLL_INTERVAL_MS = 60_000;
 
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 const IDLE_LOGOUT_FLAG = "labtrax_idle_logout_v1";
 
 const IDLE_EVENTS = ["mousemove", "mousedown", "keydown", "touchstart"] as const;
 
 export function AppLayout({ children }: Props) {
   const [location, setLocation] = useLocation();
-  const { user, logout } = useAuth();
+  const { user, logout, updateProfilePhoto } = useAuth();
   const isAdmin = user?.role === "admin";
   const [menuOpen, setMenuOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => { setNavOpen(false); }, [location]);
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [aiPanelCases, setAiPanelCases] = useState<AiCaseContext[]>([]);
+
+  // Local-folder scheduled backups are executed by this desktop app while it
+  // is open (the server cannot reach the local disk). The scheduler no-ops in
+  // plain browsers and for non-local schedules, and backs off on 403.
+  useEffect(() => {
+    if (!isAdmin) return;
+    const electronAPI = (window as unknown as {
+      electronAPI?: {
+        downloadBackupToFolder?: unknown;
+        onBackupRunId?: (callback: (runId: string) => void) => () => void;
+        saveBackupToFolder?: (
+          buffer: Uint8Array,
+          fileName: string,
+          folderPath: string,
+        ) => Promise<{ ok: boolean; path?: string; error?: string }>;
+      };
+    }).electronAPI;
+    if (!electronAPI?.saveBackupToFolder && !electronAPI?.downloadBackupToFolder) return;
+    return startLocalBackupScheduler({
+      apiFetch,
+      apiFetchArrayBuffer,
+      saveBackupToFolder: electronAPI.saveBackupToFolder,
+      downloadBackupToFolder: electronAPI.downloadBackupToFolder ? apiDownloadBackupToFolder : undefined,
+      onDownloadRunId: electronAPI.onBackupRunId,
+      getLiveStatus: (runId) =>
+        apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(runId)}`),
+      onProgress: setScheduledLocalBackupProgress,
+      storage: window.localStorage,
+    });
+  }, [isAdmin]);
 
   const openAiPanel = useCallback(
     (ctx?: AiCaseContext | AiCaseContext[]) => {
@@ -258,27 +355,70 @@ export function AppLayout({ children }: Props) {
   // Notification ids already observed by the poller. `null` until the first
   // poll seeds it, so we don't toast pre-existing notifications on mount.
   const seenNotifIdsRef = useRef<Set<string> | null>(null);
+  const notificationRead = useRef(createSingleFlight<Notification[]>());
+  const notificationUser = useRef(user?.id);
+  notificationUser.current = user?.id;
+  const loadNotifications = useCallback(() => notificationRead.current(
+    user?.id ?? "",
+    () => apiFetch<Notification[]>("/notifications"),
+  ), [user?.id]);
+  useEffect(() => {
+    seenNotifIdsRef.current = null;
+    setNotificationItems([]);
+    setHasUnread(false);
+  }, [user?.id]);
   const [selectedNotif, setSelectedNotif] = useState<Notification | null>(null);
+  const queryClient = useQueryClient();
 
-  const backupScheduleQuery = useQuery<BackupScheduleShape>({
-    queryKey: ["admin", "backup-schedule-v2"],
-    queryFn: () => apiFetch<BackupScheduleShape>("/admin/backup/schedule"),
-    enabled: isAdmin,
-    retry: retryUnlessForbidden,
-    staleTime: 5 * 60 * 1000,
-  });
-
-  const backupOverdue =
-    isAdmin &&
-    backupScheduleQuery.isSuccess &&
-    isBackupStale(backupScheduleQuery.data?.lastSuccessfulBackupAt);
+  // Freshness of the archive actually confirmed off-site, from the lab-admin
+  // endpoint (no platform-admin session needed): this drives both the nav dot
+  // and the persistent banner, so an outage cannot be visible only to someone
+  // who happens to open Settings.
+  const backupFreshness = useBackupFreshness(isAdmin);
+  const backupOverdue = isAdmin && backupFreshness.stale;
 
   const { entries, activeCount, removeEntry, cancelEntry } = useUploads();
   const meQuery = useQuery({
-    queryKey: ["auth", "me"],
+    queryKey: ["auth", "me", user?.id],
     queryFn: () => apiFetch<MeResponse>("/auth/me"),
     enabled: !!user,
+    refetchOnWindowFocus: true,
+    refetchOnMount: "always",
   });
+  const recoveryBillingAccessQuery = useQuery({
+    queryKey: ["billing-recovery", "access", user?.id],
+    queryFn: () => apiFetch<{ available: boolean; role?: "admin" | "staff" }>("/billing-recovery/access"),
+    enabled: !!user,
+    retry: false,
+  });
+  const refetchMe = meQuery.refetch;
+  const requestLabs = customerRequestLabs(meQuery.data);
+  const requestQueries = useCustomerRequestCounts(user?.id, requestLabs.map((m) => m.organizationId));
+  const pendingRequestCount = requestQueries.reduce((sum, query) => sum + (query.data?.length ?? 0), 0);
+  const requestCountError = requestQueries.some((query) => query.isError);
+  const firstPendingLabId = requestLabs[requestQueries.findIndex((query) => (query.data?.length ?? 0) > 0)]?.organizationId;
+  const requestHref = `/accounts?view=requests${firstPendingLabId ? `&requestLabId=${encodeURIComponent(firstPendingLabId)}` : ""}`;
+  useEffect(() => {
+    if (!user) return;
+    const refreshRequests = () => {
+      void queryClient.invalidateQueries({ queryKey: ["lab-team", "customer-requests", user.id] });
+    };
+    window.addEventListener("focus", refreshRequests);
+    return () => window.removeEventListener("focus", refreshRequests);
+  }, [queryClient, user?.id]);
+  useEffect(() => {
+    if (meQuery.data && meQuery.data.user.id === user?.id && user &&
+      meQuery.data.user.profilePhotoUrl !== user.profilePhotoUrl) {
+      updateProfilePhoto?.(user.id, meQuery.data.user.profilePhotoUrl ?? null);
+    }
+  }, [meQuery.data, user, updateProfilePhoto]);
+  // Electron windows can regain focus without a document visibility change.
+  useEffect(() => {
+    if (!user) return;
+    const onFocus = () => { void refetchMe({ cancelRefetch: false }); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [user?.id, refetchMe]);
   const hasBillingLab = useMemo(
     () =>
       (meQuery.data?.memberships ?? []).some(
@@ -293,6 +433,30 @@ export function AppLayout({ children }: Props) {
     () =>
       (meQuery.data?.memberships ?? []).some(
         (m) => m.status === "active" && m.organization?.type === "lab",
+      ),
+    [meQuery.data],
+  );
+  const creatorAccess = useCreatorAccess();
+  const isCreator = creatorAccess.data?.isCreator === true;
+  const isOwnerOfLab = useMemo(
+    () =>
+      (meQuery.data?.memberships ?? []).some(
+        (m) =>
+          m.status === "active" &&
+          m.organization?.type === "lab" &&
+          m.role === "owner",
+      ),
+    [meQuery.data],
+  );
+  const canReportLabIssue = useMemo(
+    () =>
+      (meQuery.data?.memberships ?? []).some(
+        (m) =>
+          m.status === "active" &&
+          m.organization?.type === "lab" &&
+          m.organization.isActive !== false &&
+          !m.organization.deletedAt &&
+          canReportIssueRole(m.role),
       ),
     [meQuery.data],
   );
@@ -311,6 +475,17 @@ export function AppLayout({ children }: Props) {
   });
   const dupClusterCount = dupClustersQuery.data?.data?.totalGroups ?? 0;
 
+  // Messenger unread count — polled every 10 s, drives the red dot on Messages nav
+  const messengerUnreadQuery = useQuery<{ total: number }>({
+    queryKey: ["provider-messenger", "unread-count"],
+    queryFn: () => apiFetch<{ total: number }>("/provider-messenger/unread-count"),
+    enabled: !!user && hasActiveLabMembership,
+    refetchInterval: 10_000,
+    staleTime: 0,
+    retry: false,
+  });
+  const messengerUnreadCount = messengerUnreadQuery.data?.total ?? 0;
+
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 
   const successCount = entries.filter((e) => e.status === "success").length;
@@ -324,13 +499,36 @@ export function AppLayout({ children }: Props) {
     const last = user?.lastName?.[0] || "";
     return (first + last).toUpperCase();
   }, [user]);
+  // A successful profile response may intentionally clear the photo; in that
+  // case don't resurrect the older image from the initial session snapshot.
+  const profilePhoto =
+    meQuery.isSuccess && meQuery.data?.user.id === user?.id
+      ? meQuery.data.user.profilePhotoUrl
+      : user?.profilePhotoUrl;
+  let avatarUrl: string | null = null;
+  try { avatarUrl = profilePhoto ? serverAssetUrl(profilePhoto) : null; } catch { /* initials */ }
+
+  const headerLabMemberships = (meQuery.data?.memberships ?? []).filter(
+    (m) => m.status === "active" && m.organization?.type === "lab",
+  );
+  const headerLab = (
+    headerLabMemberships.find((m) => m.organizationId === user?.practiceOrganizationId) ??
+    headerLabMemberships[0]
+  )?.organization;
+  const headerLabName =
+    headerLab?.displayName ||
+    headerLab?.name ||
+    user?.practiceName ||
+    "";
 
   const fullName =
     [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
     user?.username ||
     "Guest";
 
-  const role = user?.role === "admin" ? "Admin" : user?.role === "user" ? "User" : "Member";
+  // Team settings' names for the user's real lab role (Billing and Read Only
+  // included), not the collapsed admin/user authorization role.
+  const role = headerRoleLabel(user);
 
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -356,7 +554,8 @@ export function AppLayout({ children }: Props) {
   const fetchUnreadCount = useCallback(async () => {
     if (!user) return;
     try {
-      const items = await apiFetch<Notification[]>("/notifications");
+      const items = await loadNotifications();
+      if (notificationUser.current !== user.id) return;
       const unread = items.some((n) => !n.readAt);
       setHasUnread(unread);
 
@@ -384,12 +583,22 @@ export function AppLayout({ children }: Props) {
               duration: 6000,
             });
           }
+          if (n.type === "backup_local_error" || n.type === "backup_offsite_failure") {
+            toast({
+              title: n.title,
+              description: n.body,
+              // Off-site protection lapsing is the one alert that must not be
+              // missed, so it stays on screen until it is dismissed.
+              variant: "destructive",
+              duration: n.type === "backup_offsite_failure" ? Infinity : 8000,
+            });
+          }
         }
       }
     } catch {
       /* ignore */
     }
-  }, [user]);
+  }, [user?.id, loadNotifications]);
 
   useEffect(() => {
     fetchUnreadCount();
@@ -398,10 +607,12 @@ export function AppLayout({ children }: Props) {
   }, [fetchUnreadCount]);
 
   async function openNotifications() {
+    const userId = user?.id;
     setNotificationsOpen(true);
     setNotifLoading(true);
     try {
-      const items = await apiFetch<Notification[]>("/notifications");
+      const items = await loadNotifications();
+      if (notificationUser.current !== userId) return;
       setNotificationItems(items);
       setHasUnread(items.some((n) => !n.readAt));
     } catch {
@@ -431,6 +642,14 @@ export function AppLayout({ children }: Props) {
   async function handleNotificationClick(notif: Notification) {
     setNotificationsOpen(false);
 
+    // Provider notes and attachments are written by another client. Refresh the
+    // open case drawer immediately when its notification is selected instead of
+    // waiting for the drawer's normal polling interval or a full page reload.
+    const providerCaseId = getProviderCaseActivityId(notif);
+    if (providerCaseId) {
+      void queryClient.invalidateQueries({ queryKey: ["case", providerCaseId] });
+    }
+
     if (!notif.readAt) {
       const now = new Date().toISOString();
       setNotificationItems((prev) =>
@@ -449,17 +668,25 @@ export function AppLayout({ children }: Props) {
 
   function renderNavItem(item: NavItem, depth = 0) {
     if (item.billingOnly && !hasBillingLab) return null;
+    if (item.recoveryBillingOnly && recoveryBillingAccessQuery.data?.available !== true) return null;
+    if (item.labId && !(meQuery.data?.memberships ?? []).some((m) => m.status === "active" && m.organization?.id === item.labId && BILLING_ROLES.has(m.role))) return null;
     if (item.adminOnly && user?.role !== "admin") return null;
+    if (item.ownerOnly && !(isCreator && isOwnerOfLab)) return null;
+    if (item.creatorOnly && !isCreator) return null;
     // Case lists require an active lab membership.
     if (item.path === "/cases" && noActiveLabMembership) return null;
+    // Messages page requires an active lab membership.
+    if (item.path === "/messages" && noActiveLabMembership) return null;
     const active = navPathActive(item.path, location);
     const Icon = item.icon;
     const indent = depth > 0;
     const showBackupDot = backupOverdue && item.path === "/settings";
     const showDupBadge = item.path === "/accounts" && dupClusterCount > 0;
+    const showMessengerDot = item.path === "/messages" && messengerUnreadCount > 0;
     const href = showDupBadge ? "/accounts?view=duplicates" : item.path;
     return (
       <li key={item.path}>
+        <div className="flex items-center">
         <Link
           href={href}
           title={
@@ -469,9 +696,11 @@ export function AppLayout({ children }: Props) {
                 ? `${dupClusterCount} possible duplicate doctor ${
                     dupClusterCount === 1 ? "group" : "groups"
                   } — review and merge`
-                : undefined
+                : showMessengerDot
+                  ? `${messengerUnreadCount} unread message${messengerUnreadCount === 1 ? "" : "s"}`
+                  : undefined
           }
-          className={`flex items-center gap-3 rounded-md text-sm font-medium transition-colors ${
+          className={`flex flex-1 min-w-0 items-center gap-3 rounded-md text-sm font-medium transition-colors ${
             indent ? "py-1.5" : "px-3 py-2"
           } ${
             active
@@ -480,8 +709,19 @@ export function AppLayout({ children }: Props) {
           }`}
           style={indent ? { paddingLeft: 24 + depth * 12, paddingRight: 12 } : undefined}
         >
-          <Icon size={indent ? 14 : 16} strokeWidth={2.2} />
+          <span className="relative shrink-0">
+            <Icon size={indent ? 14 : 16} strokeWidth={2.2} />
+          </span>
           <span className="flex-1">{item.label}</span>
+          {showMessengerDot && (
+            <span
+              className="shrink-0 inline-flex items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-semibold leading-none text-white"
+              style={{ minWidth: 18, height: 18 }}
+              aria-label={`${messengerUnreadCount} unread message${messengerUnreadCount === 1 ? "" : "s"}`}
+            >
+              {messengerUnreadCount > 99 ? "99+" : messengerUnreadCount}
+            </span>
+          )}
           {showDupBadge && <DuplicateCountBadge count={dupClusterCount} />}
           {item.badge && (
             <span className="text-[10px] bg-sidebar-accent text-sidebar-accent-foreground px-1.5 py-0.5 rounded-full">
@@ -496,6 +736,17 @@ export function AppLayout({ children }: Props) {
             />
           )}
         </Link>
+        {item.path === "/accounts" && (pendingRequestCount > 0 || requestCountError) && (
+          <Link
+            href={requestHref}
+            aria-label={requestCountError ? "Request count unavailable — review requests" : `${pendingRequestCount} requests awaiting review`}
+            title={requestCountError ? "Unable to refresh requests" : "Requests awaiting review"}
+            className="mr-2 shrink-0 rounded-full bg-sky-600 px-2 py-1 text-[10px] font-semibold text-white hover:bg-sky-700"
+          >
+            Requests {pendingRequestCount > 99 ? "99+" : pendingRequestCount || "!"}
+          </Link>
+        )}
+        </div>
       </li>
     );
   }
@@ -503,6 +754,8 @@ export function AppLayout({ children }: Props) {
   function renderNavGroup(group: NavGroup, depth = 0) {
     if (group.billingOnly && !hasBillingLab) return null;
     if (group.adminOnly && user?.role !== "admin") return null;
+    if (group.ownerOnly && !(isCreator && isOwnerOfLab)) return null;
+    if (group.creatorOnly && !isCreator) return null;
     const open = openGroups[group.label] ?? groupContainsActive(group, location);
     const Icon = group.icon;
     const indent = depth > 0;
@@ -552,6 +805,15 @@ export function AppLayout({ children }: Props) {
                 />
               )}
             </Link>
+            {!open && groupContainsPath(group, "/accounts") && (pendingRequestCount > 0 || requestCountError) && (
+              <Link
+                href={requestHref}
+                aria-label={requestCountError ? "Request count unavailable — review requests" : `${pendingRequestCount} requests awaiting review`}
+                className="shrink-0 rounded-full bg-sky-600 px-2 py-1 text-[10px] font-semibold text-white hover:bg-sky-700"
+              >
+                Requests {pendingRequestCount > 99 ? "99+" : pendingRequestCount || "!"}
+              </Link>
+            )}
             <button
               type="button"
               onClick={toggle}
@@ -600,11 +862,33 @@ export function AppLayout({ children }: Props) {
 
   return (
     <AiPanelContext.Provider value={{ openPanel: openAiPanel }}>
-    <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
-      {/* Sidebar */}
-      <aside className="w-[240px] shrink-0 bg-sidebar text-sidebar-foreground flex flex-col border-r border-sidebar-border">
-        <div className="px-5 py-4 border-b border-sidebar-border">
+    <div className="flex h-[100dvh] w-full overflow-hidden bg-background text-foreground" data-testid="app-shell">
+      {navOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-slate-900/50 md:hidden"
+          data-testid="nav-drawer-backdrop"
+          onClick={() => setNavOpen(false)}
+        />
+      )}
+      {/* Sidebar — fixed drawer below md, static column from md up */}
+      <aside
+        id="app-nav"
+        data-testid="app-sidebar"
+        data-open={navOpen}
+        style={{ "--sidebar": "222 62% 12%", "--sidebar-primary": "217 82% 48%", "--sidebar-primary-foreground": "0 0% 100%" } as React.CSSProperties}
+        className={`fixed inset-y-0 left-0 z-50 w-[240px] max-w-[85vw] md:static md:z-auto md:translate-x-0 ${location === "/" ? "md:w-[160px]" : ""} transition-transform duration-200 shrink-0 bg-sidebar text-sidebar-foreground flex flex-col border-r border-sidebar-border ${navOpen ? "translate-x-0" : "-translate-x-full"}`}
+      >
+        <div className="px-5 py-4 border-b border-sidebar-border flex items-center justify-between">
           <Logo size={34} variant="dark" />
+          <button
+            type="button"
+            aria-label="Close navigation"
+            data-testid="button-close-nav"
+            className="md:hidden p-2 -mr-2 rounded-md hover:bg-sidebar-accent"
+            onClick={() => setNavOpen(false)}
+          >
+            <X size={18} />
+          </button>
         </div>
         <nav className="flex-1 overflow-y-auto py-3 px-3 scrollbar-thin">
           <div className="text-[10px] uppercase tracking-[0.2em] text-sidebar-foreground/45 px-3 py-2">
@@ -622,6 +906,8 @@ export function AppLayout({ children }: Props) {
           </ul>
         </nav>
         <div className="px-3 pb-3">
+          {canReportLabIssue && <ReportIssueAction portal="lab" />}
+          {!noActiveLabMembership && <FeedbackAction portal="lab" />}
           <a
             href="/"
             className="flex items-center gap-2 px-3 py-2 rounded-md text-xs text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
@@ -634,8 +920,26 @@ export function AppLayout({ children }: Props) {
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-[60px] shrink-0 border-b border-border bg-card flex items-center gap-4 px-6">
-          <div className="flex-1" />
+        <header className="h-[60px] shrink-0 border-b border-border bg-card flex items-center gap-2 sm:gap-4 px-3 sm:px-6" data-testid="app-header">
+          <button
+            type="button"
+            aria-label="Open navigation"
+            aria-controls="app-nav"
+            aria-expanded={navOpen}
+            data-testid="button-open-nav"
+            className="md:hidden h-10 w-10 inline-flex items-center justify-center rounded-md hover:bg-secondary"
+            onClick={() => setNavOpen(true)}
+          >
+            <Menu size={20} />
+          </button>
+          <div className="flex-1 min-w-0 flex items-center gap-2">
+            {headerLabName && (
+              <span data-testid="text-header-lab-name" className="truncate text-sm font-semibold text-[#0f1f4a]">
+                {headerLabName}
+              </span>
+            )}
+            {isAdmin && <ScheduledBackupIndicator />}
+          </div>
           <div className="relative">
             <button
               type="button"
@@ -855,9 +1159,12 @@ export function AppLayout({ children }: Props) {
               onClick={() => setMenuOpen((v) => !v)}
               className="flex items-center gap-2.5 pl-1.5 pr-2 py-1.5 rounded-md hover:bg-secondary"
             >
-              <div className="h-8 w-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-semibold">
-                {initials}
-              </div>
+              <Avatar key={`${user?.id}:${avatarUrl ?? ""}`} className="h-8 w-8 bg-primary text-primary-foreground text-xs font-semibold">
+                {avatarUrl && <AvatarImage src={avatarUrl} alt={`${fullName}'s profile photo`} className="object-cover" data-testid="img-profile-avatar" />}
+                <AvatarFallback className="bg-primary text-primary-foreground" data-testid="text-profile-initials">
+                  {initials}
+                </AvatarFallback>
+              </Avatar>
               <div className="hidden md:flex flex-col items-start leading-tight">
                 <span className="text-sm font-medium">{fullName}</span>
                 <span className="text-[11px] text-muted-foreground">
@@ -897,9 +1204,9 @@ export function AppLayout({ children }: Props) {
           </div>
         </header>
         <UpdateBanner />
-        <main className="flex-1 overflow-y-auto scrollbar-thin">{children}</main>
+        {isAdmin && <BackupStalenessBanner view={backupFreshness} />}
+        <main className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">{children}</main>
       </div>
-      <MessengerDock />
       {aiPanelOpen && (
         <AiChatPanel
           initialCases={aiPanelCases}

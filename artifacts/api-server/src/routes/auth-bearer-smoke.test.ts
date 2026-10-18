@@ -70,6 +70,7 @@ maybe("Bearer-auth smoke: cookie isolation and 401→refresh→retry", () => {
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-bearer-smoke";
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
+    await (await import("./index.js")).labtraxRoutesReady;
     authLib = await import("../lib/auth.js");
   });
 

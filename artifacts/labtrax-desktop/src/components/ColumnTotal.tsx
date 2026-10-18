@@ -38,3 +38,23 @@ export function ColumnTotal({
     </span>
   );
 }
+
+export function FilteredSalesTotal({
+  amount,
+  loading = false,
+}: {
+  amount?: string | number | null;
+  loading?: boolean;
+}) {
+  return (
+    <div
+      data-testid="filtered-case-sales-total"
+      className="flex items-center justify-end gap-2 px-5 py-3 text-sm"
+    >
+      <span className="font-medium text-muted-foreground">Filtered sales total</span>
+      <span className="font-semibold tabular-nums">
+        {loading ? "—" : formatMoney(Number(amount ?? 0))}
+      </span>
+    </div>
+  );
+}

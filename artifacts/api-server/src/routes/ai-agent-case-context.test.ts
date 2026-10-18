@@ -1,5 +1,5 @@
 /**
- * Tests for active-case context injection into the Maynard system prompt.
+ * Tests for active-case context injection into the LabTrax Assistant system prompt.
  *
  * The clients pass the case the user is viewing (caseId) or the set of pinned
  * cases (caseIds). The server fetches a bounded set of safe summary fields —
@@ -21,7 +21,6 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
 import request from "supertest";
 import express from "express";
-import bodyParser from "body-parser";
 import { registerAiAgentRoutes } from "./ai-agent";
 
 // ─── OpenAI mock (supports both non-stream and stream shapes) ────────────────
@@ -49,10 +48,10 @@ const dbState = vi.hoisted(() => ({
   membershipFindFirst: null as any,
 }));
 
-vi.mock("@workspace/db", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@workspace/db")>();
-  const casesTable = actual.cases;
-  const membershipTable = actual.organizationMemberships;
+vi.mock("@workspace/db", async () => {
+  const schema = await import("@workspace/db/schema");
+  const casesTable = schema.cases;
+  const membershipTable = schema.organizationMemberships;
 
   const makeChain = (): any => {
     let table: unknown = null;
@@ -83,7 +82,7 @@ vi.mock("@workspace/db", async (importOriginal) => {
   };
 
   return {
-    ...actual,
+    ...schema,
     db: {
       select: () => makeChain(),
       insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
@@ -128,7 +127,7 @@ vi.mock("../middlewares/auth", () => ({
 
 function makeApp(userId: string, userType: "lab" | "provider" = "lab") {
   const app = express();
-  app.use(bodyParser.json());
+  app.use(express.json());
   app.use((req: any, _res, next) => {
     req.user = { id: userId, userType };
     next();
@@ -152,12 +151,12 @@ function systemPromptSent(): string {
 function makeCase(overrides: Record<string, unknown> = {}) {
   return {
     id: "case-uuid-1",
-    caseNumber: "C-1001",
+    caseNumber: "SYN-CASE-001",
     labOrganizationId: "lab-1",
     providerOrganizationId: "prov-1",
     patientFirstName: "Jane",
     patientLastName: "Doe",
-    doctorName: "Dr. Smith",
+    doctorName: "Dr. Synthetic063",
     status: "in_progress",
     priority: "rush",
     dueDate: new Date("2026-07-20T00:00:00Z"),
@@ -219,16 +218,16 @@ describe("POST /api/ai-agent — active-case context injection", () => {
     expect(res.status).toBe(200);
     const sp = systemPromptSent();
     expect(sp).toContain("ACTIVE CASE");
-    expect(sp).toContain("C-1001");
+    expect(sp).toContain("SYN-CASE-001");
     expect(sp).toContain("Jane Doe");
-    expect(sp).toContain("Dr. Smith");
+    expect(sp).toContain("Dr. Synthetic063");
   });
 
   it("renders the multi-case block when multiple caseIds are pinned", async () => {
     dbState.membershipRows = [{ labId: "lab-1" }];
     dbState.membershipFindFirst = { role: "admin" };
     dbState.caseRows = [
-      makeCase({ id: "a", caseNumber: "C-1001", patientFirstName: "Jane", patientLastName: "Doe" }),
+      makeCase({ id: "a", caseNumber: "SYN-CASE-001", patientFirstName: "Jane", patientLastName: "Doe" }),
       makeCase({ id: "b", caseNumber: "C-1002", patientFirstName: "John", patientLastName: "Roe" }),
     ];
 
@@ -240,7 +239,7 @@ describe("POST /api/ai-agent — active-case context injection", () => {
     expect(res.status).toBe(200);
     const sp = systemPromptSent();
     expect(sp).toContain("ACTIVE CASES");
-    expect(sp).toContain("C-1001");
+    expect(sp).toContain("SYN-CASE-001");
     expect(sp).toContain("C-1002");
     expect(sp).toContain("these 2 cases");
   });
@@ -255,7 +254,7 @@ describe("POST /api/ai-agent — active-case context injection", () => {
       .send({ messages: [{ role: "user", content: "what's the status of this case?" }], caseId: "case-uuid-1" });
 
     expect(res.status).toBe(200);
-    expect(systemPromptSent()).toContain("C-1001");
+    expect(systemPromptSent()).toContain("SYN-CASE-001");
   });
 
   it("does NOT inject any case for a provider with no org scope (no cross-tenant leak)", async () => {
@@ -271,7 +270,7 @@ describe("POST /api/ai-agent — active-case context injection", () => {
     expect(res.status).toBe(200);
     const sp = systemPromptSent();
     expect(sp).not.toContain("ACTIVE CASE");
-    expect(sp).not.toContain("C-1001");
+    expect(sp).not.toContain("SYN-CASE-001");
   });
 
   it("does NOT inject any case for a lab user with no active membership", async () => {
@@ -313,7 +312,7 @@ describe("POST /api/ai-agent — active-case context injection", () => {
     expect(res.status).toBe(200);
     const sp = systemPromptSent();
     expect(sp).not.toContain("ACTIVE CASE");
-    expect(sp).not.toContain("C-1001");
+    expect(sp).not.toContain("SYN-CASE-001");
   });
 
   it("degrades gracefully (chat still replies) when the case lookup throws", async () => {
@@ -371,6 +370,6 @@ describe("POST /api/ai-agent/stream — active-case context injection", () => {
       .send({ messages: [{ role: "user", content: "summarize this case" }], caseId: "case-uuid-1" });
 
     expect(res.status).toBe(200);
-    expect(systemPromptSent()).toContain("C-1001");
+    expect(systemPromptSent()).toContain("SYN-CASE-001");
   });
 });

@@ -95,24 +95,69 @@ const INVOICE_VOIDED_EVENT = {
   },
 };
 
+const INTERNAL_EXCEPTION_EVENTS = [
+  {
+    id: "evt-exception-issue",
+    caseId: BASE_CASE.id,
+    eventType: "internal_exception_opened_note",
+    actorInitials: "OO",
+    occurredAt: "2026-02-04T10:00:00Z",
+    createdAt: "2026-02-04T10:00:00Z",
+    metadataJson: {
+      authorName: "Olive Owner",
+      noteText: "The margin needs an internal review.",
+      visibility: "internal_lab_only",
+      internalException: true,
+    },
+  },
+  {
+    id: "evt-exception-note",
+    caseId: BASE_CASE.id,
+    eventType: "internal_exception_note_added",
+    actorInitials: "TT",
+    occurredAt: "2026-02-05T10:00:00Z",
+    createdAt: "2026-02-05T10:00:00Z",
+    metadataJson: {
+      authorName: "Tina Tech",
+      noteText: "The model was checked and re-articulated.",
+      visibility: "internal_lab_only",
+      internalException: true,
+    },
+  },
+  {
+    id: "evt-exception-resolution",
+    caseId: BASE_CASE.id,
+    eventType: "internal_exception_resolution_note_added",
+    actorInitials: "OO",
+    occurredAt: "2026-02-06T10:00:00Z",
+    createdAt: "2026-02-06T10:00:00Z",
+    metadataJson: {
+      authorName: "Olive Owner",
+      noteText: "The margin was corrected before release.",
+      visibility: "internal_lab_only",
+      internalException: true,
+    },
+  },
+];
+
 const DETAILED_CASE = {
   ...BASE_CASE,
   restorations: [],
   notes: [],
   attachments: [],
-  events: [INVOICE_UPDATED_EVENT, INVOICE_VOIDED_EVENT],
+  events: [INVOICE_UPDATED_EVENT, INVOICE_VOIDED_EVENT, ...INTERNAL_EXCEPTION_EVENTS],
   viewerIsLabMember: true,
 };
 
 /**
- * Serves the case detail (`/cases/:id`) with the two invoice events; every
- * other endpoint returns a safe empty array.
+ * Serves the case detail (`/cases/:id`) with the given events; every other
+ * endpoint returns a safe empty array.
  */
-function makeFetchStub(): ReturnType<typeof vi.fn> {
+function makeFetchStub(detail: unknown = DETAILED_CASE): ReturnType<typeof vi.fn> {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.includes(`/cases/${BASE_CASE.id}`) && !url.includes("?barcode=")) {
-      return new Response(JSON.stringify(DETAILED_CASE), {
+      return new Response(JSON.stringify(detail), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -123,6 +168,45 @@ function makeFetchStub(): ReturnType<typeof vi.fn> {
     });
   });
 }
+
+/**
+ * Builds an ISO timestamp for a LOCAL calendar day/time, so the day the row
+ * renders ("MM/DD/YYYY", formatted in local time) is deterministic no matter
+ * which timezone the test container runs in.
+ */
+function localIso(year: number, month: number, day: number, hour: number): string {
+  return new Date(year, month - 1, day, hour, 0, 0).toISOString();
+}
+
+/**
+ * Five status events: three on Aug 12, two on Aug 14. Exactly one calendar-day
+ * boundary sits inside the run, so the timeline must show exactly one date
+ * separator regardless of sort direction.
+ */
+const DATE_GROUPED_EVENTS = [
+  { id: "evt-d1-a", hour: 9, day: 12 },
+  { id: "evt-d1-b", hour: 11, day: 12 },
+  { id: "evt-d1-c", hour: 15, day: 12 },
+  { id: "evt-d2-a", hour: 9, day: 14 },
+  { id: "evt-d2-b", hour: 13, day: 14 },
+].map(({ id, hour, day }) => ({
+  id,
+  caseId: BASE_CASE.id,
+  eventType: "note_added",
+  actorInitials: "BK",
+  occurredAt: localIso(2026, 8, day, hour),
+  createdAt: localIso(2026, 8, day, hour),
+  metadataJson: { authorName: "Bea Keeper", noteText: `Note ${id}` },
+}));
+
+const DATE_GROUPED_CASE = {
+  ...BASE_CASE,
+  restorations: [],
+  notes: [],
+  attachments: [],
+  events: DATE_GROUPED_EVENTS,
+  viewerIsLabMember: true,
+};
 
 async function renderHistoryTab() {
   const Wrapper = makeAuthWrapper("/cases");
@@ -168,5 +252,154 @@ describe("Case History tab — invoice lifecycle events", () => {
       expect(screen.getByText("Invoice INV-9001 marked Open")).toBeInTheDocument();
     });
     expect(screen.getByText("Invoice INV-9002 voided")).toBeInTheDocument();
+  });
+
+  it("renders internal exception issue, follow-up, and resolution notes with their authors", async () => {
+    await renderHistoryTab();
+
+    await waitFor(() => {
+      expect(screen.getByText("Internal Exception — Issue")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Internal Exception Note")).toBeInTheDocument();
+    expect(
+      screen.getByText("Internal Exception — Resolution Note"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("The margin needs an internal review."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("The model was checked and re-articulated."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("The margin was corrected before release."),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("history-event-meta-evt-exception-issue")).toHaveTextContent(
+      /Olive Owner · \d{1,2}:\d{2} (AM|PM)/,
+    );
+    expect(screen.getByTestId("history-event-meta-evt-exception-resolution")).toHaveTextContent(
+      /Olive Owner · \d{1,2}:\d{2} (AM|PM)/,
+    );
+    expect(screen.getByTestId("history-event-meta-evt-exception-note")).toHaveTextContent(
+      /Tina Tech · \d{1,2}:\d{2} (AM|PM)/,
+    );
+  });
+});
+
+describe("Case History tab — calendar-day headers", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", makeFetchStub(DATE_GROUPED_CASE));
+  });
+
+  it("draws one bold header per date group and one rule per transition", async () => {
+    await renderHistoryTab();
+
+    // All five rows render...
+    await waitFor(() => {
+      expect(screen.getAllByText("Note Added")).toHaveLength(5);
+    });
+
+    // ...and 3 Aug-12 entries + 2 Aug-14 entries produce exactly two headers
+    // with one transition rule and no leading or same-day rule.
+    const headers = screen.getAllByTestId("history-day-header");
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toHaveTextContent(/08\/14\/2026/);
+    expect(headers[1]).toHaveTextContent(/08\/12\/2026/);
+    const separators = screen.getAllByTestId("history-date-separator");
+    expect(separators).toHaveLength(1);
+    expect(separators[0]).toHaveClass("border-t-2");
+    expect(headers[0]).toHaveClass("text-base", "font-semibold");
+  });
+
+  it("keeps one header per date group after toggling the sort direction", async () => {
+    await renderHistoryTab();
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("history-day-header")).toHaveLength(2);
+    });
+
+    // Default is "Newest first"; flip to "Oldest first" and back.
+    fireEvent.click(screen.getByRole("button", { name: /Newest first/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Oldest first/i })).toBeInTheDocument();
+    });
+    expect(screen.getAllByTestId("history-day-header")).toHaveLength(2);
+    expect(screen.getAllByTestId("history-date-separator")).toHaveLength(1);
+    expect(screen.getAllByTestId("history-day-header")[0]).toHaveTextContent(/08\/12\/2026/);
+    expect(screen.getAllByTestId("history-day-header")[1]).toHaveTextContent(/08\/14\/2026/);
+
+    fireEvent.click(screen.getByRole("button", { name: /Oldest first/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Newest first/i })).toBeInTheDocument();
+    });
+    expect(screen.getAllByTestId("history-day-header")).toHaveLength(2);
+    expect(screen.getAllByTestId("history-date-separator")).toHaveLength(1);
+    expect(screen.getAllByTestId("history-day-header")[0]).toHaveTextContent(/08\/14\/2026/);
+    expect(screen.getAllByTestId("history-day-header")[1]).toHaveTextContent(/08\/12\/2026/);
+  });
+
+  it("keeps time-only metadata and groups events by the viewer's local day", async () => {
+    const events = [
+      {
+        ...DATE_GROUPED_EVENTS[0],
+        id: "evt-before-midnight",
+        occurredAt: localIso(2026, 8, 12, 23),
+        createdAt: localIso(2026, 8, 12, 23),
+      },
+      {
+        ...DATE_GROUPED_EVENTS[1],
+        id: "evt-after-midnight",
+        occurredAt: localIso(2026, 8, 13, 0),
+        createdAt: localIso(2026, 8, 13, 0),
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      makeFetchStub({
+        ...DATE_GROUPED_CASE,
+        events,
+      }),
+    );
+    await renderHistoryTab();
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("history-day-header")).toHaveLength(2);
+    });
+    expect(screen.getByTestId("history-event-meta-evt-before-midnight")).toHaveTextContent(
+      /Bea Keeper · (11:00 PM|12:00 AM)/,
+    );
+    expect(screen.getByTestId("history-event-meta-evt-before-midnight")).not.toHaveTextContent(
+      /08\/12\/2026/,
+    );
+  });
+
+  it("keeps one day rule alongside the merged-remake divider without duplicating it", async () => {
+    const originalEvent = {
+      ...DATE_GROUPED_EVENTS[0],
+      id: "evt-original",
+      occurredAt: localIso(2026, 8, 12, 9),
+      createdAt: localIso(2026, 8, 12, 9),
+    };
+    const remakeEvent = {
+      ...DATE_GROUPED_EVENTS[1],
+      id: "evt-remake",
+      occurredAt: localIso(2026, 8, 14, 9),
+      createdAt: localIso(2026, 8, 14, 9),
+    };
+    vi.stubGlobal(
+      "fetch",
+      makeFetchStub({
+        ...DATE_GROUPED_CASE,
+        events: [remakeEvent],
+        originalCaseEvents: [originalEvent],
+        remakeOriginal: { id: "case-original", caseNumber: "4999", kind: "canonical" },
+      }),
+    );
+    await renderHistoryTab();
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("history-day-header")).toHaveLength(2);
+    });
+    expect(screen.getByText(`Case ${BASE_CASE.caseNumber}`)).toBeInTheDocument();
+    expect(screen.getAllByTestId("history-date-separator")).toHaveLength(1);
   });
 });

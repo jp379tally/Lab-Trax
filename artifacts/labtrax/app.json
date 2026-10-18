@@ -2,7 +2,7 @@
   "expo": {
     "name": "LabTrax",
     "slug": "labtrax",
-    "version": "1.0.12",
+    "version": "1.0.15",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "labtrax",
@@ -15,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "288",
+      "buildNumber": "341",
       "bundleIdentifier": "app.replit.labtrax",
       "infoPlist": {
         "NSCameraUsageDescription": "This app uses the camera to capture photos of dental cases and scans for case tracking, documentation, and communication with the dental lab.",
@@ -66,7 +66,7 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "versionCode": 288
+      "versionCode": 341
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
@@ -80,7 +80,27 @@
       ],
       "expo-font",
       "expo-web-browser",
+      [
+        "@stripe/stripe-react-native",
+        {
+          "enableGooglePay": false
+        }
+      ],
+      "react-native-compressor",
       "react-native-document-scanner-plugin",
+      [
+        "expo-media-library",
+        {
+          "savePhotosPermission": "This app saves case photos to your photo library when you choose to save one from LabTrax."
+        }
+      ],
+      [
+        "react-native-vision-camera",
+        {
+          "enableCodeScanner": true,
+          "enableFrameProcessors": false
+        }
+      ],
       [
         "expo-share-intent",
         {
@@ -92,10 +112,12 @@
           "iosShareExtensionName": "LabTraxShare",
           "iosAppGroupIdentifier": "group.app.replit.labtrax.sdr",
           "androidIntentFilters": [
-            "image/*"
+            "image/*",
+            "video/*"
           ],
           "androidMultiIntentFilters": [
-            "image/*"
+            "image/*",
+            "video/*"
           ]
         }
       ]

@@ -120,8 +120,11 @@ maybe("Pricing tiers and overrides (db integration)", () => {
       caseNotes,
       cases: casesTable,
       invoices,
+      organizationConnections,
       pricingOverrides,
       pricingTiers,
+      labItemLabels,
+      vendors,
       userSessions,
       organizationMemberships,
       organizations,
@@ -145,10 +148,23 @@ maybe("Pricing tiers and overrides (db integration)", () => {
     await db.delete(casesTable).where(eq(casesTable.labOrganizationId, labOrgId));
     await db.delete(pricingOverrides).where(eq(pricingOverrides.labOrganizationId, labOrgId));
     await db.delete(pricingTiers).where(eq(pricingTiers.labOrganizationId, labOrgId));
+    await db.delete(labItemLabels).where(eq(labItemLabels.labOrganizationId, labOrgId));
+    await db.delete(vendors).where(eq(vendors.labOrganizationId, labOrgId));
     await db.delete(userSessions).where(inArray(userSessions.userId, [adminId, nonAdminId]));
     await db.delete(organizationMemberships).where(
       inArray(organizationMemberships.userId, [adminId, nonAdminId])
     );
+    // Delete organization_connections rows before orgs/users — requestedByUserId has onDelete:restrict.
+    await db
+      .delete(organizationConnections)
+      .where(
+        inArray(organizationConnections.labOrganizationId, [labOrgId, providerOrgId])
+      );
+    await db
+      .delete(organizationConnections)
+      .where(
+        inArray(organizationConnections.providerOrganizationId, [labOrgId, providerOrgId])
+      );
     await db.delete(organizations).where(eq(organizations.id, providerOrgId));
     await db.delete(organizations).where(eq(organizations.id, labOrgId));
     await db.delete(users).where(inArray(users.id, [adminId, nonAdminId]));
@@ -426,6 +442,268 @@ maybe("Pricing tiers and overrides (db integration)", () => {
       // Tiers/overrides are cleaned up by afterAll too.
     }
   }, 20000);
+
+  it("GET /api/pricing/pre-create-items returns active item identities with the doctor's effective price", async () => {
+    const { access } = await makeSession(adminId);
+    const doctorName = rid("PreCreateDr");
+    const { db, vendors } = dbMod as any;
+    const [billableItem] = await db
+      .insert(vendors)
+      .values({
+        labOrganizationId: labOrgId,
+        name: "Premium Crown",
+        priceKey: "pfm_crown",
+        vendorType: "item",
+        unitPrice: "999.00",
+        isActive: true,
+      })
+      .returning();
+    await db.insert(vendors).values({
+      labOrganizationId: labOrgId,
+      name: "Inactive Item",
+      vendorType: "item",
+      unitPrice: "777.00",
+      isActive: false,
+    });
+
+    const tier = await request(appMod.default)
+      .post("/api/pricing/tiers")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        name: rid("PreCreateTier"),
+        prices: { pfm_crown: 120 },
+      });
+    expect(tier.status).toBe(201);
+    const override = await request(appMod.default)
+      .post("/api/pricing/overrides")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        doctorName,
+        prices: { pfm_crown: 80 },
+      });
+    expect(override.status).toBe(201);
+
+    const response = await request(appMod.default)
+      .get(
+        `/api/pricing/pre-create-items?labOrganizationId=${labOrgId}&providerOrganizationId=${providerOrgId}&doctorName=${encodeURIComponent(doctorName)}`,
+      )
+      .set("Authorization", `Bearer ${access}`);
+    expect(response.status).toBe(200);
+    expect(response.body.data.items).toEqual([
+      expect.objectContaining({
+        id: billableItem.id,
+        name: "Premium Crown",
+        priceKey: "pfm_crown",
+        unitPrice: 80,
+        source: "override",
+      }),
+    ]);
+  }, 20000);
+
+  it("GET /api/pricing/pre-create-items also returns catalog rows priced for the lab/practice/doctor", async () => {
+    const { access } = await makeSession(adminId);
+    const doctorName = rid("PreCreateCatalogDr");
+
+    const tier = await request(appMod.default)
+      .post("/api/pricing/tiers")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        name: rid("PreCreateCatalogTier"),
+        prices: { emax_crown: 210 },
+      });
+    expect(tier.status).toBe(201);
+    // The doctor's own tier assignment must be what prices the catalog row.
+    const override = await request(appMod.default)
+      .post("/api/pricing/overrides")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        doctorName,
+        tierName: tier.body.data.name,
+        prices: {},
+      });
+    expect(override.status).toBe(201);
+
+    const response = await request(appMod.default)
+      .get(
+        `/api/pricing/pre-create-items?labOrganizationId=${labOrgId}&providerOrganizationId=${providerOrgId}&doctorName=${encodeURIComponent(doctorName)}`,
+      )
+      .set("Authorization", `Bearer ${access}`);
+    expect(response.status).toBe(200);
+    const catalogItems: Array<{
+      key: string;
+      label: string;
+      unitPrice: number;
+      source: string | null;
+    }> = response.body.data.catalogItems ?? [];
+    // Catalog rows are material-style entries that need no billable-item row.
+    expect(catalogItems.length).toBeGreaterThan(0);
+    const emax = catalogItems.find((i) => i.key === "emax_crown");
+    expect(emax).toBeDefined();
+    expect(emax?.unitPrice).toBe(210);
+    expect(emax?.source).toBe("tier");
+    expect(typeof emax?.label).toBe("string");
+    expect(emax?.label.length).toBeGreaterThan(0);
+  }, 20000);
+
+  it("creates discount catalog items with positive prices and keeps them out of case pricing lists", async () => {
+    const { access } = await makeSession(adminId);
+    const { db, vendors } = dbMod as any;
+    const tier = await request(appMod.default)
+      .post("/api/pricing/tiers")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        name: rid("DiscountCatalogTier"),
+        prices: {},
+      });
+    expect(tier.status).toBe(201);
+
+    const name = rid("Discount");
+    const created = await request(appMod.default)
+      .post("/api/pricing/add-item")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        name,
+        price: 400,
+        isDiscount: true,
+        tierIds: [tier.body.data.id],
+      });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.data).toMatchObject({
+      name,
+      price: 400,
+      isDiscount: true,
+    });
+    const priceKey = created.body.data.priceKey as string;
+
+    const labels = await request(appMod.default)
+      .get(`/api/pricing/item-labels?labOrganizationId=${labOrgId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(labels.status).toBe(200);
+    expect(labels.body.data.discountKeys).toContain(priceKey);
+
+    const discounts = await request(appMod.default)
+      .get(`/api/pricing/discount-items?labOrganizationId=${labOrgId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(discounts.status).toBe(200);
+    expect(discounts.body.data.items).toContainEqual(
+      expect.objectContaining({
+        key: priceKey,
+        label: name,
+        unitPrice: 400,
+        isDiscount: true,
+      }),
+    );
+
+    // Even if an old vendor item points at the same price key, case creation
+    // must not offer the discount as a restoration/billable item.
+    await db.insert(vendors).values({
+      labOrganizationId: labOrgId,
+      name,
+      priceKey,
+      vendorType: "item",
+      unitPrice: "400.00",
+      isActive: true,
+    });
+    const caseItems = await request(appMod.default)
+      .get(
+        `/api/pricing/pre-create-items?labOrganizationId=${labOrgId}&providerOrganizationId=${providerOrgId}`,
+      )
+      .set("Authorization", `Bearer ${access}`);
+    expect(caseItems.status).toBe(200);
+    expect(caseItems.body.data.items).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ priceKey })]),
+    );
+    expect(caseItems.body.data.catalogItems).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ key: priceKey })]),
+    );
+  }, 20000);
+
+  it("never resolves an explicitly flagged discount key as a restoration price", async () => {
+    const { db, labItemLabels } = dbMod as any;
+    const {
+      resolveAllPricesForContext,
+      resolveServerPriceWithSource,
+    } = await import("../lib/pricing.js");
+    const priceKey = "pfm_crown";
+    const priorRows = await db.query.labItemLabels.findMany({
+      where: eq(labItemLabels.labOrganizationId, labOrgId),
+    });
+    const prior = priorRows.find((row: any) => row.priceKey === priceKey);
+    const [flagged] = await db
+      .insert(labItemLabels)
+      .values({
+        labOrganizationId: labOrgId,
+        priceKey,
+        label: "Discounted PFM Crown",
+        isDiscount: true,
+      })
+      .onConflictDoUpdate({
+        target: [labItemLabels.labOrganizationId, labItemLabels.priceKey],
+        set: { label: "Discounted PFM Crown", isDiscount: true },
+      })
+      .returning();
+    const context = {
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+    };
+    try {
+      const allPrices = await resolveAllPricesForContext(context);
+      expect(allPrices.some((item) => item.key === priceKey)).toBe(false);
+      expect(
+        await resolveServerPriceWithSource(context, "PFM", "Crown"),
+      ).toBeNull();
+    } finally {
+      if (prior) {
+        await db
+          .update(labItemLabels)
+          .set({
+            label: prior.label,
+            description: prior.description,
+            isDiscount: prior.isDiscount,
+          })
+          .where(eq(labItemLabels.id, prior.id));
+      } else {
+        await db
+          .delete(labItemLabels)
+          .where(eq(labItemLabels.id, flagged.id));
+      }
+    }
+  });
+
+  it("GET /api/pricing/pre-create-items catalog rows are gated by the same admin check", async () => {
+    const { access } = await makeSession(nonAdminId);
+    const response = await request(appMod.default)
+      .get(
+        `/api/pricing/pre-create-items?labOrganizationId=${labOrgId}&providerOrganizationId=${providerOrgId}`,
+      )
+      .set("Authorization", `Bearer ${access}`);
+    expect(response.status).toBe(403);
+    expect(response.body?.data?.catalogItems).toBeUndefined();
+  });
+
+  it("GET /api/pricing/pre-create-items rejects non-admin lab members", async () => {
+    const { access } = await makeSession(nonAdminId);
+    const response = await request(appMod.default)
+      .get(`/api/pricing/pre-create-items?labOrganizationId=${labOrgId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(response.status).toBe(403);
+  });
+
+  it("GET /api/pricing/pre-create-items rejects a practice outside the requested lab", async () => {
+    const { access } = await makeSession(adminId);
+    const response = await request(appMod.default)
+      .get(
+        `/api/pricing/pre-create-items?labOrganizationId=${labOrgId}&providerOrganizationId=${rid("foreign-provider")}`,
+      )
+      .set("Authorization", `Bearer ${access}`);
+    expect(response.status).toBe(400);
+  });
 
   // ── GET /api/pricing/resolve-items — tier beats default ($0) fallback ───────
   //
@@ -968,11 +1246,11 @@ maybe("Pricing tiers and overrides (db integration)", () => {
         .from(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
       expect(Number(before[0]?.unitPrice)).toBe(BASE_PRICE);
 
-      // Create discount override — triggers re-quote.
+      // Create discount override — caller opts in to re-quote.
       const overrideResp = await request(appMod.default)
         .post("/api/pricing/overrides")
         .set("Authorization", `Bearer ${access}`)
-        .send({ labOrganizationId: labOrgId, doctorName, defaultDiscountPercent: DISCOUNT_PCT });
+        .send({ labOrganizationId: labOrgId, doctorName, defaultDiscountPercent: DISCOUNT_PCT, repriceDraftInvoices: true });
       expect(overrideResp.status).toBe(201);
 
       // Restoration and invoice must now reflect the discounted price.
@@ -1046,11 +1324,12 @@ maybe("Pricing tiers and overrides (db integration)", () => {
       .where(eq(caseRestorationsTable.caseId, caseId));
     expect(before[0]?.priceSource).toBe("manual");
 
-    // Create override with 20% discount — should NOT touch the manual restoration.
+    // Create override with 20% discount and opt-in to re-quote — should NOT
+    // touch the manual restoration even though re-quoting runs.
     const overrideResp = await request(appMod.default)
       .post("/api/pricing/overrides")
       .set("Authorization", `Bearer ${access}`)
-      .send({ labOrganizationId: labOrgId, doctorName, defaultDiscountPercent: 20 });
+      .send({ labOrganizationId: labOrgId, doctorName, defaultDiscountPercent: 20, repriceDraftInvoices: true });
     expect(overrideResp.status).toBe(201);
 
     const after: Array<{ unitPrice: string; priceSource: string | null }> = await db
@@ -1150,6 +1429,197 @@ maybe("Pricing tiers and overrides (db integration)", () => {
       await db.delete(organizationConnections)
         .where(eq(organizationConnections.providerOrganizationId, parProvId));
       await db.delete(orgsTable).where(eq(orgsTable.id, parProvId));
+    }
+  }, 30000);
+
+  // ── GET /pricing/overrides/pending-repricing-count ───────────────────────
+
+  it("GET /pricing/overrides/pending-repricing-count — returns 0 when no matching invoices", async () => {
+    const { access } = await makeSession(adminId);
+    const doctorName = rid("CountZeroDr");
+
+    const r = await request(appMod.default)
+      .get(`/api/pricing/overrides/pending-repricing-count?doctorName=${encodeURIComponent(doctorName)}&labOrganizationId=${labOrgId}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(r.status).toBe(200);
+    expect(r.body.data?.count).toBe(0);
+  });
+
+  it("GET /pricing/overrides/pending-repricing-count — returns 0 when doctorName is empty", async () => {
+    const { access } = await makeSession(adminId);
+
+    const r = await request(appMod.default)
+      .get(`/api/pricing/overrides/pending-repricing-count?doctorName=&labOrganizationId=${labOrgId}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(r.status).toBe(200);
+    expect(r.body.data?.count).toBe(0);
+  });
+
+  it("GET /pricing/overrides/pending-repricing-count — non-admin returns 403", async () => {
+    const { access } = await makeSession(nonAdminId);
+
+    const r = await request(appMod.default)
+      .get(`/api/pricing/overrides/pending-repricing-count?doctorName=Dr+Test&labOrganizationId=${labOrgId}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(r.status).toBe(403);
+  });
+
+  it("POST /pricing/overrides with repriceDraftInvoices: false does NOT re-price existing draft invoice", async () => {
+    const { db, caseRestorations: caseRestorationsTable, invoices: invoicesTable,
+      caseEvents: caseEventsTable, caseNotes: caseNotesTable, cases: casesTable,
+      organizations: orgsTable, organizationConnections } = dbMod as any;
+    const { access } = await makeSession(adminId);
+    const doctorName = rid("NoRepriceDr");
+    const BASE_TIER_NAME = rid("NoRepriceBase");
+    const BASE_PRICE = 130;
+    const DISCOUNT_PCT = 10;
+
+    const noReprovId = rid("noreprov");
+    await db.insert(orgsTable).values({
+      id: noReprovId, type: "provider", name: rid("NoRepriceProv"),
+      parentLabOrganizationId: labOrgId,
+    });
+    const tierResp = await request(appMod.default)
+      .post("/api/pricing/tiers")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ labOrganizationId: labOrgId, name: BASE_TIER_NAME, prices: { pfm_crown: BASE_PRICE } });
+    expect(tierResp.status).toBe(201);
+    await db.insert(organizationConnections).values({
+      id: rid("noreconn"), labOrganizationId: labOrgId,
+      providerOrganizationId: noReprovId, status: "active",
+      tierName: BASE_TIER_NAME, requestedByOrgId: labOrgId,
+      requestedByUserId: adminId,
+    });
+
+    let caseId: string | undefined;
+    try {
+      const caseResp = await request(appMod.default)
+        .post("/api/cases")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          caseNumber: rid("CN"), labOrganizationId: labOrgId,
+          providerOrganizationId: noReprovId, doctorName,
+          patientFirstName: "NoReprice", patientLastName: rid("Pat"),
+          status: "received",
+          restorations: [{ toothNumber: "30", restorationType: "Crown", material: "PFM", quantity: 1 }],
+        });
+      expect(caseResp.status, JSON.stringify(caseResp.body)).toBe(201);
+      caseId = caseResp.body.data.id;
+
+      const before: Array<{ unitPrice: string }> = await db
+        .select({ unitPrice: caseRestorationsTable.unitPrice })
+        .from(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+      expect(Number(before[0]?.unitPrice)).toBe(BASE_PRICE);
+
+      // Create override with repriceDraftInvoices: false — price must NOT change.
+      const overrideResp = await request(appMod.default)
+        .post("/api/pricing/overrides")
+        .set("Authorization", `Bearer ${access}`)
+        .send({ labOrganizationId: labOrgId, doctorName, defaultDiscountPercent: DISCOUNT_PCT, repriceDraftInvoices: false });
+      expect(overrideResp.status).toBe(201);
+
+      const after: Array<{ unitPrice: string }> = await db
+        .select({ unitPrice: caseRestorationsTable.unitPrice })
+        .from(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+      // Price must remain at BASE_PRICE — no re-quote happened.
+      expect(Number(after[0]?.unitPrice)).toBe(BASE_PRICE);
+    } finally {
+      if (caseId) {
+        await db.delete(caseEventsTable).where(eq(caseEventsTable.caseId, caseId));
+        await db.delete(caseNotesTable).where(eq(caseNotesTable.caseId, caseId));
+        await db.delete(invoicesTable).where(eq(invoicesTable.caseId, caseId));
+        await db.delete(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+        await db.delete(casesTable).where(eq(casesTable.id, caseId));
+      }
+      await db.delete(organizationConnections)
+        .where(eq(organizationConnections.providerOrganizationId, noReprovId));
+      await db.delete(orgsTable).where(eq(orgsTable.id, noReprovId));
+    }
+  }, 30000);
+
+  it("PATCH /pricing/overrides/:id with repriceDraftInvoices: true re-prices existing draft invoice", async () => {
+    const { db, caseRestorations: caseRestorationsTable, invoices: invoicesTable,
+      caseEvents: caseEventsTable, caseNotes: caseNotesTable, cases: casesTable,
+      organizations: orgsTable, organizationConnections } = dbMod as any;
+    const { access } = await makeSession(adminId);
+    const doctorName = rid("PatchRepriceDr");
+    const BASE_TIER_NAME = rid("PatchRepriceBase");
+    const BASE_PRICE = 200;
+    const DISCOUNT_PCT = 25;
+    // 200 * 0.75 = 150
+    const EXPECTED_DISCOUNTED = 150;
+
+    const patchReprovId = rid("patchreprov");
+    await db.insert(orgsTable).values({
+      id: patchReprovId, type: "provider", name: rid("PatchRepriceProv"),
+      parentLabOrganizationId: labOrgId,
+    });
+    const tierResp = await request(appMod.default)
+      .post("/api/pricing/tiers")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ labOrganizationId: labOrgId, name: BASE_TIER_NAME, prices: { pfm_crown: BASE_PRICE } });
+    expect(tierResp.status).toBe(201);
+    await db.insert(organizationConnections).values({
+      id: rid("patchrepconn"), labOrganizationId: labOrgId,
+      providerOrganizationId: patchReprovId, status: "active",
+      tierName: BASE_TIER_NAME, requestedByOrgId: labOrgId,
+      requestedByUserId: adminId,
+    });
+
+    let caseId: string | undefined;
+    try {
+      // Create override first (no repricing yet).
+      const overrideResp = await request(appMod.default)
+        .post("/api/pricing/overrides")
+        .set("Authorization", `Bearer ${access}`)
+        .send({ labOrganizationId: labOrgId, doctorName, repriceDraftInvoices: false });
+      expect(overrideResp.status).toBe(201);
+      const ovId: string = overrideResp.body.data.id;
+
+      // Case at full BASE_PRICE.
+      const caseResp = await request(appMod.default)
+        .post("/api/cases")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          caseNumber: rid("CN"), labOrganizationId: labOrgId,
+          providerOrganizationId: patchReprovId, doctorName,
+          patientFirstName: "PatchReprice", patientLastName: rid("Pat"),
+          status: "received",
+          restorations: [{ toothNumber: "30", restorationType: "Crown", material: "PFM", quantity: 1 }],
+        });
+      expect(caseResp.status, JSON.stringify(caseResp.body)).toBe(201);
+      caseId = caseResp.body.data.id;
+
+      const before: Array<{ unitPrice: string }> = await db
+        .select({ unitPrice: caseRestorationsTable.unitPrice })
+        .from(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+      expect(Number(before[0]?.unitPrice)).toBe(BASE_PRICE);
+
+      // PATCH override with discount + repriceDraftInvoices: true → price updates.
+      const patchResp = await request(appMod.default)
+        .patch(`/api/pricing/overrides/${ovId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ defaultDiscountPercent: DISCOUNT_PCT, repriceDraftInvoices: true });
+      expect(patchResp.status).toBe(200);
+
+      const after: Array<{ unitPrice: string }> = await db
+        .select({ unitPrice: caseRestorationsTable.unitPrice })
+        .from(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+      expect(Number(after[0]?.unitPrice)).toBe(EXPECTED_DISCOUNTED);
+    } finally {
+      if (caseId) {
+        await db.delete(caseEventsTable).where(eq(caseEventsTable.caseId, caseId));
+        await db.delete(caseNotesTable).where(eq(caseNotesTable.caseId, caseId));
+        await db.delete(invoicesTable).where(eq(invoicesTable.caseId, caseId));
+        await db.delete(caseRestorationsTable).where(eq(caseRestorationsTable.caseId, caseId));
+        await db.delete(casesTable).where(eq(casesTable.id, caseId));
+      }
+      await db.delete(organizationConnections)
+        .where(eq(organizationConnections.providerOrganizationId, patchReprovId));
+      await db.delete(orgsTable).where(eq(orgsTable.id, patchReprovId));
     }
   }, 30000);
 

@@ -1,0 +1,18 @@
+{
+  "scenarioId": "GUIDE-1",
+  "platform": "ios",
+  "device": "pending-device",
+  "profile": "iphone-375-default",
+  "build": "pending-device-run",
+  "osVersion": "pending",
+  "runId": "pending",
+  "tester": "pending",
+  "status": "not-run",
+  "artifacts": [
+    {
+      "path": "pending-evidence.xml",
+      "type": "document",
+      "sha256": "72d84943b872f59f966a81fe4e6a67b6a122163968485c7326be8b8fd089eab1"
+    }
+  ]
+}

@@ -5,12 +5,11 @@
  * in afterAll so the suite is safe to run against a shared dev DB.
  *
  * Coverage:
- *  - POST /api/account-links/manual — links two accounts by platform account number
- *  - POST /api/account-links/manual — {alreadyLinked: true} on repeated call
+ *  - POST /api/account-links/manual — creates a pending invite, not an active link
+ *  - POST /api/account-links/respond — only the invited account can respond
  *  - POST /api/account-links/manual — 404 when account number not found
  *  - POST /api/account-links/manual — 400 when linking own account number
- *  - POST /api/sms/sms-inbound YES — links accounts matching a pending invite
- *  - POST /api/sms/sms-inbound non-YES — silently ignored (200 XML, no link)
+ *  - Unauthenticated SMS fields cannot accept account-link invitations
  *  - Unauthenticated /api/account-links/manual returns 401
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -115,8 +114,9 @@ maybe("Account links (db integration)", () => {
 
   // ── POST /api/account-links/manual ────────────────────────────────────────
 
-  it("POST /api/account-links/manual links two accounts and returns {ok: true}", async () => {
+  it("POST /api/account-links/manual creates an invite without linking accounts", async () => {
     const { access } = await makeSession(userAId);
+    const { db, accountLinkInvites, doctorAccountLinks } = dbMod as any;
 
     const r = await request(appMod.default)
       .post("/api/account-links/manual")
@@ -126,17 +126,33 @@ maybe("Account links (db integration)", () => {
     expect(r.status).toBe(200);
     expect(r.body.data?.ok ?? r.body.ok).toBe(true);
     expect(r.body.data?.alreadyLinked ?? r.body.alreadyLinked).toBe(false);
+    expect(r.body.data?.invitePending ?? r.body.invitePending).toBe(true);
 
-    // Clean up the link so subsequent tests start clean.
-    const { db, doctorAccountLinks } = dbMod as any;
-    await db.delete(doctorAccountLinks).where(inArray(doctorAccountLinks.userIdLow, [userAId, userBId]));
-    await db.delete(doctorAccountLinks).where(inArray(doctorAccountLinks.userIdHigh, [userAId, userBId]));
+    const invite = await db.query.accountLinkInvites.findFirst({
+      where: and(
+        eq(accountLinkInvites.newUserId, userAId),
+        eq(accountLinkInvites.existingUserId, userBId)
+      ),
+    });
+    expect(invite?.status).toBe("pending");
+    const links = await db
+      .select()
+      .from(doctorAccountLinks)
+      .where(
+        and(
+          inArray(doctorAccountLinks.userIdLow, [userAId, userBId]),
+          inArray(doctorAccountLinks.userIdHigh, [userAId, userBId])
+        )
+      );
+    expect(links).toHaveLength(0);
+    await db.delete(accountLinkInvites).where(eq(accountLinkInvites.id, invite.id));
   });
 
-  it("POST /api/account-links/manual repeated call returns {alreadyLinked: true}", async () => {
+  it("POST /api/account-links/manual repeated call reuses the pending invite", async () => {
     const { access } = await makeSession(userAId);
+    const { db, accountLinkInvites } = dbMod as any;
 
-    await request(appMod.default)
+    const first = await request(appMod.default)
       .post("/api/account-links/manual")
       .set("Authorization", `Bearer ${access}`)
       .send({ otherPlatformAccountNumber: ACCT_B });
@@ -147,12 +163,20 @@ maybe("Account links (db integration)", () => {
       .send({ otherPlatformAccountNumber: ACCT_B });
 
     expect(second.status).toBe(200);
-    expect(second.body.data?.alreadyLinked ?? second.body.alreadyLinked).toBe(true);
+    expect(first.body.data?.invitePending ?? first.body.invitePending).toBe(true);
+    expect(second.body.data?.invitePending ?? second.body.invitePending).toBe(true);
 
-    // Clean up.
-    const { db, doctorAccountLinks } = dbMod as any;
-    await db.delete(doctorAccountLinks).where(inArray(doctorAccountLinks.userIdLow, [userAId, userBId]));
-    await db.delete(doctorAccountLinks).where(inArray(doctorAccountLinks.userIdHigh, [userAId, userBId]));
+    const invites = await db
+      .select()
+      .from(accountLinkInvites)
+      .where(
+        and(
+          eq(accountLinkInvites.newUserId, userAId),
+          eq(accountLinkInvites.existingUserId, userBId)
+        )
+      );
+    expect(invites).toHaveLength(1);
+    await db.delete(accountLinkInvites).where(eq(accountLinkInvites.id, invites[0].id));
   });
 
   it("POST /api/account-links/manual with unknown account number returns 404", async () => {
@@ -184,9 +208,60 @@ maybe("Account links (db integration)", () => {
     expect(r.status).toBe(401);
   });
 
+  it("only the invited account can accept a pending link", async () => {
+    const { db, accountLinkInvites, doctorAccountLinks } = dbMod as any;
+    const { access: requesterToken } = await makeSession(userAId);
+    const { access: invitedToken } = await makeSession(userBId);
+
+    await request(appMod.default)
+      .post("/api/account-links/manual")
+      .set("Authorization", `Bearer ${requesterToken}`)
+      .send({ otherPlatformAccountNumber: ACCT_B });
+    const invite = await db.query.accountLinkInvites.findFirst({
+      where: and(
+        eq(accountLinkInvites.newUserId, userAId),
+        eq(accountLinkInvites.existingUserId, userBId)
+      ),
+    });
+
+    const requesterResponse = await request(appMod.default)
+      .post("/api/account-links/respond")
+      .set("Authorization", `Bearer ${requesterToken}`)
+      .send({ inviteId: invite.id, accept: true });
+    expect(requesterResponse.status).toBe(403);
+    expect((await db.query.accountLinkInvites.findFirst({
+      where: eq(accountLinkInvites.id, invite.id),
+    }))?.status).toBe("pending");
+
+    const targetResponse = await request(appMod.default)
+      .post("/api/account-links/respond")
+      .set("Authorization", `Bearer ${invitedToken}`)
+      .send({ inviteId: invite.id, accept: true });
+    expect(targetResponse.status).toBe(200);
+    expect(targetResponse.body.data?.accepted ?? targetResponse.body.accepted).toBe(true);
+    const links = await db
+      .select()
+      .from(doctorAccountLinks)
+      .where(
+        and(
+          inArray(doctorAccountLinks.userIdLow, [userAId, userBId]),
+          inArray(doctorAccountLinks.userIdHigh, [userAId, userBId])
+        )
+      );
+    expect(links).toHaveLength(1);
+
+    await db.delete(accountLinkInvites).where(eq(accountLinkInvites.id, invite.id));
+    await db.delete(doctorAccountLinks).where(
+      inArray(doctorAccountLinks.userIdLow, [userAId, userBId])
+    );
+    await db.delete(doctorAccountLinks).where(
+      inArray(doctorAccountLinks.userIdHigh, [userAId, userBId])
+    );
+  });
+
   // ── POST /api/sms/sms-inbound ──────────────────────────────────────────
 
-  it("POST /api/sms/sms-inbound YES links accounts from a pending invite", async () => {
+  it("unsigned POST /api/sms/sms-inbound cannot accept a pending invite", async () => {
     // Use a numeric-only phone so normalizePhoneE164 keeps all digits intact.
     const suffix = String(1000000 + Math.floor(Math.random() * 9000000));
     const phone = `+1555${suffix}`;
@@ -209,16 +284,13 @@ maybe("Account links (db integration)", () => {
         .type("form")
         .send({ msisdn: phone, text: "YES" });
 
-      expect(r.status).toBe(200);
-      // Self-closing <Response/> for no-candidates, or <Response><Message>...</Message></Response>
-      // for success. Both start with "<Response".
-      expect(r.text).toContain("<Response");
+      expect(r.status).toBe(404);
 
-      // The invite should now be accepted.
+      // Caller-supplied phone numbers and message bodies are not consent.
       const invite = await db.query.accountLinkInvites.findFirst({
         where: eq(accountLinkInvites.sentToPhone, phone),
       });
-      expect(invite?.status).toBe("accepted");
+      expect(invite?.status).toBe("pending");
     } finally {
       // Always clean up even if assertions fail, so later tests see a clean slate.
       await db.delete(accountLinkInvites).where(eq(accountLinkInvites.sentToPhone, phone));
@@ -231,7 +303,7 @@ maybe("Account links (db integration)", () => {
     }
   });
 
-  it("POST /api/sms/sms-inbound non-YES body is silently ignored (200 XML, no link)", async () => {
+  it("unsigned non-YES SMS requests are not routed to account linking", async () => {
     const suffix = String(2000000 + Math.floor(Math.random() * 9000000));
     const phone = `+1556${suffix}`;
     // Use reversed user pair to avoid unique constraint with the YES test's invite.
@@ -253,8 +325,7 @@ maybe("Account links (db integration)", () => {
         .type("form")
         .send({ msisdn: phone, text: "STOP" });
 
-      expect(r.status).toBe(200);
-      expect(r.text).toContain("<Response");
+      expect(r.status).toBe(404);
 
       const invite = await db.query.accountLinkInvites.findFirst({
         where: eq(accountLinkInvites.sentToPhone, phone),
@@ -265,7 +336,7 @@ maybe("Account links (db integration)", () => {
     }
   });
 
-  it("POST /api/sms/sms-inbound YES is idempotent (second YES does not create a duplicate link)", async () => {
+  it("repeated unsigned SMS confirmations cannot create an account link", async () => {
     const suffix = String(3000000 + Math.floor(Math.random() * 9000000));
     const phone = `+1557${suffix}`;
     const { db, accountLinkInvites, doctorAccountLinks } = dbMod as any;
@@ -285,16 +356,16 @@ maybe("Account links (db integration)", () => {
         .post("/api/sms/sms-inbound")
         .type("form")
         .send({ msisdn: phone, text: "YES" });
-      expect(first.status).toBe(200);
+      expect(first.status).toBe(404);
 
-      // Send YES a second time — must not throw and must not duplicate the link row.
+      // Repeated spoofed requests remain unable to resolve the invitation.
       const second = await request(appMod.default)
         .post("/api/sms/sms-inbound")
         .type("form")
         .send({ msisdn: phone, text: "YES" });
-      expect(second.status).toBe(200);
+      expect(second.status).toBe(404);
 
-      // Exactly one link row must exist between these two users.
+      // No link row can be created by the public SMS route.
       const links = await db
         .select()
         .from(doctorAccountLinks)
@@ -304,7 +375,11 @@ maybe("Account links (db integration)", () => {
             inArray(doctorAccountLinks.userIdHigh, [userAId, userBId])
           )
         );
-      expect(links.length).toBe(1);
+      expect(links.length).toBe(0);
+      const invite = await db.query.accountLinkInvites.findFirst({
+        where: eq(accountLinkInvites.sentToPhone, phone),
+      });
+      expect(invite?.status).toBe("pending");
     } finally {
       await db.delete(accountLinkInvites).where(eq(accountLinkInvites.sentToPhone, phone));
       await db.delete(doctorAccountLinks).where(
@@ -316,13 +391,12 @@ maybe("Account links (db integration)", () => {
     }
   });
 
-  it("POST /api/sms/sms-inbound with no pending invite returns 200 XML (not 500)", async () => {
+  it("POST /api/sms/sms-inbound is not mounted", async () => {
     const r = await request(appMod.default)
       .post("/api/sms/sms-inbound")
       .type("form")
       .send({ msisdn: "+19999999999", text: "YES" });
 
-    expect(r.status).toBe(200);
-    expect(r.text).toContain("<Response");
+    expect(r.status).toBe(404);
   });
 });

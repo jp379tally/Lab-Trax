@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { caseToRxSummary } from "../rx-summary";
 
 describe("caseToRxSummary", () => {
-  it("derives from real restorations[] when present (desktop / iTero cases)", () => {
+  it("derives from real restorations[] when present (desktop / iTero cases)", async () => {
     const summary = caseToRxSummary({
       caseType: "" as const,
       material: "",
@@ -17,7 +17,7 @@ describe("caseToRxSummary", () => {
     expect(summary.teeth).toEqual(["8", "9"]);
   });
 
-  it("ignores legacy single-restoration fields when restorations[] is non-empty", () => {
+  it("ignores legacy single-restoration fields when restorations[] is non-empty", async () => {
     const summary = caseToRxSummary({
       caseType: "Removable" as const,
       material: "Acrylic",
@@ -31,7 +31,7 @@ describe("caseToRxSummary", () => {
     expect(summary.teeth).toEqual(["14"]);
   });
 
-  it("falls back to legacy single-restoration fields when restorations[] is missing", () => {
+  it("falls back to legacy single-restoration fields when restorations[] is missing", async () => {
     const summary = caseToRxSummary({
       caseType: "Restorative" as const,
       material: "Zirconia",
@@ -43,7 +43,7 @@ describe("caseToRxSummary", () => {
     expect(summary.teeth).toEqual(["30"]);
   });
 
-  it("falls back to legacy single-restoration fields when restorations[] is empty", () => {
+  it("falls back to legacy single-restoration fields when restorations[] is empty", async () => {
     const summary = caseToRxSummary({
       caseType: "Restorative" as const,
       material: "PFM",
@@ -55,7 +55,7 @@ describe("caseToRxSummary", () => {
     expect(summary.teeth).toEqual(["19"]);
   });
 
-  it("returns empty summary when no data is available at all", () => {
+  it("returns empty summary when no data is available at all", async () => {
     const summary = caseToRxSummary({
       caseType: "" as const,
       material: "",

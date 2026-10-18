@@ -1,4 +1,5 @@
 import jsPDF from "jspdf";
+import { formatInvoiceDate } from "./invoice-date";
 import autoTable from "jspdf-autotable";
 import {
   coerceInvoiceTemplate,
@@ -89,6 +90,27 @@ export interface StatementPdfOptions {
   extraImageDataUrls?: Record<string, string>;
   /** Lab name for the header fallback when no logo is available. */
   labName?: string;
+  recipientType?: "practice" | "doctor";
+  labContact?: {
+    displayName?: string | null;
+    legalName?: string | null;
+    addressLine1?: string | null;
+    addressLine2?: string | null;
+    city?: string | null;
+    state?: string | null;
+    zip?: string | null;
+    phone?: string | null;
+    billingEmail?: string | null;
+    additionalEmails?: string[];
+    accountNumber?: string | null;
+    licenseNumber?: string | null;
+  } | null;
+  practiceContact?: StatementPdfOptions["labContact"];
+  doctorContact?: {
+    displayName?: string | null;
+    phones?: string[];
+    emails?: string[];
+  } | null;
 }
 
 function fmtMoney(n: number | string): string {
@@ -137,6 +159,7 @@ export interface InvoicePdfLineItem {
   quantity: number | string;
   unitPrice: number | string;
   lineTotal: number | string;
+  isDiscount?: boolean;
   subItems?: InvoicePdfLineItem[];
 }
 
@@ -406,8 +429,8 @@ export function buildInvoiceMetaPairs(
   >,
 ): Array<[string, string]> {
   const pairs: Array<[string, string]> = [
-    ["Issued", fmtDate(opts.issuedAt) || "—"],
-    ["Due", fmtDate(opts.dueAt) || "—"],
+    ["Issued", formatInvoiceDate(opts.issuedAt)],
+    ["Due", formatInvoiceDate(opts.dueAt)],
     ["Status", opts.status],
   ];
   if (opts.teeth && opts.teeth.trim()) pairs.push(["Teeth", opts.teeth.trim()]);
@@ -417,8 +440,17 @@ export function buildInvoiceMetaPairs(
   return pairs;
 }
 
-function buildInvoiceDoc(opts: InvoicePdfOptions) {
+export function buildInvoicesPdf(options: InvoicePdfOptions[]): Blob {
+  if (!options.length) throw new Error("No invoices to print.");
   const doc = new jsPDF({ unit: "pt", format: "letter" });
+  options.forEach((opts, index) => {
+    if (index) doc.addPage();
+    buildInvoiceDoc(opts, doc, true);
+  });
+  return doc.output("blob");
+}
+
+function buildInvoiceDoc(opts: InvoicePdfOptions, doc = new jsPDF({ unit: "pt", format: "letter" }), strictAssets = false) {
   const template = coerceInvoiceTemplate(opts.template ?? DEFAULT_INVOICE_TEMPLATE);
   const { boxes, logo, extraImages } = template;
   const extraDataUrls = opts.extraImageDataUrls ?? {};
@@ -437,7 +469,8 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
       setOpacity(logo.opacity);
       doc.addImage(opts.logoUrl, logo.x, logo.y, logo.w, logo.h);
       setOpacity(1);
-    } catch {
+    } catch (error) {
+      if (strictAssets) throw error;
       /* watermark is decorative */
     }
   }
@@ -450,7 +483,8 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
       if (img.opacity < 1) setOpacity(img.opacity);
       doc.addImage(dataUrl, img.x, img.y, img.w, img.h);
       if (img.opacity < 1) setOpacity(1);
-    } catch {
+    } catch (error) {
+      if (strictAssets) throw error;
       /* skip broken image */
     }
   }
@@ -495,7 +529,8 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
   if (opts.logoUrl && logo.mode === "header") {
     try {
       doc.addImage(opts.logoUrl, logo.x, logo.y, logo.w, logo.h);
-    } catch {
+    } catch (error) {
+      if (strictAssets) throw error;
       doc.setFontSize(11);
       doc.setFont("helvetica", "bold");
       doc.text(opts.labName, logo.x + logo.w, logo.y + 20, { align: "right" });
@@ -510,7 +545,7 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
   doc.setFontSize(9);
   doc.setTextColor(120);
   doc.text(
-    `Generated ${opts.generatedAt.toLocaleDateString("en-US")}`,
+    `Generated ${String(opts.generatedAt.getMonth() + 1).padStart(2, "0")}/${String(opts.generatedAt.getDate()).padStart(2, "0")}/${opts.generatedAt.getFullYear()}`,
     logo.x + logo.w,
     logo.y + logo.h + 8,
     { align: "right" },
@@ -572,6 +607,21 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
 
   // ── Case notes (above items) ─────────────────────────────────────────
   let postNotesY = boxes.items.y;
+  // Flow variable-length notes across pages rather than drawing beyond the
+  // bottom edge. Keep the QR/footer region free on every continuation page.
+  const bottom = doc.internal.pageSize.getHeight() - 125;
+  const writeFlowText = (text: string, x: number, y: number, width: number): number => {
+    const lines = doc.splitTextToSize(text, width) as string[];
+    for (const line of lines) {
+      if (y > bottom) {
+        doc.addPage();
+        y = 48;
+      }
+      doc.text(line, x, y);
+      y += 11;
+    }
+    return y;
+  };
   if (opts.caseNotes && opts.caseNotes.trim()) {
     const notesY = m.y + m.h + 6;
     doc.setFontSize(8);
@@ -579,9 +629,11 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
     doc.text("CASE NOTES", m.x, notesY);
     doc.setFontSize(9);
     doc.setTextColor(0);
-    const wrapped = doc.splitTextToSize(opts.caseNotes.trim(), m.w);
-    doc.text(wrapped, m.x, notesY + 12);
-    postNotesY = Math.max(postNotesY, notesY + 12 + wrapped.length * 11 + 4);
+    const startPage = doc.getNumberOfPages();
+    const endY = writeFlowText(opts.caseNotes.trim(), m.x, notesY + 12, m.w);
+    postNotesY = doc.getNumberOfPages() === startPage
+      ? Math.max(postNotesY, endY + 4)
+      : endY + 4;
   }
 
   // ── Line-items table ─────────────────────────────────────────────────
@@ -595,7 +647,7 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
     tableBody.push([
       (row.item && String(row.item).trim()) || "—",
       row.toothLabel != null ? row.toothLabel : row.toothNumber != null ? String(row.toothNumber) : "—",
-      row.description,
+      `${row.isDiscount ? "Discount: " : ""}${row.description}`,
       String(row.quantity),
       fmtMoney(row.unitPrice as number | string),
       fmtMoney(row.lineTotal as number | string),
@@ -607,7 +659,7 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
       tableBody.push([
         (sub.item && String(sub.item).trim()) ? `↳ ${String(sub.item).trim()}` : "↳",
         sub.toothNumber != null ? String(sub.toothNumber) : "—",
-        sub.description,
+        `${sub.isDiscount ? "Discount: " : ""}${sub.description}`,
         String(sub.quantity),
         fmtMoney(sub.unitPrice as number | string),
         fmtMoney(sub.lineTotal as number | string),
@@ -635,7 +687,7 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
       4: { halign: "right", cellWidth: 76 },
       5: { halign: "right", cellWidth: 76 },
     },
-    margin: { left: it.x, right: pageWidth - (it.x + it.w) },
+    margin: { top: 48, bottom: 125, left: it.x, right: pageWidth - (it.x + it.w) },
     didParseCell: (data) => {
       if (data.section === "body") {
         if (isSubItemRow[data.row.index]) {
@@ -667,6 +719,10 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
   const afterTable = (doc as unknown as { lastAutoTable?: { finalY: number } })
     .lastAutoTable;
   let totalsY = Math.max(t.y, (afterTable?.finalY ?? itemsStartY) + 16);
+  if (totalsY + 130 > bottom) {
+    doc.addPage();
+    totalsY = 48;
+  }
   const totalsX = t.x;
   const valueX = t.x + t.w;
   const writeRow = (label: string, value: string, bold = false) => {
@@ -702,8 +758,7 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
     doc.text("NOTES", notesX, totalsY + 12);
     doc.setFontSize(9);
     doc.setTextColor(0);
-    const wrapped = doc.splitTextToSize(opts.notes.trim(), notesW);
-    doc.text(wrapped, notesX, totalsY + 26);
+    writeFlowText(opts.notes.trim(), notesX, totalsY + 26, notesW);
   }
 
   // ── QR code ──────────────────────────────────────────────────────────
@@ -722,7 +777,8 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
         ? `Scan to open case ${opts.caseNumber}`
         : "Scan to open case";
       doc.text(qrLabel, qrX + qrSize / 2, qrY + qrSize + 8, { align: "center" });
-    } catch {
+    } catch (error) {
+      if (strictAssets) throw error;
       // silently skip if image embedding fails
     }
   }
@@ -734,7 +790,16 @@ function fmtDate(value?: string | null): string {
   if (!value) return "";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString("en-US");
+  return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+}
+
+/** Formats a Date as "MM/DD/YYYY, h:mm AM/PM" for "Generated …" export stamps. */
+function fmtGeneratedAt(d: Date): string {
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return `${mm}/${dd}/${yyyy}, ${timeStr}`;
 }
 
 // ── Template-aware statement PDF ─────────────────────────────────────────────
@@ -744,158 +809,7 @@ function fmtDate(value?: string | null): string {
  * Returns true when the preview window opened successfully.
  */
 export function previewStatementLayoutPdf(opts: StatementPdfOptions): boolean {
-  const tpl = coerceStatementTemplate(opts.template ?? null);
-  const doc = new jsPDF({ unit: "pt", format: "letter" });
-  const pageWidth = doc.internal.pageSize.getWidth();
-
-  // ── Logo ────────────────────────────────────────────────────────────────────
-  const extraImageDataUrls = opts.extraImageDataUrls ?? {};
-  if (opts.logoUrl) {
-    const logoData = extraImageDataUrls[opts.logoUrl] ?? null;
-    if (logoData) {
-      const logo = tpl.logo;
-      if (logo.mode === "watermark") {
-        const currentOpacity = (doc as any).internal?.getCurrentPageInfo?.()?.pageContext?.globalAlpha;
-        (doc as any).setGState?.(new (doc as any).GState({ opacity: logo.opacity }));
-        doc.addImage(logoData, "PNG", logo.x, logo.y, logo.w, logo.h);
-        if (currentOpacity !== undefined) {
-          (doc as any).setGState?.(new (doc as any).GState({ opacity: 1 }));
-        }
-      } else {
-        doc.addImage(logoData, "PNG", logo.x, logo.y, logo.w, logo.h);
-      }
-    }
-  }
-
-  // ── Extra images ─────────────────────────────────────────────────────────────
-  for (const img of tpl.extraImages) {
-    const data = extraImageDataUrls[img.url];
-    if (!data) continue;
-    try {
-      (doc as any).setGState?.(new (doc as any).GState({ opacity: img.opacity }));
-      doc.addImage(data, "PNG", img.x, img.y, img.w, img.h);
-      (doc as any).setGState?.(new (doc as any).GState({ opacity: 1 }));
-    } catch { /* skip */ }
-  }
-
-  // ── Custom / default text blocks ─────────────────────────────────────────────
-  for (const tb of tpl.customTexts) {
-    if (!tb.text?.trim()) continue;
-    doc.setFontSize(tb.fontSize);
-    doc.setFont("helvetica", tb.bold ? "bold" : "normal");
-    doc.setTextColor(0);
-    const lines = doc.splitTextToSize(tb.text, tb.w);
-    doc.text(lines, tb.align === "right" ? tb.x + tb.w : tb.align === "center" ? tb.x + tb.w / 2 : tb.x, tb.y + tb.fontSize, { align: tb.align });
-  }
-
-  // ── Statement header section ─────────────────────────────────────────────────
-  const sh = tpl.boxes.stmtHeader;
-  doc.setFontSize(18);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(0);
-  doc.text("Statement", sh.x, sh.y + 22);
-  doc.setFontSize(11);
-  doc.setFont("helvetica", "normal");
-  doc.text(opts.practiceName, sh.x, sh.y + 40);
-
-  // ── Practice info section ────────────────────────────────────────────────────
-  const pi = tpl.boxes.practiceInfo;
-  doc.setFontSize(9);
-  doc.setTextColor(120);
-  doc.text(`Generated ${opts.generatedAt.toLocaleString("en-US")}`, pi.x, pi.y + 14);
-  if (opts.filtersDescription) {
-    doc.text(opts.filtersDescription, pi.x, pi.y + 28);
-  }
-  doc.setTextColor(0);
-
-  // ── Balance summary ──────────────────────────────────────────────────────────
-  const bs = tpl.boxes.balanceSummary;
-  const cols = 4;
-  const colW = bs.w / cols;
-  const summary: Array<[string, string]> = [
-    ["Billed", fmtMoney(opts.totals.billed)],
-    ["Paid", fmtMoney(opts.totals.paid)],
-    ["Open balance", fmtMoney(opts.totals.open)],
-    ["Overdue", fmtMoney(opts.totals.overdue)],
-  ];
-  summary.forEach(([label, value], i) => {
-    const x = bs.x + colW * i;
-    doc.setDrawColor(220);
-    doc.setFillColor(248, 248, 250);
-    doc.roundedRect(x, bs.y, colW - 8, bs.h, 4, 4, "FD");
-    doc.setFontSize(8);
-    doc.setTextColor(120);
-    doc.text(label.toUpperCase(), x + 10, bs.y + 18);
-    doc.setFontSize(13);
-    doc.setTextColor(0);
-    doc.setFont("helvetica", "bold");
-    doc.text(value, x + 10, bs.y + bs.h - 10);
-    doc.setFont("helvetica", "normal");
-  });
-
-  // ── Transaction table ────────────────────────────────────────────────────────
-  const tx = tpl.boxes.transactions;
-  autoTable(doc, {
-    startY: tx.y,
-    head: [["Invoice", "Patient", "Issued", "Due", "Status", "Total", "Open"]],
-    body: opts.invoices.map((inv) => {
-      const patient = (inv.patientName && inv.patientName.trim()) || "—";
-      const billTo = inv.billTo && inv.billTo.trim() ? inv.billTo.trim() : "";
-      const invoiceCell = billTo && billTo !== opts.practiceName ? `${inv.invoiceNumber}\nBill to: ${billTo}` : inv.invoiceNumber;
-      return [invoiceCell, patient, fmtDate(inv.issuedAt), fmtDate(inv.dueAt), inv.status, fmtMoney(inv.total), Number(inv.balanceDue) > 0 ? fmtMoney(inv.balanceDue) : "—"];
-    }),
-    styles: { fontSize: 9, cellPadding: 6, valign: "top" },
-    headStyles: { fillColor: [40, 44, 52], textColor: 255 },
-    columnStyles: { 5: { halign: "right" }, 6: { halign: "right" } },
-    margin: { left: tx.x, right: pageWidth - (tx.x + tx.w) },
-  });
-
-  // ── Aging summary ────────────────────────────────────────────────────────────
-  const ag = tpl.boxes.aging;
-  doc.setFontSize(8);
-  doc.setTextColor(120);
-  doc.text("AGING SUMMARY", ag.x, ag.y + 14);
-  doc.setFontSize(9);
-  doc.setTextColor(0);
-  const agingCols = ["Current", "1–30 days", "31–60 days", "61–90 days", "90+ days"];
-  const agingW = ag.w / agingCols.length;
-  agingCols.forEach((label, i) => {
-    const x = ag.x + agingW * i;
-    doc.setFontSize(8);
-    doc.setTextColor(120);
-    doc.text(label, x, ag.y + 28);
-    doc.setFontSize(10);
-    doc.setTextColor(0);
-    doc.text("—", x, ag.y + 44);
-  });
-
-  // ── Totals ───────────────────────────────────────────────────────────────────
-  const tt = tpl.boxes.totals;
-  let ty = tt.y + 14;
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(10);
-  doc.setTextColor(0);
-  doc.text("Total billed", tt.x, ty);
-  doc.text(fmtMoney(opts.totals.billed), tt.x + tt.w, ty, { align: "right" });
-  ty += 16;
-  doc.text("Total paid", tt.x, ty);
-  doc.text(fmtMoney(opts.totals.paid), tt.x + tt.w, ty, { align: "right" });
-  ty += 2;
-  doc.setDrawColor(220);
-  doc.line(tt.x, ty, tt.x + tt.w, ty);
-  ty += 14;
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.text("Balance due", tt.x, ty);
-  doc.text(fmtMoney(opts.totals.open), tt.x + tt.w, ty, { align: "right" });
-  doc.setFont("helvetica", "normal");
-
-  // ── Footer / notes ───────────────────────────────────────────────────────────
-  const ft = tpl.boxes.footer;
-  doc.setFontSize(8);
-  doc.setTextColor(120);
-  doc.text("Thank you for your business.", ft.x, ft.y + 14);
-
+  const doc = buildStatementDoc(opts);
   doc.output("dataurlnewwindow", { filename: "statement-preview.pdf" });
   return true;
 }
@@ -1020,76 +934,156 @@ export function previewCorrespondencePdf(opts: CorrespondencePdfOptions): boolea
 
 function buildStatementDoc(opts: StatementPdfOptions) {
   const doc = new jsPDF({ unit: "pt", format: "letter" });
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const margin = 40;
-
-  doc.setFontSize(18);
-  doc.setFont("helvetica", "bold");
-  doc.text("Statement", margin, 50);
-
-  doc.setFontSize(11);
-  doc.setFont("helvetica", "normal");
-  doc.text(opts.practiceName, margin, 70);
-
-  doc.setFontSize(9);
-  doc.setTextColor(120);
-  doc.text(`Generated ${opts.generatedAt.toLocaleString("en-US")}`, margin, 86);
-  if (opts.filtersDescription) {
-    doc.text(opts.filtersDescription, margin, 100);
-  }
-  doc.setTextColor(0);
-
-  const summaryY = opts.filtersDescription ? 124 : 110;
-  const colWidth = (pageWidth - margin * 2) / 4;
-  const summary: Array<[string, string]> = [
-    ["Billed", fmtMoney(opts.totals.billed)],
-    ["Paid", fmtMoney(opts.totals.paid)],
-    ["Open balance", fmtMoney(opts.totals.open)],
-    ["Overdue", fmtMoney(opts.totals.overdue)],
-  ];
-  summary.forEach(([label, value], i) => {
-    const x = margin + colWidth * i;
-    doc.setDrawColor(220);
-    doc.setFillColor(248, 248, 250);
-    doc.roundedRect(x, summaryY, colWidth - 8, 50, 4, 4, "FD");
-    doc.setFontSize(8);
-    doc.setTextColor(120);
-    doc.text(label.toUpperCase(), x + 10, summaryY + 18);
-    doc.setFontSize(13);
-    doc.setTextColor(0);
-    doc.setFont("helvetica", "bold");
-    doc.text(value, x + 10, summaryY + 38);
+  const template = coerceStatementTemplate(opts.template);
+  const nonblank = (value?: string | null) => value?.trim() || null;
+  const contactLines = (contact: StatementPdfOptions["labContact"]) => {
+    if (!contact) return [];
+    const lines = [
+      nonblank(contact.displayName),
+      contact.legalName && contact.legalName !== contact.displayName
+        ? `Legal name: ${contact.legalName}`
+        : null,
+      nonblank(contact.addressLine1),
+      nonblank(contact.addressLine2),
+      [contact.city, contact.state, contact.zip].filter(Boolean).join(", ") || null,
+      contact.phone ? `Phone: ${contact.phone}` : null,
+      contact.billingEmail ? `Billing email: ${contact.billingEmail}` : null,
+      ...(contact.additionalEmails ?? []).filter((email) => email !== contact.billingEmail).map((email) => `Additional email: ${email}`),
+      contact.accountNumber ? `Account #: ${contact.accountNumber}` : null,
+      contact.licenseNumber ? `License #: ${contact.licenseNumber}` : null,
+    ];
+    return lines.filter((line): line is string => !!line);
+  };
+  const writeBox = (
+    box: StatementTemplate["boxes"][keyof StatementTemplate["boxes"]],
+    lines: string[],
+    size = 9,
+  ) => {
+    if (!lines.length) return;
+    const available = Math.max(1, Math.floor(box.h / (size + 1)));
     doc.setFont("helvetica", "normal");
+    doc.setFontSize(size);
+    doc.setTextColor(0);
+    doc.text(lines.slice(0, available), box.x + 5, box.y + size + 2, {
+      maxWidth: Math.max(1, box.w - 10),
+      lineHeightFactor: 1.1,
+    });
+  };
+  const addImage = (
+    url: string | null | undefined,
+    box: Pick<StatementTemplate["logo"], "x" | "y" | "w" | "h">,
+    opacity = 1,
+  ) => {
+    if (!url) return;
+    let opacityApplied = false;
+    try {
+      if (opacity < 1) {
+        doc.setGState(new (doc as any).GState({ opacity }));
+        opacityApplied = true;
+      }
+      doc.addImage(url, "AUTO", box.x, box.y, box.w, box.h, undefined, "MEDIUM");
+    } catch { /* image loading is validated before this renderer is called */ }
+    finally {
+      if (opacityApplied) {
+        try {
+          doc.setGState(new (doc as any).GState({ opacity: 1 }));
+        } catch { /* do not let a graphics-state reset hide the rest of the preview */ }
+      }
+    }
+  };
+
+  if (template.logo.mode === "watermark") addImage(opts.logoUrl, template.logo, template.logo.opacity);
+  for (const image of template.extraImages) addImage(opts.extraImageDataUrls?.[image.url], image, image.opacity);
+  for (const block of template.customTexts) {
+    writeBox(block, block.text ? [block.text] : [], block.fontSize);
+  }
+  if (template.logo.mode === "header") addImage(opts.logoUrl, template.logo, template.logo.opacity);
+  const recipientLines = opts.recipientType === "doctor"
+    ? [
+        nonblank(opts.doctorContact?.displayName),
+        ...(opts.doctorContact?.phones ?? []).map((phone) => `Phone: ${phone}`),
+        ...(opts.doctorContact?.emails ?? []).map((email) => `Email: ${email}`),
+        "Practice context",
+        ...contactLines(opts.practiceContact),
+      ].filter((line): line is string => !!line)
+    : contactLines(opts.practiceContact);
+  const transactionRows = opts.invoices.map((invoice) => {
+    const patient = (invoice.patientName && invoice.patientName.trim()) || "—";
+    const billTo = invoice.billTo && invoice.billTo.trim() ? invoice.billTo.trim() : "";
+    return [
+      billTo && billTo !== opts.practiceName ? `${invoice.invoiceNumber}\nBill to: ${billTo}` : invoice.invoiceNumber,
+      patient,
+      invoice.issuedAt,
+      invoice.dueAt,
+      invoice.status,
+      fmtMoney(invoice.total),
+      Number(invoice.balanceDue) > 0 ? fmtMoney(invoice.balanceDue) : "—",
+    ];
   });
 
-  autoTable(doc, {
-    startY: summaryY + 70,
-    head: [["Invoice", "Patient", "Issued", "Due", "Status", "Total", "Open"]],
-    body: opts.invoices.map((i) => {
-      const patient = (i.patientName && i.patientName.trim()) || "—";
-      const billTo = i.billTo && i.billTo.trim() ? i.billTo.trim() : "";
-      const invoiceCell =
-        billTo && billTo !== opts.practiceName
-          ? `${i.invoiceNumber}\nBill to: ${billTo}`
-          : i.invoiceNumber;
-      return [
-        invoiceCell,
-        patient,
-        i.issuedAt,
-        i.dueAt,
-        i.status,
-        fmtMoney(i.total),
-        Number(i.balanceDue) > 0 ? fmtMoney(i.balanceDue) : "—",
-      ];
-    }),
-    styles: { fontSize: 9, cellPadding: 6, valign: "top" },
-    headStyles: { fillColor: [40, 44, 52], textColor: 255 },
-    columnStyles: {
-      5: { halign: "right" },
-      6: { halign: "right" },
-    },
-    margin: { left: margin, right: margin },
-  });
+  for (const section of template.sections.filter((item) => item.enabled)) {
+    const title = section.title.trim() || "Section";
+    if (section.contentMode === "custom" || section.type === "custom") {
+      writeBox(section.box, [title, section.customText?.trim() || ""].filter(Boolean), 9);
+      continue;
+    }
+    switch (section.generatedType) {
+      case "stmtHeader":
+        writeBox(section.box, [
+          title,
+          opts.labName || "",
+          `For: ${opts.practiceName}`,
+          `Generated: ${fmtGeneratedAt(opts.generatedAt)}`,
+          ...(opts.filtersDescription ? [opts.filtersDescription] : []),
+        ].filter(Boolean), 10);
+        break;
+      case "labInfo":
+        writeBox(section.box, [title, ...contactLines(opts.labContact)], 8.5);
+        break;
+      case "practiceInfo":
+        writeBox(section.box, [title, ...recipientLines], 8.5);
+        break;
+      case "balanceSummary":
+        writeBox(section.box, [
+          title,
+          `Billed: ${fmtMoney(opts.totals.billed)}    Paid: ${fmtMoney(opts.totals.paid)}    Open balance: ${fmtMoney(opts.totals.open)}`,
+          `Overdue: ${fmtMoney(opts.totals.overdue)}`,
+        ], 9);
+        break;
+      case "transactions": {
+        const tx = section.box;
+        writeBox({ ...tx, h: 18 }, [title], 9);
+        autoTable(doc, {
+          startY: tx.y + 20,
+          head: [["Invoice", "Patient", "Issued", "Due", "Status", "Total", "Open"]],
+          body: transactionRows,
+          styles: { fontSize: 8, cellPadding: 4, valign: "top" },
+          headStyles: { fillColor: [40, 44, 52], textColor: 255 },
+          columnStyles: { 5: { halign: "right" }, 6: { halign: "right" } },
+          margin: { left: tx.x, right: 612 - tx.x - tx.w },
+          tableWidth: tx.w,
+        });
+        break;
+      }
+      case "aging":
+        writeBox(section.box, [
+          title,
+          `Current: ${fmtMoney(Math.max(0, opts.totals.open - opts.totals.overdue))}    90+ days: ${fmtMoney(opts.totals.overdue)}`,
+        ], 8);
+        break;
+      case "totals":
+        writeBox(section.box, [
+          title,
+          `Billed: ${fmtMoney(opts.totals.billed)}`,
+          `Paid: ${fmtMoney(opts.totals.paid)}`,
+          `Balance due: ${fmtMoney(opts.totals.open)}`,
+        ], 8.5);
+        break;
+      case "footer":
+        writeBox(section.box, [title], 8);
+        break;
+    }
+  }
 
   return doc;
 }

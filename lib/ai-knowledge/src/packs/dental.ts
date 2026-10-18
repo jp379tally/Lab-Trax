@@ -144,7 +144,7 @@ export const DENTAL_SECTIONS: KnowledgeSection[] = [
       "cad", "cam", "cad/cam", "scanner", "scanners", "intraoral", "ios",
       "itero", "trios", "scan", "digital impression", "model",
     ],
-    body: "CAD/CAM software designs restorations from digital impressions captured by intraoral scanners (e.g. iTero, TRIOS) or by scanning physical models. The design (margins, contacts, cement gap, anatomy) is then milled or printed. Clean scans with clear margins reduce remakes. LabTrax Desktop can auto-import cases from an iTero Lab-Review queue, extracting the Rx and creating a case flagged for review.",
+    body: "CAD/CAM software designs restorations from digital impressions captured by intraoral scanners (e.g. iTero, TRIOS) or by scanning physical models. The design (margins, contacts, cement gap, anatomy) is then milled or printed. Clean scans with clear margins reduce remakes. LabTrax Desktop can auto-import cases from an iTero Lab-Review queue and extract the Rx; these imports are not given a separate pending-review acknowledgement flag.",
   },
   {
     id: "dental.lab-communication",

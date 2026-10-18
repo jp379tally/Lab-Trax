@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -30,11 +30,17 @@ interface NotifPrefs {
   pushCaseStatusChanged: boolean;
   pushInvoiceDue: boolean;
   pushChatMessage: boolean;
+  inAppNewCase: boolean;
+  inAppTeammateMessage: boolean;
+  inAppDoctorPracticeMessage: boolean;
+  inAppExceptionCase: boolean;
+  inAppRushCase: boolean;
 }
 
 interface PrefsResponse {
   success?: boolean;
   preferences?: Partial<NotifPrefs>;
+  hasActiveOwnerOrAdminLabMembership?: boolean;
 }
 
 const NOTIFICATION_GROUPS: Array<{
@@ -71,25 +77,47 @@ const NOTIFICATION_GROUPS: Array<{
   },
 ];
 
+const IN_APP_NOTIFICATION_GROUP: {
+  title: string;
+  items: Array<{ key: keyof NotifPrefs; label: string; description: string }>;
+} = {
+  title: "In-app notifications",
+  items: [
+    { key: "inAppNewCase", label: "New cases", description: "Bell alerts when a standard case is created" },
+    { key: "inAppTeammateMessage", label: "Teammate messages", description: "Bell alerts for internal teammate messages when available" },
+    { key: "inAppDoctorPracticeMessage", label: "Doctor and practice messages", description: "Bell alerts for provider messages, notes, and uploads" },
+    { key: "inAppExceptionCase", label: "Exception cases", description: "Bell alerts when a case is flagged for lab review" },
+    { key: "inAppRushCase", label: "Rush cases", description: "Bell alerts when a rush case is created" },
+  ],
+};
+
 export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const qc = useQueryClient();
+  const [pendingKeys, setPendingKeys] = useState<
+    Partial<Record<keyof NotifPrefs, boolean>>
+  >({});
 
-  const query = useQuery<NotifPrefs>({
+  const query = useQuery<PrefsResponse>({
     queryKey: ["auth", "notification-preferences"],
     queryFn: async () => {
       const res = await resilientFetch("/api/auth/notification-preferences");
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       const body = (await res.json()) as PrefsResponse;
-      return (body?.preferences ?? {}) as NotifPrefs;
+      return body ?? {};
     },
     staleTime: 60_000,
   });
 
   const mutation = useMutation({
-    mutationFn: async (patch: Partial<NotifPrefs>) => {
+    scope: { id: "notification-preferences" },
+    mutationFn: async ({ patch }: {
+      patch: Partial<NotifPrefs>;
+      key: keyof NotifPrefs;
+      previous: boolean;
+    }) => {
       const res = await resilientFetch("/api/auth/notification-preferences", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -98,22 +126,54 @@ export default function NotificationsScreen() {
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       return (await res.json()) as PrefsResponse;
     },
-    onSuccess: (data) => {
-      if (data.preferences) {
-        qc.setQueryData(["auth", "notification-preferences"], data.preferences);
+    onMutate: ({ key }) => {
+      setPendingKeys((current) => ({ ...current, [key]: true }));
+    },
+    onSuccess: (data, variables) => {
+      const savedValue = data.preferences?.[variables.key];
+      if (typeof savedValue === "boolean") {
+        qc.setQueryData<PrefsResponse>(["auth", "notification-preferences"], (old) => ({
+          ...(old ?? {}),
+          preferences: {
+            ...(old?.preferences ?? {}),
+            [variables.key]: savedValue,
+          },
+          hasActiveOwnerOrAdminLabMembership:
+            data.hasActiveOwnerOrAdminLabMembership ??
+            old?.hasActiveOwnerOrAdminLabMembership,
+        }));
       }
+    },
+    onError: (_error, variables) => {
+      qc.setQueryData<PrefsResponse>(["auth", "notification-preferences"], (old) => ({
+        ...(old ?? {}),
+        preferences: {
+          ...(old?.preferences ?? {}),
+          [variables.key]: variables.previous,
+        },
+      }));
+    },
+    onSettled: (_data, _error, variables) => {
+      setPendingKeys((current) => ({ ...current, [variables.key]: false }));
     },
   });
 
-  const prefs = query.data;
+  const prefs = query.data?.preferences;
+  const inAppEligible = query.data?.hasActiveOwnerOrAdminLabMembership === true;
 
   function toggle(key: keyof NotifPrefs) {
     if (!prefs) return;
-    const updated = { [key]: !prefs[key] };
-    qc.setQueryData<NotifPrefs>(["auth", "notification-preferences"], (old) =>
-      old ? { ...old, ...updated } : old
+    const previous = prefs[key] ?? false;
+    const updated = { [key]: !previous };
+    qc.setQueryData<PrefsResponse>(["auth", "notification-preferences"], (old) =>
+      old
+        ? {
+            ...old,
+            preferences: { ...(old.preferences ?? {}), ...updated },
+          }
+        : old,
     );
-    mutation.mutate(updated);
+    mutation.mutate({ patch: updated, key, previous });
   }
 
   return (
@@ -163,12 +223,40 @@ export default function NotificationsScreen() {
                     onValueChange={() => toggle(item.key)}
                     trackColor={{ false: colors.border, true: colors.tint }}
                     thumbColor="#fff"
-                    disabled={mutation.isPending}
+                    disabled={!!pendingKeys[item.key]}
                   />
                 </View>
               ))}
             </SettingsSection>
           ))}
+        {inAppEligible && (
+          <SettingsSection title={IN_APP_NOTIFICATION_GROUP.title}>
+            {IN_APP_NOTIFICATION_GROUP.items.map((item, idx) => (
+              <View
+                key={item.key as string}
+                style={[
+                  styles.row,
+                  idx > 0 && styles.rowBorder,
+                  idx > 0 && { borderTopColor: colors.border },
+                ]}
+              >
+                <View style={styles.rowInfo}>
+                  <Text style={[styles.rowTitle, { color: colors.text }]}>{item.label}</Text>
+                  <Text style={[styles.rowDesc, { color: colors.textSecondary }]}>
+                    {item.description}
+                  </Text>
+                </View>
+                <Switch
+                  value={prefs?.[item.key] ?? true}
+                  onValueChange={() => toggle(item.key)}
+                  trackColor={{ false: colors.border, true: colors.tint }}
+                  thumbColor="#fff"
+                  disabled={!!pendingKeys[item.key]}
+                />
+              </View>
+            ))}
+          </SettingsSection>
+        )}
       </ScrollView>
     </ScreenShell>
   );

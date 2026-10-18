@@ -21,6 +21,10 @@ import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { FormSheet } from "@/components/ui/FormSheet";
 import { TextField } from "@/components/ui/TextField";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+} from "@/components/ui/DismissKeyboardView";
 import { getJson, sendJson, isForbiddenError, ApiError } from "@/lib/read-api";
 import { useMe, primaryLabOrgId, canAdminAnyLab } from "@/lib/auth-me";
 import { CASE_STATIONS, stationLabelFor } from "@/lib/case-stations";
@@ -208,7 +212,11 @@ export default function LocationsScreen() {
   const draggedItem = dragIndex >= 0 ? items[dragIndex] : null;
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <DismissKeyboardView
+      style={[styles.screen, { paddingTop: insets.top }]}
+      enabled={dragIndex < 0}
+      testID="locations-keyboard-dismiss"
+    >
       <View style={styles.header}>
         <Pressable
           style={styles.backBtn}
@@ -261,6 +269,8 @@ export default function LocationsScreen() {
             </Text>
           ) : null}
           <ScrollView
+            keyboardDismissMode={scrollKeyboardDismissMode}
+            keyboardShouldPersistTaps="handled"
             contentContainerStyle={[
               styles.list,
               { paddingBottom: insets.bottom + Spacing.xl },
@@ -333,7 +343,7 @@ export default function LocationsScreen() {
           }}
         />
       ) : null}
-    </View>
+    </DismissKeyboardView>
   );
 }
 

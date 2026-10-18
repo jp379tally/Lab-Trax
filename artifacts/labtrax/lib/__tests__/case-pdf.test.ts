@@ -15,6 +15,8 @@ vi.mock("expo-sharing", () => ({ shareAsync, isAvailableAsync }));
 import {
   buildCaseCardHtml,
   buildInvoiceHtml,
+  formatProviderPreferences,
+  shouldIncludeProviderPreferencesOnLabSlip,
   generatePdf,
   sharePdf,
 } from "@/lib/case-pdf";
@@ -27,11 +29,43 @@ beforeEach(() => {
 });
 
 describe("buildCaseCardHtml", () => {
-  it("renders the case number, patient, doctor and restorations", () => {
+  it("formats structured provider preferences deterministically", async () => {
+    expect(formatProviderPreferences({
+      occlusionAmount: 0.5,
+      occlusionUnit: "mm",
+      proximalContactAmount: 25,
+      proximalContactUnit: "microns",
+      anatomyPreference: "primary_and_secondary",
+      caseQuestionContactMethod: "email",
+      caseQuestionContactValue: "[email protected]",
+    })).toBe(
+      "Occlusion: 0.5 mm\nProximal contact: 25 microns\nAnatomy: Primary and secondary\nCase questions: Email: [email protected]",
+    );
+    expect(formatProviderPreferences({ empty: "  ", skipped: null })).toBe("");
+  });
+
+  it("prints meaningful provider preferences only when enabled by the lab", async () => {
+    const data = {
+      providerDoctorPreferences: {
+        occlusionAmount: 0.5,
+        occlusionUnit: "mm",
+        anatomyPreference: "other",
+        anatomyOther: "Deep anatomy",
+      },
+    };
+    expect(buildCaseCardHtml({ ...data, printProviderPreferencesOnLabSlips: true }))
+      .toContain("Provider Preferences");
+    expect(buildCaseCardHtml({ ...data, printProviderPreferencesOnLabSlips: true }))
+      .toContain("Occlusion: 0.5 mm\nAnatomy: Deep anatomy");
+    expect(buildCaseCardHtml({ ...data, printProviderPreferencesOnLabSlips: false }))
+      .not.toContain("Provider Preferences");
+  });
+
+  it("renders the case number, patient, doctor and restorations", async () => {
     const html = buildCaseCardHtml({
       caseNumber: "5001",
       patientName: "Jane Doe",
-      doctorName: "Dr. Smith",
+      doctorName: "Dr. Synthetic063",
       status: "in_design",
       priority: "rush",
       dueDate: "2024-01-15",
@@ -45,7 +79,7 @@ describe("buildCaseCardHtml", () => {
     expect(html).toContain("Work Order");
     expect(html).toContain("#5001");
     expect(html).toContain("Jane Doe");
-    expect(html).toContain("Dr. Smith");
+    expect(html).toContain("Dr. Synthetic063");
     expect(html).toContain("Zirconia");
     expect(html).toContain("Acme Dental Lab");
     // titleCase of the status / priority / restoration type.
@@ -56,7 +90,22 @@ describe("buildCaseCardHtml", () => {
     expect(html).toContain("Handle with care");
   });
 
-  it("escapes HTML-significant characters in user-supplied text", () => {
+  it("prints dated prescription history in order and labels unknown dates", () => {
+    const html = buildCaseCardHtml({
+      caseNumber: "RX-1",
+      rxNoteEntries: [
+        { id: "old", caseId: "c1", noteText: "First line\nSecond line", scannedAt: null, provenance: "legacy" },
+        { id: "new", caseId: "c1", noteText: "Later prescription", scannedAt: "2026-02-03T22:00:00.000Z", provenance: "ai_reader" },
+      ],
+    });
+    expect(html).toContain("Date unknown");
+    expect(html).toContain("02/03/2026");
+    expect(html).toContain("First line\nSecond line");
+    expect(html.indexOf("First line")).toBeLessThan(html.indexOf("Later prescription"));
+    expect(html).toContain("grid-template-columns: 82px minmax(0, 1fr)");
+  });
+
+  it("escapes HTML-significant characters in user-supplied text", async () => {
     const html = buildCaseCardHtml({
       caseNumber: "1",
       patientName: "<script>alert('x')</script>",
@@ -67,14 +116,74 @@ describe("buildCaseCardHtml", () => {
     expect(html).toContain("Smith &amp; Sons");
   });
 
-  it("shows an empty-state row when there are no restorations", () => {
+  it("shows an empty-state row when there are no restorations", async () => {
     const html = buildCaseCardHtml({ caseNumber: "1", restorations: [] });
     expect(html).toContain("No restorations recorded.");
+  });
+
+  it("renders gingival shade when present", async () => {
+    const html = buildCaseCardHtml({
+      caseNumber: "5002",
+      gingivialShade: "Medium Pink",
+    });
+    expect(html).toContain("Gingival Shade");
+    expect(html).toContain("Medium Pink");
+  });
+
+  it("renders a typed custom remake reason in the work order", () => {
+    const html = buildCaseCardHtml({
+      caseNumber: "5005",
+      remakeReason: "Occlusal interference on the distal crown",
+    });
+    expect(html).toContain("Remake Information");
+    expect(html).toContain("Occlusal interference on the distal crown");
+  });
+
+  it("omits gingival shade when null", async () => {
+    const html = buildCaseCardHtml({
+      caseNumber: "5003",
+      gingivialShade: null,
+    });
+    expect(html).not.toContain("Gingival Shade");
+  });
+
+  it("omits gingival shade when empty string", async () => {
+    const html = buildCaseCardHtml({
+      caseNumber: "5004",
+      gingivialShade: "",
+    });
+    expect(html).not.toContain("Gingival Shade");
+  });
+});
+
+describe("shouldIncludeProviderPreferencesOnLabSlip", () => {
+  const enabled = true;
+
+  it("includes preferences for the default template", async () => {
+    expect(shouldIncludeProviderPreferencesOnLabSlip(enabled, { isCustom: false })).toBe(true);
+  });
+
+  it("includes preferences when a custom template has a visible preferences element", async () => {
+    expect(shouldIncludeProviderPreferencesOnLabSlip(enabled, {
+      isCustom: true,
+      template: { elements: [{ kind: "providerPreferences", visible: true }] },
+    })).toBe(true);
+  });
+
+  it("excludes preferences when the custom element is hidden or absent", async () => {
+    expect(shouldIncludeProviderPreferencesOnLabSlip(enabled, {
+      isCustom: true,
+      template: { elements: [{ kind: "providerPreferences", visible: false }] },
+    })).toBe(false);
+    expect(shouldIncludeProviderPreferencesOnLabSlip(enabled, {
+      isCustom: true,
+      template: { elements: [{ kind: "patient", visible: true }] },
+    })).toBe(false);
   });
 });
 
 describe("buildInvoiceHtml", () => {
-  it("renders invoice metadata, line items and money totals", () => {
+  it("renders invoice metadata, line items and money totals", async () => {
     const html = buildInvoiceHtml({
       invoiceNumber: "INV-2024-002",
       status: "paid",
@@ -104,7 +213,25 @@ describe("buildInvoiceHtml", () => {
     expect(html).toContain("Paid");
   });
 
-  it("shows an empty-state row when there are no line items", () => {
+  it("renders discount lines as labeled deductions with the minus before currency", () => {
+    const html = buildInvoiceHtml({
+      invoiceNumber: "INV-DISCOUNT",
+      items: [
+        {
+          description: "Courtesy discount",
+          isDiscount: true,
+          quantity: 1,
+          unitPrice: -400,
+          lineTotal: -400,
+        },
+      ],
+    });
+    expect(html).toContain("Discount: Courtesy discount");
+    expect(html).toContain("−$400.00");
+    expect(html).not.toContain("$-400.00");
+  });
+
+  it("shows an empty-state row when there are no line items", async () => {
     const html = buildInvoiceHtml({ invoiceNumber: "INV-1", items: [] });
     expect(html).toContain("No line items.");
   });

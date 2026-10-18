@@ -35,12 +35,20 @@ export default function AiReaderCaptureScreen() {
   console.log("[AiReader/capture] useTheme OK");
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
-  const { new: isNew, retake } = useLocalSearchParams<{ new?: string; retake?: string }>();
+  const { new: isNew, retake, attach } = useLocalSearchParams<{
+    new?: string;
+    retake?: string;
+    attach?: string;
+  }>();
   const retakeIndex = retake !== undefined ? parseInt(retake, 10) : null;
   const isRetakeMode = retakeIndex !== null && !isNaN(retakeIndex);
 
   const [pages, setPages] = useState<CapturedPage[]>(() => {
-    if (isNew === "1") {
+    // `new=1` resets the session for a fresh intake scan. `attach=1` means the
+    // caller (the returned-case wizard) already primed the session with the
+    // case to attach to — clearing here would wipe that context and the review
+    // screen would silently fall back to the create-a-case flow.
+    if (isNew === "1" && attach !== "1") {
       clearAiReaderSession();
       return [];
     }

@@ -1,6 +1,6 @@
 import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   setBaseUrl as setApiClientBaseUrl,
   setAuthTokenGetter as setApiClientAuthTokenGetter,
@@ -13,9 +13,9 @@ import { UploadsProvider } from "@/lib/uploads-context";
 import LoginPage from "@/pages/login";
 import { AppLayout } from "@/components/AppLayout";
 import { OfflineBanner } from "@/components/OfflineBanner";
-import { MessengerProvider } from "@/context/MessengerContext";
-import { canReceivePayments } from "@/components/finance/FinanceShell";
+import { canReceivePayments, LabFinanceRoute } from "@/components/finance/FinanceShell";
 import PlanPickerOnboarding from "@/components/PlanPickerOnboarding";
+import { CreatorGate } from "@/lib/creator";
 import { Toaster } from "@/components/ui/toaster";
 
 const DashboardPage = lazy(() => import("@/pages/dashboard"));
@@ -26,7 +26,6 @@ const AccountsPage = lazy(() => import("@/pages/accounts"));
 const StatementsPage = lazy(() => import("@/pages/statements"));
 const PricingPage = lazy(() => import("@/pages/pricing"));
 const ReportsPage = lazy(() => import("@/pages/reports"));
-const StatsPage = lazy(() => import("@/pages/stats"));
 const SettingsPage = lazy(() => import("@/pages/settings"));
 const MaintenancePage = lazy(() => import("@/pages/maintenance"));
 const RegisterPage = lazy(() => import("@/pages/finance/register"));
@@ -36,11 +35,20 @@ const RecurringPage = lazy(() => import("@/pages/finance/recurring"));
 const ReceivePaymentsPage = lazy(() => import("@/pages/finance/receive-payments"));
 const MakeDepositsPage = lazy(() => import("@/pages/finance/make-deposits"));
 const PayeesPage = lazy(() => import("@/pages/finance/payees"));
+const BillsPage = lazy(() => import("@/pages/finance/bills"));
+const PayBillsPage = lazy(() => import("@/pages/finance/pay-bills"));
+const AgingPage = lazy(() => import("@/pages/finance/aging"));
 const ListsPage = lazy(() => import("@/pages/lists"));
 const DownloadPage = lazy(() => import("@/pages/download"));
 const BillingPage = lazy(() => import("@/pages/billing"));
+const CreatorPage = lazy(() => import("@/pages/creator/CreatorPage"));
+const OwnerPage = lazy(() => import("@/pages/owner/OwnerPage"));
+const RecoveryBillingPage = lazy(() => import("@/pages/recovery-billing"));
+const MessagesPage = lazy(() => import("@/pages/messages"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 const AcceptInvitePage = lazy(() => import("@/pages/accept-invite"));
+const ResetPasswordPage = lazy(() => import("@/pages/reset-password"));
+const ViewUsernamePage = lazy(() => import("@/pages/view-username"));
 
 // Wire the generated react-query hooks (`@workspace/api-client-react`) up
 // to the same bearer-token + base-URL machinery the legacy `apiFetch`
@@ -62,9 +70,7 @@ const queryClient = new QueryClient({
 function AuthedRoutes() {
   return (
     <UploadsProvider>
-      <MessengerProvider>
-        <AppLayoutWithUploads />
-      </MessengerProvider>
+      <AppLayoutWithUploads />
     </UploadsProvider>
   );
 }
@@ -83,7 +89,8 @@ function AppLayoutWithUploads() {
           <Route path="/statements" component={StatementsPage} />
           <Route path="/pricing" component={PricingPage} />
           <Route path="/reports" component={ReportsPage} />
-          <Route path="/stats" component={StatsPage} />
+          {/* Stats now lives as a tab inside Reports; keep old bookmarks working. */}
+          <Route path="/stats" component={() => <Redirect to="/reports?tab=stats" />} />
           <Route path="/settings" component={SettingsPage} />
           <Route path="/maintenance" component={MaintenancePage} />
           <Route path="/finance" component={() => <Redirect to="/finance/register" />} />
@@ -91,13 +98,31 @@ function AppLayoutWithUploads() {
           <Route path="/finance/reconcile" component={ReconcilePage} />
           <Route path="/finance/cash-flow" component={CashFlowPage} />
           <Route path="/finance/recurring" component={RecurringPage} />
-          <Route path="/finance/receive-payments" component={ReceivePaymentsGuard} />
-          <Route path="/finance/make-deposits" component={MakeDepositsPage} />
+          {/* Lab members reach these pages, which gate on their role in the lab
+              selected in the Financial header (the server's rule) and name that
+              role when a screen is not available to them. */}
+          <Route path="/finance/receive-payments">
+            {() => <LabFinanceRoute><ReceivePaymentsPage /></LabFinanceRoute>}
+          </Route>
+          <Route path="/finance/make-deposits">
+            {() => <LabFinanceRoute><MakeDepositsPage /></LabFinanceRoute>}
+          </Route>
           <Route path="/finance/payees" component={PayeesPage} />
+          <Route path="/finance/bills" component={BillsGuard} />
+          <Route path="/finance/pay-bills" component={PayBillsGuard} />
+          <Route path="/finance/aging">
+            {() => <LabFinanceRoute><AgingPage /></LabFinanceRoute>}
+          </Route>
           <Route path="/lists" component={ListsPage} />
           <Route path="/customer-center" component={() => <Redirect to="/accounts" />} />
           <Route path="/download" component={DownloadPage} />
           <Route path="/billing" component={BillingPage} />
+          <Route path="/creator" component={CreatorPage} />
+          <Route path="/admin/subscriptions" component={CreatorPage} />
+          <Route path="/admin/provider-subscriptions" component={CreatorPage} />
+          <Route path="/owner">{() => <CreatorGate><OwnerPage /></CreatorGate>}</Route>
+          <Route path="/recovery-billing" component={RecoveryBillingPage} />
+          <Route path="/messages" component={MessagesPage} />
           <Route component={NotFound} />
         </Switch>
       </Suspense>
@@ -105,12 +130,18 @@ function AppLayoutWithUploads() {
   );
 }
 
-function ReceivePaymentsGuard() {
+// The API is the real gate on every AP route; these guards only keep the
+// navigation honest for members who would be refused anyway.
+function BillsGuard() {
   const { user } = useAuth();
-  if (!canReceivePayments(user)) {
-    return <Redirect to="/finance/register" />;
-  }
-  return <ReceivePaymentsPage />;
+  if (!canReceivePayments(user)) return <Redirect to="/finance/register" />;
+  return <BillsPage />;
+}
+
+function PayBillsGuard() {
+  const { user } = useAuth();
+  if (!canReceivePayments(user)) return <Redirect to="/finance/register" />;
+  return <PayBillsPage />;
 }
 
 function AuthRestoreBanner() {
@@ -141,6 +172,28 @@ function readInviteToken(): string | null {
   }
 }
 
+function readResetToken(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+    if (token && token.trim()) return token.trim();
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function readUsernameRecoveryToken(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("username_token");
+    if (token && token.trim()) return token.trim();
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function ProviderPortal() {
   return (
     <Suspense
@@ -157,9 +210,61 @@ function ProviderPortal() {
 
 function Gate() {
   const { status, user } = useAuth();
+  const lastUserId = useRef<string | number | null | undefined>(user?.id);
+  useEffect(() => {
+    if (lastUserId.current === user?.id) return;
+    lastUserId.current = user?.id;
+    // Logout or account switch: drop every Creator capability/data cache.
+    queryClient.removeQueries({
+      predicate: (q) => {
+        const k = String(q.queryKey[0]);
+        return k === "creator" || k.startsWith("admin-subscription");
+      },
+    });
+  }, [user?.id]);
   const [inviteToken, setInviteToken] = useState<string | null>(() =>
     readInviteToken(),
   );
+  const [resetToken] = useState<string | null>(() => readResetToken());
+  const [usernameRecoveryToken] = useState<string | null>(() =>
+    readUsernameRecoveryToken(),
+  );
+
+  if (usernameRecoveryToken) {
+    return (
+      <>
+        <OfflineBanner />
+        <Suspense
+          fallback={
+            <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">
+              Loading…
+            </div>
+          }
+        >
+          <ViewUsernamePage token={usernameRecoveryToken} />
+        </Suspense>
+      </>
+    );
+  }
+
+  if (resetToken) {
+    return (
+      <>
+        <OfflineBanner />
+        <Suspense
+          fallback={
+            <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">
+              Loading…
+            </div>
+          }
+        >
+          <ResetPasswordPage
+            token={resetToken}
+          />
+        </Suspense>
+      </>
+    );
+  }
 
   if (inviteToken) {
     return (
@@ -216,7 +321,15 @@ function Gate() {
       <>
         <OfflineBanner />
         <AuthRestoreBanner />
-        <ProviderPortal />
+        <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading…</div>}>
+          <Switch>
+            <Route path="/creator" component={CreatorPage} />
+            <Route path="/owner"><CreatorGate><OwnerPage /></CreatorGate></Route>
+            <Route path="/settings/subscriptions"><Redirect to="/creator?tab=subscriptions" /></Route>
+            <Route path="/admin/subscriptions"><Redirect to="/creator?tab=subscriptions" /></Route>
+            <Route><ProviderPortal /></Route>
+          </Switch>
+        </Suspense>
         <PlanPickerOnboarding />
       </>
     );

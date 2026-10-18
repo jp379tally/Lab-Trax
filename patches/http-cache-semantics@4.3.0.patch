@@ -1,0 +1,65 @@
+diff --git a/index.js b/index.js
+--- a/index.js
++++ b/index.js
+@@ -266,6 +266,13 @@ module.exports = class CachePolicy {
+     storable() {
+         // The "no-store" request directive indicates that a cache MUST NOT store any part of either this request or any response to it.
+         return !!(
++            // Never retain security-zeroed shared entries for later reuse.
++            this._resHeaders.vary !== '*' &&
++            !(this._isShared &&
++                this._resHeaders['set-cookie'] &&
++                !this._rescc.public &&
++                !this._rescc.immutable) &&
++
+             !this._reqcc['no-store'] &&
+             // A cache MUST NOT store a response to any request, unless:
+             // The request method is understood by the cache and defined as being cacheable, and
+@@ -395,6 +395,12 @@ module.exports = class CachePolicy {
+     evaluateRequest(req) {
+         this._assertRequestHasHeaders(req);
+ 
++        // Security-zeroed entries must not be revived by client max-stale or
++        // stale-while-revalidate directives (GHSA-ch52-4w7c-c8xp).
++        if (!this._allowsStaleReuse()) {
++            return this._evaluateRequestMissResult(req);
++        }
++
+         // In all circumstances, a cache MUST NOT ignore the must-revalidate directive
+         if (this._rescc['must-revalidate']) {
+             return this._evaluateRequestMissResult(req);
+@@ -697,3 +703,14 @@ module.exports = class CachePolicy {
++    _allowsStaleReuse() {
++        return this.storable() &&
++            !this._rescc['no-cache'] &&
++            !this._rescc['must-revalidate'] &&
++            this._resHeaders.vary !== '*' &&
++            !(this._isShared && (this._rescc['proxy-revalidate'] ||
++                (this._resHeaders['set-cookie'] &&
++                    !this._rescc.public && !this._rescc.immutable)));
++    }
++
+     _useStaleIfError() {
+-        return this.maxAge() + toNumberOrZero(this._rescc['stale-if-error']) > this.age();
++        return this._allowsStaleReuse() &&
++            this.maxAge() + toNumberOrZero(this._rescc['stale-if-error']) > this.age();
+     }
+@@ -704,4 +721,4 @@ module.exports = class CachePolicy {
+     useStaleWhileRevalidate() {
+         const swr = toNumberOrZero(this._rescc['stale-while-revalidate']);
+-        return swr > 0 && this.maxAge() + swr > this.age();
++        return this._allowsStaleReuse() && swr > 0 && this.maxAge() + swr > this.age();
+     }
+@@ -851,2 +875,12 @@ module.exports = class CachePolicy {
+     revalidatedPolicy(request, response) {
+         this._assertRequestHasHeaders(request);
++
++        // Also fence old serialized entries that predate the storage guard.
++        // A matching 304 must never revive an ineligible cached body.
++        if (!this.storable()) {
++            return {
++                policy: new this.constructor(request, response),
++                modified: true,
++                matches: false,
++            };
++        }

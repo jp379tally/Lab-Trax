@@ -7,8 +7,8 @@
  * Coverage:
  *  - Username rules (3–12 chars, [a-zA-Z0-9_] only) rejected with 400.
  *  - Case-insensitive username uniqueness → 409.
- *  - Canonical platform account number `<TYPE>-<YEAR>-<SEQ>-<PHONE>` on register.
- *  - Phone normalized into the account-number phone segment.
+ *  - New fixed-length Luhn-checked platform account number on register.
+ *  - Phone and other personal data are not embedded in the identifier.
  *  - requireVerifiedAccount: canonical + unverified account blocked (403) on a
  *    PHI route; grandfathered (legacy / null account-number) account NOT blocked
  *    for the verification reason.
@@ -18,6 +18,10 @@ import { inArray, eq } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import request from "supertest";
 import * as path from "node:path";
+import {
+  generateAccountNumberFromSequence,
+  isValidNewAccountNumber,
+} from "@workspace/account-number";
 
 vi.mock("../lib/backup.js", () => ({
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
@@ -33,7 +37,7 @@ vi.mock("../lib/case-media.js", () => ({
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
 const maybe = SHOULD_RUN ? describe : describe.skip;
 
-const CANONICAL = /^[LP]-\d{4}-\d+(-\d{10})?$/;
+const CANONICAL = /^7\d{11}$/;
 
 function rid(prefix: string) {
   return `${prefix}_${randomBytes(6).toString("hex")}`;
@@ -57,6 +61,9 @@ maybe("Account epic Phase 2 (db integration)", () => {
     delete process.env["DISABLE_VERIFICATION_ENFORCEMENT"];
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
+    await vi.waitFor(async () => {
+      expect((await request(appMod.default).get("/api/__test_missing_route__")).status).toBe(404);
+    }, { timeout: 15_000, interval: 25 });
   });
 
   afterAll(async () => {
@@ -79,6 +86,18 @@ maybe("Account epic Phase 2 (db integration)", () => {
   });
 
   // ── Username rules ────────────────────────────────────────────────────────
+
+  it("rejects a mistyped new account number before lookup", async () => {
+    const valid = generateAccountNumberFromSequence(1234);
+    const mistyped = `${valid.slice(0, 5)}${valid[5] === "9" ? "8" : "9"}${valid.slice(6)}`;
+    const r = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ identifier: mistyped, password: "irrelevant" });
+    expect(r.status).toBe(400);
+    expect(r.body.message ?? r.body.error).toBe(
+      "That account number doesn't look right.",
+    );
+  });
 
   it("rejects a username shorter than 3 chars (400)", async () => {
     const r = await request(appMod.default)
@@ -133,7 +152,7 @@ maybe("Account epic Phase 2 (db integration)", () => {
 
   // ── Canonical account number ──────────────────────────────────────────────
 
-  it("assigns a canonical platform account number with phone segment", async () => {
+  it("assigns a Luhn-valid account number without embedding the phone", async () => {
     const r = await request(appMod.default)
       .post("/api/auth/register")
       .send({
@@ -148,11 +167,11 @@ maybe("Account epic Phase 2 (db integration)", () => {
     if (r.body.user?.id) createdUserIds.push(r.body.user.id);
     const pan = r.body.user.platformAccountNumber as string;
     expect(pan).toMatch(CANONICAL);
-    expect(pan.startsWith("L-")).toBe(true);
-    expect(pan.endsWith("-5551234567")).toBe(true);
+    expect(isValidNewAccountNumber(pan)).toBe(true);
+    expect(pan).not.toContain("5551234567");
   });
 
-  it("assigns a P-type canonical number for providers, no phone segment when absent", async () => {
+  it("assigns the same new format to providers", async () => {
     const r = await request(appMod.default)
       .post("/api/auth/register")
       .send({
@@ -166,9 +185,7 @@ maybe("Account epic Phase 2 (db integration)", () => {
     if (r.body.user?.id) createdUserIds.push(r.body.user.id);
     const pan = r.body.user.platformAccountNumber as string;
     expect(pan).toMatch(CANONICAL);
-    expect(pan.startsWith("P-")).toBe(true);
-    // No phone supplied → no trailing 10-digit segment.
-    expect(/-\d{10}$/.test(pan)).toBe(false);
+    expect(isValidNewAccountNumber(pan)).toBe(true);
   });
 
   // ── Verification enforcement ──────────────────────────────────────────────
@@ -214,10 +231,10 @@ maybe("Account epic Phase 2 (db integration)", () => {
     const { db, users } = dbMod as any;
     const legacyId = rid("legacy");
     // Randomize the legacy (non-canonical) account number per run so a leftover
-    // row from an aborted run — or a real backfilled "<seq><YY><F><L>" account
+    // row from an aborted run — or a real "<seq><YY><F><L>" account
     // already in a shared DB — cannot collide on
     // users_platform_account_number_unique. Format stays legacy (no hyphens),
-    // so it never matches the CANONICAL regex.
+    // so it never matches the new-format regex.
     const legacyAcct = `${randomBytes(3).toString("hex").toUpperCase()}26JW`;
     await db.insert(users).values({
       id: legacyId,

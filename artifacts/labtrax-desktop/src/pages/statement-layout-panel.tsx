@@ -20,15 +20,17 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, authedMediaFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import {
   coerceStatementTemplate,
   DEFAULT_STATEMENT_TEMPLATE,
   stmtDefaultTextBlockPosition,
   STATEMENT_SECTION_COLORS,
+  STATEMENT_SECTION_KEYS,
   STATEMENT_SECTION_LABELS,
   type StatementDefaultTextBlock,
+  type StatementTemplateSection,
   type StatementTemplate,
   type StatementTemplateBox as TemplateBox,
   type StatementTemplateTextBlock,
@@ -131,6 +133,37 @@ function disableDefault(draft: StatementTemplate, defId: string): StatementTempl
   return { ...draft, customTexts: draft.customTexts.filter((ct) => ct.sourceId !== defId) };
 }
 
+function sectionColor(section: StatementTemplateSection): string {
+  return section.generatedType
+    ? STATEMENT_SECTION_COLORS[section.generatedType]
+    : "rgba(251,146,60,0.18)";
+}
+
+function sectionLabel(section: StatementTemplateSection): string {
+  return section.title || (section.generatedType ? STATEMENT_SECTION_LABELS[section.generatedType] : "Custom section");
+}
+
+function patchSection(
+  draft: StatementTemplate,
+  id: string,
+  patch: Partial<StatementTemplateSection>,
+): StatementTemplate {
+  const sections = draft.sections.map((section) =>
+    section.id === id ? { ...section, ...patch } : section,
+  );
+  const changed = sections.find((section) => section.id === id);
+  const boxes = changed?.generatedType && changed.id === changed.generatedType
+    ? { ...draft.boxes, [changed.generatedType]: changed.box }
+    : draft.boxes;
+  return { ...draft, sections, boxes };
+}
+
+function sectionPosition(index: number): TemplateBox {
+  const col = index % 2;
+  const row = Math.floor(index / 2);
+  return { x: col === 0 ? 40 : 330, y: 300 + row * 90, w: 260, h: 70 };
+}
+
 function syncDefaultToCanvas(
   draft: StatementTemplate,
   patch: Partial<StatementDefaultTextBlock> & { id: string },
@@ -143,6 +176,26 @@ function syncDefaultToCanvas(
         : ct,
     ),
   };
+}
+
+export async function prepareStatementPreviewImage(
+  url: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const response = await authedMediaFetch(url, signal);
+  if (!response.ok) {
+    throw new Error(`The lab logo could not be loaded (${response.status}).`);
+  }
+  const blob = await response.blob();
+  if (!blob.size) throw new Error("The lab logo could not be loaded because the file was empty.");
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === "string"
+      ? resolve(reader.result)
+      : reject(new Error("The lab logo could not be prepared for preview."));
+    reader.onerror = () => reject(new Error("The lab logo could not be prepared for preview."));
+    reader.readAsDataURL(blob);
+  });
 }
 
 export function StatementLayoutPanel() {
@@ -169,11 +222,14 @@ export function StatementLayoutPanel() {
   const [selected, setSelected] = useState<{ kind: "section" | "logo" | "extra" | "text"; key: string } | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
+  const [logoLoadError, setLogoLoadError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const [editingDefaultId, setEditingDefaultId] = useState<string | null>(null);
   const [hoveredDefaultId, setHoveredDefaultId] = useState<string | null>(null);
   const [pinnedPreviewId, setPinnedPreviewId] = useState<string | null>(null);
+  const [copySectionType, setCopySectionType] = useState<SectionKey>("stmtHeader");
 
   useEffect(() => {
     if (!query.data) return;
@@ -182,7 +238,27 @@ export function StatementLayoutPanel() {
   }, [query.data]);
 
   useEffect(() => {
+    const logoUrl = user?.practiceLogoUrl;
+    if (!logoUrl) {
+      setLogoDataUrl(null);
+      setLogoLoadError(null);
+      return;
+    }
+    const controller = new AbortController();
+    setLogoDataUrl(null);
+    setLogoLoadError(null);
+    void prepareStatementPreviewImage(logoUrl, controller.signal)
+      .then(setLogoDataUrl)
+      .catch((error: unknown) => {
+        if ((error as Error)?.name === "AbortError") return;
+        setLogoLoadError((error as Error)?.message ?? "The lab logo could not be loaded.");
+      });
+    return () => controller.abort();
+  }, [user?.practiceLogoUrl]);
+
+  useEffect(() => {
     if (!selected) return;
+    if (selected.kind === "section" && !draft.sections.some((s) => s.id === selected.key)) setSelected(null);
     if (selected.kind === "text" && !draft.customTexts.some((t) => t.id === selected.key)) setSelected(null);
     if (selected.kind === "extra" && !draft.extraImages[Number(selected.key)]) setSelected(null);
   }, [draft, selected]);
@@ -243,7 +319,7 @@ export function StatementLayoutPanel() {
     const dy = e.clientY * scale - d.startY;
     const next = applyDrag(d.startBox, d.handle, dx, dy);
     setDraft((cur) => {
-      if (d.kind === "section") return { ...cur, boxes: { ...cur.boxes, [d.key]: next } };
+      if (d.kind === "section") return patchSection(cur, d.key, { box: next });
       if (d.kind === "logo") return { ...cur, logo: { ...cur.logo, ...next } };
       if (d.kind === "extra") {
         const idx = Number(d.key);
@@ -261,20 +337,24 @@ export function StatementLayoutPanel() {
 
   function endDrag() { dragRef.current = null; }
 
-  const overlappingPairs: [SectionKey, SectionKey][] = [];
+  const overlappingPairs: [StatementTemplateSection, StatementTemplateSection][] = [];
   {
-    const keys = Object.keys(draft.boxes) as SectionKey[];
-    for (let i = 0; i < keys.length; i++) {
-      for (let j = i + 1; j < keys.length; j++) {
-        if (boxesOverlap(draft.boxes[keys[i]], draft.boxes[keys[j]])) overlappingPairs.push([keys[i], keys[j]]);
+    const sections = draft.sections.filter((section) => section.enabled);
+    for (let i = 0; i < sections.length; i++) {
+      for (let j = i + 1; j < sections.length; j++) {
+        if (boxesOverlap(sections[i].box, sections[j].box)) overlappingPairs.push([sections[i], sections[j]]);
       }
     }
   }
-  const overlappingSections = new Set<SectionKey>(overlappingPairs.flat());
-  const outOfBoundsSections = (Object.keys(draft.boxes) as SectionKey[])
-    .map((k) => ({ key: k, edges: boxEdgesOutOfBounds(draft.boxes[k]) }))
+  const overlappingSections = new Set(overlappingPairs.flat().map((section) => section.id));
+  const outOfBoundsSections = draft.sections
+    .filter((section) => section.enabled)
+    .map((section) => ({ section, edges: boxEdgesOutOfBounds(section.box) }))
     .filter((e) => e.edges.length > 0);
 
+  const selectedSection = selected?.kind === "section"
+    ? draft.sections.find((section) => section.id === selected.key) ?? null
+    : null;
   const selectedExtraIdx = selected?.kind === "extra" ? Number(selected.key) : -1;
   const selectedExtra = selectedExtraIdx >= 0 ? draft.extraImages[selectedExtraIdx] : null;
   const selectedText = selected?.kind === "text" ? draft.customTexts.find((t) => t.id === selected.key) ?? null : null;
@@ -284,6 +364,56 @@ export function StatementLayoutPanel() {
     const id = selected.key;
     setDraft((d) => ({ ...d, customTexts: d.customTexts.map((t) => t.id === id ? { ...t, ...patch } : t) }));
     setDirty(true);
+  }
+
+  function updateSelectedSection(patch: Partial<StatementTemplateSection>) {
+    if (!selectedSection) return;
+    setDraft((d) => patchSection(d, selectedSection.id, patch));
+    setDirty(true);
+  }
+
+  function toggleSection(section: StatementTemplateSection) {
+    setDraft((d) => patchSection(d, section.id, { enabled: !section.enabled }));
+    setDirty(true);
+  }
+
+  function removeSection(id: string) {
+    setDraft((d) => ({ ...d, sections: d.sections.filter((section) => section.id !== id) }));
+    setDirty(true);
+    if (selected?.kind === "section" && selected.key === id) setSelected(null);
+  }
+
+  function addCustomSection() {
+    if (draft.sections.length >= 40) return;
+    const section: StatementTemplateSection = {
+      id: crypto.randomUUID(),
+      type: "custom",
+      title: "Custom section",
+      enabled: true,
+      contentMode: "custom",
+      customText: "",
+      box: sectionPosition(draft.sections.length),
+    };
+    setDraft((d) => ({ ...d, sections: [...d.sections, section] }));
+    setDirty(true);
+    setSelected({ kind: "section", key: section.id });
+  }
+
+  function addGeneratedCopy(generatedType: SectionKey) {
+    if (draft.sections.length >= 40) return;
+    const source = draft.sections.find((section) => section.generatedType === generatedType);
+    const section: StatementTemplateSection = {
+      id: crypto.randomUUID(),
+      type: "generated",
+      generatedType,
+      title: `${STATEMENT_SECTION_LABELS[generatedType]} (copy)`,
+      enabled: true,
+      contentMode: "generated",
+      box: source ? applyDrag(source.box, "move", 12, 12) : { ...draft.boxes[generatedType] },
+    };
+    setDraft((d) => ({ ...d, sections: [...d.sections, section] }));
+    setDirty(true);
+    setSelected({ kind: "section", key: section.id });
   }
 
   function deleteExtraImage(idx: number) {
@@ -304,12 +434,16 @@ export function StatementLayoutPanel() {
     setIsPreviewing(true);
     setPreviewError(null);
     try {
+      if (user?.practiceLogoUrl && !logoDataUrl) {
+        throw new Error(logoLoadError ?? "The lab logo is still loading. Please try the preview again.");
+      }
       const extraImageDataUrls: Record<string, string> = {};
       await Promise.all(
         draft.extraImages.map(async (img) => {
           if (!img.url) return;
           try {
-            const res = await fetch(img.url);
+            const res = await authedMediaFetch(img.url);
+            if (!res.ok) throw new Error(`Image request failed (${res.status})`);
             const blob = await res.blob();
             const dataUrl = await new Promise<string>((resolve, reject) => {
               const reader = new FileReader();
@@ -331,8 +465,35 @@ export function StatementLayoutPanel() {
           { invoiceNumber: "INV-002", issuedAt: "2026-03-15", dueAt: "2026-04-15", status: "Overdue", total: "600", balanceDue: "600", patientName: "John Smith" },
           { invoiceNumber: "INV-003", issuedAt: "2026-04-10", dueAt: "2026-05-10", status: "Paid", total: "1800", balanceDue: "0", patientName: "Alice Brown" },
         ],
-        logoUrl: user?.practiceLogoUrl ?? null,
+        logoUrl: logoDataUrl,
         template: draft,
+        recipientType: "practice",
+        labContact: {
+          displayName: "Sample Dental Lab",
+          legalName: "Sample Dental Laboratory, LLC",
+          addressLine1: "100 Lab Way",
+          city: "Austin",
+          state: "TX",
+          zip: "78701",
+          phone: "(512) 555-0140",
+          billingEmail: "billing@samplelab.test",
+          additionalEmails: ["support@samplelab.test"],
+          accountNumber: "LAB-1001",
+          licenseNumber: "TX-LAB-2048",
+        },
+        practiceContact: {
+          displayName: "Riverside Dental",
+          legalName: "Riverside Dental Group",
+          addressLine1: "200 River Road",
+          addressLine2: "Suite 300",
+          city: "Austin",
+          state: "TX",
+          zip: "78702",
+          phone: "(512) 555-0188",
+          billingEmail: "ap@riversidedental.test",
+          additionalEmails: ["office@riversidedental.test"],
+          accountNumber: "RD-4421",
+        },
         extraImageDataUrls,
       });
       if (!opened) setPreviewError("Preview was blocked. Please allow pop-ups for this site.");
@@ -411,7 +572,7 @@ export function StatementLayoutPanel() {
 
   return (
     <div className="p-6">
-      <div className="flex items-start justify-between gap-4 mb-4">
+      <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4 mb-4">
         <div>
           <h2 className="text-lg font-semibold">Statement layout</h2>
           <p className="text-sm text-muted-foreground mt-1">
@@ -419,18 +580,18 @@ export function StatementLayoutPanel() {
             Changes apply to every statement this lab generates.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => void handlePreview()} disabled={isPreviewing}
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" data-testid="button-preview-statement-layout" onClick={() => void handlePreview()} disabled={isPreviewing || (!!user?.practiceLogoUrl && !logoDataUrl && !logoLoadError)}
             className="text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary disabled:opacity-50 flex items-center gap-1">
             {isPreviewing ? <Loader2 size={12} className="animate-spin" /> : <Eye size={12} />} Preview PDF
           </button>
-          <button type="button"
+          <button type="button" data-testid="button-discard-statement-layout"
             onClick={() => { setDraft(coerceStatementTemplate(query.data?.template)); setDirty(false); setSelected(null); setEditingDefaultId(null); }}
             disabled={!dirty || saveMutation.isPending}
             className="text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary disabled:opacity-50">
             Discard
           </button>
-          <button type="button"
+          <button type="button" data-testid="button-reset-statement-layout"
             onClick={() => {
               if (!confirm("Reset the layout to the built-in defaults? Your saved default text blocks will be preserved.")) return;
               setSelected(null); setEditingDefaultId(null);
@@ -445,7 +606,7 @@ export function StatementLayoutPanel() {
             className="text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary disabled:opacity-50 flex items-center gap-1">
             <RotateCcw size={12} /> Reset to default
           </button>
-          <button type="button" onClick={() => saveMutation.mutate(draft)} disabled={!dirty || saveMutation.isPending}
+          <button type="button" data-testid="button-save-statement-layout" onClick={() => saveMutation.mutate(draft)} disabled={!dirty || saveMutation.isPending}
             className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center gap-1">
             {saveMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save layout
           </button>
@@ -453,19 +614,20 @@ export function StatementLayoutPanel() {
       </div>
 
       {previewError ? <div className="mb-3 text-xs text-destructive">{previewError}</div> : null}
+      {logoLoadError ? <div role="alert" data-testid="statement-logo-load-error" className="mb-3 text-xs text-destructive">Logo preview failed: {logoLoadError}</div> : null}
       {saveMutation.isError ? <div className="mb-3 text-xs text-destructive">Save failed: {(saveMutation.error as Error)?.message}</div> : null}
 
-      <div className="grid grid-cols-[1fr_280px] gap-6">
+      <div data-testid="statement-layout-workspace" className="grid min-w-0 grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,612px)_minmax(280px,1fr)]">
         {/* Canvas */}
         <div
           ref={canvasRef}
           onPointerMove={onPointerMove} onPointerUp={endDrag} onPointerLeave={endDrag}
           onClick={() => setSelected(null)}
-          className="relative bg-white border border-border rounded shadow-sm select-none"
+          className="relative min-w-0 justify-self-center 2xl:justify-self-start bg-white border border-border rounded shadow-sm select-none"
           style={{ aspectRatio: `${PAGE_W} / ${PAGE_H}`, width: "100%", maxWidth: 612 }}
         >
-          {draft.logo.mode === "watermark" && user?.practiceLogoUrl ? (
-            <img src={user.practiceLogoUrl} alt="" style={{ position: "absolute", left: `${(draft.logo.x / PAGE_W) * 100}%`, top: `${(draft.logo.y / PAGE_H) * 100}%`, width: `${(draft.logo.w / PAGE_W) * 100}%`, height: `${(draft.logo.h / PAGE_H) * 100}%`, opacity: draft.logo.opacity, pointerEvents: "none", objectFit: "contain" }} />
+          {draft.logo.mode === "watermark" && logoDataUrl ? (
+            <img data-testid="statement-logo-watermark" src={logoDataUrl} alt="" style={{ position: "absolute", left: `${(draft.logo.x / PAGE_W) * 100}%`, top: `${(draft.logo.y / PAGE_H) * 100}%`, width: `${(draft.logo.w / PAGE_W) * 100}%`, height: `${(draft.logo.h / PAGE_H) * 100}%`, opacity: draft.logo.opacity, pointerEvents: "none", objectFit: "contain" }} />
           ) : null}
 
           {draft.extraImages.map((img, i) => (
@@ -489,21 +651,74 @@ export function StatementLayoutPanel() {
           {draft.logo.mode === "header" ? (
             <DraggableBox box={draft.logo} color="rgba(14,165,233,0.22)" label="Logo"
               selected={selected?.kind === "logo"}
-              imageUrl={user?.practiceLogoUrl ?? undefined}
+              imageUrl={logoDataUrl ?? undefined} imageTestId="statement-logo-header" opacity={draft.logo.opacity}
               onStart={(e, h) => startDrag(e, "logo", "logo", h, draft.logo)} />
           ) : null}
 
-          {(Object.keys(draft.boxes) as SectionKey[]).map((k) => (
-            <DraggableBox key={k} box={draft.boxes[k]} color={STATEMENT_SECTION_COLORS[k]}
-              label={STATEMENT_SECTION_LABELS[k]}
-              selected={selected?.kind === "section" && selected?.key === k}
-              overlapping={overlappingSections.has(k)}
-              onStart={(e, h) => startDrag(e, "section", k, h, draft.boxes[k])} />
+          {draft.sections.filter((section) => section.enabled).map((section) => (
+            <DraggableBox key={section.id} box={section.box} color={sectionColor(section)}
+              label={sectionLabel(section)}
+              section={section}
+              selected={selected?.kind === "section" && selected?.key === section.id}
+              overlapping={overlappingSections.has(section.id)}
+              onStart={(e, h) => startDrag(e, "section", section.id, h, section.box)}
+              onDelete={() => removeSection(section.id)} />
           ))}
         </div>
 
         {/* Right rail */}
-        <div className="space-y-5 text-sm">
+        <div data-testid="statement-layout-settings-rail" className="min-w-0 space-y-5 text-sm 2xl:border-l 2xl:border-border 2xl:pl-6">
+          {selectedSection ? (
+            <section data-testid="panel-active-selection" className="p-3 rounded border border-primary/30 bg-primary/5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-primary">Edit section</h3>
+                <button type="button" data-testid={`button-section-delete-${selectedSection.id}`}
+                  onClick={() => removeSection(selectedSection.id)}
+                  className="p-1.5 rounded text-destructive hover:bg-destructive/10" title="Remove section">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+              <label className="block">
+                <span className="text-xs text-muted-foreground">Title</span>
+                <input data-testid={`input-section-title-${selectedSection.id}`} value={selectedSection.title}
+                  maxLength={120}
+                  onChange={(e) => updateSelectedSection({ title: e.target.value })}
+                  className="mt-1 w-full text-xs px-2 py-1.5 rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary" />
+              </label>
+              <label className="flex items-center gap-2 text-xs">
+                <input data-testid={`checkbox-section-enabled-${selectedSection.id}`} type="checkbox"
+                  checked={selectedSection.enabled}
+                  onChange={() => toggleSection(selectedSection)} />
+                Include this section
+              </label>
+              {selectedSection.type === "generated" ? (
+                <div>
+                  <span className="text-xs text-muted-foreground">Content</span>
+                  <div className="grid grid-cols-2 gap-1 mt-1">
+                    {(["generated", "custom"] as const).map((mode) => (
+                      <button key={mode} type="button" data-testid={`button-section-mode-${mode}-${selectedSection.id}`}
+                        onClick={() => updateSelectedSection({ contentMode: mode })}
+                        className={`text-xs px-2 py-1.5 rounded border ${selectedSection.contentMode === mode ? "border-primary bg-primary text-primary-foreground" : "border-border hover:bg-secondary"}`}>
+                        {mode === "generated" ? "Generated" : "Custom text"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {selectedSection.contentMode === "custom" ? (
+                <label className="block">
+                  <span className="text-xs text-muted-foreground">Custom content</span>
+                  <textarea data-testid={`textarea-section-content-${selectedSection.id}`}
+                    rows={5} maxLength={4000} value={selectedSection.customText ?? ""}
+                    onChange={(e) => updateSelectedSection({ customText: e.target.value })}
+                    placeholder="Enter plain text for this section…"
+                    className="mt-1 w-full text-xs p-2 rounded border border-border bg-background resize-y focus:outline-none focus:ring-1 focus:ring-primary" />
+                  <span className="block text-[10px] text-muted-foreground text-right mt-0.5">{(selectedSection.customText ?? "").length}/4000</span>
+                </label>
+              ) : null}
+            </section>
+          ) : null}
+
           {selectedText ? (
             <section className="p-3 rounded border border-orange-200 bg-orange-50 dark:bg-orange-950/20 dark:border-orange-800 space-y-2">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-orange-600 dark:text-orange-400 mb-2">
@@ -731,25 +946,70 @@ export function StatementLayoutPanel() {
             </ul>
           </section>
 
-          {/* Sections legend */}
+          {/* Sections registry */}
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Sections</h3>
-            <ul className="space-y-1 text-xs">
-              {(Object.keys(STATEMENT_SECTION_LABELS) as SectionKey[]).map((k) => (
-                <li key={k} className="flex items-center gap-2">
-                  <span className="inline-block w-3 h-3 rounded-sm border border-border" style={{ background: STATEMENT_SECTION_COLORS[k] }} />
-                  {STATEMENT_SECTION_LABELS[k]}
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Sections</h3>
+              <span className="text-[10px] text-muted-foreground">{draft.sections.length}/40</span>
+            </div>
+            <p className="text-xs text-muted-foreground mb-2">Check sections to include them. Select a row to edit its title or content.</p>
+            <ul data-testid="list-section-registry" className="space-y-1.5 text-xs">
+              {draft.sections.map((section) => (
+                <li key={section.id}
+                  data-testid={`row-section-${section.id}`}
+                  className={`flex items-center gap-2 p-2 rounded border cursor-pointer ${selected?.kind === "section" && selected.key === section.id ? "border-primary bg-primary/5" : "border-border hover:bg-secondary"}`}
+                  onClick={() => setSelected({ kind: "section", key: section.id })}>
+                  <input type="checkbox" data-testid={`checkbox-section-visible-${section.id}`}
+                    aria-label={`Include ${sectionLabel(section)}`}
+                    checked={section.enabled}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => toggleSection(section)} />
+                  <span className="inline-block w-3 h-3 rounded-sm border border-border shrink-0" style={{ background: sectionColor(section) }} />
+                  <span className={`truncate flex-1 ${section.enabled ? "" : "text-muted-foreground line-through"}`}>{sectionLabel(section)}</span>
+                  {section.generatedType ? (
+                    <button type="button" data-testid={`button-section-duplicate-${section.id}`}
+                      title={`Add another ${STATEMENT_SECTION_LABELS[section.generatedType]}`}
+                      onClick={(e) => { e.stopPropagation(); addGeneratedCopy(section.generatedType!); }}
+                      disabled={draft.sections.length >= 40}
+                      className="p-1 rounded text-muted-foreground hover:bg-background hover:text-foreground disabled:opacity-30">
+                      <Plus size={12} />
+                    </button>
+                  ) : null}
+                  <button type="button" data-testid={`button-section-remove-${section.id}`}
+                    title="Remove section"
+                    onClick={(e) => { e.stopPropagation(); removeSection(section.id); }}
+                    className="p-1 rounded text-destructive hover:bg-destructive/10">
+                    <X size={12} />
+                  </button>
                 </li>
               ))}
-              <li className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-sm border border-border" style={{ background: "rgba(34,197,94,0.18)" }} />Default text block</li>
-              <li className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-sm border border-border" style={{ background: "rgba(251,146,60,0.18)" }} />Custom text block</li>
             </ul>
+            {draft.sections.length === 0 ? <p className="text-xs text-muted-foreground italic py-2">No sections. Add one below.</p> : null}
+            <div className="grid grid-cols-[1fr_auto] gap-1.5 mt-3">
+              <select data-testid="select-generated-section-type" value={copySectionType}
+                onChange={(e) => setCopySectionType(e.target.value as SectionKey)}
+                className="min-w-0 text-xs px-2 py-1.5 rounded border border-border bg-background">
+                {STATEMENT_SECTION_KEYS.map((type) => <option key={type} value={type}>{STATEMENT_SECTION_LABELS[type]}</option>)}
+              </select>
+              <button type="button" data-testid="button-add-generated-section"
+                onClick={() => addGeneratedCopy(copySectionType)}
+                disabled={draft.sections.length >= 40}
+                className="text-xs px-2 py-1.5 rounded border border-border hover:bg-secondary flex items-center gap-1 disabled:opacity-50">
+                <Plus size={11} /> Copy
+              </button>
+            </div>
+            <button type="button" data-testid="button-add-custom-section"
+              onClick={addCustomSection}
+              disabled={draft.sections.length >= 40}
+              className="w-full mt-2 text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary flex items-center justify-center gap-1 disabled:opacity-50">
+              <Plus size={12} /> Add custom section
+            </button>
             {overlappingPairs.length > 0 ? (
               <div className="flex items-start gap-1.5 rounded px-2 py-1.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs mt-3">
                 <span className="shrink-0 mt-px">⚠</span>
                 <div>
                   <p className="font-medium mb-0.5">Overlapping sections</p>
-                  <ul className="space-y-0.5">{overlappingPairs.map(([a, b]) => <li key={`${a}-${b}`}>{STATEMENT_SECTION_LABELS[a]} overlaps {STATEMENT_SECTION_LABELS[b]}</li>)}</ul>
+                  <ul className="space-y-0.5">{overlappingPairs.map(([a, b]) => <li key={`${a.id}-${b.id}`}>{sectionLabel(a)} overlaps {sectionLabel(b)}</li>)}</ul>
                 </div>
               </div>
             ) : null}
@@ -758,7 +1018,7 @@ export function StatementLayoutPanel() {
                 <span className="shrink-0 mt-px">⚠</span>
                 <div>
                   <p className="font-medium mb-0.5">Sections outside the page</p>
-                  <ul className="space-y-0.5">{outOfBoundsSections.map(({ key, edges }) => <li key={key}>{STATEMENT_SECTION_LABELS[key]} extends past the {edges.join(" and ")} of the page</li>)}</ul>
+                  <ul className="space-y-0.5">{outOfBoundsSections.map(({ section, edges }) => <li key={section.id}>{sectionLabel(section)} extends past the {edges.join(" and ")} of the page</li>)}</ul>
                 </div>
               </div>
             ) : null}
@@ -777,13 +1037,15 @@ interface DraggableBoxProps {
   selected?: boolean;
   overlapping?: boolean;
   imageUrl?: string;
+  imageTestId?: string;
   opacity?: number;
   textBlock?: StatementTemplateTextBlock;
+  section?: StatementTemplateSection;
   onStart: (e: React.PointerEvent, handle: Handle) => void;
   onDelete?: () => void;
 }
 
-function DraggableBox({ box, color, label, selected, overlapping, imageUrl, opacity, textBlock, onStart, onDelete }: DraggableBoxProps) {
+function DraggableBox({ box, color, label, selected, overlapping, imageUrl, imageTestId, opacity, textBlock, section, onStart, onDelete }: DraggableBoxProps) {
   const [hovered, setHovered] = useState(false);
   const border = overlapping ? "2px dashed #ef4444" : selected ? "1.5px solid #2563eb" : "1px dashed rgba(0,0,0,0.35)";
   const style: React.CSSProperties = {
@@ -803,7 +1065,7 @@ function DraggableBox({ box, color, label, selected, overlapping, imageUrl, opac
   };
   return (
     <div style={style} onPointerDown={(e) => onStart(e, "move")} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
-      {imageUrl ? <img src={imageUrl} alt="" draggable={false} style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none", opacity: opacity !== undefined ? opacity : 0.7 }} /> : null}
+      {imageUrl ? <img data-testid={imageTestId} src={imageUrl} alt="" draggable={false} style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none", opacity: opacity !== undefined ? opacity : 0.7 }} /> : null}
       {textBlock ? (
         <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", padding: "2px", display: "flex", flexDirection: "column", justifyContent: "flex-start" }}>
           {textBlock.text?.trim() ? (
@@ -816,9 +1078,12 @@ function DraggableBox({ box, color, label, selected, overlapping, imageUrl, opac
         </div>
       ) : null}
       {!imageUrl && !textBlock ? (
-        <span style={{ position: "absolute", top: 2, left: 4, fontSize: "clamp(6px, 1.1%, 9px)", color: "rgba(0,0,0,0.55)", fontFamily: "sans-serif", pointerEvents: "none", whiteSpace: "nowrap", overflow: "hidden", maxWidth: "calc(100% - 8px)" }}>
-          {label}
-        </span>
+        <div style={{ position: "absolute", inset: 0, padding: "2px 4px", color: "rgba(0,0,0,0.6)", fontFamily: "sans-serif", pointerEvents: "none", overflow: "hidden" }}>
+          <div style={{ fontSize: "clamp(6px, 1.1%, 9px)", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</div>
+          {section?.contentMode === "custom" && section.customText?.trim() ? (
+            <div style={{ marginTop: 2, fontSize: "clamp(5px, 0.9%, 7px)", lineHeight: 1.2, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{section.customText}</div>
+          ) : null}
+        </div>
       ) : null}
       {(selected || hovered) ? handles.map((h) => (
         <div key={h} onPointerDown={(e) => onStart(e, h as Handle)}

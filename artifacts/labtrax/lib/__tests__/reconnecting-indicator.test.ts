@@ -168,7 +168,7 @@ describe("createReconnectingTracker", () => {
     vi.useRealTimers();
   });
 
-  it("does not signal reconnecting for fast refreshes (< 400ms)", () => {
+  it("does not signal reconnecting for fast refreshes (< 400ms)", async () => {
     vi.useFakeTimers();
     const setState = vi.fn();
     const tracker = createReconnectingTracker(setState);
@@ -181,7 +181,7 @@ describe("createReconnectingTracker", () => {
     expect(setState).toHaveBeenCalledWith(false);
   });
 
-  it("signals reconnecting for slow refreshes (>= 400ms)", () => {
+  it("signals reconnecting for slow refreshes (>= 400ms)", async () => {
     vi.useFakeTimers();
     const setState = vi.fn();
     const tracker = createReconnectingTracker(setState);
@@ -195,7 +195,7 @@ describe("createReconnectingTracker", () => {
     expect(setState).toHaveBeenLastCalledWith(false);
   });
 
-  it("clears the indicator after a successful refresh", () => {
+  it("clears the indicator after a successful refresh", async () => {
     vi.useFakeTimers();
     const setState = vi.fn();
     const tracker = createReconnectingTracker(setState);
@@ -208,7 +208,7 @@ describe("createReconnectingTracker", () => {
     expect(setState).toHaveBeenLastCalledWith(false);
   });
 
-  it("clears the indicator after a failed refresh", () => {
+  it("clears the indicator after a failed refresh", async () => {
     vi.useFakeTimers();
     const setState = vi.fn();
     const tracker = createReconnectingTracker(setState);
@@ -220,7 +220,7 @@ describe("createReconnectingTracker", () => {
     expect(setState).toHaveBeenLastCalledWith(false);
   });
 
-  it("cancels the pending timer when end() is called before 400ms", () => {
+  it("cancels the pending timer when end() is called before 400ms", async () => {
     vi.useFakeTimers();
     const setState = vi.fn();
     const tracker = createReconnectingTracker(setState);

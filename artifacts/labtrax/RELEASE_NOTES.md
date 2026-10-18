@@ -10,25 +10,15 @@
   - The fuller, area-grouped list below it is for the team's reference.
 -->
 
-## App Store Connect — What's New (v1.0.9, build 152)
+## App Store Connect — What's New (v1.0.15, build 342)
 
-This update is a big one, with improvements across the whole app:
-
-- Unified case timeline with photos, videos, and notes, plus progress bars
-  and a days-remaining / overdue countdown.
-- Automatic QR code on every case, smoother barcode scanning, and manual
-  barcode entry.
-- A context-aware AI assistant — ask questions about any case, get more
-  accurate handwritten Rx reading, and preview smile whitening & straightening.
-- New Messages tab with a real-time inbox, chat, and file/image attachments.
-- Smarter invoicing: nested sub-items with subtotals, send by email or SMS,
-  and overhauled statements.
-- More reliable media uploads with a crash-safe offline queue, faster loading,
-  and sturdier syncing between mobile and desktop.
-
-Thanks for using LabTrax!
+- Cases: reassign the doctor on one case only, with active lab-admin access controls and a short, case-specific Undo. Directory merging remains separate.
 
 ---
+
+## v1.0.15 (build 342)
+
+- Cases: reassign the doctor on one case only, with active lab-admin access controls and a short, case-specific Undo. Directory merging remains separate.
 
 ## v1.0.9 (build 152) — full changelog (since build 103)
 

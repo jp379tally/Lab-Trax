@@ -15,7 +15,8 @@ here.
 - `AI_INTEGRATIONS_OPENAI_API_KEY` — enables AI features (Rx parsing, AI chat, smile preview)
 - `AI_STT_MODEL` — optional override for the Maynard voice-input transcription model (`POST /api/ai-stt`). When unset, the route tries `gpt-4o-mini-transcribe` then `gpt-4o-transcribe`. `whisper-1` is intentionally not a default — the Replit AI Integrations proxy rejects it (`UNSUPPORTED_MODEL`); only set this to `whisper-1` if a future proxy re-adds support.
 - `AI_TTS_MODEL` — optional override for the Maynard spoken-reply model (`POST /api/ai-tts`). When unset, the route tries `gpt-audio` then `gpt-audio-mini` via chat-completions. The `audio/speech` REST endpoint (e.g. `tts-1`, `gpt-4o-mini-tts`) is unsupported by the proxy, so only set this to another chat-completions audio model.
-- `LABTRAX_ENABLE_DEMO_SEEDS` — set `"true"` to seed demo users on startup
+- `LABTRAX_ENABLE_DEMO_SEEDS` — demo seeding is off by default; only enable it in development after setting `LABTRAX_DEMO_SEED_PASSWORD` to a local, non-production secret. Production seeding is unavailable.
+- `LABTRAX_DEMO_SEED_PASSWORD` — required only when demo seeding is explicitly enabled in development; set it as a development-only secret, never use a production or shared password. Missing or blank values fail startup.
 - `PLATFORM_ADMIN_PIN` — short numeric PIN alternative to `PLATFORM_ADMIN_SECRET` via `X-Platform-Admin-Pin`; requires a signed-in `role:"admin"` user (PIN alone cannot authenticate)
 
 ## SMS (Twilio)
@@ -28,8 +29,9 @@ here.
 
 ## Backup / OneDrive
 
-- `ONEDRIVE_*` — OneDrive integration credentials. Settings → Backup shows status via `GET /api/admin/backup/onedrive-status` and a Reconnect button at `POST /api/admin/backup/onedrive-reconnect`.
+- OneDrive backups use the Replit-managed **Microsoft OneDrive connector** — no env vars. The app owner connects a Microsoft account through the workspace integration pane; the server fetches short-lived Graph tokens from the connector proxy at run time. Settings → Backup shows connection status via `GET /api/admin/backup/onedrive-status`. (Legacy `ONEDRIVE_*` env vars are no longer read.)
 - `BACKUP_HOUR_UTC` — UTC hour for nightly OneDrive backup (default: `7`)
+- `ONEDRIVE_BACKUP_MAX_KEEP` — number of OneDrive backup files to keep after each upload; older files beyond this count are automatically deleted (default: `30`). Can also be set via the `onedrive_backup_retention_max` system setting (DB takes precedence over env var).
 - `BACKUP_HISTORY_RETENTION_DAYS` — days of `backup_runs` to keep (default: `90`; overridable per-lab)
 - `BACKUP_HISTORY_MAX_ROWS` — max `backup_runs` rows (default: `500`; overridable per-lab)
 
@@ -73,7 +75,9 @@ here.
 - `STRIPE_PRICE_ID_PROVIDER_MONTHLY` — Provider plan, monthly billing ($49/mo) — output by seed-stripe-products
 - `STRIPE_PRICE_ID_PROVIDER_ANNUAL` — Provider plan, annual billing ($490/yr) — output by seed-stripe-products
 - `STRIPE_WEBHOOK_SECRET` — Stripe webhook signing secret (store in Stripe Replit integration connector)
+- `PROVIDER_PAYMENT_RETURN_ORIGINS` — optional comma-separated HTTPS origin allowlist for provider invoice Checkout returns; defaults to configured `REPLIT_DOMAINS`
 - `EXPO_PUBLIC_REVENUECAT_IOS_API_KEY` / `EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY` — RevenueCat public keys for IAP
+- `REVENUECAT_WEBHOOK_SECRET` — required bearer authorization value configured on the RevenueCat webhook; unauthenticated events are rejected
 
 ## GitHub backup env overrides
 

@@ -52,13 +52,10 @@ function fmtDateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${mm}/${dd}/${d.getFullYear()} ${time}`;
 }
 
 function titleCaseLocal(s: string): string {
@@ -68,11 +65,45 @@ function titleCaseLocal(s: string): string {
     .trim();
 }
 
+function fmtAuditTimestamp(value: unknown): string {
+  if (typeof value !== "string" || !value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return `${parsed.toISOString().replace(".000Z", "Z")} (UTC)`;
+}
+
+function fmtDoctorIdentity(displayName: unknown, identity: unknown): string {
+  const name =
+    typeof displayName === "string" && displayName.trim()
+      ? displayName.trim()
+      : "Unassigned";
+  return typeof identity === "string" && identity.trim()
+    ? `${name} [${identity.trim()}]`
+    : name;
+}
+
 // Mirror formatEventType from the case detail screen.
 function formatEventType(eventType?: string | null): string {
   if (!eventType) return "Event";
   if (eventType === "status_changed") return "Location Changed";
+  if (eventType === "internal_exception_opened_note") {
+    return "Internal Exception — Issue";
+  }
+  if (eventType === "internal_exception_note_added") {
+    return "Internal Exception Note";
+  }
+  if (eventType === "internal_exception_resolution_note_added") {
+    return "Internal Exception — Resolution Note";
+  }
   return titleCaseLocal(eventType);
+}
+
+function isInternalExceptionNoteEvent(eventType?: string | null): boolean {
+  return [
+    "internal_exception_opened_note",
+    "internal_exception_note_added",
+    "internal_exception_resolution_note_added",
+  ].includes(eventType ?? "");
 }
 
 // Mirror eventNoteId / eventDescription from the case detail screen so the
@@ -102,6 +133,34 @@ function eventDescription(
     }
   }
   if (!meta) return null;
+  if (ev.eventType === "invoice_dates_repaired") {
+    return `Issued: ${fmtAuditTimestamp(meta.previousIssuedAt)} → ${fmtAuditTimestamp(meta.correctedIssuedAt)} · Due: ${fmtAuditTimestamp(meta.previousDueAt)} → ${fmtAuditTimestamp(meta.correctedDueAt)}`;
+  }
+  if (ev.eventType === "invoice_payments_deleted") {
+    const count = typeof meta.deletedCount === "number" ? meta.deletedCount : null;
+    const parts = [
+      count === 1
+        ? "1 cleared payment deleted"
+        : count != null
+          ? `${count} cleared payments deleted`
+          : "Cleared payments deleted",
+    ];
+    if (typeof meta.previousStatus === "string" && meta.previousStatus) {
+      parts.push(`Previous status: ${titleCaseLocal(meta.previousStatus)}`);
+    }
+    if (
+      typeof meta.reversedDepositCount === "number" &&
+      meta.reversedDepositCount > 0
+    ) {
+      parts.push(
+        `${meta.reversedDepositCount} linked deposit${meta.reversedDepositCount === 1 ? "" : "s"} reversed`,
+      );
+    }
+    return parts.join(" · ");
+  }
+  if (ev.eventType === "invoice_doctor_identity_repaired") {
+    return `Doctor: ${fmtDoctorIdentity(meta.previousDoctorDisplayName, meta.previousDoctorIdentity)} → ${fmtDoctorIdentity(meta.correctedDoctorDisplayName, meta.correctedDoctorIdentity)}`;
+  }
   const from = meta.fromStatus ?? meta.from ?? meta.previousStatus;
   const to = meta.toStatus ?? meta.to ?? meta.newStatus ?? meta.status;
   if (typeof to === "string" && to) {
@@ -119,6 +178,13 @@ function eventDescription(
       return null;
     }
   }
+  if (isInternalExceptionNoteEvent(ev.eventType)) {
+    if (typeof meta.noteText === "string" && meta.noteText) return meta.noteText;
+    if (typeof meta.note === "string" && meta.note) return meta.note;
+    if (typeof meta.description === "string" && meta.description) {
+      return meta.description;
+    }
+  }
   if (typeof meta.noteText === "string" && meta.noteText) return meta.noteText;
   if (typeof meta.note === "string" && meta.note) return meta.note;
   if (typeof meta.message === "string" && meta.message) return meta.message;
@@ -132,7 +198,13 @@ function eventDescription(
 // their metadata. Surface it in the printed history so a shared/printed record
 // shows WHICH invoice changed, mirroring the on-screen mobile History tab.
 function eventInvoiceNumber(ev: PrintableEvent): string | null {
-  if (ev.eventType !== "invoice_updated" && ev.eventType !== "invoice_voided") {
+  if (
+    ev.eventType !== "invoice_updated" &&
+    ev.eventType !== "invoice_voided" &&
+    ev.eventType !== "invoice_dates_repaired" &&
+    ev.eventType !== "invoice_payments_deleted" &&
+    ev.eventType !== "invoice_doctor_identity_repaired"
+  ) {
     return null;
   }
   let meta: Record<string, unknown> | null = null;
@@ -260,7 +332,12 @@ export function buildCaseHistoryHtml(
       const what = formatEventType(ev.eventType);
       const desc = eventDescription(ev, notesById);
       const invoiceNumber = eventInvoiceNumber(ev);
-      const actor = ev.actorName ?? ev.actorInitials ?? null;
+      const metadataAuthor =
+        typeof (ev.metadataJson as any)?.authorName === "string" &&
+        (ev.metadataJson as any).authorName
+          ? (ev.metadataJson as any).authorName
+          : null;
+      const actor = metadataAuthor ?? ev.actorName ?? ev.actorInitials ?? null;
       return `
 <div class="event">
   <div class="event-when">${esc(when)}</div>

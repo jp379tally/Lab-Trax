@@ -263,6 +263,14 @@ export function buildSummaryPdfRows(
   return rows;
 }
 
+/** Formats a Date as "MM/DD/YYYY, h:mm AM/PM" for "Generated …" export stamps. */
+function fmtGeneratedAt(d: Date): string {
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return `${mm}/${dd}/${d.getFullYear()}, ${timeStr}`;
+}
+
 export function buildStatsPdf(opts: StatsPdfOptions): {
   blob: Blob;
   filename: string;
@@ -283,7 +291,7 @@ export function buildStatsPdf(opts: StatsPdfOptions): {
     maxWidth: pageW - marginX * 2,
   });
   doc.text(
-    `Generated ${opts.generatedAt.toLocaleString("en-US")}`,
+    `Generated ${fmtGeneratedAt(opts.generatedAt)}`,
     pageW - marginX,
     56,
     { align: "right" },

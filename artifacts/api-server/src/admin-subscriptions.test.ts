@@ -1,545 +1,239 @@
 /**
- * Unit tests for GET /api/admin/subscriptions.
- *
- * Verifies:
- *  - Authorization gating (missing secret → 403, wrong secret → 403,
- *    correct secret via CI/automation path → 200)
- *  - Pagination metadata (total, limit, offset)
- *  - Provider and status filters (valid values accepted; unknown values ignored)
- *  - Sensitive ID masking (revenueCatAppUserId, stripeCustomerId,
- *    stripeSubscriptionId are returned as first4****last4 or "****")
- *  - Subject-name resolution: lab_org and provider_org map to the organizations
- *    table; user (and any non-org type) maps to the users table
- *
- * All external dependencies are mocked; no DB or network access required.
+ * Focused contract tests for human-only provider subscription administration.
+ * Neither legacy nor provider administration may be reached with a CI secret
+ * alone; the production guard is exercised by the route integration suite.
  */
-
-import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
-import type { Server } from "node:http";
+import express, { type RequestHandler } from "express";
 import request from "supertest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// ---------------------------------------------------------------------------
-// @workspace/db mock — controlled per-table row data
-// ---------------------------------------------------------------------------
-
-const dbState = vi.hoisted(() => {
-  const now = new Date("2026-01-15T10:00:00.000Z");
-  const periodEnd = new Date("2026-02-15T10:00:00.000Z");
-
-  const subscriptionRows = [
-    {
-      id: "sub-1",
-      subjectType: "lab_org",
-      subjectId: "org-lab-1",
-      provider: "stripe",
-      status: "active",
-      currentPeriodEnd: periodEnd,
-      cancelAtPeriodEnd: false,
-      paymentMethodOnFile: true,
-      revenueCatAppUserId: null,
-      stripeCustomerId: "cus_ABCDEFGHIJ12345",
-      stripeSubscriptionId: "sub_ABCDEFGHIJ12345",
-      trialStartAt: null,
-      trialEndAt: null,
-      gracePeriodStartAt: null,
-      canceledAt: null,
-      lastReminderSentAt: null,
-      lastReminderKind: null,
-      deletedAt: null,
-      deletedByUserId: null,
-      createdAt: now,
-      updatedAt: now,
-    },
-    {
-      id: "sub-2",
-      subjectType: "provider_org",
-      subjectId: "org-provider-1",
-      provider: "revenuecat",
-      status: "active",
-      currentPeriodEnd: periodEnd,
-      cancelAtPeriodEnd: false,
-      paymentMethodOnFile: true,
-      revenueCatAppUserId: "rc_ABCDEFGHIJ12345",
-      stripeCustomerId: null,
-      stripeSubscriptionId: null,
-      trialStartAt: null,
-      trialEndAt: null,
-      gracePeriodStartAt: null,
-      canceledAt: null,
-      lastReminderSentAt: null,
-      lastReminderKind: null,
-      deletedAt: null,
-      deletedByUserId: null,
-      createdAt: now,
-      updatedAt: now,
-    },
-    {
-      id: "sub-3",
-      subjectType: "user",
-      subjectId: "user-solo-1",
-      provider: "none",
-      status: "trialing",
-      currentPeriodEnd: null,
-      cancelAtPeriodEnd: false,
-      paymentMethodOnFile: false,
-      revenueCatAppUserId: null,
-      stripeCustomerId: null,
-      stripeSubscriptionId: null,
-      trialStartAt: now,
-      trialEndAt: new Date("2026-01-29T10:00:00.000Z"),
-      gracePeriodStartAt: null,
-      canceledAt: null,
-      lastReminderSentAt: null,
-      lastReminderKind: null,
-      deletedAt: null,
-      deletedByUserId: null,
-      createdAt: now,
-      updatedAt: now,
-    },
-  ];
-
-  const organizationRows = [
-    { id: "org-lab-1", name: "Sunshine Dental Lab", type: "lab" },
-    { id: "org-provider-1", name: "Smith Dental Practice", type: "provider" },
-  ];
-
-  const userRows = [
-    {
-      id: "user-solo-1",
-      username: "solouser",
-      firstName: "Solo",
-      lastName: "User",
-      email: "solo@example.com",
-    },
-  ];
-
-  return { subscriptionRows, organizationRows, userRows };
-});
+const state = vi.hoisted(() => ({
+  db: null as any,
+  subscription: {
+    id: "sub-provider",
+    subjectType: "provider_org",
+    subjectId: "org-provider",
+    provider: "stripe",
+    providerPlan: "basic",
+    status: "active",
+    waiverReason: null as string | null,
+    waiverStartsAt: null as Date | null,
+    waiverEndsAt: null as Date | null,
+    waiverGrantedAt: null as Date | null,
+    waiverGrantedByUserId: null as string | null,
+    currentPeriodEnd: null,
+    trialEndAt: null,
+    canceledAt: null,
+    cancelAtPeriodEnd: false,
+    paymentMethodOnFile: true,
+    stripeCustomerId: "cus_test",
+    stripeSubscriptionId: "sub_test",
+    revenueCatAppUserId: null,
+    deletedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  } as any,
+  organization: {
+    id: "org-provider", name: "Provider", type: "provider",
+    accountNumber: "old", parentLabOrganizationId: "lab-1",
+    addressLine1: "123 Main St", city: "Austin", state: "TX", zip: "78701",
+  } as any,
+  conflict: false,
+  events: [] as any[],
+  audits: [] as any[],
+  appendSubscriptionEvent: vi.fn(async (event) => state.events.push(event)),
+  writeAuditLog: vi.fn(async (entry) => state.audits.push(entry)),
+  assertCustomAccountNumberAvailable: vi.fn(async (_lab, number) => number),
+}));
 
 vi.mock("@workspace/db", () => {
-  // ---------------------------------------------------------------------------
-  // Chainable Drizzle-style stub. The `from()` call determines which table's
-  // data is resolved; `where()`, `orderBy()`, `limit()`, and `offset()` are
-  // all pass-through so the real query-builder code can chain freely.
-  // ---------------------------------------------------------------------------
-  const T = {};
-
-  type Row = Record<string, unknown>;
-
-  function makeInnerChain(result: Row[]): Record<string, unknown> {
-    const chain: Record<string, unknown> = {
-      then: (resolve: (v: Row[]) => void, reject?: (e: unknown) => void) =>
-        Promise.resolve(result).then(resolve, reject),
-    };
-    for (const m of ["where", "orderBy", "limit", "offset", "returning"]) {
-      chain[m] = (..._: unknown[]) => makeInnerChain(result);
-    }
+  const table = (name: string) => new Proxy({ __table: name }, { get: (target, key) => key in target ? (target as any)[key] : { name: String(key) } });
+  const subscriptions = table("subscriptions");
+  const organizations = table("organizations");
+  const subscriptionEvents = table("subscriptionEvents");
+  const auditLogs = table("auditLogs");
+  const users = table("users");
+  const organizationMemberships = table("organizationMemberships");
+  const readChain = (rows: any[]) => {
+    const chain: any = { then: (resolve: any, reject?: any) => Promise.resolve(rows).then(resolve, reject) };
+    for (const method of ["where", "orderBy", "limit", "offset"]) chain[method] = () => chain;
     return chain;
-  }
-
-  const db = {
-    select: (fields?: unknown) => {
-      const isCountQuery =
-        fields !== undefined &&
-        typeof fields === "object" &&
-        fields !== null &&
-        "total" in (fields as object);
-      return {
-        from: (table: { __table?: string }) => {
-          const tableName = (table as { __table?: string }).__table ?? "";
-          let result: Row[];
-          if (isCountQuery) {
-            const rowCount = tableName === "subscriptions"
-              ? dbState.subscriptionRows.length
-              : 0;
-            result = [{ total: rowCount }];
-          } else if (tableName === "subscriptions") {
-            result = dbState.subscriptionRows as Row[];
-          } else if (tableName === "organizations") {
-            result = dbState.organizationRows as Row[];
-          } else if (tableName === "users") {
-            result = dbState.userRows as Row[];
-          } else {
-            result = [];
-          }
-          return makeInnerChain(result);
-        },
-      };
-    },
-    insert: (..._: unknown[]) => {
-      return makeInnerChain([]);
-    },
-    update: (..._: unknown[]) => makeInnerChain([]),
-    delete: (..._: unknown[]) => makeInnerChain([]),
-    execute: (..._: unknown[]) => Promise.resolve({ rows: [] }),
-    transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
-    query: new Proxy({} as Record<string, unknown>, {
-      get: () => ({
-        findFirst: (..._: unknown[]) => Promise.resolve(null),
-        findMany: (..._: unknown[]) => Promise.resolve([]),
+  };
+  const db: any = {
+    execute: async () => ({ rows: [] }),
+    select: (fields?: any) => ({
+      from: (source: any) => {
+        if (fields?.total) return readChain([{ total: 1 }]);
+        if (source.__table === "subscriptions") return readChain([state.subscription]);
+        if (source.__table === "organizations") return readChain(state.conflict ? [{ id: "other" }] : [state.organization]);
+        if (source.__table === "subscriptionEvents") return readChain(state.events);
+        if (source.__table === "auditLogs") return readChain(state.audits);
+        return readChain([]);
+      },
+    }),
+    update: (source: any) => ({
+      set: (values: any) => ({
+        where: () => ({
+          returning: async () => {
+            if (source.__table === "subscriptions") {
+              Object.assign(state.subscription, values);
+              return [state.subscription];
+            }
+            Object.assign(state.organization, values);
+            return [state.organization];
+          },
+        }),
       }),
     }),
   };
-
-  return {
-    db,
-    pool: {},
-    users: { __table: "users" },
-    userSessions: { __table: "userSessions" },
-    notifications: { __table: "notifications" },
-    organizations: { __table: "organizations" },
-    organizationMemberships: { __table: "organizationMemberships" },
-    organizationJoinRequests: { __table: "organizationJoinRequests" },
-    organizationInvites: { __table: "organizationInvites" },
-    organizationConnections: { __table: "organizationConnections" },
-    cases: { __table: "cases" },
-    caseAttachments: { __table: "caseAttachments" },
-    caseEvents: { __table: "caseEvents" },
-    caseLocations: { __table: "caseLocations" },
-    caseNotes: { __table: "caseNotes" },
-    caseRestorations: { __table: "caseRestorations" },
-    caseSubmissionQueue: { __table: "caseSubmissionQueue" },
-    labCases: { __table: "labCases" },
-    labPendingFiles: { __table: "labPendingFiles" },
-    labPendingFileNoteEdits: { __table: "labPendingFileNoteEdits" },
-    invoices: { __table: "invoices" },
-    invoiceLineItems: { __table: "invoiceLineItems" },
-    invoiceAttachments: { __table: "invoiceAttachments" },
-    invoiceCredits: { __table: "invoiceCredits" },
-    practiceStatements: { __table: "practiceStatements" },
-    practiceStatementSends: { __table: "practiceStatementSends" },
-    payments: { __table: "payments" },
-    bankAccounts: { __table: "bankAccounts" },
-    bankTransactions: { __table: "bankTransactions" },
-    bankTransactionInvoices: { __table: "bankTransactionInvoices" },
-    recurringTransactions: { __table: "recurringTransactions" },
-    reconciliationItems: { __table: "reconciliationItems" },
-    reconciliations: { __table: "reconciliations" },
-    transactionCategories: { __table: "transactionCategories" },
-    pricingTiers: { __table: "pricingTiers" },
-    pricingOverrides: { __table: "pricingOverrides" },
-    vendorTypes: { __table: "vendorTypes" },
-    aiMemory: { __table: "aiMemory" },
-    systemSettings: { __table: "systemSettings" },
-    installerChangelog: { __table: "installerChangelog" },
-    installerUploads: { __table: "installerUploads" },
-    subscriptions: { __table: "subscriptions" },
-    subscriptionEvents: { __table: "subscriptionEvents" },
-    auditLogs: { __table: "auditLogs" },
-    mediaCleanupRuns: { __table: "mediaCleanupRuns" },
-    statementSchedules: { __table: "statementSchedules" },
-    statementSendRuns: { __table: "statementSendRuns" },
-    iteroImportedOrders: T,
-    doctorAccountLinks: T,
-    accountLinkInvites: T,
-    platformAccountSequences: T,
-    labItemLabels: T,
-  };
+  state.db = db;
+  return { db, subscriptions, organizations, organizationMemberships, subscriptionEvents, auditLogs, users };
 });
 
-// ---------------------------------------------------------------------------
-// Side-effect-only dependency mocks
-// ---------------------------------------------------------------------------
-
-vi.mock("./lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
-vi.mock("./lib/case-media.js", () => ({
-  startDailyOrphanedMediaCleanup: vi.fn(),
-  caseMediaDir: "/tmp/test-case-media",
-  extractMediaFileName: vi.fn((name: string) => name),
-  cleanupOrphanedCaseMedia: vi.fn(),
-  runAndPersistCleanup: vi.fn(),
-  getCleanupAlertThresholds: vi.fn(),
-  getCleanupHistoryRetentionDays: vi.fn(),
-  getCleanupHourUtc: vi.fn(),
-  getCleanupProgress: vi.fn(),
-  getCleanupStuckTimeoutMinutes: vi.fn(),
-  cancelCleanup: vi.fn(),
-  CleanupAlreadyRunningError: class CleanupAlreadyRunningError extends Error {},
-  SETTING_CLEANUP_MIN_REMOVED: "cleanup_min_removed",
-  SETTING_CLEANUP_MIN_FREED_MB: "cleanup_min_freed_mb",
-  SETTING_CLEANUP_HISTORY_RETENTION_DAYS: "cleanup_history_retention_days",
-  SETTING_CLEANUP_HOUR_UTC: "cleanup_hour_utc",
-  SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES: "cleanup_stuck_timeout_minutes",
-}));
-vi.mock("./lib/backup.js", () => ({
-  restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
-  runBackup: vi.fn(),
-  getBackupHourUtc: vi.fn(),
-  getBackupScheduleConfig: vi.fn(),
-  SETTING_BACKUP_HOUR_UTC: "backup_hour_utc",
-  SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES: "backup_schedule_interval_minutes",
-  SETTING_BACKUP_SCHEDULE_DESTINATION: "backup_schedule_destination",
-  SETTING_BACKUP_SCHEDULE_PATH: "backup_schedule_path",
-  SETTING_BACKUP_SCHEDULE_ENABLED: "backup_schedule_enabled",
-  ALL_SCHEDULE_SETTINGS: [
-    "backup_schedule_interval_minutes",
-    "backup_schedule_destination",
-    "backup_schedule_path",
-    "backup_schedule_enabled",
-  ],
-}));
-vi.mock("./lib/mail.js", () => ({
-  sendInstallerPublishFailureAlertEmail: vi.fn(),
-  sendInviteEmail: vi.fn(),
-  sendStatementEmail: vi.fn(),
-  sendVerificationEmail: vi.fn(),
-  sendPasswordResetEmail: vi.fn(),
-  sendSecurityAlertEmail: vi.fn(),
-}));
-vi.mock("./middlewares/csrf.js", () => ({
-  requireCsrf: (_req: unknown, _res: unknown, next: () => void) => next(),
-}));
-vi.mock("./lib/logger.js", () => ({
-  logger: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-    child: vi.fn(() => ({
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-    })),
+vi.mock("./lib/entitlement", () => ({
+  PROVIDER_PLANS: {
+    basic: { monthlyPriceUsd: 99, capabilities: ["active_case_view"] },
+    standard: { monthlyPriceUsd: 149, capabilities: ["active_case_view", "billing_view_pay"] },
+    premium: { monthlyPriceUsd: 199, capabilities: ["active_case_view", "billing_view_pay", "lab_communication"] },
   },
+  appendSubscriptionEvent: state.appendSubscriptionEvent,
 }));
-vi.mock("pino-http", () => ({
-  default: () => (_req: unknown, _res: unknown, next: () => void) => next(),
-}));
-vi.mock("./lib/desktop-installer-storage.js", () => ({
-  getDesktopInstallerHandle: vi.fn(),
-  openDesktopInstallerStream: vi.fn(),
-  installerKindFromUrl: vi.fn(),
-  getDesktopInstallerMetadata: vi.fn(),
-  uploadDesktopInstaller: vi.fn(),
-  deleteDesktopInstaller: vi.fn(),
-  DesktopInstallerNotConfiguredError: class DesktopInstallerNotConfiguredError extends Error {},
+vi.mock("./lib/audit", () => ({ writeAuditLog: state.writeAuditLog }));
+vi.mock("./lib/provider-account-number", () => ({
+  withAccountNumberLock: async (_lab: string, fn: any) => fn(state.db),
+  assertCustomAccountNumberAvailable: state.assertCustomAccountNumberAvailable,
 }));
 
-// ---------------------------------------------------------------------------
-// Import app after all mocks are registered
-// ---------------------------------------------------------------------------
-import app from "./app.js";
+import { createAdminProviderSubscriptionRouter } from "./routes/admin-provider-subscriptions";
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+function appFor(guard: RequestHandler) {
+  const app = express();
+  app.use(express.json());
+  app.use("/api/admin/provider-subscriptions", createAdminProviderSubscriptionRouter(guard));
+  return app;
+}
 
-const ADMIN_SECRET = "test-platform-admin-secret";
+const authenticatedCreator: RequestHandler = (req: any, _res, next) => {
+  req.auth = { userId: "creator-1" };
+  req.user = { id: "creator-1", role: "admin" };
+  next();
+};
+const denied: RequestHandler = (_req, res) => res.status(403).json({ error: "Platform creator/admin access required." });
 
-describe("GET /api/admin/subscriptions", () => {
-  let server: Server;
-
-  beforeAll(() => {
-    process.env.PLATFORM_ADMIN_SECRET = ADMIN_SECRET;
-    server = app.listen(0);
+describe("provider subscription administration", () => {
+  beforeEach(() => {
+    state.conflict = false;
+    state.events.length = 0;
+    state.audits.length = 0;
+    state.subscription.providerPlan = "basic";
+    state.subscription.status = "active";
+    state.subscription.waiverReason = null;
+    state.subscription.waiverStartsAt = null;
+    state.subscription.waiverEndsAt = null;
+    state.subscription.canceledAt = null;
+    state.subscription.cancelAtPeriodEnd = false;
+    state.appendSubscriptionEvent.mockClear();
+    state.writeAuditLog.mockClear();
+    state.assertCustomAccountNumberAvailable.mockClear();
   });
 
-  afterAll(() => {
-    delete process.env.PLATFORM_ADMIN_SECRET;
-    return new Promise<void>((resolve, reject) => {
-      server.close((err) => (err ? reject(err) : resolve()));
+  it("allows an authenticated creator and exposes fixed plan definitions", async () => {
+    const res = await request(appFor(authenticatedCreator)).get("/api/admin/provider-subscriptions");
+    expect(res.status).toBe(200);
+    expect(res.body.plans.map((p: any) => p.id)).toEqual(["basic", "standard", "premium"]);
+    expect(res.body.items[0]).toMatchObject({
+      id: "sub-provider",
+      providerPlan: "basic",
+      formattedAddress: "123 Main St, Austin, TX, 78701",
     });
   });
 
-  // ── Authorization ────────────────────────────────────────────────────────
-
-  it("returns 401 when no X-Platform-Admin-Secret header is sent (no auth at all)", async () => {
-    // platformAdminUserOrSecret falls through to requireAuth → 401 unauthenticated
-    const res = await request(server).get("/api/admin/subscriptions");
-    expect(res.status).toBe(401);
+  it("denies a non-admin/secret-only caller through the injected production-equivalent guard", async () => {
+    const res = await request(appFor(denied)).get("/api/admin/provider-subscriptions").set("X-Platform-Admin-Secret", "ci-secret");
+    expect(res.status).toBe(403);
   });
 
-  it("returns 401 when the X-Platform-Admin-Secret header is wrong (falls through to requireAuth)", async () => {
-    // Wrong secret → platformAdminUserOrSecret falls through to requireAuth → 401
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", "wrong-secret");
-    expect(res.status).toBe(401);
+  it("rejects non-fixed plans and invalid statuses", async () => {
+    const app = appFor(authenticatedCreator);
+    expect((await request(app).patch("/api/admin/provider-subscriptions/sub-provider").send({ providerPlan: "unlimited" })).status).toBe(400);
+    expect((await request(app).patch("/api/admin/provider-subscriptions/sub-provider").send({ status: "made_up" })).status).toBe(400);
   });
 
-  it("returns 200 with the correct secret via the CI/automation path", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
+  it("requires a waiver reason and returns the expiry and active state", async () => {
+    const app = appFor(authenticatedCreator);
+    expect((await request(app).put("/api/admin/provider-subscriptions/sub-provider/waiver").send({ endsAt: "2027-01-02T00:00:00Z" })).status).toBe(400);
+    const res = await request(app).put("/api/admin/provider-subscriptions/sub-provider/waiver").send({
+      reason: "Provider migration", startsAt: "2026-01-01T00:00:00Z", endsAt: "2027-01-02T00:00:00Z",
+    });
     expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
+    expect(res.body.subscription).toMatchObject({ waiverReason: "Provider migration", waiverActive: true, waiverEndsAt: "2027-01-02T00:00:00.000Z" });
   });
 
-  // ── Pagination metadata ──────────────────────────────────────────────────
-
-  it("returns total, limit, and offset in the response", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions?limit=10&offset=0")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    expect(res.body.total).toBe(dbState.subscriptionRows.length);
-    expect(res.body.limit).toBe(10);
-    expect(res.body.offset).toBe(0);
+  it("propagates account-number uniqueness conflicts", async () => {
+    state.assertCustomAccountNumberAvailable.mockRejectedValueOnce(Object.assign(new Error("Account number is already assigned."), { status: 409 }));
+    const res = await request(appFor(authenticatedCreator))
+      .patch("/api/admin/provider-subscriptions/sub-provider/account-number")
+      .send({ accountNumber: "P-2026-1-5551234567" });
+    // The account-number helper's conflict must be surfaced rather than hidden.
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/already assigned/i);
   });
 
-  it("clamps limit to 100 and ignores NaN offset", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions?limit=999&offset=NaN")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
+  it("corrects the Customer Center number without changing provider identity", async () => {
+    const providerOrganizationId = state.organization.id;
+    const res = await request(appFor(authenticatedCreator))
+      .patch("/api/admin/provider-subscriptions/sub-provider/account-number")
+      .send({ accountNumber: "LAB-2603-BC-2" });
+
     expect(res.status).toBe(200);
-    expect(res.body.limit).toBe(100);
-    expect(res.body.offset).toBe(0);
-  });
-
-  it("uses default limit=50 when limit param is absent", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    expect(res.body.limit).toBe(50);
-  });
-
-  // ── Data shape ───────────────────────────────────────────────────────────
-
-  it("returns an items array", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    expect(Array.isArray(res.body.items)).toBe(true);
-  });
-
-  it("each item includes required fields", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    const item = res.body.items[0];
-    expect(item).toHaveProperty("id");
-    expect(item).toHaveProperty("subjectType");
-    expect(item).toHaveProperty("subjectName");
-    expect(item).toHaveProperty("provider");
-    expect(item).toHaveProperty("status");
-    expect(item).toHaveProperty("currentPeriodEnd");
-    expect(item).toHaveProperty("cancelAtPeriodEnd");
-    expect(item).toHaveProperty("paymentMethodOnFile");
-    expect(item).toHaveProperty("revenueCatAppUserId");
-    expect(item).toHaveProperty("stripeCustomerId");
-    expect(item).toHaveProperty("createdAt");
-  });
-
-  // ── ID masking ───────────────────────────────────────────────────────────
-
-  it("masks stripeCustomerId as first4****last4", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    const stripe = res.body.items.find((i: { provider: string }) => i.provider === "stripe");
-    expect(stripe).toBeDefined();
-    // "cus_ABCDEFGHIJ12345" → "cus_****2345"
-    expect(stripe.stripeCustomerId).toMatch(/^.{4}\*{4}.{4}$/);
-    expect(stripe.stripeCustomerId).not.toBe("cus_ABCDEFGHIJ12345");
-  });
-
-  it("masks stripeSubscriptionId as first4****last4", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    const stripe = res.body.items.find((i: { provider: string }) => i.provider === "stripe");
-    expect(stripe.stripeSubscriptionId).toMatch(/^.{4}\*{4}.{4}$/);
-    expect(stripe.stripeSubscriptionId).not.toBe("sub_ABCDEFGHIJ12345");
-  });
-
-  it("masks revenueCatAppUserId as first4****last4", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    const rc = res.body.items.find((i: { provider: string }) => i.provider === "revenuecat");
-    expect(rc).toBeDefined();
-    expect(rc.revenueCatAppUserId).toMatch(/^.{4}\*{4}.{4}$/);
-    expect(rc.revenueCatAppUserId).not.toBe("rc_ABCDEFGHIJ12345");
-  });
-
-  it("returns null for absent revenueCatAppUserId instead of masking", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    const stripe = res.body.items.find((i: { provider: string }) => i.provider === "stripe");
-    expect(stripe.revenueCatAppUserId).toBeNull();
-  });
-
-  // ── Subject-name resolution ──────────────────────────────────────────────
-
-  it("resolves lab_org subjectName from the organizations table", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    const labItem = res.body.items.find(
-      (i: { subjectType: string }) => i.subjectType === "lab_org"
+    expect(res.body.organization).toEqual({
+      id: providerOrganizationId,
+      accountNumber: "LAB-2603-BC-2",
+    });
+    expect(state.subscription.subjectId).toBe(providerOrganizationId);
+    expect(state.writeAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "provider_subscription_account_number_corrected",
+        beforeJson: expect.objectContaining({ organizationId: providerOrganizationId }),
+        afterJson: expect.objectContaining({ organizationId: providerOrganizationId }),
+      }),
     );
-    expect(labItem).toBeDefined();
-    expect(labItem.subjectName).toBe("Sunshine Dental Lab");
-    expect(labItem.subjectOrgType).toBe("lab");
   });
 
-  it("resolves provider_org subjectName from the organizations table", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
+  it("writes actor before/after subscription events and audit logs for mutations", async () => {
+    const res = await request(appFor(authenticatedCreator))
+      .patch("/api/admin/provider-subscriptions/sub-provider")
+      .send({ providerPlan: "standard", status: "grace" });
     expect(res.status).toBe(200);
-    const providerItem = res.body.items.find(
-      (i: { subjectType: string }) => i.subjectType === "provider_org"
-    );
-    expect(providerItem).toBeDefined();
-    expect(providerItem.subjectName).toBe("Smith Dental Practice");
-    expect(providerItem.subjectOrgType).toBe("provider");
+    expect(state.appendSubscriptionEvent).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "provider_subscription_updated",
+      rawPayloadJson: expect.objectContaining({ actorUserId: "creator-1", before: expect.any(Object), after: expect.any(Object) }),
+    }));
+    expect(state.writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      userId: "creator-1", beforeJson: expect.any(Object), afterJson: expect.any(Object),
+    }));
   });
 
-  it("resolves user subjectName from the users table", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    const userItem = res.body.items.find(
-      (i: { subjectType: string }) => i.subjectType === "user"
-    );
-    expect(userItem).toBeDefined();
-    expect(userItem.subjectName).toBe("Solo User");
-    expect(userItem.subjectEmail).toBe("solo@example.com");
-  });
+  it("keeps cancellation lifecycle fields coherent when status changes", async () => {
+    const app = appFor(authenticatedCreator);
+    const canceled = await request(app)
+      .patch("/api/admin/provider-subscriptions/sub-provider")
+      .send({ status: "canceled" });
+    expect(canceled.status).toBe(200);
+    expect(canceled.body.subscription).toMatchObject({
+      status: "canceled",
+      cancelAtPeriodEnd: false,
+    });
+    expect(canceled.body.subscription.canceledAt).toBeTruthy();
 
-  // ── Filters ─────────────────────────────────────────────────────────────
-
-  it("accepts valid provider filter without error", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions?provider=stripe")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-  });
-
-  it("accepts valid status filter without error", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions?status=active")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-  });
-
-  it("ignores an unknown provider filter value", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions?provider=unknown_provider")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-  });
-
-  it("ignores an unknown status filter value", async () => {
-    const res = await request(server)
-      .get("/api/admin/subscriptions?status=invalid_status")
-      .set("X-Platform-Admin-Secret", ADMIN_SECRET);
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
+    const reactivated = await request(app)
+      .patch("/api/admin/provider-subscriptions/sub-provider")
+      .send({ status: "active" });
+    expect(reactivated.status).toBe(200);
+    expect(reactivated.body.subscription).toMatchObject({
+      status: "active",
+      canceledAt: null,
+      cancelAtPeriodEnd: false,
+    });
   });
 });

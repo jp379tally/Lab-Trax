@@ -11,13 +11,13 @@ import {
 } from "../geolocation-error";
 
 describe("geolocation-error messages", () => {
-  it("maps the browser permission-denied code to an actionable message", () => {
+  it("maps the browser permission-denied code to an actionable message", async () => {
     expect(webGeolocationErrorMessage(WEB_GEO_PERMISSION_DENIED)).toBe(
       GEO_MESSAGES.permissionDenied,
     );
   });
 
-  it("distinguishes position-unavailable and timeout from permission-denied", () => {
+  it("distinguishes position-unavailable and timeout from permission-denied", async () => {
     expect(webGeolocationErrorMessage(WEB_GEO_POSITION_UNAVAILABLE)).toBe(
       GEO_MESSAGES.positionUnavailable,
     );
@@ -32,24 +32,24 @@ describe("geolocation-error messages", () => {
     ).toBe(3);
   });
 
-  it("falls back to a generic-but-actionable message for unknown codes", () => {
+  it("falls back to a generic-but-actionable message for unknown codes", async () => {
     expect(webGeolocationErrorMessage(undefined)).toBe(GEO_MESSAGES.generic);
     expect(webGeolocationErrorMessage(99)).toBe(GEO_MESSAGES.generic);
   });
 
-  it("classifies a thrown browser GeolocationPositionError (permission denied)", () => {
+  it("classifies a thrown browser GeolocationPositionError (permission denied)", async () => {
     // Simulates the object the browser rejects getCurrentPosition with.
     const denied = { code: WEB_GEO_PERMISSION_DENIED, message: "User denied" };
     expect(geolocationErrorMessage(denied)).toBe(GEO_MESSAGES.permissionDenied);
   });
 
-  it("classifies the native timeout sentinel as a timeout message", () => {
+  it("classifies the native timeout sentinel as a timeout message", async () => {
     expect(geolocationErrorMessage(new GeolocationTimeoutError())).toBe(
       GEO_MESSAGES.timeout,
     );
   });
 
-  it("classifies an unknown thrown value as the generic message", () => {
+  it("classifies an unknown thrown value as the generic message", async () => {
     expect(geolocationErrorMessage(new Error("boom"))).toBe(GEO_MESSAGES.generic);
   });
 });

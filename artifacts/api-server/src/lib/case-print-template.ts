@@ -1,10 +1,11 @@
 import { z } from "zod/v4";
+import { withImplantElements } from "@workspace/case-taxonomy";
 
 /**
  * Visual case-print-label template (advanced layout editor) — v2.
  *
  * v2 is an **element-based** model: every piece of case info (case number,
- * patient, doctor, due date, priority, restorative type, teeth, material,
+ * patient, doctor, due date, priority, step, restorative type, teeth, material,
  * shade, prescription notes, tooth chart, barcode) is its own independently
  * positionable / resizable box with Word-style typography (font family,
  * numeric font size, bold, italic, alignment). Uploaded images are elements
@@ -32,11 +33,17 @@ export const TEXT_ELEMENT_KINDS = [
   "doctor",
   "dueDate",
   "priority",
+  "step",
   "restorativeType",
   "teeth",
   "material",
   "shade",
+  "gingivialShade",
+  "implantRetention",
+  "implantManufacturer",
+  "implantPlatformNotes",
   "rxNotes",
+  "remakeNotes",
 ] as const;
 export type TextElementKind = (typeof TEXT_ELEMENT_KINDS)[number];
 
@@ -69,13 +76,15 @@ export const INVOICE_ELEMENT_KINDS = [
 ] as const;
 export type InvoiceElementKind = (typeof INVOICE_ELEMENT_KINDS)[number];
 
-// "doctorInfo", "image", and invoice kinds are opt-in elements — NOT in
+// "doctorInfo", "providerPreferences", "image", and invoice kinds are opt-in
+// elements — NOT in
 // BUILTIN_ELEMENT_KINDS so ensureBuiltinElements does not force them into
 // every template.
 export const ELEMENT_KINDS = [
   ...BUILTIN_ELEMENT_KINDS,
   "image",
   "doctorInfo",
+  "providerPreferences",
   ...INVOICE_ELEMENT_KINDS,
 ] as const;
 export type ElementKind = (typeof ELEMENT_KINDS)[number];
@@ -91,6 +100,7 @@ const elementSchema = z.object({
   w: z.number().min(10).max(PAGE_W),
   h: z.number().min(10).max(PAGE_H),
   visible: z.boolean().default(true),
+  page: z.number().int().min(1).max(2).optional(),
   // Typography (text elements). Optional so graphic/image elements omit them.
   fontFamily: z.string().min(1).max(120).optional(),
   fontSize: z.number().min(5).max(200).optional(),
@@ -112,7 +122,7 @@ const elementSchema = z.object({
 
 export const casePrintTemplateSchema = z.object({
   version: z.literal(2),
-  elements: z.array(elementSchema).max(40).default([]),
+  elements: z.array(elementSchema).max(100).default([]),
 });
 
 export type CasePrintTemplate = z.infer<typeof casePrintTemplateSchema>;
@@ -168,13 +178,19 @@ export const DEFAULT_CASE_PRINT_TEMPLATE: CasePrintTemplate = {
     textEl("doctor", 418, 120, 350, 46, 13, false),
     textEl("dueDate", 48, 176, 350, 46, 13, false),
     textEl("priority", 418, 176, 350, 46, 13, false),
+    textEl("step", 418, 334, 350, 46, 13, false),
     textEl("restorativeType", 48, 232, 350, 46, 13, false),
     textEl("teeth", 418, 232, 350, 46, 13, false),
     textEl("material", 48, 288, 350, 46, 13, false),
     textEl("shade", 418, 288, 350, 46, 13, false),
-    graphicEl("toothChart", 48, 352, 720, 300),
-    textEl("rxNotes", 48, 672, 720, 220, 12, false),
-    graphicEl("barcode", 48, 912, 720, 90),
+    { ...textEl("gingivialShade", 48, 334, 350, 46, 13, false), visible: true },
+    graphicEl("toothChart", 48, 596, 720, 160),
+    textEl("rxNotes", 48, 772, 720, 136, 12, false),
+    { ...textEl("remakeNotes", 48, 912, 720, 24, 12, false), visible: false },
+    graphicEl("barcode", 48, 940, 720, 90),
+    textEl("implantRetention", 48, 380, 720, 68, 13, false),
+    textEl("implantManufacturer", 48, 452, 720, 68, 13, false),
+    textEl("implantPlatformNotes", 48, 524, 720, 68, 13, false),
   ],
 };
 
@@ -402,11 +418,11 @@ function coerceImageElement(raw: unknown): CasePrintElement | null {
 export function coerceCasePrintTemplate(value: unknown): CasePrintTemplate {
   if (value == null) return DEFAULT_CASE_PRINT_TEMPLATE;
   const parsed = casePrintTemplateSchema.safeParse(value);
-  if (parsed.success) return parsed.data;
+  if (parsed.success) return { ...parsed.data, elements: withImplantElements(parsed.data.elements) };
   const migrated = migrateV1(value);
   if (migrated) {
     const reparsed = casePrintTemplateSchema.safeParse(migrated);
-    if (reparsed.success) return reparsed.data;
+    if (reparsed.success) return { ...reparsed.data, elements: withImplantElements(reparsed.data.elements) };
   }
   return DEFAULT_CASE_PRINT_TEMPLATE;
 }

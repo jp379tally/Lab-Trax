@@ -51,6 +51,10 @@ const Colors = {
     darkSecondary: "#1E293B",
     accent: "#0F766E",
     accentLight: "#CCFBF1",
+    casesHeader: "#0B2B55",
+    casesHeaderMuted: "#BDD3EE",
+    casesHeaderText: "#FFFFFF",
+    casesActiveTab: "#DCEBFF",
   },
   dark: {
     text: "#F1F5F9",
@@ -104,6 +108,10 @@ const Colors = {
     darkSecondary: "#E2E8F0",
     accent: "#4FD1C5",
     accentLight: "#103C3A",
+    casesHeader: "#081A31",
+    casesHeaderMuted: "#A8BED8",
+    casesHeaderText: "#FFFFFF",
+    casesActiveTab: "#193A5D",
   },
 };
 

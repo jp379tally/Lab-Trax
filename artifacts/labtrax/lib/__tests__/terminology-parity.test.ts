@@ -51,7 +51,7 @@ describe("terminology parity: mobile case stages mirror desktop", () => {
   const mobile = readFileSync(MOBILE_CASE, "utf8");
   const mobileStationsSource = readFileSync(MOBILE_STATIONS, "utf8");
 
-  it("mobile STATUS_OPTIONS equals desktop STATUS_FILTERS (minus the 'all' filter)", () => {
+  it("mobile STATUS_OPTIONS equals desktop STATUS_FILTERS (minus the 'all' filter)", async () => {
     const desktopStages = parseValueLabelArray(desktop, "STATUS_FILTERS").filter(
       (s) => s.value !== "all",
     );
@@ -64,7 +64,7 @@ describe("terminology parity: mobile case stages mirror desktop", () => {
     expect(mobileStages).toEqual(desktopStages);
   });
 
-  it("both clients surface a 'status_changed' history event with the same label", () => {
+  it("both clients surface a 'status_changed' history event with the same label", async () => {
     const desktopLabel = statusChangedLabel(desktop);
     const mobileLabel = statusChangedLabel(mobile);
     expect(desktopLabel).toBe("Location Changed");

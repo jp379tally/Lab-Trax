@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { expandToothAssignmentIdentifiers, catalogToothMaterialOptions, deriveCaseHierarchy, encodeRestorationSubtype } from "@workspace/case-taxonomy";
+import { useGetCatalogTree, getGetCatalogTreeQueryKey } from "@workspace/api-client-react";
 import {
   View,
   Text,
@@ -8,6 +10,8 @@ import {
   StyleSheet,
   ActivityIndicator,
   TextInput,
+  Alert,
+  Keyboard,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -16,6 +20,10 @@ import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import type { ToothId } from "@/lib/rx-summary";
 import { resilientFetch } from "@/lib/query-client";
+import {
+  scrollKeyboardDismissMode,
+  useDismissKeyboardOnTap,
+} from "@/components/ui/DismissKeyboardView";
 
 const DEFAULT_CROWN_MATERIALS = [
   "Zirconia",
@@ -39,14 +47,23 @@ const DEFAULT_VITA_SHADES = [
 ];
 
 export type ToothActionPayload =
+  | { kind: "change_role"; toothId: string; restorationId: string; role: "Crown" | "Pontic" }
+  | { kind: "copy_assignment"; role: "Crown" | "Pontic"; material: string; restorationSubtype?: string; shade?: string; toothNumbers: string[] }
   | {
       kind: "add_crown";
       toothId: string;
       material: string;
       restorationType: string;
+      restorationSubtype?: string;
       shade?: string;
     }
-  | { kind: "add_pontic"; toothId: string }
+  | {
+      kind: "add_pontic";
+      toothId: string;
+      material: string;
+      restorationSubtype?: string;
+      shade?: string;
+    }
   | { kind: "mark_missing"; toothId: string }
   | { kind: "remove_restoration"; toothId: string; restorationId?: string }
   | {
@@ -54,6 +71,7 @@ export type ToothActionPayload =
       toothId: string;
       restorationId: string;
       material: string;
+      restorationSubtype?: string;
       shade?: string;
     };
 
@@ -66,17 +84,32 @@ type Step =
   | "change_shade";
 
 interface Props {
+  allowMarkMissing?: boolean;
   toothId: ToothId | null;
   /** Human-readable description(s) of any restoration already on this tooth. */
   existingLabel?: string | null;
   /** ID of the restoration on this tooth targeted by Change/Remove actions. */
   existingRestorationId?: string | null;
+  existingAssignment?: { toothNumber?: string | null; restorationType?: string | null; material?: string | null; shade?: string | null; restorationSubtype?: string | null };
+  groupLabel?: string;
   submitting?: boolean;
   error?: string | null;
   onClose: () => void;
   onConfirm: (payload: ToothActionPayload) => void;
   /** Lab-specific vocabulary for materials (merged with built-in defaults). */
   vocabularyMaterials?: string[];
+  /** Effective catalog materials with their encoded subtype hierarchy. */
+  catalogMaterials?: Array<{
+    label: string;
+    restorationSubtype: string;
+    isCustom?: boolean;
+  }>;
+  /** Effective restorative subtype choices for the tooth wizard. */
+  catalogTypes?: Array<{
+    label: string;
+    restorationSubtype: string;
+    materials: Array<{ label: string; restorationSubtype: string }>;
+  }>;
   /** Lab-specific vocabulary for shades (merged with built-in defaults). */
   vocabularyShades?: string[];
   /** Lab org ID — enables saving new custom materials/shades to the lab's vocabulary. */
@@ -93,13 +126,18 @@ interface Props {
  */
 export function ToothActionSheet({
   toothId,
+  allowMarkMissing = true,
   existingLabel,
   existingRestorationId,
+  existingAssignment,
+  groupLabel,
   submitting = false,
   error,
   onClose,
   onConfirm,
   vocabularyMaterials,
+  catalogMaterials: providedCatalogMaterials,
+  catalogTypes: providedCatalogTypes,
   vocabularyShades,
   labOrganizationId,
 }: Props) {
@@ -107,9 +145,26 @@ export function ToothActionSheet({
   const insets = useSafeAreaInsets();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const qc = useQueryClient();
+  const dismissKeyboardOnSheetTap = useDismissKeyboardOnTap();
+  const toothCatalog = useGetCatalogTree(
+    { labOrganizationId: labOrganizationId ?? "" },
+    { query: { queryKey: getGetCatalogTreeQueryKey({ labOrganizationId: labOrganizationId ?? "" }), enabled: !!labOrganizationId && !!toothId } },
+  );
+  const loadedMaterials = useMemo(() => toothCatalog.data?.data
+    ? catalogToothMaterialOptions(toothCatalog.data.data) : [], [toothCatalog.data]);
+  const catalogMaterials = providedCatalogMaterials?.length ? providedCatalogMaterials : loadedMaterials;
+  const catalogTypes = providedCatalogTypes?.length ? providedCatalogTypes :
+    [...new Set(loadedMaterials.filter((material) => material.parentIsCustom).map((material) => material.parentSubtype))]
+      .map((subtype) => ({
+        label: loadedMaterials.find((material) => material.parentSubtype === subtype)!.parentLabel,
+        restorationSubtype: subtype,
+        materials: loadedMaterials.filter((material) => material.parentSubtype === subtype),
+      }));
 
   const [step, setStep] = useState<Step>("choose_kind");
   const [material, setMaterial] = useState("");
+  const [restorationType, setRestorationType] = useState("Crown");
+  const [selectedRole, setSelectedRole] = useState<"crown" | "pontic">("crown");
   const [shade, setShade] = useState("");
   const [customShade, setCustomShade] = useState("");
   const [isCustomShade, setIsCustomShade] = useState(false);
@@ -125,18 +180,31 @@ export function ToothActionSheet({
   const [newShadeText, setNewShadeText] = useState("");
   const [addingShadePending, setAddingShadePending] = useState(false);
   const [addShadeError, setAddShadeError] = useState<string | null>(null);
+  const [copyTargets, setCopyTargets] = useState("");
+  const [pendingRole, setPendingRole] = useState<"Crown" | "Pontic" | null>(null);
+  const [draftUndo, setDraftUndo] = useState<{
+    step: Step; role: "crown" | "pontic"; material: string; shade: string;
+    copyTargets: string; pendingRole: "Crown" | "Pontic" | null;
+  } | null>(null);
+  function captureDraftUndo() {
+    setDraftUndo({ step, role: selectedRole, material, shade, copyTargets, pendingRole });
+  }
 
   // Merge lab vocabulary with built-in defaults, deduping case-insensitively.
   const mergedMaterials = useMemo(() => {
     const base = [...DEFAULT_CROWN_MATERIALS];
-    if (vocabularyMaterials) {
+    const additional = [
+      ...(vocabularyMaterials ?? []),
+      ...(catalogMaterials ?? []).map((m) => m.label),
+    ];
+    if (additional.length > 0) {
       const baseLower = new Set(base.map((m) => m.toLowerCase()));
-      for (const m of vocabularyMaterials) {
+      for (const m of additional) {
         if (!baseLower.has(m.toLowerCase())) base.push(m);
       }
     }
-    return base;
-  }, [vocabularyMaterials]);
+    return [...new Set(base)];
+  }, [catalogMaterials, vocabularyMaterials]);
 
   const mergedShades = useMemo(() => {
     const base = [...DEFAULT_VITA_SHADES];
@@ -151,6 +219,8 @@ export function ToothActionSheet({
 
   function resetWizard() {
     setMaterial("");
+    setRestorationType("Crown");
+    setSelectedRole("crown");
     setShade("");
     setCustomShade("");
     setIsCustomShade(false);
@@ -173,6 +243,9 @@ export function ToothActionSheet({
   useEffect(() => {
     if (toothId !== null) {
       setStep(existingLabel ? "choose_action" : "choose_kind");
+      setDraftUndo(null);
+      setPendingRole(null);
+      setCopyTargets("");
       resetWizard();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -193,17 +266,19 @@ export function ToothActionSheet({
   }
 
   function handleKind(kind: "crown" | "pontic" | "missing") {
+    captureDraftUndo();
     if (!toothId) return;
-    if (kind === "crown") {
+    if (kind === "crown" || kind === "pontic") {
+      setSelectedRole(kind);
+      setRestorationType("Crown");
       setStep("choose_material");
-    } else if (kind === "pontic") {
-      onConfirm({ kind: "add_pontic", toothId });
     } else {
       onConfirm({ kind: "mark_missing", toothId });
     }
   }
 
   function handleMaterialNext() {
+    captureDraftUndo();
     if (!material) return;
     setShade("");
     setCustomShade("");
@@ -214,13 +289,29 @@ export function ToothActionSheet({
 
   function handleShadeConfirm(withShade: boolean) {
     if (!toothId) return;
-    onConfirm({
-      kind: "add_crown",
+    const catalogMaterial = catalogMaterials?.find(
+      (entry) => entry.label.toLowerCase() === material.toLowerCase() &&
+        (!catalogTypes.find((type) => type.label === restorationType) ||
+          entry.restorationSubtype.startsWith(catalogTypes.find((type) => type.label === restorationType)!.restorationSubtype)),
+    );
+    const catalogType = catalogTypes.find(
+      (entry) => entry.label.toLowerCase() === restorationType.toLowerCase(),
+    );
+    const details = {
       toothId,
       material,
-      restorationType: "Crown",
+      ...(catalogMaterial
+        ? { restorationSubtype: catalogMaterial.restorationSubtype }
+        : catalogType?.restorationSubtype
+          ? { restorationSubtype: catalogType.restorationSubtype }
+          : {}),
       shade: withShade ? resolvedShade() : undefined,
-    });
+    };
+    if (selectedRole === "pontic") {
+      onConfirm({ kind: "add_pontic", ...details });
+    } else {
+      onConfirm({ kind: "add_crown", ...details, restorationType });
+    }
   }
 
   function handleChangeMaterialNext() {
@@ -234,11 +325,22 @@ export function ToothActionSheet({
 
   function handleChangeShadeConfirm(withShade: boolean) {
     if (!toothId || !existingRestorationId) return;
+    const parent = existingAssignment?.restorationSubtype?.split("/").slice(0, 2).join("/") ?? "restorative/crown";
+    const selected = catalogMaterials?.find((entry) => entry.label.toLowerCase() === material.toLowerCase() &&
+      entry.restorationSubtype?.startsWith(`${parent}/`));
+    const previous = deriveCaseHierarchy("Crown", existingAssignment?.restorationSubtype, existingAssignment?.material);
+    const replacement = deriveCaseHierarchy("Crown", undefined, material);
+    const subtype = selected?.restorationSubtype ??
+      (material === existingAssignment?.material ? existingAssignment?.restorationSubtype :
+        encodeRestorationSubtype({ ...previous,
+          materialSubtype: previous.customSubtypeId ? null : replacement.materialSubtype,
+          customMaterialSubtypeId: undefined }));
     onConfirm({
       kind: "change_restoration",
       toothId,
       restorationId: existingRestorationId,
       material,
+      ...(subtype ? { restorationSubtype: subtype } : {}),
       shade: withShade ? resolvedShade() : undefined,
     });
   }
@@ -368,7 +470,7 @@ export function ToothActionSheet({
       <Pressable style={styles.backdrop} onPress={submitting ? undefined : onClose}>
         <Pressable
           style={[styles.sheet, { paddingBottom: insets.bottom + Spacing.md }]}
-          onPress={() => undefined}
+          onPress={dismissKeyboardOnSheetTap}
         >
           <View style={styles.grabber} />
 
@@ -395,13 +497,66 @@ export function ToothActionSheet({
             style={styles.body}
             contentContainerStyle={styles.bodyContent}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={scrollKeyboardDismissMode}
           >
             {/* choose_action — tooth already has a restoration */}
-            {step === "choose_action" && (
+            {step === "choose_action" && existingAssignment?.toothNumber && expandToothAssignmentIdentifiers(existingAssignment.toothNumber).length > 1 && (
+              <View>
+                <Text style={styles.prompt}>Review legacy restoration: this row covers teeth {existingAssignment.toothNumber}. Individual roles are unconfirmed. Remove the entire row before assigning these teeth individually.</Text>
+                <Pressable accessibilityRole="button" disabled={submitting} style={{ minHeight: 44, justifyContent: "center" }}
+                  onPress={() => toothId && onConfirm({ kind: "remove_restoration", toothId, restorationId: existingRestorationId ?? undefined })}>
+                  <Text style={{ color: colors.tint }}>Remove entire row ({existingAssignment.toothNumber})</Text>
+                </Pressable>
+              </View>
+            )}
+            {step === "choose_action" && (!existingAssignment?.toothNumber || expandToothAssignmentIdentifiers(existingAssignment.toothNumber).length <= 1) && (
               <>
                 <Text style={styles.prompt}>
                   Tooth {toothId} already has {existingLabel}.
                 </Text>
+                <Text style={{ color: colors.textSecondary, fontSize: 13 }}>{groupLabel ? `Connected group: ${groupLabel}` : "Not connected to another assigned unit."}</Text>
+                <Text style={{ color: colors.textSecondary, fontSize: 13 }}>
+                  {existingAssignment?.material || "Material needs review"} · Shade: {existingAssignment?.shade || "Not specified"}
+                </Text>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  {(["Crown", "Pontic"] as const).map((role) => (
+                    <Pressable key={role} accessibilityRole="button"
+                      accessibilityState={{ selected: pendingRole === role }}
+                      onPress={() => { captureDraftUndo(); setPendingRole(role); }}
+                      style={{ minHeight: 44, padding: 12, borderWidth: 1, borderColor: pendingRole === role ? colors.tint : colors.border, borderRadius: 8 }}>
+                      <Text style={{ color: colors.text }}>{role === "Crown" ? "Prepared crown" : "Pontic"}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <Pressable accessibilityRole="button" disabled={!pendingRole || !existingRestorationId || submitting}
+                  onPress={() => {
+                    if (pendingRole && existingRestorationId && toothId) onConfirm({ kind: "change_role", role: pendingRole, restorationId: existingRestorationId, toothId });
+                  }} style={{ minHeight: 44, justifyContent: "center" }}>
+                  <Text style={{ color: colors.tint, opacity: pendingRole ? 1 : 0.4 }}>Save role</Text>
+                </Pressable>
+                <TextInput accessibilityLabel="Copy assignment to teeth" placeholder="Copy to teeth, e.g. 6-8"
+                  value={copyTargets} onChangeText={(value) => { captureDraftUndo(); setCopyTargets(value); }}
+                  returnKeyType="done" onSubmitEditing={() => Keyboard.dismiss()}
+                  style={{ color: colors.text, borderColor: colors.border, borderWidth: 1, minHeight: 44, paddingHorizontal: 12, borderRadius: 8 }} />
+                <Pressable accessibilityRole="button" disabled={submitting || !copyTargets.trim()}
+                  onPress={() => {
+                    const teeth = expandToothAssignmentIdentifiers(copyTargets).filter((target) => target !== toothId);
+                    const role = /^crown$/i.test(existingAssignment?.restorationType ?? "") ? "Crown"
+                      : /^pontic$/i.test(existingAssignment?.restorationType ?? "") ? "Pontic" : null;
+                    if (!role || !existingAssignment?.material?.trim() || !teeth.length ||
+                        teeth.some((tooth) => !/^\d+$/.test(tooth) || (Number(tooth) <= 16) !== (Number(teeth[0]) <= 16))) {
+                      Alert.alert("Review copy", "Choose an explicit assigned crown or pontic with a material, and target teeth from one arch.");
+                      return;
+                    }
+                    onConfirm({
+                      kind: "copy_assignment", role, toothNumbers: teeth,
+                      material: existingAssignment.material,
+                      ...(existingAssignment.restorationSubtype ? { restorationSubtype: existingAssignment.restorationSubtype } : {}),
+                      ...(existingAssignment.shade ? { shade: existingAssignment.shade } : {}),
+                    });
+                  }} style={{ minHeight: 44, justifyContent: "center" }}>
+                  <Text style={{ color: colors.tint }}>Apply copied values to teeth</Text>
+                </Pressable>
                 <View style={styles.kindGrid}>
                   <Pressable
                     style={({ pressed }) => [styles.kindCard, pressed && styles.cardPressed]}
@@ -456,6 +611,17 @@ export function ToothActionSheet({
               </>
             )}
 
+            {draftUndo && (
+              <Pressable accessibilityRole="button" disabled={submitting}
+                onPress={() => {
+                  setStep(draftUndo.step); setSelectedRole(draftUndo.role);
+                  setMaterial(draftUndo.material); setShade(draftUndo.shade);
+                  setCopyTargets(draftUndo.copyTargets); setPendingRole(draftUndo.pendingRole);
+                  setDraftUndo(null);
+                }} style={{ minHeight: 44, justifyContent: "center" }}>
+                <Text style={{ color: colors.tint }}>Undo unsaved tooth edit</Text>
+              </Pressable>
+            )}
             {/* choose_kind — add a new restoration (alongside or on empty tooth) */}
             {step === "choose_kind" && (
               <>
@@ -469,7 +635,7 @@ export function ToothActionSheet({
                     { kind: "crown" as const, icon: "👑", label: "Crown / Restoration", desc: "Adds a billed line item" },
                     { kind: "pontic" as const, icon: "🔗", label: "Pontic", desc: "Bridge unit" },
                     { kind: "missing" as const, icon: "✕", label: "Missing", desc: "Visual only, no invoice" },
-                  ]).map((opt) => (
+                  ]).filter((opt) => allowMarkMissing || opt.kind !== "missing").map((opt) => (
                     <Pressable
                       key={opt.kind}
                       style={({ pressed }) => [styles.kindCard, pressed && styles.cardPressed]}
@@ -489,7 +655,46 @@ export function ToothActionSheet({
             {/* choose_material — add new crown path */}
             {step === "choose_material" && (
               <>
-                <Text style={styles.prompt}>Select a material for the crown on tooth {toothId}:</Text>
+                <Text style={styles.prompt}>Select a material for the {selectedRole === "pontic" ? "pontic" : "crown"} on tooth {toothId}:</Text>
+                {catalogTypes.length > 0 ? (
+                  <View style={styles.optionWrap}>
+                    {[
+                      { label: "Crown", restorationSubtype: "", materials: [] },
+                      ...catalogTypes,
+                    ]
+                      .filter((entry, index, entries) =>
+                        entries.findIndex(
+                          (candidate) =>
+                            candidate.label.toLowerCase() === entry.label.toLowerCase(),
+                        ) === index,
+                      )
+                      .map((entry) => (
+                        <Pressable
+                          key={entry.label}
+                          style={[
+                            styles.optionChip,
+                            restorationType.toLowerCase() === entry.label.toLowerCase() &&
+                              styles.optionChipOn,
+                          ]}
+                          onPress={() => {
+                            setRestorationType(entry.label);
+                            setMaterial("");
+                          }}
+                          disabled={submitting || addingMaterialPending}
+                        >
+                          <Text
+                            style={[
+                              styles.optionText,
+                              restorationType.toLowerCase() === entry.label.toLowerCase() &&
+                                styles.optionTextOn,
+                            ]}
+                          >
+                            {entry.label}
+                          </Text>
+                        </Pressable>
+                      ))}
+                  </View>
+                ) : null}
                 {renderMaterialChips(mergedMaterials, "tooth-material", setMaterial)}
                 {isAddingNewMaterial && (
                   <AddNewInput

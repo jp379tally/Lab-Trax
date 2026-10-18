@@ -30,12 +30,12 @@ afterEach(() => {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-function renderSheet(
+async function renderSheet(
   overrides: Partial<React.ComponentProps<typeof ToothActionSheet>> = {},
 ) {
   const onClose = vi.fn();
   const onConfirm = vi.fn();
-  const utils = render(
+  const utils = await render(
     <ToothActionSheet
       toothId="14"
       onClose={onClose}
@@ -49,41 +49,41 @@ function renderSheet(
 // ─── Crown wizard ─────────────────────────────────────────────────────────────
 
 describe("ToothActionSheet — crown wizard", () => {
-  it("renders the kind-selection step initially", () => {
-    const { getByTestId } = renderSheet();
+  it("renders the kind-selection step initially", async () => {
+    const { getByTestId } = await renderSheet();
     expect(getByTestId("tooth-kind-crown")).toBeTruthy();
     expect(getByTestId("tooth-kind-pontic")).toBeTruthy();
     expect(getByTestId("tooth-kind-missing")).toBeTruthy();
   });
 
-  it("advances to the material step when Crown is chosen", () => {
-    const { getByTestId, queryByTestId } = renderSheet();
-    fireEvent.press(getByTestId("tooth-kind-crown"));
+  it("advances to the material step when Crown is chosen", async () => {
+    const { getByTestId, queryByTestId } = await renderSheet();
+    await fireEvent.press(getByTestId("tooth-kind-crown"));
     // Kind cards must be gone; at least one material chip must be visible.
     expect(queryByTestId("tooth-kind-crown")).toBeNull();
     expect(getByTestId("tooth-material-Zirconia")).toBeTruthy();
   });
 
-  it("keeps the Next button disabled until a material is selected", () => {
-    const { getByTestId } = renderSheet();
-    fireEvent.press(getByTestId("tooth-kind-crown"));
+  it("keeps the Next button disabled until a material is selected", async () => {
+    const { getByTestId } = await renderSheet();
+    await fireEvent.press(getByTestId("tooth-kind-crown"));
     const nextBtn = getByTestId("tooth-material-next");
     // The button is rendered but marked disabled (prop check).
     expect(nextBtn.props.disabled).toBe(true);
   });
 
-  it("enables the Next button once a material is selected", () => {
-    const { getByTestId } = renderSheet();
-    fireEvent.press(getByTestId("tooth-kind-crown"));
-    fireEvent.press(getByTestId("tooth-material-Zirconia"));
+  it("enables the Next button once a material is selected", async () => {
+    const { getByTestId } = await renderSheet();
+    await fireEvent.press(getByTestId("tooth-kind-crown"));
+    await fireEvent.press(getByTestId("tooth-material-Zirconia"));
     expect(getByTestId("tooth-material-next").props.disabled).toBe(false);
   });
 
-  it("advances to the shade step after selecting material and pressing Next", () => {
-    const { getByTestId, queryByTestId } = renderSheet();
-    fireEvent.press(getByTestId("tooth-kind-crown"));
-    fireEvent.press(getByTestId("tooth-material-Lithium Disilicate (Emax)"));
-    fireEvent.press(getByTestId("tooth-material-next"));
+  it("advances to the shade step after selecting material and pressing Next", async () => {
+    const { getByTestId, queryByTestId } = await renderSheet();
+    await fireEvent.press(getByTestId("tooth-kind-crown"));
+    await fireEvent.press(getByTestId("tooth-material-Lithium Disilicate (Emax)"));
+    await fireEvent.press(getByTestId("tooth-material-next"));
     // Material chips gone; shade chips present.
     expect(queryByTestId("tooth-material-next")).toBeNull();
     expect(getByTestId("tooth-shade-A1")).toBeTruthy();
@@ -91,15 +91,15 @@ describe("ToothActionSheet — crown wizard", () => {
     expect(getByTestId("tooth-shade-confirm")).toBeTruthy();
   });
 
-  it("emits the correct ToothActionPayload for crown + material + shade on Confirm", () => {
-    const { getByTestId, onConfirm } = renderSheet();
+  it("emits the correct ToothActionPayload for crown + material + shade on Confirm", async () => {
+    const { getByTestId, onConfirm } = await renderSheet();
 
     // kind → material → shade → confirm
-    fireEvent.press(getByTestId("tooth-kind-crown"));
-    fireEvent.press(getByTestId("tooth-material-Zirconia"));
-    fireEvent.press(getByTestId("tooth-material-next"));
-    fireEvent.press(getByTestId("tooth-shade-A2"));
-    fireEvent.press(getByTestId("tooth-shade-confirm"));
+    await fireEvent.press(getByTestId("tooth-kind-crown"));
+    await fireEvent.press(getByTestId("tooth-material-Zirconia"));
+    await fireEvent.press(getByTestId("tooth-material-next"));
+    await fireEvent.press(getByTestId("tooth-shade-A2"));
+    await fireEvent.press(getByTestId("tooth-shade-confirm"));
 
     expect(onConfirm).toHaveBeenCalledOnce();
     const payload = onConfirm.mock.calls[0][0] as ToothActionPayload;
@@ -112,13 +112,13 @@ describe("ToothActionSheet — crown wizard", () => {
     });
   });
 
-  it("emits a payload without shade when Skip is pressed", () => {
-    const { getByTestId, onConfirm } = renderSheet();
+  it("emits a payload without shade when Skip is pressed", async () => {
+    const { getByTestId, onConfirm } = await renderSheet();
 
-    fireEvent.press(getByTestId("tooth-kind-crown"));
-    fireEvent.press(getByTestId("tooth-material-PFM"));
-    fireEvent.press(getByTestId("tooth-material-next"));
-    fireEvent.press(getByTestId("tooth-shade-skip"));
+    await fireEvent.press(getByTestId("tooth-kind-crown"));
+    await fireEvent.press(getByTestId("tooth-material-PFM"));
+    await fireEvent.press(getByTestId("tooth-material-next"));
+    await fireEvent.press(getByTestId("tooth-shade-skip"));
 
     expect(onConfirm).toHaveBeenCalledOnce();
     const payload = onConfirm.mock.calls[0][0] as ToothActionPayload;
@@ -126,69 +126,71 @@ describe("ToothActionSheet — crown wizard", () => {
     expect((payload as Extract<ToothActionPayload, { kind: "add_crown" }>).shade).toBeUndefined();
   });
 
-  it("keeps Confirm disabled when no shade chip is selected", () => {
-    const { getByTestId } = renderSheet();
-    fireEvent.press(getByTestId("tooth-kind-crown"));
-    fireEvent.press(getByTestId("tooth-material-Zirconia"));
-    fireEvent.press(getByTestId("tooth-material-next"));
+  it("keeps Confirm disabled when no shade chip is selected", async () => {
+    const { getByTestId } = await renderSheet();
+    await fireEvent.press(getByTestId("tooth-kind-crown"));
+    await fireEvent.press(getByTestId("tooth-material-Zirconia"));
+    await fireEvent.press(getByTestId("tooth-material-next"));
     expect(getByTestId("tooth-shade-confirm").props.disabled).toBe(true);
   });
 
-  it("navigates back from shade to material via the back button", () => {
-    const { getByTestId, queryByTestId } = renderSheet();
-    fireEvent.press(getByTestId("tooth-kind-crown"));
-    fireEvent.press(getByTestId("tooth-material-Zirconia"));
-    fireEvent.press(getByTestId("tooth-material-next"));
+  it("navigates back from shade to material via the back button", async () => {
+    const { getByTestId, queryByTestId } = await renderSheet();
+    await fireEvent.press(getByTestId("tooth-kind-crown"));
+    await fireEvent.press(getByTestId("tooth-material-Zirconia"));
+    await fireEvent.press(getByTestId("tooth-material-next"));
     // We are on shade step — back button is present.
-    fireEvent.press(getByTestId("tooth-action-back"));
+    await fireEvent.press(getByTestId("tooth-action-back"));
     // Shade controls gone; material chips back.
     expect(queryByTestId("tooth-shade-confirm")).toBeNull();
     expect(getByTestId("tooth-material-Zirconia")).toBeTruthy();
   });
 
-  it("supports a custom 'Other' shade entered via text input", () => {
-    const { getByTestId, onConfirm } = renderSheet();
+  it("supports a custom 'Other' shade entered via text input", async () => {
+    const { getByTestId, onConfirm } = await renderSheet();
 
-    fireEvent.press(getByTestId("tooth-kind-crown"));
-    fireEvent.press(getByTestId("tooth-material-Zirconia"));
-    fireEvent.press(getByTestId("tooth-material-next"));
-    fireEvent.press(getByTestId("tooth-shade-other"));
-    fireEvent.changeText(getByTestId("tooth-shade-custom"), "Vita 3L");
-    fireEvent.press(getByTestId("tooth-shade-confirm"));
+    await fireEvent.press(getByTestId("tooth-kind-crown"));
+    await fireEvent.press(getByTestId("tooth-material-Zirconia"));
+    await fireEvent.press(getByTestId("tooth-material-next"));
+    await fireEvent.press(getByTestId("tooth-shade-other"));
+    await fireEvent.changeText(getByTestId("tooth-shade-custom"), "Vita 3L");
+    await fireEvent.press(getByTestId("tooth-shade-confirm"));
 
     expect(onConfirm).toHaveBeenCalledOnce();
     const payload = onConfirm.mock.calls[0][0] as Extract<ToothActionPayload, { kind: "add_crown" }>;
     expect(payload.shade).toBe("Vita 3L");
   });
 
-  it("keeps Confirm disabled when 'Other' is selected but the text input is empty", () => {
-    const { getByTestId } = renderSheet();
-    fireEvent.press(getByTestId("tooth-kind-crown"));
-    fireEvent.press(getByTestId("tooth-material-Zirconia"));
-    fireEvent.press(getByTestId("tooth-material-next"));
-    fireEvent.press(getByTestId("tooth-shade-other"));
+  it("keeps Confirm disabled when 'Other' is selected but the text input is empty", async () => {
+    const { getByTestId } = await renderSheet();
+    await fireEvent.press(getByTestId("tooth-kind-crown"));
+    await fireEvent.press(getByTestId("tooth-material-Zirconia"));
+    await fireEvent.press(getByTestId("tooth-material-next"));
+    await fireEvent.press(getByTestId("tooth-shade-other"));
     // text input is empty — confirm must remain disabled
     expect(getByTestId("tooth-shade-confirm").props.disabled).toBe(true);
   });
 });
 
-// ─── Pontic / missing fast-paths ─────────────────────────────────────────────
+// ─── Pontic material selection / missing fast-paths ──────────────────────────
 
-describe("ToothActionSheet — pontic / missing fast-paths", () => {
-  it("emits an add_pontic payload immediately when Pontic is chosen", () => {
-    const { getByTestId, onConfirm } = renderSheet();
-    fireEvent.press(getByTestId("tooth-kind-pontic"));
+describe("ToothActionSheet — pontic material selection / missing", () => {
+  it("requires an explicit material for a pontic before adding the unit", async () => {
+    const { getByTestId, onConfirm } = await renderSheet();
+    await fireEvent.press(getByTestId("tooth-kind-pontic"));
+    expect(onConfirm).not.toHaveBeenCalled();
+    await fireEvent.press(getByTestId("tooth-material-Zirconia"));
+    await fireEvent.press(getByTestId("tooth-material-next"));
+    await fireEvent.press(getByTestId("tooth-shade-skip"));
 
     expect(onConfirm).toHaveBeenCalledOnce();
-    expect(onConfirm.mock.calls[0][0]).toEqual<ToothActionPayload>({
-      kind: "add_pontic",
-      toothId: "14",
-    });
+    const payload = onConfirm.mock.calls[0][0] as Extract<ToothActionPayload, { kind: "add_pontic" }>;
+    expect(payload).toMatchObject({ kind: "add_pontic", toothId: "14", material: "Zirconia" });
   });
 
-  it("emits a mark_missing payload immediately when Missing is chosen", () => {
-    const { getByTestId, onConfirm } = renderSheet();
-    fireEvent.press(getByTestId("tooth-kind-missing"));
+  it("emits a mark_missing payload immediately when Missing is chosen", async () => {
+    const { getByTestId, onConfirm } = await renderSheet();
+    await fireEvent.press(getByTestId("tooth-kind-missing"));
 
     expect(onConfirm).toHaveBeenCalledOnce();
     expect(onConfirm.mock.calls[0][0]).toEqual<ToothActionPayload>({
@@ -197,9 +199,9 @@ describe("ToothActionSheet — pontic / missing fast-paths", () => {
     });
   });
 
-  it("does not call onConfirm when toothId is null", () => {
-    const { getByTestId, onConfirm } = renderSheet({ toothId: null });
-    fireEvent.press(getByTestId("tooth-kind-pontic"));
+  it("does not call onConfirm when toothId is null", async () => {
+    const { getByTestId, onConfirm } = await renderSheet({ toothId: null });
+    await fireEvent.press(getByTestId("tooth-kind-pontic"));
     expect(onConfirm).not.toHaveBeenCalled();
   });
 });
@@ -207,9 +209,9 @@ describe("ToothActionSheet — pontic / missing fast-paths", () => {
 // ─── Close / reset ────────────────────────────────────────────────────────────
 
 describe("ToothActionSheet — close", () => {
-  it("calls onClose when the X button is pressed", () => {
-    const { getByTestId, onClose } = renderSheet();
-    fireEvent.press(getByTestId("tooth-action-close"));
+  it("calls onClose when the X button is pressed", async () => {
+    const { getByTestId, onClose } = await renderSheet();
+    await fireEvent.press(getByTestId("tooth-action-close"));
     expect(onClose).toHaveBeenCalledOnce();
   });
 });
@@ -217,13 +219,13 @@ describe("ToothActionSheet — close", () => {
 // ─── Error banner ─────────────────────────────────────────────────────────────
 
 describe("ToothActionSheet — error banner", () => {
-  it("renders the error message when the error prop is provided", () => {
-    const { getByText } = renderSheet({ error: "Server returned 500" });
+  it("renders the error message when the error prop is provided", async () => {
+    const { getByText } = await renderSheet({ error: "Server returned 500" });
     expect(getByText("Server returned 500")).toBeTruthy();
   });
 
-  it("renders nothing for the error banner when error is null", () => {
-    const { queryByText } = renderSheet({ error: null });
+  it("renders nothing for the error banner when error is null", async () => {
+    const { queryByText } = await renderSheet({ error: null });
     expect(queryByText(/Server|error/i)).toBeNull();
   });
 });
@@ -231,13 +233,13 @@ describe("ToothActionSheet — error banner", () => {
 // ─── Existing-label prompt ────────────────────────────────────────────────────
 
 describe("ToothActionSheet — existing restoration label", () => {
-  it("shows the existing label in the prompt when provided", () => {
-    const { getByText } = renderSheet({ existingLabel: "Crown" });
+  it("shows the existing label in the prompt when provided", async () => {
+    const { getByText } = await renderSheet({ existingLabel: "Crown" });
     expect(getByText(/already has Crown/i)).toBeTruthy();
   });
 
-  it("shows the generic prompt when no existing label is present", () => {
-    const { getByText } = renderSheet({ existingLabel: null });
+  it("shows the generic prompt when no existing label is present", async () => {
+    const { getByText } = await renderSheet({ existingLabel: null });
     expect(getByText(/What are you adding to tooth 14/i)).toBeTruthy();
   });
 });

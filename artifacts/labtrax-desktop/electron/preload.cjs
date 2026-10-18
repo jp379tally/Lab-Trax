@@ -46,8 +46,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     // bearer token. The main process only attaches the token to the LabTrax
     // API origin, so third-party URLs are rejected. Returns
     // { ok, status, mimeType, buffer } or { ok:false, status, error }.
-    fetchAuthenticated: (url) =>
-      ipcRenderer.invoke("media:fetch-authenticated", url),
+    fetchAuthenticated: (url, headers) =>
+      ipcRenderer.invoke("media:fetch-authenticated", { url, headers }),
   },
   previewFile: (buffer, mimeType, fileKey, filename) =>
     ipcRenderer.invoke("preview:open-file", buffer, mimeType, fileKey, filename),
@@ -56,6 +56,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   showFolderDialog: () => ipcRenderer.invoke("dialog:show-folder"),
   saveBackupToFolder: (buffer, fileName, folderPath) =>
     ipcRenderer.invoke("backup:save-to-folder", { buffer, fileName, folderPath }),
+  downloadBackupToFolder: (request) => ipcRenderer.invoke("backup:download-to-folder", request),
+  onBackupRunId: (callback) => {
+    const listener = (_event, runId) => callback(runId);
+    ipcRenderer.on("backup:run-id", listener);
+    return () => ipcRenderer.removeListener("backup:run-id", listener);
+  },
   showOpenDialog: (opts) => ipcRenderer.invoke("dialog:showOpenDialog", opts),
   readLocalFile: (filePath) => ipcRenderer.invoke("dialog:read-file", filePath),
   itero: {

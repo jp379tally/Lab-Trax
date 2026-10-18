@@ -91,6 +91,7 @@ describe("POST /api/send-phone-code", () => {
     process.env["JWT_SECRET"] =
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-send-phone-code";
     const appMod = await import("../app.js");
+    await (await import("./index.js")).labtraxRoutesReady;
     app = appMod.default;
   });
 

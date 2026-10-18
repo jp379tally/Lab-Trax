@@ -1,4 +1,5 @@
 import React from "react";
+import { Alert } from "react-native";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react-native";
 import {
@@ -55,25 +56,48 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function renderEditor() {
+async function renderEditor() {
   setMockSearchParams({ id: invoiceWithSubItems.id });
   setMockAppState({ invoices: [invoiceWithSubItems] });
-  return render(<InvoiceEditorScreen />);
+  return await render(<InvoiceEditorScreen />);
 }
 
 describe("InvoiceEditorScreen (full-screen editor, desktop parity)", () => {
-  it("renders without throwing and surfaces carried-through sub-items", () => {
-    const { getByText } = renderEditor();
+  it("shows ambiguous legacy charge review guidance and acknowledges it with an explicit save", async () => {
+    setMockSearchParams({ id: invoiceWithSubItems.id });
+    setMockAppState({ invoices: [{
+      ...invoiceWithSubItems,
+      displayMetadata: {
+        ...invoiceWithSubItems.displayMetadata,
+        legacyChargesNeedsReview: true,
+        reviewedCharges: true,
+        reviewedChargesNeedsReview: true,
+      },
+    }] });
+    const { getByTestId } = await render(<InvoiceEditorScreen />);
+    expect(getByTestId("invoice-editor-legacy-review-warning")).toBeTruthy();
+    expect(mockUpdateInvoiceMutateAsync).not.toHaveBeenCalled();
+    await fireEvent.press(getByTestId("invoice-editor-save"));
+    await waitFor(() => expect(mockUpdateInvoiceMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({
+        displayMetadata: expect.objectContaining({
+          reviewedCharges: true, reviewedChargesNeedsReview: false, legacyChargesNeedsReview: false,
+        }),
+      }) }),
+    ));
+  });
+  it("renders without throwing and surfaces carried-through sub-items", async () => {
+    const { getByText } = await renderEditor();
     expect(getByText(/1 sub-item \(edit on desktop\)/)).toBeTruthy();
   });
 
   it("saves the hydrated fields untouched, round-tripping displayMetadata + sub-items", async () => {
-    const { getByTestId } = renderEditor();
+    const { getByTestId } = await renderEditor();
 
     // Save immediately, without editing anything: this proves the prefill flows
     // straight into the payload (invoiceNumber/status/teeth/shade) and that the
     // sub-items and non-edited metadata are preserved verbatim.
-    fireEvent.press(getByTestId("invoice-editor-save"));
+    await fireEvent.press(getByTestId("invoice-editor-save"));
 
     await waitFor(() =>
       expect(mockUpdateInvoiceMutateAsync).toHaveBeenCalledWith(
@@ -110,13 +134,13 @@ describe("InvoiceEditorScreen (full-screen editor, desktop parity)", () => {
   });
 
   it("flows edited number / status / teeth / shade into the update payload", async () => {
-    const { getByTestId } = renderEditor();
+    const { getByTestId } = await renderEditor();
 
-    fireEvent.changeText(getByTestId("invoice-editor-number"), "INV-9999");
-    fireEvent.changeText(getByTestId("invoice-editor-teeth"), "6-11");
-    fireEvent.changeText(getByTestId("invoice-editor-shade"), "B1");
-    fireEvent.press(getByTestId("invoice-editor-status-paid"));
-    fireEvent.press(getByTestId("invoice-editor-save"));
+    await fireEvent.changeText(getByTestId("invoice-editor-number"), "INV-9999");
+    await fireEvent.changeText(getByTestId("invoice-editor-teeth"), "6-11");
+    await fireEvent.changeText(getByTestId("invoice-editor-shade"), "B1");
+    await fireEvent.press(getByTestId("invoice-editor-status-paid"));
+    await fireEvent.press(getByTestId("invoice-editor-save"));
 
     await waitFor(() =>
       expect(mockUpdateInvoiceMutateAsync).toHaveBeenCalledWith(
@@ -139,12 +163,45 @@ describe("InvoiceEditorScreen (full-screen editor, desktop parity)", () => {
   });
 
   it("blocks saving when the invoice number is cleared", async () => {
-    const { getByTestId } = renderEditor();
+    const { getByTestId } = await renderEditor();
 
-    fireEvent.changeText(getByTestId("invoice-editor-number"), "   ");
-    fireEvent.press(getByTestId("invoice-editor-save"));
+    await fireEvent.changeText(getByTestId("invoice-editor-number"), "   ");
+    await fireEvent.press(getByTestId("invoice-editor-save"));
 
     // Validation short-circuits before the mutation fires.
     await waitFor(() => expect(mockUpdateInvoiceMutateAsync).not.toHaveBeenCalled());
+  });
+
+  it("rejects a blank price instead of converting it to zero", async () => {
+    const alert = vi.spyOn(Alert, "alert").mockImplementation(() => {});
+    const { getByTestId } = await renderEditor();
+    await fireEvent.changeText(getByTestId("invoice-editor-line-price-0"), "");
+    await fireEvent.press(getByTestId("invoice-editor-save"));
+
+    await waitFor(() => {
+      expect(mockUpdateInvoiceMutateAsync).not.toHaveBeenCalled();
+      expect(alert).toHaveBeenCalledWith(
+        "Valid price required",
+        expect.stringContaining("Enter 0"),
+      );
+    });
+  });
+
+  it("saves an explicitly entered zero price", async () => {
+    const { getByTestId } = await renderEditor();
+    await fireEvent.changeText(getByTestId("invoice-editor-line-price-0"), "0");
+    await fireEvent.press(getByTestId("invoice-editor-save"));
+
+    await waitFor(() =>
+      expect(mockUpdateInvoiceMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            items: expect.arrayContaining([
+              expect.objectContaining({ id: "li-1", unitPrice: 0 }),
+            ]),
+          }),
+        }),
+      ),
+    );
   });
 });

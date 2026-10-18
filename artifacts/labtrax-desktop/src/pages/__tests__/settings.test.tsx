@@ -15,7 +15,6 @@ const ADMIN_USER = {
 describe("SettingsPage smoke render", () => {
   it("renders the settings shell for an admin without throwing", () => {
     const Wrapper = makeAuthWrapper("/settings", {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       user: ADMIN_USER as any,
       status: "authed",
       restoreStatus: "ok",
@@ -42,7 +41,6 @@ describe("SettingsPage navigation guards", () => {
 
   it("does NOT render a 'Users' nav entry for an admin", () => {
     const Wrapper = makeAuthWrapper("/settings", {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       user: ADMIN_USER as any,
       status: "authed",
       restoreStatus: "ok",
@@ -66,7 +64,6 @@ describe("SettingsPage navigation guards", () => {
     window.history.pushState({}, "", "?tab=users");
 
     const Wrapper = makeAuthWrapper("/settings?tab=users", {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       user: ADMIN_USER as any,
       status: "authed",
       restoreStatus: "ok",
@@ -84,7 +81,6 @@ describe("SettingsPage navigation guards", () => {
 
   it("renders the lab/environment name heading above Lab team status", () => {
     const Wrapper = makeAuthWrapper("/settings", {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       user: ADMIN_USER as any,
       status: "authed",
       restoreStatus: "ok",
@@ -111,5 +107,63 @@ describe("SettingsPage navigation guards", () => {
       envHeading.compareDocumentPosition(teamStatusHeading) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+});
+
+describe("SettingsPage grouped left nav", () => {
+  afterEach(() => {
+    window.history.pushState({}, "", "/");
+  });
+
+  function renderSettings(search = "") {
+    if (search) window.history.pushState({}, "", search);
+    const Wrapper = makeAuthWrapper(`/settings${search}`, {
+      user: ADMIN_USER as any,
+      status: "authed",
+      restoreStatus: "ok",
+      restoreNoticeDismissed: true,
+    });
+    return render(
+      <Wrapper>
+        <SettingsPage />
+      </Wrapper>,
+    );
+  }
+
+  const navButton = (name: RegExp) => screen.queryByRole("button", { name });
+
+  it("expands Profile by default and keeps Lab Preferences collapsed", () => {
+    renderSettings();
+    // Profile is the landing section, so its children are revealed.
+    expect(navButton(/^Password$/)).toBeInTheDocument();
+    expect(navButton(/^Active sessions$/)).toBeInTheDocument();
+    expect(navButton(/^Notifications$/)).toBeInTheDocument();
+    // The sibling group stays collapsed until it (or a child) is selected.
+    expect(navButton(/^Lab Preferences$/)).toBeInTheDocument();
+    expect(navButton(/^Backup/)).not.toBeInTheDocument();
+    expect(navButton(/^Templates$/)).not.toBeInTheDocument();
+  });
+
+  it("opens a deep-linked child with its ancestor groups expanded", () => {
+    renderSettings("?tab=closed-days");
+    // Ancestor group + its siblings are visible …
+    expect(navButton(/^Lab Preferences$/)).toBeInTheDocument();
+    expect(navButton(/^Closed Days$/)).toBeInTheDocument();
+    expect(navButton(/^Templates$/)).toBeInTheDocument();
+    // … and the two-level-deep Templates children stay collapsed.
+    expect(navButton(/^Invoice layout$/)).not.toBeInTheDocument();
+  });
+
+  it("expands Templates two levels deep for a template deep link", () => {
+    renderSettings("?tab=statement-email");
+    expect(navButton(/^Lab Preferences$/)).toBeInTheDocument();
+    expect(navButton(/^Templates$/)).toBeInTheDocument();
+    expect(navButton(/^Invoice layout$/)).toBeInTheDocument();
+    expect(navButton(/^Statement email$/)).toBeInTheDocument();
+  });
+
+  it("no longer offers a Desktop app section", () => {
+    renderSettings();
+    expect(navButton(/^Desktop app$/)).not.toBeInTheDocument();
   });
 });

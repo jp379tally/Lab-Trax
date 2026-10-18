@@ -47,8 +47,14 @@ const {
   mockRecordingCreateAsync,
   mockSoundCreateAsync,
   mockSoundPlayAsync,
+  mockGetStatusAsync,
 } = vi.hoisted(() => {
   const mockSoundPlayAsync = vi.fn(async () => undefined);
+  // Configurable metering value; tests override this to exercise the VAD path.
+  const mockGetStatusAsync = vi.fn(async () => ({
+    isRecording: true,
+    metering: -80, // default: well below -45 dB speech threshold → no VAD trigger
+  }));
   return {
     mockRequestPermissionsAsync: vi.fn(async () => ({
       status: "granted",
@@ -59,6 +65,7 @@ const {
       recording: {
         stopAndUnloadAsync: vi.fn(async () => undefined),
         getURI: vi.fn(() => "file:///tmp/test.m4a"),
+        getStatusAsync: mockGetStatusAsync,
       },
     })),
     mockSoundPlayAsync,
@@ -70,6 +77,7 @@ const {
         unloadAsync: vi.fn(async () => undefined),
       },
     })),
+    mockGetStatusAsync,
   };
 });
 
@@ -111,10 +119,13 @@ afterEach(async () => {
   vi.clearAllMocks();
   // Restore default successful permission for subsequent tests.
   mockRequestPermissionsAsync.mockResolvedValue({ status: "granted", granted: true });
+  // Restore default recording mock (includes getStatusAsync for VAD tests).
+  mockGetStatusAsync.mockResolvedValue({ isRecording: true, metering: -80 });
   mockRecordingCreateAsync.mockResolvedValue({
     recording: {
       stopAndUnloadAsync: vi.fn(async () => undefined),
       getURI: vi.fn(() => "file:///tmp/test.m4a"),
+      getStatusAsync: mockGetStatusAsync,
     },
   });
 });
@@ -126,14 +137,14 @@ describe("AiAssistantScreen — mic button accessibilityLabel on permission erro
     const err = new Error("NotAllowed: mic permission denied");
     mockRequestPermissionsAsync.mockRejectedValueOnce(err);
 
-    const { getByLabelText } = render(<AiAssistantScreen />);
+    const { getByLabelText } = await render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
     const micBtn = getByLabelText("Dictate message");
-    fireEvent.press(micBtn);
+    await fireEvent.press(micBtn);
 
     await waitFor(() => {
       expect(
@@ -146,14 +157,14 @@ describe("AiAssistantScreen — mic button accessibilityLabel on permission erro
     const err = new Error("Permission to use microphone was denied");
     mockRequestPermissionsAsync.mockRejectedValueOnce(err);
 
-    const { getByLabelText } = render(<AiAssistantScreen />);
+    const { getByLabelText } = await render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
     const micBtn = getByLabelText("Dictate message");
-    fireEvent.press(micBtn);
+    await fireEvent.press(micBtn);
 
     await waitFor(() => {
       expect(
@@ -168,14 +179,14 @@ describe("AiAssistantScreen — mic button accessibilityLabel on non-permission 
     const err = new Error("AVAudioSession could not be activated");
     mockRequestPermissionsAsync.mockRejectedValueOnce(err);
 
-    const { getByLabelText } = render(<AiAssistantScreen />);
+    const { getByLabelText } = await render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
     const micBtn = getByLabelText("Dictate message");
-    fireEvent.press(micBtn);
+    await fireEvent.press(micBtn);
 
     await waitFor(() => {
       expect(
@@ -193,14 +204,14 @@ describe("AiAssistantScreen — mic button accessibilityLabel on non-permission 
       new Error("Hardware unavailable"),
     );
 
-    const { getByLabelText } = render(<AiAssistantScreen />);
+    const { getByLabelText } = await render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
     const micBtn = getByLabelText("Dictate message");
-    fireEvent.press(micBtn);
+    await fireEvent.press(micBtn);
 
     await waitFor(() => {
       expect(
@@ -250,7 +261,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       ),
     );
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -258,8 +269,8 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hi there");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hi there");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText("Hello world");
   });
@@ -280,19 +291,66 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       ),
     );
 
-    const { getByLabelText, getByPlaceholderText } = render(<AiAssistantScreen />);
+    const { getByLabelText, getByPlaceholderText, getByText } = await render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "create a case");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "create a case");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await waitFor(() => {
+      expect(getByText("Review")).toBeTruthy();
       expect(getByLabelText("Confirm action")).toBeTruthy();
       expect(getByLabelText("Cancel action")).toBeTruthy();
     });
+  });
+
+  it("shows typed progress events while an assistant response is streaming", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ progress: { phase: "tool", message: "Looking up cases" } })}\n\n`));
+        await gate;
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "Done" })}\n\ndata: ${JSON.stringify({ done: true })}\n\n`));
+        controller.close();
+      },
+    });
+    mockStreamResponseOnce({ ok: true, status: 200, body: stream } as unknown as Response);
+
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(<AiAssistantScreen />);
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "cases due today");
+    await fireEvent.press(getByLabelText("Send message"));
+
+    await findByText("Looking up cases");
+    release();
+    await findByText("Done");
+  });
+
+  it("retains readonly tool outputs from done and expands Details and sources", async () => {
+    mockStreamResponseOnce(
+      new Response(
+        makeSSEStream([
+          { token: "I found one matching case." },
+          { done: true, toolOutputs: [{ name: "lookup_cases", result: { count: 1, source: "cases" } }] },
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(<AiAssistantScreen />);
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "find my case");
+    await fireEvent.press(getByLabelText("Send message"));
+
+    await findByText("I found one matching case.");
+    await fireEvent.press(getByLabelText("Show details"));
+    await findByText(/lookup_cases:/);
+    await findByText(/"count":1/);
   });
 
   it("calls /api/ai-agent/confirm and transitions the card to Done when Confirm is tapped", async () => {
@@ -304,7 +362,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
             proposed_action: {
               actionId: "act-002",
               toolName: "create_case",
-              summary: "Create case for Dr. Jones",
+              summary: "Create case for Dr. Example",
             },
           },
         ]),
@@ -342,7 +400,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       return new Response(JSON.stringify({ data: null }), { status: 200 });
     });
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -350,14 +408,14 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "create a case");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "create a case");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await waitFor(() => {
       expect(getByLabelText("Confirm action")).toBeTruthy();
     });
 
-    fireEvent.press(getByLabelText("Confirm action"));
+    await fireEvent.press(getByLabelText("Confirm action"));
 
     // The card state transitions to "done" → ConfirmCard renders the "Done" label
     await findByText("Done");
@@ -391,7 +449,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       return new Response(JSON.stringify({ data: null }), { status: 200 });
     });
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -399,14 +457,14 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "delete the case");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "delete the case");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await waitFor(() => {
       expect(getByLabelText("Cancel action")).toBeTruthy();
     });
 
-    fireEvent.press(getByLabelText("Cancel action"));
+    await fireEvent.press(getByLabelText("Cancel action"));
 
     await findByText("Action cancelled");
     expect(rejectCalled).toBe(true);
@@ -417,7 +475,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       new Response("Service Unavailable", { status: 503 }),
     );
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -425,8 +483,8 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText(
       "AI assistant is not configured on this server. Contact your administrator.",
@@ -444,7 +502,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       ),
     );
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -452,8 +510,8 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText(
       "AI assistant is not configured on this server. Please ask your administrator to set AI_INTEGRATIONS_OPENAI_API_KEY.",
@@ -465,7 +523,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       new Response("Too Many Requests", { status: 429 }),
     );
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -473,8 +531,8 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText("Please slow down — try again in a moment.");
   });
@@ -484,7 +542,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       new Response("Internal Server Error", { status: 500 }),
     );
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -492,8 +550,8 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText(
       "The server hit an error while processing your request. Please try again.",
@@ -505,7 +563,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }),
     );
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -513,8 +571,8 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText(
       "Your session has expired. Please sign in again to keep using the AI assistant.",
@@ -526,7 +584,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 }),
     );
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -534,8 +592,8 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText(
       "You don't have permission to use the AI assistant on this account.",
@@ -545,7 +603,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
   it("shows the outdated-deployment message when the stream endpoint returns 404", async () => {
     mockStreamResponseOnce(new Response("Not Found", { status: 404 }));
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -553,8 +611,8 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText(
       "This server doesn't have the AI assistant available — it may be running an outdated deployment. Please contact your administrator.",
@@ -564,7 +622,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
   it("shows the network error message when the fetch itself rejects", async () => {
     expoFetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -572,8 +630,8 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText(
       "Sorry, I'm having trouble connecting right now. Please check your connection and try again.",
@@ -585,7 +643,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
     const bodylessResp = { ok: true, status: 200, body: null } as unknown as Response;
     mockStreamResponseOnce(bodylessResp);
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -593,8 +651,8 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText(
       "The AI response was interrupted before it finished. Please try again.",
@@ -613,7 +671,7 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       { ok: true, status: 200, body: stream } as unknown as Response,
     );
 
-    const { getByLabelText, getByPlaceholderText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -621,8 +679,8 @@ describe("AiAssistantScreen — dispatchAiStream streaming", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText(
       "The AI response was interrupted before it finished. Please try again.",
@@ -696,11 +754,11 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
   async function recordAndStop(
     getByLabelText: (label: string) => unknown,
   ): Promise<void> {
-    fireEvent.press(getByLabelText("Dictate message") as Parameters<typeof fireEvent.press>[0]);
+    await fireEvent.press(getByLabelText("Dictate message") as Parameters<typeof fireEvent.press>[0]);
     await waitFor(() => {
       expect(getByLabelText("Stop recording")).toBeTruthy();
     });
-    fireEvent.press(getByLabelText("Stop recording") as Parameters<typeof fireEvent.press>[0]);
+    await fireEvent.press(getByLabelText("Stop recording") as Parameters<typeof fireEvent.press>[0]);
   }
 
   it("transcribes recorded audio and fills the text input", async () => {
@@ -709,7 +767,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
       transcript: "show me overdue cases",
     });
 
-    const { getByLabelText } = render(<AiAssistantScreen />);
+    const { getByLabelText } = await render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
@@ -732,7 +790,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
   it("does not send a message when the transcript is empty", async () => {
     mockXhrState.responseText = JSON.stringify({ ok: true, transcript: "   " });
 
-    const { getByLabelText } = render(<AiAssistantScreen />);
+    const { getByLabelText } = await render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
@@ -753,7 +811,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
   it("shows the transcription error state when the STT request fails", async () => {
     mockXhrState.mode = "error";
 
-    const { getByLabelText, findByText } = render(<AiAssistantScreen />);
+    const { getByLabelText, findByText } = await render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
@@ -778,7 +836,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
     mockXhrState.status = 500;
     mockXhrState.responseText = JSON.stringify({ ok: false });
 
-    const { getByLabelText, findByText } = render(<AiAssistantScreen />);
+    const { getByLabelText, findByText } = await render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
@@ -795,7 +853,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
 
 // ─── Voice conversation TTS (text-to-speech) tests ───────────────────────────
 //
-// Protects the "Maynard speaks his replies" flow: after a conversation-mode
+// Protects the "LabTrax Assistant speaks replies" flow: after a conversation-mode
 // voice exchange, the reply is fetched from /api/ai-tts via expo/fetch (the
 // only fetch path proven to stream/download reliably on physical devices),
 // written to a temp file, and played with expo-av. A TTS failure must surface
@@ -847,17 +905,17 @@ describe("AiAssistantScreen — voice conversation TTS", () => {
   async function conversationRecordAndStop(
     getByLabelText: (label: string) => unknown,
   ): Promise<void> {
-    fireEvent.press(getByLabelText("Talk with Maynard") as Parameters<typeof fireEvent.press>[0]);
+    await fireEvent.press(getByLabelText("Enter voice mode") as Parameters<typeof fireEvent.press>[0]);
     await waitFor(() => {
       expect(getByLabelText("Stop recording")).toBeTruthy();
     });
-    fireEvent.press(getByLabelText("Talk with Maynard") as Parameters<typeof fireEvent.press>[0]);
+    await fireEvent.press(getByLabelText("Enter voice mode") as Parameters<typeof fireEvent.press>[0]);
   }
 
   it("speaks the reply after a conversation-mode voice exchange", async () => {
     const { ttsCalls } = installConversationHandler({ ttsStatus: 200 });
 
-    const { getByLabelText, findByText } = render(<AiAssistantScreen />);
+    const { getByLabelText, findByText } = await render(<AiAssistantScreen />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
     });
@@ -886,7 +944,7 @@ describe("AiAssistantScreen — voice conversation TTS", () => {
   it("shows the voice playback error banner when the TTS request fails", async () => {
     const { ttsCalls } = installConversationHandler({ ttsStatus: 500 });
 
-    const { getByLabelText, findByText } = render(<AiAssistantScreen />);
+    const { getByLabelText, findByText } = await render(<AiAssistantScreen />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
     });
@@ -900,7 +958,7 @@ describe("AiAssistantScreen — voice conversation TTS", () => {
 
     // The failure is surfaced, not swallowed.
     await findByText(
-      "Maynard couldn't speak that reply. Check your volume, then tap the headset button to try again.",
+      "LabTrax Assistant couldn't speak that reply. Check your volume, then tap Voice mode to try again.",
     );
     expect(mockSoundCreateAsync).not.toHaveBeenCalled();
   });
@@ -929,7 +987,7 @@ describe("AiAssistantScreen — server-history fallback on mount", () => {
       return new Response(JSON.stringify({ data: null }), { status: 200 });
     });
 
-    const { findByText, findAllByText } = render(<AiAssistantScreen />);
+    const { findByText, findAllByText } = await render(<AiAssistantScreen />);
 
     // The assistant reply is unique to the chat thread. The user message text
     // also appears as the "Past Conversations" session preview (the restored
@@ -947,10 +1005,10 @@ describe("AiAssistantScreen — server-history fallback on mount", () => {
       return new Response(JSON.stringify({ data: null }), { status: 200 });
     });
 
-    const { findByText } = render(<AiAssistantScreen />);
+    const { findByText } = await render(<AiAssistantScreen />);
 
     // The welcome greeting remains the only assistant message.
-    await findByText(/I'm Maynard/i);
+    await findByText(/I'm LabTrax Assistant/i);
   });
 
   it("falls back to the welcome message when the history request fails", async () => {
@@ -961,9 +1019,9 @@ describe("AiAssistantScreen — server-history fallback on mount", () => {
       return new Response(JSON.stringify({ data: null }), { status: 200 });
     });
 
-    const { findByText } = render(<AiAssistantScreen />);
+    const { findByText } = await render(<AiAssistantScreen />);
 
-    await findByText(/I'm Maynard/i);
+    await findByText(/I'm LabTrax Assistant/i);
   });
 });
 
@@ -1009,13 +1067,13 @@ describe("AiAssistantScreen — load earlier messages", () => {
       return new Response(JSON.stringify({ data: null }), { status: 200 });
     });
 
-    const { findByText, queryByText } = render(<AiAssistantScreen />);
+    const { findByText, queryByText } = await render(<AiAssistantScreen />);
 
     // The newest page is shown and the affordance appears (hasMore: true).
     await findByText("newest answer");
     const loadBtn = await findByText("Load earlier messages");
 
-    fireEvent.press(loadBtn);
+    await fireEvent.press(loadBtn);
 
     // Older messages are fetched and prepended.
     await findByText("older answer");
@@ -1059,10 +1117,10 @@ describe("AiAssistantScreen — load earlier messages", () => {
       return new Response(JSON.stringify({ data: null }), { status: 200 });
     });
 
-    const { findByText, findAllByText } = render(<AiAssistantScreen />);
+    const { findByText, findAllByText } = await render(<AiAssistantScreen />);
 
     const loadBtn = await findByText("Load earlier messages");
-    fireEvent.press(loadBtn);
+    await fireEvent.press(loadBtn);
 
     // The older page has been prepended (its unique marker is visible).
     await findByText("older marker");
@@ -1090,7 +1148,7 @@ describe("AiAssistantScreen — voice-resume affordance (remembered voice mode)"
   it("shows the resume affordance without starting the mic when voice mode is remembered as on", async () => {
     await AsyncStorage.setItem(AI_VOICE_MODE_KEY, "true");
 
-    const { getByLabelText, getByText } = render(<AiAssistantScreen />);
+    const { getByLabelText, getByText } = await render(<AiAssistantScreen />);
 
     await waitFor(() => {
       expect(getByLabelText("Resume voice conversation")).toBeTruthy();
@@ -1102,13 +1160,13 @@ describe("AiAssistantScreen — voice-resume affordance (remembered voice mode)"
   });
 
   it("does not show the resume affordance when voice mode is not remembered", async () => {
-    const { getByLabelText, queryByText, queryByLabelText } = render(<AiAssistantScreen />);
+    const { getByLabelText, queryByText, queryByLabelText } = await render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    expect(getByLabelText("Talk with Maynard")).toBeTruthy();
+    expect(getByLabelText("Enter voice mode")).toBeTruthy();
     expect(queryByLabelText("Resume voice conversation")).toBeNull();
     expect(queryByText(RESUME_HINT)).toBeNull();
   });
@@ -1116,10 +1174,10 @@ describe("AiAssistantScreen — voice-resume affordance (remembered voice mode)"
   it("first tap on the headphones button starts recording and clears the affordance", async () => {
     await AsyncStorage.setItem(AI_VOICE_MODE_KEY, "true");
 
-    const { getByLabelText, queryByText, queryByLabelText } = render(<AiAssistantScreen />);
+    const { getByLabelText, queryByText, queryByLabelText } = await render(<AiAssistantScreen />);
 
     const resumeBtn = await waitFor(() => getByLabelText("Resume voice conversation"));
-    fireEvent.press(resumeBtn);
+    await fireEvent.press(resumeBtn);
 
     await waitFor(() => {
       expect(mockRecordingCreateAsync).toHaveBeenCalled();
@@ -1135,13 +1193,13 @@ describe("AiAssistantScreen — voice-resume affordance (remembered voice mode)"
   it("clears the affordance when the loop resumes via the dictation mic instead", async () => {
     await AsyncStorage.setItem(AI_VOICE_MODE_KEY, "true");
 
-    const { getByLabelText, queryByText, queryByLabelText } = render(<AiAssistantScreen />);
+    const { getByLabelText, queryByText, queryByLabelText } = await render(<AiAssistantScreen />);
 
     await waitFor(() => {
       expect(getByLabelText("Resume voice conversation")).toBeTruthy();
     });
 
-    fireEvent.press(getByLabelText("Dictate message"));
+    await fireEvent.press(getByLabelText("Dictate message"));
 
     await waitFor(() => {
       expect(mockRecordingCreateAsync).toHaveBeenCalled();
@@ -1159,7 +1217,7 @@ describe("AiAssistantScreen — voice-resume affordance (remembered voice mode)"
       ),
     );
 
-    const { getByLabelText, getByPlaceholderText, queryByText, queryByLabelText, findByText } = render(
+    const { getByLabelText, getByPlaceholderText, queryByText, queryByLabelText, findByText } = await render(
       <AiAssistantScreen />,
     );
 
@@ -1167,13 +1225,119 @@ describe("AiAssistantScreen — voice-resume affordance (remembered voice mode)"
       expect(getByLabelText("Resume voice conversation")).toBeTruthy();
     });
 
-    fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
-    fireEvent.press(getByLabelText("Send message"));
+    await fireEvent.changeText(getByPlaceholderText("Ask me anything…"), "hello");
+    await fireEvent.press(getByLabelText("Send message"));
 
     await findByText("Hi!");
     await waitFor(() => {
       expect(queryByLabelText("Resume voice conversation")).toBeNull();
       expect(queryByText(RESUME_HINT)).toBeNull();
     });
+  });
+});
+
+// ─── VAD (voice-activity detection) tests ────────────────────────────────────
+
+describe("AiAssistantScreen — VAD in conversation mode", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Flush the async startRecording chain (resolved mocks → microtasks). */
+  async function flushAsyncRecording() {
+    // Multiple rounds handle the promise chain: requestPermissionsAsync →
+    // setAudioModeAsync → createAsync → VAD setup → React state updates.
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  }
+
+  it("stops recording after the 5 s no-speech timeout when metering never exceeds threshold", async () => {
+    // Metering stays at -80 dB — always below the -45 dB speech threshold.
+    mockGetStatusAsync.mockResolvedValue({ isRecording: true, metering: -80 });
+    const stopAndUnloadAsync = vi.fn(async () => undefined);
+    mockRecordingCreateAsync.mockResolvedValue({
+      recording: {
+        stopAndUnloadAsync,
+        getURI: vi.fn(() => "file:///tmp/test.m4a"),
+        getStatusAsync: mockGetStatusAsync,
+      },
+    });
+
+    const { getByLabelText } = await render(<AiAssistantScreen />);
+    await act(flushAsyncRecording);
+
+    // Open conversation recording via the headset button.
+    await fireEvent.press(getByLabelText("Enter voice mode"));
+    // Flush async startRecording internals (permissions, setAudioMode, createAsync).
+    await act(flushAsyncRecording);
+
+    // Advance 5.1 s — past the no-speech watchdog.
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100); });
+
+    // The no-speech timeout should have called stopAndUnloadAsync.
+    expect(stopAndUnloadAsync).toHaveBeenCalled();
+  });
+
+  it("stops recording ~1 500 ms after speech-level drops below silence threshold", async () => {
+    // Sequence: 5 calls below threshold (no speech yet), then 5 above (speech
+    // onset), then all below (silence → 1 500 ms window triggers auto-stop).
+    let callCount = 0;
+    mockGetStatusAsync.mockImplementation(async () => {
+      callCount++;
+      if (callCount <= 5) return { isRecording: true, metering: -80 }; // silence
+      if (callCount <= 10) return { isRecording: true, metering: -30 }; // speech
+      return { isRecording: true, metering: -80 };                       // silence again
+    });
+    const stopAndUnloadAsync = vi.fn(async () => undefined);
+    mockRecordingCreateAsync.mockResolvedValue({
+      recording: {
+        stopAndUnloadAsync,
+        getURI: vi.fn(() => "file:///tmp/test.m4a"),
+        getStatusAsync: mockGetStatusAsync,
+      },
+    });
+
+    const { getByLabelText } = await render(<AiAssistantScreen />);
+    await act(flushAsyncRecording);
+
+    await fireEvent.press(getByLabelText("Enter voice mode"));
+    await act(flushAsyncRecording);
+
+    // 1 000 ms pre-speech + 1 000 ms speech + 1 800 ms silence window (one tick past 1 500 ms).
+    // Silence starts at 2 200 ms; first tick where Date.now()-2200 > 1 500 is at 3 800 ms.
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+
+    expect(stopAndUnloadAsync).toHaveBeenCalled();
+  });
+
+  it("does not start a VAD interval when recording in dictation mode", async () => {
+    mockGetStatusAsync.mockResolvedValue({ isRecording: true, metering: -80 });
+    const stopAndUnloadAsync = vi.fn(async () => undefined);
+    mockRecordingCreateAsync.mockResolvedValue({
+      recording: {
+        stopAndUnloadAsync,
+        getURI: vi.fn(() => "file:///tmp/test.m4a"),
+        getStatusAsync: mockGetStatusAsync,
+      },
+    });
+
+    const { getByLabelText } = await render(<AiAssistantScreen />);
+    await act(flushAsyncRecording);
+
+    // Press the dictate button (not the headset / conversation button).
+    await fireEvent.press(getByLabelText("Dictate message"));
+    await act(flushAsyncRecording);
+
+    // Advance well past the no-speech timeout that would fire in conversation mode.
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+
+    // In dictation mode no VAD interval is started, so getStatusAsync should
+    // never be called by the VAD loop.
+    expect(mockGetStatusAsync).not.toHaveBeenCalled();
+    // And stopAndUnloadAsync should NOT have been auto-called (no VAD stop).
+    expect(stopAndUnloadAsync).not.toHaveBeenCalled();
   });
 });

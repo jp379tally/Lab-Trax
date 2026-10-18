@@ -10,7 +10,7 @@ import {
   Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
@@ -18,11 +18,22 @@ import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { FormSheet } from "@/components/ui/FormSheet";
 import { TextField } from "@/components/ui/TextField";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+} from "@/components/ui/DismissKeyboardView";
 import { getJson, sendJson, isForbiddenError, ApiError } from "@/lib/read-api";
 import { useMe, primaryAdminLabOrgId, canAdminAnyLab } from "@/lib/auth-me";
 import { titleCase } from "@/lib/format";
 
 type Prices = Record<string, string | number | null>;
+
+interface PricingOverride {
+  id: string;
+  doctorName: string;
+  tierName?: string | null;
+  defaultDiscountPercent?: number | null;
+}
 
 interface PricingTier {
   id: string;
@@ -32,6 +43,10 @@ interface PricingTier {
 interface TiersResponse {
   keys: string[];
   tiers: PricingTier[];
+}
+interface ItemLabelsResponse {
+  labels: Record<string, string>;
+  discountKeys: string[];
 }
 
 function pricedCount(prices: Prices | null | undefined): number {
@@ -60,6 +75,22 @@ export default function PricingScreen() {
   const labOrgId = primaryAdminLabOrgId(me);
   const canEdit = canAdminAnyLab(me);
 
+  // Detect navigation intent from invoices: ?addItem=1&name=<encoded>
+  const routeParams = useLocalSearchParams<{ addItem?: string; name?: string }>();
+  const [addBillableItemOpen, setAddBillableItemOpen] = useState(false);
+  const [addBillableItemName, setAddBillableItemName] = useState("");
+
+  useEffect(() => {
+    if (routeParams.addItem === "1") {
+      setAddBillableItemName(
+        Array.isArray(routeParams.name) ? (routeParams.name[0] ?? "") : (routeParams.name ?? ""),
+      );
+      setAddBillableItemOpen(true);
+    }
+  // Only run on mount (when the screen first receives these params).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const tiersQ = useQuery<TiersResponse>({
     queryKey: ["pricing-tiers-full", labOrgId ?? ""],
     enabled: !!labOrgId,
@@ -67,49 +98,67 @@ export default function PricingScreen() {
     queryFn: () =>
       getJson<TiersResponse>(`/api/pricing/tiers?labOrganizationId=${encodeURIComponent(labOrgId!)}`),
   });
-  const labelsQ = useQuery<Record<string, string>>({
+  const labelsQ = useQuery<ItemLabelsResponse>({
     queryKey: ["item-labels", labOrgId ?? ""],
     enabled: !!labOrgId,
     staleTime: 30_000,
     queryFn: async () => {
-      const data = await getJson<{ labels: Record<string, string> }>(
+      return getJson<ItemLabelsResponse>(
         `/api/pricing/item-labels?labOrganizationId=${encodeURIComponent(labOrgId!)}`,
       );
-      return data.labels ?? {};
     },
+  });
+  const overridesQ = useQuery<{ overrides: PricingOverride[] }>({
+    queryKey: ["pricing-overrides", labOrgId ?? ""],
+    enabled: !!labOrgId,
+    staleTime: 30_000,
+    queryFn: () =>
+      getJson<{ overrides: PricingOverride[] }>(
+        `/api/pricing/overrides?labOrganizationId=${encodeURIComponent(labOrgId!)}`,
+      ),
   });
 
   const keys = tiersQ.data?.keys ?? [];
-  const labels = labelsQ.data ?? {};
+  const labels = labelsQ.data?.labels ?? {};
+  const discountKeys = labelsQ.data?.discountKeys ?? [];
   const labelFor = (k: string) => labels[k]?.trim() || titleCase(k.replace(/_/g, " "));
 
   const loading = !!labOrgId && tiersQ.isLoading;
-  const refreshing = tiersQ.isFetching || labelsQ.isFetching;
+  const refreshing = tiersQ.isFetching || labelsQ.isFetching || overridesQ.isFetching;
 
   function refetchAll() {
     tiersQ.refetch();
     labelsQ.refetch();
+    overridesQ.refetch();
   }
 
   const [tierEditor, setTierEditor] = useState<PricingTier | "new" | null>(null);
+  const [overrideEditor, setOverrideEditor] = useState<PricingOverride | "new" | null>(null);
 
   const invalidateTiers = () => qc.invalidateQueries({ queryKey: ["pricing-tiers-full", labOrgId ?? ""] });
+  const invalidateOverrides = () => qc.invalidateQueries({ queryKey: ["pricing-overrides", labOrgId ?? ""] });
 
   if (!canEdit) {
     return (
-      <View style={[styles.screen, { paddingTop: insets.top }]}>
+      <DismissKeyboardView
+        style={[styles.screen, { paddingTop: insets.top }]}
+        testID="pricing-keyboard-dismiss"
+      >
         <Header onBack={() => router.back()} colors={colors} styles={styles} />
         <View style={styles.center}>
           <Ionicons name="lock-closed-outline" size={40} color={colors.textTertiary} />
           <Text style={styles.emptyTitle}>Not available</Text>
           <Text style={styles.emptyBody}>Pricing is managed by lab owners and admins.</Text>
         </View>
-      </View>
+      </DismissKeyboardView>
     );
   }
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <DismissKeyboardView
+      style={[styles.screen, { paddingTop: insets.top }]}
+      testID="pricing-keyboard-dismiss"
+    >
       <Header onBack={() => router.back()} colors={colors} styles={styles} />
 
       {loading ? (
@@ -118,6 +167,8 @@ export default function PricingScreen() {
         </View>
       ) : (
         <ScrollView
+          keyboardDismissMode={scrollKeyboardDismissMode}
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.content}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refetchAll} tintColor={colors.tint} />}
         >
@@ -151,6 +202,38 @@ export default function PricingScreen() {
               </Card>
             ))}
           </Section>
+
+          <Section
+            title="Doctor Overrides"
+            count={overridesQ.data?.overrides.length ?? 0}
+            error={overridesQ.isError}
+            styles={styles}
+            colors={colors}
+            onAdd={() => setOverrideEditor("new")}
+          >
+            {(overridesQ.data?.overrides ?? []).map((o) => (
+              <Card
+                key={o.id}
+                style={styles.row}
+                onPress={() => setOverrideEditor(o)}
+                testID={`override-${o.id}`}
+              >
+                <View style={[styles.icon, { backgroundColor: colors.tint + "1A" }]}>
+                  <Ionicons name="person-outline" size={20} color={colors.tint} />
+                </View>
+                <View style={styles.main}>
+                  <Text style={styles.name} numberOfLines={1}>
+                    {o.doctorName}
+                  </Text>
+                  <Text style={styles.meta}>
+                    {o.tierName ? `Tier: ${o.tierName}` : "No tier"}
+                    {o.defaultDiscountPercent != null ? ` · ${o.defaultDiscountPercent}% off` : ""}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+              </Card>
+            ))}
+          </Section>
         </ScrollView>
       )}
 
@@ -160,6 +243,7 @@ export default function PricingScreen() {
           tier={tierEditor === "new" ? null : tierEditor}
           keys={keys}
           labelFor={labelFor}
+          discountKeys={discountKeys}
           onClose={() => setTierEditor(null)}
           onSaved={() => {
             setTierEditor(null);
@@ -167,7 +251,191 @@ export default function PricingScreen() {
           }}
         />
       ) : null}
-    </View>
+
+      {overrideEditor ? (
+        <OverrideEditor
+          labOrgId={labOrgId!}
+          override={overrideEditor === "new" ? null : overrideEditor}
+          tiers={tiersQ.data?.tiers ?? []}
+          onClose={() => setOverrideEditor(null)}
+          onSaved={() => {
+            setOverrideEditor(null);
+            invalidateOverrides();
+          }}
+        />
+      ) : null}
+
+      {addBillableItemOpen && labOrgId ? (
+        <AddBillableItemSheet
+          labOrgId={labOrgId}
+          tiers={tiersQ.data?.tiers ?? []}
+          initialName={addBillableItemName}
+          onClose={() => setAddBillableItemOpen(false)}
+          onSaved={() => {
+            setAddBillableItemOpen(false);
+            invalidateTiers();
+          }}
+        />
+      ) : null}
+    </DismissKeyboardView>
+  );
+}
+
+// --- Add billable item sheet -----------------------------------------------
+interface AddBillableItemResult {
+  labOrganizationId: string;
+  priceKey: string;
+  name: string;
+  description: string | null;
+  price: number;
+  isDiscount: boolean;
+  tierIds: string[];
+  updatedTiers: number;
+}
+
+function AddBillableItemSheet({
+  labOrgId,
+  tiers,
+  initialName = "",
+  onClose,
+  onSaved,
+}: {
+  labOrgId: string;
+  tiers: PricingTier[];
+  initialName?: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const [name, setName] = useState(initialName);
+  const [description, setDescription] = useState("");
+  const [price, setPrice] = useState("");
+  const [isDiscount, setIsDiscount] = useState(false);
+  const [selectedTierIds, setSelectedTierIds] = useState<string[]>(() =>
+    tiers.length === 1 ? [tiers[0].id] : [],
+  );
+
+  function toggleTier(id: string) {
+    setSelectedTierIds((prev) =>
+      prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id],
+    );
+  }
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const trimmedName = name.trim();
+      const priceValue = Number(price);
+      if (!trimmedName) throw new Error("Enter a name for the item.");
+      if (selectedTierIds.length === 0) throw new Error("Select at least one tier.");
+      if (!Number.isFinite(priceValue) || priceValue <= 0)
+        throw new Error(
+          isDiscount
+            ? "Enter a discount amount greater than 0."
+            : "Enter a price greater than 0.",
+        );
+      return sendJson("POST", "/api/pricing/add-item", {
+        name: trimmedName,
+        description: description.trim() || null,
+        price: priceValue,
+        isDiscount,
+        tierIds: selectedTierIds,
+      }) as Promise<AddBillableItemResult>;
+    },
+    onSuccess: onSaved,
+    onError: (e) => Alert.alert("Couldn't add item", friendlyError(e, "Please try again.")),
+  });
+
+  const canSubmit = name.trim().length > 0 && selectedTierIds.length > 0 && price.trim().length > 0;
+
+  return (
+    <FormSheet
+      visible
+      title="Add billable item"
+      onClose={onClose}
+      onSubmit={() => save.mutate()}
+      submitting={save.isPending}
+      submitDisabled={!canSubmit}
+    >
+      <TextField
+        label="Item name"
+        required
+        value={name}
+        onChangeText={setName}
+        placeholder="e.g. Custom whitening tray"
+        autoFocus={!initialName}
+      />
+      <TextField
+        label="Description (optional)"
+        value={description}
+        onChangeText={setDescription}
+        placeholder="What this item covers…"
+        multiline
+      />
+      <View style={styles.typeRow}>
+        <Text style={styles.fieldLabel}>Item type</Text>
+        <View style={styles.typeButtons}>
+          {[
+            { value: false, label: "Charge" },
+            { value: true, label: "Discount" },
+          ].map((option) => (
+            <Pressable
+              key={option.label}
+              onPress={() => setIsDiscount(option.value)}
+              style={[
+                styles.typeButton,
+                isDiscount === option.value && styles.typeButtonSelected,
+              ]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: isDiscount === option.value }}
+            >
+              <Text
+                style={[
+                  styles.typeButtonText,
+                  isDiscount === option.value && styles.typeButtonTextSelected,
+                ]}
+              >
+                {option.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+      <TextField
+        label={isDiscount ? "Discount amount" : "Price"}
+        required
+        value={price}
+        onChangeText={setPrice}
+        keyboardType="decimal-pad"
+        placeholder="0.00"
+      />
+      {tiers.length > 0 && (
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>Apply to tiers</Text>
+          {tiers.map((t) => {
+            const checked = selectedTierIds.includes(t.id);
+            return (
+              <Pressable
+                key={t.id}
+                style={styles.tierCheckRow}
+                onPress={() => toggleTier(t.id)}
+                testID={`add-item-tier-${t.id}`}
+              >
+                <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
+                  {checked && <Ionicons name="checkmark" size={12} color="#fff" />}
+                </View>
+                <Text style={styles.tierCheckLabel}>{t.name}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+      {tiers.length === 0 && (
+        <Text style={[styles.fieldLabel, { fontStyle: "italic" }]}>
+          Create a pricing tier first before adding a billable item.
+        </Text>
+      )}
+    </FormSheet>
   );
 }
 
@@ -191,12 +459,161 @@ function stringsToPrices(input: Record<string, string>): Record<string, number> 
   return out;
 }
 
+// --- Doctor override editor -----------------------------------------------
+function OverrideEditor({
+  labOrgId,
+  override,
+  tiers,
+  onClose,
+  onSaved,
+}: {
+  labOrgId: string;
+  override: PricingOverride | null;
+  tiers: PricingTier[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [doctorName, setDoctorName] = useState(override?.doctorName ?? "");
+  const [tierName, setTierName] = useState(override?.tierName ?? "");
+  const [discount, setDiscount] = useState(
+    override?.defaultDiscountPercent != null ? String(override.defaultDiscountPercent) : "",
+  );
+
+  useEffect(() => {
+    setDoctorName(override?.doctorName ?? "");
+    setTierName(override?.tierName ?? "");
+    setDiscount(
+      override?.defaultDiscountPercent != null ? String(override.defaultDiscountPercent) : "",
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [override?.id]);
+
+  async function handleSave() {
+    const name = doctorName.trim();
+    if (!name) return;
+
+    const discountNum = discount.trim() !== "" ? Number(discount.trim()) : null;
+    const body: Record<string, unknown> = {
+      tierName: tierName.trim() || null,
+      defaultDiscountPercent: discountNum,
+    };
+
+    const doSave = async (repriceDraftInvoices: boolean) => {
+      try {
+        if (override) {
+          await sendJson("PATCH", `/api/pricing/overrides/${override.id}`, {
+            ...body,
+            repriceDraftInvoices,
+          });
+        } else {
+          await sendJson("POST", "/api/pricing/overrides", {
+            ...body,
+            doctorName: name,
+            labOrganizationId: labOrgId,
+            repriceDraftInvoices,
+          });
+        }
+        onSaved();
+      } catch (e) {
+        Alert.alert("Couldn't save", friendlyError(e, "Please try again."));
+      }
+    };
+
+    // Pre-save: check for open invoices to decide whether to show a dialog.
+    try {
+      const params = new URLSearchParams({
+        doctorName: override?.doctorName ?? name,
+        labOrganizationId: labOrgId,
+      });
+      const result = await getJson<{ count: number }>(
+        `/api/pricing/overrides/pending-repricing-count?${params.toString()}`,
+      );
+      if (result.count > 0) {
+        const invoiceWord = result.count === 1 ? "invoice" : "invoices";
+        Alert.alert(
+          "Update open invoices?",
+          `There ${result.count === 1 ? "is" : "are"} ${result.count} open ${invoiceWord} for this doctor. Apply the new pricing to ${result.count === 1 ? "it" : "them"} now?`,
+          [
+            { text: "No, keep as-is", style: "cancel", onPress: () => doSave(false) },
+            { text: "Yes, update invoices", onPress: () => doSave(true) },
+          ],
+        );
+        return;
+      }
+    } catch {
+      // Count fetch failed — proceed without the dialog (non-fatal).
+    }
+
+    await doSave(false);
+  }
+
+  const save = useMutation({
+    mutationFn: handleSave,
+    onError: (e) => Alert.alert("Couldn't save", friendlyError(e, "Please try again.")),
+  });
+
+  function confirmDelete() {
+    Alert.alert("Remove override", `Remove pricing override for "${override!.doctorName}"?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Remove",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await sendJson("DELETE", `/api/pricing/overrides/${override!.id}`);
+            onSaved();
+          } catch (e) {
+            Alert.alert("Couldn't remove", friendlyError(e, "Please try again."));
+          }
+        },
+      },
+    ]);
+  }
+
+  return (
+    <FormSheet
+      visible
+      title={override ? "Edit override" : "New doctor override"}
+      onClose={onClose}
+      onSubmit={() => save.mutate()}
+      submitting={save.isPending}
+      submitDisabled={doctorName.trim().length === 0}
+      onDelete={override ? confirmDelete : undefined}
+    >
+      {!override ? (
+        <TextField
+          label="Doctor name"
+          required
+          value={doctorName}
+          onChangeText={setDoctorName}
+          placeholder="e.g. Dr. Smith"
+          autoFocus
+        />
+      ) : null}
+      <TextField
+        label="Tier (optional)"
+        value={tierName}
+        onChangeText={setTierName}
+        placeholder={tiers.length > 0 ? tiers[0].name : "e.g. Standard"}
+      />
+      <TextField
+        label="Default discount %"
+        value={discount}
+        onChangeText={setDiscount}
+        keyboardType="decimal-pad"
+        placeholder="0"
+      />
+    </FormSheet>
+  );
+}
+
 // --- Tier editor ----------------------------------------------------------
 function TierEditor({
   labOrgId,
   tier,
   keys,
   labelFor,
+  discountKeys,
   onClose,
   onSaved,
 }: {
@@ -204,6 +621,7 @@ function TierEditor({
   tier: PricingTier | null;
   keys: string[];
   labelFor: (k: string) => string;
+  discountKeys: string[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -252,7 +670,13 @@ function TierEditor({
       onDelete={tier ? confirmDelete : undefined}
     >
       <TextField label="Tier name" required value={name} onChangeText={setName} placeholder="e.g. Standard" autoFocus />
-      <PriceGrid keys={keys} labelFor={labelFor} values={prices} onChange={setPrices} />
+      <PriceGrid
+        keys={keys}
+        labelFor={labelFor}
+        discountKeys={discountKeys}
+        values={prices}
+        onChange={setPrices}
+      />
     </FormSheet>
   );
 }
@@ -261,11 +685,13 @@ function TierEditor({
 function PriceGrid({
   keys,
   labelFor,
+  discountKeys,
   values,
   onChange,
 }: {
   keys: string[];
   labelFor: (k: string) => string;
+  discountKeys: string[];
   values: Record<string, string>;
   onChange: (v: Record<string, string>) => void;
 }) {
@@ -279,9 +705,12 @@ function PriceGrid({
           <View key={k} style={styles.priceRow}>
             <Text style={styles.priceLabel} numberOfLines={1}>
               {labelFor(k)}
+              {discountKeys.includes(k) ? " · Discount" : ""}
             </Text>
             <View style={styles.priceInputWrap}>
-              <Text style={styles.priceCurrency}>$</Text>
+              <Text style={styles.priceCurrency}>
+                {discountKeys.includes(k) ? "−$" : "$"}
+              </Text>
               <TextField
                 value={values[k] ?? ""}
                 onChangeText={(t) => onChange({ ...values, [k]: t })}
@@ -397,10 +826,43 @@ function makeStyles(c: ThemeColors) {
     meta: { ...Typography.caption, color: c.textSecondary },
     field: { gap: Spacing.xs },
     fieldLabel: { ...Typography.captionSemibold, color: c.textSecondary },
+    typeRow: { gap: Spacing.xs },
+    typeButtons: { flexDirection: "row", gap: Spacing.sm },
+    typeButton: {
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: Radius.md,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+    },
+    typeButtonSelected: { borderColor: c.tint, backgroundColor: c.tint + "1A" },
+    typeButtonText: { ...Typography.captionSemibold, color: c.textSecondary },
+    typeButtonTextSelected: { color: c.tint },
     priceList: { gap: Spacing.sm },
     priceRow: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
     priceLabel: { ...Typography.body, color: c.text, flex: 1 },
     priceInputWrap: { flexDirection: "row", alignItems: "center", gap: Spacing.xs, width: 130 },
     priceCurrency: { ...Typography.body, color: c.textSecondary },
+    tierCheckRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      paddingVertical: Spacing.xs,
+    },
+    checkbox: {
+      width: 20,
+      height: 20,
+      borderRadius: 4,
+      borderWidth: 1.5,
+      borderColor: c.border,
+      backgroundColor: c.backgroundSolid,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    checkboxChecked: {
+      backgroundColor: c.tint,
+      borderColor: c.tint,
+    },
+    tierCheckLabel: { ...Typography.body, color: c.text },
   });
 }

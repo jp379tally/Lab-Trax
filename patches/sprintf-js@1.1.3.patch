@@ -1,0 +1,20 @@
+diff --git a/src/sprintf.js b/src/sprintf.js
+index 65d6324645ef1d0133614a71497751009dc5c912..9c4dd446774ee510ee8733b77230f7395bc30d1e 100644
+--- a/src/sprintf.js
++++ b/src/sprintf.js
+@@ -155,6 +155,15 @@
+                 parse_tree.push('%')
+             }
+             else if ((match = re.placeholder.exec(_fmt)) !== null) {
++                // Bound numeric precision before passing it to native Number
++                // formatting methods (GHSA-hp3w-g68c-fv3c).
++                if (match[7] !== undefined && /[efg]/.test(match[8])) {
++                    var precision = Number(match[7])
++                    if (!isFinite(precision) || precision > 100 ||
++                        (match[8] === 'g' && precision < 1)) {
++                        throw new TypeError('[sprintf] numeric precision must be within the supported range')
++                    }
++                }
+                 if (match[2]) {
+                     arg_names |= 1
+                     var field_list = [], replacement_field = match[2], field_match = []

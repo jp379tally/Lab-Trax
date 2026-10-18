@@ -23,7 +23,7 @@ export const LABTRAX_SECTIONS: KnowledgeSection[] = [
       "prescription", "rx", "ai reader", "rx parsing", "import", "scan rx",
       "lab slip", "intake", "extract", "ocr",
     ],
-    body: "A prescription (Rx) is the doctor's written order for a case. LabTrax can create a case from an uploaded Rx using the AI Reader, which extracts the patient, doctor, and restorations (type, material, shade, tooth numbers) from a photo or PDF and pre-fills the case for staff to review. AI-imported cases are flagged for review so a human confirms the extracted details before the case proceeds. The AI Reader is a separate surface from AI Chat/Agent: it only parses prescriptions, it does not answer questions. Always verify extracted material and shade against the original Rx before saving.",
+    body: "A prescription (Rx) is the doctor's written order for a case. LabTrax can create a case from an uploaded Rx using the AI Reader, which extracts the patient, doctor, and restorations (type, material, shade, tooth numbers) from a photo or PDF and pre-fills the case for staff to verify before saving. iTero imports retain their source metadata but are not placed in a separate pending-review acknowledgement state. The AI Reader is a separate surface from AI Chat/Agent: it only parses prescriptions, it does not answer questions. Always verify extracted material and shade against the original Rx before saving.",
   },
   {
     id: "labtrax.invoicing",

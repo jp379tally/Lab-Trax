@@ -72,8 +72,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     apiFetch: vi.fn(async () => [
       {
         id: PROVIDER_ID,
-        name: "Mahan Village Dental Care",
-        displayName: "Mahan Village Dental Care",
+        name: "Summit Dental Care",
+        displayName: "Summit Dental Care",
         type: "provider",
         parentLabOrganizationId: LAB_ID,
       },
@@ -110,12 +110,12 @@ describe("MergeDialog — same-practice duplicate initialization", () => {
       {
         doctorName: "Dr. Kanesha Cole",
         providerOrganizationId: PROVIDER_ID,
-        practiceName: "Mahan Village Dental Care",
+        practiceName: "Summit Dental Care",
       },
       {
         doctorName: "Kanesha Cole",
         providerOrganizationId: PROVIDER_ID,
-        practiceName: "Mahan Village Dental Care",
+        practiceName: "Summit Dental Care",
       },
     ]);
 
@@ -169,12 +169,12 @@ describe("MergeDialog — same-practice duplicate initialization", () => {
       {
         doctorName: "Dr. Kanesha Cole",
         providerOrganizationId: PROVIDER_ID,
-        practiceName: "Mahan Village Dental Care",
+        practiceName: "Summit Dental Care",
       },
       {
         doctorName: "Kanesha Cole",
         providerOrganizationId: PROVIDER_ID,
-        practiceName: "Mahan Village Dental Care",
+        practiceName: "Summit Dental Care",
       },
     ]);
 
@@ -188,7 +188,7 @@ describe("MergeDialog — same-practice duplicate initialization", () => {
     await waitFor(() =>
       expect(
         within(practiceSelect).getByRole("option", {
-          name: "Mahan Village Dental Care",
+          name: "Summit Dental Care",
         }),
       ).toBeInTheDocument(),
     );
@@ -200,17 +200,17 @@ describe("MergeDialog — same-practice duplicate initialization", () => {
     expect(screen.getByRole("button", { name: "Merge" })).toBeDisabled();
   });
 
-  it("allows capitalization-only duplicate merge (Dr. Ray Montalvo → Dr. Ray montalvo)", async () => {
+  it("allows capitalization-only duplicate merge (Dr. Provider054 Synthetic054 → Dr. Provider054 synthetic054)", async () => {
     renderDialog([
       {
-        doctorName: "Dr. Ray Montalvo",
+        doctorName: "Dr. Provider054 Synthetic054",
         providerOrganizationId: PROVIDER_ID,
-        practiceName: "Russell Bartow Rainey DMD",
+        practiceName: "Example Dental Group",
       },
       {
-        doctorName: "Dr. Ray montalvo",
+        doctorName: "Dr. Provider054 synthetic054",
         providerOrganizationId: PROVIDER_ID,
-        practiceName: "Russell Bartow Rainey DMD",
+        practiceName: "Example Dental Group",
       },
     ]);
 
@@ -220,10 +220,10 @@ describe("MergeDialog — same-practice duplicate initialization", () => {
 
     const sourcesList = screen.getByRole("list");
     expect(
-      within(sourcesList).getByText("Dr. Ray montalvo"),
+      within(sourcesList).getByText("Dr. Provider054 synthetic054"),
     ).toBeInTheDocument();
     expect(
-      within(sourcesList).queryByText("Dr. Ray Montalvo"),
+      within(sourcesList).queryByText("Dr. Provider054 Synthetic054"),
     ).not.toBeInTheDocument();
 
     // No self-merge warning: target and source differ by casing.
@@ -240,9 +240,9 @@ describe("MergeDialog — same-practice duplicate initialization", () => {
       data: {
         labOrganizationId: LAB_ID,
         sources: [
-          { doctorName: "Dr. Ray montalvo", providerOrganizationId: PROVIDER_ID },
+          { doctorName: "Dr. Provider054 synthetic054", providerOrganizationId: PROVIDER_ID },
         ],
-        targetDoctorName: "Dr. Ray Montalvo",
+        targetDoctorName: "Dr. Provider054 Synthetic054",
         targetProviderOrganizationId: PROVIDER_ID,
         includeSoftDeleted: false,
       },
@@ -258,12 +258,12 @@ describe("MergeDialog — submitting an enabled merge", () => {
         {
           doctorName: "Dr. Kanesha Cole",
           providerOrganizationId: PROVIDER_ID,
-          practiceName: "Mahan Village Dental Care",
+          practiceName: "Summit Dental Care",
         },
         {
           doctorName: "Kanesha Cole",
           providerOrganizationId: PROVIDER_ID,
-          practiceName: "Mahan Village Dental Care",
+          practiceName: "Summit Dental Care",
         },
       ],
       onMerged,

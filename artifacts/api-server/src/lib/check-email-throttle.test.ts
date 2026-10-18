@@ -22,9 +22,9 @@ import { createCheckEmailThrottle } from "./rate-limit.js";
  * Build a minimal Express app that applies `createCheckEmailThrottle` and
  * returns 200 { ok: true } when the throttle passes the request through.
  *
- * Each test calls this to get a fresh throttle instance.  Because the
+ * Each test calls this to get a fresh throttle instance. Because the
  * underlying store is module-level, tests must use distinct email addresses
- * and X-Forwarded-For IPs to avoid cross-test bleed.
+ * and client IPs to avoid cross-test bleed.
  */
 function buildApp(opts: {
   windowMs: number;
@@ -32,6 +32,9 @@ function buildApp(opts: {
   maxPerIp: number;
 }) {
   const app = express();
+  // Match the API's one-hop reverse-proxy setup so test X-Forwarded-For values
+  // are interpreted by Express rather than by the limiter itself.
+  app.set("trust proxy", 1);
   const throttle = createCheckEmailThrottle(opts);
   app.get("/check-email", throttle, (_req, res) => {
     res.json({ ok: true });

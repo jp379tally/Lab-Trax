@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, History } from "lucide-react";
 import { apiFetch } from "@/lib/api";
@@ -6,11 +6,23 @@ import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankTransaction, Reconciliation } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
+import { useBatchedListReset } from "@/hooks/useBatchedListReset";
 
 // 5 resizable columns: Date(0), Type(1), Payee(2), Memo(3), Amount(4)
 const RECON_COL_DEFAULTS = [100, 80, 160, 240, 110] as const;
 const RECON_FIXED_CHECK = 48;
 const RECON_COL_LABELS = ["Date", "Type", "Payee", "Memo", "Amount"] as const;
+const PAGE_SIZE = 10;
+/** Stable identity for an unloaded batch. */
+const EMPTY_RECONCILIATIONS: Reconciliation[] = [];
+type ReconciliationPage = {
+  rows: Reconciliation[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  nextCursor?: string | null;
+};
 
 export default function ReconcilePage() {
   return (
@@ -20,7 +32,7 @@ export default function ReconcilePage() {
   );
 }
 
-function Reconcile({ accountId }: { accountId: string }) {
+export function Reconcile({ accountId }: { accountId: string }) {
   const qc = useQueryClient();
   const [statementDate, setStatementDate] = useState<string>(
     new Date().toISOString().slice(0, 10)
@@ -29,9 +41,20 @@ function Reconcile({ accountId }: { accountId: string }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  // Batches are anchored on the last entry already received (a keyset
+  // cursor), so a reconciliation finished mid-scroll cannot shift the window.
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  // History accumulates against the account it belongs to; switching accounts
+  // empties the list until that account's first page lands.
+  const [loaded, setLoaded] = useState<{ key: string; rows: Reconciliation[]; total: number }>({
+    key: "",
+    rows: [],
+    total: 0,
+  });
 
-  const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn } =
+  const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn, fitColumn } =
     useColumnWidths([...RECON_COL_DEFAULTS], "labtrax_recon_col_widths_v1");
+  const tableRef = useRef<HTMLTableElement>(null);
 
   const candidatesQuery = useQuery({
     queryKey: ["finance", "recon-candidates", accountId, statementDate],
@@ -43,13 +66,45 @@ function Reconcile({ accountId }: { accountId: string }) {
       ),
   });
 
+  const historyQuery = `bankAccountId=${encodeURIComponent(accountId)}&limit=${PAGE_SIZE}${
+    historyCursor ? `&cursor=${encodeURIComponent(historyCursor)}` : ""
+  }`;
   const history = useQuery({
-    queryKey: ["finance", "recon-history", accountId],
-    queryFn: () =>
-      apiFetch<Reconciliation[]>(
-        `/finance/reconciliation/history?bankAccountId=${accountId}`
-      ),
+    queryKey: ["finance", "recon-history", accountId, historyQuery],
+    queryFn: async () => {
+      const query = historyQuery;
+      const requestCursor = historyCursor;
+      const response = await apiFetch<ReconciliationPage | Reconciliation[]>(
+        `/finance/reconciliation/history?${query}`
+      );
+      const result = Array.isArray(response)
+        ? { rows: response, total: response.length, limit: response.length, offset: 0, hasMore: false, nextCursor: null }
+        : response;
+      return { ...result, query, requestCursor };
+    },
   });
+  const [pagedAccountId, setPagedAccountId] = useState(accountId);
+  if (pagedAccountId !== accountId) {
+    setPagedAccountId(accountId);
+    setHistoryCursor(null);
+  }
+  // Finishing a reconciliation invalidates ["finance"]; restart at the head of
+  // the list so the new entry lands at the top instead of being merged past.
+  const restartHistory = useCallback(() => setHistoryCursor(null), []);
+  useBatchedListReset("finance", restartHistory);
+  useEffect(() => {
+    const result = history.data;
+    if (!result || result.query !== historyQuery) return;
+    setLoaded((previous) => ({
+      key: accountId,
+      rows: previous.key === accountId && result.requestCursor
+        ? [...previous.rows.filter((row) => !result.rows.some((next) => next.id === row.id)), ...result.rows]
+        : result.rows,
+      total: result.total,
+    }));
+  }, [history.data, historyQuery, accountId]);
+  const loadedHistory = loaded.key === accountId ? loaded.rows : EMPTY_RECONCILIATIONS;
+  const historyTotal = loaded.key === accountId ? loaded.total : 0;
 
   const finishMut = useMutation({
     mutationFn: () =>
@@ -155,6 +210,7 @@ function Reconcile({ accountId }: { accountId: string }) {
               />
             )}
             <table
+              ref={tableRef}
               className="text-sm"
               style={{
                 tableLayout: "fixed",
@@ -185,13 +241,21 @@ function Reconcile({ accountId }: { accountId: string }) {
                     return (
                       <th
                         key={label}
+                        data-col-id={`col-${i}`}
                         className={`font-medium py-2 relative px-3${isAmount ? " text-right" : " text-left"}`}
                         style={{ overflow: "hidden" }}
                       >
                         {label}
                         <div
                           onMouseDown={(e) => startResize(i, e)}
-                          onDoubleClick={() => resetColumn(i)}
+                          onDoubleClick={() => {
+                            const table = tableRef.current;
+                            if (!table) { resetColumn(i); return; }
+                            const cells = table.querySelectorAll<HTMLElement>(`[data-col-id="col-${i}"]`);
+                            let max = 0;
+                            cells.forEach((el) => { max = Math.max(max, el.scrollWidth); });
+                            fitColumn(i, max + 8);
+                          }}
                           className="group/resize"
                           style={{
                             position: "absolute",
@@ -233,13 +297,14 @@ function Reconcile({ accountId }: { accountId: string }) {
                     <td className="px-4 py-2">
                       <input type="checkbox" checked={selected.has(r.id)} readOnly />
                     </td>
-                    <td className="py-2 px-3 whitespace-nowrap">{formatDate(r.txnDate)}</td>
-                    <td className="py-2 px-3 capitalize">{r.type}</td>
-                    <td className="py-2 px-3 truncate">{r.payee || "—"}</td>
-                    <td className="py-2 px-3 text-muted-foreground truncate">
+                    <td data-col-id="col-0" className="py-2 px-3 whitespace-nowrap">{formatDate(r.txnDate)}</td>
+                    <td data-col-id="col-1" className="py-2 px-3 capitalize truncate" title={r.type}>{r.type}</td>
+                    <td data-col-id="col-2" className="py-2 px-3 truncate" title={r.payee || ""}>{r.payee || "—"}</td>
+                    <td data-col-id="col-3" className="py-2 px-3 text-muted-foreground truncate" title={r.memo || ""}>
                       {r.memo || ""}
                     </td>
                     <td
+                      data-col-id="col-4"
                       className={`py-2 px-3 text-right tabular-nums ${
                         Number(r.netAmount) >= 0
                           ? "text-emerald-600 dark:text-emerald-400"
@@ -303,7 +368,7 @@ function Reconcile({ accountId }: { accountId: string }) {
           <History size={14} /> History
         </div>
         <ul className="space-y-2.5">
-          {(history.data || []).map((h) => (
+          {loadedHistory.map((h) => (
             <li
               key={h.id}
               className="text-sm border border-border rounded-md px-3 py-2"
@@ -318,10 +383,24 @@ function Reconcile({ accountId }: { accountId: string }) {
               </div>
             </li>
           ))}
-          {!history.data?.length && (
+          {!loadedHistory.length && !history.isLoading && (
             <li className="text-sm text-muted-foreground">No reconciliations yet.</li>
           )}
         </ul>
+        <div data-testid="reconcile-history-loaded-count" className="mt-3 text-xs text-muted-foreground">
+          Showing {loadedHistory.length} of {historyTotal}
+        </div>
+        {history.data?.query === historyQuery && history.data.hasMore && (
+          <button
+            type="button"
+            data-testid="reconcile-history-load-more"
+            onClick={() => setHistoryCursor(history.data?.nextCursor ?? null)}
+            disabled={history.isFetching}
+            className="mt-2 h-8 w-full rounded-md bg-secondary px-3 text-xs font-medium disabled:opacity-50"
+          >
+            {history.isFetching ? "Loading…" : `Load more (${loadedHistory.length} of ${historyTotal})`}
+          </button>
+        )}
       </aside>
     </div>
   );

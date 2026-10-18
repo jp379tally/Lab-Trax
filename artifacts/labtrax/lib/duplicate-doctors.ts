@@ -7,9 +7,11 @@
 // each lab's duplicateSuggestionThreshold, so non-admins get an empty result.
 // We still gate the query on canAdminAnyLab to avoid an unnecessary call for
 // provider/read-only users.
+import { useQueryClient } from "@tanstack/react-query";
 import {
   useGetDoctorDuplicateClusters,
   getGetDoctorDuplicateClustersQueryKey,
+  useConsolidateDuplicateDoctorAccounts,
   type DoctorDuplicateCluster,
 } from "@workspace/api-client-react";
 import { useMe, canAdminAnyLab } from "@/lib/auth-me";
@@ -33,4 +35,23 @@ export function useDuplicateDoctorClusters() {
     : [];
   const totalGroups = enabled ? query.data?.data?.totalGroups ?? 0 : 0;
   return { query, clusters, totalGroups, enabled };
+}
+
+/**
+ * Consolidate the duplicate provider *accounts* behind a cluster onto the
+ * account with the oldest account number (Task #4373). Unambiguous clusters
+ * are already handled by a background sweep, so this is for the ones whose
+ * contact details disagree and that an admin has decided are the same person.
+ */
+export function useConsolidateDoctorAccounts() {
+  const queryClient = useQueryClient();
+  return useConsolidateDuplicateDoctorAccounts({
+    mutation: {
+      onSuccess: () => {
+        queryClient.invalidateQueries({
+          queryKey: getGetDoctorDuplicateClustersQueryKey(),
+        });
+      },
+    },
+  });
 }

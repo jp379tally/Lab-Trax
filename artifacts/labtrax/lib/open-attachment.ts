@@ -1,10 +1,108 @@
 import * as Sharing from "expo-sharing";
 import * as FileSystem from "expo-file-system/legacy";
-import { getAuthedMediaUri } from "./authed-media-cache";
+import {
+  acquireAuthedMediaUri,
+  type AcquiredMediaUri,
+} from "./authed-media-cache";
 
 export type OpenAttachmentResult = "opened" | "unavailable" | "error";
 
 const SHARE_DIR = `${FileSystem.cacheDirectory ?? ""}labtrax-share/`;
+const SHARE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const SHARE_MAX_BYTES = 64 * 1024 * 1024;
+const SHARE_MAX_ENTRIES = 20;
+const activeShareUris = new Map<string, number>();
+const sharePathOperations = new Map<string, Promise<unknown>>();
+let shareEpoch = 0;
+
+function withSharePathOperation<T>(uri: string, operation: () => Promise<T>): Promise<T> {
+  const previous = sharePathOperations.get(uri) ?? Promise.resolve();
+  const pending = previous.catch(() => undefined).then(operation);
+  sharePathOperations.set(uri, pending);
+  void pending.finally(() => {
+    if (sharePathOperations.get(uri) === pending) sharePathOperations.delete(uri);
+  }).catch(() => undefined);
+  return pending;
+}
+
+function hashIdentity(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function retainShareUri(uri: string): AcquiredMediaUri {
+  activeShareUris.set(uri, (activeShareUris.get(uri) ?? 0) + 1);
+  let released = false;
+  return {
+    uri,
+    release: () => {
+      if (released) return;
+      released = true;
+      const remaining = (activeShareUris.get(uri) ?? 1) - 1;
+      if (remaining > 0) {
+        activeShareUris.set(uri, remaining);
+        return;
+      }
+      activeShareUris.delete(uri);
+      void withSharePathOperation(uri, async () => {
+        if (!activeShareUris.has(uri)) {
+          await FileSystem.deleteAsync(uri, { idempotent: true });
+        }
+      }).catch(() => undefined);
+    },
+  };
+}
+
+export async function clearProtectedShareCache(): Promise<void> {
+  shareEpoch += 1;
+  activeShareUris.clear();
+  sharePathOperations.clear();
+  if (!FileSystem.cacheDirectory) return;
+  await FileSystem.deleteAsync(SHARE_DIR, { idempotent: true }).catch(() => undefined);
+}
+
+export async function pruneProtectedShareCache(now = Date.now()): Promise<void> {
+  try {
+    const info = await FileSystem.getInfoAsync(SHARE_DIR);
+    if (!info.exists) return;
+    const entries = await FileSystem.readDirectoryAsync(SHARE_DIR);
+    const files = (await Promise.all(entries.map(async (entry) => {
+      const uri = `${SHARE_DIR}${entry}`;
+      const fileInfo = await FileSystem.getInfoAsync(uri);
+      if (!fileInfo.exists) return null;
+      return {
+        uri,
+        size: typeof fileInfo.size === "number" ? fileInfo.size : 0,
+        modifiedAt: typeof fileInfo.modificationTime === "number"
+          ? fileInfo.modificationTime * 1000
+          : 0,
+      };
+    }))).filter((file): file is NonNullable<typeof file> => !!file)
+      .sort((a, b) => a.modifiedAt - b.modifiedAt || a.uri.localeCompare(b.uri));
+    let totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+    let count = files.length;
+    for (const file of files) {
+      const expired = now - file.modifiedAt > SHARE_MAX_AGE_MS;
+      const overBudget = totalBytes > SHARE_MAX_BYTES || count > SHARE_MAX_ENTRIES;
+      if (!expired && !overBudget) continue;
+      const deleted = await withSharePathOperation(file.uri, async () => {
+        if (activeShareUris.has(file.uri)) return false;
+        await FileSystem.deleteAsync(file.uri, { idempotent: true });
+        return true;
+      });
+      if (deleted) {
+        totalBytes -= file.size;
+        count -= 1;
+      }
+    }
+  } catch {
+    // Temporary share cleanup must never block opening an attachment.
+  }
+}
 
 // Extract a lowercase extension (with dot) from a file name, e.g. ".pdf".
 function extFromName(name?: string | null): string {
@@ -43,12 +141,16 @@ async function copyToExtensioned(
   localUri: string,
   fileName: string | null | undefined,
   strict: boolean,
-): Promise<string | null> {
+  identity: string,
+): Promise<AcquiredMediaUri | null> {
   const ext = extFromName(fileName);
-  if (!ext) return strict ? null : localUri;
-  if (localUri.toLowerCase().endsWith(ext)) return localUri;
+  if (!ext) return strict ? null : { uri: localUri, release: () => {} };
+  if (localUri.toLowerCase().endsWith(ext)) {
+    return { uri: localUri, release: () => {} };
+  }
 
   try {
+    await pruneProtectedShareCache();
     const info = await FileSystem.getInfoAsync(SHARE_DIR);
     if (!info.exists) {
       await FileSystem.makeDirectoryAsync(SHARE_DIR, { intermediates: true });
@@ -56,15 +158,22 @@ async function copyToExtensioned(
     const safeBase = (fileName || "attachment")
       .replace(/[^a-zA-Z0-9_\-.]/g, "_")
       .slice(-120);
-    const dest = `${SHARE_DIR}${
+    const epoch = shareEpoch;
+    const dest = `${SHARE_DIR}${epoch}_${hashIdentity(identity)}_${
       safeBase.toLowerCase().endsWith(ext) ? safeBase : safeBase + ext
     }`;
     // copyAsync fails on iOS if the file already exists — clear it first.
-    await FileSystem.deleteAsync(dest, { idempotent: true });
-    await FileSystem.copyAsync({ from: localUri, to: dest });
-    return dest;
+    return await withSharePathOperation(dest, async () => {
+      const existing = await FileSystem.getInfoAsync(dest);
+      if (!existing.exists) await FileSystem.copyAsync({ from: localUri, to: dest });
+      if (epoch !== shareEpoch) {
+        await FileSystem.deleteAsync(dest, { idempotent: true });
+        return null;
+      }
+      return retainShareUri(dest);
+    });
   } catch {
-    return strict ? null : localUri;
+    return strict ? null : { uri: localUri, release: () => {} };
   }
 }
 
@@ -72,7 +181,7 @@ async function copyToExtensioned(
 // name carries the real extension. Returns null on download or copy failure.
 //
 // The media endpoints are Bearer-protected, so we cannot point a viewer at the
-// remote URL directly — it would 401. getAuthedMediaUri() downloads the file
+// remote URL directly — it would 401. acquireAuthedMediaUri() downloads the file
 // (refreshing the token on 401) and returns a local file:// URI.
 //
 // Used by the in-app document viewer (app/pdf-viewer.tsx): WKWebView needs a
@@ -82,10 +191,22 @@ export async function downloadAttachmentToLocalFile(opts: {
   fileName?: string | null;
   fileType?: string | null;
   onProgress?: (progress: number) => void;
-}): Promise<string | null> {
-  const localUri = await getAuthedMediaUri(opts.url, opts.onProgress);
-  if (!localUri) return null;
-  return copyToExtensioned(localUri, opts.fileName, true);
+}): Promise<AcquiredMediaUri | null> {
+  const acquired = await acquireAuthedMediaUri(opts.url, opts.onProgress);
+  if (!acquired) return null;
+  const localFile = await copyToExtensioned(
+    acquired.uri,
+    opts.fileName,
+    true,
+    opts.url,
+  );
+  if (!localFile) {
+    acquired.release();
+    return null;
+  }
+  if (localFile.uri === acquired.uri) return acquired;
+  acquired.release();
+  return localFile;
 }
 
 // Share an already-downloaded local file through the OS share sheet. Powers the
@@ -125,8 +246,9 @@ export async function openAttachment(opts: {
   fileType?: string | null;
   onProgress?: (progress: number) => void;
 }): Promise<OpenAttachmentResult> {
-  const localUri = await getAuthedMediaUri(opts.url, opts.onProgress);
-  if (!localUri) return "error";
+  const acquired = await acquireAuthedMediaUri(opts.url, opts.onProgress);
+  if (!acquired) return "error";
+  const localUri = acquired.uri;
 
   let available = false;
   try {
@@ -134,9 +256,18 @@ export async function openAttachment(opts: {
   } catch {
     available = false;
   }
-  if (!available) return "unavailable";
+  if (!available) {
+    acquired.release();
+    return "unavailable";
+  }
 
-  const shareUri = (await copyToExtensioned(localUri, opts.fileName, false)) ?? localUri;
+  const shareFile = await copyToExtensioned(
+    localUri,
+    opts.fileName,
+    false,
+    opts.url,
+  );
+  const shareUri = shareFile?.uri ?? localUri;
 
   try {
     await Sharing.shareAsync(shareUri, {
@@ -147,5 +278,8 @@ export async function openAttachment(opts: {
     return "opened";
   } catch {
     return "error";
+  } finally {
+    shareFile?.release();
+    acquired.release();
   }
 }

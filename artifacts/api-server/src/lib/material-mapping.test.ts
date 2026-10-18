@@ -2,9 +2,12 @@ import { describe, it, expect } from "vitest";
 import {
   CANONICAL_LITHIUM_DISILICATE,
   CANONICAL_PFM,
+  CANONICAL_WAX,
   CANONICAL_ZIRCONIA,
   DEFAULT_TIER_ITEMS,
   DEFAULT_TIER_KEYS,
+  VALID_STEPS,
+  cleanStepValue,
   isKnownPriceKey,
   materialToPriceKey,
   normalizeMaterialName,
@@ -140,11 +143,23 @@ describe("normalizeMaterialName", () => {
       "BruxZ",
       "Bruxzir",
       "BZR",
-      "PFZ",
       "BruxZir Solid Zirconia",
       "Ceramic: Zirconia",
     ]) {
       expect(normalizeMaterialName(v)).toBe(CANONICAL_ZIRCONIA);
+    }
+  });
+
+  it("maps PFZ synonyms to canonical Porcelain Fused to Zirconia (distinct from Zirconia)", () => {
+    // "PFZ" must NOT normalize to plain Zirconia — it needs its own canonical
+    // name so the invoice-sync layer can attach the Layered Porcelain surcharge.
+    for (const v of [
+      "PFZ",
+      "pfz",
+      "porcelain fused to zirconia",
+      "Porcelain Fused to Zirconia",
+    ]) {
+      expect(normalizeMaterialName(v)).toBe("Porcelain Fused to Zirconia");
     }
   });
 
@@ -198,5 +213,61 @@ describe("normalizeMaterialName", () => {
     expect(materialToPriceKey(normalizeMaterialName("PFM"), "Crown")).toBe(
       "pfm_crown",
     );
+  });
+
+  it('maps wax synonyms to canonical "Wax"', () => {
+    // Core requirement: wax-related note phrases must normalize to "Wax" so the
+    // AI can record a wax material without being misclassified as a different
+    // material type.
+    for (const v of [
+      "wax",
+      "Wax",
+      "wax setup",
+      "Wax Setup",
+      "wax try-in",
+      "Wax Try-In",
+      "wax tryin",
+      "in wax",
+    ]) {
+      expect(normalizeMaterialName(v), `normalizeMaterialName(${JSON.stringify(v)})`).toBe(CANONICAL_WAX);
+    }
+  });
+
+  it("WAX_SYNONYMS do not affect Zirconia normalization", () => {
+    // A crown case note such as "check shade in wax" must not cause the
+    // material field "Zirconia" to be reclassified — zirconia matching runs
+    // independently and must win over any wax phrase inside the same string.
+    expect(normalizeMaterialName("Zirconia")).toBe(CANONICAL_ZIRCONIA);
+    expect(normalizeMaterialName("BruxZir")).toBe(CANONICAL_ZIRCONIA);
+    // A combined string where a wax word is present: zirconia still wins because
+    // zirconia synonyms are checked before WAX_SYNONYMS.
+    expect(normalizeMaterialName("Zirconia wax")).toBe(CANONICAL_ZIRCONIA);
+  });
+});
+
+describe("cleanStepValue", () => {
+  it("passes through every valid step value unchanged", () => {
+    for (const step of VALID_STEPS) {
+      expect(cleanStepValue(step)).toBe(step);
+    }
+  });
+
+  it("drops unrecognized string values silently (returns undefined)", () => {
+    expect(cleanStepValue("wax_setup_typo")).toBeUndefined();
+    expect(cleanStepValue("crown")).toBeUndefined();
+    expect(cleanStepValue("")).toBeUndefined();
+    expect(cleanStepValue("WAX_SETUP")).toBeUndefined(); // case-sensitive
+  });
+
+  it("drops null and undefined silently (returns undefined)", () => {
+    expect(cleanStepValue(null)).toBeUndefined();
+    expect(cleanStepValue(undefined)).toBeUndefined();
+  });
+
+  it("drops non-string types silently (returns undefined)", () => {
+    expect(cleanStepValue(0)).toBeUndefined();
+    expect(cleanStepValue(42)).toBeUndefined();
+    expect(cleanStepValue(true)).toBeUndefined();
+    expect(cleanStepValue({})).toBeUndefined();
   });
 });

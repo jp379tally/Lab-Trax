@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./schemas": "./src/generated/api.schemas.ts",
+    "./invoice-filter-test-fixtures": "./src/invoice-filter-test-fixtures.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "catalog:"

@@ -264,6 +264,61 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
     expect(res.status).toBe(403);
   });
 
+  it("protects linked textures by case, visibility, and deletion", async () => {
+    const app = appMod.default;
+    const memberToken = await makeSession(memberUserId);
+    const outsiderToken = await makeSession(outsiderUserId);
+    const { db, caseAttachments, labCases } = dbMod as any;
+    const otherCaseId = `${Date.now()}${randomBytes(4).toString("hex")}`;
+    const scanId = rid("scan");
+    const textureId = rid("texture");
+    await db.insert(labCases).values({
+      id: otherCaseId,
+      ownerId: memberUserId,
+      organizationId: labOrgId,
+      caseData: JSON.stringify({ id: otherCaseId, caseNumber: "26-OTHER" }),
+    });
+    await db.insert(caseAttachments).values([
+      {
+        id: scanId, labCaseId: labCaseId, uploadedByUserId: memberUserId,
+        uploadedByOrganizationId: labOrgId, fileName: "scan.ply",
+        storageKey: `/uploads/case-media/${fileName}`,
+        fileType: "application/octet-stream", visibility: "internal_lab_only",
+        textureAttachmentId: textureId,
+      },
+      {
+        id: textureId, labCaseId: labCaseId, uploadedByUserId: memberUserId,
+        uploadedByOrganizationId: labOrgId, fileName: "scan.jpg",
+        storageKey: `/uploads/case-media/${fileName}`,
+        fileType: "image/jpeg", visibility: "internal_lab_only",
+      },
+    ]);
+
+    const sameCase = await request(app)
+      .get(`/api/cases/${labCaseId}/attachments/${textureId}/file`)
+      .set("Authorization", `Bearer ${memberToken}`);
+    expect(sameCase.status).toBe(200);
+
+    const crossCase = await request(app)
+      .get(`/api/cases/${otherCaseId}/attachments/${textureId}/file`)
+      .set("Authorization", `Bearer ${memberToken}`);
+    expect(crossCase.status).toBe(404);
+
+    const providerLike = await request(app)
+      .get(`/api/cases/${labCaseId}/attachments/${textureId}/file`)
+      .set("Authorization", `Bearer ${outsiderToken}`);
+    expect(providerLike.status).toBe(403);
+
+    await db.update(caseAttachments)
+      .set({ deletedAt: new Date() })
+      .where(eq(caseAttachments.id, textureId));
+    const deleted = await request(app)
+      .get(`/api/cases/${labCaseId}/attachments/${textureId}/file`)
+      .set("Authorization", `Bearer ${memberToken}`);
+    expect(deleted.status).toBe(404);
+    await db.delete(labCases).where(eq(labCases.id, otherCaseId));
+  });
+
   it("POST /:caseId/attachments — non-member gets 403", async () => {
     const app = appMod.default;
     const outsiderToken = await makeSession(outsiderUserId);

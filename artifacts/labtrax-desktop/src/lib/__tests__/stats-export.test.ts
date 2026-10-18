@@ -28,8 +28,9 @@ import {
 
 const FILTERS: StatsExportFilters = {
   orgName: "Main Lab",
-  dateFrom: "2026-03-01T00:00:00.000Z",
-  dateTo: "2026-03-31T23:59:59.999Z",
+  // Match the range picker: local calendar boundaries serialized as ISO instants.
+  dateFrom: new Date(2026, 2, 1).toISOString(),
+  dateTo: new Date(2026, 2, 31, 23, 59, 59, 999).toISOString(),
   groupByLabel: "Monthly",
   categoryLabel: "Zirconia",
   material: null,

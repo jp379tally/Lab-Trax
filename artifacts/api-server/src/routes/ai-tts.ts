@@ -19,10 +19,11 @@ import { type IRouter } from "express";
 import { createOpenAIClient } from "../lib/ai-openai-client";
 import { requireAuth } from "../middlewares/auth";
 import { z } from "zod/v4";
+import { TTS_VOICE_IDS, TTS_DEFAULT_VOICE } from "./ai-tts-voices";
 
 const TtsBodySchema = z.object({
   text: z.string().min(1).max(4096),
-  voice: z.enum(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]).optional(),
+  voice: z.enum(TTS_VOICE_IDS).optional(),
 });
 
 /**
@@ -78,7 +79,7 @@ export function registerAiTtsRoutes(router: IRouter): void {
     }
 
     const text = parsed.data.text;
-    const voice = parsed.data.voice ?? "onyx";
+    const voice = parsed.data.voice ?? TTS_DEFAULT_VOICE;
     const models = ttsModelChain();
     let lastCategory = "provider_error";
 

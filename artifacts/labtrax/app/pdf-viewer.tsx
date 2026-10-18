@@ -16,6 +16,7 @@ import {
   downloadAttachmentToLocalFile,
   shareLocalFile,
 } from "@/lib/open-attachment";
+import type { AcquiredMediaUri } from "@/lib/authed-media-cache";
 
 // useLocalSearchParams values are `string | string[]` — coerce to a single value.
 function firstParam(value: string | string[] | undefined): string | undefined {
@@ -43,10 +44,11 @@ export default function PdfViewerScreen() {
   const fileType = firstParam(params.fileType);
 
   const [localUri, setLocalUri] = useState<string | null>(null);
-  const [status, setStatus] = useState<ViewerStatus>("loading");
+  const [status, setStatus] = useState<ViewerStatus>(() => (url ? "loading" : "error"));
 
   useEffect(() => {
     let cancelled = false;
+    let acquired: AcquiredMediaUri | null = null;
 
     if (!url) {
       setStatus("error");
@@ -57,10 +59,13 @@ export default function PdfViewerScreen() {
     setLocalUri(null);
 
     (async () => {
-      const uri = await downloadAttachmentToLocalFile({ url, fileName, fileType });
-      if (cancelled) return;
-      if (uri) {
-        setLocalUri(uri);
+      acquired = await downloadAttachmentToLocalFile({ url, fileName, fileType });
+      if (cancelled) {
+        acquired?.release();
+        return;
+      }
+      if (acquired) {
+        setLocalUri(acquired.uri);
         setStatus("ready");
       } else {
         setStatus("error");
@@ -69,6 +74,7 @@ export default function PdfViewerScreen() {
 
     return () => {
       cancelled = true;
+      acquired?.release();
     };
   }, [url, fileName, fileType]);
 
@@ -123,11 +129,22 @@ export default function PdfViewerScreen() {
       </View>
 
       <View style={styles.body}>
-        {status === "loading" ? (
+        {!url || status === "error" ? (
+          <View style={styles.center} testID="pdf-error">
+            <Ionicons name="document-outline" size={44} color={colors.textTertiary} />
+            <Text style={styles.errorTitle}>This document couldn&apos;t be opened.</Text>
+            <Text style={styles.errorBody}>
+              The file could not be downloaded. Please check your connection and try again.
+            </Text>
+            <Pressable onPress={() => router.back()} style={styles.errorButton}>
+              <Text style={styles.errorButtonText}>Go back</Text>
+            </Pressable>
+          </View>
+        ) : status === "loading" ? (
           <View style={styles.center} testID="pdf-loading">
             <ActivityIndicator color={colors.tint} />
           </View>
-        ) : status === "error" || !localUri ? (
+        ) : !localUri ? (
           <View style={styles.center} testID="pdf-error">
             <Ionicons name="document-outline" size={44} color={colors.textTertiary} />
             <Text style={styles.errorTitle}>This document couldn&apos;t be opened.</Text>

@@ -28,7 +28,7 @@ const mockOrgsFindFirst = vi.hoisted(() => vi.fn().mockResolvedValue(null));
 const mockBankAccountsFindMany = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 const mockOpenAICreate = vi.hoisted(() =>
   vi.fn().mockResolvedValue({
-    choices: [{ message: { content: "Hi Dr. Smith, your case is ready. — Bright Lab" } }],
+    choices: [{ message: { content: "Hi Dr. Synthetic063, your case is ready. — Bright Lab" } }],
   }),
 );
 
@@ -150,6 +150,7 @@ function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     userId: "user-1",
     req: {} as never,
     userType: "lab",
+    appSurface: "labtrax",
     labOrganizationId: "lab-1",
     providerOrgIds: [],
     ...overrides,
@@ -192,11 +193,11 @@ describe("get_case_history", () => {
       caseNumber: "26-001",
       patientFirstName: "Jane",
       patientLastName: "Doe",
-      doctorName: "Dr. Smith",
+      doctorName: "Dr. Synthetic063",
       status: "active",
       priority: "normal",
       dueDate: new Date("2026-06-15"),
-      receivedAt: new Date("2026-06-01"),
+      receivedAt: "2026-06-01",
       createdAt: new Date("2026-06-01"),
       remakeOfCaseId: null,
       remakeReason: null,
@@ -331,7 +332,7 @@ describe("get_cases_due_soon", () => {
 
     const fakeRows = [
       { id: "c1", caseNumber: "26-001", patientFirstName: "A", patientLastName: "B",
-        doctorName: "Dr. X", status: "active", priority: "normal", dueDate: now },
+        doctorName: "Dr. SYNTHETIC072", status: "active", priority: "normal", dueDate: now },
       { id: "c2", caseNumber: "26-002", patientFirstName: "C", patientLastName: "D",
         doctorName: "Dr. Y", status: "active", priority: "normal", dueDate: tomorrow },
     ];
@@ -365,14 +366,14 @@ describe("draft_message", () => {
     mockOrgsFindFirst.mockResolvedValueOnce({ displayName: "Bright Lab", name: "Bright Lab" });
 
     const result = await tool.execute(
-      { targetType: "doctor", targetName: "Dr. Jones", intent: "case is delayed by 2 days" },
+      { targetType: "doctor", targetName: "Dr. Synthetic047", intent: "case is delayed by 2 days" },
       makeCtx(),
     ) as Record<string, unknown>;
 
     expect(typeof result["draft"]).toBe("string");
     expect(String(result["draft"]).length).toBeGreaterThan(0);
     expect(result["note"]).toMatch(/not available|template/i);
-    expect(String(result["draft"])).toContain("Dr. Jones");
+    expect(String(result["draft"])).toContain("Dr. Synthetic047");
   });
 
   it("template includes intent text when AI key is absent", async () => {
@@ -392,7 +393,7 @@ describe("draft_message", () => {
     mockOrgsFindFirst.mockResolvedValueOnce({ displayName: "Bright Lab", name: "Bright Lab" });
 
     const result = await tool.execute(
-      { targetType: "doctor", targetName: "Dr. Smith", intent: "case is ready for pickup" },
+      { targetType: "doctor", targetName: "Dr. Synthetic063", intent: "case is ready for pickup" },
       makeCtx(),
     ) as Record<string, unknown>;
 
@@ -427,7 +428,7 @@ describe("draft_message", () => {
   it("throws when role check fails", async () => {
     mockRequireAnyRole.mockRejectedValueOnce(new Error("Forbidden"));
     await expect(
-      tool.execute({ targetType: "doctor", targetName: "Dr. X", intent: "test" }, makeCtx()),
+      tool.execute({ targetType: "doctor", targetName: "Dr. SYNTHETIC072", intent: "test" }, makeCtx()),
     ).rejects.toThrow();
   });
 });
@@ -645,7 +646,7 @@ describe("registry completeness — 6 new tools", () => {
     const args = {
       query: "test",
       targetType: "doctor",
-      targetName: "Dr. X",
+      targetName: "Dr. SYNTHETIC072",
       intent: "test intent",
     };
     for (const name of NEW_TOOL_NAMES) {

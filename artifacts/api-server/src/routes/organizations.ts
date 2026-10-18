@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { assertCaseAccessWithMemberships } from "./cases";
+import { enqueueJoinRequestNotification } from "../lib/join-request-notifications";
 import { Router } from "express";
 import multer from "multer";
 import {
@@ -8,6 +10,7 @@ import {
   openCasePrintTemplateImageStream,
   openInvoiceTemplateImageStream,
   openLabLogoStream,
+  readLabLogoAsset,
   uploadCasePrintTemplateImage,
   uploadInvoiceTemplateImage,
   uploadLabLogo,
@@ -38,18 +41,37 @@ import { db } from "@workspace/db";
 import {
   auditLogs,
   cases,
+  doctorEmailEntries,
+  doctorPhoneEntries,
+  doctorProfiles,
   invoices,
   labCases,
+  labClosedDays,
   labUnassignedDoctors,
   notifications,
+  organizationAdditionalEmails,
   organizationConnections,
   organizationInvites,
   organizationJoinRequests,
   organizationMemberships,
   organizations,
+  pricingOverrides,
+  providerAccountChangeRequests,
+  quickReferenceNotes,
   users,
 } from "@workspace/db";
 import { splitDisplayName } from "../lib/patient-similarity";
+import {
+  createProviderAccountThroughGate,
+  findUserByEmail,
+  labAffiliatedProviderAccountCondition,
+  labMatchableProviderAccountCondition,
+  resolveExistingProviderAccount,
+  type DoctorIdentityInput,
+  type ProviderAccountMatchReason,
+  type ProviderAccountRow,
+} from "../lib/provider-account";
+import { normalizeDoctorForCompare } from "../lib/doctor-similarity";
 import { generateInviteToken } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import {
@@ -58,18 +80,24 @@ import {
 } from "../lib/lab-creation";
 import { hashPassword } from "../lib/crypto";
 import { HttpError, ok, wrapDbError, extractPgCode, extractPgConstraintName } from "../lib/http";
+import { broadcastCaseUpdated } from "../lib/case-events-ws";
 import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
-import { getAppBaseUrl, sendInviteEmail, sendInviteResultEmail } from "../lib/mail";
+import { sendInviteEmail, sendInviteResultEmail } from "../lib/mail";
 import { checkEmailPref } from "../lib/email-prefs";
 import {
   assertCustomAccountNumberAvailable,
   generateProviderAccountNumber,
   generateProviderAccountNumberFallback,
+  generateStandaloneProviderAccountNumber,
+  parseAccountNumbers,
+  withAccountNumberLock,
 } from "../lib/provider-account-number";
 import {
   ADMIN_ROLES,
   getActiveMembership,
+  hasCapability,
   requireAnyRole,
+  requireCapability,
   requireMembership,
   type MembershipRole,
 } from "../lib/rbac";
@@ -81,11 +109,106 @@ import {
 } from "../middlewares/auth";
 import {
   allocatePlatformAccountNumber,
-  deriveAccountNameParts,
 } from "../lib/platform-account-number";
+import { getUncachableStripeClient } from "../lib/stripeClient";
+import {
+  getCachedSharedCardSummary,
+  refreshSharedCardSummary,
+} from "../lib/provider-shared-account";
+import { requireSelectedProviderOrganization } from "../lib/provider-selection";
 
 const router = Router();
+
+const organizationListColumns = {
+  id: organizations.id,
+  type: organizations.type,
+  name: organizations.name,
+  displayName: organizations.displayName,
+  billingEmail: organizations.billingEmail,
+  phone: organizations.phone,
+  addressLine1: organizations.addressLine1,
+  addressLine2: organizations.addressLine2,
+  city: organizations.city,
+  state: organizations.state,
+  zip: organizations.zip,
+  isActive: organizations.isActive,
+  defaultBankAccountId: organizations.defaultBankAccountId,
+  logoUrl: organizations.logoUrl,
+  logoplacements: organizations.logoplacements,
+  logoPdfSize: organizations.logoPdfSize,
+  invoiceTemplate: organizations.invoiceTemplate,
+  invoiceTemplatePresets: organizations.invoiceTemplatePresets,
+  statementTemplate: organizations.statementTemplate,
+  casePrintTemplate: organizations.casePrintTemplate,
+  correspondenceTemplate: organizations.correspondenceTemplate,
+  parentLabOrganizationId: organizations.parentLabOrganizationId,
+  accountNumber: organizations.accountNumber,
+  platformAccountNumber: organizations.platformAccountNumber,
+  createdByUserId: organizations.createdByUserId,
+  createdAt: organizations.createdAt,
+  updatedAt: organizations.updatedAt,
+  statementEmailOptOut: organizations.statementEmailOptOut,
+  duplicateSuggestionThreshold: organizations.duplicateSuggestionThreshold,
+  defaultCaseDueDays: organizations.defaultCaseDueDays,
+  capCaseDueToDefault: organizations.capCaseDueToDefault,
+  invoiceDueDayOfMonth: organizations.invoiceDueDayOfMonth,
+  autoAddAlloyOnPfm: organizations.autoAddAlloyOnPfm,
+  printProviderPreferencesOnLabSlips:
+    organizations.printProviderPreferencesOnLabSlips,
+  licenseNumber: organizations.licenseNumber,
+  defaultDoctorTierName: organizations.defaultDoctorTierName,
+  revenueTargetLow: organizations.revenueTargetLow,
+  revenueTargetHigh: organizations.revenueTargetHigh,
+  deletedAt: organizations.deletedAt,
+  deletedByUserId: organizations.deletedByUserId,
+};
 router.use(requireAuth);
+
+const providerPortalContactSchema = z.object({
+  name: z.string().trim().min(1).max(200).optional(),
+  displayName: z.string().trim().min(1).max(200).nullable().optional(),
+  billingEmail: z.union([z.literal(""), z.string().email()]).nullable().optional(),
+  phone: z.string().max(50).nullable().optional(),
+  addressLine1: z.string().max(200).nullable().optional(),
+  addressLine2: z.string().max(200).nullable().optional(),
+  city: z.string().max(100).nullable().optional(),
+  state: z.string().max(50).nullable().optional(),
+  zip: z.string().max(30).nullable().optional(),
+});
+
+router.patch("/provider-portal-contact", asyncHandler(async (req, res) => {
+  const organization = await requireSelectedProviderOrganization(
+    (req as any).auth.userId as string,
+    req.header("x-provider-organization-id"),
+  );
+  const providerMembership = await getActiveMembership(
+    (req as any).auth.userId as string,
+    organization.id,
+  );
+  if (!providerMembership || !ADMIN_ROLES.includes(providerMembership.role as MembershipRole)) {
+    throw new HttpError(403, "Only provider organization owners and admins can update contact details.");
+  }
+  const input = providerPortalContactSchema.parse(req.body);
+  const updates: Record<string, unknown> = {};
+  for (const field of [
+    "name", "displayName", "billingEmail", "phone", "addressLine1",
+    "addressLine2", "city", "state", "zip",
+  ] as const) {
+    if (input[field] !== undefined) updates[field] = input[field] || null;
+  }
+  if (Object.keys(updates).length === 0) throw new HttpError(400, "No contact changes supplied.");
+  const [updated] = await db.update(organizations)
+    .set(updates)
+    .where(eq(organizations.id, organization.id))
+    .returning(organizationListColumns);
+  await writeAuditLog({
+    req, action: "provider_organization_contact_updated",
+    entityType: "organization", entityId: organization.id,
+    beforeJson: sharedProviderContact(organization),
+    afterJson: sharedProviderContact(updated),
+  });
+  return ok(res, updated);
+}));
 
 const createOrgSchema = z.object({
   type: z.enum(["lab", "provider"]),
@@ -114,9 +237,20 @@ const createOrgSchema = z.object({
   // When true, new case due dates are capped at (received date + defaultCaseDueDays).
   // Dates sooner than the turnaround are kept as-is (treated as rush). Lab orgs only.
   capCaseDueToDefault: z.boolean().nullable().optional(),
+  // Day of the month (1–28) on which invoices become due (following month from issue
+  // date). Null clears the override (application default 10 applies). Lab orgs only.
+  invoiceDueDayOfMonth: z.number().int().min(1).max(28).nullable().optional(),
   // When true, adding a PFM restoration auto-appends an "Alloy" surcharge line
   // (priced via tier/override logic). Lab orgs only.
   autoAddAlloyOnPfm: z.boolean().optional(),
+  // When true, lab slips include the current provider user's preferences.
+  // Lab orgs only.
+  printProviderPreferencesOnLabSlips: z.boolean().optional(),
+  // Monthly revenue target thresholds (dollars) for chart red/yellow/green
+  // coloring. Null clears the override (application defaults 85 000 / 95 000
+  // apply). Lab orgs only; ignored on provider orgs.
+  revenueTargetLow: z.number().int().min(0).nullable().optional(),
+  revenueTargetHigh: z.number().int().min(0).nullable().optional(),
   // Lab license / registration number (Account epic Phase 3). Required when
   // creating a lab environment; ignored on provider orgs.
   licenseNumber: z.string().optional(),
@@ -132,11 +266,27 @@ const createOrgSchema = z.object({
   parentLabOrganizationId: z.string().optional(),
 });
 
+// Revenue-target cross-field guard shared by create and update schemas.
+function refineRevenueCrossField<
+  T extends { revenueTargetLow?: number | null; revenueTargetHigh?: number | null },
+>(data: T, ctx: z.RefinementCtx) {
+  const lo = data.revenueTargetLow;
+  const hi = data.revenueTargetHigh;
+  if (lo != null && hi != null && lo >= hi) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Low threshold must be less than the high threshold.",
+      path: ["revenueTargetLow"],
+    });
+  }
+}
+
 // PATCH does not allow changing the parent lab — that would silently move a
 // practice between labs and re-key its account-number namespace.
 const updateOrgSchema = createOrgSchema
   .omit({ type: true, parentLabOrganizationId: true, doctorName: true })
-  .partial();
+  .partial()
+  .superRefine(refineRevenueCrossField);
 
 // Resolve read access for an organization. Direct active membership grants
 // access; for provider orgs, an active membership of the parent lab also
@@ -157,6 +307,19 @@ async function resolveOrgReadAccess(userId: string, organizationId: string) {
     if (parentMembership) return { membership: parentMembership, organization: org };
   }
   throw new HttpError(403, "You do not belong to this organization.");
+}
+
+// A case viewer may read the lab's shared slip and its protected images without
+// acquiring any organization/template write permission. Bind to that exact case.
+async function resolveCasePrintReadAccess(userId: string, organizationId: string, caseId: unknown) {
+  try {
+    return await resolveOrgReadAccess(userId, organizationId);
+  } catch (error) {
+    if (typeof caseId !== "string" || !caseId) throw error;
+    const access = await assertCaseAccessWithMemberships(userId, caseId);
+    if (access.case.labOrganizationId !== organizationId) throw new HttpError(403, "This template does not belong to the case's lab.");
+    return access;
+  }
 }
 
 // Resolve admin-write access for an organization. Direct admin membership of
@@ -186,6 +349,52 @@ async function resolveOrgAdminAccess(
       roles.includes(parentMembership.role as MembershipRole)
     ) {
       return { membership: parentMembership, organization: org };
+    }
+  }
+  throw new HttpError(403, "You do not have permission for this action.");
+}
+
+// Resolve who may review (list/approve/reject) join requests for an
+// organization. Direct admin membership of the org always works. For provider
+// orgs (practices) that have NO active admin/owner members — the common case
+// for lab-created practices — an admin of the parent lab may act instead, so
+// practice join requests are never stuck with nobody able to approve them.
+// Once the practice has its own active admin, the parent-lab fallback closes.
+async function resolveJoinRequestAdminAccess(
+  userId: string,
+  organizationId: string
+) {
+  const direct = await getActiveMembership(userId, organizationId);
+  if (direct && ADMIN_ROLES.includes(direct.role as MembershipRole)) {
+    return { membership: direct, organization: null };
+  }
+  const org = await db.query.organizations.findFirst({
+    where: eq(organizations.id, organizationId),
+  });
+  if (!org) throw new HttpError(404, "Organization not found.");
+  if (org.type === "provider" && org.parentLabOrganizationId) {
+    const practiceAdmins = await db
+      .select()
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.labId, organizationId),
+          eq(organizationMemberships.status, "active"),
+          inArray(organizationMemberships.role, [...ADMIN_ROLES]),
+          notDeleted(organizationMemberships)
+        )
+      );
+    if (practiceAdmins.length === 0) {
+      const parentMembership = await getActiveMembership(
+        userId,
+        org.parentLabOrganizationId
+      );
+      if (
+        parentMembership &&
+        ADMIN_ROLES.includes(parentMembership.role as MembershipRole)
+      ) {
+        return { membership: parentMembership, organization: org };
+      }
     }
   }
   throw new HttpError(403, "You do not have permission for this action.");
@@ -228,6 +437,142 @@ function getOrganizationAddress(organization: any): string | null {
     .join(", ");
 
   return address || null;
+}
+
+const SHARED_PROVIDER_CONTACT_FIELDS = [
+  "name",
+  "displayName",
+  "billingEmail",
+  "phone",
+  "addressLine1",
+  "addressLine2",
+  "city",
+  "state",
+  "zip",
+] as const;
+
+type SharedProviderContactField =
+  (typeof SHARED_PROVIDER_CONTACT_FIELDS)[number];
+type SharedProviderContact = Record<SharedProviderContactField, string | null>;
+
+function sharedProviderContact(organization: typeof organizations.$inferSelect) {
+  return Object.fromEntries(
+    SHARED_PROVIDER_CONTACT_FIELDS.map((field) => [
+      field,
+      organization[field] ?? null,
+    ]),
+  ) as SharedProviderContact;
+}
+
+function sameSharedProviderContact(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+) {
+  return SHARED_PROVIDER_CONTACT_FIELDS.every(
+    (field) => (left[field] ?? null) === (right[field] ?? null),
+  );
+}
+
+async function getSharedProviderRelationship(
+  userId: string,
+  labOrganizationId: string,
+  providerOrganizationId: string,
+  requireAdmin = false,
+) {
+  const provider = await db.query.organizations.findFirst({
+    where: and(
+      eq(organizations.id, providerOrganizationId),
+      eq(organizations.type, "provider"),
+      isNull(organizations.deletedAt),
+    ),
+  });
+  if (
+    !provider ||
+    !provider.isActive ||
+    provider.parentLabOrganizationId !== labOrganizationId
+  ) {
+    throw new HttpError(404, "Provider relationship not found.");
+  }
+  const [labMembership, providerMembership] = await Promise.all([
+    getActiveMembership(userId, labOrganizationId),
+    getActiveMembership(userId, providerOrganizationId),
+  ]);
+  const allowedRoles = requireAdmin ? ADMIN_ROLES : VALID_MEMBERSHIP_ROLES;
+  const labAccess =
+    labMembership &&
+    allowedRoles.includes(labMembership.role as MembershipRole);
+  const providerAccess =
+    providerMembership &&
+    allowedRoles.includes(providerMembership.role as MembershipRole);
+  if (!labAccess && !providerAccess) {
+    throw new HttpError(403, "You do not have access to this provider relationship.");
+  }
+  return {
+    provider,
+    actingOrganizationId: labAccess
+      ? labOrganizationId
+      : providerOrganizationId,
+    source: labAccess ? ("lab" as const) : ("provider" as const),
+  };
+}
+
+async function assertProviderCallerSelection(
+  req: any,
+  providerOrganizationId: string,
+) {
+  if (req.user?.userType !== "provider") return;
+  const selected = await requireSelectedProviderOrganization(
+    req.auth.userId as string,
+    req.header("x-provider-organization-id"),
+  );
+  if (selected.id !== providerOrganizationId) {
+    throw new HttpError(403, "That provider organization is not selected.");
+  }
+}
+
+async function notifySharedAccountCounterpart(input: {
+  labOrganizationId: string;
+  providerOrganizationId: string;
+  recipientOrganizationId: string;
+  requestId: string;
+  type: "provider_account_change_requested" | "provider_account_change_decided";
+  title: string;
+  body: string;
+}) {
+  try {
+    const recipients = await db
+      .select({ userId: organizationMemberships.userId })
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(
+            organizationMemberships.labId,
+            input.recipientOrganizationId,
+          ),
+          eq(organizationMemberships.status, "active"),
+          isNull(organizationMemberships.deletedAt),
+          inArray(organizationMemberships.role, [...ADMIN_ROLES]),
+        ),
+      );
+    if (recipients.length === 0) return;
+    await db.insert(notifications).values(
+      [...new Set(recipients.map((recipient) => recipient.userId))].map(
+        (userId) => ({
+          userId,
+          type: input.type,
+          title: input.title,
+          body: input.body,
+          dataJson: {
+            requestId: input.requestId,
+            labOrganizationId: input.labOrganizationId,
+            providerOrganizationId: input.providerOrganizationId,
+          },
+        }),
+      ),
+    );
+  } catch {
+    // Counterpart notifications are best-effort and never mutate account state.
+  }
 }
 
 async function repairLabCaseAffiliations(labId: string): Promise<void> {
@@ -465,11 +810,18 @@ router.post(
   "/",
   asyncHandler(async (req, res) => {
     const input = createOrgSchema.parse(req.body);
+    if (
+      input.type !== "lab" &&
+      input.printProviderPreferencesOnLabSlips !== undefined
+    ) {
+      throw new HttpError(
+        400,
+        "Provider preference printing can only be configured for lab organizations.",
+      );
+    }
     const callerId = (req as any).auth.userId;
 
     let parentLabOrganizationId: string | null = null;
-    let accountNumber: string | null = null;
-    let accountNumberWasAutoGenerated = false;
 
     if (input.type === "lab") {
       // Account epic Phase 3 — only a verified account may stand up a lab
@@ -557,24 +909,7 @@ router.post(
           );
         }
 
-        if (input.accountNumber && input.accountNumber.trim()) {
-          accountNumber = await assertCustomAccountNumberAvailable(
-            parentLabOrganizationId,
-            input.accountNumber,
-            null
-          );
-          accountNumberWasAutoGenerated = false;
-        } else {
-          accountNumber = await generateProviderAccountNumber(
-            parentLabOrganizationId,
-            {
-              addressLine1: input.addressLine1 ?? null,
-              doctorName: input.doctorName ?? null,
-              practiceName: input.displayName || input.name,
-            }
-          );
-          accountNumberWasAutoGenerated = true;
-        }
+        // accountNumber is computed inside withAccountNumberLock below.
       }
     }
 
@@ -590,110 +925,129 @@ router.post(
     const licenseNumber =
       input.type === "lab" ? input.licenseNumber?.trim() || null : null;
 
-    // Platform-wide account number for provider organizations (Task #320).
-    // Best-effort; never blocks creation.
-    let platformAccountNumber: string | null = null;
-    if (input.type === "provider") {
-      try {
-        platformAccountNumber = await allocatePlatformAccountNumber(
-          "org",
-          deriveAccountNameParts({
-            practiceName: input.displayName || input.name,
-            doctorName: input.doctorName ?? null,
-          })
-        );
-      } catch (err: any) {
-        req.log?.warn?.(
-          { err: err?.message ?? String(err) },
-          "Failed to allocate platform account number for org (non-fatal)"
-        );
-      }
-    }
-
-    const insertValues = {
+    // Base insert values — accountNumber is computed inside the advisory lock.
+    const baseInsertValues = {
       ...persistableInput,
       licenseNumber,
       parentLabOrganizationId,
-      accountNumber,
-      platformAccountNumber,
       createdByUserId: callerId,
     };
 
-    let organization: (typeof organizations.$inferSelect) | undefined;
-    try {
-      const [row] = await db
-        .insert(organizations)
-        .values(insertValues)
-        .returning();
-      organization = row;
-    } catch (err: unknown) {
-      if (extractPgCode(err) === "23505") {
-        const constraint = extractPgConstraintName(err);
-        if (constraint === "organizations_platform_account_number_unique") {
-          // Platform account number collision — non-fatal; retry with null.
-          req.log?.warn?.(
-            { constraint },
-            "Platform account number collision on org insert; retrying with null"
-          );
-          try {
-            const [row] = await db
-              .insert(organizations)
-              .values({ ...insertValues, platformAccountNumber: null })
-              .returning();
-            organization = row;
-          } catch (retryErr: unknown) {
-            wrapDbError(retryErr, {
-              duplicate: "A practice with this name already exists. Select existing practice instead.",
-              notNull: "Practice name, city, state, and ZIP are required.",
-              checkViolation: "Practice name, city, state, and ZIP are required.",
-              fallback: "Could not save this practice. Please check required fields and try again.",
-            });
-          }
-        } else if (constraint === "organizations_parent_lab_account_number_unique") {
-          if (accountNumberWasAutoGenerated && parentLabOrganizationId) {
-            // The primary generator excluded soft-deleted rows but the DB
-            // index has no WHERE clause, so it still rejects the number.
-            // Retry with a fallback generator that skips ALL rows (including
-            // deleted) to find a slot that is genuinely unoccupied in the DB.
-            req.log?.warn?.(
-              { constraint },
-              "Auto-generated account number collided with a soft-deleted row; retrying with fallback generator"
+    // Helper: acquire the per-lab advisory lock (pg_advisory_xact_lock),
+    // validate/generate the account number inside the same transaction, then
+    // insert — making check+write atomic and preventing concurrent races.
+    //
+    // `useFallback` — when true, use generateProviderAccountNumberFallback
+    //                 (includes soft-deleted rows) instead of the primary
+    //                 generator. Only needed while the transitional
+    //                 organizations_parent_lab_account_number_unique DB index
+    //                 still exists on the dev DB (before schema push).
+    const insertWithAccountNumberLock = (useFallback = false) =>
+      withAccountNumberLock(parentLabOrganizationId, async (client) => {
+        // Platform allocation and the organization insert share this
+        // transaction. It is never best-effort: a failed allocation rolls the
+        // creation back rather than creating an unnumbered provider org.
+        const platformAccountNumber = await allocatePlatformAccountNumber({
+          tx: client,
+        });
+        let acctNum: string | null = null;
+        if (parentLabOrganizationId) {
+          if (input.accountNumber && input.accountNumber.trim()) {
+            acctNum = await assertCustomAccountNumberAvailable(
+              parentLabOrganizationId,
+              input.accountNumber,
+              null,
+              client
             );
-            const fallbackAccountNumber = await generateProviderAccountNumberFallback(
+          } else if (useFallback) {
+            acctNum = await generateProviderAccountNumberFallback(
               parentLabOrganizationId,
               {
                 addressLine1: input.addressLine1 ?? null,
                 doctorName: input.doctorName ?? null,
                 practiceName: input.displayName || input.name,
-              }
+              },
+              client
             );
-            try {
-              const [row] = await db
-                .insert(organizations)
-                .values({ ...insertValues, accountNumber: fallbackAccountNumber })
-                .returning();
-              organization = row;
-            } catch (retryErr: unknown) {
-              wrapDbError(retryErr, {
-                duplicate: "A practice with this name already exists. Select existing practice instead.",
-                notNull: "Practice name, city, state, and ZIP are required.",
-                checkViolation: "Practice name, city, state, and ZIP are required.",
-                fallback: "Could not save this practice. Please check required fields and try again.",
-              });
-            }
           } else {
-            throw new HttpError(
-              409,
-              "An account number conflict occurred; please supply a unique account number manually."
+            acctNum = await generateProviderAccountNumber(
+              parentLabOrganizationId,
+              {
+                addressLine1: input.addressLine1 ?? null,
+                doctorName: input.doctorName ?? null,
+                practiceName: input.displayName || input.name,
+              },
+              client
             );
           }
+        } else if (input.type === "provider") {
+          acctNum = await generateStandaloneProviderAccountNumber(
+            {
+              addressLine1: input.addressLine1 ?? null,
+              doctorName: input.doctorName ?? null,
+              practiceName: input.displayName || input.name,
+            },
+            client,
+          );
+        }
+        const [row] = await (client as any)
+          .insert(organizations)
+          .values({ ...baseInsertValues, accountNumber: acctNum, platformAccountNumber })
+          .returning();
+        return row as typeof organizations.$inferSelect;
+      });
+
+    const insertWrapErrors = {
+      duplicate: "A practice with this name already exists. Select existing practice instead.",
+      notNull: "Practice name, city, state, and ZIP are required.",
+      checkViolation: "Practice name, city, state, and ZIP are required.",
+      fallback: "Could not save this practice. Please check required fields and try again.",
+    };
+
+    let organization: (typeof organizations.$inferSelect) | undefined;
+    try {
+      organization = await insertWithAccountNumberLock();
+    } catch (err: unknown) {
+      // Re-throw application-level errors (e.g. HttpError from account number
+      // validation) directly — they must not be passed through wrapDbError.
+      if (err instanceof HttpError) throw err;
+      if (extractPgCode(err) === "23505") {
+        const constraint = extractPgConstraintName(err);
+        if (constraint === "organizations_platform_account_number_unique") {
+          // The allocator checks both owner tables before returning, so this
+          // indicates an unexpected schema/concurrency problem. Never create
+          // an unnumbered provider organization as a fallback.
+          throw new HttpError(
+            500,
+            "Could not allocate a unique platform account number.",
+          );
+        } else if (constraint === "organizations_parent_lab_account_number_unique") {
+          // Transitional: the dev DB may still carry the old unique index on
+          // (parentLabOrganizationId, accountNumber) before schema push removes it.
+          //
+          // Caller supplied a CUSTOM account number: the submitted number collides
+          // with a soft-deleted practice's number stored in the old index. Return
+          // a clear 409 — never silently substitute a different number.
+          //
+          // Auto-generated number: the primary generator excluded soft-deleted
+          // rows from its availability check, but the old index still covers them.
+          // Retry with the fallback generator that scans ALL rows (including
+          // soft-deleted) to find a slot that is genuinely unoccupied in the DB.
+          if (input.accountNumber && input.accountNumber.trim()) {
+            throw new HttpError(409, "That account number is already in use.");
+          }
+          req.log?.warn?.(
+            { constraint },
+            "Auto-generated account number collided with a soft-deleted row; retrying with fallback generator"
+          );
+          try {
+            organization = await insertWithAccountNumberLock(true);
+          } catch (retryErr: unknown) {
+            if (retryErr instanceof HttpError) throw retryErr;
+            wrapDbError(retryErr, insertWrapErrors);
+          }
         } else {
-          wrapDbError(err, {
-            duplicate: "A practice with this name already exists. Select existing practice instead.",
-            notNull: "Practice name, city, state, and ZIP are required.",
-            checkViolation: "Practice name, city, state, and ZIP are required.",
-            fallback: "Could not save this practice. Please check required fields and try again.",
-          });
+          wrapDbError(err, insertWrapErrors);
         }
       } else {
         wrapDbError(err, {
@@ -746,6 +1100,17 @@ router.post(
   })
 );
 
+/**
+ * Accounts the admin was shown by the match preview and explicitly marked as
+ * a different person (Task #4398). Carried per doctor row so a dismissal only
+ * applies to the row it was made on.
+ */
+const distinctFromUserIdsSchema = z
+  .array(z.string().min(1))
+  .max(20)
+  .optional()
+  .default([]);
+
 const addDoctorsSchema = z.object({
   doctors: z
     .array(
@@ -754,41 +1119,47 @@ const addDoctorsSchema = z.object({
         lastName: z.string().trim().optional().default(""),
         email: z.string().trim().email().optional().or(z.literal("")),
         phone: z.string().trim().optional(),
+        distinctFromUserIds: distinctFromUserIdsSchema,
       })
     )
     .min(1)
     .max(50),
 });
 
-function slugifyForUsername(s: string): string {
-  return s
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 30) || "doctor";
-}
+/**
+ * Read-only "does this doctor already have an account?" preview
+ * (Task #4398). Same input shape as the add call, but every field is
+ * optional: the admin is still typing, and a half-filled row simply has
+ * nothing to match on yet.
+ */
+const previewDoctorMatchesSchema = z.object({
+  doctors: z
+    .array(
+      z.object({
+        firstName: z.string().trim().optional().default(""),
+        lastName: z.string().trim().optional().default(""),
+        // Deliberately NOT `.email()` — a partially typed address must return
+        // "no match", not a validation error that blanks the whole preview.
+        email: z.string().trim().max(320).optional().default(""),
+        phone: z.string().trim().max(64).optional().default(""),
+        distinctFromUserIds: distinctFromUserIdsSchema,
+      })
+    )
+    .min(1)
+    .max(50),
+});
 
-async function generateUniqueDoctorUsername(
-  firstName: string,
-  lastName: string
-): Promise<string> {
-  const base = slugifyForUsername(`${firstName}-${lastName}`);
-  for (let i = 0; i < 8; i++) {
-    const suffix = Math.random().toString(36).slice(2, 8);
-    const candidate = `${base}-${suffix}`;
-    const existing = await db.query.users.findFirst({
-      where: eq(users.username, candidate),
-    });
-    if (!existing) return candidate;
-  }
-  throw new HttpError(500, "Could not allocate a unique username for doctor.");
-}
-
-// Bulk-create doctor users for a provider practice. Lab admin only. Each
-// created user gets its own platform account number (Task #320) and is added
-// to the practice as an active member with role "user". A random password is
-// stored — the doctor must claim/reset it later via the standard flows.
+// Bulk-add doctors to a provider practice. Lab admin only.
+//
+// A doctor who already has a provider account is ATTACHED to the practice and
+// reported as reused, carrying their existing account number — adding the same
+// person twice (with or without an email, with or without a "Dr." prefix or a
+// middle initial) must never mint a second account or a second number
+// (Task #4372). Only a genuinely new doctor is created, through the
+// provider-account gate, which allocates the account number (Task #320) and
+// records the sanctioned trigger that created the account. Every added doctor
+// becomes an active member with role "user"; a random password is stored — the
+// doctor must claim/reset it later via the standard flows.
 router.post(
   "/:organizationId/doctors",
   asyncHandler(async (req, res) => {
@@ -812,8 +1183,9 @@ router.post(
     await requireAnyRole(callerId, practice.parentLabOrganizationId, ADMIN_ROLES);
 
     const input = addDoctorsSchema.parse(req.body);
+    const labId = practice.parentLabOrganizationId;
 
-    const created: Array<{
+    type AddedDoctor = {
       id: string;
       username: string;
       firstName: string | null;
@@ -821,7 +1193,11 @@ router.post(
       email: string | null;
       phone: string | null;
       platformAccountNumber: string | null;
-    }> = [];
+    };
+    const created: AddedDoctor[] = [];
+    const reused: Array<
+      AddedDoctor & { index: number; matchedOn: ProviderAccountMatchReason }
+    > = [];
     const skipped: Array<{ index: number; reason: string }> = [];
 
     for (let i = 0; i < input.doctors.length; i++) {
@@ -829,87 +1205,39 @@ router.post(
       try {
         const email = d.email && d.email.length > 0 ? d.email.toLowerCase() : null;
         const phone = d.phone && d.phone.length > 0 ? d.phone : null;
+        const identity: DoctorIdentityInput = {
+          firstName: d.firstName,
+          lastName: d.lastName,
+          doctorName: `${d.firstName} ${d.lastName}`.trim(),
+          email,
+          phone,
+        };
 
-        // Skip duplicates (by email) instead of failing the whole batch.
-        if (email) {
-          const allUsers = await db.select({ id: users.id, email: users.email }).from(users);
-          const dup = allUsers.find((u) => u.email?.toLowerCase() === email);
-          if (dup) {
-            skipped.push({ index: i, reason: "An account with this email already exists." });
-            continue;
-          }
-        }
-
-        const username = await generateUniqueDoctorUsername(d.firstName, d.lastName);
-        const randomPassword = crypto.randomUUID() + crypto.randomUUID();
-        const hashed = await hashPassword(randomPassword);
-
-        const initials =
-          ((d.firstName.trim()[0] ?? "") + (d.lastName.trim()[0] ?? "")).toUpperCase() || "DR";
-
-        let platformAccountNumber: string | null = null;
-        try {
-          platformAccountNumber = await allocatePlatformAccountNumber(
-            "user",
-            deriveAccountNameParts({
-              firstName: d.firstName,
-              lastName: d.lastName,
-              doctorName: `${d.firstName} ${d.lastName}`.trim(),
-              practiceName: practice.displayName || practice.name,
-            })
-          );
-        } catch (err: any) {
-          req.log?.warn?.(
-            { err: err?.message ?? String(err) },
-            "Failed to allocate platform account number for doctor (non-fatal)"
-          );
-        }
-
-        // Wrap the user + membership inserts in a transaction so a failure
-        // partway through doesn't leave a dangling user without membership.
-        const user = await db.transaction(async (tx) => {
-          const [u] = await tx
-            .insert(users)
-            .values({
-              username,
-              password: hashed,
-              email,
-              phone,
-              firstName: d.firstName,
-              lastName: d.lastName || null,
-              initials,
-              userType: "provider",
-              doctorName: `${d.firstName} ${d.lastName}`.trim(),
-              role: "user",
-              platformAccountNumber,
-            })
-            .returning();
-          await tx.insert(organizationMemberships).values({
-            labId: organizationId,
-            userId: u.id,
-            role: "user",
-            status: "active",
-            approvedByUserId: callerId,
-            joinedAt: new Date(),
+        // The gate resolves the doctor against existing accounts first: when
+        // they already have one it is attached here and reported as reused,
+        // so no second account (and no second account number) is minted.
+        const outcome = await db.transaction(async (tx) => {
+          const gate = await createProviderAccountThroughGate({
+            runner: tx,
+            trigger: "lab_created_account",
+            actorUserId: callerId,
+            labOrganizationId: labId,
+            organizationId,
+            identity,
+            practice: { name: practice.name, displayName: practice.displayName },
+            // Accounts the admin saw in the pre-submit preview and declared a
+            // different person (Task #4398). Everyone else is still matched.
+            excludeUserIds: d.distinctFromUserIds,
           });
-          return u;
+          await ensureMembership(tx, organizationId, gate.user.id, callerId);
+          // Attaching a doctor to a practice takes them out of the lab's
+          // Unassigned holding area.
+          await clearUnassignedHolding(tx, labId, { userId: gate.user.id });
+          return gate;
         });
 
-        await writeAuditLog({
-          req,
-          organizationId,
-          action: "practice_doctor_added",
-          entityType: "user",
-          entityId: user.id,
-          afterJson: {
-            username: user.username,
-            email: user.email,
-            phone: user.phone,
-            platformAccountNumber: user.platformAccountNumber,
-          },
-        });
-
-        created.push({
+        const user = outcome.user;
+        const row: AddedDoctor = {
           id: user.id,
           username: user.username,
           firstName: user.firstName,
@@ -917,7 +1245,40 @@ router.post(
           email: user.email,
           phone: user.phone,
           platformAccountNumber: user.platformAccountNumber,
+        };
+
+        await writeAuditLog({
+          req,
+          organizationId,
+          action:
+            outcome.outcome === "reused"
+              ? "practice_doctor_attached_existing"
+              : "practice_doctor_added",
+          entityType: "user",
+          entityId: user.id,
+          afterJson: {
+            username: user.username,
+            email: user.email,
+            phone: user.phone,
+            platformAccountNumber: user.platformAccountNumber,
+            ...(outcome.outcome === "reused"
+              ? { reusedExistingAccount: true, matchedOn: outcome.matchedOn }
+              : {
+                  trigger: "lab_created_account",
+                  // A new account created *after* the admin dismissed a match
+                  // has to be traceable back to that decision.
+                  ...(d.distinctFromUserIds.length > 0
+                    ? { confirmedDistinctFromUserIds: d.distinctFromUserIds }
+                    : {}),
+                }),
+          },
         });
+
+        if (outcome.outcome === "reused") {
+          reused.push({ ...row, index: i, matchedOn: outcome.matchedOn });
+        } else {
+          created.push(row);
+        }
       } catch (err: any) {
         // Per-row failure must not abort the whole batch — surface the row
         // as skipped so the caller can see exactly which doctors landed.
@@ -932,7 +1293,186 @@ router.post(
       }
     }
 
-    return ok(res, { created, skipped }, 201);
+    return ok(res, { created, reused, skipped }, 201);
+  })
+);
+
+// Pre-submit duplicate check for the add-doctor forms (Task #4398).
+//
+// Adding a doctor who already has an account attaches that account instead of
+// minting a second one, but before this endpoint the admin only found out
+// afterwards. This is a READ-ONLY preview of that same decision: it runs the
+// one shared resolver the add path runs (`resolveExistingProviderAccount`) —
+// never a second matching rule — and reports what would happen, so the admin
+// can attach knowingly, fix a typo, or say "different person" up front.
+//
+// `:organizationId` may be the provider practice the doctor is being added to
+// OR the parent lab itself: matching is scoped per lab, and the "add practice"
+// dialog previews its doctor rows before the practice exists. Lab-admin only.
+router.post(
+  "/:organizationId/doctors/match-preview",
+  asyncHandler(async (req, res) => {
+    const organizationId = req.params.organizationId;
+    const callerId = (req as any).auth.userId as string;
+
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!org || org.deletedAt) {
+      throw new HttpError(404, "Organization not found.");
+    }
+
+    let labId: string;
+    let practiceId: string | null = null;
+    if (org.type === "provider") {
+      if (!org.parentLabOrganizationId) {
+        throw new HttpError(400, "Practice has no parent lab.");
+      }
+      labId = org.parentLabOrganizationId;
+      practiceId = org.id;
+    } else if (org.type === "lab") {
+      labId = org.id;
+    } else {
+      throw new HttpError(
+        400,
+        "Doctor matches can only be previewed for a lab or a provider practice."
+      );
+    }
+
+    // Same gate as the add call — a preview leaks who a lab's doctors are.
+    await requireAnyRole(callerId, labId, ADMIN_ROLES);
+
+    const input = previewDoctorMatchesSchema.parse(req.body);
+
+    type PreviewMatch = {
+      index: number;
+      userId: string;
+      displayName: string;
+      firstName: string | null;
+      lastName: string | null;
+      email: string | null;
+      phone: string | null;
+      platformAccountNumber: string | null;
+      matchedOn: ProviderAccountMatchReason;
+      similarity: number;
+      practices: string[];
+      alreadyMemberOfPractice: boolean;
+    };
+
+    const matches: PreviewMatch[] = [];
+    // Rows whose typed email already belongs to an account the add call would
+    // NOT attach to. The gate refuses those rows outright, so the preview has
+    // to say "this will be rejected" rather than promise an attach. The owner
+    // is never named: they may be outside this lab entirely.
+    const emailConflicts: number[] = [];
+
+    for (let i = 0; i < input.doctors.length; i++) {
+      const d = input.doctors[i];
+      const identity: DoctorIdentityInput = {
+        firstName: d.firstName,
+        lastName: d.lastName,
+        doctorName: `${d.firstName} ${d.lastName}`.trim(),
+        email: d.email || null,
+        phone: d.phone || null,
+      };
+      // The resolver short-circuits an identity with nothing to match on
+      // before it touches the database, so half-typed rows stay cheap.
+      const match = await resolveExistingProviderAccount(db, identity, {
+        labOrganizationId: labId,
+        excludeUserIds: d.distinctFromUserIds,
+      });
+
+      // Mirrors the gate's ordering: email ownership is settled before the
+      // resolver's answer is accepted.
+      if (d.email) {
+        const emailOwner = await findUserByEmail(db, d.email);
+        if (emailOwner && emailOwner.id !== match?.user.id) {
+          emailConflicts.push(i);
+          continue;
+        }
+      }
+
+      if (!match) continue;
+
+      const u = match.user;
+      matches.push({
+        index: i,
+        userId: u.id,
+        displayName:
+          (u.doctorName ?? "").trim() ||
+          `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() ||
+          u.username,
+        firstName: u.firstName,
+        lastName: u.lastName,
+        email: u.email,
+        phone: u.phone,
+        platformAccountNumber: u.platformAccountNumber,
+        matchedOn: match.matchedOn,
+        similarity: match.similarity,
+        practices: [],
+        alreadyMemberOfPractice: false,
+      });
+    }
+
+    // Annotate each match with where that account already practises. Sibling
+    // practices under this lab are named; memberships elsewhere collapse to a
+    // generic label so the preview never leaks another lab's practice names —
+    // same rule the eligible-doctor picker follows.
+    const matchedIds = Array.from(new Set(matches.map((m) => m.userId)));
+    if (matchedIds.length > 0) {
+      const memberships = await db
+        .select({
+          labId: organizationMemberships.labId,
+          userId: organizationMemberships.userId,
+        })
+        .from(organizationMemberships)
+        .where(
+          and(
+            inArray(organizationMemberships.userId, matchedIds),
+            eq(organizationMemberships.status, "active"),
+            notDeleted(organizationMemberships)
+          )
+        );
+      const referencedIds = Array.from(
+        new Set(memberships.map((m) => m.labId))
+      );
+      const referencedOrgs = referencedIds.length
+        ? await db
+            .select({
+              id: organizations.id,
+              name: organizations.name,
+              displayName: organizations.displayName,
+              type: organizations.type,
+              parentLabOrganizationId: organizations.parentLabOrganizationId,
+            })
+            .from(organizations)
+            .where(inArray(organizations.id, referencedIds))
+        : [];
+      const orgMap = new Map(referencedOrgs.map((o) => [o.id, o]));
+
+      const labelsByUser = new Map<string, string[]>();
+      const memberOfPractice = new Set<string>();
+      for (const m of memberships) {
+        if (practiceId && m.labId === practiceId) {
+          memberOfPractice.add(m.userId);
+        }
+        const pr = orgMap.get(m.labId);
+        if (!pr || pr.type !== "provider") continue;
+        const label =
+          pr.parentLabOrganizationId === labId
+            ? pr.displayName || pr.name
+            : "another lab";
+        const arr = labelsByUser.get(m.userId) ?? [];
+        if (!arr.includes(label)) arr.push(label);
+        labelsByUser.set(m.userId, arr);
+      }
+      for (const m of matches) {
+        m.practices = labelsByUser.get(m.userId) ?? [];
+        m.alreadyMemberOfPractice = memberOfPractice.has(m.userId);
+      }
+    }
+
+    return ok(res, { matches, emailConflicts });
   })
 );
 
@@ -975,8 +1515,15 @@ router.get(
       );
     const currentMemberIds = new Set(currentMembersRows.map((m) => m.userId));
 
-    // Every provider-type user on the platform, minus current members.
-    const allProviderUsers = await db
+    // Provider-type accounts affiliated with THIS lab, minus current members.
+    //
+    // Scope (Task #4849): membership under this lab, or a place in its
+    // Unassigned holding area. It is deliberately NOT every provider account
+    // on the platform — this is a per-lab picker, and the database holds
+    // other tenants' providers plus the automated-test accounts imported on
+    // 2026-10-06. Linking a doctor's accounts across labs stays a separate
+    // concern, handled by the account-link flow.
+    const labProviderUsers = await db
       .select({
         id: users.id,
         username: users.username,
@@ -984,12 +1531,23 @@ router.get(
         phone: users.phone,
         firstName: users.firstName,
         lastName: users.lastName,
+        doctorName: users.doctorName,
         userType: users.userType,
         platformAccountNumber: users.platformAccountNumber,
       })
       .from(users)
-      .where(eq(users.userType, "provider"));
-    const eligibleUsers = allProviderUsers.filter(
+      // Accounts retired by a duplicate consolidation (Task #4373) are
+      // deactivated + soft-deleted; they must never come back through the
+      // eligible-doctor picker.
+      .where(
+        and(
+          eq(users.userType, "provider"),
+          eq(users.isActive, true),
+          notDeleted(users),
+          labAffiliatedProviderAccountCondition(practice.parentLabOrganizationId)
+        )
+      );
+    const eligibleUsers = labProviderUsers.filter(
       (u) => !currentMemberIds.has(u.id)
     );
 
@@ -1086,10 +1644,39 @@ router.get(
       )
       .groupBy(cases.doctorName, cases.providerOrganizationId);
 
+    // A case-history name only counts as "virtual" when no provider account
+    // already covers it. Compare on the shared normalized form so "Dr. Jane
+    // A. Smith" and "Jane Smith" are recognised as the same doctor and the
+    // picker stops offering a name that would only be adopted back onto the
+    // existing account (Task #4372).
+    //
+    // This pool is the resolver's MATCHING scope, not the listing scope
+    // above: adopting the name runs resolveExistingProviderAccount, so a
+    // name it would reuse must not be offered as new even when the account
+    // it would reuse is unaffiliated and therefore not itself listed.
+    const matchableProviderNames = await db
+      .select({
+        firstName: users.firstName,
+        lastName: users.lastName,
+        doctorName: users.doctorName,
+      })
+      .from(users)
+      .where(
+        and(
+          eq(users.userType, "provider"),
+          eq(users.isActive, true),
+          notDeleted(users),
+          labMatchableProviderAccountCondition(practice.parentLabOrganizationId)
+        )
+      );
     const existingProviderNames = new Set(
-      allProviderUsers.map((u) =>
-        `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim().toLowerCase()
-      )
+      matchableProviderNames
+        .flatMap((u) => [
+          `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim(),
+          u.doctorName ?? "",
+        ])
+        .map((n) => normalizeDoctorForCompare(n))
+        .filter((n) => n.length > 0)
     );
 
     // Resolve source practice display names for the case-history rows.
@@ -1119,7 +1706,7 @@ router.get(
         (c) =>
           c.doctorName &&
           c.doctorName.trim() &&
-          !existingProviderNames.has(c.doctorName.trim().toLowerCase())
+          !existingProviderNames.has(normalizeDoctorForCompare(c.doctorName))
       )
       .map((c) => {
         const nm = c.doctorName as string;
@@ -1277,6 +1864,389 @@ router.post(
 // Remove a doctor from a practice (detach — never delete) + reassignment +
 // the per-lab "Unassigned doctors" holding area. (Task #2359.)
 //
+// ---------------------------------------------------------------------------
+// Provider practice assignments
+//
+// A provider login can belong to several provider organizations under the
+// same lab. These memberships are the authorization source for the provider
+// portal; account numbers remain properties of the individual practices.
+// ---------------------------------------------------------------------------
+
+const doctorPracticeAssignmentsQuerySchema = z.object({
+  providerOrgId: z.string().min(1),
+  userId: z.string().min(1),
+});
+
+const updateDoctorPracticeAssignmentsSchema = z.object({
+  providerOrgId: z.string().min(1),
+  userId: z.string().min(1),
+  practiceOrganizationIds: z.array(z.string().min(1)).max(200),
+});
+
+function pickCurrentDoctorMembership<
+  T extends {
+    status: string;
+    deletedAt: Date | null;
+    updatedAt?: Date | null;
+    createdAt?: Date | null;
+  },
+>(memberships: T[]): T | undefined {
+  const active = memberships.find(
+    (membership) =>
+      membership.status === "active" && !membership.deletedAt,
+  );
+  if (active) return active;
+  return [...memberships].sort((a, b) => {
+    const aTime =
+      a.deletedAt?.getTime() ??
+      a.updatedAt?.getTime() ??
+      a.createdAt?.getTime() ??
+      0;
+    const bTime =
+      b.deletedAt?.getTime() ??
+      b.updatedAt?.getTime() ??
+      b.createdAt?.getTime() ??
+      0;
+    return bTime - aTime;
+  })[0];
+}
+
+async function resolveDoctorAssignmentContext(
+  labId: string,
+  providerOrgId: string,
+  userId: string,
+  callerId: string,
+) {
+  const lab = await db.query.organizations.findFirst({
+    where: eq(organizations.id, labId),
+  });
+  if (!lab || lab.deletedAt || lab.type !== "lab") {
+    throw new HttpError(404, "Lab not found.");
+  }
+  await requireAnyRole(callerId, labId, ADMIN_ROLES);
+
+  const sourcePractice = await db.query.organizations.findFirst({
+    where: eq(organizations.id, providerOrgId),
+  });
+  if (!sourcePractice) throw new HttpError(404, "Practice not found.");
+  if (
+    sourcePractice.type !== "provider" ||
+    sourcePractice.parentLabOrganizationId !== labId
+  ) {
+    throw new HttpError(400, "Practice must belong to this lab.");
+  }
+
+  const targetUser = await db.query.users.findFirst({
+    where: eq(users.id, userId),
+  });
+  if (!targetUser) throw new HttpError(404, "Provider user not found.");
+  if (targetUser.userType !== "provider") {
+    throw new HttpError(400, "Only provider users can have practice assignments.");
+  }
+
+  // Include removed/soft-deleted memberships so an assignment can be restored
+  // and so an admin can finish an edit after another session removed the link.
+  const sourceMemberships = await db.query.organizationMemberships.findMany({
+    where: and(
+      eq(organizationMemberships.labId, providerOrgId),
+      eq(organizationMemberships.userId, userId),
+    ),
+  });
+  const membership = pickCurrentDoctorMembership(sourceMemberships);
+  if (!membership) {
+    throw new HttpError(
+      404,
+      "This provider login is not associated with the selected practice.",
+    );
+  }
+
+  return { sourcePractice, userId: membership.userId };
+}
+
+async function loadDoctorPracticeAssignments(labId: string, userId: string) {
+  const practices = await db
+    .select({
+      id: organizations.id,
+      name: organizations.name,
+      displayName: organizations.displayName,
+      accountNumber: organizations.accountNumber,
+    })
+    .from(organizations)
+    .where(
+      and(
+        eq(organizations.type, "provider"),
+        eq(organizations.parentLabOrganizationId, labId),
+        notDeleted(organizations),
+      ),
+    );
+  const memberships = await db.query.organizationMemberships.findMany({
+    where: eq(organizationMemberships.userId, userId),
+  });
+  const membershipByPractice = new Map<string, (typeof memberships)[number]>();
+  for (const practice of practices) {
+    const current = pickCurrentDoctorMembership(
+      memberships.filter(
+        (membership) => membership.labId === practice.id,
+      ),
+    );
+    if (current) membershipByPractice.set(practice.id, current);
+  }
+
+  return practices
+    .map((practice) => {
+      const membership = membershipByPractice.get(practice.id);
+      const active =
+        !!membership &&
+        membership.status === "active" &&
+        !membership.deletedAt;
+      return {
+        practiceOrganizationId: practice.id,
+        practiceName: practice.displayName || practice.name,
+        accountNumber: practice.accountNumber,
+        membershipId: membership?.id ?? null,
+        status: active ? "active" : "available",
+        assigned: active,
+      };
+    })
+    .sort((a, b) => a.practiceName.localeCompare(b.practiceName));
+}
+
+router.get(
+  "/:labId/doctors/assignments",
+  asyncHandler(async (req, res) => {
+    const { providerOrgId, userId } = doctorPracticeAssignmentsQuerySchema.parse(
+      req.query,
+    );
+    await resolveDoctorAssignmentContext(
+      req.params.labId,
+      providerOrgId,
+      userId,
+      (req as any).auth.userId,
+    );
+    return ok(res, {
+      userId,
+      providerOrgId,
+      assignments: await loadDoctorPracticeAssignments(req.params.labId, userId),
+    });
+  }),
+);
+
+router.put(
+  "/:labId/doctors/assignments",
+  asyncHandler(async (req, res) => {
+    const labId = req.params.labId;
+    const callerId = (req as any).auth.userId as string;
+    const input = updateDoctorPracticeAssignmentsSchema.parse(req.body);
+    const selectedIds = Array.from(new Set(input.practiceOrganizationIds));
+    const { sourcePractice, userId } = await resolveDoctorAssignmentContext(
+      labId,
+      input.providerOrgId,
+      input.userId,
+      callerId,
+    );
+    if (!selectedIds.includes(sourcePractice.id)) {
+      throw new HttpError(
+        400,
+        "The customer’s own practice must remain assigned.",
+        { code: "SOURCE_PRACTICE_REQUIRED" },
+      );
+    }
+
+    const selectedPractices = selectedIds.length
+      ? await db
+          .select({
+            id: organizations.id,
+            name: organizations.name,
+            displayName: organizations.displayName,
+            accountNumber: organizations.accountNumber,
+            deletedAt: organizations.deletedAt,
+            parentLabOrganizationId: organizations.parentLabOrganizationId,
+            type: organizations.type,
+          })
+          .from(organizations)
+          .where(inArray(organizations.id, selectedIds))
+      : [];
+    const selectedById = new Map(
+      selectedPractices.map((practice) => [practice.id, practice]),
+    );
+    const unknown = selectedIds.filter((id) => !selectedById.has(id));
+    if (unknown.length > 0) {
+      throw new HttpError(
+        400,
+        "One or more selected practices could not be found.",
+        { code: "UNKNOWN_PRACTICE", practiceOrganizationIds: unknown },
+      );
+    }
+    const archived = selectedPractices.filter((practice) => !!practice.deletedAt);
+    if (archived.length > 0) {
+      throw new HttpError(
+        400,
+        `Archived practices cannot be assigned: ${archived
+          .map((practice) => practice.displayName || practice.name)
+          .join(", ")}.`,
+        { code: "ARCHIVED_PRACTICE" },
+      );
+    }
+    if (
+      selectedPractices.some(
+        (practice) =>
+          practice.type !== "provider" ||
+          practice.parentLabOrganizationId !== labId,
+      )
+    ) {
+      throw new HttpError(
+        400,
+        "Selected practices must be provider practices in this lab.",
+        { code: "PRACTICE_OUTSIDE_LAB" },
+      );
+    }
+
+    const accountOwners = new Map<string, string>();
+    for (const practice of selectedPractices) {
+      for (const segment of parseAccountNumbers(practice.accountNumber)) {
+        const previous = accountOwners.get(segment);
+        if (previous && previous !== practice.id) {
+          throw new HttpError(
+            409,
+            `Account number '${segment}' belongs to more than one selected practice.`,
+            { code: "DUPLICATE_ACCOUNT_NUMBER", accountNumber: segment },
+          );
+        }
+        accountOwners.set(segment, practice.id);
+      }
+    }
+
+    await db.transaction(async (tx) => {
+      const labPractices = await tx
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(
+          and(
+            eq(organizations.type, "provider"),
+            eq(organizations.parentLabOrganizationId, labId),
+          ),
+        );
+      const labPracticeIds = new Set(labPractices.map((practice) => practice.id));
+      const memberships = await tx.query.organizationMemberships.findMany({
+        where: and(
+          eq(organizationMemberships.userId, userId),
+          inArray(organizationMemberships.labId, Array.from(labPracticeIds)),
+        ),
+      });
+      const membershipByPractice = new Map<
+        string,
+        (typeof memberships)[number]
+      >();
+      for (const practiceId of labPracticeIds) {
+        const current = pickCurrentDoctorMembership(
+          memberships.filter(
+            (membership) => membership.labId === practiceId,
+          ),
+        );
+        if (current) membershipByPractice.set(practiceId, current);
+      }
+      const now = new Date();
+
+      for (const practiceId of labPracticeIds) {
+        const existing = membershipByPractice.get(practiceId);
+        if (selectedIds.includes(practiceId)) {
+          if (existing) {
+            await tx
+              .update(organizationMemberships)
+              .set({
+                status: "active",
+                role: existing.role || "user",
+                approvedByUserId: callerId,
+                joinedAt: now,
+                deletedAt: null,
+                deletedByUserId: null,
+              })
+              .where(eq(organizationMemberships.id, existing.id));
+          } else {
+            await tx.insert(organizationMemberships).values({
+              labId: practiceId,
+              userId,
+              role: "user",
+              status: "active",
+              approvedByUserId: callerId,
+              joinedAt: now,
+            });
+          }
+        } else if (
+          existing &&
+          existing.status === "active" &&
+          !existing.deletedAt
+        ) {
+          await tx
+            .update(organizationMemberships)
+            .set({
+              status: "removed",
+              deletedAt: now,
+              deletedByUserId: callerId,
+            })
+            .where(eq(organizationMemberships.id, existing.id));
+        }
+      }
+
+      const unassigned = await tx.query.labUnassignedDoctors.findFirst({
+        where: and(
+          eq(labUnassignedDoctors.labOrganizationId, labId),
+          eq(labUnassignedDoctors.userId, userId),
+        ),
+      });
+      if (selectedIds.length > 0) {
+        await tx
+          .update(labUnassignedDoctors)
+          .set({ deletedAt: now })
+          .where(
+            and(
+              eq(labUnassignedDoctors.labOrganizationId, labId),
+              eq(labUnassignedDoctors.userId, userId),
+              isNull(labUnassignedDoctors.deletedAt),
+            ),
+          );
+      } else if (unassigned) {
+        await tx
+          .update(labUnassignedDoctors)
+          .set({
+            removedFromOrganizationId: sourcePractice.id,
+            removedAt: now,
+            removedByUserId: callerId,
+            deletedAt: null,
+          })
+          .where(eq(labUnassignedDoctors.id, unassigned.id));
+      } else {
+        await tx.insert(labUnassignedDoctors).values({
+          labOrganizationId: labId,
+          userId,
+          removedFromOrganizationId: sourcePractice.id,
+          removedAt: now,
+          removedByUserId: callerId,
+        });
+      }
+    });
+
+    await writeAuditLog({
+      req,
+      organizationId: labId,
+      action: "provider_practice_assignments_updated",
+      entityType: "user",
+      entityId: userId,
+      afterJson: {
+        userId,
+        sourcePracticeId: sourcePractice.id,
+        practiceOrganizationIds: selectedIds,
+      },
+    });
+
+    return ok(res, {
+      userId,
+      providerOrgId: input.providerOrgId,
+      assignments: await loadDoctorPracticeAssignments(labId, userId),
+    });
+  }),
+);
+
 // Detaching a doctor drops their active membership at the source practice but
 // keeps the user account. They land either in another practice (reassign) or
 // in the per-lab `lab_unassigned_doctors` holding area. The caller chooses,
@@ -1317,62 +2287,40 @@ function doctorMatchName(u: {
   );
 }
 
-// Promote a virtual (name-only) doctor to a real provider user account. Does
-// NOT create any membership — the caller decides where the new account lands
-// (a destination practice or the Unassigned holding area).
-async function promoteVirtualDoctor(
+// Clear a per-lab "Unassigned doctors" exclusion so the doctor is no longer
+// held out of the lab's active roster. Name-only holding entries are matched
+// by normalized name, account-backed ones by user id.
+async function clearUnassignedHolding(
   tx: any,
-  doctorName: string,
-  practice: { name: string; displayName: string | null }
-): Promise<{
-  id: string;
-  username: string;
-  firstName: string | null;
-  lastName: string | null;
-  email: string | null;
-  phone: string | null;
-  doctorName: string | null;
-  platformAccountNumber: string | null;
-}> {
-  const { first, last } = splitDisplayName(doctorName);
-  const username = await generateUniqueDoctorUsername(first || doctorName, last);
-  const randomPassword = crypto.randomUUID() + crypto.randomUUID();
-  const hashed = await hashPassword(randomPassword);
-  const initials =
-    ((first.trim()[0] ?? "") + (last.trim()[0] ?? "")).toUpperCase() || "DR";
-
-  let platformAccountNumber: string | null = null;
-  try {
-    platformAccountNumber = await allocatePlatformAccountNumber(
-      "user",
-      deriveAccountNameParts({
-        firstName: first,
-        lastName: last,
-        doctorName,
-        practiceName: practice.displayName || practice.name,
-      })
-    );
-  } catch {
-    platformAccountNumber = null;
+  labId: string,
+  target: { userId?: string | null; doctorName?: string | null }
+): Promise<void> {
+  if (target.userId) {
+    await tx
+      .update(labUnassignedDoctors)
+      .set({ deletedAt: new Date() })
+      .where(
+        and(
+          eq(labUnassignedDoctors.labOrganizationId, labId),
+          eq(labUnassignedDoctors.userId, target.userId),
+          isNull(labUnassignedDoctors.deletedAt)
+        )
+      );
   }
-
-  const [u] = await tx
-    .insert(users)
-    .values({
-      username,
-      password: hashed,
-      email: null,
-      phone: null,
-      firstName: first || null,
-      lastName: last || null,
-      initials,
-      userType: "provider",
-      doctorName: doctorName.trim(),
-      role: "user",
-      platformAccountNumber,
-    })
-    .returning();
-  return u;
+  const name = target.doctorName?.trim();
+  if (name) {
+    await tx
+      .update(labUnassignedDoctors)
+      .set({ deletedAt: new Date() })
+      .where(
+        and(
+          eq(labUnassignedDoctors.labOrganizationId, labId),
+          isNull(labUnassignedDoctors.userId),
+          sql`lower(${labUnassignedDoctors.doctorName}) = lower(${name})`,
+          isNull(labUnassignedDoctors.deletedAt)
+        )
+      );
+  }
 }
 
 // Move a doctor's cases + invoices from one practice to another inside a
@@ -1383,7 +2331,7 @@ async function moveDoctorCasesAndInvoices(
   matchName: string,
   fromPracticeId: string,
   toPracticeId: string
-): Promise<{ casesMoved: number; invoicesMoved: number }> {
+): Promise<{ casesMoved: number; invoicesMoved: number; caseIds: string[] }> {
   const matchedCases = await tx
     .select({ id: cases.id })
     .from(cases)
@@ -1426,7 +2374,7 @@ async function moveDoctorCasesAndInvoices(
     invoicesMoved = invoiceIds.length;
   }
 
-  return { casesMoved: caseIds.length, invoicesMoved };
+  return { casesMoved: caseIds.length, invoicesMoved, caseIds };
 }
 
 // Create or restore an active membership for a user at a practice inside a
@@ -1470,34 +2418,6 @@ async function ensureMembership(
     })
     .returning();
   return m.id;
-}
-
-// Find an existing, non-deleted provider account whose name matches the given
-// case-history doctor name (either the free-text `doctorName` field or the
-// firstName+lastName pair). Used so adopting a case-history doctor reuses the
-// matching provider rather than spawning a duplicate account.
-async function findExistingProviderByName(
-  tx: any,
-  name: string
-): Promise<{
-  id: string;
-  firstName: string | null;
-  lastName: string | null;
-  email: string | null;
-  platformAccountNumber: string | null;
-} | null> {
-  const norm = name.trim().toLowerCase();
-  if (!norm) return null;
-  const candidates = await tx
-    .select()
-    .from(users)
-    .where(and(eq(users.userType, "provider"), notDeleted(users)));
-  const match = candidates.find((u: any) => {
-    const full = `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim().toLowerCase();
-    const dn = (u.doctorName ?? "").trim().toLowerCase();
-    return full === norm || dn === norm;
-  });
-  return match ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1594,17 +2514,22 @@ router.post(
     // membership so the doctor formally belongs to the destination practice.
 
     const result = await db.transaction(async (tx) => {
-      // Reuse a matching provider account when one exists; otherwise promote
-      // the name-only doctor into a fresh provider account.
-      let user = await findExistingProviderByName(tx, name);
-      let createdNewAccount = false;
-      if (!user) {
-        user = await promoteVirtualDoctor(tx, name, {
-          name: practice.name,
-          displayName: practice.displayName,
-        });
-        createdNewAccount = true;
-      }
+      // The gate reuses the doctor's existing account whenever one resolves —
+      // including name variants such as a "Dr." prefix or a middle initial —
+      // and only promotes the name-only doctor into a fresh account (with a
+      // fresh account number) when they genuinely have none.
+      const gate = await createProviderAccountThroughGate({
+        runner: tx,
+        trigger: "lab_created_account",
+        actorUserId: callerId,
+        labOrganizationId: labId,
+        organizationId,
+        identity: { doctorName: name },
+        practice: { name: practice.name, displayName: practice.displayName },
+      });
+      const user = gate.user;
+      const createdNewAccount = gate.outcome === "created";
+      const matchedOn = gate.outcome === "reused" ? gate.matchedOn : null;
 
       const membershipId = await ensureMembership(
         tx,
@@ -1615,6 +2540,7 @@ router.post(
 
       let casesMoved = 0;
       let invoicesMoved = 0;
+      let movedCaseIds: string[] = [];
       if (sourceOrganizationId && sourceOrganizationId !== organizationId) {
         const moved = await moveDoctorCasesAndInvoices(
           tx,
@@ -1625,23 +2551,28 @@ router.post(
         );
         casesMoved = moved.casesMoved;
         invoicesMoved = moved.invoicesMoved;
+        movedCaseIds = moved.caseIds;
       }
 
-      // Clear any per-lab "Unassigned doctors" exclusion for this user so the
-      // doctor is no longer held out of the lab's active roster.
-      await tx
-        .update(labUnassignedDoctors)
-        .set({ deletedAt: new Date() })
-        .where(
-          and(
-            eq(labUnassignedDoctors.labOrganizationId, labId),
-            eq(labUnassignedDoctors.userId, user.id),
-            isNull(labUnassignedDoctors.deletedAt)
-          )
-        );
+      // Clear any per-lab "Unassigned doctors" exclusion (account-backed or
+      // name-only) so the doctor is no longer held out of the active roster.
+      await clearUnassignedHolding(tx, labId, {
+        userId: user.id,
+        doctorName: name,
+      });
 
-      return { user, membershipId, createdNewAccount, casesMoved, invoicesMoved };
+      return {
+        user,
+        membershipId,
+        createdNewAccount,
+        matchedOn,
+        casesMoved,
+        invoicesMoved,
+        movedCaseIds,
+      };
     });
+
+    for (const caseId of result.movedCaseIds) broadcastCaseUpdated(caseId, "doctor_adopted");
 
     await writeAuditLog({
       req,
@@ -1656,6 +2587,8 @@ router.post(
         destinationPracticeId: organizationId,
         membershipId: result.membershipId,
         createdNewAccount: result.createdNewAccount,
+        reusedExistingAccount: !result.createdNewAccount,
+        matchedOn: result.matchedOn,
         casesMoved: result.casesMoved,
         invoicesMoved: result.invoicesMoved,
       },
@@ -1671,6 +2604,7 @@ router.post(
         email: result.user.email,
         platformAccountNumber: result.user.platformAccountNumber,
         createdNewAccount: result.createdNewAccount,
+        matchedOn: result.matchedOn,
         sourcePracticeId: sourceOrganizationId,
         casesMoved: result.casesMoved,
         invoicesMoved: result.invoicesMoved,
@@ -1740,7 +2674,10 @@ router.post(
     const movecases = destination !== null && input.existingCases === "move";
 
     const result = await db.transaction(async (tx) => {
-      // 1. Resolve the doctor → a real provider user. Promote a virtual one.
+      // 1. Resolve the doctor → an existing account when they have one.
+      //    Removing a doctor must NEVER create an account or an account
+      //    number (Task #4372): a name-only doctor with no existing account
+      //    is recorded by name instead.
       let user: {
         id: string;
         username: string;
@@ -1750,8 +2687,8 @@ router.post(
         phone: string | null;
         doctorName: string | null;
         platformAccountNumber: string | null;
-      };
-      let promoted = false;
+      } | null = null;
+      let matchedOn: ProviderAccountMatchReason | null = null;
       // Whether the resolved doctor is a real provider-type account. The
       // Unassigned holding area is a provider-doctor concept, so a
       // non-provider member is detached without a holding-area record.
@@ -1788,18 +2725,26 @@ router.post(
             "A doctor name is required to remove a name-only doctor."
           );
         }
-        user = await promoteVirtualDoctor(tx, name, {
-          name: practice.name,
-          displayName: practice.displayName,
-        });
-        promoted = true;
+        // Reuse the doctor's account when they already have one (including
+        // "Dr." prefix / middle-initial variants). Otherwise they stay
+        // account-less — the removal is recorded by name.
+        const match = await resolveExistingProviderAccount(
+          tx,
+          { doctorName: name },
+          { labOrganizationId: labId }
+        );
+        if (match) {
+          user = { ...match.user, doctorName: match.user.doctorName ?? null };
+          matchedOn = match.matchedOn;
+        }
       }
 
-      const matchName = input.doctorName?.trim() || doctorMatchName(user);
+      const matchName =
+        input.doctorName?.trim() || (user ? doctorMatchName(user) : "");
 
-      // 2. Drop the active membership at the source practice (real doctors
-      //    only — a virtual doctor never had one).
-      if (!promoted) {
+      // 2. Drop the active membership at the source practice (a name-only
+      //    doctor with no account never had one).
+      if (user) {
         const existing = await tx.query.organizationMemberships.findFirst({
           where: and(
             eq(organizationMemberships.labId, organizationId),
@@ -1821,11 +2766,15 @@ router.post(
 
       let casesMoved = 0;
       let invoicesMoved = 0;
+      let movedCaseIds: string[] = [];
 
       if (destination) {
         // 3a. Reassign: optionally move cases/invoices, then attach the
-        //     doctor at the destination practice.
-        if (movecases) {
+        //     doctor at the destination practice. A doctor with no account
+        //     can only be reassigned by moving their cases — there is no
+        //     membership to create, and creating an account to carry one is
+        //     exactly what this flow must not do.
+        if (movecases || !user) {
           const moved = await moveDoctorCasesAndInvoices(
             tx,
             labId,
@@ -1835,34 +2784,39 @@ router.post(
           );
           casesMoved = moved.casesMoved;
           invoicesMoved = moved.invoicesMoved;
+          movedCaseIds = moved.caseIds;
         }
-        await ensureMembership(tx, destination.id, user.id, callerId);
+        if (user) await ensureMembership(tx, destination.id, user.id, callerId);
         // If the doctor was previously unassigned, clear that record.
-        await tx
-          .update(labUnassignedDoctors)
-          .set({ deletedAt: new Date() })
-          .where(
-            and(
-              eq(labUnassignedDoctors.labOrganizationId, labId),
-              eq(labUnassignedDoctors.userId, user.id),
-              isNull(labUnassignedDoctors.deletedAt)
-            )
-          );
+        await clearUnassignedHolding(tx, labId, {
+          userId: user?.id ?? null,
+          doctorName: matchName,
+        });
       } else if (isProviderUser) {
         // 3b. Unassigned: upsert the holding-area record (cases stay put).
         // Only provider-type doctors land in the Unassigned holding area —
         // a non-provider member is simply detached (membership dropped above)
-        // and never appears in the per-lab Unassigned list.
-        const existing = await tx.query.labUnassignedDoctors.findFirst({
-          where: and(
-            eq(labUnassignedDoctors.labOrganizationId, labId),
-            eq(labUnassignedDoctors.userId, user.id)
-          ),
-        });
+        // and never appears in the per-lab Unassigned list. A doctor with no
+        // account is held by name.
+        const existing = user
+          ? await tx.query.labUnassignedDoctors.findFirst({
+              where: and(
+                eq(labUnassignedDoctors.labOrganizationId, labId),
+                eq(labUnassignedDoctors.userId, user.id)
+              ),
+            })
+          : await tx.query.labUnassignedDoctors.findFirst({
+              where: and(
+                eq(labUnassignedDoctors.labOrganizationId, labId),
+                isNull(labUnassignedDoctors.userId),
+                sql`lower(${labUnassignedDoctors.doctorName}) = lower(${matchName})`
+              ),
+            });
         if (existing) {
           await tx
             .update(labUnassignedDoctors)
             .set({
+              doctorName: matchName || existing.doctorName,
               removedFromOrganizationId: organizationId,
               removedAt: new Date(),
               removedByUserId: callerId,
@@ -1872,15 +2826,27 @@ router.post(
         } else {
           await tx.insert(labUnassignedDoctors).values({
             labOrganizationId: labId,
-            userId: user.id,
+            userId: user?.id ?? null,
+            doctorName: matchName || null,
             removedFromOrganizationId: organizationId,
             removedByUserId: callerId,
           });
         }
       }
 
-      return { user, promoted, matchName, casesMoved, invoicesMoved };
+      return {
+        user,
+        matchedOn,
+        matchName,
+        casesMoved,
+        invoicesMoved,
+        movedCaseIds,
+      };
     });
+
+    for (const caseId of result.movedCaseIds) {
+      broadcastCaseUpdated(caseId, destination ? "doctor_reassigned" : "doctor_removed");
+    }
 
     await writeAuditLog({
       req,
@@ -1889,22 +2855,31 @@ router.post(
         ? "practice_doctor_reassigned"
         : "practice_doctor_removed",
       entityType: "user",
-      entityId: result.user.id,
+      entityId: result.user?.id ?? organizationId,
       afterJson: {
-        userId: result.user.id,
+        userId: result.user?.id ?? null,
         doctorName: result.matchName,
         sourcePracticeId: organizationId,
         destinationPracticeId: destination?.id ?? null,
         existingCases: movecases ? "move" : "leave",
         casesMoved: result.casesMoved,
         invoicesMoved: result.invoicesMoved,
-        promotedFromVirtual: result.promoted,
+        // Removal never creates an account. Either the doctor's existing
+        // account was resolved, or the removal was recorded by name alone.
+        promotedFromVirtual: false,
+        reusedExistingAccount: result.matchedOn !== null,
+        matchedOn: result.matchedOn,
       },
     });
 
     return ok(res, {
-      userId: result.user.id,
-      promotedFromVirtual: result.promoted,
+      userId: result.user?.id ?? null,
+      // Retained for API compatibility; removal no longer promotes anyone.
+      promotedFromVirtual: false,
+      reusedExistingAccount: result.matchedOn !== null,
+      matchedOn: result.matchedOn,
+      platformAccountNumber: result.user?.platformAccountNumber ?? null,
+      doctorName: result.matchName,
       destinationPracticeId: destination?.id ?? null,
       casesMoved: result.casesMoved,
       invoicesMoved: result.invoicesMoved,
@@ -1929,10 +2904,13 @@ router.get(
     }
     await requireAnyRole(callerId, labId, ADMIN_ROLES);
 
+    // LEFT JOIN: a name-only doctor removed from a practice is held here
+    // without an account (removing a doctor never creates one).
     const rows = await db
       .select({
         id: labUnassignedDoctors.id,
         userId: labUnassignedDoctors.userId,
+        entryDoctorName: labUnassignedDoctors.doctorName,
         removedFromOrganizationId:
           labUnassignedDoctors.removedFromOrganizationId,
         removedAt: labUnassignedDoctors.removedAt,
@@ -1945,11 +2923,21 @@ router.get(
         platformAccountNumber: users.platformAccountNumber,
       })
       .from(labUnassignedDoctors)
-      .innerJoin(users, eq(users.id, labUnassignedDoctors.userId))
+      .leftJoin(
+        users,
+        and(eq(users.id, labUnassignedDoctors.userId), notDeleted(users))
+      )
       .where(
         and(
           eq(labUnassignedDoctors.labOrganizationId, labId),
-          isNull(labUnassignedDoctors.deletedAt)
+          isNull(labUnassignedDoctors.deletedAt),
+          // Hide holding entries whose account was retired by a duplicate
+          // consolidation (Task #4373) — the survivor's entry covers them.
+          sql`(${labUnassignedDoctors.userId} is null or exists (
+            select 1 from users u
+            where u.id = ${labUnassignedDoctors.userId}
+              and u.deleted_at is null
+          ))`
         )
       )
       .orderBy(desc(labUnassignedDoctors.removedAt));
@@ -1973,8 +2961,13 @@ router.get(
       res,
       rows.map((r) => {
         const pr = practiceMap.get(r.removedFromOrganizationId);
+        const { entryDoctorName, ...rest } = r;
         return {
-          ...r,
+          ...rest,
+          // Name-only entries carry their name on the holding row itself.
+          doctorName: r.doctorName ?? entryDoctorName ?? null,
+          username: r.username ?? entryDoctorName ?? null,
+          hasAccount: r.userId !== null,
           removedFromPracticeName: pr
             ? pr.displayName || pr.name
             : null,
@@ -1985,12 +2978,21 @@ router.get(
 );
 
 // Reassign an unassigned doctor to a practice. Lab-admin only.
-const reassignUnassignedSchema = z.object({
-  labOrganizationId: z.string().min(1),
-  userId: z.string().min(1),
-  destinationOrganizationId: z.string().min(1),
-  existingCases: z.enum(["leave", "move"]).default("leave"),
-});
+const reassignUnassignedSchema = z
+  .object({
+    labOrganizationId: z.string().min(1),
+    // Account-backed entry. Omit for a name-only entry (a doctor removed
+    // without an account — removal never creates one).
+    userId: z.string().min(1).nullable().optional(),
+    // Required for a name-only entry; identifies the holding row by name.
+    doctorName: z.string().trim().min(1).optional(),
+    destinationOrganizationId: z.string().min(1),
+    existingCases: z.enum(["leave", "move"]).default("leave"),
+  })
+  .refine((v) => !!v.userId || !!v.doctorName, {
+    message: "Provide the doctor's account id or their name.",
+    path: ["userId"],
+  });
 
 router.post(
   "/unassigned-doctors/reassign",
@@ -2021,28 +3023,47 @@ router.post(
       );
     }
 
-    const user = await db.query.users.findFirst({
-      where: eq(users.id, input.userId),
-    });
-    if (!user) throw new HttpError(404, "Doctor account not found.");
+    const user = input.userId
+      ? await db.query.users.findFirst({ where: eq(users.id, input.userId) })
+      : null;
+    if (input.userId && !user) {
+      throw new HttpError(404, "Doctor account not found.");
+    }
 
-    const matchName = doctorMatchName(user);
+    const matchName = user
+      ? doctorMatchName(user)
+      : (input.doctorName ?? "").trim();
 
     const result = await db.transaction(async (tx) => {
-      const unassigned = await tx.query.labUnassignedDoctors.findFirst({
-        where: and(
-          eq(labUnassignedDoctors.labOrganizationId, labId),
-          eq(labUnassignedDoctors.userId, input.userId),
-          isNull(labUnassignedDoctors.deletedAt)
-        ),
-      });
+      // Name-only entries (a doctor removed without an account) are keyed by
+      // their name instead of a user id.
+      const unassigned = user
+        ? await tx.query.labUnassignedDoctors.findFirst({
+            where: and(
+              eq(labUnassignedDoctors.labOrganizationId, labId),
+              eq(labUnassignedDoctors.userId, user.id),
+              isNull(labUnassignedDoctors.deletedAt)
+            ),
+          })
+        : await tx.query.labUnassignedDoctors.findFirst({
+            where: and(
+              eq(labUnassignedDoctors.labOrganizationId, labId),
+              isNull(labUnassignedDoctors.userId),
+              sql`lower(${labUnassignedDoctors.doctorName}) = lower(${matchName})`,
+              isNull(labUnassignedDoctors.deletedAt)
+            ),
+          });
       if (!unassigned) {
         throw new HttpError(404, "Doctor is not in the Unassigned list.");
       }
 
       let casesMoved = 0;
       let invoicesMoved = 0;
-      if (input.existingCases === "move") {
+      let movedCaseIds: string[] = [];
+      // A doctor with no account has nothing but their cases to move, so a
+      // reassignment moves them rather than creating an account to carry a
+      // membership.
+      if (input.existingCases === "move" || !user) {
         const moved = await moveDoctorCasesAndInvoices(
           tx,
           labId,
@@ -2052,9 +3073,10 @@ router.post(
         );
         casesMoved = moved.casesMoved;
         invoicesMoved = moved.invoicesMoved;
+        movedCaseIds = moved.caseIds;
       }
 
-      await ensureMembership(tx, dest.id, input.userId, callerId);
+      if (user) await ensureMembership(tx, dest.id, user.id, callerId);
 
       await tx
         .update(labUnassignedDoctors)
@@ -2064,18 +3086,21 @@ router.post(
       return {
         casesMoved,
         invoicesMoved,
+        movedCaseIds,
         sourcePracticeId: unassigned.removedFromOrganizationId,
       };
     });
+
+    for (const caseId of result.movedCaseIds) broadcastCaseUpdated(caseId, "doctor_reassigned");
 
     await writeAuditLog({
       req,
       organizationId: labId,
       action: "unassigned_doctor_reassigned",
       entityType: "user",
-      entityId: input.userId,
+      entityId: user?.id ?? labId,
       afterJson: {
-        userId: input.userId,
+        userId: user?.id ?? null,
         doctorName: matchName,
         sourcePracticeId: result.sourcePracticeId,
         destinationPracticeId: dest.id,
@@ -2086,7 +3111,8 @@ router.post(
     });
 
     return ok(res, {
-      userId: input.userId,
+      userId: user?.id ?? null,
+      doctorName: matchName,
       destinationPracticeId: dest.id,
       casesMoved: result.casesMoved,
       invoicesMoved: result.invoicesMoved,
@@ -2112,6 +3138,11 @@ router.get(
           organizationMemberships.userId,
           (req as any).auth.userId
         ),
+        columns: {
+          labId: true,
+          role: true,
+          status: true,
+        },
       });
     const activeMemberships = memberships.filter(
       (m: any) => m.status === "active"
@@ -2159,7 +3190,7 @@ router.get(
     const orgIds = Array.from(orgIdSet);
     const orgs = orgIds.length
       ? await db
-          .select()
+          .select(organizationListColumns)
           .from(organizations)
           .where(
             includeArchived
@@ -2299,6 +3330,504 @@ router.get(
   })
 );
 
+const sharedAccountRelationshipSchema = z
+  .object({
+    labOrganizationId: z.string().uuid(),
+    providerOrganizationId: z.string().uuid(),
+  })
+  .strict();
+
+const nullableContactValue = z
+  .union([z.string().max(500), z.null()])
+  .transform((value) =>
+    typeof value === "string" && value.trim() === "" ? null : value,
+  );
+
+const sharedAccountChangeSchema = sharedAccountRelationshipSchema
+  .extend({
+    changes: z
+      .object({
+        name: z.string().trim().min(1).max(200).optional(),
+        displayName: nullableContactValue.optional(),
+        billingEmail: z
+          .union([z.string().email().max(320), z.null()])
+          .optional(),
+        phone: nullableContactValue.optional(),
+        addressLine1: nullableContactValue.optional(),
+        addressLine2: nullableContactValue.optional(),
+        city: nullableContactValue.optional(),
+        state: nullableContactValue.optional(),
+        zip: nullableContactValue.optional(),
+      })
+      .strict(),
+    clientRequestId: z.string().trim().min(1).max(200).optional(),
+  })
+  .strict();
+
+function safeAccountChangeRequest(
+  request: typeof providerAccountChangeRequests.$inferSelect,
+) {
+  return {
+    id: request.id,
+    labOrganizationId: request.labOrganizationId,
+    providerOrganizationId: request.providerOrganizationId,
+    requestedByOrganizationId: request.requestedByOrganizationId,
+    requestedByUserId: request.requestedByUserId,
+    source: request.source,
+    status: request.status,
+    changes: request.changesJson,
+    reviewedByUserId: request.reviewedByUserId,
+    reviewedAt: request.reviewedAt?.toISOString() ?? null,
+    createdAt: request.createdAt.toISOString(),
+    updatedAt: request.updatedAt.toISOString(),
+  };
+}
+
+router.get(
+  "/shared-accounts",
+  asyncHandler(async (req, res) => {
+    const input = sharedAccountRelationshipSchema.parse(req.query);
+    const callerId = (req as any).auth.userId as string;
+    await assertProviderCallerSelection(req, input.providerOrganizationId);
+    const { provider } = await getSharedProviderRelationship(
+      callerId,
+      input.labOrganizationId,
+      input.providerOrganizationId,
+    );
+    const requests = await db
+      .select()
+      .from(providerAccountChangeRequests)
+      .where(
+        and(
+          eq(
+            providerAccountChangeRequests.labOrganizationId,
+            input.labOrganizationId,
+          ),
+          eq(
+            providerAccountChangeRequests.providerOrganizationId,
+            input.providerOrganizationId,
+          ),
+        ),
+      )
+      .orderBy(desc(providerAccountChangeRequests.createdAt));
+
+    let card = await getCachedSharedCardSummary(input.providerOrganizationId);
+    try {
+      const stripe = await getUncachableStripeClient();
+      if (stripe) {
+        const refreshed = await refreshSharedCardSummary(
+          input.providerOrganizationId,
+          stripe,
+        );
+        card = refreshed.card;
+        if (refreshed.changed) {
+          await writeAuditLog({
+            req,
+            organizationId: input.labOrganizationId,
+            action: "provider_shared_card_refreshed",
+            entityType: "provider_payment_customer",
+            entityId: input.providerOrganizationId,
+            beforeJson: refreshed.previous,
+            afterJson: refreshed.card,
+            metadataJson: {
+              labOrganizationId: input.labOrganizationId,
+              providerOrganizationId: input.providerOrganizationId,
+            },
+          });
+        }
+      }
+    } catch {
+      // Stripe outages do not hide the last processor-safe summary.
+    }
+
+    return ok(res, {
+      relationship: {
+        labOrganizationId: input.labOrganizationId,
+        providerOrganizationId: input.providerOrganizationId,
+      },
+      contact: {
+        ...sharedProviderContact(provider),
+        source: "provider_organization",
+        updatedAt: provider.updatedAt.toISOString(),
+      },
+      card,
+      profileChangeRequests: requests.map(safeAccountChangeRequest),
+    });
+  }),
+);
+
+router.post(
+  "/shared-accounts/profile-change-requests",
+  asyncHandler(async (req, res) => {
+    const input = sharedAccountChangeSchema.parse(req.body);
+    const callerId = (req as any).auth.userId as string;
+    await assertProviderCallerSelection(req, input.providerOrganizationId);
+    const relationship = await getSharedProviderRelationship(
+      callerId,
+      input.labOrganizationId,
+      input.providerOrganizationId,
+      true,
+    );
+    const baseline = sharedProviderContact(relationship.provider);
+    const changes = Object.fromEntries(
+      Object.entries(input.changes).filter(
+        ([field, value]) =>
+          SHARED_PROVIDER_CONTACT_FIELDS.includes(
+            field as SharedProviderContactField,
+          ) && baseline[field as SharedProviderContactField] !== value,
+      ),
+    );
+    if (Object.keys(changes).length === 0) {
+      throw new HttpError(400, "No profile or contact changes were provided.");
+    }
+    const requestFingerprint = crypto
+      .createHash("sha256")
+      .update(
+        JSON.stringify({
+          labOrganizationId: input.labOrganizationId,
+          providerOrganizationId: input.providerOrganizationId,
+          requestedByOrganizationId: relationship.actingOrganizationId,
+          baseline,
+          changes,
+        }),
+      )
+      .digest("hex");
+
+    const [created] = await db
+      .insert(providerAccountChangeRequests)
+      .values({
+        labOrganizationId: input.labOrganizationId,
+        providerOrganizationId: input.providerOrganizationId,
+        requestedByOrganizationId: relationship.actingOrganizationId,
+        requestedByUserId: callerId,
+        source: relationship.source,
+        changesJson: changes,
+        baselineJson: baseline,
+        requestFingerprint,
+        clientRequestId: input.clientRequestId ?? null,
+      })
+      .onConflictDoNothing()
+      .returning();
+
+    let request:
+      | typeof providerAccountChangeRequests.$inferSelect
+      | undefined = created;
+    if (!request) {
+      request =
+        (input.clientRequestId
+          ? await db.query.providerAccountChangeRequests.findFirst({
+              where: and(
+                eq(
+                  providerAccountChangeRequests.labOrganizationId,
+                  input.labOrganizationId,
+                ),
+                eq(
+                  providerAccountChangeRequests.providerOrganizationId,
+                  input.providerOrganizationId,
+                ),
+                eq(
+                  providerAccountChangeRequests.clientRequestId,
+                  input.clientRequestId,
+                ),
+              ),
+            })
+          : null) ??
+        (await db.query.providerAccountChangeRequests.findFirst({
+          where: and(
+            eq(
+              providerAccountChangeRequests.labOrganizationId,
+              input.labOrganizationId,
+            ),
+            eq(
+              providerAccountChangeRequests.providerOrganizationId,
+              input.providerOrganizationId,
+            ),
+            eq(
+              providerAccountChangeRequests.requestFingerprint,
+              requestFingerprint,
+            ),
+            eq(providerAccountChangeRequests.status, "pending"),
+          ),
+        }));
+      if (!request || request.requestFingerprint !== requestFingerprint) {
+        throw new HttpError(
+          409,
+          "That request id was already used for a different change.",
+        );
+      }
+    }
+
+    if (created) {
+      await writeAuditLog({
+        req,
+        organizationId: input.labOrganizationId,
+        action: "provider_account_change_requested",
+        entityType: "provider_account_change_request",
+        entityId: request.id,
+        beforeJson: baseline,
+        afterJson: changes,
+        metadataJson: {
+          source: request.source,
+          providerOrganizationId: input.providerOrganizationId,
+        },
+      });
+      const counterpartOrganizationId =
+        relationship.actingOrganizationId === input.labOrganizationId
+          ? input.providerOrganizationId
+          : input.labOrganizationId;
+      await notifySharedAccountCounterpart({
+        labOrganizationId: input.labOrganizationId,
+        providerOrganizationId: input.providerOrganizationId,
+        recipientOrganizationId: counterpartOrganizationId,
+        requestId: request.id,
+        type: "provider_account_change_requested",
+        title: "Provider account update needs review",
+        body: "The connected account proposed profile or contact changes for this practice.",
+      });
+    }
+    return ok(res, safeAccountChangeRequest(request), created ? 201 : 200);
+  }),
+);
+
+async function loadAccountChangeForReview(requestId: string) {
+  const request = await db.query.providerAccountChangeRequests.findFirst({
+    where: eq(providerAccountChangeRequests.id, requestId),
+  });
+  if (!request) throw new HttpError(404, "Profile change request not found.");
+  return request;
+}
+
+async function requireAccountChangeReviewer(
+  userId: string,
+  request: typeof providerAccountChangeRequests.$inferSelect,
+) {
+  if (request.requestedByUserId === userId) {
+    throw new HttpError(
+      403,
+      "A profile change must be reviewed by a different administrator.",
+    );
+  }
+  const counterpartOrganizationId =
+    request.requestedByOrganizationId === request.labOrganizationId
+      ? request.providerOrganizationId
+      : request.labOrganizationId;
+  await requireAnyRole(userId, counterpartOrganizationId, ADMIN_ROLES);
+  return counterpartOrganizationId;
+}
+
+router.post(
+  "/shared-accounts/profile-change-requests/:requestId/approve",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const existing = await loadAccountChangeForReview(req.params.requestId);
+    await assertProviderCallerSelection(req, existing.providerOrganizationId);
+    const reviewerOrganizationId = await requireAccountChangeReviewer(
+      callerId,
+      existing,
+    );
+    if (existing.status === "approved") {
+      return ok(res, safeAccountChangeRequest(existing));
+    }
+    if (existing.status !== "pending") {
+      throw new HttpError(
+        409,
+        `Cannot approve a request that is already ${existing.status}.`,
+      );
+    }
+
+    const outcome = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT id FROM organizations WHERE id = ${existing.providerOrganizationId} FOR UPDATE`,
+      );
+      const [currentProvider] = await tx
+        .select()
+        .from(organizations)
+        .where(
+          and(
+            eq(organizations.id, existing.providerOrganizationId),
+            eq(
+              organizations.parentLabOrganizationId,
+              existing.labOrganizationId,
+            ),
+            isNull(organizations.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!currentProvider) {
+        throw new HttpError(404, "Provider relationship not found.");
+      }
+      if (
+        !sameSharedProviderContact(
+          sharedProviderContact(currentProvider),
+          existing.baselineJson as Record<string, unknown>,
+        )
+      ) {
+        const [stale] = await tx
+          .update(providerAccountChangeRequests)
+          .set({
+            status: "stale",
+            reviewedByUserId: callerId,
+            reviewedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(providerAccountChangeRequests.id, existing.id),
+              eq(providerAccountChangeRequests.status, "pending"),
+            ),
+          )
+          .returning();
+        return { kind: "stale" as const, request: stale ?? existing };
+      }
+
+      const [claimed] = await tx
+        .update(providerAccountChangeRequests)
+        .set({
+          status: "approved",
+          reviewedByUserId: callerId,
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(providerAccountChangeRequests.id, existing.id),
+            eq(providerAccountChangeRequests.status, "pending"),
+          ),
+        )
+        .returning();
+      if (!claimed) {
+        return { kind: "conflict" as const, request: existing };
+      }
+      const [provider] = await tx
+        .update(organizations)
+        .set({
+          ...(existing.changesJson as Partial<
+            typeof organizations.$inferInsert
+          >),
+          updatedAt: new Date(),
+        })
+        .where(eq(organizations.id, existing.providerOrganizationId))
+        .returning();
+      return { kind: "approved" as const, request: claimed, provider };
+    });
+
+    if (outcome.kind === "conflict") {
+      throw new HttpError(409, "Profile change request was already decided.");
+    }
+    await writeAuditLog({
+      req,
+      organizationId: existing.labOrganizationId,
+      action:
+        outcome.kind === "stale"
+          ? "provider_account_change_stale"
+          : "provider_account_change_approved",
+      entityType: "provider_account_change_request",
+      entityId: existing.id,
+      beforeJson: existing.baselineJson,
+      afterJson:
+        outcome.kind === "approved"
+          ? sharedProviderContact(outcome.provider)
+          : existing.changesJson,
+      metadataJson: {
+        reviewerOrganizationId,
+        providerOrganizationId: existing.providerOrganizationId,
+      },
+    });
+    if (outcome.kind === "stale") {
+      await notifySharedAccountCounterpart({
+        labOrganizationId: existing.labOrganizationId,
+        providerOrganizationId: existing.providerOrganizationId,
+        recipientOrganizationId: existing.requestedByOrganizationId,
+        requestId: existing.id,
+        type: "provider_account_change_decided",
+        title: "Provider account update is out of date",
+        body: "The provider profile changed before this proposal was reviewed. Submit a new request from the current profile.",
+      });
+      throw new HttpError(
+        409,
+        "The provider profile changed after this request was created. Submit a new request.",
+      );
+    }
+    await syncUsersToOrganization(
+      existing.providerOrganizationId,
+      outcome.provider,
+    );
+    await notifySharedAccountCounterpart({
+      labOrganizationId: existing.labOrganizationId,
+      providerOrganizationId: existing.providerOrganizationId,
+      recipientOrganizationId: existing.requestedByOrganizationId,
+      requestId: existing.id,
+      type: "provider_account_change_decided",
+      title: "Provider account update approved",
+      body: "The connected account approved the proposed profile or contact changes.",
+    });
+    return ok(res, safeAccountChangeRequest(outcome.request));
+  }),
+);
+
+router.post(
+  "/shared-accounts/profile-change-requests/:requestId/reject",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const existing = await loadAccountChangeForReview(req.params.requestId);
+    await assertProviderCallerSelection(req, existing.providerOrganizationId);
+    const reviewerOrganizationId = await requireAccountChangeReviewer(
+      callerId,
+      existing,
+    );
+    if (existing.status === "rejected") {
+      return ok(res, safeAccountChangeRequest(existing));
+    }
+    if (existing.status !== "pending") {
+      throw new HttpError(
+        409,
+        `Cannot reject a request that is already ${existing.status}.`,
+      );
+    }
+    const [updated] = await db
+      .update(providerAccountChangeRequests)
+      .set({
+        status: "rejected",
+        reviewedByUserId: callerId,
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(providerAccountChangeRequests.id, existing.id),
+          eq(providerAccountChangeRequests.status, "pending"),
+        ),
+      )
+      .returning();
+    if (!updated) {
+      throw new HttpError(409, "Profile change request was already decided.");
+    }
+    await writeAuditLog({
+      req,
+      organizationId: existing.labOrganizationId,
+      action: "provider_account_change_rejected",
+      entityType: "provider_account_change_request",
+      entityId: existing.id,
+      beforeJson: existing.baselineJson,
+      afterJson: existing.changesJson,
+      metadataJson: {
+        reviewerOrganizationId,
+        providerOrganizationId: existing.providerOrganizationId,
+      },
+    });
+    await notifySharedAccountCounterpart({
+      labOrganizationId: existing.labOrganizationId,
+      providerOrganizationId: existing.providerOrganizationId,
+      recipientOrganizationId: existing.requestedByOrganizationId,
+      requestId: existing.id,
+      type: "provider_account_change_decided",
+      title: "Provider account update declined",
+      body: "The connected account declined the proposed profile or contact changes.",
+    });
+    return ok(res, safeAccountChangeRequest(updated));
+  }),
+);
+
 // List provider practices for a lab. Member-level (any active member of
 // the lab) so the mobile Rx review screen can show a browsable, tappable
 // practice picker — no admin gate and no minimum-character search. Scoped
@@ -2363,7 +3892,62 @@ router.get(
         where: eq(organizations.id, req.params.organizationId),
       }));
     if (!organization) throw new HttpError(404, "Organization not found.");
-    return ok(res, organization);
+    const additionalEmails = await db
+      .select({
+        id: organizationAdditionalEmails.id,
+        email: organizationAdditionalEmails.email,
+        type: organizationAdditionalEmails.type,
+      })
+      .from(organizationAdditionalEmails)
+      .where(eq(organizationAdditionalEmails.organizationId, organization.id));
+    return ok(res, { ...organization, additionalEmails });
+  })
+);
+
+// ── Additional emails sub-resource ──────────────────────────────────────────
+
+const additionalEmailSchema = z.object({
+  email: z.string().email("Must be a valid email address."),
+  type: z.enum(["billing", "correspondence"], {
+    errorMap: () => ({ message: 'Type must be "billing" or "correspondence".' }),
+  }),
+});
+
+router.post(
+  "/:organizationId/additional-emails",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+    const { email, type } = additionalEmailSchema.parse(req.body);
+    const [row] = await db
+      .insert(organizationAdditionalEmails)
+      .values({ organizationId, email, type })
+      .returning();
+    return ok(res, row);
+  })
+);
+
+router.delete(
+  "/:organizationId/additional-emails/:emailId",
+  asyncHandler(async (req, res) => {
+    const { organizationId, emailId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+    const existing = await db.query.organizationAdditionalEmails.findFirst({
+      where: and(
+        eq(organizationAdditionalEmails.id, emailId),
+        eq(organizationAdditionalEmails.organizationId, organizationId)
+      ),
+    });
+    if (!existing) throw new HttpError(404, "Additional email not found.");
+    await db
+      .delete(organizationAdditionalEmails)
+      .where(
+        and(
+          eq(organizationAdditionalEmails.id, emailId),
+          eq(organizationAdditionalEmails.organizationId, organizationId)
+        )
+      );
+    return ok(res, { deleted: true });
   })
 );
 
@@ -2383,6 +3967,29 @@ router.patch(
         where: eq(organizations.id, organizationId),
       }));
     if (!existing) throw new HttpError(404, "Organization not found.");
+    if (
+      existing.type !== "lab" &&
+      input.printProviderPreferencesOnLabSlips !== undefined
+    ) {
+      throw new HttpError(
+        400,
+        "Provider preference printing can only be configured for lab organizations.",
+      );
+    }
+
+    const includesSharedContactChange = SHARED_PROVIDER_CONTACT_FIELDS.some(
+      (field) => input[field] !== undefined,
+    );
+    if (
+      existing.type === "provider" &&
+      existing.parentLabOrganizationId &&
+      includesSharedContactChange
+    ) {
+      throw new HttpError(
+        409,
+        "Provider contact changes require counterpart approval. Use the shared-account change request endpoint.",
+      );
+    }
 
     // If the caller is changing the account number, validate format and
     // lab-scoped uniqueness. We only allow this for orgs that have a parent
@@ -2401,13 +4008,8 @@ router.patch(
         nextAccountNumber = null;
       } else if (trimmed === existing.accountNumber) {
         nextAccountNumber = existing.accountNumber;
-      } else {
-        nextAccountNumber = await assertCustomAccountNumberAvailable(
-          existing.parentLabOrganizationId,
-          trimmed,
-          existing.id
-        );
       }
+      // Otherwise nextAccountNumber stays undefined; resolved inside the lock.
     }
 
     const { accountNumber: _accountNumberInput, ...rest } = input;
@@ -2416,11 +4018,42 @@ router.patch(
       updateValues.accountNumber = nextAccountNumber;
     }
 
-    const [updated] = await db
-      .update(organizations)
-      .set(updateValues)
-      .where(eq(organizations.id, organizationId))
-      .returning();
+    // When the account number is actually changing, wrap the uniqueness check
+    // and the update in a per-lab advisory lock transaction so no concurrent
+    // request can interleave and claim the same segment between check and write.
+    const accountNumberIsChanging =
+      input.accountNumber !== undefined &&
+      existing.parentLabOrganizationId &&
+      nextAccountNumber === undefined; // only unresolved cases reach here
+
+    let updated: typeof organizations.$inferSelect;
+    if (accountNumberIsChanging && existing.parentLabOrganizationId) {
+      const trimmed = (input.accountNumber ?? "").trim();
+      updated = await withAccountNumberLock(
+        existing.parentLabOrganizationId,
+        async (client) => {
+          const validated = await assertCustomAccountNumberAvailable(
+            existing.parentLabOrganizationId!,
+            trimmed,
+            existing.id,
+            client
+          );
+          const [row] = await (client as any)
+            .update(organizations)
+            .set({ ...updateValues, accountNumber: validated })
+            .where(eq(organizations.id, organizationId))
+            .returning();
+          return row as typeof organizations.$inferSelect;
+        }
+      );
+    } else {
+      const [row] = await db
+        .update(organizations)
+        .set(updateValues)
+        .where(eq(organizations.id, organizationId))
+        .returning();
+      updated = row;
+    }
 
     await syncUsersToOrganization(organizationId, updated);
 
@@ -2547,7 +4180,9 @@ router.get(
     const userIds = memberships.map((m: any) => m.userId);
     const allUsers = userIds.length
       ? await db.query.users.findMany({
-          where: inArray(users.id, userIds),
+          // Retired duplicate accounts (Task #4373) are soft-deleted; their
+          // memberships must not hydrate into the members list.
+          where: and(inArray(users.id, userIds), notDeleted(users)),
         })
       : [];
 
@@ -2576,6 +4211,14 @@ router.get(
     );
   })
 );
+
+const MEMBERSHIP_ROLE_RANK: Record<string, number> = {
+  owner: 0,
+  admin: 1,
+  billing: 2,
+  user: 3,
+  read_only: 4,
+};
 
 const inviteSchema = z.object({
   email: z.string().email(),
@@ -2705,6 +4348,11 @@ const SAFE_SEND_FAILURE_REASONS = new Set([
   "smtp_not_configured",
   "reserved_domain",
   "undeliverable_domain",
+  // SMTP login rejected (bad username/password/app password). Set by
+  // sendMail()'s classified catch path — a stable string, never raw provider
+  // text. Deliberately NOT in RETRYABLE_INVITE_EMAIL_REASONS: retrying a bad
+  // password just hammers the provider and risks account lockout.
+  "auth_failed",
 ]);
 
 function toSafeSendReason(reason?: string): string {
@@ -2755,10 +4403,9 @@ export async function deliverInviteEmail(
             .trim() || inviter.username || inviter.email || null
         : null;
       const placements = resolveLogoplacements(organization);
-      const labLogoUrl =
-        placements.has("welcome_emails") && organization?.logoUrl
-          ? `${getAppBaseUrl()}${organization.logoUrl}`
-          : null;
+      const labLogo = placements.has("welcome_emails")
+        ? await readLabLogoAsset(invite.labId)
+        : null;
       const allowed = await checkEmailPref(
         invite.email,
         "orgInviteNotifications"
@@ -2784,7 +4431,7 @@ export async function deliverInviteEmail(
           token: invite.token,
           inviterName,
           expiresAt: invite.expiresAt ?? null,
-          labLogoUrl,
+          labLogo,
         });
         if (result.sent) {
           delivery = { sent: true, status: "sent" };
@@ -2891,12 +4538,35 @@ router.post(
   "/:organizationId/invites",
   asyncHandler(async (req, res) => {
     const organizationId = req.params.organizationId;
-    await requireAnyRole(
+    // manage_team_members capability: owners and admins pass implicitly; non-admin
+    // team members may also invite if they hold an explicit capability grant.
+    await requireCapability(
       (req as any).auth.userId,
       organizationId,
-      ADMIN_ROLES
+      "manage_team_members"
     );
     const input = inviteSchema.parse(req.body);
+
+    // Capability grants allow a member to manage invitations, not to exceed
+    // their own role. Keep invitation assignments within the same ceiling as
+    // direct membership edits so accepting a self-invite cannot promote them.
+    const callerMembership = await db.query.organizationMemberships.findFirst({
+      where: and(
+        eq(organizationMemberships.userId, (req as any).auth.userId),
+        eq(organizationMemberships.labId, organizationId),
+        eq(organizationMemberships.status, "active"),
+        isNull(organizationMemberships.deletedAt),
+      ),
+    });
+    const callerRank =
+      MEMBERSHIP_ROLE_RANK[callerMembership?.role ?? "read_only"] ?? 99;
+    const inviteeRank = MEMBERSHIP_ROLE_RANK[input.roleToAssign] ?? 99;
+    if (inviteeRank < callerRank) {
+      throw new HttpError(403, "You cannot assign a role above your own.");
+    }
+    if (input.roleToAssign === "owner") {
+      throw new HttpError(400, "Invite an active member first, then use the confirmed ownership transfer to make them Owner.");
+    }
 
     const existingInvite = await db.query.organizationInvites.findFirst({
       where: and(
@@ -3063,30 +4733,16 @@ router.post(
     });
 
     // Deliver via the shared path so create & resend behave identically and
-    // the delivery outcome is recorded on the invite row. The whole point of
-    // a resend is the email, so a non-delivery is surfaced as an error —
-    // while keeping the token rotation that already happened.
+    // the delivery outcome is recorded on the invite row. Resend is non-fatal
+    // and symmetric with create: a failed or skipped email never surfaces as a
+    // server error (502/409). The token rotation already happened, and the
+    // response reports the delivery outcome truthfully via `emailDelivery` so
+    // the client can show "refreshed, but not sent" without a destructive
+    // "server error" framing.
     const { delivery, invite: inviteWithDelivery } = await deliverInviteEmail(
       req,
       updatedInvite
     );
-
-    if (!delivery.sent) {
-      if (delivery.status === "skipped") {
-        // Recipient opted out of invite emails — distinguishable from a
-        // send failure (409 vs 502).
-        throw new HttpError(
-          409,
-          "This recipient has opted out of invite emails, so no email was sent.",
-          { reason: delivery.reason ?? "recipient_opted_out" }
-        );
-      }
-      throw new HttpError(
-        502,
-        "Invite saved, but the email could not be sent. Please try again or contact the person directly.",
-        { reason: delivery.reason ?? "send_failed" }
-      );
-    }
 
     return ok(res, {
       ...inviteWithDelivery,
@@ -3230,6 +4886,9 @@ router.post(
     }
 
     const assignedRole = coerceMembershipRole(invite.roleToAssign, "user");
+    if (assignedRole === "owner") {
+      throw new HttpError(400, "Ownership requires a confirmed transfer to an active member. Ask the inviter to send a non-Owner invitation.");
+    }
 
     await upsertActiveMembership({
       labId: invite.labId,
@@ -3281,6 +4940,21 @@ router.post(
     const organizationId = req.params.organizationId;
     const input = joinRequestSchema.parse(req.body);
 
+    // Validate the target: it must be a real, active, non-deleted lab or
+    // provider organization. Without this a request could be filed against a
+    // deactivated/deleted org and sit unreviewable forever.
+    const targetOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (
+      !targetOrg ||
+      targetOrg.deletedAt ||
+      !targetOrg.isActive ||
+      (targetOrg.type !== "lab" && targetOrg.type !== "provider")
+    ) {
+      throw new HttpError(404, "We couldn't find that organization.");
+    }
+
     const alreadyMember =
       await db.query.organizationMemberships.findFirst({
         where: and(
@@ -3313,15 +4987,21 @@ router.post(
       throw new HttpError(409, "You already have a pending join request.");
     }
 
-    const [request] = await db
-      .insert(organizationJoinRequests)
-      .values({
-        labId: organizationId,
-        userId: (req as any).auth.userId,
-        requestedRole: input.requestedRole,
-        message: input.message ?? null,
-      })
-      .returning();
+    const request = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(organizationJoinRequests)
+        .values({
+          labId: organizationId,
+          userId: (req as any).auth.userId,
+          requestedRole: input.requestedRole,
+          message: input.message ?? null,
+        })
+        .returning();
+      if (targetOrg.type === "lab" || targetOrg.type === "dental_lab") {
+        await enqueueJoinRequestNotification(tx, created.id);
+      }
+      return created;
+    });
 
     await writeAuditLog({
       req,
@@ -3398,10 +5078,9 @@ router.get(
   "/:organizationId/join-requests",
   asyncHandler(async (req, res) => {
     const organizationId = req.params.organizationId;
-    await requireAnyRole(
+    await resolveJoinRequestAdminAccess(
       (req as any).auth.userId,
-      organizationId,
-      ADMIN_ROLES
+      organizationId
     );
     const requests =
       await db.query.organizationJoinRequests.findMany({
@@ -3430,10 +5109,9 @@ router.post(
       });
     if (!request) throw new HttpError(404, "Join request not found.");
 
-    await requireAnyRole(
+    const adminAccess = await resolveJoinRequestAdminAccess(
       (req as any).auth.userId,
-      request.labId,
-      ADMIN_ROLES
+      request.labId
     );
 
     if (request.status === "approved") {
@@ -3501,14 +5179,32 @@ router.post(
       const org = await db.query.organizations.findFirst({
         where: eq(organizations.id, request.labId),
       });
-      const orgLabel = org?.displayName || org?.name || "the lab";
+      const isPractice = org?.type === "provider";
+      const orgLabel =
+        org?.displayName || org?.name || (isPractice ? "the practice" : "the lab");
+
+      let approvalBody: string;
+      if (isPractice && adminAccess.organization !== null) {
+        // Approved via parent-lab fallback — credit the acting lab by name.
+        const parentLab = await db.query.organizations.findFirst({
+          where: eq(organizations.id, adminAccess.membership.labId),
+        });
+        const labLabel =
+          parentLab?.displayName || parentLab?.name || "its lab";
+        approvalBody = `You've been approved to join ${orgLabel} by ${labLabel}. You now have access to the practice.`;
+      } else if (isPractice) {
+        approvalBody = `You've been approved to join ${orgLabel}. You now have access to the practice.`;
+      } else {
+        approvalBody = `You've been approved to join ${orgLabel}. You now have access to the lab.`;
+      }
+
       await db
         .insert(notifications)
         .values({
           userId: request.userId,
           type: "join_request_approved",
           title: "Join request approved",
-          body: `You've been approved to join ${orgLabel}. You now have access to the lab.`,
+          body: approvalBody,
           dataJson: { organizationId: request.labId, joinRequestId: request.id },
         })
         .catch((err: unknown): never =>
@@ -3599,11 +5295,11 @@ router.post(
       });
     if (!request) throw new HttpError(404, "Join request not found.");
 
-    await requireAnyRole(
+    await resolveJoinRequestAdminAccess(
       (req as any).auth.userId,
-      request.labId,
-      ADMIN_ROLES
+      request.labId
     );
+    // (return value unused for reject — we only need the access check)
 
     if (request.status === "rejected") {
       return ok(res, request);
@@ -3631,14 +5327,21 @@ router.post(
       const org = await db.query.organizations.findFirst({
         where: eq(organizations.id, request.labId),
       });
-      const orgLabel = org?.displayName || org?.name || "the lab";
+      const isPractice = org?.type === "provider";
+      const orgLabel =
+        org?.displayName || org?.name || (isPractice ? "the practice" : "the lab");
+
+      const rejectionBody = isPractice
+        ? `Your request to join ${orgLabel} was declined. You can search for another practice or lab to join, or wait for an invite.`
+        : `Your request to join ${orgLabel} was declined. You can search for another lab to join, or wait for a lab admin to invite you.`;
+
       await db
         .insert(notifications)
         .values({
           userId: request.userId,
           type: "join_request_rejected",
           title: "Join request declined",
-          body: `Your request to join ${orgLabel} was declined. You can search for another lab to join.`,
+          body: rejectionBody,
           dataJson: { organizationId: request.labId, joinRequestId: request.id },
         })
         .catch((err: unknown): never =>
@@ -3835,20 +5538,21 @@ router.patch(
 
     // Role ceiling: prevent a caller from assigning a role above their own.
     if (input.role) {
-      const ROLE_RANK: Record<string, number> = {
-        owner: 0, admin: 1, billing: 2, user: 3, read_only: 4,
-      };
       const callerMembership = await db.query.organizationMemberships.findFirst({
         where: and(
           eq(organizationMemberships.userId, (req as any).auth.userId),
           eq(organizationMemberships.labId, membership.labId),
         ),
       });
-      const callerRank = ROLE_RANK[callerMembership?.role ?? "read_only"] ?? 99;
-      const targetRank = ROLE_RANK[input.role] ?? 99;
+      const callerRank =
+        MEMBERSHIP_ROLE_RANK[callerMembership?.role ?? "read_only"] ?? 99;
+      const targetRank = MEMBERSHIP_ROLE_RANK[input.role] ?? 99;
       if (targetRank < callerRank) {
         throw new HttpError(403, "You cannot assign a role above your own.");
       }
+    }
+    if (input.role === "owner") {
+      throw new HttpError(400, "Use the confirmed ownership transfer to assign Owner.");
     }
 
     const [updated] = await db
@@ -3962,7 +5666,22 @@ router.patch(
   "/:organizationId/logo-placements",
   asyncHandler(async (req, res) => {
     const { organizationId } = req.params;
-    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+    const _userId = (req as any).auth.userId as string;
+    // configure_integrations capability: direct admins/owners always pass.
+    // Non-admin members with an explicit configure_integrations grant also pass.
+    // For parent-lab delegation (lab admin editing a provider org), fall through
+    // to the original resolveOrgAdminAccess check.
+    const _directMembership = await getActiveMembership(_userId, organizationId);
+    const _isDirectAdmin =
+      _directMembership != null &&
+      ADMIN_ROLES.includes(_directMembership.role as MembershipRole);
+    if (!_isDirectAdmin) {
+      const _hasGrant = await hasCapability(_userId, organizationId, "configure_integrations");
+      if (!_hasGrant) {
+        // Not a direct admin and no capability grant — try parent-lab access.
+        await resolveOrgAdminAccess(_userId, organizationId);
+      }
+    }
 
     const { placements, logoPdfSize } = logoPlacementsBodySchema.parse(req.body);
 
@@ -4331,7 +6050,7 @@ router.get(
   "/:organizationId/case-print-template",
   asyncHandler(async (req, res) => {
     const { organizationId } = req.params;
-    await resolveOrgReadAccess((req as any).auth.userId, organizationId);
+    await resolveCasePrintReadAccess((req as any).auth.userId, organizationId, req.query.caseId);
     const org = await db.query.organizations.findFirst({
       where: eq(organizations.id, organizationId),
     });
@@ -4446,7 +6165,7 @@ router.get(
   "/:organizationId/case-print-template/images/:imageId",
   asyncHandler(async (req, res) => {
     const { organizationId, imageId } = req.params;
-    await resolveOrgReadAccess((req as any).auth.userId, organizationId);
+    await resolveCasePrintReadAccess((req as any).auth.userId, organizationId, req.query.caseId);
     const stream = await openCasePrintTemplateImageStream(organizationId, imageId);
     if (!stream) {
       res.status(404).json({ error: "Image not found." });
@@ -4805,6 +6524,594 @@ router.delete(
       .where(eq(organizations.id, organizationId));
     return ok(res, { deleted: true });
   }),
+);
+
+// ─────────────────────────── Closed-days settings ──────────────────────────
+// Custom non-working days for a lab (e.g. local holidays, studio closures).
+// These are excluded from the business-day denominator in Stats averages.
+// Owner/admin ONLY — billing members cannot manage the calendar.
+
+const closedDaySchema = z.object({
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD")
+    .refine((v) => !Number.isNaN(new Date(v).getTime()), "date must be a valid calendar date"),
+  note: z.string().max(200).optional(),
+});
+
+router.get(
+  "/:organizationId/settings/closed-days",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+    const rows = await db
+      .select({
+        id: labClosedDays.id,
+        date: labClosedDays.date,
+        note: labClosedDays.note,
+        createdAt: labClosedDays.createdAt,
+      })
+      .from(labClosedDays)
+      .where(eq(labClosedDays.labOrganizationId, organizationId))
+      .orderBy(labClosedDays.date);
+    return ok(res, { closedDays: rows });
+  }),
+);
+
+router.post(
+  "/:organizationId/settings/closed-days",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    const userId: string = (req as any).auth.userId;
+    await resolveOrgAdminAccess(userId, organizationId);
+    const body = closedDaySchema.parse(req.body);
+    const [row] = await db
+      .insert(labClosedDays)
+      .values({
+        labOrganizationId: organizationId,
+        date: body.date,
+        note: body.note ?? null,
+        createdByUserId: userId,
+      })
+      .onConflictDoUpdate({
+        target: [labClosedDays.labOrganizationId, labClosedDays.date],
+        set: { note: body.note ?? null },
+      })
+      .returning();
+    return ok(res, { closedDay: row });
+  }),
+);
+
+router.delete(
+  "/:organizationId/settings/closed-days/:date",
+  asyncHandler(async (req, res) => {
+    const { organizationId, date } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new HttpError(400, "date must be YYYY-MM-DD");
+    }
+    await db
+      .delete(labClosedDays)
+      .where(
+        and(
+          eq(labClosedDays.labOrganizationId, organizationId),
+          eq(labClosedDays.date, date),
+        ),
+      );
+    return ok(res, { deleted: true });
+  }),
+);
+
+// ── Quick Reference Notes ────────────────────────────────────────────────────
+// Lab-scoped reusable note templates that staff can insert into the Add Note
+// composer on any case without retyping common status updates.
+// All roles that can access the lab can READ; only owner/admin/user (staff)
+// can write (create/update/delete/reorder).
+
+const QRN_WRITE_ROLES: MembershipRole[] = ["owner", "admin", "user"];
+
+const createQuickRefNoteSchema = z.object({
+  body: z.string().min(1, "body is required").max(2000),
+  label: z.string().max(200).optional().nullable(),
+  displayOrder: z.number().int().optional(),
+  isActive: z.boolean().optional(),
+});
+
+const updateQuickRefNoteSchema = createQuickRefNoteSchema.partial();
+
+const updateQuickRefNoteOrderSchema = z.object({
+  displayOrder: z.number().int(),
+});
+
+const DEFAULT_QUICK_REF_TEMPLATES: Array<{ body: string; label: string }> = [
+  { label: "Due date changed", body: "Changed due date." },
+  { label: "Courtesy text sent", body: "Sent courtesy text to office." },
+  { label: "Called office", body: "Called office." },
+  { label: "Rush case", body: "Rush case — prioritized." },
+  { label: "Case on hold", body: "Case placed on hold pending further information." },
+  { label: "Awaiting shade", body: "Waiting on shade confirmation from office." },
+  { label: "Awaiting bite records", body: "Awaiting bite records from office." },
+  { label: "Awaiting approval", body: "Awaiting doctor approval before proceeding." },
+  { label: "Parts ordered", body: "Parts ordered — waiting on delivery." },
+  { label: "Remake initiated", body: "Remake initiated per doctor request." },
+  { label: "Shipped today", body: "Case shipped today." },
+  { label: "Ready for pickup", body: "Case ready for pickup." },
+  { label: "Delivered to office", body: "Delivered to office." },
+  { label: "Additional visit needed", body: "Additional try-in/visit required." },
+  { label: "Model issue", body: "Issue noted with model — please advise." },
+  { label: "Impression issue", body: "Impression quality issue — may need retake." },
+  { label: "Left voicemail", body: "Left voicemail with office." },
+  { label: "Spoke with doctor", body: "Spoke with doctor directly." },
+  { label: "Alloy included", body: "Alloy charge included on this case." },
+  { label: "No charge", body: "Courtesy — no charge for this case." },
+];
+
+/**
+ * Template libraries are organization-scoped. Lab roles may maintain the
+ * shared lab library, while a provider library is deliberately restricted to
+ * that provider's own admins/owners. This keeps a provider from editing a
+ * laboratory's shared templates while still letting it curate its own notes.
+ */
+async function requireQuickReferenceWriteAccess(
+  userId: string,
+  organizationId: string,
+) {
+  const organization = await db.query.organizations.findFirst({
+    where: eq(organizations.id, organizationId),
+    columns: { id: true, type: true },
+  });
+  if (!organization) throw new HttpError(404, "Organization not found.");
+  await requireAnyRole(
+    userId,
+    organizationId,
+    organization.type === "provider" ? ADMIN_ROLES : QRN_WRITE_ROLES,
+  );
+}
+
+router.get(
+  "/:organizationId/quick-reference-notes",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    const callerId = (req as any).auth.userId as string;
+    await requireMembership(callerId, organizationId);
+    const rows = await db
+      .select()
+      .from(quickReferenceNotes)
+      .where(eq(quickReferenceNotes.organizationId, organizationId))
+      .orderBy(quickReferenceNotes.displayOrder, quickReferenceNotes.createdAt);
+    return ok(res, { notes: rows });
+  }),
+);
+
+router.post(
+  "/:organizationId/quick-reference-notes",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    const callerId = (req as any).auth.userId as string;
+    await requireQuickReferenceWriteAccess(callerId, organizationId);
+    const body = createQuickRefNoteSchema.parse(req.body);
+    const [row] = await db
+      .insert(quickReferenceNotes)
+      .values({
+        organizationId,
+        body: body.body,
+        label: body.label ?? null,
+        displayOrder: body.displayOrder ?? 0,
+        isActive: body.isActive ?? true,
+      })
+      .returning();
+    return ok(res, { note: row });
+  }),
+);
+
+router.post(
+  "/:organizationId/quick-reference-notes/seed-defaults",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    const callerId = (req as any).auth.userId as string;
+    await requireQuickReferenceWriteAccess(callerId, organizationId);
+    const existing = await db
+      .select({ id: quickReferenceNotes.id })
+      .from(quickReferenceNotes)
+      .where(eq(quickReferenceNotes.organizationId, organizationId))
+      .limit(1);
+    if (existing.length > 0) {
+      return ok(res, { seeded: false, message: "Templates already exist for this lab." });
+    }
+    const toInsert = DEFAULT_QUICK_REF_TEMPLATES.map((t, i) => ({
+      organizationId,
+      body: t.body,
+      label: t.label,
+      displayOrder: i,
+      isActive: true,
+    }));
+    const rows = await db.insert(quickReferenceNotes).values(toInsert).returning();
+    return ok(res, { seeded: true, notes: rows });
+  }),
+);
+
+router.patch(
+  "/:organizationId/quick-reference-notes/:noteId",
+  asyncHandler(async (req, res) => {
+    const { organizationId, noteId } = req.params;
+    const callerId = (req as any).auth.userId as string;
+    await requireQuickReferenceWriteAccess(callerId, organizationId);
+    const body = updateQuickRefNoteSchema.parse(req.body);
+    const existing = await db.query.quickReferenceNotes.findFirst({
+      where: and(
+        eq(quickReferenceNotes.id, noteId),
+        eq(quickReferenceNotes.organizationId, organizationId)
+      ),
+    });
+    if (!existing) throw new HttpError(404, "Quick reference note not found.");
+    const set: Record<string, unknown> = { updatedAt: new Date() };
+    if (body.body !== undefined) set.body = body.body;
+    if (body.label !== undefined) set.label = body.label ?? null;
+    if (body.isActive !== undefined) set.isActive = body.isActive;
+    if (body.displayOrder !== undefined) set.displayOrder = body.displayOrder;
+    const [updated] = await db
+      .update(quickReferenceNotes)
+      .set(set)
+      .where(and(eq(quickReferenceNotes.id, noteId), eq(quickReferenceNotes.organizationId, organizationId)))
+      .returning();
+    return ok(res, { note: updated });
+  }),
+);
+
+router.delete(
+  "/:organizationId/quick-reference-notes/:noteId",
+  asyncHandler(async (req, res) => {
+    const { organizationId, noteId } = req.params;
+    const callerId = (req as any).auth.userId as string;
+    await requireQuickReferenceWriteAccess(callerId, organizationId);
+    const existing = await db.query.quickReferenceNotes.findFirst({
+      where: and(
+        eq(quickReferenceNotes.id, noteId),
+        eq(quickReferenceNotes.organizationId, organizationId)
+      ),
+    });
+    if (!existing) throw new HttpError(404, "Quick reference note not found.");
+    const [updated] = await db
+      .update(quickReferenceNotes)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(and(eq(quickReferenceNotes.id, noteId), eq(quickReferenceNotes.organizationId, organizationId)))
+      .returning();
+    return ok(res, { note: updated, deleted: true });
+  }),
+);
+
+router.patch(
+  "/:organizationId/quick-reference-notes/:noteId/order",
+  asyncHandler(async (req, res) => {
+    const { organizationId, noteId } = req.params;
+    const callerId = (req as any).auth.userId as string;
+    await requireQuickReferenceWriteAccess(callerId, organizationId);
+    const body = updateQuickRefNoteOrderSchema.parse(req.body);
+    const existing = await db.query.quickReferenceNotes.findFirst({
+      where: and(
+        eq(quickReferenceNotes.id, noteId),
+        eq(quickReferenceNotes.organizationId, organizationId)
+      ),
+    });
+    if (!existing) throw new HttpError(404, "Quick reference note not found.");
+    const [updated] = await db
+      .update(quickReferenceNotes)
+      .set({ displayOrder: body.displayOrder, updatedAt: new Date() })
+      .where(and(eq(quickReferenceNotes.id, noteId), eq(quickReferenceNotes.organizationId, organizationId)))
+      .returning();
+    return ok(res, { note: updated });
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Doctor profile endpoints
+// ─────────────────────────────────────────────────────────────────────────────
+
+const phoneEntrySchema = z.object({
+  phoneNumber: z.string().min(1),
+  label: z.enum(["main", "mobile", "other"]),
+  isPrimary: z.boolean().optional().default(false),
+});
+
+const emailEntrySchema = z.object({
+  email: z.string().email(),
+  label: z.enum(["general", "invoicing", "other"]),
+  isPrimary: z.boolean().optional().default(false),
+});
+
+const putDoctorProfileSchema = z.object({
+  doctorName: z.string().trim().min(1),
+  providerOrgId: z
+    .union([z.string().trim().min(1), z.null()])
+    .optional()
+    .transform((v) => v ?? null),
+  displayName: z.string().trim().nullable().optional(),
+  preferences: z.string().nullable().optional(),
+  phones: z.array(phoneEntrySchema).optional().default([]),
+  emails: z.array(emailEntrySchema).optional().default([]),
+});
+
+const doctorRenameSchema = z.object({
+  doctorName: z.string().trim().min(1),
+  providerOrgId: z
+    .union([z.string().trim().min(1), z.null()])
+    .optional()
+    .transform((v) => v ?? null),
+  newName: z.string().trim().min(1),
+});
+
+/**
+ * Build the WHERE clause for a doctor profile lookup, handling the NULL
+ * providerOrganizationId case correctly.
+ */
+function doctorProfileWhere(
+  orgId: string,
+  doctorName: string,
+  providerOrgId: string | null
+) {
+  const providerClause =
+    providerOrgId !== null
+      ? eq(doctorProfiles.providerOrganizationId, providerOrgId)
+      : isNull(doctorProfiles.providerOrganizationId);
+  return and(
+    eq(doctorProfiles.labOrganizationId, orgId),
+    sql`lower(${doctorProfiles.doctorName}) = lower(${doctorName})`,
+    providerClause
+  );
+}
+
+/**
+ * Fetch a doctor profile with its phone and email children. Returns null when
+ * no row exists.
+ */
+async function fetchDoctorProfileFull(
+  orgId: string,
+  doctorName: string,
+  providerOrgId: string | null
+) {
+  const profile = await db.query.doctorProfiles.findFirst({
+    where: doctorProfileWhere(orgId, doctorName, providerOrgId),
+  });
+  if (!profile) return null;
+
+  const [phones, emails] = await Promise.all([
+    db.query.doctorPhoneEntries.findMany({
+      where: eq(doctorPhoneEntries.doctorProfileId, profile.id),
+    }),
+    db.query.doctorEmailEntries.findMany({
+      where: eq(doctorEmailEntries.doctorProfileId, profile.id),
+    }),
+  ]);
+
+  return { ...profile, phones, emails };
+}
+
+/** Zero-state shape returned when no profile row exists yet. */
+function emptyProfileShape(
+  doctorName: string,
+  providerOrgId: string | null
+) {
+  return {
+    id: null,
+    doctorName,
+    providerOrganizationId: providerOrgId,
+    displayName: null,
+    preferences: null,
+    phones: [] as Array<{ phoneNumber: string; label: string; isPrimary: boolean }>,
+    emails: [] as Array<{ email: string; label: string; isPrimary: boolean }>,
+  };
+}
+
+/**
+ * GET /organizations/:orgId/doctors/profile
+ *
+ * Returns the doctor profile (phones, emails, preferences, displayName) for a
+ * doctor within a lab. Returns an empty/default shape when no row exists yet.
+ *
+ * Query params:
+ *   doctorName   – required
+ *   providerOrgId – optional (null-safe)
+ */
+router.get(
+  "/:orgId/doctors/profile",
+  asyncHandler(async (req, res) => {
+    const orgId = req.params.orgId;
+    const userId = (req as any).auth.userId as string;
+    await requireMembership(userId, orgId);
+
+    const doctorName = String(req.query.doctorName ?? "").trim();
+    if (!doctorName) throw new HttpError(400, "doctorName query param is required.");
+
+    const providerOrgIdRaw = req.query.providerOrgId;
+    const providerOrgId =
+      providerOrgIdRaw == null || providerOrgIdRaw === ""
+        ? null
+        : String(providerOrgIdRaw).trim();
+
+    const profile = await fetchDoctorProfileFull(orgId, doctorName, providerOrgId);
+    return ok(res, profile ?? emptyProfileShape(doctorName, providerOrgId));
+  })
+);
+
+/**
+ * PUT /organizations/:orgId/doctors/profile
+ *
+ * Upserts a doctor profile (displayName, preferences, phone list, email list)
+ * in a single transaction. Child rows are replaced wholesale.
+ */
+router.put(
+  "/:orgId/doctors/profile",
+  asyncHandler(async (req, res) => {
+    const orgId = req.params.orgId;
+    const userId = (req as any).auth.userId as string;
+    await requireMembership(userId, orgId);
+
+    const body = putDoctorProfileSchema.parse(req.body);
+
+    const result = await db.transaction(async (tx) => {
+      // Upsert the profile row.
+      const existing = await tx.query.doctorProfiles.findFirst({
+        where: doctorProfileWhere(orgId, body.doctorName, body.providerOrgId ?? null),
+      });
+
+      let profileId: string;
+
+      if (existing) {
+        const [updated] = await tx
+          .update(doctorProfiles)
+          .set({
+            displayName: body.displayName ?? null,
+            preferences: body.preferences ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(doctorProfiles.id, existing.id))
+          .returning({ id: doctorProfiles.id });
+        profileId = updated.id;
+      } else {
+        const [inserted] = await tx
+          .insert(doctorProfiles)
+          .values({
+            labOrganizationId: orgId,
+            doctorName: body.doctorName,
+            providerOrganizationId: body.providerOrgId ?? null,
+            displayName: body.displayName ?? null,
+            preferences: body.preferences ?? null,
+          })
+          .returning({ id: doctorProfiles.id });
+        profileId = inserted.id;
+      }
+
+      // Replace child phone rows.
+      await tx
+        .delete(doctorPhoneEntries)
+        .where(eq(doctorPhoneEntries.doctorProfileId, profileId));
+      if (body.phones.length > 0) {
+        await tx.insert(doctorPhoneEntries).values(
+          body.phones.map((p) => ({
+            doctorProfileId: profileId,
+            phoneNumber: p.phoneNumber,
+            label: p.label,
+            isPrimary: p.isPrimary ?? false,
+          }))
+        );
+      }
+
+      // Replace child email rows.
+      await tx
+        .delete(doctorEmailEntries)
+        .where(eq(doctorEmailEntries.doctorProfileId, profileId));
+      if (body.emails.length > 0) {
+        await tx.insert(doctorEmailEntries).values(
+          body.emails.map((e) => ({
+            doctorProfileId: profileId,
+            email: e.email,
+            label: e.label,
+            isPrimary: e.isPrimary ?? false,
+          }))
+        );
+      }
+
+      return profileId;
+    });
+
+    // Return the full updated profile.
+    const profile = await fetchDoctorProfileFull(orgId, body.doctorName, body.providerOrgId ?? null);
+    return ok(res, profile ?? emptyProfileShape(body.doctorName, body.providerOrgId ?? null));
+  })
+);
+
+/**
+ * PATCH /organizations/:orgId/doctors/rename  (admin only)
+ *
+ * Renames a doctor across `cases`, `pricing_overrides`, and `doctor_profiles`
+ * for the given lab in a single transaction. Returns counts of updated rows.
+ *
+ * `lab_unassigned_doctors` is NOT updated here — that table is keyed by
+ * `userId`, not `doctorName`, so it does not hold a renameable name string.
+ */
+router.patch(
+  "/:orgId/doctors/rename",
+  asyncHandler(async (req, res) => {
+    const orgId = req.params.orgId;
+    const userId = (req as any).auth.userId as string;
+    await requireAnyRole(userId, orgId, ADMIN_ROLES);
+
+    const body = doctorRenameSchema.parse(req.body);
+    const { doctorName, providerOrgId, newName } = body;
+    const resolvedProviderOrgId = providerOrgId ?? null;
+
+    if (doctorName.trim().toLowerCase() === newName.trim().toLowerCase()) {
+      throw new HttpError(400, "New name must differ from the current name.");
+    }
+
+    const counts = await db.transaction(async (tx) => {
+      const providerClause =
+        resolvedProviderOrgId !== null
+          ? eq(cases.providerOrganizationId, resolvedProviderOrgId)
+          : isNull(cases.providerOrganizationId);
+
+      // 1. cases.doctor_name
+      const caseResult = await tx
+        .update(cases)
+        .set({ doctorName: newName })
+        .where(
+          and(
+            eq(cases.labOrganizationId, orgId),
+            sql`lower(${cases.doctorName}) = lower(${doctorName})`,
+            providerClause
+          )
+        )
+        .returning({ id: cases.id });
+      const casesUpdated = caseResult.length;
+
+      // 2. pricing_overrides.doctor_name
+      const pricingProviderClause =
+        resolvedProviderOrgId !== null
+          ? eq(pricingOverrides.providerOrganizationId, resolvedProviderOrgId)
+          : isNull(pricingOverrides.providerOrganizationId);
+      const pricingResult = await tx
+        .update(pricingOverrides)
+        .set({ doctorName: newName, updatedAt: new Date() })
+        .where(
+          and(
+            eq(pricingOverrides.labOrganizationId, orgId),
+            sql`lower(${pricingOverrides.doctorName}) = lower(${doctorName})`,
+            pricingProviderClause,
+            isNull(pricingOverrides.deletedAt)
+          )
+        )
+        .returning({ id: pricingOverrides.id });
+      const pricingUpdated = pricingResult.length;
+
+      // 3. doctor_profiles.doctor_name
+      const profileResult = await tx
+        .update(doctorProfiles)
+        .set({ doctorName: newName, updatedAt: new Date() })
+        .where(doctorProfileWhere(orgId, doctorName, resolvedProviderOrgId))
+        .returning({ id: doctorProfiles.id });
+      const profilesUpdated = profileResult.length;
+
+      return {
+        casesUpdated,
+        pricingUpdated,
+        profilesUpdated,
+        renamedCaseIds: caseResult.map((c: { id: string }) => c.id),
+      };
+    });
+
+    for (const caseId of counts.renamedCaseIds) {
+      broadcastCaseUpdated(caseId, "doctor_renamed");
+    }
+
+    return ok(res, {
+      oldName: doctorName,
+      newName,
+      providerOrganizationId: resolvedProviderOrgId,
+      casesUpdated: counts.casesUpdated,
+      pricingUpdated: counts.pricingUpdated,
+      profilesUpdated: counts.profilesUpdated,
+    });
+  })
 );
 
 export default router;

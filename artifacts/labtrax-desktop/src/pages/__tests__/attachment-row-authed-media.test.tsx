@@ -26,7 +26,7 @@
  */
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 // jspdf and react-pdf pull in heavy/non-jsdom-friendly modules at import time.
 // This surface never touches PDF code, but cases.tsx loads them at module time.
@@ -128,6 +128,37 @@ describe("AttachmentRow — real desktop Files-tab list-row surface", () => {
     expect(img.getAttribute("src")).not.toBe(FILE_URL);
   });
 
+  it("shows an authenticated video thumbnail and opens the in-app viewer without downloading", async () => {
+    const videoAttachment = {
+      ...imageAttachment,
+      id: "att_video_1",
+      fileName: "shade-check.MOV",
+      fileType: "video/quicktime",
+    };
+    const onVideoClick = vi.fn();
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click");
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        <AttachmentRow
+          caseId={CASE_ID}
+          attachment={videoAttachment}
+          canManage={false}
+          onVideoClick={onVideoClick}
+        />
+      </Wrapper>,
+    );
+
+    expect(await screen.findByLabelText("Play video")).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('Play "shade-check.MOV"'));
+    expect(onVideoClick).toHaveBeenCalledWith(
+      expect.stringContaining(`/attachments/${videoAttachment.id}/file`),
+      "video/quicktime",
+      "shade-check.MOV",
+    );
+    expect(anchorClick).not.toHaveBeenCalled();
+  });
+
   it("never renders a plain <img> pointed at the protected /file URL", async () => {
     const Wrapper = makeAuthWrapper("/cases");
     const { container } = render(
@@ -146,6 +177,73 @@ describe("AttachmentRow — real desktop Files-tab list-row surface", () => {
     // exactly the regression this guard exists to prevent.
     const rawSrc = container.querySelector(`img[src="${FILE_URL}"]`);
     expect(rawSrc).toBeNull();
+  });
+
+  it.each([
+    {
+      name: "measured",
+      condition: "simple-matte" as const,
+      range: { min: 0.1, max: 0.4 },
+      expected: "Condition: Matte / non-reflective · Measured range up to 0.4 mm",
+    },
+    {
+      name: "unmeasured",
+      condition: "dental-complex" as const,
+      range: null,
+      expected: "Condition: Complex dental surface · No measured range for this condition",
+    },
+    {
+      name: "reflective/translucent",
+      condition: "reflective-or-translucent" as const,
+      range: null,
+      expected: "Condition: Reflective / translucent · No measured range for this condition",
+    },
+  ])("labels $name scan accuracy details", ({ condition, range, expected }) => {
+    const attachment = {
+      ...imageAttachment,
+      id: `scan-${condition}`,
+      fileName: "scan.ply",
+      fileType: "model/ply",
+      scanAccuracy: {
+        objectCondition: condition,
+        estimatedErrorRangeMm: range,
+      },
+    } as CaseAttachment;
+    const Wrapper = makeAuthWrapper("/cases");
+
+    render(
+      <Wrapper>
+        <AttachmentRow
+          caseId={CASE_ID}
+          attachment={attachment}
+          canManage={false}
+        />
+      </Wrapper>,
+    );
+
+    expect(screen.getByTestId(`scan-accuracy-${attachment.id}`)).toHaveTextContent(expected);
+  });
+
+  it("does not add scan labels to legacy attachments without scan metadata", () => {
+    const legacyAttachment = {
+      ...imageAttachment,
+      id: "legacy-attachment",
+      fileName: "legacy-note.txt",
+      fileType: "text/plain",
+    } as CaseAttachment;
+    const Wrapper = makeAuthWrapper("/cases");
+
+    render(
+      <Wrapper>
+        <AttachmentRow
+          caseId={CASE_ID}
+          attachment={legacyAttachment}
+          canManage={false}
+        />
+      </Wrapper>,
+    );
+
+    expect(screen.queryByTestId("scan-accuracy-legacy-attachment")).toBeNull();
   });
 
   it("shows the fallback (no <img>) when the authenticated fetch fails", async () => {

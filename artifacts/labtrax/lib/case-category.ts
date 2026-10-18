@@ -18,6 +18,34 @@
  * for the tap-a-bar → filtered-cases investigation flow.
  */
 
+// Re-export taxonomy helpers — callers can import everything from here.
+export {
+  deriveCaseHierarchy,
+  encodeRestorationSubtype,
+  normalizeCaseHierarchy,
+  isValidCaseType,
+  isValidSubtype,
+  isValidMaterialSubtype,
+  caseTypeForSubtype,
+  getSubtypes,
+  getMaterialSubtypes,
+  getCaseTypeLabel,
+  getSubtypeLabel,
+  getMaterialSubtypeLabel,
+  getTaxonomyVocab,
+  hierarchyToCaseCategory,
+  CASE_TAXONOMY,
+  CASE_TYPES,
+  type CaseType,
+  type CaseSubtype,
+  type MaterialSubtype,
+  type CaseHierarchy,
+  type TaxonomyVocabEntry,
+} from "@workspace/case-taxonomy";
+
+import { deriveCaseHierarchy, hierarchyToCaseCategory } from "@workspace/case-taxonomy";
+import type { CanonicalCase } from "@workspace/api-client-react";
+
 export const CASE_CATEGORY_KEYS = [
   "implants",
   "zirconia",
@@ -32,7 +60,16 @@ export type CaseCategory = (typeof CASE_CATEGORY_KEYS)[number];
 const IMPLANT_RE = /\bimplant|\babutment|screw[- ]?retained|all[- ]?on[- ]?(4|6|x)/i;
 const CROWN_BRIDGE_RE =
   /\bcrown|\bbridge|\bveneer|\binlay|\bonlay|\bmaryland|\bpontic|\bcoping/i;
-const REMOVABLE_RE = /\bdenture|\bpartial|\bflipper|\bflexible|\bvalplast/i;
+const REMOVABLE_RE = /\bremovable|\bdenture|\bpartial|\bflipper|\bflexible|\bvalplast/i;
+/**
+ * Ortho / appliance free-text signals. Deliberately excludes "essix", which is
+ * ambiguous (`removable/essix_with_teeth` vs `ortho/essix_without_teeth`) —
+ * those cases are classified from their structured subtype instead.
+ *
+ * Mirrors `_ORTHO_RE` in the desktop app's case-date-filter classifier.
+ */
+const ORTHO_RE =
+  /night\s*guard|nightguard|occlusal\s*guard|bite\s*guard|sports?\s*guard|snore\s*guard|mouth\s*guard|mouthguard|\bretainer|\bsplint|bleach\s*tray|\bhawley|space\s*maintainer|\bortho|\bappliance/i;
 const CROWN_BRIDGE_MATERIAL_RE =
   /lithium disilicate|\bpfm\b|\bgold\b|full cast|cast metal|semi precious/i;
 
@@ -81,6 +118,30 @@ function normalizeMaterial(raw: string): string {
 }
 
 /**
+ * Classify a case from a stored `restorationSubtype` column key of the form
+ * `"<caseType>/<subtype>"` or `"<caseType>/<subtype>/<materialSubtype>"` (the
+ * format encoded by `encodeRestorationSubtype`).
+ *
+ * Uses the shared taxonomy decoder so the mapping stays in sync with the
+ * server — any key that `deriveCaseHierarchy` cannot recognise falls back to
+ * `"uncategorized"` rather than crashing.  This guards the Stats drill-down
+ * against silent empty results when a canonical case carries a structured
+ * subtype key but empty free-text `restorationTypes`/`restorationMaterials`.
+ *
+ * Priority mirrors `hierarchyToCaseCategory`:
+ *   implants > zirconia > crown_bridge > removable > other > uncategorized
+ */
+export function classifyCaseCategoryFromSubtype(
+  restorationSubtype: string | null | undefined,
+): CaseCategory {
+  if (!restorationSubtype) return "uncategorized";
+  const hierarchy = deriveCaseHierarchy(null, restorationSubtype, null);
+  if (!hierarchy.caseType) return "uncategorized";
+  const mapped = hierarchyToCaseCategory(hierarchy);
+  return mapped ?? "uncategorized";
+}
+
+/**
  * Classify a case from its comma-joined restoration type/material strings.
  * Highest-priority category wins; blank type + material → "uncategorized".
  */
@@ -110,4 +171,98 @@ export function classifyCaseCategory(
   }
   if (REMOVABLE_RE.test(haystack)) return "removable";
   return "other";
+}
+
+function firstListValue(value: string | null | undefined): string | null {
+  const first = value?.split(",")[0]?.trim();
+  return first || null;
+}
+
+function titleCase(s: string): string {
+  return s
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase())
+    .trim();
+}
+
+export interface CompactWorkDetails {
+  /** "C" (restorative), "D" (removable), "O" (ortho / appliances), the raw
+   * restoration type as a fallback, or null when there's nothing to show. */
+  typeLabel: string | null;
+  material: string | null;
+  detail: string | null;
+}
+
+/**
+ * Cases arrive as compact list rows, not full restoration objects. Build the
+ * short work summary from that list contract so canonical and legacy-projected
+ * cases use the same card treatment.
+ *
+ * Shared by the Cases tab and the Dashboard tab so both case-preview cards
+ * render identical type/material/detail text — do not fork this per screen.
+ */
+export function getCompactWorkDetails(c: CanonicalCase): CompactWorkDetails {
+  const restorationType = firstListValue(c.restorationTypes);
+  const material = firstListValue(c.restorationMaterials);
+  const hierarchy = deriveCaseHierarchy(
+    restorationType,
+    c.firstRestorationSubtype,
+    material,
+  );
+  const typeText = `${restorationType ?? ""} ${c.firstRestorationSubtype ?? ""}`.toLowerCase();
+  let caseType =
+    hierarchy.caseType ??
+    (/removable|denture|partial|flipper|nesbit/.test(typeText)
+      ? "removable"
+      : // Keep this ortho keyword set aligned with the dashboard's
+        // deriveCaseTypeIndicator (and the desktop classifier) so the sort
+        // order can never disagree with the letter shown on the row.
+        ORTHO_RE.test(typeText)
+        ? "ortho"
+        : /crown|bridge|implant|veneer|restorative|temporary/.test(typeText)
+          ? "restorative"
+          : null);
+
+  // Everything above sees only the FIRST comma-separated restoration, while
+  // the Case Type sort classifies the whole comma-joined string with
+  // restorative-then-removable precedence. Re-check a mixed row here so an
+  // appliance listed alongside crown or denture work can't display "O" while
+  // sorting into the C or D group. A structured ortho subtype is
+  // authoritative (the sort honors it too), so it skips this.
+  if (caseType === "ortho" && c.firstRestorationSubtype?.split("/")[0] !== "ortho") {
+    const allTypes = c.restorationTypes ?? "";
+    if (IMPLANT_RE.test(allTypes) || CROWN_BRIDGE_RE.test(allTypes)) {
+      caseType = "restorative";
+    } else if (REMOVABLE_RE.test(allTypes)) {
+      caseType = "removable";
+    }
+  }
+
+  if (caseType === "restorative") {
+    return {
+      typeLabel: "C",
+      material,
+      detail: c.teeth?.trim() ? `Teeth ${c.teeth.trim()}` : null,
+    };
+  }
+  if (caseType === "removable") {
+    return {
+      typeLabel: "D",
+      material,
+      detail: c.step?.trim() ? titleCase(c.step) : null,
+    };
+  }
+  if (caseType === "ortho") {
+    return {
+      typeLabel: "O",
+      material,
+      detail: null,
+    };
+  }
+
+  return {
+    typeLabel: restorationType,
+    material,
+    detail: null,
+  };
 }

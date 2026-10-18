@@ -5,7 +5,7 @@
  *
  * Clicking a transaction row expands an editor that renders inside the SAME
  * fixed-layout `<table>` as the data rows. Both editors span the full grid with
- * a single `<td colSpan={cols}>` cell, where `cols = isUF ? 8 : 9` mirrors the
+ * a single `<td colSpan={cols}>` cell, where `cols = isUF ? 10 : 11` mirrors the
  * Balance column being hidden for Undeposited Funds accounts:
  *   - InlineEditRow  — the standard edit drawer for a normal transaction
  *   - TransferEditRow — the drawer for a transaction with a transferGroupId
@@ -25,12 +25,12 @@
  *     NOT clickable (entries come from Receive Payments), so no edit drawer can
  *     ever mount into the 8-column grid. We assert the grid collapses to 8 and
  *     that the 8-column spanning cell that DOES render (the empty/loading state,
- *     which shares the identical `isUF ? 8 : 9` source) stays aligned — proving
+ *     which shares the identical `isUF ? 10 : 11` source) stays aligned — proving
  *     the spanning value tracks the header count in the 8-column variant too.
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import RegisterPage from "@/pages/finance/register";
 import { makeAuthWrapper } from "./test-utils";
 import type { SessionUser } from "@/lib/api";
@@ -167,31 +167,42 @@ describe("Register edit/transfer drawer alignment", () => {
     }
   });
 
-  it("InlineEditRow (9-col): spanning cell colSpan === header column count", async () => {
+  it("InlineEditRow (11-col): spanning cell colSpan === header column count", async () => {
     installFetchMock("checking", "normal");
     const { container } = renderRegister();
 
     // Click the transaction row to expand its inline edit drawer.
     const payeeText = await screen.findByText("Acme Supply");
-    expect(headerCells(container)).toHaveLength(9);
+    expect(headerCells(container)).toHaveLength(11);
 
     fireEvent.click(payeeText);
 
-    // The "Memo" label is unique to the InlineEditRow drawer (the data row has
+    // The "Memo" label inside tbody is unique to the InlineEditRow drawer (the header Memo is in thead) (the data row has
     // no such label), so it pins us to the expanded editor.
-    const memoLabel = await screen.findByText("Memo");
+    const memoLabel = await within(container.querySelector("tbody") as HTMLElement).findByText("Memo");
     const span = drawerSpanCell(memoLabel);
 
     expect(Number(span.getAttribute("colspan"))).toBe(headerCells(container).length);
-    expect(span.getAttribute("colspan")).toBe("9");
+    expect(span.getAttribute("colspan")).toBe("11");
+    const grid = container.querySelector('[data-testid="register-inline-edit-grid"]') as HTMLElement;
+    const fields = Array.from(grid.children) as HTMLElement[];
+    expect(fields).toHaveLength(11);
+    expect(fields.map((field) => field.querySelector("label")?.textContent)).toEqual(["Date", "Num", "Payee", "Account", "Category", "Payment", "Deposit", "✓", "Balance", "Memo", "Act"]);
+    expect(fields[3].querySelector("input")).toBeNull();
+    expect(fields[3].textContent).toContain("Checking");
+    expect(fields[9].querySelector("input")?.getAttribute("aria-label")).toBe("Memo");
+    // The grid follows the live colgroup, including the fixed Cleared/Actions
+    // columns, rather than a wrapping flex layout that drifts under headers.
+    const widths = Array.from(container.querySelectorAll("colgroup col")).map((col) => (col as HTMLElement).style.width).join(" ");
+    expect(grid.style.gridTemplateColumns).toBe(widths);
   });
 
-  it("TransferEditRow (9-col): spanning cell colSpan === header column count", async () => {
+  it("TransferEditRow (11-col): spanning cell colSpan === header column count", async () => {
     installFetchMock("checking", "transfer");
     const { container } = renderRegister();
 
     const payeeText = await screen.findByText("Transfer to Savings");
-    expect(headerCells(container)).toHaveLength(9);
+    expect(headerCells(container)).toHaveLength(11);
 
     fireEvent.click(payeeText);
 
@@ -200,26 +211,26 @@ describe("Register edit/transfer drawer alignment", () => {
     const span = drawerSpanCell(fromLabel);
 
     expect(Number(span.getAttribute("colspan"))).toBe(headerCells(container).length);
-    expect(span.getAttribute("colspan")).toBe("9");
+    expect(span.getAttribute("colspan")).toBe("11");
   });
 
-  it("Undeposited Funds (8-col): rows are not expandable into a drawer", async () => {
+  it("Undeposited Funds (10-col): rows are not expandable into a drawer", async () => {
     installFetchMock("undeposited_funds", "normal");
     const { container } = renderRegister();
 
     const payeeText = await screen.findByText("Acme Supply");
-    expect(headerCells(container)).toHaveLength(8);
+    expect(headerCells(container)).toHaveLength(10);
 
     // UF rows are intentionally not clickable, so no edit drawer mounts into the
     // 8-column grid. Clicking must NOT open the InlineEditRow ("Memo" label).
     fireEvent.click(payeeText);
     await waitFor(() => {
-      expect(screen.queryByText("Memo")).toBeNull();
+      expect(within(container.querySelector("tbody") as HTMLElement).queryByText("Memo")).toBeNull();
     });
   });
 
-  it("Undeposited Funds (8-col): 8-column spanning cell stays aligned with the header", async () => {
-    // The empty-state spanning cell shares the identical `isUF ? 8 : 9` source as
+  it("Undeposited Funds (10-col): 8-column spanning cell stays aligned with the header", async () => {
+    // The empty-state spanning cell shares the identical `isUF ? 10 : 11` source as
     // the drawer's `cols`, so it proves the 8-column spanning value tracks the
     // collapsed header count even though the drawer itself is unreachable on UF.
     installFetchMock("undeposited_funds", "normal", /* empty */ true);
@@ -230,8 +241,8 @@ describe("Register edit/transfer drawer alignment", () => {
     )).closest("td") as HTMLTableCellElement;
     expect(emptyCell).not.toBeNull();
 
-    expect(headerCells(container)).toHaveLength(8);
+    expect(headerCells(container)).toHaveLength(10);
     expect(Number(emptyCell.getAttribute("colspan"))).toBe(headerCells(container).length);
-    expect(emptyCell.getAttribute("colspan")).toBe("8");
+    expect(emptyCell.getAttribute("colspan")).toBe("10");
   });
 });

@@ -1,7 +1,7 @@
 /**
  * Integration tests: cross-device AI chat history round-trip (real DB).
  *
- * The persistence gap that lost a user's "Maynard" chat history across devices
+ * The persistence gap that lost a user's LabTrax Assistant chat history across devices
  * was invisible because every other AI test runs against a fully-mocked
  * `@workspace/db`, so nothing exercised a real write-then-read. These tests use
  * the real database (gated on DATABASE_URL, same as the other route integration
@@ -31,7 +31,7 @@ import * as os from "node:os";
 // lets each test choose between a terminal text reply and an impactful tool
 // call that produces a proposed_action.
 const { mockCompletionsCreate, setMode, ASSISTANT_REPLY } = vi.hoisted(() => {
-  const ASSISTANT_REPLY = "Maynard says: your case is on track.";
+  const ASSISTANT_REPLY = "LabTrax Assistant says: your case is on track.";
   let mode: "text" | "proposed" = "text";
   const setMode = (m: "text" | "proposed") => {
     mode = m;

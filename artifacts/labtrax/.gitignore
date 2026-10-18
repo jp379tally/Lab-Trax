@@ -36,6 +36,10 @@ public/labtrax-source.tar.gz
 # Native
 ios/
 android/
+!modules/
+!modules/labtrax-depth/
+!modules/labtrax-depth/ios/
+!modules/labtrax-depth/ios/**
 *.orig.*
 *.jks
 *.p8

@@ -1,10 +1,12 @@
 const fs = require("fs");
+const net = require("net");
 const path = require("path");
 const { spawn } = require("child_process");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
 
 let metroProcess = null;
+let metroPort = Number(process.env.METRO_PORT || 8081);
 
 const projectRoot = path.resolve(__dirname, "..");
 
@@ -114,13 +116,39 @@ function clearMetroCache() {
 
 async function checkMetroHealth() {
   try {
-    const response = await fetch("http://localhost:8081/status", {
+    const response = await fetch(`http://localhost:${metroPort}/status`, {
       signal: AbortSignal.timeout(5000),
     });
     return response.ok;
   } catch {
     return false;
   }
+}
+
+function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+async function selectMetroPort() {
+  if (await isPortAvailable(metroPort)) return;
+
+  const firstPort = metroPort;
+  for (let port = firstPort + 1; port <= firstPort + 20; port++) {
+    if (await isPortAvailable(port)) {
+      metroPort = port;
+      console.log(`Metro port ${firstPort} is busy; using ${metroPort}`);
+      return;
+    }
+  }
+
+  exitWithError(`No available Metro port found from ${firstPort} to ${firstPort + 20}`);
 }
 
 function getExpoPublicReplId() {
@@ -133,6 +161,8 @@ async function startMetro(expoPublicDomain, expoPublicReplId) {
     console.log("Metro already running");
     return;
   }
+
+  await selectMetroPort();
 
   console.log("Starting Metro...");
   console.log(`Setting EXPO_PUBLIC_DOMAIN=${expoPublicDomain}`);
@@ -155,6 +185,8 @@ async function startMetro(expoPublicDomain, expoPublicReplId) {
       "--no-dev",
       "--minify",
       "--localhost",
+      "--port",
+      String(metroPort),
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
@@ -230,7 +262,7 @@ async function downloadFile(url, outputPath) {
 async function downloadBundle(platform, timestamp) {
   const entryPath = path.resolve(projectRoot, "node_modules", "expo-router", "entry");
   const bundlePath = path.relative(workspaceRoot, entryPath);
-  const url = new URL(`http://localhost:8081/${bundlePath}.bundle`);
+  const url = new URL(`http://localhost:${metroPort}/${bundlePath}.bundle`);
   url.searchParams.set("platform", platform);
   url.searchParams.set("dev", "false");
   url.searchParams.set("hot", "false");
@@ -258,7 +290,7 @@ async function downloadManifest(platform) {
 
   try {
     console.log(`Fetching ${platform} manifest...`);
-    const response = await fetch("http://localhost:8081/manifest", {
+    const response = await fetch(`http://localhost:${metroPort}/manifest`, {
       headers: { "expo-platform": platform },
       signal: controller.signal,
     });
@@ -326,7 +358,7 @@ function extractAssets(timestamp) {
       const originalPath = match[1];
       const filename = match[3] + "." + match[4];
 
-      const tempUrl = new URL(`http://localhost:8081${originalPath}`);
+      const tempUrl = new URL(`http://localhost:${metroPort}${originalPath}`);
       const unstablePath = tempUrl.searchParams.get("unstable_path");
 
       if (!unstablePath) {
@@ -368,7 +400,7 @@ async function downloadAssets(assets, timestamp) {
   const failures = [];
 
   const downloadPromises = assets.map(async (asset) => {
-    const tempUrl = new URL(`http://localhost:8081${asset.originalPath}`);
+    const tempUrl = new URL(`http://localhost:${metroPort}${asset.originalPath}`);
     const unstablePath = tempUrl.searchParams.get("unstable_path");
 
     if (!unstablePath) {
@@ -441,7 +473,7 @@ function updateBundleUrls(timestamp, baseUrl) {
     bundle = bundle.replace(
       /httpServerLocation:"(\/[^"]+)"/g,
       (_match, capturedPath) => {
-        const tempUrl = new URL(`http://localhost:8081${capturedPath}`);
+        const tempUrl = new URL(`http://localhost:${metroPort}${capturedPath}`);
         const unstablePath = tempUrl.searchParams.get("unstable_path");
 
         if (!unstablePath) {
@@ -505,6 +537,88 @@ function updateManifests(manifests, timestamp, baseUrl, assetsByHash) {
   console.log("Manifests updated");
 }
 
+async function buildWebExport({
+  domain,
+  buildRoot = projectRoot,
+  spawnImpl = spawn,
+  timeoutMs = 4 * 60 * 1000,
+} = {}) {
+  const webTmpDir = path.join(buildRoot, "static-build-web-tmp");
+
+  try {
+    fs.rmSync(webTmpDir, { recursive: true, force: true });
+    const webBuild = spawnImpl(
+      "npx",
+      ["expo", "export", "--platform", "web", "--output-dir", webTmpDir],
+      {
+        stdio: "inherit",
+        cwd: buildRoot,
+        env: {
+          ...process.env,
+          EXPO_PUBLIC_DOMAIN: domain,
+          NODE_OPTIONS: "--max-old-space-size=3072",
+        },
+      },
+    );
+
+    await new Promise((resolve, reject) => {
+      let timedOut = false;
+      const killTimer = setTimeout(() => {
+        timedOut = true;
+        console.error("Web export timed out after 4 minutes; terminating Expo export.");
+        webBuild.kill("SIGTERM");
+        setTimeout(() => {
+          try {
+            webBuild.kill("SIGKILL");
+          } catch {}
+        }, 5000).unref();
+      }, timeoutMs);
+
+      webBuild.on("close", (code, signal) => {
+        clearTimeout(killTimer);
+        if (code === 0 && !timedOut) {
+          const copyRecursive = (src, dest) => {
+            if (!fs.existsSync(src)) return;
+            const entries = fs.readdirSync(src, { withFileTypes: true });
+            fs.mkdirSync(dest, { recursive: true });
+            for (const entry of entries) {
+              const srcPath = path.join(src, entry.name);
+              const destPath = path.join(dest, entry.name);
+              if (entry.isDirectory()) {
+                copyRecursive(srcPath, destPath);
+              } else {
+                fs.copyFileSync(srcPath, destPath);
+              }
+            }
+          };
+          copyRecursive(webTmpDir, path.join(buildRoot, "static-build"));
+          console.log("Web export merged into static-build!");
+          resolve();
+        } else {
+          const reason = timedOut
+            ? "timed out after 4 minutes"
+            : signal
+              ? `terminated by signal ${signal}`
+              : `exited with code ${code}`;
+          reject(new Error(`Expo web export ${reason}`));
+        }
+      });
+      webBuild.on("error", (err) => {
+        clearTimeout(killTimer);
+        reject(new Error(`Expo web export could not start: ${err.message}`, { cause: err }));
+      });
+    });
+  } catch (webErr) {
+    console.error("Web export failed:", webErr);
+    throw new Error(
+      "LabTrax browser app was not produced; failing the deployment build.",
+      { cause: webErr },
+    );
+  } finally {
+    fs.rmSync(webTmpDir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   console.log("Building static Expo Go deployment...");
 
@@ -563,75 +677,20 @@ async function main() {
     metroProcess = null;
   }
 
-  try {
-    const webTmpDir = "static-build-web-tmp";
-    if (fs.existsSync(webTmpDir)) fs.rmSync(webTmpDir, { recursive: true });
-    const webBuild = spawn("npx", ["expo", "export", "--platform", "web", "--output-dir", webTmpDir], {
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        EXPO_PUBLIC_DOMAIN: domain,
-        NODE_OPTIONS: "--max-old-space-size=3072",
-      },
-    });
-    const WEB_EXPORT_TIMEOUT_MS = 4 * 60 * 1000;
-    await new Promise((resolve) => {
-      const killTimer = setTimeout(() => {
-        console.warn("Web export timed out after 4 minutes — killing and skipping web app");
-        webBuild.kill("SIGTERM");
-        setTimeout(() => {
-          try { webBuild.kill("SIGKILL"); } catch {}
-        }, 5000);
-        if (fs.existsSync(webTmpDir)) fs.rmSync(webTmpDir, { recursive: true, force: true });
-        resolve();
-      }, WEB_EXPORT_TIMEOUT_MS);
-
-      webBuild.on("close", (code, signal) => {
-        clearTimeout(killTimer);
-        if (code === 0) {
-          const copyRecursive = (src, dest) => {
-            if (!fs.existsSync(src)) return;
-            const entries = fs.readdirSync(src, { withFileTypes: true });
-            fs.mkdirSync(dest, { recursive: true });
-            for (const entry of entries) {
-              const srcPath = path.join(src, entry.name);
-              const destPath = path.join(dest, entry.name);
-              if (entry.isDirectory()) {
-                copyRecursive(srcPath, destPath);
-              } else {
-                fs.copyFileSync(srcPath, destPath);
-              }
-            }
-          };
-          copyRecursive(webTmpDir, "static-build");
-          fs.rmSync(webTmpDir, { recursive: true, force: true });
-          console.log("Web export merged into static-build!");
-        } else {
-          const reason = signal ? `signal ${signal}` : `code ${code}`;
-          console.warn(`Web export failed (${reason}), skipping web app`);
-          if (fs.existsSync(webTmpDir)) fs.rmSync(webTmpDir, { recursive: true, force: true });
-        }
-        resolve();
-      });
-      webBuild.on("error", (err) => {
-        clearTimeout(killTimer);
-        console.warn("Web export error:", err.message);
-        if (fs.existsSync(webTmpDir)) fs.rmSync(webTmpDir, { recursive: true, force: true });
-        resolve();
-      });
-    });
-  } catch (webErr) {
-    console.warn("Web export failed:", webErr.message);
-  }
+  await buildWebExport({ domain });
 
   console.log("Build complete! Deploy to:", baseUrl);
   process.exit(0);
 }
 
-main().catch((error) => {
-  console.error("Build failed:", error.message);
-  if (metroProcess) {
-    metroProcess.kill();
-  }
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Build failed:", error.message);
+    if (metroProcess) {
+      metroProcess.kill();
+    }
+    process.exit(1);
+  });
+}
+
+module.exports = { buildWebExport };

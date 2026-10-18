@@ -21,7 +21,7 @@
  *  - 401 when no auth token is provided
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
 
@@ -74,6 +74,7 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
   let dbMod: typeof import("@workspace/db");
   let appMod: { default: import("express").Express };
   let auth: typeof import("../lib/auth.js");
+  let casesRoutes: typeof import("./cases.js");
 
   const labOrgId = rid("lab");
   const otherLabOrgId = rid("lab2");
@@ -165,6 +166,76 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
       .send({ caseIds, deleteSessionToken, smsOtpCode: "123456" });
   }
 
+  async function initiateDelete(
+    caseIds: string[],
+    adminToken: string,
+  ): Promise<string> {
+    const init = await request(appMod.default)
+      .post("/api/cases/delete-initiate")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ adminPin: "testpin123", caseIds });
+    expect(init.status, `delete-initiate failed: ${JSON.stringify(init.body)}`).toBe(200);
+    return init.body.data.deleteSessionToken;
+  }
+
+  async function waitForInvoiceLockWaiters(
+    blockerPid: number,
+    expectedCount: number,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const result = await (dbMod as any).pool.query(
+        `WITH RECURSIVE blocked(pid) AS (
+           SELECT pid
+             FROM pg_stat_activity
+            WHERE $1 = ANY(pg_blocking_pids(pid))
+           UNION
+           SELECT activity.pid
+             FROM pg_stat_activity activity
+             JOIN blocked blocker
+               ON blocker.pid = ANY(pg_blocking_pids(activity.pid))
+         )
+         SELECT pid FROM blocked`,
+        [blockerPid],
+      );
+      if (result.rows.length >= expectedCount) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(
+      `Timed out waiting for ${expectedCount} invoice lock waiters`,
+    );
+  }
+
+  async function waitForOrderedInvoiceLockChain(
+    blockerPid: number,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const result = await (dbMod as any).pool.query(
+        `WITH RECURSIVE blocked(pid) AS (
+           SELECT pid
+             FROM pg_stat_activity
+            WHERE $1 = ANY(pg_blocking_pids(pid))
+           UNION
+           SELECT activity.pid
+             FROM pg_stat_activity activity
+             JOIN blocked blocker
+               ON blocker.pid = ANY(pg_blocking_pids(activity.pid))
+         )
+         SELECT
+           (SELECT count(*)
+              FROM pg_stat_activity
+             WHERE $1 = ANY(pg_blocking_pids(pid)))::int AS direct_count,
+           (SELECT count(*) FROM blocked)::int AS total_count`,
+        [blockerPid],
+      );
+      const row = result.rows[0];
+      if (Number(row.direct_count) === 1 && Number(row.total_count) >= 2) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(
+      "Timed out waiting for bulk deletion behind the sorted invoice-lock chain",
+    );
+  }
+
   beforeAll(async () => {
     process.env["JWT_SECRET"] =
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-bulk-delete";
@@ -172,6 +243,7 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
     auth = await import("../lib/auth.js");
+    casesRoutes = await import("./cases.js");
 
     const { db, organizations, users, organizationMemberships } = dbMod as any;
 
@@ -327,6 +399,441 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     // a hard delete, which never happens for cases.
     expect(row.caseId).toBe(c1);
   });
+
+  it("rolls back invoice freezing when its deletion audit cannot be written", async () => {
+    const caseId = await insertCanonical(rid("AUDITFAIL"));
+    const invoiceId = await insertInvoice(caseId, {
+      total: "119.00",
+      balanceDue: "119.00",
+    });
+      const { db, cases, invoices, auditLogs, pool } = dbMod as any;
+    const triggerName = `fail_freeze_audit_${randomBytes(8).toString("hex")}`;
+    const functionName = `${triggerName}_fn`;
+
+    try {
+      await pool.query(`
+        CREATE FUNCTION ${functionName}() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.action = 'invoice_frozen_case_deleted'
+             AND NEW.entity_id = '${invoiceId}' THEN
+            RAISE EXCEPTION 'injected freeze audit failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER ${triggerName}
+          BEFORE INSERT ON audit_logs
+          FOR EACH ROW EXECUTE FUNCTION ${functionName}();
+      `);
+
+      const response = await deleteViaFlow([caseId], tokens.admin);
+      expect(response.status).toBe(500);
+
+      const [invoice] = await db
+        .select({
+          frozen: invoices.frozen,
+          balanceDue: invoices.balanceDue,
+          caseDeletedAt: invoices.caseDeletedAt,
+        })
+        .from(invoices)
+        .where(eq(invoices.id, invoiceId));
+      expect(invoice.frozen).toBe(false);
+      expect(Number(invoice.balanceDue)).toBe(119);
+      expect(invoice.caseDeletedAt).toBeNull();
+
+      const freezeAudits = await db
+        .select({ id: auditLogs.id })
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.action, "invoice_frozen_case_deleted"),
+            eq(auditLogs.entityId, invoiceId),
+          ),
+        );
+      expect(freezeAudits).toHaveLength(0);
+
+      const [caseAfterFailure] = await db
+        .select({ deletedAt: cases.deletedAt })
+        .from(cases)
+        .where(eq(cases.id, caseId));
+      expect(caseAfterFailure.deletedAt).toBeNull();
+    } finally {
+      await pool.query(`DROP TRIGGER IF EXISTS ${triggerName} ON audit_logs`);
+      await pool.query(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    }
+
+    const retry = await deleteViaFlow([caseId], tokens.admin);
+    expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+
+    const [finalCase] = await db
+      .select({ deletedAt: cases.deletedAt })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+    const [finalInvoice] = await db
+      .select({ frozen: invoices.frozen, balanceDue: invoices.balanceDue })
+      .from(invoices)
+      .where(eq(invoices.id, invoiceId));
+    expect(finalCase.deletedAt).not.toBeNull();
+    expect(finalInvoice.frozen).toBe(true);
+    expect(Number(finalInvoice.balanceDue)).toBe(0);
+  });
+
+  it("rolls back a single-case deletion when its invoice freeze audit fails", async () => {
+    const caseId = await insertCanonical(rid("SINGLEAUDITFAIL"));
+    const invoiceId = await insertInvoice(caseId, {
+      total: "83.00",
+      balanceDue: "83.00",
+    });
+    const { db, cases, invoices, pool } = dbMod as any;
+    const triggerName = `fail_single_freeze_audit_${randomBytes(8).toString("hex")}`;
+    const functionName = `${triggerName}_fn`;
+
+    try {
+      await pool.query(`
+        CREATE FUNCTION ${functionName}() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.action = 'invoice_frozen_case_deleted'
+             AND NEW.entity_id = '${invoiceId}' THEN
+            RAISE EXCEPTION 'injected single freeze audit failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER ${triggerName}
+          BEFORE INSERT ON audit_logs
+          FOR EACH ROW EXECUTE FUNCTION ${functionName}();
+      `);
+
+      const failed = await request(appMod.default)
+        .delete(`/api/cases/${caseId}`)
+        .set("Authorization", `Bearer ${tokens.admin}`);
+      expect(failed.status).toBe(500);
+
+      const [caseAfterFailure] = await db
+        .select({ deletedAt: cases.deletedAt })
+        .from(cases)
+        .where(eq(cases.id, caseId));
+      const [invoiceAfterFailure] = await db
+        .select({ frozen: invoices.frozen, balanceDue: invoices.balanceDue })
+        .from(invoices)
+        .where(eq(invoices.id, invoiceId));
+      expect(caseAfterFailure.deletedAt).toBeNull();
+      expect(invoiceAfterFailure.frozen).toBe(false);
+      expect(Number(invoiceAfterFailure.balanceDue)).toBe(83);
+    } finally {
+      await pool.query(`DROP TRIGGER IF EXISTS ${triggerName} ON audit_logs`);
+      await pool.query(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    }
+
+    const retry = await request(appMod.default)
+      .delete(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${tokens.admin}`);
+    expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+
+    const [finalCase] = await db
+      .select({ deletedAt: cases.deletedAt })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+    const [finalInvoice] = await db
+      .select({ frozen: invoices.frozen, balanceDue: invoices.balanceDue })
+      .from(invoices)
+      .where(eq(invoices.id, invoiceId));
+    expect(finalCase.deletedAt).not.toBeNull();
+    expect(finalInvoice.frozen).toBe(true);
+    expect(Number(finalInvoice.balanceDue)).toBe(0);
+  });
+
+  it("freezes once and writes one audit when two freeze requests overlap", async () => {
+    const caseId = await insertCanonical(rid("OVERLAP"));
+    const invoiceId = await insertInvoice(caseId, {
+      total: "119.00",
+      balanceDue: "119.00",
+    });
+    const { db, invoices, auditLogs, pool } = dbMod as any;
+    const holder = await pool.connect();
+    const started: Promise<number>[] = [];
+    const req = {
+      auth: { userId: adminUserId },
+      ip: "127.0.0.1",
+      get: () => "cases-bulk-delete-test",
+    } as any;
+
+    const freeze = () =>
+      casesRoutes.freezeInvoicesForDeletedCases({
+        req,
+        caseIds: [caseId],
+        labOrganizationId: labOrgId,
+        deletingUserId: adminUserId,
+        caseNumberById: new Map([[caseId, "OVERLAP"]]),
+      });
+
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        [invoiceId],
+      );
+      const blockerPid = Number(
+        (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid,
+      );
+
+      const first = freeze();
+      started.push(first);
+      await waitForInvoiceLockWaiters(blockerPid, 1);
+
+      const second = freeze();
+      started.push(second);
+      await waitForInvoiceLockWaiters(blockerPid, 2);
+
+      await holder.query("COMMIT");
+      const frozenCounts = await Promise.all([first, second]);
+      expect(frozenCounts.sort()).toEqual([0, 1]);
+
+      const [invoice] = await db
+        .select({
+          frozen: invoices.frozen,
+          balanceDue: invoices.balanceDue,
+        })
+        .from(invoices)
+        .where(eq(invoices.id, invoiceId));
+      expect(invoice.frozen).toBe(true);
+      expect(Number(invoice.balanceDue)).toBe(0);
+
+      const freezeAudits = await db
+        .select({ id: auditLogs.id })
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.action, "invoice_frozen_case_deleted"),
+            eq(auditLogs.entityId, invoiceId),
+          ),
+        );
+      expect(freezeAudits).toHaveLength(1);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+      await Promise.allSettled(started);
+    }
+  }, 30_000);
+
+  it("serializes invoice date repair with case-deletion freezing in either order", async () => {
+    const { db, cases, invoices, auditLogs, pool } = dbMod as any;
+
+    async function runOrdering(firstOperation: "repair" | "freeze") {
+      const caseId = await insertCanonical(rid(`DATELOCK_${firstOperation}`));
+      const invoiceId = await insertInvoice(caseId);
+      const originalIssuedAt = new Date("2026-01-15T05:00:00.000Z");
+      const originalDueAt = new Date("2026-02-15T05:00:00.000Z");
+      const repairedIssuedAt = "2026-01-15T00:00:00.000Z";
+      const repairedDueAt = "2026-02-15T00:00:00.000Z";
+      await db
+        .update(invoices)
+        .set({
+          issuedAt: originalIssuedAt,
+          dueAt: originalDueAt,
+          createdAt: new Date("2026-09-10T12:00:00.000Z"),
+        })
+        .where(eq(invoices.id, invoiceId));
+      const deleteSessionToken = await initiateDelete([caseId], tokens.admin);
+      const holder = await pool.connect();
+      const started: Promise<request.Response>[] = [];
+
+      const repair = () =>
+        Promise.resolve(
+          request(appMod.default)
+            .patch(`/api/invoices/${invoiceId}/repair-dates`)
+            .set("Authorization", `Bearer ${tokens.admin}`)
+            .send({ issuedAt: repairedIssuedAt, dueAt: repairedDueAt }),
+        );
+      const freeze = () =>
+        Promise.resolve(
+          request(appMod.default)
+            .post("/api/cases/bulk-delete")
+            .set("Authorization", `Bearer ${tokens.admin}`)
+            .send({
+              caseIds: [caseId],
+              deleteSessionToken,
+              smsOtpCode: "123456",
+            }),
+        );
+
+      try {
+        await holder.query("BEGIN");
+        await holder.query(
+          "SELECT pg_advisory_xact_lock(hashtext($1))",
+          [invoiceId],
+        );
+        const blockerPid = Number(
+          (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid,
+        );
+
+        const first = firstOperation === "repair" ? repair() : freeze();
+        started.push(first);
+        await waitForInvoiceLockWaiters(blockerPid, 1);
+        const second = firstOperation === "repair" ? freeze() : repair();
+        started.push(second);
+        await waitForInvoiceLockWaiters(blockerPid, 2);
+        await holder.query("COMMIT");
+
+        const [firstResponse, secondResponse] = await Promise.all([first, second]);
+        const repairResponse =
+          firstOperation === "repair" ? firstResponse : secondResponse;
+        const freezeResponse =
+          firstOperation === "freeze" ? firstResponse : secondResponse;
+        expect(freezeResponse.status, JSON.stringify(freezeResponse.body)).toBe(200);
+
+        const [invoice] = await db
+          .select({
+            frozen: invoices.frozen,
+            issuedAt: invoices.issuedAt,
+            dueAt: invoices.dueAt,
+          })
+          .from(invoices)
+          .where(eq(invoices.id, invoiceId));
+        expect(invoice.frozen).toBe(true);
+        const repairAudits = await db
+          .select()
+          .from(auditLogs)
+          .where(eq(auditLogs.entityId, invoiceId));
+        const dateRepairAudits = repairAudits.filter(
+          (row: any) => row.action === "invoice_dates_repaired",
+        );
+
+        if (firstOperation === "repair") {
+          expect(repairResponse.status, JSON.stringify(repairResponse.body)).toBe(200);
+          expect(invoice.issuedAt.toISOString()).toBe(repairedIssuedAt);
+          expect(invoice.dueAt.toISOString()).toBe(repairedDueAt);
+          expect(dateRepairAudits).toHaveLength(1);
+        } else {
+          expect(repairResponse.status, JSON.stringify(repairResponse.body)).toBe(409);
+          expect(invoice.issuedAt.toISOString()).toBe(originalIssuedAt.toISOString());
+          expect(invoice.dueAt.toISOString()).toBe(originalDueAt.toISOString());
+          expect(dateRepairAudits).toHaveLength(0);
+        }
+
+        const [caseRow] = await db
+          .select({ deletedAt: cases.deletedAt })
+          .from(cases)
+          .where(eq(cases.id, caseId));
+        expect(caseRow.deletedAt).not.toBeNull();
+      } finally {
+        await holder.query("ROLLBACK").catch(() => undefined);
+        holder.release();
+        await Promise.allSettled(started);
+      }
+    }
+
+    await runOrdering("repair");
+    await runOrdering("freeze");
+  }, 30_000);
+
+  it("locks multiple linked invoices in stable order without deadlocking an overlapping writer", async () => {
+    const { db, invoices, pool } = dbMod as any;
+    const firstCaseId = await insertCanonical(rid("MULTILOCK_A"));
+    const secondCaseId = await insertCanonical(rid("MULTILOCK_B"));
+    const firstInvoiceId = await insertInvoice(firstCaseId, {
+      total: "131.00",
+      balanceDue: "131.00",
+    });
+    const secondInvoiceId = await insertInvoice(secondCaseId, {
+      total: "247.00",
+      balanceDue: "247.00",
+    });
+    const [lowerInvoiceId, higherInvoiceId] = [
+      firstInvoiceId,
+      secondInvoiceId,
+    ].sort();
+    const deleteSessionToken = await initiateDelete(
+      [secondCaseId, firstCaseId],
+      tokens.admin,
+    );
+    const holder = await pool.connect();
+    const writer = await pool.connect();
+    let writerHighLock: Promise<unknown> | undefined;
+    let deleteRequest: Promise<request.Response> | undefined;
+
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        [higherInvoiceId],
+      );
+      const holderPid = Number(
+        (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid,
+      );
+
+      await writer.query("BEGIN");
+      await writer.query(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        [lowerInvoiceId],
+      );
+      writerHighLock = writer.query(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        [higherInvoiceId],
+      );
+      await waitForInvoiceLockWaiters(holderPid, 1);
+
+      deleteRequest = Promise.resolve(
+        request(appMod.default)
+          .post("/api/cases/bulk-delete")
+          .set("Authorization", `Bearer ${tokens.admin}`)
+          .send({
+            caseIds: [secondCaseId, firstCaseId],
+            deleteSessionToken,
+            smsOtpCode: "123456",
+          }),
+      );
+
+      // The writer is the holder's only direct waiter. Bulk deletion must be
+      // queued behind the writer's lower invoice lock, proving it requested
+      // the two invoice locks in sorted order rather than query/input order.
+      await waitForOrderedInvoiceLockChain(holderPid);
+      await holder.query("COMMIT");
+      await writerHighLock;
+      await writer.query("COMMIT");
+
+      const response = await deleteRequest;
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.data.deletedCount).toBe(2);
+
+      const rows = await db
+        .select({
+          id: invoices.id,
+          frozen: invoices.frozen,
+          balanceDue: invoices.balanceDue,
+          total: invoices.total,
+          deletedAt: invoices.deletedAt,
+          caseDeletedAt: invoices.caseDeletedAt,
+        })
+        .from(invoices)
+        .where(inArray(invoices.id, [firstInvoiceId, secondInvoiceId]));
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row: any) => row.id).sort()).toEqual(
+        [firstInvoiceId, secondInvoiceId].sort(),
+      );
+      for (const row of rows) {
+        expect(row.frozen).toBe(true);
+        expect(Number(row.balanceDue)).toBe(0);
+        expect(row.deletedAt).toBeNull();
+        expect(row.caseDeletedAt).not.toBeNull();
+      }
+      expect(
+        rows
+          .map((row: any) => Number(row.total))
+          .sort((a: number, b: number) => a - b),
+      ).toEqual([131, 247]);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      await writer.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+      writer.release();
+      await Promise.allSettled(
+        [writerHighLock, deleteRequest].filter(
+          (promise): promise is Promise<unknown> => promise !== undefined,
+        ),
+      );
+    }
+  }, 30_000);
 
   it("does NOT freeze an invoice owned by a different lab even if it references the deleted case id", async () => {
     // Defense-in-depth tenant scoping: there is no composite FK tying an

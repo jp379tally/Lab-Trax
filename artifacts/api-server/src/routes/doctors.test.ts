@@ -99,6 +99,23 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     return id;
   }
 
+  async function insertDoctorMemory(opts: {
+    doctorKey: string;
+    practiceId: string;
+    labId?: string;
+  }) {
+    const { db, rxDoctorPracticeMemory } = dbMod as any;
+    const id = rid("dpm");
+    await db.insert(rxDoctorPracticeMemory).values({
+      id,
+      labOrganizationId: opts.labId ?? labOrgId,
+      doctorName: opts.doctorKey,
+      providerOrganizationId: opts.practiceId,
+      createdByUserId: adminUserId,
+    });
+    return id;
+  }
+
   // Legacy mobile cases keep the doctor name inside a TEXT JSON blob.
   async function insertLegacyCase(opts: {
     id?: string;
@@ -148,6 +165,12 @@ maybe("Task #382 doctor merge route (db integration)", () => {
         type: "provider",
         name: "Practice A",
         parentLabOrganizationId: labOrgId,
+        // Address parts so resolve-name candidates can be asserted to carry a
+        // real street/city/state (the intake names them in its "is this
+        // <doctor> at <practice> — <address>?" question).
+        addressLine1: "100 Example Road",
+        city: "Sampletown",
+        state: "FL",
       },
       {
         id: practiceBId,
@@ -207,6 +230,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       userSessions,
       auditLogs,
       labCases,
+      rxDoctorPracticeMemory,
     } = dbMod as any;
     await db
       .delete(auditLogs)
@@ -217,6 +241,14 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     await db
       .delete(pricingOverrides)
       .where(eq(pricingOverrides.labOrganizationId, labOrgId));
+    await db
+      .delete(rxDoctorPracticeMemory)
+      .where(
+        inArray(rxDoctorPracticeMemory.labOrganizationId, [
+          labOrgId,
+          otherLabOrgId,
+        ])
+      );
     await db.delete(cases).where(eq(cases.labOrganizationId, labOrgId));
     await db
       .delete(organizationMemberships)
@@ -256,7 +288,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
   it("rejects non-admin members", async () => {
     const c1 = await insertCase({
       caseNumber: rid("CN"),
-      doctorName: "Dr. Smith",
+      doctorName: "Dr. Synthetic063",
       practiceId: practiceAId,
     });
     const r = await request(appMod.default)
@@ -267,7 +299,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
         targetDoctorName: "Dr. Smithe",
         targetProviderOrganizationId: practiceAId,
         sources: [
-          { doctorName: "Dr. Smith", providerOrganizationId: practiceAId },
+          { doctorName: "Dr. Synthetic063", providerOrganizationId: practiceAId },
         ],
       });
     expect(r.status).toBeGreaterThanOrEqual(400);
@@ -281,17 +313,17 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       .set("Authorization", `Bearer ${tokens.otherLabAdmin}`)
       .send({
         labOrganizationId: otherLabOrgId,
-        targetDoctorName: "Dr. Smith",
+        targetDoctorName: "Dr. Synthetic063",
         targetProviderOrganizationId: practiceAId, // belongs to labOrgId
-        sources: [{ doctorName: "Dr. X", providerOrganizationId: null }],
+        sources: [{ doctorName: "Dr. SYNTHETIC072", providerOrganizationId: null }],
       });
     expect(r.status).toBe(400);
   });
 
-  it("allows capitalization-only canonicalization merge (Dr. Ray montalvo → Dr. Ray Montalvo)", async () => {
+  it("allows capitalization-only canonicalization merge (Dr. Provider054 synthetic054 → Dr. Provider054 Synthetic054)", async () => {
     const c1 = await insertCase({
       caseNumber: rid("CN"),
-      doctorName: "Dr. Ray montalvo",
+      doctorName: "Dr. Provider054 synthetic054",
       practiceId: practiceAId,
     });
 
@@ -300,10 +332,10 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       .set("Authorization", `Bearer ${tokens.admin}`)
       .send({
         labOrganizationId: labOrgId,
-        targetDoctorName: "Dr. Ray Montalvo",
+        targetDoctorName: "Dr. Provider054 Synthetic054",
         targetProviderOrganizationId: practiceAId,
         sources: [
-          { doctorName: "Dr. Ray montalvo", providerOrganizationId: practiceAId },
+          { doctorName: "Dr. Provider054 synthetic054", providerOrganizationId: practiceAId },
         ],
       });
     expect(r.status).toBe(200);
@@ -312,7 +344,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
 
     const { db, cases } = dbMod as any;
     const [row] = await db.select().from(cases).where(eq(cases.id, c1));
-    expect(row.doctorName).toBe("Dr. Ray Montalvo");
+    expect(row.doctorName).toBe("Dr. Provider054 Synthetic054");
     await db.delete(cases).where(eq(cases.id, c1));
   });
 
@@ -335,7 +367,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
   it("dedupes redundant capitalization variants in a multi-source payload (no double-count)", async () => {
     const c1 = await insertCase({
       caseNumber: rid("CN"),
-      doctorName: "Dr. Smith",
+      doctorName: "Dr. Synthetic063",
       practiceId: practiceAId,
     });
 
@@ -350,8 +382,8 @@ maybe("Task #382 doctor merge route (db integration)", () => {
         targetDoctorName: "Dr. Smythe",
         targetProviderOrganizationId: practiceAId,
         sources: [
-          { doctorName: "Dr. Smith", providerOrganizationId: practiceAId },
-          { doctorName: "dr. smith", providerOrganizationId: practiceAId },
+          { doctorName: "Dr. Synthetic063", providerOrganizationId: practiceAId },
+          { doctorName: "dr. synthetic063", providerOrganizationId: practiceAId },
         ],
       });
     expect(r.status).toBe(200);
@@ -369,7 +401,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     ids.push(
       await insertCase({
         caseNumber: rid("CN"),
-        doctorName: "Dr. Smith",
+        doctorName: "Dr. Synthetic063",
         practiceId: practiceAId,
       })
     );
@@ -389,7 +421,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     );
     const softId = await insertCase({
       caseNumber: rid("CN"),
-      doctorName: "Dr. Smith",
+      doctorName: "Dr. Synthetic063",
       practiceId: practiceAId,
       deletedAt: new Date(),
     });
@@ -397,7 +429,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     // Two source overrides + an existing target override → one source
     // should collapse, the other should be remapped.
     const ovSrc1 = await insertOverride({
-      doctorName: "Dr. Smith",
+      doctorName: "Dr. Synthetic063",
       practiceId: practiceAId,
     });
     const ovTarget = await insertOverride({
@@ -413,7 +445,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
         targetDoctorName: "Dr. Smyth",
         targetProviderOrganizationId: practiceAId,
         sources: [
-          { doctorName: "Dr. Smith", providerOrganizationId: practiceAId },
+          { doctorName: "Dr. Synthetic063", providerOrganizationId: practiceAId },
           { doctorName: "Dr Smith", providerOrganizationId: practiceAId },
           { doctorName: "Dr. SMYTH", providerOrganizationId: practiceBId },
         ],
@@ -426,7 +458,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     const entryNames = r.body.data.entries.map(
       (e: any) => e.sourceDoctorName
     );
-    expect(entryNames).toContain("Dr. Smith");
+    expect(entryNames).toContain("Dr. Synthetic063");
     expect(entryNames).toContain("Dr. SMYTH");
 
     const { db, cases, pricingOverrides } = dbMod as any;
@@ -443,7 +475,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       .select()
       .from(cases)
       .where(eq(cases.id, softId));
-    expect(softRow.doctorName).toBe("Dr. Smith");
+    expect(softRow.doctorName).toBe("Dr. Synthetic063");
 
     const ov1 = await db
       .select()
@@ -463,15 +495,327 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       .where(inArray(pricingOverrides.id, [ovSrc1, ovTarget]));
   });
 
+  it("keeps remembered practice after merge so the next scan auto-selects it", async () => {
+    const suffix = randomBytes(8).toString("hex");
+    const sourceName = `Dr. Synthetic029 Provider028 ${suffix}`;
+    const targetName = `Dr. Synthetic029 Provider029 ${suffix}`;
+    const sourceKey = `synthetic029 provider028 ${suffix}`;
+    const targetKey = `synthetic029 provider029 ${suffix}`;
+    const sourceCaseId = await insertCase({
+      caseNumber: rid("CN"),
+      doctorName: sourceName,
+      practiceId: practiceBId,
+    });
+    const targetCaseId = await insertCase({
+      caseNumber: rid("CN"),
+      doctorName: targetName,
+      practiceId: practiceAId,
+    });
+    await insertDoctorMemory({
+      doctorKey: sourceKey,
+      practiceId: practiceBId,
+    });
+
+    const merge = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: targetName,
+        targetProviderOrganizationId: practiceAId,
+        sources: [
+          { doctorName: sourceName, providerOrganizationId: practiceBId },
+        ],
+      });
+    expect(merge.status).toBe(200);
+    expect(merge.body.data.doctorMemoriesMoved).toBe(1);
+    expect(merge.body.data.doctorMemoriesDropped).toBe(0);
+
+    // This is the lookup the prescription intake performs before showing any
+    // practice prompt. A hit means the next scan silently auto-selects it.
+    const nextScan = await request(appMod.default)
+      .get(
+        `/api/rx-doctor-practice-memory?labOrganizationId=${labOrgId}&doctorName=${encodeURIComponent(targetName)}`
+      )
+      .set("Authorization", `Bearer ${tokens.admin}`);
+    expect(nextScan.status).toBe(200);
+    expect(nextScan.body.data).toEqual({
+      found: true,
+      providerOrganizationId: practiceBId,
+    });
+
+    const oldNameLookup = await request(appMod.default)
+      .get(
+        `/api/rx-doctor-practice-memory?labOrganizationId=${labOrgId}&doctorName=${encodeURIComponent(sourceName)}`
+      )
+      .set("Authorization", `Bearer ${tokens.admin}`);
+    expect(oldNameLookup.body.data.found).toBe(false);
+
+    // Running the same merge again is a no-op for memory and must not erase the
+    // surviving target mapping.
+    const repeated = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: targetName,
+        targetProviderOrganizationId: practiceAId,
+        sources: [
+          { doctorName: sourceName, providerOrganizationId: practiceBId },
+        ],
+      });
+    expect(repeated.status).toBe(200);
+    expect(repeated.body.data.doctorMemoriesMoved).toBe(0);
+    expect(repeated.body.data.doctorMemoriesDropped).toBe(0);
+
+    const { db, cases, rxDoctorPracticeMemory } = dbMod as any;
+    const memories = await db
+      .select()
+      .from(rxDoctorPracticeMemory)
+      .where(
+        and(
+          eq(rxDoctorPracticeMemory.labOrganizationId, labOrgId),
+          inArray(rxDoctorPracticeMemory.doctorName, [sourceKey, targetKey])
+        )
+      );
+    expect(memories).toHaveLength(1);
+    expect(memories[0].doctorName).toBe(targetKey);
+    expect(memories[0].providerOrganizationId).toBe(practiceBId);
+
+    await db
+      .delete(rxDoctorPracticeMemory)
+      .where(eq(rxDoctorPracticeMemory.id, memories[0].id));
+    await db
+      .delete(cases)
+      .where(inArray(cases.id, [sourceCaseId, targetCaseId]));
+  });
+
+  it("keeps the survivor's remembered practice when both doctors disagree", async () => {
+    const suffix = randomBytes(8).toString("hex");
+    const sourceName = `Dr. Dan Conflict ${suffix}`;
+    const targetName = `Dr. Daniel Conflict ${suffix}`;
+    const sourceKey = `dan conflict ${suffix}`;
+    const targetKey = `daniel conflict ${suffix}`;
+    const sourceCaseId = await insertCase({
+      caseNumber: rid("CN"),
+      doctorName: sourceName,
+      practiceId: practiceBId,
+    });
+    const targetCaseId = await insertCase({
+      caseNumber: rid("CN"),
+      doctorName: targetName,
+      practiceId: practiceAId,
+    });
+    await insertDoctorMemory({
+      doctorKey: sourceKey,
+      practiceId: practiceBId,
+    });
+    await insertDoctorMemory({
+      doctorKey: targetKey,
+      practiceId: practiceAId,
+    });
+
+    const merge = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: targetName,
+        targetProviderOrganizationId: practiceAId,
+        sources: [
+          { doctorName: sourceName, providerOrganizationId: practiceBId },
+        ],
+      });
+    expect(merge.status).toBe(200);
+    expect(merge.body.data.doctorMemoriesMoved).toBe(0);
+    expect(merge.body.data.doctorMemoriesDropped).toBe(1);
+
+    const { db, cases, rxDoctorPracticeMemory } = dbMod as any;
+    const memories = await db
+      .select()
+      .from(rxDoctorPracticeMemory)
+      .where(
+        and(
+          eq(rxDoctorPracticeMemory.labOrganizationId, labOrgId),
+          inArray(rxDoctorPracticeMemory.doctorName, [sourceKey, targetKey])
+        )
+      );
+    expect(memories).toHaveLength(1);
+    expect(memories[0].doctorName).toBe(targetKey);
+    expect(memories[0].providerOrganizationId).toBe(practiceAId);
+
+    await db
+      .delete(rxDoctorPracticeMemory)
+      .where(eq(rxDoctorPracticeMemory.id, memories[0].id));
+    await db
+      .delete(cases)
+      .where(inArray(cases.id, [sourceCaseId, targetCaseId]));
+  });
+
+  it("chooses the same remembered practice regardless of multi-source payload order", async () => {
+    async function runScenario(reverseSources: boolean) {
+      const suffix = randomBytes(8).toString("hex");
+      const firstName = `Dr. Amy Stable ${suffix}`;
+      const secondName = `Dr. Zoe Stable ${suffix}`;
+      const targetName = `Dr. Stable Survivor ${suffix}`;
+      const firstKey = `amy stable ${suffix}`;
+      const secondKey = `zoe stable ${suffix}`;
+      const targetKey = `stable survivor ${suffix}`;
+      const caseIds = [
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: firstName,
+          practiceId: practiceAId,
+        }),
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: secondName,
+          practiceId: practiceBId,
+        }),
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: targetName,
+          practiceId: practiceAId,
+        }),
+      ];
+      await insertDoctorMemory({
+        doctorKey: firstKey,
+        practiceId: practiceAId,
+      });
+      await insertDoctorMemory({
+        doctorKey: secondKey,
+        practiceId: practiceBId,
+      });
+
+      const sources = [
+        { doctorName: firstName, providerOrganizationId: practiceAId },
+        { doctorName: secondName, providerOrganizationId: practiceBId },
+      ];
+      const merge = await request(appMod.default)
+        .post("/api/doctors/merge")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .send({
+          labOrganizationId: labOrgId,
+          targetDoctorName: targetName,
+          targetProviderOrganizationId: practiceAId,
+          sources: reverseSources ? [...sources].reverse() : sources,
+        });
+      expect(merge.status).toBe(200);
+      expect(merge.body.data.doctorMemoriesMoved).toBe(1);
+      expect(merge.body.data.doctorMemoriesDropped).toBe(1);
+
+      const { db, cases, rxDoctorPracticeMemory } = dbMod as any;
+      const memories = await db
+        .select()
+        .from(rxDoctorPracticeMemory)
+        .where(
+          and(
+            eq(rxDoctorPracticeMemory.labOrganizationId, labOrgId),
+            inArray(rxDoctorPracticeMemory.doctorName, [
+              firstKey,
+              secondKey,
+              targetKey,
+            ])
+          )
+        );
+      expect(memories).toHaveLength(1);
+      expect(memories[0].doctorName).toBe(targetKey);
+
+      await db
+        .delete(rxDoctorPracticeMemory)
+        .where(eq(rxDoctorPracticeMemory.id, memories[0].id));
+      await db.delete(cases).where(inArray(cases.id, caseIds));
+      return memories[0].providerOrganizationId;
+    }
+
+    expect(await runScenario(false)).toBe(practiceAId);
+    expect(await runScenario(true)).toBe(practiceAId);
+  }, 30000);
+
+  it("undo refuses to clobber a same-practice target re-confirmation", async () => {
+    const suffix = randomBytes(8).toString("hex");
+    const sourceName = `Dr. Undo Source ${suffix}`;
+    const targetName = `Dr. Undo Target ${suffix}`;
+    const sourceKey = `undo source ${suffix}`;
+    const targetKey = `undo target ${suffix}`;
+    const caseIds = [
+      await insertCase({
+        caseNumber: rid("CN"),
+        doctorName: sourceName,
+        practiceId: practiceAId,
+      }),
+      await insertCase({
+        caseNumber: rid("CN"),
+        doctorName: targetName,
+        practiceId: practiceAId,
+      }),
+    ];
+    await insertDoctorMemory({
+      doctorKey: sourceKey,
+      practiceId: practiceAId,
+    });
+
+    const merge = await request(appMod.default)
+      .post("/api/doctors/merge")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        targetDoctorName: targetName,
+        targetProviderOrganizationId: practiceAId,
+        sources: [
+          { doctorName: sourceName, providerOrganizationId: practiceAId },
+        ],
+      });
+    expect(merge.status).toBe(200);
+    const auditLogId = merge.body.data.entries[0].auditLogId;
+
+    // Re-saving the same provider still represents a newer user confirmation;
+    // its updatedAt must prevent undo from renaming that target row away.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const resave = await request(appMod.default)
+      .post("/api/rx-doctor-practice-memory")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        labOrganizationId: labOrgId,
+        doctorName: targetName,
+        providerOrganizationId: practiceAId,
+      });
+    expect(resave.status).toBe(200);
+
+    const undo = await request(appMod.default)
+      .post(`/api/doctors/merge/${auditLogId}/undo`)
+      .set("Authorization", `Bearer ${tokens.admin}`);
+    expect(undo.status).toBe(409);
+
+    const { db, cases, rxDoctorPracticeMemory } = dbMod as any;
+    const memories = await db
+      .select()
+      .from(rxDoctorPracticeMemory)
+      .where(
+        and(
+          eq(rxDoctorPracticeMemory.labOrganizationId, labOrgId),
+          inArray(rxDoctorPracticeMemory.doctorName, [sourceKey, targetKey])
+        )
+      );
+    expect(memories).toHaveLength(1);
+    expect(memories[0].doctorName).toBe(targetKey);
+    expect(memories[0].providerOrganizationId).toBe(practiceAId);
+
+    await db
+      .delete(rxDoctorPracticeMemory)
+      .where(eq(rxDoctorPracticeMemory.id, memories[0].id));
+    await db.delete(cases).where(inArray(cases.id, caseIds));
+  });
+
   it("includeSoftDeleted=true also moves soft-deleted cases", async () => {
     const live = await insertCase({
       caseNumber: rid("CN"),
-      doctorName: "Dr. Jones",
+      doctorName: "Dr. Synthetic047",
       practiceId: practiceAId,
     });
     const soft = await insertCase({
       caseNumber: rid("CN"),
-      doctorName: "Dr. Jones",
+      doctorName: "Dr. Synthetic047",
       practiceId: practiceAId,
       deletedAt: new Date(),
     });
@@ -485,7 +829,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
         targetProviderOrganizationId: practiceAId,
         includeSoftDeleted: true,
         sources: [
-          { doctorName: "Dr. Jones", providerOrganizationId: practiceAId },
+          { doctorName: "Dr. Synthetic047", providerOrganizationId: practiceAId },
         ],
       });
     expect(r.status).toBe(200);
@@ -506,7 +850,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       ids.push(
         await insertCase({
           caseNumber: rid("CN"),
-          doctorName: "Dr. Original",
+          doctorName: "Dr. Synthetic057",
           practiceId: practiceAId,
         })
       );
@@ -519,7 +863,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
         targetDoctorName: "Dr. Renamed",
         targetProviderOrganizationId: practiceAId,
         sources: [
-          { doctorName: "Dr. Original", providerOrganizationId: practiceAId },
+          { doctorName: "Dr. Synthetic057", providerOrganizationId: practiceAId },
         ],
       });
     expect(r.status).toBe(200);
@@ -538,7 +882,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       .select()
       .from(cases)
       .where(inArray(cases.id, ids));
-    for (const row of rows) expect(row.doctorName).toBe("Dr. Original");
+    for (const row of rows) expect(row.doctorName).toBe("Dr. Synthetic057");
 
     // Re-merge to a different name then tamper one row → undo refused.
     const r2 = await request(appMod.default)
@@ -549,7 +893,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
         targetDoctorName: "Dr. Renamed2",
         targetProviderOrganizationId: practiceAId,
         sources: [
-          { doctorName: "Dr. Original", providerOrganizationId: practiceAId },
+          { doctorName: "Dr. Synthetic057", providerOrganizationId: practiceAId },
         ],
       });
     const audit2 = r2.body.data.entries[0].auditLogId;
@@ -1087,6 +1431,10 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       similarMatches: Array<{
         doctorName: string;
         providerOrganizationId: string | null;
+        practiceName: string | null;
+        practiceAddressLine1: string | null;
+        practiceCity: string | null;
+        practiceState: string | null;
         similarity: number;
         totalCases: number;
       }>;
@@ -1221,6 +1569,108 @@ maybe("Task #382 doctor merge route (db integration)", () => {
         .set("Authorization", `Bearer ${tokens.otherLabAdmin}`);
       expect(r.status).toBe(403);
     }, 30000);
+
+    // The AI intake asks "Is this <doctor> at <practice> — <address>?" before
+    // it asks anything about the practice, so each candidate has to carry the
+    // practice it is REALLY associated with — not an echo of whatever practice
+    // the caller happened to ask about.
+    it("returns each candidate's own practice with name and address", async () => {
+      const { db, cases } = dbMod as any;
+      const suffix = rid("x");
+      const stored = `Dr. Synthetic029 Provider029 ${suffix}`;
+      const c = await insertCase({
+        caseNumber: rid("CN"),
+        doctorName: stored,
+        practiceId: practiceAId,
+      });
+
+      // Lab-wide lookup (no providerOrganizationId) — this is how the intake
+      // calls it, because the practice is exactly what it does not know yet.
+      const r = await request(appMod.default)
+        .get("/api/doctors/resolve-name")
+        .query({
+          labOrganizationId: labOrgId,
+          doctorName: `Dr. Synthetic029 Provider028 ${suffix}`,
+        })
+        .set("Authorization", `Bearer ${tokens.admin}`);
+      expect(r.status).toBe(200);
+      const body = r.body.data as ResolveBody;
+      expect(body.exactMatch).toBeNull();
+      const match = body.similarMatches.find((m) => m.doctorName === stored);
+      expect(match).toBeTruthy();
+      expect(match!.providerOrganizationId).toBe(practiceAId);
+      expect(match!.practiceName).toBe("Practice A");
+      expect(match!.practiceAddressLine1).toBe("100 Example Road");
+      expect(match!.practiceCity).toBe("Sampletown");
+      expect(match!.practiceState).toBe("FL");
+
+      await db.delete(cases).where(eq(cases.id, c));
+    }, 30000);
+
+    it("names the practice a doctor has the most cases under, not the caller's", async () => {
+      const { db, cases } = dbMod as any;
+      const suffix = rid("x");
+      const stored = `Dr. Primary Practice ${suffix}`;
+      const ids = [
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: stored,
+          practiceId: practiceBId,
+        }),
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: stored,
+          practiceId: practiceBId,
+        }),
+        await insertCase({
+          caseNumber: rid("CN"),
+          doctorName: stored,
+          practiceId: practiceAId,
+        }),
+      ];
+
+      // Ask while scoped to Practice A — the candidate must still report
+      // Practice B, where the doctor actually has the most cases.
+      const r = await request(appMod.default)
+        .get("/api/doctors/resolve-name")
+        .query({
+          labOrganizationId: labOrgId,
+          doctorName: `Dr. Primry Practice ${suffix}`,
+        })
+        .set("Authorization", `Bearer ${tokens.admin}`);
+      expect(r.status).toBe(200);
+      const body = r.body.data as ResolveBody;
+      const match = body.similarMatches.find((m) => m.doctorName === stored);
+      expect(match).toBeTruthy();
+      expect(match!.providerOrganizationId).toBe(practiceBId);
+      expect(match!.practiceName).toBe("Practice B");
+      expect(match!.totalCases).toBe(3);
+
+      for (const id of ids) await db.delete(cases).where(eq(cases.id, id));
+    }, 30000);
+
+    it("leaves the practice null for legacy blob names, which carry none", async () => {
+      const { db, labCases } = dbMod as any;
+      const suffix = rid("x");
+      const legName = `Dr. Legacy Nopractice ${suffix}`;
+      const leg = await insertLegacyCase({ caseData: { doctorName: legName } });
+
+      const r = await request(appMod.default)
+        .get("/api/doctors/resolve-name")
+        .query({
+          labOrganizationId: labOrgId,
+          doctorName: `Dr. Legcy Nopractice ${suffix}`,
+        })
+        .set("Authorization", `Bearer ${tokens.admin}`);
+      expect(r.status).toBe(200);
+      const body = r.body.data as ResolveBody;
+      const match = body.similarMatches.find((m) => m.doctorName === legName);
+      expect(match).toBeTruthy();
+      expect(match!.providerOrganizationId).toBeNull();
+      expect(match!.practiceName).toBeNull();
+
+      await db.delete(labCases).where(eq(labCases.id, leg));
+    }, 30000);
   });
 
   // -------------------------------------------------------------------------
@@ -1264,6 +1714,195 @@ maybe("Task #382 doctor merge route (db integration)", () => {
 
       const { db, cases } = dbMod as any;
       await db.delete(cases).where(inArray(cases.id, ids));
+    });
+
+    it("names the provider account each doctor already has", async () => {
+      // Task #4397: the merge UI says "keeps account #…", so every cluster node
+      // must carry the account the doctor already owns — and when a row has
+      // several duplicate accounts, the one consolidation keeps (oldest
+      // account number wins, so seq 10 beats seq 90 in the same year).
+      const { db, users, organizationMemberships, cases } = dbMod as any;
+      const initials = Array.from({ length: 6 }, () =>
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ".charAt(Math.floor(Math.random() * 26))
+      ).join("");
+      const olderAccount = `1026${initials}`;
+      const newerAccount = `9026${initials}`;
+      const keeperUserId = rid("udoc");
+      const extraUserId = rid("udoc");
+      const membershipIds = [rid("m"), rid("m")];
+      const caseIds: string[] = [];
+
+      try {
+        await db.insert(users).values([
+          {
+            id: keeperUserId,
+            username: `doc_${keeperUserId}`,
+            password: "x",
+            userType: "provider",
+            doctorName: "Dr. Keepsaccount",
+            platformAccountNumber: olderAccount,
+          },
+          {
+            id: extraUserId,
+            username: `doc_${extraUserId}`,
+            password: "x",
+            userType: "provider",
+            doctorName: "Dr. Keepsaccount",
+            platformAccountNumber: newerAccount,
+          },
+        ]);
+        await db.insert(organizationMemberships).values([
+          {
+            id: membershipIds[0],
+            labId: practiceAId,
+            userId: keeperUserId,
+            role: "member",
+            status: "active",
+          },
+          {
+            id: membershipIds[1],
+            labId: practiceAId,
+            userId: extraUserId,
+            role: "member",
+            status: "active",
+          },
+        ]);
+        caseIds.push(
+          await insertCase({
+            caseNumber: rid("CN"),
+            doctorName: "Dr. Keepsaccount",
+            practiceId: practiceAId,
+          }),
+          await insertCase({
+            caseNumber: rid("CN"),
+            doctorName: "Dr Keepsaccount",
+            practiceId: practiceAId,
+          })
+        );
+
+        const r = await request(appMod.default)
+          .get("/api/doctors/duplicate-clusters")
+          .set("Authorization", `Bearer ${tokens.admin}`);
+
+        expect(r.status).toBe(200);
+        const cluster = r.body.data.clusters.find((c: any) =>
+          c.doctors.some((d: any) => d.doctorName === "Dr. Keepsaccount")
+        );
+        expect(cluster).toBeDefined();
+
+        const keeper = cluster.doctors.find(
+          (d: any) => d.doctorName === "Dr. Keepsaccount"
+        );
+        expect(keeper.accountCount).toBe(2);
+        expect(keeper.platformAccountNumber).toBe(olderAccount);
+
+        // The spelling variant is a name on cases only — no account to keep.
+        const nameOnly = cluster.doctors.find(
+          (d: any) => d.doctorName === "Dr Keepsaccount"
+        );
+        expect(nameOnly.platformAccountNumber).toBeNull();
+        // Merging names retires no account, so the name cluster names no
+        // cluster-wide survivor.
+        expect(cluster.kind).toBe("name");
+        expect(cluster.survivingAccountNumber).toBeNull();
+      } finally {
+        if (caseIds.length) {
+          await db.delete(cases).where(inArray(cases.id, caseIds));
+        }
+        await db
+          .delete(organizationMemberships)
+          .where(inArray(organizationMemberships.id, membershipIds));
+        await db
+          .delete(users)
+          .where(inArray(users.id, [keeperUserId, extraUserId]));
+      }
+    });
+
+    it("names the one account a consolidation keeps for the whole cluster", async () => {
+      // Task #4397: an account cluster collapses onto the OLDEST account in the
+      // cluster and retires the rest. Per-row numbers are not enough to say
+      // which one survives — two near-name rows each owning one account would
+      // otherwise both claim to be kept next to the Consolidate action.
+      const { db, users, organizationMemberships } = dbMod as any;
+      const initials = Array.from({ length: 6 }, () =>
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ".charAt(Math.floor(Math.random() * 26))
+      ).join("");
+      const olderAccount = `1026${initials}`;
+      const newerAccount = `9026${initials}`;
+      const olderUserId = rid("udoc");
+      const newerUserId = rid("udoc");
+      const membershipIds = [rid("m"), rid("m")];
+
+      try {
+        await db.insert(users).values([
+          {
+            id: newerUserId,
+            username: `doc_${newerUserId}`,
+            password: "x",
+            userType: "provider",
+            doctorName: "Dr. Brittney Craigson",
+            platformAccountNumber: newerAccount,
+          },
+          {
+            id: olderUserId,
+            username: `doc_${olderUserId}`,
+            password: "x",
+            userType: "provider",
+            doctorName: "Brittney Craigson",
+            platformAccountNumber: olderAccount,
+          },
+        ]);
+        await db.insert(organizationMemberships).values([
+          {
+            id: membershipIds[0],
+            labId: practiceAId,
+            userId: newerUserId,
+            role: "member",
+            status: "active",
+          },
+          {
+            id: membershipIds[1],
+            labId: practiceAId,
+            userId: olderUserId,
+            role: "member",
+            status: "active",
+          },
+        ]);
+
+        const r = await request(appMod.default)
+          .get("/api/doctors/duplicate-clusters")
+          .set("Authorization", `Bearer ${tokens.admin}`);
+
+        expect(r.status).toBe(200);
+        const cluster = r.body.data.clusters.find(
+          (c: any) =>
+            c.kind === "account" &&
+            c.doctors.some(
+              (d: any) => d.doctorName === "Dr. Brittney Craigson"
+            )
+        );
+        expect(cluster).toBeDefined();
+
+        // The survivor is the oldest number in the cluster — which lives on the
+        // OTHER row, not on every row.
+        expect(cluster.survivingAccountNumber).toBe(olderAccount);
+        const byName = new Map<string, any>(
+          cluster.doctors.map((d: any) => [d.doctorName, d])
+        );
+        expect(byName.get("Dr. Brittney Craigson").platformAccountNumber).toBe(
+          newerAccount
+        );
+        expect(byName.get("Brittney Craigson").platformAccountNumber).toBe(
+          olderAccount
+        );
+      } finally {
+        await db
+          .delete(organizationMemberships)
+          .where(inArray(organizationMemberships.id, membershipIds));
+        await db
+          .delete(users)
+          .where(inArray(users.id, [olderUserId, newerUserId]));
+      }
     });
 
     it("excludes soft-deleted cases from clustering", async () => {
@@ -1577,6 +2216,15 @@ maybe("Task #2375 remove non-provider doctor (db integration)", () => {
     if (trackCases.length) {
       await db.delete(cases).where(inArray(cases.id, trackCases));
     }
+    // Name-only holding entries carry no user id, so clear this lab's by lab.
+    await db
+      .delete(labUnassignedDoctors)
+      .where(
+        and(
+          eq(labUnassignedDoctors.labOrganizationId, labOrgId),
+          isNull(labUnassignedDoctors.userId)
+        )
+      );
     if (trackUsers.length) {
       await db
         .delete(labUnassignedDoctors)
@@ -1724,11 +2372,17 @@ maybe("Task #2375 remove non-provider doctor (db integration)", () => {
     expect(r.status).toBe(404);
   });
 
-  it("still removes a virtual (name-only) doctor with no userId", async () => {
+  it("removes a virtual (name-only) doctor without creating an account", async () => {
     const caseId = await addCase({
       doctorName: "Dr. Virtual Only",
       practiceId: practiceAId,
     });
+
+    const { db, labUnassignedDoctors, users } = dbMod as any;
+    const before = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.userType, "provider"));
 
     const r = await request(appMod.default)
       .post(`/api/organizations/${practiceAId}/doctors/remove`)
@@ -1736,17 +2390,29 @@ maybe("Task #2375 remove non-provider doctor (db integration)", () => {
       .send({ doctorName: "Dr. Virtual Only" });
 
     expect(r.status).toBe(200);
-    expect(r.body.data.promotedFromVirtual).toBe(true);
-    // Track the promoted provider user for cleanup.
-    if (r.body.data.userId) trackUsers.push(r.body.data.userId);
-    // Promoted virtual doctors are a provider concept → they DO get a
-    // holding-area record.
-    const { db, labUnassignedDoctors } = dbMod as any;
+    // Removing a doctor must never create an account or an account number.
+    expect(r.body.data.promotedFromVirtual).toBe(false);
+    expect(r.body.data.userId).toBeNull();
+    expect(r.body.data.platformAccountNumber).toBeNull();
+
+    const after = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.userType, "provider"));
+    expect(after.length).toBe(before.length);
+
+    // The removal is recorded by name in the lab's holding area instead.
     const holding = await db
       .select()
       .from(labUnassignedDoctors)
-      .where(eq(labUnassignedDoctors.userId, r.body.data.userId));
+      .where(
+        and(
+          eq(labUnassignedDoctors.labOrganizationId, labOrgId),
+          isNull(labUnassignedDoctors.userId)
+        )
+      );
     expect(holding.length).toBe(1);
+    expect(holding[0].doctorName).toBe("Dr. Virtual Only");
     void caseId;
   });
 });

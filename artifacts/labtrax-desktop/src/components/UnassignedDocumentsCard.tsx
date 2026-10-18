@@ -11,6 +11,7 @@ import {
   Inbox,
   Loader2,
   Paperclip,
+  Pencil,
   Trash2,
   X,
 } from "lucide-react";
@@ -19,6 +20,7 @@ import {
   useAssignLabInboxFile,
   useDeleteLabInboxFile,
   useBulkDeleteLabInboxFiles,
+  useUpdateLabInboxFileNote,
   getListLabInboxFilesQueryKey,
 } from "@workspace/api-client-react";
 import type { LabInboxFile } from "@workspace/api-client-react";
@@ -33,6 +35,7 @@ import {
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { relativeTime } from "@/lib/format";
+import { openFilePreviewWindow } from "@/lib/file-preview";
 
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
 const SIZE_ERROR = "File is too large. Max upload size is 200 MB.";
@@ -68,58 +71,8 @@ function formatBytes(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-/**
- * Opens a dedicated preview window for a fetched file blob URL.
- * - PDFs render in an <iframe>, images in an <img>.
- * - Unsupported types get a fallback page with an explicit Download button
- *   instead of triggering an automatic download.
- * The caller owns the blob URL lifecycle (do not revoke while the window is open).
- */
-function openFilePreviewWindow(
-  blobUrl: string,
-  contentType: string,
-  filename: string,
-): void {
-  // No "noopener" here: we need the window handle to write the preview
-  // document. The document is same-origin and fully under our control.
-  const win = window.open("", "_blank");
-  if (!win) {
-    // Popup blocked — fall back to opening the blob directly.
-    window.open(blobUrl, "_blank");
-    return;
-  }
-  const safeTitle = escapeHtml(filename);
-  const isPdf = contentType === "application/pdf";
-  const isImage = contentType.startsWith("image/");
-  let body: string;
-  if (isPdf) {
-    body = `<iframe src="${blobUrl}" title="${safeTitle}" style="border:0;width:100vw;height:100vh;display:block"></iframe>`;
-  } else if (isImage) {
-    body = `<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#1a1a1a"><img src="${blobUrl}" alt="${safeTitle}" style="max-width:100%;max-height:100vh;object-fit:contain" /></div>`;
-  } else {
-    body = `
-      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:16px;font-family:system-ui,sans-serif;background:#f5f5f5;color:#333">
-        <div style="font-size:48px">📎</div>
-        <div style="font-size:15px;font-weight:600;max-width:80vw;overflow-wrap:anywhere;text-align:center">${safeTitle}</div>
-        <div style="font-size:13px;color:#777">This file type cannot be previewed in the browser.</div>
-        <a href="${blobUrl}" download="${safeTitle}" style="padding:8px 20px;border-radius:6px;background:#2563eb;color:#fff;text-decoration:none;font-size:13px;font-weight:600">Download</a>
-      </div>`;
-  }
-  win.document.write(
-    `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title><style>html,body{margin:0;padding:0}</style></head><body>${body}</body></html>`,
-  );
-  win.document.close();
-}
-
-function fileIcon(mimeType: string): string {
+function fileIcon(mimeType: string | null | undefined): string {
+  if (!mimeType) return "📎";
   if (mimeType.startsWith("image/")) return "🖼";
   if (mimeType === "application/pdf") return "📄";
   if (mimeType.includes("word") || mimeType.includes("document")) return "📝";
@@ -160,20 +113,43 @@ function InboxFileRow({
   const [searchResults, setSearchResults] = useState<QuickCase[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [viewLoading, setViewLoading] = useState(false);
+  const [isEditingNote, setIsEditingNote] = useState(false);
+  const [noteDraft, setNoteDraft] = useState(file.note ?? "");
   const inputRef = useRef<HTMLInputElement>(null);
   const pendingCaseIdRef = useRef<string>("");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const objectUrlRef = useRef<string | null>(null);
 
+  const isNoteOnly = !file.storagePath;
+
   const deleteMutation = useDeleteLabInboxFile({
     mutation: {
       onSuccess: () => {
         onDeleted(file.id);
-        toast({ title: "File deleted", description: file.originalFilename });
+        toast({ title: isNoteOnly ? "Note deleted" : "File deleted", description: file.originalFilename ?? undefined });
       },
       onError: (err: Error) => {
         toast({
           title: "Could not delete file",
+          description: err.message || "Please try again.",
+          variant: "destructive",
+        });
+      },
+    },
+  });
+  const qc = useQueryClient();
+  const updateNoteMutation = useUpdateLabInboxFileNote({
+    mutation: {
+      onSuccess: () => {
+        setIsEditingNote(false);
+        void qc.invalidateQueries({
+          queryKey: getListLabInboxFilesQueryKey({ labOrganizationId }),
+        });
+        toast({ title: "Note updated" });
+      },
+      onError: (err: Error) => {
+        toast({
+          title: "Could not save note",
           description: err.message || "Please try again.",
           variant: "destructive",
         });
@@ -237,7 +213,7 @@ function InboxFileRow({
   };
 
   const handleView = async () => {
-    if (viewLoading) return;
+    if (viewLoading || isNoteOnly) return;
     setViewLoading(true);
     try {
       const resp = await authedMediaFetch(apiUrl(`/lab-inbox/${file.id}/file`));
@@ -256,7 +232,7 @@ function InboxFileRow({
       objectUrlRef.current = url;
       // Keep the blob URL alive while the preview window uses it — it is
       // revoked on the next view or on unmount, never immediately.
-      openFilePreviewWindow(url, contentType, file.originalFilename);
+      openFilePreviewWindow(url, contentType, file.originalFilename ?? "file");
     } catch {
       toast({ title: "Could not open file", description: "Please try again.", variant: "destructive" });
     } finally {
@@ -289,33 +265,98 @@ function InboxFileRow({
       ) : (
         <span
           className="text-base leading-none mt-0.5 shrink-0"
-          title={file.mimeType}
+          title={file.mimeType ?? (isNoteOnly ? "Note only" : undefined)}
         >
-          {fileIcon(file.mimeType)}
+          {isNoteOnly ? "💬" : fileIcon(file.mimeType)}
         </span>
       )}
 
       <div className="flex-1 min-w-0">
-        <button
-          type="button"
-          onClick={handleView}
-          disabled={viewLoading}
-          className="text-xs font-medium truncate max-w-full text-left hover:underline hover:text-primary transition-colors disabled:opacity-60 disabled:cursor-wait"
-          title={`Click to view: ${file.originalFilename}`}
-        >
-          {viewLoading ? (
-            <span className="inline-flex items-center gap-1">
-              <Loader2 size={10} className="animate-spin" />
-              {file.originalFilename}
-            </span>
-          ) : (
-            file.originalFilename
-          )}
-        </button>
+        {isNoteOnly ? (
+          <p className="text-xs font-medium text-muted-foreground">Note only</p>
+        ) : (
+          <button
+            type="button"
+            onClick={handleView}
+            disabled={viewLoading}
+            className="text-xs font-medium truncate max-w-full text-left hover:underline hover:text-primary transition-colors disabled:opacity-60 disabled:cursor-wait"
+            title={`Click to view: ${file.originalFilename ?? ""}`}
+          >
+            {viewLoading ? (
+              <span className="inline-flex items-center gap-1">
+                <Loader2 size={10} className="animate-spin" />
+                {file.originalFilename}
+              </span>
+            ) : (
+              file.originalFilename
+            )}
+          </button>
+        )}
         <p className="text-[10px] text-muted-foreground mt-0.5">
-          {formatBytes(file.sizeBytes)} · {uploaderName} ·{" "}
+          {file.sizeBytes != null ? `${formatBytes(file.sizeBytes)} · ` : ""}{uploaderName} ·{" "}
           {relativeTime(file.createdAt)}
         </p>
+
+        {/* Provider note — shown when the upload came from the provider portal */}
+        {isEditingNote ? (
+          <div className="mt-2 space-y-1.5">
+            <textarea
+              autoFocus
+              value={noteDraft}
+              onChange={(event) => setNoteDraft(event.target.value)}
+              placeholder="Optional note"
+              maxLength={2000}
+              rows={3}
+              className="w-full resize-none rounded-md border border-border bg-background px-2.5 py-2 text-xs placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <div className="flex justify-end gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setNoteDraft(file.note ?? "");
+                  setIsEditingNote(false);
+                }}
+                disabled={updateNoteMutation.isPending}
+                className="h-6 rounded border border-border px-2 text-[10px] font-medium hover:bg-secondary disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  updateNoteMutation.mutate({
+                    fileId: file.id,
+                    data: { note: noteDraft.trim() || null },
+                  })
+                }
+                disabled={updateNoteMutation.isPending}
+                className="inline-flex h-6 min-w-12 items-center justify-center rounded bg-primary px-2 text-[10px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+              >
+                {updateNoteMutation.isPending ? <Loader2 size={9} className="animate-spin" /> : "Save"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setNoteDraft(file.note ?? "");
+              setIsEditingNote(true);
+            }}
+            className="mt-1 flex max-w-full items-center gap-1 text-left text-[10px] text-foreground/80 hover:text-primary"
+            title={file.note ? "Edit note" : "Add note"}
+          >
+            <span className={file.note ? "italic line-clamp-3" : "text-muted-foreground"}>
+              {file.note ? `“${file.note}”` : "Add note"}
+            </span>
+            <Pencil size={9} className="shrink-0" />
+          </button>
+        )}
+        {(file as { linkedCaseIds?: string | null }).linkedCaseIds && (
+          <p className="text-[10px] text-muted-foreground mt-0.5">
+            Cases: {(file as { linkedCaseIds?: string | null }).linkedCaseIds}
+          </p>
+        )}
 
         {assigned ? (
           <span className="inline-flex items-center gap-1 text-[10px] text-green-600 dark:text-green-400 mt-1">
@@ -382,24 +423,26 @@ function InboxFileRow({
 
       {!assigned && !selectMode && (
         <div className="flex items-center gap-1 shrink-0 mt-0.5">
-          <button
-            type="button"
-            onClick={handleView}
-            disabled={viewLoading}
-            title="View file"
-            className="inline-flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-foreground hover:bg-secondary border border-border transition-colors disabled:opacity-60 disabled:cursor-wait"
-          >
-            {viewLoading ? (
-              <Loader2 size={9} className="animate-spin" />
-            ) : (
-              <Eye size={9} />
-            )}
-          </button>
+          {!isNoteOnly && (
+            <button
+              type="button"
+              onClick={handleView}
+              disabled={viewLoading}
+              title="View file"
+              className="inline-flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-foreground hover:bg-secondary border border-border transition-colors disabled:opacity-60 disabled:cursor-wait"
+            >
+              {viewLoading ? (
+                <Loader2 size={9} className="animate-spin" />
+              ) : (
+                <Eye size={9} />
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => deleteMutation.mutate({ fileId: file.id })}
             disabled={deleteMutation.isPending}
-            title="Delete file"
+            title={isNoteOnly ? "Delete note" : "Delete file"}
             className="inline-flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 border border-border transition-colors disabled:opacity-60 disabled:cursor-wait opacity-0 group-hover:opacity-100"
           >
             {deleteMutation.isPending ? (
@@ -408,25 +451,27 @@ function InboxFileRow({
               <Trash2 size={9} />
             )}
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              setOpen((v) => !v);
-              if (!open) setTimeout(() => inputRef.current?.focus(), 50);
-            }}
-            disabled={assignMutation.isPending}
-            title={open ? "Cancel" : "Assign to case"}
-            className="shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded text-[10px] font-medium border border-border bg-secondary hover:bg-secondary/70 text-foreground transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {assignMutation.isPending ? (
-              <Loader2 size={9} className="animate-spin" />
-            ) : open ? (
-              <X size={9} />
-            ) : (
-              <Paperclip size={9} />
-            )}
-            {open ? "Cancel" : "Assign"}
-          </button>
+          {!isNoteOnly && (
+            <button
+              type="button"
+              onClick={() => {
+                setOpen((v) => !v);
+                if (!open) setTimeout(() => inputRef.current?.focus(), 50);
+              }}
+              disabled={assignMutation.isPending}
+              title={open ? "Cancel" : "Assign to case"}
+              className="shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded text-[10px] font-medium border border-border bg-secondary hover:bg-secondary/70 text-foreground transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {assignMutation.isPending ? (
+                <Loader2 size={9} className="animate-spin" />
+              ) : open ? (
+                <X size={9} />
+              ) : (
+                <Paperclip size={9} />
+              )}
+              {open ? "Cancel" : "Assign"}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -438,6 +483,11 @@ type FileUploadState = {
   error: string | null;
 };
 
+type PendingUpload = {
+  file: File;
+  note: string;
+};
+
 export function UnassignedDocumentsCard() {
   const { user } = useAuth();
   const labOrganizationId = user?.practiceOrganizationId ?? "";
@@ -447,10 +497,20 @@ export function UnassignedDocumentsCard() {
   const [collapsed, setCollapsed] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<Record<string, FileUploadState>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
+  const [pendingUploadIndex, setPendingUploadIndex] = useState(0);
+  const [pendingNote, setPendingNote] = useState("");
+  const [showNotePrompt, setShowNotePrompt] = useState(false);
 
   // Multi-select state
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    const reveal = () => setCollapsed(false);
+    window.addEventListener("labtrax:reveal-unassigned", reveal);
+    return () => window.removeEventListener("labtrax:reveal-unassigned", reveal);
+  }, []);
 
   const filesQuery = useListLabInboxFiles(
     { labOrganizationId },
@@ -502,7 +562,7 @@ export function UnassignedDocumentsCard() {
   );
 
   const uploadFileInChunks = useCallback(
-    async (file: File) => {
+    async (file: File, note = "") => {
       const key = `${file.name}-${file.size}`;
 
       if (file.size > MAX_FILE_BYTES) {
@@ -553,6 +613,7 @@ export function UnassignedDocumentsCard() {
                 mimeType: file.type || "application/octet-stream",
                 sizeBytes: file.size,
                 labOrganizationId,
+                ...(note.trim() ? { note: note.trim() } : {}),
               }),
             });
 
@@ -573,12 +634,47 @@ export function UnassignedDocumentsCard() {
   const handleFiles = useCallback(
     (files: FileList | File[]) => {
       const arr = Array.from(files);
-      for (const file of arr) {
-        void uploadFileInChunks(file);
-      }
+      if (arr.length === 0) return;
+      setPendingUploads(arr.map((file) => ({ file, note: "" })));
+      setPendingUploadIndex(0);
+      setPendingNote("");
+      setShowNotePrompt(true);
     },
-    [uploadFileInChunks],
+    [],
   );
+
+  const finishPendingUpload = useCallback(async () => {
+    const pending = pendingUploads[pendingUploadIndex];
+    if (!pending) {
+      setShowNotePrompt(false);
+      setPendingUploads([]);
+      setPendingUploadIndex(0);
+      setPendingNote("");
+      return;
+    }
+
+    const note = pendingNote.trim();
+    setShowNotePrompt(false);
+    await uploadFileInChunks(pending.file, note);
+
+    const nextIndex = pendingUploadIndex + 1;
+    if (nextIndex < pendingUploads.length) {
+      setPendingUploadIndex(nextIndex);
+      setPendingNote("");
+      setShowNotePrompt(true);
+    } else {
+      setPendingUploads([]);
+      setPendingUploadIndex(0);
+      setPendingNote("");
+    }
+  }, [pendingNote, pendingUploadIndex, pendingUploads, uploadFileInChunks]);
+
+  const cancelPendingUploads = useCallback(() => {
+    setShowNotePrompt(false);
+    setPendingUploads([]);
+    setPendingUploadIndex(0);
+    setPendingNote("");
+  }, []);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -672,12 +768,54 @@ export function UnassignedDocumentsCard() {
   const isUploading = inFlightEntries.some(([, s]) => s.error === null);
 
   return (
-    <section className="bg-card border border-border rounded-xl">
+    <section className="dash-section bg-card border border-slate-200 rounded-lg" data-testid="unassigned-documents-card">
+      {showNotePrompt && pendingUploads[pendingUploadIndex] && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="inbox-upload-note-title"
+            className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-xl"
+          >
+            <h3 id="inbox-upload-note-title" className="text-sm font-semibold">
+              Add a note to {pendingUploads[pendingUploadIndex].file.name}
+            </h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {pendingUploadIndex + 1} of {pendingUploads.length} files. Notes are optional.
+            </p>
+            <textarea
+              autoFocus
+              value={pendingNote}
+              onChange={(event) => setPendingNote(event.target.value)}
+              placeholder="Optional note for the lab…"
+              maxLength={2000}
+              rows={4}
+              className="mt-3 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={cancelPendingUploads}
+                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-secondary"
+              >
+                Cancel remaining
+              </button>
+              <button
+                type="button"
+                onClick={finishPendingUpload}
+                className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                {pendingNote.trim() ? "Upload with note" : "Skip note & upload"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <header
         className="flex items-center gap-2 px-5 py-3.5 border-b border-border cursor-pointer select-none hover:bg-secondary/30 transition-colors rounded-t-xl"
         onClick={() => setCollapsed((v) => !v)}
       >
-        <Inbox size={14} className="text-muted-foreground shrink-0" />
+        <Inbox size={14} className="text-[#1d5fd8] shrink-0" />
         <div className="flex-1 min-w-0">
           <h2 className="text-sm font-semibold flex items-center gap-2">
             Unassigned Documents

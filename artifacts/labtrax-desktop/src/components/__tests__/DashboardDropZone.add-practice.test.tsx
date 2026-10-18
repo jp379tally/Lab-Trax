@@ -326,6 +326,40 @@ describe("DashboardDropZone — inline Add practice", () => {
     );
   });
 
+  it("shows the server's verbatim account-number conflict message on a 409 with no conflictingOrg", async () => {
+    // Regression: a 409 whose body has no details.conflictingOrg (i.e. an
+    // account-number collision) must show the server message verbatim rather
+    // than the generic "Could not create practice." fallback.
+    const serverMessage = "Account number 'XYZ-789' is already in use.";
+    mockApiFetch.mockImplementation((path: string, opts?: any) => {
+      const stub = baseStubs(path, opts);
+      if (stub) return stub;
+      if (path === "/organizations" && opts?.method === "POST") {
+        return Promise.reject(
+          new (ApiError as any)(serverMessage, 409, {
+            ok: false,
+            message: serverMessage,
+          }),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected: ${path}`));
+    });
+
+    const { container } = renderDropZone();
+    await reachInlineAddPracticeForm(container);
+
+    await act(async () => {
+      fireEvent.click(saveButton());
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    await waitFor(() =>
+      expect(container.textContent ?? "").toContain(serverMessage),
+    );
+    // The form must stay open so the admin can correct the account number.
+    expect(container.textContent ?? "").toMatch(/New practice — confirm details/i);
+  });
+
   it("maps a 400 field error back to the offending input (inline highlight + message)", async () => {
     mockApiFetch.mockImplementation((path: string, opts?: any) => {
       const stub = baseStubs(path, opts);

@@ -1,4 +1,6 @@
 import React from "react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { Alert } from "react-native";
@@ -13,6 +15,17 @@ import {
 } from "../../../vitest.setup";
 
 import AiKnowledgeScreen from "@/app/manage/ai-knowledge";
+
+describe("AiKnowledgeScreen — product branding", () => {
+  it("uses LabTrax Assistant terminology throughout explanatory copy", async () => {
+    const source = readFileSync(
+      join(__dirname, "..", "..", "..", "app", "manage", "ai-knowledge.tsx"),
+      "utf8",
+    );
+    expect(source).toContain("LabTrax Assistant");
+    expect(source).not.toContain("Maynard");
+  });
+});
 
 // The screen reads the signed-in user's memberships via `useMe()` (a
 // `useQuery({ queryKey: ["auth-me"] })` consumer), which the global vitest
@@ -63,13 +76,13 @@ afterEach(() => {
 });
 
 describe("AiKnowledgeScreen — read access for all active lab members", () => {
-  it("shows entries to a non-admin lab member but renders no add/edit/delete controls", () => {
+  it("shows entries to a non-admin lab member but renders no add/edit/delete controls", async () => {
     setMockAppState({
       meMemberships: labMembership("user"),
       aiMemory: [GLOSSARY_ENTRY],
     });
 
-    const { getByText, queryByTestId } = render(<AiKnowledgeScreen />);
+    const { getByText, queryByTestId } = await render(<AiKnowledgeScreen />);
 
     // The entry is visible (reads are allowed for any active member)…
     expect(getByText("PFZ")).toBeTruthy();
@@ -83,7 +96,7 @@ describe("AiKnowledgeScreen — read access for all active lab members", () => {
 
     // Pressing the entry card does nothing for a non-admin (no onPress wired),
     // so the editor never opens.
-    fireEvent.press(queryByTestId("entry-ai-1") as never);
+    await fireEvent.press(queryByTestId("entry-ai-1") as never);
     expect(queryByTestId("form-save")).toBeNull();
   });
 });
@@ -92,20 +105,20 @@ describe("AiKnowledgeScreen — admin edit flows", () => {
   it("lets an admin open the new-entry editor and create a glossary term", async () => {
     setMockAppState({ meMemberships: labMembership("admin"), aiMemory: [] });
 
-    const { getByTestId, getByText, getByPlaceholderText } = render(
+    const { getByTestId, getByText, getByPlaceholderText } = await render(
       <AiKnowledgeScreen />,
     );
 
-    fireEvent.press(getByTestId("add-glossary"));
+    await fireEvent.press(getByTestId("add-glossary"));
 
     await waitFor(() => expect(getByText("New glossary entry")).toBeTruthy());
 
-    fireEvent.changeText(getByPlaceholderText("Term"), "PFM");
-    fireEvent.changeText(
+    await fireEvent.changeText(getByPlaceholderText("Term"), "PFM");
+    await fireEvent.changeText(
       getByPlaceholderText("Definition"),
       "Porcelain fused to metal",
     );
-    fireEvent.press(getByTestId("form-save"));
+    await fireEvent.press(getByTestId("form-save"));
 
     await waitFor(() => {
       expect(mockCreateAiMemoryMutateAsync).toHaveBeenCalledTimes(1);
@@ -126,19 +139,19 @@ describe("AiKnowledgeScreen — admin edit flows", () => {
       aiMemory: [GLOSSARY_ENTRY],
     });
 
-    const { getByTestId, getByText, getByDisplayValue } = render(
+    const { getByTestId, getByText, getByDisplayValue } = await render(
       <AiKnowledgeScreen />,
     );
 
-    fireEvent.press(getByTestId("entry-ai-1"));
+    await fireEvent.press(getByTestId("entry-ai-1"));
 
     await waitFor(() => expect(getByText("Edit glossary entry")).toBeTruthy());
 
-    fireEvent.changeText(
+    await fireEvent.changeText(
       getByDisplayValue("Porcelain fused to zirconia"),
       "Porcelain fused to zirconia (updated)",
     );
-    fireEvent.press(getByTestId("form-save"));
+    await fireEvent.press(getByTestId("form-save"));
 
     await waitFor(() => {
       expect(mockUpdateAiMemoryMutateAsync).toHaveBeenCalledTimes(1);
@@ -155,12 +168,12 @@ describe("AiKnowledgeScreen — admin edit flows", () => {
       aiMemory: [GLOSSARY_ENTRY],
     });
 
-    const { getByTestId, getByText } = render(<AiKnowledgeScreen />);
+    const { getByTestId, getByText } = await render(<AiKnowledgeScreen />);
 
-    fireEvent.press(getByTestId("entry-ai-1"));
+    await fireEvent.press(getByTestId("entry-ai-1"));
     await waitFor(() => expect(getByText("Edit glossary entry")).toBeTruthy());
 
-    fireEvent.press(getByTestId("form-delete"));
+    await fireEvent.press(getByTestId("form-delete"));
 
     // Deletion is gated behind a confirm dialog; pull the destructive button
     // out of the Alert call and invoke it.
@@ -193,14 +206,14 @@ const GLOSSARY_CANDIDATE = {
 };
 
 describe("AiKnowledgeScreen — AI suggestion review (admin only)", () => {
-  it("hides the suggestions surface from non-admin lab members", () => {
+  it("hides the suggestions surface from non-admin lab members", async () => {
     setMockAppState({
       meMemberships: labMembership("user"),
       aiMemory: [],
       aiCandidates: [GLOSSARY_CANDIDATE],
     });
 
-    const { queryByTestId } = render(<AiKnowledgeScreen />);
+    const { queryByTestId } = await render(<AiKnowledgeScreen />);
 
     expect(queryByTestId("ai-candidates")).toBeNull();
     expect(queryByTestId("candidate-cand-1")).toBeNull();
@@ -213,12 +226,12 @@ describe("AiKnowledgeScreen — AI suggestion review (admin only)", () => {
       aiCandidates: [GLOSSARY_CANDIDATE],
     });
 
-    const { getByText, getByTestId } = render(<AiKnowledgeScreen />);
+    const { getByText, getByTestId } = await render(<AiKnowledgeScreen />);
 
     expect(getByText("Suggested by AI")).toBeTruthy();
     expect(getByText("Zr")).toBeTruthy();
 
-    fireEvent.press(getByTestId("candidate-approve-cand-1"));
+    await fireEvent.press(getByTestId("candidate-approve-cand-1"));
 
     await waitFor(() => {
       expect(mockApproveAiMemoryCandidateMutateAsync).toHaveBeenCalledTimes(1);
@@ -236,9 +249,9 @@ describe("AiKnowledgeScreen — AI suggestion review (admin only)", () => {
       aiCandidates: [GLOSSARY_CANDIDATE],
     });
 
-    const { getByTestId } = render(<AiKnowledgeScreen />);
+    const { getByTestId } = await render(<AiKnowledgeScreen />);
 
-    fireEvent.press(getByTestId("candidate-dismiss-cand-1"));
+    await fireEvent.press(getByTestId("candidate-dismiss-cand-1"));
 
     await waitFor(() => {
       expect(mockRejectAiMemoryCandidateMutateAsync).toHaveBeenCalledTimes(1);
@@ -255,11 +268,11 @@ describe("AiKnowledgeScreen — AI suggestion review (admin only)", () => {
       aiCandidates: [GLOSSARY_CANDIDATE],
     });
 
-    const { getByTestId, getByText, getByDisplayValue } = render(
+    const { getByTestId, getByText, getByDisplayValue } = await render(
       <AiKnowledgeScreen />,
     );
 
-    fireEvent.press(getByTestId("candidate-edit-cand-1"));
+    await fireEvent.press(getByTestId("candidate-edit-cand-1"));
 
     await waitFor(() =>
       expect(getByText("Review glossary suggestion")).toBeTruthy(),
@@ -270,8 +283,8 @@ describe("AiKnowledgeScreen — AI suggestion review (admin only)", () => {
     expect(getByDisplayValue("Zirconia")).toBeTruthy();
 
     // Reword the definition, leave the term untouched.
-    fireEvent.changeText(getByDisplayValue("Zirconia"), "Zirconium dioxide");
-    fireEvent.press(getByTestId("form-save"));
+    await fireEvent.changeText(getByDisplayValue("Zirconia"), "Zirconium dioxide");
+    await fireEvent.press(getByTestId("form-save"));
 
     await waitFor(() => {
       expect(mockApproveAiMemoryCandidateMutateAsync).toHaveBeenCalledTimes(1);
@@ -290,14 +303,14 @@ describe("AiKnowledgeScreen — AI suggestion review (admin only)", () => {
       aiCandidates: [GLOSSARY_CANDIDATE],
     });
 
-    const { getByTestId, getByText } = render(<AiKnowledgeScreen />);
+    const { getByTestId, getByText } = await render(<AiKnowledgeScreen />);
 
-    fireEvent.press(getByTestId("candidate-edit-cand-1"));
+    await fireEvent.press(getByTestId("candidate-edit-cand-1"));
     await waitFor(() =>
       expect(getByText("Review glossary suggestion")).toBeTruthy(),
     );
 
-    fireEvent.press(getByTestId("form-save"));
+    await fireEvent.press(getByTestId("form-save"));
 
     await waitFor(() => {
       expect(mockApproveAiMemoryCandidateMutateAsync).toHaveBeenCalledTimes(1);
@@ -315,14 +328,14 @@ describe("AiKnowledgeScreen — AI suggestion review (admin only)", () => {
       aiCandidates: [GLOSSARY_CANDIDATE],
     });
 
-    const { getByTestId, getByText } = render(<AiKnowledgeScreen />);
+    const { getByTestId, getByText } = await render(<AiKnowledgeScreen />);
 
-    fireEvent.press(getByTestId("candidate-edit-cand-1"));
+    await fireEvent.press(getByTestId("candidate-edit-cand-1"));
     await waitFor(() =>
       expect(getByText("Review glossary suggestion")).toBeTruthy(),
     );
 
-    fireEvent.press(getByTestId("form-delete"));
+    await fireEvent.press(getByTestId("form-delete"));
 
     // Dismiss is gated behind a confirm dialog.
     expect(Alert.alert).toHaveBeenCalledTimes(1);
@@ -342,13 +355,13 @@ describe("AiKnowledgeScreen — AI suggestion review (admin only)", () => {
 });
 
 describe("AiKnowledgeScreen — provider-only user", () => {
-  it("shows the 'No lab available' empty state when the user has no lab membership", () => {
+  it("shows the 'No lab available' empty state when the user has no lab membership", async () => {
     setMockAppState({
       meMemberships: PROVIDER_MEMBERSHIP,
       aiMemory: [GLOSSARY_ENTRY],
     });
 
-    const { getByText, queryByTestId } = render(<AiKnowledgeScreen />);
+    const { getByText, queryByTestId } = await render(<AiKnowledgeScreen />);
 
     expect(getByText("No lab available")).toBeTruthy();
     // No sections, no add controls, and entries are never loaded for a

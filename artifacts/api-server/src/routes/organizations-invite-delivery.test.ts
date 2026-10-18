@@ -6,8 +6,9 @@
  *  - create returns 201 with an `emailDelivery` outcome and records
  *    lastEmailAttemptAt / lastEmailStatus / lastEmailError on the invite row
  *  - raw provider errors are never exposed — they collapse to "send_failed"
- *  - resend returns 502 when the email fails, 409 when the recipient opted
- *    out (distinguishable), and 200 with emailDelivery on success
+ *  - resend is non-fatal and symmetric with create: it always returns 200 with
+ *    an `emailDelivery` outcome (sent, failed, or skipped) — never 502/409 —
+ *    while preserving the token/expiry rotation that already happened
  *  - invite listings expose the delivery fields
  *
  * Skipped when DATABASE_URL is not configured. All inserted rows are removed
@@ -126,7 +127,7 @@ maybe("Invite email delivery tracking (db integration)", () => {
       emailPreferences: { orgInviteNotifications: false },
     });
 
-    const { access } = await makeSession(ownerId);
+    const { access } = await makeSession(ownerId); // session-guard:allow
     const r = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${access}`)
@@ -229,6 +230,38 @@ maybe("Invite email delivery tracking (db integration)", () => {
     });
   });
 
+  it("create: carries auth_failed through to the response and invite row", async () => {
+    // sendMail() classifies a Gmail 535/EAUTH rejection into the stable
+    // reason "auth_failed" — it must survive to the client (it's in
+    // SAFE_SEND_FAILURE_REASONS) instead of collapsing to "send_failed".
+    sendInviteEmailMock().mockResolvedValue({
+      sent: false,
+      reason: "auth_failed",
+    });
+    const { access } = await makeSession(ownerId);
+    const r = await createInvite(access, `auth_${rid("e")}@labtrax-test.com`);
+
+    expect(r.status).toBe(201);
+    expect(r.body.data.emailDelivery).toEqual({
+      sent: false,
+      status: "failed",
+      reason: "auth_failed",
+    });
+    // Verify raw SMTP details ("535 BadCredentials") don't leak into the
+    // error-message fields — check only the string fields that could carry
+    // SMTP detail, not the whole body (UUIDs can contain "535").
+    const smtpLeakCheck = JSON.stringify({
+      lastEmailError: r.body.data.lastEmailError,
+      reason: r.body.data.emailDelivery?.reason,
+    });
+    expect(smtpLeakCheck).not.toContain("BadCredentials");
+    expect(smtpLeakCheck).not.toContain("535");
+
+    const row = await inviteRow(r.body.data.id);
+    expect(row.lastEmailStatus).toBe("failed");
+    expect(row.lastEmailError).toBe("auth_failed");
+  });
+
   it("create: reports a thrown send error as failed, still 201", async () => {
     sendInviteEmailMock().mockRejectedValue(new Error("socket hang up"));
     const { access } = await makeSession(ownerId);
@@ -277,7 +310,7 @@ maybe("Invite email delivery tracking (db integration)", () => {
     expect(row.lastEmailStatus).toBe("sent");
   });
 
-  it("resend: returns 502 with a safe reason when the send fails", async () => {
+  it("resend: is non-fatal — returns 200 + emailDelivery.sent=false when the send fails", async () => {
     const { access } = await makeSession(ownerId);
     const created = await createInvite(access, `rf_${rid("e")}@labtrax-test.com`);
     const inviteId = created.body.data.id;
@@ -291,10 +324,14 @@ maybe("Invite email delivery tracking (db integration)", () => {
       .post(`/api/organizations/invites/${inviteId}/resend`)
       .set("Authorization", `Bearer ${access}`);
 
-    expect(r.status).toBe(502);
-    expect(r.body.ok).toBe(false);
-    expect(r.body.message).toMatch(/could not be sent/i);
-    expect(r.body.details).toEqual({ reason: "send_failed" });
+    // No 502 — the invite link is refreshed and the outcome is reported
+    // truthfully via emailDelivery, without leaking the raw provider detail.
+    expect(r.status).toBe(200);
+    expect(r.body.data.emailDelivery).toEqual({
+      sent: false,
+      status: "failed",
+      reason: "send_failed",
+    });
     expect(JSON.stringify(r.body)).not.toContain("provider-internal-detail");
 
     // Failure is recorded and the invite is still pending (token rotated).
@@ -305,7 +342,7 @@ maybe("Invite email delivery tracking (db integration)", () => {
     expect(row.token).not.toBe(tokenBefore);
   });
 
-  it("resend: returns 409 when the recipient opted out (distinguishable)", async () => {
+  it("resend: is non-fatal — returns 200 + emailDelivery.status=skipped when the recipient opted out", async () => {
     const { access } = await makeSession(ownerId);
     // Reuse the opted-out invite created earlier, or create it if this test
     // file runs in isolation ordering.
@@ -321,10 +358,20 @@ maybe("Invite email delivery tracking (db integration)", () => {
       .post(`/api/organizations/invites/${inviteId}/resend`)
       .set("Authorization", `Bearer ${access}`);
 
-    expect(r.status).toBe(409);
-    expect(r.body.ok).toBe(false);
-    expect(r.body.details).toEqual({ reason: "recipient_opted_out" });
+    // No 409 — an opted-out recipient is reported non-fatally, consistent
+    // with create.
+    expect(r.status).toBe(200);
+    expect(r.body.data.emailDelivery).toEqual({
+      sent: false,
+      status: "skipped",
+      reason: "recipient_opted_out",
+    });
     expect(sendInviteEmailMock()).not.toHaveBeenCalled();
+
+    const row = await inviteRow(inviteId);
+    expect(row.status).toBe("pending");
+    expect(row.lastEmailStatus).toBe("skipped");
+    expect(row.lastEmailError).toBe("recipient_opted_out");
   });
 
   // ── Listings ──────────────────────────────────────────────────────────────
@@ -435,11 +482,13 @@ maybe("Invite email delivery tracking (db integration)", () => {
     expect(await runSweep(inviteId)).toBe(0);
     expect(sendInviteEmailMock()).not.toHaveBeenCalled();
 
-    // Manual resend restarts the budget.
+    // Manual resend restarts the budget. It's non-fatal now: still 200 with a
+    // failed emailDelivery, but the auto-retry budget is reset.
     const r = await request(appMod.default)
       .post(`/api/organizations/invites/${inviteId}/resend`)
       .set("Authorization", `Bearer ${access}`);
-    expect(r.status).toBe(502); // still failing, but…
+    expect(r.status).toBe(200);
+    expect(r.body.data.emailDelivery.sent).toBe(false); // still failing, but…
     row = await inviteRow(inviteId);
     expect(row.emailRetryCount).toBe(0); // …the auto-retry budget is fresh
   });
@@ -472,6 +521,31 @@ maybe("Invite email delivery tracking (db integration)", () => {
     expect((await inviteRow(inviteId)).lastEmailError).toBe(
       "undeliverable_domain"
     );
+    await backdateAttempt(inviteId, 60 * 60 * 1000);
+    sendInviteEmailMock().mockClear();
+    expect(await runSweep(inviteId)).toBe(0);
+    expect(sendInviteEmailMock()).not.toHaveBeenCalled();
+    expect((await inviteRow(inviteId)).emailRetryCount).toBe(0);
+  });
+
+  it("retry sweep: never retries auth_failed (bad credentials fail identically)", async () => {
+    // Retrying a rejected SMTP login just hammers the provider and risks an
+    // account lockout — RETRYABLE_INVITE_EMAIL_REASONS must stay limited to
+    // send_failed.
+    const retryLib = await import("../lib/invite-email-retry.js");
+    expect([...retryLib.RETRYABLE_INVITE_EMAIL_REASONS]).toEqual([
+      "send_failed",
+    ]);
+
+    sendInviteEmailMock().mockResolvedValue({
+      sent: false,
+      reason: "auth_failed",
+    });
+    const { access } = await makeSession(ownerId);
+    const created = await createInvite(access, `ar_${rid("e")}@labtrax-test.com`);
+    const inviteId = created.body.data.id;
+    expect((await inviteRow(inviteId)).lastEmailError).toBe("auth_failed");
+
     await backdateAttempt(inviteId, 60 * 60 * 1000);
     sendInviteEmailMock().mockClear();
     expect(await runSweep(inviteId)).toBe(0);

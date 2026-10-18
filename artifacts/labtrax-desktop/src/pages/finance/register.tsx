@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Ban, CheckCircle2, Download, Landmark, Loader2, Plus, Repeat, Scale, Search, Trash2, Upload, X } from "lucide-react";
+import type { DepositBatchHistoryRow } from "@workspace/api-client-react";
+import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Ban, CheckCircle2, ChevronDown, ChevronRight, Download, FileText, Landmark, Loader2, Plus, Repeat, Scale, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import {
   computeShiftClickRange,
@@ -11,10 +11,18 @@ import { FinanceShell } from "@/components/finance/FinanceShell";
 import { TYPE_BADGE_CLASS, TYPE_LABEL, useVendors, VendorCombobox } from "@/components/finance/VendorCombobox";
 import { CategorySelect } from "@/components/finance/CategorySelect";
 import type { BankAccount, BankTransaction, Invoice, RecurringRule, TransactionCategory } from "@/lib/types";
-import { formatDate, formatMoney, formatShortDate } from "@/lib/format";
+import { formatDate, formatDateTime, formatMoney, formatShortDate } from "@/lib/format";
+import { useBankAccounts } from "@/lib/finance";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
+import { useBatchedListReset } from "@/hooks/useBatchedListReset";
 import { toast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
+import { useAuth } from "@/lib/auth-context";
+import { RegisterAnalyticsPanels } from "@/components/finance/RegisterAnalyticsPanels";
+import { isValidRange } from "@/lib/register-analytics";
+import { StatementImportDrawer } from "@/components/finance/StatementImportDrawer";
+import { fetchAllPages, type ExportProgress } from "@/lib/fetch-all-pages";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 type BlankRowValues = {
   date: string;
@@ -27,28 +35,181 @@ type BlankRowValues = {
 
 type BlankRowEntry = { key: number; initialValues?: BlankRowValues };
 
-// QB-style layout — 7 resizable cols: Date(0) Num(1) Payee(2) Account(3) Payment(4) Deposit(5) Balance(6)
-// DOM order: Date | Num | Payee | Account | Payment | ✓(fixed) | Deposit | Balance | Actions(fixed)
-const FINANCE_COL_DEFAULTS = [90, 70, 160, 150, 100, 100, 110] as const;
+// Resizable cols: Date(0) Num(1) Payee(2) Account(3) Category(4) Payment(5) Deposit(6) Balance(7) Memo(8)
+// DOM order: Date | Num | Payee | Account | Category | Payment | Deposit | ✓(fixed) | Balance | Memo | Actions(fixed)
+const FINANCE_COL_DEFAULTS = [90, 70, 160, 130, 140, 100, 100, 110, 180] as const;
+/** Index of the last resizable column that sits before the fixed ✓ column. */
+const FINANCE_LAST_PRE_CLR = 6;
+const FINANCE_COLUMNS = [
+  { i: 0, label: "Date", align: "left" },
+  { i: 1, label: "Num", align: "left" },
+  { i: 2, label: "Payee", align: "left" },
+  { i: 3, label: "Account", align: "left" },
+  { i: 4, label: "Category", align: "left" },
+  { i: 5, label: "Payment", align: "right" },
+  { i: 6, label: "Deposit", align: "right" },
+  { i: 7, label: "Balance", align: "right" },
+  { i: 8, label: "Memo", align: "left" },
+] as const;
+/** Date, ✓, Actions and the 7 other cols = 11 cells (10 when Balance is hidden for Undeposited Funds). */
+const FINANCE_COL_COUNT = FINANCE_COLUMNS.length + 2;
 const FINANCE_FIXED_CLR = 40; // combined cleared / reconciled "✓" indicator column
 const FINANCE_FIXED_ACTIONS = 80;
 // Labels for cols 0-4 (before the fixed ✓ column); Deposit and Balance are rendered separately
-const FINANCE_PRE_LABELS = ["Date", "Num", "Payee", "Account", "Payment"] as const;
+const PAGE_SIZE = 10;
+/** Stable identity for an unloaded batch. */
+const EMPTY_TRANSACTIONS: BankTransaction[] = [];
+type TransactionPage = {
+  rows: BankTransaction[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  nextCursor?: string | null;
+};
 
 export default function RegisterPage() {
   return (
     <FinanceShell requireAccount>
       {({ organizationId, accountId, accounts }) => (
-        <RegisterTable
-          organizationId={organizationId}
-          accountId={accountId!}
-          accounts={accounts}
-        />
+        <>
+          <RegisterTable
+            organizationId={organizationId}
+            accountId={accountId!}
+            accounts={accounts}
+          />
+          <DepositBatchHistory organizationId={organizationId} />
+        </>
       )}
     </FinanceShell>
   );
 }
 
+export function DepositBatchHistory({ organizationId }: { organizationId: string }) {
+  const { user } = useAuth();
+  const isAdmin = user?.userType === "lab" && (user.role === "admin" || user.role === "owner");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const [loaded, setLoaded] = useState<DepositBatchHistoryRow[]>([]);
+  const pageSize = 10;
+  useEffect(() => {
+    setPage(0);
+    setLoaded([]);
+    setExpandedId(null);
+  }, [organizationId]);
+  const history = useQuery({
+    queryKey: ["finance", "deposit-batches", organizationId, page],
+    enabled: isAdmin,
+    queryFn: () => apiFetch<DepositBatchHistoryRow[] | { rows: DepositBatchHistoryRow[]; hasMore: boolean }>(
+      `/finance/deposit-batches?organizationId=${encodeURIComponent(organizationId)}&limit=${pageSize}&offset=${page * pageSize}`,
+    ),
+  });
+  useEffect(() => {
+    if (!history.data) return;
+    const rows = Array.isArray(history.data) ? history.data : (history.data.rows ?? []);
+    setLoaded((previous) => page === 0
+      ? rows
+      : [...previous, ...rows.filter((row) => !previous.some((item) => item.id === row.id))]);
+  }, [history.data, page]);
+  const visibleRows = Array.isArray(loaded) ? loaded : [];
+  if (!isAdmin) return null;
+  return (
+    <section className="bg-card border border-border rounded-xl overflow-hidden" aria-label="Deposit batch history">
+      <div className="px-4 py-3 border-b border-border">
+        <h2 className="text-sm font-semibold">Deposit batch history</h2>
+        <p className="text-xs text-muted-foreground mt-1">
+          Active and released batches are retained here for review. This history is read-only.
+        </p>
+      </div>
+      {history.isLoading && (
+        <div className="px-4 py-8 text-sm text-muted-foreground">Loading deposit batch history…</div>
+      )}
+      {history.isError && (
+        <div className="px-4 py-8 text-sm text-destructive">
+          Unable to load deposit batch history. Please try again.
+        </div>
+      )}
+      {!history.isLoading && !history.isError && !visibleRows.length && (
+        <div className="px-4 py-8 text-sm text-muted-foreground">No deposit batches yet.</div>
+      )}
+      {!!visibleRows.length && (
+        <div className="divide-y divide-border">
+          {visibleRows.map((batch) => {
+            const expanded = expandedId === batch.id;
+            const stateLabel = batch.correctionState === "active"
+              ? "Active"
+              : batch.correctionState === "corrected"
+                ? "Corrected"
+                : batch.correctionState === "restored"
+                  ? "Restored"
+                  : "Unknown (legacy)";
+            return (
+              <div key={batch.id}>
+                <button
+                  type="button"
+                  className="w-full px-4 py-3 text-left hover:bg-secondary/40 flex flex-wrap items-center gap-x-5 gap-y-1"
+                  onClick={() => setExpandedId(expanded ? null : batch.id)}
+                  aria-expanded={expanded}
+                >
+                  {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                  <span className="font-medium">{formatDate(batch.txnDate)}</span>
+                  <span className="tabular-nums">{formatMoney(batch.originalTotal)}</span>
+                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                    batch.correctionState === "active"
+                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                      : batch.correctionState === "corrected"
+                        ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                        : batch.correctionState === "restored"
+                          ? "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
+                          : "bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300"
+                  }`}>{stateLabel}</span>
+                  <span className="text-xs text-muted-foreground ml-auto">
+                    {batch.releasedAt ? `Released ${formatDateTime(batch.releasedAt)}` : `${batch.members.length} payments`}
+                  </span>
+                  {batch.auditQuality === "legacy_unverified" && (
+                    <span className="basis-full text-xs text-amber-700 dark:text-amber-300">
+                      Legacy history — outcome unverified
+                    </span>
+                  )}
+                </button>
+                {expanded && (
+                  <div className="px-10 pb-4 text-xs">
+                    <div className="grid grid-cols-[1fr_auto_auto] gap-x-4 border-b border-border/60 pb-2 text-muted-foreground uppercase tracking-wide">
+                      <span>Member payment</span><span>State</span><span>Amount</span>
+                    </div>
+                    {batch.members.map((member) => (
+                      <div key={member.childTransactionId} className="grid grid-cols-[1fr_auto_auto] gap-x-4 py-2 border-b border-border/30 last:border-0">
+                        <div>
+                          <div className="font-medium">{member.payee || "Payment"}</div>
+                          <div className="text-muted-foreground">
+                            {member.invoiceLinks.length
+                              ? member.invoiceLinks.map((link) => link.invoiceNumber).join(", ")
+                              : member.memo || member.childTransactionId}
+                          </div>
+                          {member.releasedAt && <div className="text-muted-foreground">Released {formatDateTime(member.releasedAt)}</div>}
+                        </div>
+                        <span className="text-muted-foreground">{member.correctionState === "unknown" ? "Unknown (legacy)" : member.correctionState}</span>
+                        <span className="tabular-nums">{formatMoney(member.amount)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {!history.isLoading && !history.isError && !Array.isArray(history.data) && history.data?.hasMore && (
+            <div className="px-4 py-3">
+              <button type="button" onClick={() => setPage((current) => current + 1)} disabled={history.isFetching}
+                className="h-8 rounded-md bg-secondary px-3 text-xs font-medium disabled:opacity-50">
+                {history.isFetching ? "Loading…" : "Load more"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
 export function RegisterTable({
   organizationId,
   accountId,
@@ -59,14 +220,26 @@ export function RegisterTable({
   accounts: BankAccount[];
 }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const canImport = (user?.role === "owner" || user?.role === "admin") && user?.userType === "lab";
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [amountMin, setAmountMin] = useState("");
+  const [amountMax, setAmountMax] = useState("");
+  // Batches are anchored on the last row already received (a keyset cursor),
+  // so transactions added while the user pages back cannot shift the window.
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState<{ key: string; rows: BankTransaction[]; total: number }>({
+    key: "",
+    rows: [],
+    total: 0,
+  });
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [showInlineRows, setShowInlineRows] = useState(false);
+  const [inlineAddRequest, setInlineAddRequest] = useState<number | null>(null);
   const pendingGroupInvalidateRef = useRef(false);
   const qcRef = useRef(qc);
   qcRef.current = qc;
@@ -79,12 +252,22 @@ export function RegisterTable({
     };
   }, [accountId, organizationId]);
   const [importing, setImporting] = useState(false);
+  // Non-null while a CSV export is walking its bounded batches. Doubles as the
+  // "working" flag for the Export button so a second run can't start mid-walk.
+  const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
+  const exporting = exportProgress !== null;
+  const [statementImportOpen, setStatementImportOpen] = useState(false);
   const [transferring, setTransferring] = useState(false);
   const [reconOpen, setReconOpen] = useState(false);
   const [recurringFor, setRecurringFor] = useState<BankTransaction | null>(null);
 
+  const accountsState = useBankAccounts(organizationId);
+  const accountFailed = accountsState.isError;
+  // Identity/type gates survive a failed balance refresh; figures do not.
   const account = accounts.find((a) => a.id === accountId);
+  const balanceAccount = accountFailed ? undefined : account;
   const isUF = account?.accountType === "undeposited_funds";
+  const canManualEntry = Boolean(account) && !accountFailed && !isUF;
 
   // Single source of truth for the Register table's column count. The grid has
   // 5 leading columns (Date, Num, Payee, Account, Payment), a fixed ✓ column, a
@@ -92,14 +275,15 @@ export function RegisterTable({
   // and a fixed Actions column. Every spanning cell (loading/empty states) and
   // the inline/transfer edit drawers must derive their colSpan from this value
   // so they can never drift apart when columns are added or removed.
-  const registerColCount = isUF ? 8 : 9;
+  const registerColCount = isUF ? FINANCE_COL_COUNT - 1 : FINANCE_COL_COUNT;
 
-  const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn } =
-    useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v4");
+  const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn, fitColumn } =
+    useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v5");
 
   const theadRef = useRef<HTMLTableSectionElement>(null);
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const selectedRowRef = useRef<HTMLTableRowElement | null>(null);
+  const registerTableRef = useRef<HTMLTableElement>(null);
   const [selectedOutOfView, setSelectedOutOfView] = useState(false);
   const [selectedAbove, setSelectedAbove] = useState(false);
   const [theadHeight, setTheadHeight] = useState(33);
@@ -176,6 +360,8 @@ export function RegisterTable({
     return () => observer.disconnect();
   }, [expandedId, theadHeight]);
 
+  const listDatesValid = (!dateFrom || isValidRange(dateFrom, dateFrom)) &&
+    (!dateTo || isValidRange(dateTo, dateTo)) && (!dateFrom || !dateTo || dateFrom <= dateTo);
   const params = useMemo(() => {
     const sp = new URLSearchParams();
     sp.set("organizationId", organizationId);
@@ -183,15 +369,56 @@ export function RegisterTable({
     if (statusFilter !== "all") sp.set("status", statusFilter);
     if (categoryFilter) sp.set("categoryId", categoryFilter);
     if (search.trim()) sp.set("search", search.trim());
-    if (dateFrom) sp.set("dateFrom", new Date(dateFrom).toISOString());
-    if (dateTo) sp.set("dateTo", new Date(dateTo).toISOString());
+    if (dateFrom) sp.set("dateFrom", isValidRange(dateFrom, dateFrom) ? `${dateFrom}T00:00:00.000Z` : dateFrom);
+    if (dateTo) sp.set("dateTo", isValidRange(dateTo, dateTo) ? `${dateTo}T23:59:59.999Z` : dateTo);
+    if (amountMin.trim() && Number.isFinite(Number(amountMin))) sp.set("amountMin", amountMin.trim());
+    if (amountMax.trim() && Number.isFinite(Number(amountMax))) sp.set("amountMax", amountMax.trim());
+    sp.set("limit", String(PAGE_SIZE));
+    if (cursor) sp.set("cursor", cursor);
     return sp.toString();
-  }, [organizationId, accountId, statusFilter, categoryFilter, search, dateFrom, dateTo]);
+  }, [organizationId, accountId, statusFilter, categoryFilter, search, dateFrom, dateTo, amountMin, amountMax, cursor]);
+  // Identity of the server query without paging: rows accumulate while it is
+  // stable and restart at the newest matches as soon as it changes. Resetting
+  // during render keeps the first request after a filter change unanchored.
+  const paramsBase = useMemo(() => {
+    const sp = new URLSearchParams(params);
+    sp.delete("cursor");
+    return sp.toString();
+  }, [params]);
+  const [pagedParamsBase, setPagedParamsBase] = useState(paramsBase);
+  if (pagedParamsBase !== paramsBase) {
+    setPagedParamsBase(paramsBase);
+    setCursor(null);
+  }
+  const restartBatches = useCallback(() => setCursor(null), []);
+  useBatchedListReset("finance", restartBatches);
 
   const txnsQuery = useQuery({
     queryKey: ["finance", "txns", params],
-    queryFn: () => apiFetch<BankTransaction[]>(`/finance/transactions?${params}`),
+    enabled: listDatesValid,
+    queryFn: async () => {
+      const query = params;
+      const requestCursor = cursor;
+      const response = await apiFetch<TransactionPage | BankTransaction[]>(`/finance/transactions?${query}`);
+      const result = Array.isArray(response)
+        ? { rows: response, total: response.length, limit: response.length, offset: 0, hasMore: false, nextCursor: null }
+        : response;
+      return { ...result, query, requestCursor };
+    },
   });
+  useEffect(() => {
+    const result = txnsQuery.data;
+    if (!result || result.query !== params) return;
+    setLoaded((previous) => ({
+      key: paramsBase,
+      rows: previous.key === paramsBase && result.requestCursor
+        ? [...previous.rows.filter((row) => !result.rows.some((next) => next.id === row.id)), ...result.rows]
+        : result.rows,
+      total: result.total,
+    }));
+  }, [params, paramsBase, txnsQuery.data]);
+  const loadedRows = loaded.key === paramsBase ? loaded.rows : EMPTY_TRANSACTIONS;
+  const transactionTotal = loaded.key === paramsBase ? loaded.total : 0;
 
   // Keyboard navigation: Up/Down move the selection between entries, Enter opens
   // the inline edit panel for the selected row, Esc clears the selection. The
@@ -219,7 +446,7 @@ export function RegisterTable({
       // handle their own typing/cursor/Enter/Esc.
       if (isFormField) return;
 
-      const rows = txnsQuery.data || [];
+      const rows = loadedRows;
       if (rows.length === 0) return;
 
       if (key === "ArrowDown" || key === "ArrowUp") {
@@ -257,7 +484,7 @@ export function RegisterTable({
     transferring,
     reconOpen,
     recurringFor,
-    txnsQuery.data,
+    loadedRows,
     selectedId,
     expandedId,
   ]);
@@ -292,21 +519,69 @@ export function RegisterTable({
         method: "PATCH",
         body: JSON.stringify({ cleared, reconciled }),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["finance"] }),
+    onSuccess: () => {
+      // Refetching from the head of the list replaces the accumulated batch,
+      // so the edited row reappears in its new position instead of lingering
+      // as a stale copy.
+      setCursor(null);
+      void qc.invalidateQueries({ queryKey: ["finance"] });
+    },
   });
   const voidMut = useMutation({
     mutationFn: (id: string) =>
       apiFetch(`/finance/transactions/${id}/void`, { method: "POST", body: "{}" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["finance"] }),
+    onSuccess: () => {
+      // Refetching from the head of the list replaces the accumulated batch,
+      // so the edited row reappears in its new position instead of lingering
+      // as a stale copy.
+      setCursor(null);
+      void qc.invalidateQueries({ queryKey: ["finance"] });
+    },
   });
   const deleteMut = useMutation({
     mutationFn: (id: string) =>
       apiFetch(`/finance/transactions/${id}`, { method: "DELETE" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["finance"] }),
+    onSuccess: () => {
+      // Refetching from the head of the list replaces the accumulated batch,
+      // so the edited row reappears in its new position instead of lingering
+      // as a stale copy.
+      setCursor(null);
+      void qc.invalidateQueries({ queryKey: ["finance"] });
+    },
   });
 
-  function exportCsv() {
-    const rows = txnsQuery.data || [];
+  async function exportCsv() {
+    if (exportProgress) return;
+    // Export remains a full filtered-register action even though rendering is
+    // batched, but it walks the same bounded pages the table uses instead of
+    // asking for the whole register in one request.
+    setExportProgress({ loaded: 0, total: null });
+    let rows: BankTransaction[];
+    try {
+      rows = await fetchAllPages<BankTransaction>({
+        fetchPage: ({ limit, offset }) => {
+          const exportParams = new URLSearchParams(params);
+          exportParams.set("limit", String(limit));
+          exportParams.set("offset", String(offset));
+          return apiFetch<TransactionPage | BankTransaction[]>(
+            `/finance/transactions?${exportParams.toString()}`,
+          );
+        },
+        onProgress: setExportProgress,
+      });
+    } catch (err) {
+      // A partial walk must never be written to a file — report it instead.
+      setExportProgress(null);
+      toast({
+        title: "Export failed",
+        description:
+          err instanceof Error
+            ? err.message
+            : "The register could not be exported. Please try again.",
+        variant: "destructive",
+      });
+      return;
+    }
     const header = [
       "Date",
       "Type",
@@ -348,31 +623,135 @@ export function RegisterTable({
     a.download = `register-${account?.name || "export"}-${Date.now()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+    setExportProgress(null);
   }
 
+  if (!account) {
+    return <div role="alert" className="rounded-xl border border-border bg-card p-4 space-y-2">
+      <h2 className="font-semibold">Bank Register</h2>
+      <p>{accountsState.isLoading ? "Loading the selected account…" : "The selected account is unavailable. Choose an available account before making changes."}</p>
+      <button type="button" onClick={() => void accountsState.refetch()} className="rounded-md bg-secondary px-3 py-2 text-sm">Retry account details</button>
+    </div>;
+  }
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <SummaryCard label="Book balance" value={account?.bookBalance} />
-        <SummaryCard label="Cleared" value={account?.clearedBalance} tone="info" />
+    <div className="space-y-4 min-w-0 max-w-full" data-testid="register-root">
+      <style>{`@media(max-width:640px){
+        .finance-register-shell select{max-width:100%;min-width:0}
+        [data-testid="register-toolbar"]{max-width:100%}
+        [data-testid="register-toolbar"] button{height:auto;min-height:36px;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+        [data-testid="register-filters"]>*{min-width:0;max-width:100%}
+        [data-testid="register-filters"] input,[data-testid="register-filters"] select,
+        [data-testid="register-analytics"] input{min-width:0;max-width:100%}
+      }`}</style>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="register-header">
+        <div className="min-w-0 mr-auto">
+          <h2 className="text-lg font-semibold leading-tight break-words sm:truncate" data-testid="register-heading">
+            <span className="text-muted-foreground font-medium">Financial</span>{" "}
+            <span className="text-muted-foreground">/</span>{" "}
+            Bank Register
+          </h2>
+          <p className="text-xs text-muted-foreground break-words sm:truncate" data-testid="register-account-context">
+            {account ? `${account.name}${account.last4 ? ` ••${account.last4}` : ""}` : "Account unavailable"}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2" data-testid="register-toolbar">
+          {canImport && !isUF && (
+          <button
+            type="button"
+            onClick={() => setStatementImportOpen(true)}
+            className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
+          >
+            <FileText size={14} /> Import from Statement
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setImporting(true)}
+          className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
+        >
+          <Upload size={14} /> Import CSV
+        </button>
+        <button
+          type="button"
+          onClick={exportCsv}
+          disabled={exporting || !listDatesValid}
+          aria-busy={exporting}
+          className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {exporting ? (
+            <>
+              <Loader2 size={14} className="animate-spin" />
+              {exportProgress.total !== null && exportProgress.total > 0
+                ? `Exporting ${exportProgress.loaded} of ${exportProgress.total}…`
+                : "Exporting…"}
+            </>
+          ) : (
+            <>
+              <Download size={14} /> Export
+            </>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => setTransferring(true)}
+          disabled={accounts.length < 2}
+          title={accounts.length < 2 ? "Add a second bank account to transfer between accounts." : undefined}
+          className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <ArrowLeftRight size={14} /> New transfer
+        </button>
+        {!isUF && (
+          <button
+            type="button"
+            onClick={() => setReconOpen(true)}
+            className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
+          >
+            <Scale size={14} /> Reconcile
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            if (canManualEntry) setInlineAddRequest((request) => (request ?? 0) + 1);
+          }}
+          disabled={!canManualEntry}
+          title={isUF ? "Undeposited Funds holds received payments — entries are created automatically via Receive Payments" : !canManualEntry ? "Refresh account details before adding an entry." : undefined}
+          className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Plus size={14} /> Add entry
+        </button>
+        </div>
+      </div>
+      {accountFailed && (
+        <div role="alert" data-testid="balances-error" className="rounded-xl border border-destructive/40 px-4 py-2 text-sm text-destructive flex items-center gap-3">
+          Balances could not be refreshed and are hidden.
+          <button type="button" onClick={() => void accountsState.refetch()} className="h-8 px-3 rounded-md bg-secondary text-foreground text-xs font-medium">Retry</button>
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">All-time selected-account balances</p>
+      <div className="grid gap-3" data-testid="register-balances" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(min(160px,100%),1fr))" }}>
+        <SummaryCard label="Book balance" value={balanceAccount?.bookBalance} tone="book" />
+        <SummaryCard label="Cleared Balance" value={balanceAccount?.clearedBalance} tone="info" />
         <SummaryCard
           label="Uncleared"
           value={
-            account
-              ? Number(account.bookBalance ?? 0) - Number(account.clearedBalance ?? 0)
-              : 0
+            balanceAccount?.bookBalance != null && balanceAccount?.clearedBalance != null
+              ? Number(balanceAccount.bookBalance) - Number(balanceAccount.clearedBalance)
+              : undefined
           }
           tone="warning"
         />
         <SummaryCard
           label="Unreconciled"
-          value={account?.unreconciledBalance}
-          tone="warning"
+          value={balanceAccount?.unreconciledBalance}
+          tone="slate"
         />
       </div>
 
+      <RegisterAnalyticsPanels organizationId={organizationId} accountId={accountId} />
+
       <div className="relative bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2">
+        <div data-testid="register-filters" className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[200px] max-w-md">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <input
@@ -410,56 +789,39 @@ export function RegisterTable({
           <input
             type="date"
             value={dateFrom}
+            title="From date" aria-label="Register from"
             onChange={(e) => setDateFrom(e.target.value)}
             className="h-9 px-2 rounded-md bg-secondary text-sm border border-transparent"
           />
           <input
             type="date"
             value={dateTo}
+            title="To date" aria-label="Register to"
             onChange={(e) => setDateTo(e.target.value)}
             className="h-9 px-2 rounded-md bg-secondary text-sm border border-transparent"
           />
-          <div className="flex-1" />
+          <details className="relative text-xs">
+            <summary className="h-9 px-3 rounded-md bg-secondary cursor-pointer inline-flex items-center">Amount filters</summary>
+            <div className="flex flex-wrap gap-2 pt-2">
+          <input
+            type="number" inputMode="decimal" step="0.01" placeholder="Min $" aria-label="Minimum signed amount" data-testid="filter-amount-min"
+            value={amountMin} onChange={(e) => setAmountMin(e.target.value)}
+            className="h-9 w-24 px-2 rounded-md bg-secondary text-sm border border-transparent"
+          />
+          <input
+            type="number" inputMode="decimal" step="0.01" placeholder="Max $" aria-label="Maximum signed amount" data-testid="filter-amount-max"
+            value={amountMax} onChange={(e) => setAmountMax(e.target.value)}
+            className="h-9 w-24 px-2 rounded-md bg-secondary text-sm border border-transparent"
+          />
+            <span className="w-full text-muted-foreground">Signed net amount: payments negative, deposits positive.</span>
+            </div>
+          </details>
           <button
-            type="button"
-            onClick={() => setImporting(true)}
-            className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
+            type="button" data-testid="filter-reset"
+            onClick={() => { setSearch(""); setStatusFilter("all"); setCategoryFilter(""); setDateFrom(""); setDateTo(""); setAmountMin(""); setAmountMax(""); }}
+            className="h-9 px-2 text-sm font-medium text-primary hover:underline"
           >
-            <Upload size={14} /> Import CSV
-          </button>
-          <button
-            type="button"
-            onClick={exportCsv}
-            className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
-          >
-            <Download size={14} /> Export
-          </button>
-          <button
-            type="button"
-            onClick={() => setTransferring(true)}
-            disabled={accounts.length < 2}
-            title={accounts.length < 2 ? "Add a second bank account to transfer between accounts." : undefined}
-            className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <ArrowLeftRight size={14} /> New transfer
-          </button>
-          {!isUF && (
-            <button
-              type="button"
-              onClick={() => setReconOpen(true)}
-              className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
-            >
-              <Scale size={14} /> Reconcile
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => !isUF && setShowInlineRows(true)}
-            disabled={isUF}
-            title={isUF ? "Undeposited Funds holds received payments — entries are created automatically via Receive Payments" : undefined}
-            className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <Plus size={14} /> Add entry
+            Reset
           </button>
         </div>
 
@@ -477,23 +839,27 @@ export function RegisterTable({
           </div>
         )}
 
-        <div ref={tableContainerRef} className="overflow-x-auto overflow-y-auto relative" style={{ maxHeight: "calc(100vh - 22rem)" }}>
+        {!listDatesValid && <p role="alert" className="px-4 py-2 text-sm text-destructive">Choose valid register dates with From on or before To.</p>}
+        <div
+          ref={tableContainerRef}
+          data-testid="register-scroll-viewport"
+          className="overflow-x-auto overflow-y-auto relative"
+          style={{ maxHeight: "calc(100vh - 22rem)" }}
+        >
           {resizingCol !== null && (
             <div
               className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
               style={{
                 left:
-                  resizingCol <= 4
-                    ? colWidths.slice(0, resizingCol + 1).reduce((a, b) => a + b, 0) - 1
-                    : colWidths.slice(0, 5).reduce((a, b) => a + b, 0) +
-                      FINANCE_FIXED_CLR +
-                      colWidths.slice(5, resizingCol + 1).reduce((a, b) => a + b, 0) -
-                      1,
+                  colWidths.slice(0, resizingCol + 1).reduce((a, b) => a + b, 0) +
+                  (resizingCol > FINANCE_LAST_PRE_CLR ? FINANCE_FIXED_CLR : 0) -
+                  1,
                 width: 2,
               }}
             />
           )}
           <table
+            ref={registerTableRef}
             className="text-sm border-collapse [&_td]:border-r [&_td]:border-border/30 [&_th]:border-r [&_th]:border-border/20"
             style={{
               tableLayout: "fixed",
@@ -502,120 +868,54 @@ export function RegisterTable({
             }}
           >
             <colgroup>
-              {/* cols 0-4: Date Num Payee Account Payment */}
-              {colWidths.slice(0, 5).map((w, i) => (
+              {colWidths.slice(0, FINANCE_LAST_PRE_CLR + 1).map((w, i) => (
                 <col key={i} style={{ width: w }} />
               ))}
-              {/* fixed ✓ */}
               <col style={{ width: FINANCE_FIXED_CLR }} />
-              {/* col 5: Deposit */}
-              <col style={{ width: colWidths[5] }} />
-              {/* col 6: Balance — hidden for UF */}
-              {!isUF && <col style={{ width: colWidths[6] }} />}
+              {!isUF && <col style={{ width: colWidths[7] }} />}
+              <col style={{ width: colWidths[8] }} />
               {/* fixed Actions */}
               <col style={{ width: FINANCE_FIXED_ACTIONS }} />
             </colgroup>
             <thead ref={theadRef} style={{ position: "sticky", top: 0, zIndex: 20 }}>
               <tr className="bg-white dark:bg-card border-b-2 border-border text-[11px] uppercase tracking-wide text-muted-foreground">
-                {/* Cols 0-4: Date Num Payee Account Payment */}
-                {FINANCE_PRE_LABELS.map((label, i) => {
-                  const isRight = i === 4; // Payment is right-aligned
-                  const isFirst = i === 0;
-                  return (
+                {(() => {
+                  const th = (c: (typeof FINANCE_COLUMNS)[number]) => (
                     <th
-                      key={label}
-                      className={`font-medium py-2 relative${isFirst ? " px-4" : " px-3"}${isRight ? " text-right" : " text-left"}`}
+                      key={c.label}
+                      data-col-id={`col-${c.i}`}
+                      className={`font-medium py-2 relative ${c.i === 0 ? "px-4" : "px-3"} ${c.align === "right" ? "text-right" : "text-left"}`}
                       style={{ overflow: "hidden" }}
                     >
-                      {label}
+                      {c.label}
                       <div
-                        onMouseDown={(e) => startResize(i, e)}
-                        onDoubleClick={() => resetColumn(i)}
-                        className="group/resize"
-                        style={{
-                          position: "absolute",
-                          top: 0,
-                          right: 0,
-                          width: 6,
-                          height: "100%",
-                          cursor: "col-resize",
-                          userSelect: "none",
-                          display: "flex",
-                          alignItems: "stretch",
-                          justifyContent: "flex-end",
+                        onMouseDown={(e) => startResize(c.i, e)}
+                        onDoubleClick={() => {
+                          const table = registerTableRef.current;
+                          if (!table) { resetColumn(c.i); return; }
+                          const cells = table.querySelectorAll<HTMLElement>(`[data-col-id="col-${c.i}"]`);
+                          let max = 0;
+                          cells.forEach((el) => { max = Math.max(max, el.scrollWidth); });
+                          fitColumn(c.i, max + 8);
                         }}
+                        className="group/resize"
+                        style={{ position: "absolute", top: 0, right: 0, width: 6, height: "100%", cursor: "col-resize", userSelect: "none", display: "flex", alignItems: "stretch", justifyContent: "flex-end" }}
                       >
                         <span
-                          className={`w-0.5 transition-colors duration-100 ${resizingCol === i ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
+                          className={`w-0.5 transition-colors duration-100 ${resizingCol === c.i ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
                           style={{ display: "block", height: "100%" }}
                         />
                       </div>
                     </th>
                   );
-                })}
-                {/* Fixed: ✓ (cleared + reconciled combined) */}
-                <th className="text-center font-medium py-2">✓</th>
-                {/* Resizable: Deposit (index 5) */}
-                <th
-                  className="font-medium px-3 py-2 relative text-right"
-                  style={{ overflow: "hidden" }}
-                >
-                  Deposit
-                  <div
-                    onMouseDown={(e) => startResize(5, e)}
-                    onDoubleClick={() => resetColumn(5)}
-                    className="group/resize"
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      right: 0,
-                      width: 6,
-                      height: "100%",
-                      cursor: "col-resize",
-                      userSelect: "none",
-                      display: "flex",
-                      alignItems: "stretch",
-                      justifyContent: "flex-end",
-                    }}
-                  >
-                    <span
-                      className={`w-0.5 transition-colors duration-100 ${resizingCol === 5 ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
-                      style={{ display: "block", height: "100%" }}
-                    />
-                  </div>
-                </th>
-                {/* Resizable: Balance (index 6) — hidden for UF */}
-                {!isUF && (
-                  <th
-                    className="font-medium px-4 py-2 relative text-right"
-                    style={{ overflow: "hidden" }}
-                  >
-                    Balance
-                    <div
-                      onMouseDown={(e) => startResize(6, e)}
-                      onDoubleClick={() => resetColumn(6)}
-                      className="group/resize"
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        right: 0,
-                        width: 6,
-                        height: "100%",
-                        cursor: "col-resize",
-                        userSelect: "none",
-                        display: "flex",
-                        alignItems: "stretch",
-                        justifyContent: "flex-end",
-                      }}
-                    >
-                      <span
-                        className={`w-0.5 transition-colors duration-100 ${resizingCol === 6 ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
-                        style={{ display: "block", height: "100%" }}
-                      />
-                    </div>
-                  </th>
-                )}
-                {/* Fixed: Actions */}
+                  const pre = FINANCE_COLUMNS.filter((c) => c.i <= FINANCE_LAST_PRE_CLR).map(th);
+                  const post = FINANCE_COLUMNS.filter((c) => c.i > FINANCE_LAST_PRE_CLR && !(isUF && c.i === 7)).map(th);
+                  return [
+                    ...pre,
+                    <th key="clr" data-testid="register-cleared-header" aria-label="Cleared" title="Cleared / reconciled" className="text-center font-medium py-2">✓</th>,
+                    ...post,
+                  ];
+                })()}
                 <th className="px-2 py-2" />
               </tr>
             </thead>
@@ -628,16 +928,21 @@ export function RegisterTable({
                   </td>
                 </tr>
               )}
-              {txnsQuery.data?.length === 0 && !txnsQuery.isLoading && (
+              {loadedRows.length === 0 && !txnsQuery.isLoading && (
                 <tr>
                   <td colSpan={registerColCount} className="px-5 py-12 text-center text-muted-foreground">
                     No transactions match the current filters.
                   </td>
                 </tr>
               )}
-              {(txnsQuery.data || []).map((r) => {
-                const debit = Number(r.debitAmount);
-                const credit = Number(r.creditAmount);
+              {loadedRows.map((r) => {
+                const rawDebit = Number(r.debitAmount);
+                const rawCredit = Number(r.creditAmount);
+                // Invoice-sourced customer payments are stored as credits
+                // (accounting inflow) but shown in the PAYMENT column per
+                // user convention, since they represent money received.
+                const debit = r.isAggregateDeposit ? 0 : r.source === "invoice" ? rawCredit : rawDebit;
+                const credit = r.isAggregateDeposit ? rawCredit : r.source === "invoice" ? 0 : rawCredit;
                 const isVoid = r.status === "void";
                 const isProjected = r.status === "projected";
                 const isExpanded = expandedId === r.id;
@@ -659,6 +964,7 @@ export function RegisterTable({
                     } ${isVoid ? "text-muted-foreground/60 line-through" : ""} ${isProjected ? "italic text-muted-foreground" : ""}`}
                   >
                     <td
+                      data-col-id="col-0"
                       className="px-4 py-1"
                       onClick={(e) => { if (!r.reconciled) e.stopPropagation(); }}
                     >
@@ -668,11 +974,11 @@ export function RegisterTable({
                       />
                     </td>
                     {/* Num — check number, empty for non-check types */}
-                    <td className="py-1 px-3 font-mono text-xs text-muted-foreground">
+                    <td data-col-id="col-1" className="py-1 px-3 font-mono text-xs text-muted-foreground" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.checkNumber || (r.type !== "other" ? r.type : "")}>
                       {r.checkNumber || (r.type !== "other" ? <span className="capitalize">{r.type}</span> : "")}
                     </td>
                     {/* Payee — with vendor type badge and transfer badge; memo shown as secondary text */}
-                    <td className="py-1 px-3">
+                    <td data-col-id="col-2" className="py-1 px-3" style={{ overflow: "hidden" }} title={r.payee || ""}>
                       <div className="min-w-0">
                         {r.payee ? (
                           <span className="flex items-center gap-1.5 min-w-0">
@@ -697,22 +1003,29 @@ export function RegisterTable({
                             </span>
                           </span>
                         ) : <span className="text-muted-foreground">—</span>}
-                        {r.memo && (
-                          <div className="text-[11px] text-muted-foreground truncate">{r.memo}</div>
-                        )}
                       </div>
                     </td>
-                    {/* Account (Category) — shows "–split–" when multiple invoice links */}
-                    <td className="py-1 px-3 text-muted-foreground">
-                      {(r.invoices?.length ?? 0) > 1
+                    {/* Account — the bank account this register belongs to */}
+                    <td data-col-id="col-3" className="py-1 px-3 text-muted-foreground" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={account?.name || ""}>
+                      {account?.name || "—"}
+                    </td>
+                    {/* Category — shows "–split–" when multiple invoice links */}
+                    <td data-col-id="col-4" className="py-1 px-3 text-muted-foreground" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.isAggregateDeposit ? "–split–" : r.categoryId ? catNameById.get(r.categoryId) || "" : (r.invoices?.length ?? 0) > 1 ? "–split–" : ""}>
+                      {r.isAggregateDeposit
                         ? <span className="italic text-xs">–split–</span>
                         : r.categoryId
-                          ? catNameById.get(r.categoryId) || "—"
+                        ? catNameById.get(r.categoryId) || "—"
+                        : (r.invoices?.length ?? 0) > 1
+                          ? <span className="italic text-xs">–split–</span>
                           : "—"}
                     </td>
                     {/* Payment (debit) */}
-                    <td className="py-1 px-3 text-right tabular-nums">
+                    <td data-col-id="col-5" className="py-1 px-3 text-right tabular-nums">
                       {debit > 0 ? formatMoney(debit) : ""}
+                    </td>
+                    {/* Deposit (credit) */}
+                    <td data-col-id="col-6" className="py-1 px-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
+                      {credit > 0 ? formatMoney(credit) : ""}
                     </td>
                     {/* ✓ — click-to-cycle: none → C (cleared) → R (reconciled) → none */}
                     <td
@@ -746,26 +1059,25 @@ export function RegisterTable({
                         <span className="inline-flex items-center justify-center h-4 w-4 rounded-full text-muted-foreground/40 text-[10px] select-none">–</span>
                       )}
                     </td>
-                    {/* Deposit (credit) */}
-                    <td className="py-1 px-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
-                      {credit > 0 ? formatMoney(credit) : ""}
-                    </td>
                     {/* Balance — hidden for UF accounts */}
                     {!isUF && (
-                      <td className={`px-4 py-1 text-right tabular-nums font-medium${Number(r.runningBalance) < 0 ? " text-red-600 dark:text-red-400" : ""}`}>
+                      <td data-col-id="col-7" className={`px-4 py-1 text-right tabular-nums font-medium${Number(r.runningBalance) < 0 ? " text-red-600 dark:text-red-400" : ""}`}>
                         {formatMoney(r.runningBalance ?? 0)}
                       </td>
                     )}
+                    <td data-col-id="col-8" className="py-1 px-3 text-muted-foreground" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.memo || ""}>
+                      {r.memo || ""}
+                    </td>
                     <td
                       className="px-2 py-1"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <div className={`flex items-center justify-end gap-0.5 transition-opacity ${isSelected ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}>
-                        {!isUF && !isVoid && (
+                      <div className={`flex items-center justify-end gap-0.5 transition-opacity opacity-100`}>
+                        {!isUF && !isVoid && !r.isAggregateDeposit && (
                           <button
                             type="button"
                             onClick={() => setRecurringFor(r)}
-                            className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
+                            className="h-8 w-8 md:h-6 md:w-6 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
                             aria-label="Make recurring"
                             title="Make recurring"
                           >
@@ -783,14 +1095,14 @@ export function RegisterTable({
                                 voidMut.mutate(r.id);
                               }
                             }}
-                            className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
+                            className="h-8 w-8 md:h-6 md:w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
                             aria-label="Void"
                             title={r.transferGroupId ? "Void both transfer entries" : "Void"}
                           >
                             <Ban size={12} />
                           </button>
                         )}
-                        {!isUF && !r.reconciled && (
+                        {!isUF && !r.reconciled && !r.isAggregateDeposit && (
                           <button
                             type="button"
                             onClick={() => {
@@ -800,7 +1112,7 @@ export function RegisterTable({
                               if (confirm(msg))
                                 deleteMut.mutate(r.id);
                             }}
-                            className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
+                            className="h-8 w-8 md:h-6 md:w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
                             aria-label="Delete"
                             title={r.transferGroupId ? "Delete both transfer entries" : "Delete"}
                           >
@@ -811,7 +1123,13 @@ export function RegisterTable({
                     </td>
                   </tr>
                   {isExpanded && (
-                    r.transferGroupId ? (
+                    r.isAggregateDeposit ? (
+                      <AggregateDepositDetails
+                        key={`aggregate-details-${r.id}`}
+                        transaction={r}
+                        colSpan={cols}
+                      />
+                    ) : r.transferGroupId ? (
                       <TransferEditRow
                         key={`xfer-edit-${r.id}`}
                         transferGroupId={r.transferGroupId}
@@ -832,6 +1150,8 @@ export function RegisterTable({
                         existing={r}
                         categories={cats.data || []}
                         colSpan={cols}
+                        accountName={account?.name ?? ""}
+                        columnWidths={[...colWidths.slice(0, 7), FINANCE_FIXED_CLR, ...(!isUF ? [colWidths[7]] : []), colWidths[8], FINANCE_FIXED_ACTIONS]}
                         onClose={() => setExpandedId(null)}
                         onSaved={() => {
                           setExpandedId(null);
@@ -843,17 +1163,19 @@ export function RegisterTable({
                   </Fragment>
                 );
               })}
-              {showInlineRows && (
+              {inlineAddRequest !== null && (
                 <InlineBlankRows
                   accountId={accountId}
                   organizationId={organizationId}
                   accounts={accounts}
                   categories={cats.data || []}
                   rowCount={1}
+                  focusRequest={inlineAddRequest}
+                  scrollContainerRef={tableContainerRef}
                   showDatePicker
                   onSaved={() => { pendingGroupInvalidateRef.current = true; void qc.invalidateQueries({ queryKey: ["finance"] }); }}
                   onAllDismissed={() => {
-                    setShowInlineRows(false);
+                    setInlineAddRequest(null);
                     if (pendingGroupInvalidateRef.current) {
                       pendingGroupInvalidateRef.current = false;
                       void qc.invalidateQueries({ queryKey: ["finance"] });
@@ -877,6 +1199,22 @@ export function RegisterTable({
           </button>
         )}
       </div>
+        <div className="flex items-center justify-between border-t border-border px-4 py-3">
+          <span data-testid="register-loaded-count" className="text-xs text-muted-foreground">
+            Showing {loadedRows.length} of {transactionTotal}
+          </span>
+          {txnsQuery.data?.query === params && txnsQuery.data.hasMore && (
+            <button
+              type="button"
+              data-testid="register-load-more"
+              onClick={() => setCursor(txnsQuery.data?.nextCursor ?? null)}
+              disabled={txnsQuery.isFetching}
+              className="h-8 rounded-md bg-secondary px-3 text-xs font-medium disabled:opacity-50"
+            >
+              {txnsQuery.isFetching ? "Loading…" : `Load more (${loadedRows.length} of ${transactionTotal})`}
+            </button>
+          )}
+        </div>
 
 
       {importing && (
@@ -884,6 +1222,19 @@ export function RegisterTable({
           accountId={accountId}
           onClose={() => setImporting(false)}
           onComplete={() => qc.invalidateQueries({ queryKey: ["finance"] })}
+        />
+      )}
+
+      {statementImportOpen && canImport && (
+        <StatementImportDrawer
+          organizationId={organizationId}
+          accountId={accountId}
+          accountName={account?.name}
+          onClose={() => setStatementImportOpen(false)}
+          onImported={() => {
+            setStatementImportOpen(false);
+            void qc.invalidateQueries({ queryKey: ["finance"] });
+          }}
         />
       )}
 
@@ -1723,6 +2074,8 @@ function InlineBlankRows({
   organizationId,
   accounts,
   rowCount,
+  focusRequest,
+  scrollContainerRef,
   categories,
   defaultDate,
   showDatePicker,
@@ -1734,6 +2087,8 @@ function InlineBlankRows({
   organizationId: string;
   accounts: BankAccount[];
   rowCount: number;
+  focusRequest: number;
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   categories: TransactionCategory[];
   defaultDate?: string;
   showDatePicker?: boolean;
@@ -1767,8 +2122,9 @@ function InlineBlankRows({
 
   function handleSaved() {
     const newKey = nextKeyRef.current++;
-    setEntries((prev) => [
-      ...prev,
+    partialKeysRef.current.clear();
+    onPartialChangeRef.current?.(false);
+    setEntries([
       {
         key: newKey,
         initialValues: defaultDate
@@ -1814,7 +2170,12 @@ function InlineBlankRows({
           accounts={accounts}
           categories={categories}
           initialValues={entry.initialValues}
-          autoFocus={entry.key === latestKey}
+          focusRequest={
+            entry.key === latestKey || (latestKey === null && entry === entries[0])
+              ? focusRequest
+              : null
+          }
+          scrollContainerRef={scrollContainerRef}
           showDatePicker={showDatePicker}
           onSaved={handleSaved}
           onDismiss={(values) => handleDismiss(entry.key, values)}
@@ -1830,7 +2191,8 @@ function BlankRow({
   organizationId,
   accounts,
   categories,
-  autoFocus,
+  focusRequest,
+  scrollContainerRef,
   initialValues,
   showDatePicker,
   onSaved,
@@ -1841,7 +2203,8 @@ function BlankRow({
   organizationId: string;
   accounts: BankAccount[];
   categories: TransactionCategory[];
-  autoFocus?: boolean;
+  focusRequest: number | null;
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   initialValues?: BlankRowValues;
   showDatePicker?: boolean;
   onSaved: () => void;
@@ -1850,6 +2213,7 @@ function BlankRow({
 }) {
   const qc = useQueryClient();
   const rowRef = useRef<HTMLTableRowElement>(null);
+  const firstInputRef = useRef<HTMLInputElement>(null);
   const dateRowRef = useRef<HTMLTableRowElement>(null);
   const [date, setDate] = useState(initialValues?.date ?? new Date().toISOString().slice(0, 10));
   const [checkNumber, setCheckNumber] = useState("");
@@ -1864,9 +2228,39 @@ function BlankRow({
   const [error, setError] = useState<string | null>(null);
   const [recurringOpen, setRecurringOpen] = useState(false);
 
-  useEffect(() => {
-    rowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, []);
+  useLayoutEffect(() => {
+    if (focusRequest === null) return;
+    const container = scrollContainerRef.current;
+    const row = rowRef.current;
+    const firstInput = firstInputRef.current;
+    if (!container || !row || !firstInput) return;
+
+    const frame = requestAnimationFrame(() => {
+      const containerRect = container.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const inputRect = firstInput.getBoundingClientRect();
+      let top = container.scrollTop;
+      let left = container.scrollLeft;
+
+      if (rowRect.bottom > containerRect.bottom) {
+        top += rowRect.bottom - containerRect.bottom;
+      } else if (rowRect.top < containerRect.top) {
+        top += rowRect.top - containerRect.top;
+      }
+      // Keep a one-pixel buffer so fractional table widths and scroll rounding
+      // cannot leave the focused input clipped at the viewport edge.
+      const horizontalInset = 1;
+      if (inputRect.right > containerRect.right) {
+        left += inputRect.right - containerRect.right + horizontalInset;
+      } else if (inputRect.left < containerRect.left) {
+        left += inputRect.left - containerRect.left - horizontalInset;
+      }
+
+      container.scrollTo({ top, left, behavior: "smooth" });
+      firstInput.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusRequest, scrollContainerRef]);
 
   const hasAmount =
     (Number(payment) || 0) > 0 || (Number(deposit) || 0) > 0;
@@ -1948,7 +2342,7 @@ function BlankRow({
     <>
       {showDatePicker && (
         <tr ref={dateRowRef} className="border-t border-border bg-secondary/10">
-          <td colSpan={9} className="px-4 pt-1.5 pb-0">
+          <td colSpan={FINANCE_COL_COUNT} className="px-4 pt-1.5 pb-0">
             <div className="inline-flex items-center gap-2">
               <span className="text-[11px] text-muted-foreground uppercase tracking-wide font-medium">
                 Date
@@ -1966,6 +2360,7 @@ function BlankRow({
       )}
       <tr
         ref={rowRef}
+        data-testid="register-blank-entry-row"
         className={`${showDatePicker ? "" : "border-t border-border "}bg-secondary/10 transition-shadow${isPartial ? " shadow-[inset_3px_0_0_0_#fbbf24]" : ""}`}
         onBlur={handleBlur}
         onKeyDownCapture={onRowKeyDownCapture}
@@ -1985,6 +2380,7 @@ function BlankRow({
         {/* Num / Check# (col 1) */}
         <td className="py-1.5 px-3">
           <input
+            ref={firstInputRef}
             type="text"
             value={checkNumber}
             onChange={(e) => setCheckNumber(e.target.value)}
@@ -2007,7 +2403,11 @@ function BlankRow({
             className={inputCls}
           />
         </td>
-        {/* Account / Category — CategorySelect typeahead (col 3) */}
+        {/* Account (col 3) — read-only, the register's own bank account */}
+        <td className="py-1.5 px-3 text-xs text-muted-foreground truncate" title={accounts.find((a) => a.id === accountId)?.name}>
+          {accounts.find((a) => a.id === accountId)?.name ?? ""}
+        </td>
+        {/* Category — CategorySelect typeahead (col 4) */}
         <td className="py-1.5 px-3">
           <CategorySelect
             organizationId={organizationId}
@@ -2018,46 +2418,27 @@ function BlankRow({
             className={inputCls}
           />
         </td>
-        {/* Payment (col 4) */}
+        {/* Payment (col 5) */}
         <td className="py-1.5 px-3">
-          <input
-            type="number"
-            step="0.01"
-            min="0"
-            value={payment}
-            onChange={(e) => setPayment(e.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder="0.00"
-            disabled={savedOnce}
-            className={`${inputCls} text-right tabular-nums`}
-          />
+          <input type="number" step="0.01" min="0" value={payment} onChange={(e) => setPayment(e.target.value)} onKeyDown={onKeyDown} placeholder="0.00" disabled={savedOnce} className={`${inputCls} text-right tabular-nums`} />
+        </td>
+        {/* Deposit (col 6) */}
+        <td className="py-1.5 px-3">
+          <input type="number" step="0.01" min="0" value={deposit} onChange={(e) => setDeposit(e.target.value)} onKeyDown={onKeyDown} placeholder="0.00" disabled={savedOnce} className={`${inputCls} text-right tabular-nums`} />
         </td>
         {/* ✓ — partial indicator (fixed col) */}
         <td className="py-1.5 text-center">
           {isPartial && (
-            <span
-              className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse"
-              title="Unsaved — fill in date, payee, and an amount to save"
-            />
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" title="Unsaved — fill in date, payee, and an amount to save" />
           )}
         </td>
-        {/* Deposit (col 5) */}
-        <td className="py-1.5 px-3">
-          <input
-            type="number"
-            step="0.01"
-            min="0"
-            value={deposit}
-            onChange={(e) => setDeposit(e.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder="0.00"
-            disabled={savedOnce}
-            className={`${inputCls} text-right tabular-nums`}
-          />
-        </td>
-        {/* Balance — empty for new rows (col 6) */}
+        {/* Balance — empty for new rows (col 7) */}
         <td className="px-4 py-1.5 text-right text-xs text-muted-foreground italic">
           {savedOnce ? "saved" : ""}
+        </td>
+        {/* Memo (col 8) */}
+        <td className="py-1.5 px-3">
+          <input type="text" value={memo} onChange={(e) => setMemo(e.target.value)} onKeyDown={onKeyDown} placeholder="Memo" disabled={savedOnce} className={inputCls} />
         </td>
         {/* Actions (fixed col) */}
         <td className="px-2 py-1.5">
@@ -2103,7 +2484,7 @@ function BlankRow({
       </tr>
       {error && (
         <tr>
-          <td colSpan={9} className="px-4 py-1 text-xs text-destructive">
+          <td colSpan={FINANCE_COL_COUNT} className="px-4 py-1 text-xs text-destructive">
             {error}
           </td>
         </tr>
@@ -2405,33 +2786,141 @@ function SummaryCard({
 }: {
   label: string;
   value?: string | number | null;
-  tone?: "neutral" | "info" | "warning";
+  tone?: "neutral" | "info" | "warning" | "book" | "slate";
 }) {
+  const unknown = value === undefined || value === null;
   const v = Number(value ?? 0);
+  const wash =
+    tone === "book" ? "bg-blue-50 border-blue-200 dark:bg-blue-950/30"
+    : tone === "info" ? "bg-emerald-50 border-emerald-200 dark:bg-emerald-950/30"
+    : tone === "warning" ? "bg-orange-50 border-orange-200 dark:bg-orange-950/30"
+    : tone === "slate" ? "bg-slate-100 border-slate-300 dark:bg-slate-900/40"
+    : "bg-card border-border";
   const color =
-    tone === "warning"
+    tone === "book" ? "text-blue-700 dark:text-blue-300"
+    : tone === "slate" ? "text-slate-700 dark:text-slate-300"
+    : tone === "warning"
       ? "text-amber-600 dark:text-amber-400"
       : tone === "info"
-      ? "text-sky-600 dark:text-sky-400"
+      ? "text-emerald-700 dark:text-emerald-300"
       : "text-foreground";
   return (
-    <div className="bg-card border border-border rounded-xl px-4 py-3">
+    <div className={`${wash} border rounded-xl px-4 py-3`}>
       <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
         {label}
       </div>
-      <div className={`mt-1 text-xl font-semibold tabular-nums ${color}`}>
-        {formatMoney(v)}
+      <div className={`mt-1 text-xl font-semibold tabular-nums break-all ${color}`}>
+        {unknown ? "—" : formatMoney(v)}
       </div>
     </div>
   );
 }
 
+function AggregateDepositDetails({
+  transaction,
+  colSpan,
+}: {
+  transaction: BankTransaction;
+  colSpan: number;
+}) {
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
+  const [openPayments, setOpenPayments] = useState<Set<string>>(() => new Set());
+  const groups = transaction.splitGroups ?? [];
+
+  function toggle(setter: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) {
+    setter((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <tr className="bg-secondary/20 border-t border-border/30" data-testid="aggregate-deposit-details">
+      <td colSpan={colSpan} className="px-6 py-2.5">
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-semibold mb-1">
+          Deposit split details · read-only
+        </div>
+        <div className="divide-y divide-border/30 border border-border/40 rounded">
+          {groups.map((group, groupIndex) => {
+            const groupId = group.providerOrganizationId ?? `unassigned-${groupIndex}`;
+            const groupOpen = openGroups.has(groupId);
+            const label = group.providerOrganizationId ? group.providerName : "Unassigned";
+            return (
+              <div key={groupId}>
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-secondary/50"
+                  aria-expanded={groupOpen}
+                  onClick={() => toggle(setOpenGroups, groupId)}
+                >
+                  {groupOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  <span className="font-medium flex-1">{label}</span>
+                  <span className="tabular-nums font-semibold">{formatMoney(group.subtotal)}</span>
+                  <span className="text-muted-foreground">
+                    {group.payments.length} payment{group.payments.length === 1 ? "" : "s"}
+                  </span>
+                </button>
+                {groupOpen && (
+                  <div className="border-t border-border/30 bg-background/40">
+                    {group.payments.map((payment) => {
+                      const paymentOpen = openPayments.has(payment.childTransactionId);
+                      return (
+                        <div key={payment.childTransactionId} className="border-b last:border-b-0 border-border/20">
+                          <button
+                            type="button"
+                            className="w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-left hover:bg-secondary/40"
+                            aria-expanded={paymentOpen}
+                            onClick={() => toggle(setOpenPayments, payment.childTransactionId)}
+                          >
+                            {paymentOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                            <span className="flex-1 truncate">
+                              {payment.payee || "Payment"}
+                              {payment.checkNumber ? ` · Check ${payment.checkNumber}` : ""}
+                            </span>
+                            <span className="tabular-nums">{formatMoney(payment.amount)}</span>
+                          </button>
+                          {paymentOpen && (
+                            <div className="ml-16 mr-3 mb-2 grid grid-cols-2 gap-x-6 gap-y-1 text-[11px] text-muted-foreground">
+                              {payment.memo && <div><span className="font-medium text-foreground">Memo:</span> {payment.memo}</div>}
+                              {payment.paymentMethod && <div><span className="font-medium text-foreground">Payment method:</span> {payment.paymentMethod}</div>}
+                              {payment.receiptNumber && <div><span className="font-medium text-foreground">Receipt:</span> {payment.receiptNumber}</div>}
+                              {payment.checkNumber && <div><span className="font-medium text-foreground">Check #:</span> {payment.checkNumber}</div>}
+                              {payment.statementId && <div><span className="font-medium text-foreground">Statement:</span> {payment.statementId}</div>}
+                              {payment.paymentSessionId && <div><span className="font-medium text-foreground">Payment session:</span> {payment.paymentSessionId}</div>}
+                              {payment.invoices.length > 0 && (
+                                <div className="col-span-2">
+                                  <span className="font-medium text-foreground">Invoices:</span>{" "}
+                                  {payment.invoices.map((invoice) => `${invoice.invoiceNumber} (${invoice.invoiceId})`).join(", ")}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {groups.length === 0 && (
+            <div className="px-3 py-2 text-muted-foreground">No split details available.</div>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
 function InlineEditRow({
   organizationId,
   accountId,
   existing,
   categories,
   colSpan,
+  accountName,
+  columnWidths,
   onClose,
   onSaved,
 }: {
@@ -2440,6 +2929,8 @@ function InlineEditRow({
   existing: BankTransaction;
   categories: TransactionCategory[];
   colSpan: number;
+  accountName: string;
+  columnWidths: number[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -2483,20 +2974,20 @@ function InlineEditRow({
 
   return (
     <tr className="bg-secondary/20 border-t border-border/30">
-      <td colSpan={colSpan} className="px-4 py-2.5">
-        <div className="flex flex-wrap items-end gap-2">
+      <td colSpan={colSpan} className="py-2.5">
+        <div data-testid="register-inline-edit-grid" className="grid items-end" style={{ gridTemplateColumns: columnWidths.map((width) => `${width}px`).join(" ") }}>
           {/* Date */}
-          <div className="flex flex-col gap-0.5 min-w-[96px]">
+          <div className="flex flex-col gap-0.5 min-w-0 px-2">
             <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Date</label>
             <input type="date" value={txnDate} onChange={(e) => setTxnDate(e.target.value)} className={inputCls} />
           </div>
           {/* Num */}
-          <div className="flex flex-col gap-0.5 min-w-[64px]">
+          <div className="flex flex-col gap-0.5 min-w-0 px-2">
             <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Num</label>
             <input type="text" value={checkNumber} onChange={(e) => setCheckNumber(e.target.value)} placeholder="—" className={`${inputCls} font-mono`} />
           </div>
           {/* Payee */}
-          <div className="flex flex-col gap-0.5 min-w-[140px] flex-1">
+          <div className="flex flex-col gap-0.5 min-w-0 px-2">
             <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Payee</label>
             <VendorCombobox
               organizationId={organizationId}
@@ -2507,14 +2998,14 @@ function InlineEditRow({
               className={inputCls}
             />
           </div>
-          {/* Memo */}
-          <div className="flex flex-col gap-0.5 min-w-[120px] flex-1">
-            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Memo</label>
-            <input type="text" value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="—" className={inputCls} />
-          </div>
           {/* Account */}
-          <div className="flex flex-col gap-0.5 min-w-[130px] flex-1">
+          <div className="flex flex-col gap-0.5 min-w-0 px-2">
             <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Account</label>
+            <span className="h-7 text-xs truncate leading-7" title={accountName}>{accountName}</span>
+          </div>
+          {/* Category */}
+          <div className="flex flex-col gap-0.5 min-w-0 px-2">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Category</label>
             <CategorySelect
               organizationId={organizationId}
               value={categoryId}
@@ -2523,37 +3014,47 @@ function InlineEditRow({
             />
           </div>
           {/* Payment */}
-          <div className="flex flex-col gap-0.5 min-w-[80px]">
+          <div className="flex flex-col gap-0.5 min-w-0 px-2">
             <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Payment</label>
             <input type="number" step="0.01" min="0" value={payment} onChange={(e) => setPayment(e.target.value)} placeholder="0.00" className={`${inputCls} text-right tabular-nums`} />
           </div>
           {/* Deposit */}
-          <div className="flex flex-col gap-0.5 min-w-[80px]">
+          <div className="flex flex-col gap-0.5 min-w-0 px-2">
             <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Deposit</label>
             <input type="number" step="0.01" min="0" value={deposit} onChange={(e) => setDeposit(e.target.value)} placeholder="0.00" className={`${inputCls} text-right tabular-nums`} />
           </div>
           {/* Cleared */}
-          <div className="flex flex-col gap-0.5 items-center min-w-[40px]">
+          <div className="flex flex-col gap-0.5 items-center min-w-0">
             <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">✓</label>
-            <input type="checkbox" checked={cleared} onChange={(e) => setCleared(e.target.checked)} className="h-4 w-4 mt-1" />
+            <input aria-label="Cleared" type="checkbox" checked={cleared} onChange={(e) => setCleared(e.target.checked)} className="h-4 w-4 mt-1" />
+          </div>
+          {colSpan === FINANCE_COL_COUNT && <div className="flex flex-col gap-0.5 min-w-0 px-2 text-right">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Balance</label>
+            <span className="h-7 text-xs tabular-nums leading-7" title="Confirmed running balance; recalculated after save">{formatMoney(existing.runningBalance)}</span>
+          </div>}
+          {/* Memo */}
+          <div className="flex flex-col gap-0.5 min-w-0 px-2">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Memo</label>
+            <input aria-label="Memo" type="text" value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="—" className={inputCls} />
           </div>
           {/* Actions */}
-          <div className="flex flex-col gap-0.5">
+          <div className="flex flex-col gap-0.5 min-w-0 px-1">
             <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium invisible">Act</label>
             <div className="flex items-center gap-1">
               <button
                 type="button"
                 onClick={() => save.mutate()}
                 disabled={save.isPending}
-                className="h-7 px-2.5 rounded bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1"
+                className="h-7 px-1 rounded bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1"
               >
                 {save.isPending ? <Loader2 size={10} className="animate-spin" /> : <CheckCircle2 size={10} />}
                 Save
               </button>
               <button
                 type="button"
+                aria-label="Cancel edit"
                 onClick={onClose}
-                className="h-7 w-7 rounded inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary"
+                className="h-7 w-5 shrink-0 rounded inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary"
               >
                 <X size={12} />
               </button>
@@ -2794,6 +3295,20 @@ function TxnEditor({
   const [vendorId, setVendorId] = useState<string | null>(existing?.vendorId ?? null);
   const [memo, setMemo] = useState(existing?.memo || "");
   const [categoryId, setCategoryId] = useState(existing?.categoryId || "");
+
+  // Pre-fill AP category when the user switches to a debit-type transaction
+  // and hasn't already picked a category.
+  useEffect(() => {
+    if (existing) return; // don't override edit-mode initial values
+    if (type === "check" || type === "payment") {
+      setCategoryId((prev) => {
+        if (prev) return prev; // user already chose something
+        const ap = categories.find((c) => c.categoryType === "accounts_payable");
+        return ap ? ap.id : prev;
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [type]);
   const [payment, setPayment] = useState<string>(
     existing ? Number(existing.debitAmount).toString() : "0"
   );
@@ -3338,7 +3853,7 @@ function ImportDialog({
                         {parsed.slice(0, 50).map((r, i) => (
                           <tr key={i} className="border-t border-border">
                             <td className="px-3 py-1.5">{r.date}</td>
-                            <td className="px-3 py-1.5 truncate max-w-[260px]">
+                            <td className="px-3 py-1.5 truncate max-w-[260px]" title={r.payee}>
                               {r.payee}
                             </td>
                             <td className="px-3 py-1.5 text-right tabular-nums">

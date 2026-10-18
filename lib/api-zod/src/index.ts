@@ -3,8 +3,10 @@ export * from "./generated/api";
 // schemas already exported from /api (orval emits both with the same name).
 export type {
   HealthStatus,
-  AcknowledgeAiReview200,
-  AcknowledgeAiReview200Data,
   IteroImportResult,
   IteroImportResultData,
 } from "./generated/types";
+export type {
+  AiAgentProgressPhase,
+  AiAgentStreamEvent,
+} from "./ai-agent-stream";

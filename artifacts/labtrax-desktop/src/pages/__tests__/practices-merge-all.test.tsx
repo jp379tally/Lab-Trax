@@ -63,10 +63,10 @@ beforeEach(() => {
 
 describe("pickPracticeMergeTarget", () => {
   it("returns the most-populated practice as the survivor", () => {
-    const bare = provider("p1", "Family Dentistry at SouthWood");
-    const rich = provider("p2", "Family Dentistry at SouthWood", {
-      displayName: "Family Dentistry at SouthWood",
-      billingEmail: "office@fdsw.com",
+    const bare = provider("p1", "Riverbend Family Dental");
+    const rich = provider("p2", "Riverbend Family Dental", {
+      displayName: "Riverbend Family Dental",
+      billingEmail: "office@riverbend.example",
       phone: "555-1212",
       addressLine1: "1 Main St",
     });
@@ -81,14 +81,14 @@ describe("pickPracticeMergeTarget", () => {
 describe("MergeAllPracticesDialog", () => {
   function twoClusters() {
     const practices = [
-      provider("a1", "Family Dentistry at SouthWood", {
-        billingEmail: "office@fdsw.com",
+      provider("a1", "Riverbend Family Dental", {
+        billingEmail: "office@riverbend.example",
       }),
-      provider("a2", "Heartland Dental - Family Dentistry at SouthWood [565]"),
-      provider("b1", "Mahan Village Dental Care", {
-        billingEmail: "office@mahan.com",
+      provider("a2", "Sample Dental Group - Riverbend Family Dental [101]"),
+      provider("b1", "Summit Dental Care", {
+        billingEmail: "office@summit.example",
       }),
-      provider("b2", "Heartland Dental - Mahan Village Dental Care [985]"),
+      provider("b2", "Sample Dental Group - Summit Dental Care [202]"),
     ];
     return buildPracticeDuplicateClusters(
       practices,
@@ -113,9 +113,7 @@ describe("MergeAllPracticesDialog", () => {
     // Nothing should be merged before the admin confirms.
     expect(apiFetchMock).not.toHaveBeenCalled();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /^Merge 2 clusters/ }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /^Merge 2 clusters/ }));
 
     await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(2));
 
@@ -125,9 +123,7 @@ describe("MergeAllPracticesDialog", () => {
     });
 
     // Survivor of each cluster = the one with the billing email (a1 / b1).
-    const byTarget = new Map(
-      payloads.map((p) => [p.targetOrganizationId, p]),
-    );
+    const byTarget = new Map(payloads.map((p) => [p.targetOrganizationId, p]));
     expect(byTarget.get("a1")?.sourceOrganizationIds).toEqual(["a2"]);
     expect(byTarget.get("b1")?.sourceOrganizationIds).toEqual(["b2"]);
 
@@ -149,9 +145,7 @@ describe("MergeAllPracticesDialog", () => {
     const checkboxes = screen.getAllByRole("checkbox");
     fireEvent.click(checkboxes[0]);
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /^Merge 1 cluster/ }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /^Merge 1 cluster/ }));
 
     await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
   });

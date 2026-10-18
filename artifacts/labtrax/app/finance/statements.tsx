@@ -1,65 +1,52 @@
-import React, { useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import { View, Text, StyleSheet } from "react-native";
-import { useQuery } from "@tanstack/react-query";
+import { useFocusEffect } from "expo-router";
+import { useStatementAccountSummaries, type MobileStatementAccountSummary } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
-import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { ListScreen } from "@/components/ui/ListScreen";
 import { ColumnTotals } from "@/components/ui/ColumnTotals";
-import { getJson } from "@/lib/read-api";
 import { useMe, primaryLabOrgId } from "@/lib/auth-me";
-import { titleCase, toNumber, formatMoney, formatDate } from "@/lib/format";
-
-interface StatementRun {
-  id: string;
-  practiceName?: string | null;
-  periodMonth?: string | null;
-  status?: string | null;
-  invoiceCount?: number | null;
-  totalAmount?: string | number | null;
-  createdAt?: string | null;
-}
-
-function runVariant(status: string | null | undefined): BadgeVariant {
-  const s = (status ?? "").toLowerCase();
-  if (s.includes("sent") || s.includes("complete") || s.includes("success")) return "paid";
-  if (s.includes("fail") || s.includes("error")) return "overdue";
-  if (s.includes("pending") || s.includes("queue") || s.includes("progress")) return "open";
-  return "draft";
-}
+import { formatMoney, formatDate } from "@/lib/format";
 
 export default function StatementsScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const labOrgId = primaryLabOrgId(useMe().data);
 
-  const query = useQuery<StatementRun[]>({
-    queryKey: ["statement-runs", labOrgId ?? ""],
-    enabled: !!labOrgId,
-    staleTime: 30_000,
-    queryFn: () => getJson<StatementRun[]>(`/api/statements/${encodeURIComponent(labOrgId!)}/statement-runs`),
-  });
+  const query = useStatementAccountSummaries(labOrgId);
+  const refreshRef = useRef(query.refresh);
+  useEffect(() => {
+    refreshRef.current = query.refresh;
+  }, [query.refresh]);
+  useFocusEffect(useCallback(() => {
+    void refreshRef.current();
+  }, []));
 
-  const count = query.data?.length ?? 0;
+  const count = query.total;
 
   return (
-    <ListScreen<StatementRun>
+    <ListScreen<MobileStatementAccountSummary>
       title="Statements"
-      subtitle={query.isLoading ? "Loading…" : `${count} send${count === 1 ? "" : "s"}`}
+      subtitle={query.isLoading ? "Loading…" : `${count} practice${count === 1 ? "" : "s"}`}
       query={query}
-      keyExtractor={(r) => r.id}
+      hasMore={query.hasNextPage}
+      isLoadingMore={query.isFetchingNextPage}
+      onLoadMore={query.fetchNextPage}
+      onRefresh={query.refresh}
+      keyExtractor={(r) => r.practiceId}
       emptyIcon="mail-outline"
-      emptyTitle="No statement runs"
-      emptyBody="Monthly statement sends will appear here."
+      emptyTitle="No statement accounts"
+      emptyBody="Practices with invoice or statement activity will appear here."
       errorTitle="Couldn’t load statements"
       ListHeader={
         <ColumnTotals
           loading={query.isLoading || query.isFetching}
           items={[
             {
-              label: "Total",
-              values: (query.data ?? []).map((r) => r.totalAmount),
+              label: "Open Balance",
+              values: (query.data ?? []).map((r) => r.totalOpenBalance),
               testID: "column-total-total",
             },
           ]}
@@ -78,17 +65,27 @@ export default function StatementsScreen() {
         <Card style={styles.row}>
           <View style={styles.main}>
             <Text style={styles.name} numberOfLines={1}>
-              {r.practiceName || "Practice"}
+              {r.practiceName}
             </Text>
-            <Text style={styles.meta} numberOfLines={1}>
-              {r.periodMonth ? `${r.periodMonth} · ` : ""}
-              {r.invoiceCount ?? 0} invoice{(r.invoiceCount ?? 0) === 1 ? "" : "s"}
-              {r.createdAt ? ` · ${formatDate(r.createdAt)}` : ""}
+            <Text style={styles.email} numberOfLines={1}>
+              {r.billingEmail || "No email on file."}
             </Text>
-          </View>
-          <View style={styles.right}>
-            {r.totalAmount != null ? <Text style={styles.amount}>{formatMoney(toNumber(r.totalAmount))}</Text> : null}
-            <StatusBadge label={titleCase(r.status ?? "—")} variant={runVariant(r.status)} size="sm" />
+            <View style={styles.metrics}>
+              <Metric label="Open Invoices" value={String(r.openInvoiceCount)} styles={styles} />
+              <Metric label="Open Invoices Total" value={formatMoney(r.openInvoiceTotal)} styles={styles} testID={`statement-open-total-${r.practiceId}`} />
+              <Metric label="Total Open Balance" value={formatMoney(r.totalOpenBalance)} styles={styles} testID={`statement-balance-${r.practiceId}`} />
+              <Metric label="Overdue" value={formatMoney(r.overdueBalance)} styles={styles} overdue={r.overdueBalance > 0} testID={`statement-overdue-${r.practiceId}`} />
+            </View>
+            <Text style={styles.sectionLabel}>Unpaid Statements</Text>
+            {r.unpaidStatements.length ? r.unpaidStatements.slice(0, 3).map((statement) => (
+              <View key={statement.id} style={styles.statementLine}>
+                <Text style={styles.meta}>{formatDate(statement.date)}</Text>
+                <Text style={styles.amount}>{formatMoney(statement.remainingBalance)}</Text>
+              </View>
+            )) : <Text style={styles.meta}>None</Text>}
+            {r.unpaidStatements.length > 3 ? (
+              <Text style={styles.meta}>{r.unpaidStatements.length - 3} more unpaid statement{r.unpaidStatements.length === 4 ? "" : "s"}</Text>
+            ) : null}
           </View>
         </Card>
       )}
@@ -96,13 +93,34 @@ export default function StatementsScreen() {
   );
 }
 
+function Metric({ label, value, styles, overdue = false, testID }: {
+  label: string;
+  value: string;
+  styles: ReturnType<typeof makeStyles>;
+  overdue?: boolean;
+  testID?: string;
+}) {
+  return (
+    <View style={styles.metric}>
+      <Text style={styles.metricLabel}>{label}</Text>
+      <Text testID={testID} style={overdue ? styles.overdueAmount : styles.amount}>{value}</Text>
+    </View>
+  );
+}
+
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
-    row: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
+    row: { flexDirection: "row", alignItems: "flex-start", gap: Spacing.md },
     main: { flex: 1, gap: 2 },
     name: { ...Typography.bodySemibold, color: c.text },
+    email: { ...Typography.caption, color: c.textSecondary, marginBottom: Spacing.sm },
     meta: { ...Typography.caption, color: c.textSecondary },
-    right: { alignItems: "flex-end", gap: Spacing.xs },
     amount: { ...Typography.bodySemibold, color: c.text },
+    overdueAmount: { ...Typography.bodySemibold, color: c.error },
+    metrics: { flexDirection: "row", flexWrap: "wrap", gap: Spacing.sm, marginBottom: Spacing.sm },
+    metric: { width: "47%", gap: 2 },
+    metricLabel: { ...Typography.caption, color: c.textSecondary },
+    sectionLabel: { ...Typography.caption, color: c.textSecondary, marginTop: Spacing.xs },
+    statementLine: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", minHeight: 24 },
   });
 }

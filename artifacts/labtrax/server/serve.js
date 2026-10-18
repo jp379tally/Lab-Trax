@@ -13,10 +13,13 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-const STATIC_ROOT = path.resolve(__dirname, "..", "static-build");
+const STATIC_ROOT = process.env.LABTRAX_STATIC_ROOT
+  ? path.resolve(process.env.LABTRAX_STATIC_ROOT)
+  : path.resolve(__dirname, "..", "static-build");
 const TEMPLATE_PATH = path.resolve(__dirname, "templates", "landing-page.html");
 const OG_IMAGE_PATH = path.resolve(__dirname, "templates", "og-image.svg");
 const basePath = (process.env.BASE_PATH || "/").replace(/\/+$/, "");
+const WEB_APP_PATH = "/app";
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -166,6 +169,35 @@ function serveStaticFile(urlPath, res) {
   res.end(content);
 }
 
+function serveWebApp(urlPath, res) {
+  const appPath =
+    urlPath === WEB_APP_PATH
+      ? "/"
+      : urlPath.slice(WEB_APP_PATH.length) || "/";
+  const safePath = path
+    .normalize(appPath)
+    .replace(/^(\.\.(\/|\\|$))+/, "")
+    .replace(/^[/\\]+/, "");
+  let filePath = path.join(STATIC_ROOT, safePath);
+
+  // Expo Router is a client-side SPA on web. Direct navigation to a screen
+  // such as /app/finance must return index.html, while generated assets under
+  // /app/_expo continue to resolve to their real files.
+  if (
+    !safePath ||
+    !fs.existsSync(filePath) ||
+    fs.statSync(filePath).isDirectory()
+  ) {
+    filePath = path.join(STATIC_ROOT, "index.html");
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  const contentType = MIME_TYPES[ext] || "application/octet-stream";
+  const content = fs.readFileSync(filePath);
+  res.writeHead(200, { "content-type": contentType });
+  res.end(content);
+}
+
 const landingPageTemplate = fs.readFileSync(TEMPLATE_PATH, "utf-8");
 const appName = getAppName();
 
@@ -175,6 +207,10 @@ const server = http.createServer((req, res) => {
 
   if (basePath && pathname.startsWith(basePath)) {
     pathname = pathname.slice(basePath.length) || "/";
+  }
+
+  if (pathname === WEB_APP_PATH || pathname.startsWith(`${WEB_APP_PATH}/`)) {
+    return serveWebApp(pathname, res);
   }
 
   if (pathname === "/og-image.svg") {

@@ -15,7 +15,9 @@ run = "pnpm --filter @workspace/api-server run dev"
 [services.production]
 
 [services.production.build]
-args = ["pnpm", "--filter", "@workspace/api-server", "run", "build"]
+# Replit binds DATABASE_URL to the production database during this stage.
+# Keep the read-only schema preflight before compilation and promotion.
+args = ["pnpm", "run", "build:api-production"]
 
 [services.production.build.env]
 NODE_ENV = "production"
@@ -24,7 +26,7 @@ NODE_ENV = "production"
 # --max-old-space-size: declare a heap budget so GC runs aggressively before
 # the platform OOM-kills the process. Source maps omitted in production to
 # save ~9 MB of parsed memory; stack traces still have function names.
-args = ["node", "--max-old-space-size=512", "artifacts/api-server/dist/index.mjs"]
+args = [".production-runtime/bin/node", "--max-old-space-size=512", ".production-api/dist/index.mjs"]
 
 [services.production.run.env]
 PORT = "8080"

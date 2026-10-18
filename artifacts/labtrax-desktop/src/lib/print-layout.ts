@@ -24,15 +24,20 @@ export const DETAILS_FIELDS: PrintLayoutField[] = [
   { id: "doctor",       section: "details", label: "Doctor",          fontSize: "sm", visible: true,  fullWidth: false },
   { id: "status",       section: "details", label: "Status",          fontSize: "sm", visible: true,  fullWidth: false },
   { id: "priority",     section: "details", label: "Priority",        fontSize: "sm", visible: true,  fullWidth: false },
+  { id: "step",         section: "details", label: "Step",            fontSize: "sm", visible: true,  fullWidth: false },
   { id: "dueDate",      section: "details", label: "Due Date",        fontSize: "sm", visible: true,  fullWidth: false },
   { id: "created",      section: "details", label: "Created",         fontSize: "sm", visible: true,  fullWidth: false },
   { id: "casePanBarcode", section: "details", label: "Case Pan Barcode", fontSize: "sm", visible: true, fullWidth: true },
 ];
 
 export const RX_FIELDS: PrintLayoutField[] = [
+  { id: "implantRetention", section: "rx", label: "Implant Retention", fontSize: "sm", visible: true, fullWidth: true },
+  { id: "implantManufacturer", section: "rx", label: "Implant Manufacturer", fontSize: "sm", visible: true, fullWidth: true },
+  { id: "implantPlatformNotes", section: "rx", label: "Implant Platform Notes", fontSize: "sm", visible: true, fullWidth: true },
   { id: "restorativeType", section: "rx", label: "Restorative Type",  fontSize: "sm", visible: true,  fullWidth: false },
   { id: "material",        section: "rx", label: "Material",          fontSize: "sm", visible: true,  fullWidth: false },
   { id: "shade",           section: "rx", label: "Shade",             fontSize: "sm", visible: true,  fullWidth: false },
+  { id: "gingivialShade",  section: "rx", label: "Gingival Shade",    fontSize: "sm", visible: true,  fullWidth: false },
   { id: "toothNumbers",    section: "rx", label: "Tooth Number(s)",   fontSize: "sm", visible: true,  fullWidth: true  },
   { id: "rxNotes",         section: "rx", label: "Rx Notes",          fontSize: "sm", visible: true,  fullWidth: true  },
 ];

@@ -58,6 +58,9 @@ maybe("Resumable restore upload session", () => {
     process.env["JWT_SECRET"] =
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-restore-session";
     appMod = await import("../app.js");
+    await vi.waitFor(async () => {
+      expect((await request(appMod.default).get("/api/__test_missing_route__")).status).toBe(404);
+    }, { timeout: 15_000, interval: 25 });
   });
 
   afterAll(() => {

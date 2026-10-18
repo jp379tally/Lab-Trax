@@ -301,18 +301,21 @@ stamp_failure() {
 
 if [[ "$INSTALLER_KIND" == "zip" ]]; then
   # Verify the exact bytes being uploaded: extract the packed app payload from
-  # the zip and grep it for the stamp. Handles both the asar layout and the
-  # manually staged resources/app layout.
-  if unzip -l "$INSTALLER_PATH" "LabTrax/resources/app.asar" >/dev/null 2>&1; then
-    unzip -p "$INSTALLER_PATH" "LabTrax/resources/app.asar" | grep -aqF "$BUILD_STAMP" || stamp_failure
-    echo "[verify] ✓ Zip's app.asar contains the fresh build stamp."
-  elif unzip -l "$INSTALLER_PATH" "LabTrax/resources/app/dist/electron-app/build-stamp.json" >/dev/null 2>&1; then
+  # the zip and grep it for the stamp. Check the JSON file first — it is always
+  # freshly written by electron-build.mjs and staged into win-unpacked/resources/app/.
+  # The app.asar may be stale from a previous electron-builder run (electron-builder
+  # packs the asar before hanging at the Wine/NSIS step, but if it hangs before
+  # packing the asar the previous build's asar with the OLD stamp persists).
+  if unzip -l "$INSTALLER_PATH" "LabTrax/resources/app/dist/electron-app/build-stamp.json" >/dev/null 2>&1; then
     unzip -p "$INSTALLER_PATH" "LabTrax/resources/app/dist/electron-app/build-stamp.json" \
       | grep -aqF "$BUILD_STAMP" || stamp_failure
-    echo "[verify] ✓ Zip's unpacked app payload contains the fresh build stamp."
+    echo "[verify] ✓ Zip's build-stamp.json contains the fresh build stamp."
+  elif unzip -l "$INSTALLER_PATH" "LabTrax/resources/app.asar" >/dev/null 2>&1; then
+    unzip -p "$INSTALLER_PATH" "LabTrax/resources/app.asar" | grep -aqF "$BUILD_STAMP" || stamp_failure
+    echo "[verify] ✓ Zip's app.asar contains the fresh build stamp."
   else
-    echo "[verify] ERROR: zip contains neither LabTrax/resources/app.asar nor"
-    echo "[verify]   LabTrax/resources/app/dist/electron-app/build-stamp.json —"
+    echo "[verify] ERROR: zip contains neither LabTrax/resources/app/dist/electron-app/build-stamp.json"
+    echo "[verify]   nor LabTrax/resources/app.asar —"
     echo "[verify]   cannot prove the payload is fresh. Refusing to upload."
     exit 1
   fi

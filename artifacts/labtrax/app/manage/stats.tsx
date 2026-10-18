@@ -5,7 +5,7 @@
 // generated hooks, which return the `{ ok, data }` envelope, so every read is
 // `query.data?.data?.X`. Charts are lightweight View-based bars (no charting
 // library on mobile).
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -29,19 +29,93 @@ import {
   getGetStatsWeekdayVolumeQueryKey,
   useGetStatsRemakes,
   getGetStatsRemakesQueryKey,
+  useGetStatsSalesForecast,
+  getGetStatsSalesForecastQueryKey,
+  useGetInvoiceDiscountsReport,
   type StatsCaseCategory,
 } from "@workspace/api-client-react";
+import { useQuery } from "@tanstack/react-query";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { DateField } from "@/components/DateField";
+import { getJson } from "@/lib/read-api";
 import {
   useMe,
   canEditAnyLab,
   editableLabMemberships,
   adminLabMemberships,
+  ownerLabMemberships,
 } from "@/lib/auth-me";
-import { formatMoney, toNumber } from "@/lib/format";
+import {
+  formatCalendarDate,
+  formatMoney,
+  toNumber,
+} from "@/lib/format";
+import { usHolidayNameMap, formatExcludedDate } from "@/lib/us-holidays";
+import type { StatsSummaryResultDataExcludedDays } from "@workspace/api-client-react";
+
+const REVENUE_COLOR_RED = "#ef4444";
+const REVENUE_COLOR_YELLOW = "#eab308";
+const REVENUE_COLOR_GREEN = "#22c55e";
+
+const DEFAULT_REVENUE_THRESHOLDS: Record<string, [number, number]> = {
+  day: [3_000, 4_200],
+  week: [15_000, 21_000],
+  month: [85_000, 95_000],
+  year: [85_000, 95_000],
+};
+
+function revenueBarColor(
+  value: number,
+  gb: string,
+  thresholds?: Record<string, [number, number]>,
+): string {
+  const src = thresholds ?? DEFAULT_REVENUE_THRESHOLDS;
+  const [lo, hi] = src[gb] ?? src.month ?? [85_000, 95_000];
+  if (value > hi) return REVENUE_COLOR_GREEN;
+  if (value >= lo) return REVENUE_COLOR_YELLOW;
+  return REVENUE_COLOR_RED;
+}
+
+function fmtThresholdK(v: number): string {
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(0)}k`;
+  return `$${v}`;
+}
+
+function buildRevenueLegend(
+  gb: string,
+  thresholds: Record<string, [number, number]>,
+): ReadonlyArray<{ color: string; label: string }> {
+  const [lo, hi] = thresholds[gb] ?? thresholds.month ?? [85_000, 95_000];
+  return [
+    { color: REVENUE_COLOR_RED, label: `< ${fmtThresholdK(lo)}` },
+    { color: REVENUE_COLOR_YELLOW, label: `${fmtThresholdK(lo)}–${fmtThresholdK(hi)}` },
+    { color: REVENUE_COLOR_GREEN, label: `> ${fmtThresholdK(hi)}` },
+  ];
+}
+
+const REMAKE_REASON_OPTIONS: Array<{ key: string; label: string }> = [
+  { key: "fit_contacts", label: "Fit: Contacts" },
+  { key: "fit_occlusion", label: "Fit: Occlusion" },
+  { key: "fit_margins", label: "Fit: Margins" },
+  { key: "shade_wrong", label: "Shade Wrong" },
+  { key: "wrong_material_doctor", label: "Wrong Material (Doctor)" },
+  { key: "wrong_material_lab", label: "Wrong Material (Lab)" },
+  { key: "crown_broke", label: "Crown Broke" },
+  { key: "bridge_broke", label: "Bridge Broke" },
+  { key: "denture_broke", label: "Denture Broke" },
+  { key: "partial_broke", label: "Partial Broke" },
+  { key: "denture_fit_occlusion", label: "Denture Fit: Occlusion" },
+  { key: "denture_fit_intaglio", label: "Denture Fit: Intaglio" },
+  { key: "partial_fit_occlusion", label: "Partial Fit: Occlusion" },
+  { key: "partial_fit_intaglio", label: "Partial Fit: Intaglio" },
+  { key: "denture_tissue_color", label: "Denture Tissue Color" },
+  { key: "partial_tissue_color", label: "Partial Tissue Color" },
+  { key: "denture_material_wrong", label: "Denture Material Wrong" },
+  { key: "partial_material_wrong", label: "Partial Material Wrong" },
+];
 
 // ── Date-range presets ──────────────────────────────────────────────────────
 // Each preset also picks the revenue-series bucket size so the chart stays
@@ -161,12 +235,36 @@ const CATEGORY_OPTIONS: Array<{ key: StatsCaseCategory; label: string }> = [
   { key: "uncategorized", label: "Uncategorized" },
 ];
 
+const CASE_CATEGORY_COLORS: Record<string, string> = {
+  implants: "hsl(262 60% 55%)",
+  zirconia: "hsl(199 80% 45%)",
+  crown_bridge: "hsl(150 55% 42%)",
+  removable: "hsl(32 90% 52%)",
+  other: "hsl(220 10% 55%)",
+  uncategorized: "hsl(220 10% 75%)",
+};
+
+const CASE_TYPE_BAR_COLORS: Record<string, string> = {
+  Restorative: "hsl(150 55% 42%)",
+  Removable: "hsl(32 90% 52%)",
+  Implant: "hsl(199 80% 45%)",
+  Other: "hsl(220 10% 55%)",
+  Appliance: "hsl(262 60% 55%)",
+};
+
 function localTimeZone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   } catch {
     return "UTC";
   }
+}
+
+function formatRemakeRate(totalRemakes: number, totalCases: number): string {
+  if (totalCases === 0) return "—";
+  const rate = (totalRemakes / totalCases) * 100;
+  if (rate > 0 && rate < 0.1) return "< 0.1%";
+  return `${rate.toFixed(1)}%`;
 }
 
 export default function StatsScreen() {
@@ -202,6 +300,29 @@ export default function StatsScreen() {
       ? orgIdOverride
       : (billingLabs[0]?.id ?? null);
 
+  // Fetch org settings to read per-lab revenue target thresholds.
+  const orgSettingsQuery = useQuery<{ revenueTargetLow?: number | null; revenueTargetHigh?: number | null }>({
+    queryKey: ["org-settings", orgId ?? ""],
+    queryFn: async () => {
+      const data = await getJson<{ data: { revenueTargetLow?: number | null; revenueTargetHigh?: number | null } }>(
+        `/api/organizations/${orgId!}`,
+      );
+      return data.data ?? data;
+    },
+    staleTime: 60_000,
+    enabled: !!orgId && canView,
+  });
+  // Monthly thresholds from org, with fallback to defaults.
+  const orgMonthlyLow = orgSettingsQuery.data?.revenueTargetLow ?? 85_000;
+  const orgMonthlyHigh = orgSettingsQuery.data?.revenueTargetHigh ?? 95_000;
+  // Derive per-groupby thresholds by scaling from the monthly target.
+  const resolvedThresholds: Record<string, [number, number]> = useMemo(() => ({
+    day: [Math.round(orgMonthlyLow / 28), Math.round(orgMonthlyHigh / 28)],
+    week: [Math.round(orgMonthlyLow / 4.33), Math.round(orgMonthlyHigh / 4.33)],
+    month: [orgMonthlyLow, orgMonthlyHigh],
+    year: [orgMonthlyLow, orgMonthlyHigh],
+  }), [orgMonthlyLow, orgMonthlyHigh]);
+
   // Remakes are owner/admin-only (server enforces ADMIN_ROLES on
   // /api/stats/remakes) — gate on the SELECTED org so a billing-only role on
   // the current lab never sees the section even if the user admins another.
@@ -209,6 +330,16 @@ export default function StatsScreen() {
     () => adminLabMemberships(me).some((m) => m.organizationId === orgId),
     [me, orgId],
   );
+
+  // Forecast is owner-only (server enforces OWNER_ROLES on
+  // GET /stats/sales-forecast) — gate on the SELECTED org.
+  const isOwnerForOrg = useMemo(
+    () => ownerLabMemberships(me).some((m) => m.organizationId === orgId),
+    [me, orgId],
+  );
+
+  // Admin or owner on the selected org — Day/Week toggle is gated on this.
+  const isAdminOrOwnerForOrg = isAdminForOrg || isOwnerForOrg;
 
   const [rangeKey, setRangeKey] = useState<RangeKey>("month");
   const [customFrom, setCustomFrom] = useState<string>("");
@@ -240,10 +371,30 @@ export default function StatsScreen() {
     return rangeForPreset(rangeKey);
   }, [rangeKey, customFrom, customTo]);
 
-  const groupBy = useMemo<GroupBy>(() => {
+  const autoGroupBy = useMemo<GroupBy>(() => {
     if (rangeKey === "custom") return groupByForRange(range.from, range.to);
     return PRESETS.find((p) => p.key === rangeKey)?.groupBy ?? "month";
   }, [rangeKey, range.from, range.to]);
+
+  // Admin/owner can override the auto groupBy with a Day/Week toggle when the
+  // range is short enough to show meaningful sub-month bars (≤62 days).
+  const [chartGroupByOverride, setChartGroupByOverride] = useState<"day" | "week" | null>(null);
+
+  // Reset override whenever the auto groupBy changes so stale overrides don't
+  // survive switching to a long range (e.g. "Year" → only monthly makes sense).
+  const prevAutoGroupBy = React.useRef(autoGroupBy);
+  if (prevAutoGroupBy.current !== autoGroupBy) {
+    prevAutoGroupBy.current = autoGroupBy;
+    if (chartGroupByOverride !== null) setChartGroupByOverride(null);
+  }
+
+  const showRevenueToggle =
+    isAdminOrOwnerForOrg && (autoGroupBy === "day" || autoGroupBy === "week");
+
+  const groupBy: GroupBy =
+    showRevenueToggle && chartGroupByOverride !== null
+      ? chartGroupByOverride
+      : autoGroupBy;
 
   const timeZone = useMemo(() => localTimeZone(), []);
 
@@ -266,16 +417,41 @@ export default function StatsScreen() {
   const revenueQuery = useGetStatsRevenueSeries(revenueParams, {
     query: { queryKey: getGetStatsRevenueSeriesQueryKey(revenueParams), enabled },
   });
+  const discountParams = {
+    organizationId: orgId ?? "",
+    dateFrom: range.from,
+    dateTo: range.to,
+    timeZone,
+    groupBy: groupBy === "year" ? "month" as const : groupBy,
+  };
+  const discountsQuery = useGetInvoiceDiscountsReport(discountParams, {
+    query: {
+      queryKey: ["invoices", "reports", "discounts", discountParams],
+      enabled,
+    },
+  });
   const weekdayQuery = useGetStatsWeekdayVolume(baseParams, {
     query: { queryKey: getGetStatsWeekdayVolumeQueryKey(baseParams), enabled },
   });
 
-  // Remakes: date-range only, owner/admin-only (server enforces).
+  // Remake-specific filter state (separate from main category/material filters).
+  const [remakeReasonKey, setRemakeReasonKey] = useState<string>("");
+  const [remakeRecharged, setRemakeRecharged] = useState<"yes" | "no" | "">("");
+  const [remakeReturnedToLab, setRemakeReturnedToLab] = useState<"yes" | "no" | "">("");
+  const [remakeCat, setRemakeCat] = useState<"crown_bridge" | "removable" | "implant" | "">("");
+  const [remakeGroupBy, setRemakeGroupBy] = useState<"week" | "month">("week");
+
+  // Remakes: date-range + optional filters, owner/admin-only (server enforces).
   const remakesParams = {
     organizationId: orgId ?? "",
     dateFrom: range.from,
     dateTo: range.to,
     timeZone,
+    groupBy: remakeGroupBy,
+    ...(remakeReasonKey ? { reasonKey: remakeReasonKey } : {}),
+    ...(remakeRecharged ? { recharged: remakeRecharged } : {}),
+    ...(remakeReturnedToLab ? { returnedToLab: remakeReturnedToLab } : {}),
+    ...(remakeCat ? { remakeCategory: remakeCat } : {}),
   };
   const remakesQuery = useGetStatsRemakes(remakesParams, {
     query: {
@@ -284,9 +460,22 @@ export default function StatsScreen() {
     },
   });
 
+  // Sales forecast: owner-only (server enforces OWNER_ROLES on
+  // GET /stats/sales-forecast). No date-range param — always current period.
+  const forecastParams = { organizationId: orgId ?? "", timeZone };
+  const forecastQuery = useGetStatsSalesForecast(forecastParams, {
+    query: {
+      queryKey: getGetStatsSalesForecastQueryKey(forecastParams),
+      enabled: isOwnerForOrg && !!orgId,
+    },
+  });
+  const forecastMonth = forecastQuery.data?.data?.month;
+  const forecastYear = forecastQuery.data?.data?.year;
+
   const summary = summaryQuery.data?.data;
   const categories = categoriesQuery.data?.data;
   const revenue = revenueQuery.data?.data;
+  const discounts = discountsQuery.data?.data;
   const weekday = weekdayQuery.data?.data;
   const remakes = remakesQuery.data?.data;
 
@@ -294,15 +483,19 @@ export default function StatsScreen() {
     summaryQuery.isFetching ||
     categoriesQuery.isFetching ||
     revenueQuery.isFetching ||
+    discountsQuery.isFetching ||
     weekdayQuery.isFetching ||
-    remakesQuery.isFetching;
+    remakesQuery.isFetching ||
+    forecastQuery.isFetching;
 
   function refetchAll() {
     void summaryQuery.refetch();
     void categoriesQuery.refetch();
     void revenueQuery.refetch();
+    void discountsQuery.refetch();
     void weekdayQuery.refetch();
     if (isAdminForOrg) void remakesQuery.refetch();
+    if (isOwnerForOrg) void forecastQuery.refetch();
   }
 
   // Navigate to the Cases list pre-filtered to a category and/or created-date
@@ -379,54 +572,64 @@ export default function StatsScreen() {
             />
           ) : null}
 
-          <ChipRow
-            styles={styles}
-            options={[
-              ...PRESETS.map((p) => ({ key: p.key as string, label: p.label })),
-              { key: "custom", label: "Custom" },
-            ]}
-            selected={rangeKey}
-            onSelect={(k) => selectRange(k as RangeKey)}
-            testIDPrefix="stats-range"
-          />
-
-          {rangeKey === "custom" ? (
-            <View style={styles.customRange} testID="stats-custom-range">
-              <View style={styles.customField}>
-                <Text style={styles.customLabel}>Start</Text>
-                <DateField
-                  value={customFrom}
-                  onChange={setCustomFrom}
-                  title="Start date"
-                  placeholder="Start date"
-                  testID="stats-custom-from"
-                />
-              </View>
-              <View style={styles.customField}>
-                <Text style={styles.customLabel}>End</Text>
-                <DateField
-                  value={customTo}
-                  onChange={setCustomTo}
-                  title="End date"
-                  placeholder="End date"
-                  testID="stats-custom-to"
-                />
-              </View>
+          <View style={styles.filtersCard}>
+            <Text style={styles.filtersTitle}>Analytics filters</Text>
+            <View style={styles.filterGroup}>
+              <Text style={styles.filterLabel}>Date range</Text>
+              <ChipRow
+                styles={styles}
+                options={[
+                  ...PRESETS.map((p) => ({ key: p.key as string, label: p.label })),
+                  { key: "custom", label: "Custom" },
+                ]}
+                selected={rangeKey}
+                onSelect={(k) => selectRange(k as RangeKey)}
+                testIDPrefix="stats-range"
+              />
             </View>
-          ) : null}
 
-          <ChipRow
-            styles={styles}
-            options={[
-              { key: "", label: "All categories" },
-              ...CATEGORY_OPTIONS.map((c) => ({ key: c.key as string, label: c.label })),
-            ]}
-            selected={category}
-            onSelect={(k) => setCategory(k as StatsCaseCategory | "")}
-            testIDPrefix="stats-category"
-          />
+            {rangeKey === "custom" ? (
+              <View style={styles.customRange} testID="stats-custom-range">
+                <View style={styles.customField}>
+                  <Text style={styles.customLabel}>Start</Text>
+                  <DateField
+                    value={customFrom}
+                    onChange={setCustomFrom}
+                    title="Start date"
+                    placeholder="Start date"
+                    testID="stats-custom-from"
+                  />
+                </View>
+                <View style={styles.customField}>
+                  <Text style={styles.customLabel}>End</Text>
+                  <DateField
+                    value={customTo}
+                    onChange={setCustomTo}
+                    title="End date"
+                    placeholder="End date"
+                    testID="stats-custom-to"
+                  />
+                </View>
+              </View>
+            ) : null}
+
+            <View style={styles.filterGroup}>
+              <Text style={styles.filterLabel}>Case category</Text>
+              <ChipRow
+                styles={styles}
+                options={[
+                  { key: "", label: "All categories" },
+                  ...CATEGORY_OPTIONS.map((c) => ({ key: c.key as string, label: c.label })),
+                ]}
+                selected={category}
+                onSelect={(k) => setCategory(k as StatsCaseCategory | "")}
+                testIDPrefix="stats-category"
+              />
+            </View>
+          </View>
 
           {/* ── Summary metrics ─────────────────────────────────────── */}
+          <Text style={styles.sectionTitle}>Overview</Text>
           <View style={styles.metricGrid} testID="stats-summary">
             <MetricTile
               styles={styles}
@@ -455,11 +658,68 @@ export default function StatsScreen() {
             <MetricTile
               styles={styles}
               colors={colors}
+              icon="pricetag-outline"
+              label="Discounts given"
+              value={
+                discounts
+                  ? formatMoney(discounts.totals.amount)
+                  : discountsQuery.isError
+                    ? "Unavailable"
+                    : "—"
+              }
+              sub={
+                discounts
+                  ? discounts.totals.count === 0
+                    ? "No discounts in this range"
+                    : `${discounts.totals.count} invoices with discounts`
+                  : undefined
+              }
+              loading={discountsQuery.isLoading}
+            />
+            <MetricTile
+              styles={styles}
+              colors={colors}
+              icon="trending-up-outline"
+              label="Avg daily sales"
+              value={summary ? formatMoney(summary.averageDailyRevenue ?? "0") : "—"}
+              sub={
+                summary?.salesCutoffDate
+                  ? `thru ${summary.salesCutoffDate}`
+                  : undefined
+              }
+              loading={summaryQuery.isLoading}
+              infoText={buildExcludedDaysText(summary?.excludedDays)}
+              infoTestID="stats-avg-daily-info"
+              infoEntries={buildExcludedDaysEntries(summary?.excludedDays ?? null)}
+              onManagePress={isAdminForOrg ? () => router.push("/manage/closed-days" as never) : undefined}
+            />
+            <MetricTile
+              styles={styles}
+              colors={colors}
               icon="pulse-outline"
               label="Avg case value"
               value={summary ? formatMoney(summary.averageCaseValue) : "—"}
               loading={summaryQuery.isLoading}
             />
+            {isAdminForOrg && (
+              <MetricTile
+                styles={styles}
+                colors={colors}
+                icon="time-outline"
+                label="Avg turnaround"
+                value={
+                  summary?.avgTurnaroundDays != null
+                    ? `${summary.avgTurnaroundDays.toFixed(1)} days`
+                    : "—"
+                }
+                sub={
+                  summary?.eligibleTurnaroundCaseCount != null
+                    ? `${summary.eligibleTurnaroundCaseCount} eligible cases`
+                    : undefined
+                }
+                loading={summaryQuery.isLoading}
+              />
+            )}
             <MetricTile
               styles={styles}
               colors={colors}
@@ -498,13 +758,102 @@ export default function StatsScreen() {
               }
               loading={summaryQuery.isLoading}
             />
+            {isOwnerForOrg && (
+              <MetricTile
+                styles={styles}
+                colors={colors}
+                icon="trending-up-outline"
+                label="Monthly forecast"
+                value={
+                  forecastQuery.isLoading
+                    ? "…"
+                    : !forecastMonth || forecastMonth.insufficientData
+                      ? "—"
+                      : formatMoney(forecastMonth.forecast)
+                }
+                sub={
+                  !forecastQuery.isLoading && forecastMonth?.insufficientData
+                    ? "insufficient data"
+                    : undefined
+                }
+                loading={false}
+                onPress={() => router.push("/manage/sales-forecast" as never)}
+              />
+            )}
+            {isOwnerForOrg && (
+              <MetricTile
+                styles={styles}
+                colors={colors}
+                icon="trending-up-outline"
+                label="Annual forecast"
+                value={
+                  forecastQuery.isLoading
+                    ? "…"
+                    : !forecastYear || forecastYear.insufficientData
+                      ? "—"
+                      : formatMoney(forecastYear.forecast)
+                }
+                sub={
+                  !forecastQuery.isLoading && forecastYear?.insufficientData
+                    ? "insufficient data"
+                    : undefined
+                }
+                loading={false}
+              />
+            )}
           </View>
+          {summaryQuery.isError ? (
+            <Text style={styles.inlineError} testID="stats-summary-error">
+              Could not load summary metrics. Pull to refresh and try again.
+            </Text>
+          ) : null}
 
           {/* ── Sales over time ─────────────────────────────────────── */}
           <ChartCard
             styles={styles}
-            title="Sales over time"
-            subtitle="Invoiced revenue by period"
+            title={
+              groupBy === "day"
+                ? "Daily revenue"
+                : groupBy === "week"
+                  ? "Weekly revenue"
+                  : "Sales over time"
+            }
+            subtitle={
+              showRevenueToggle ? (
+                <View style={styles.revenueToggleRow}>
+                  {(["day", "week"] as const).map((g) => {
+                    const active = groupBy === g;
+                    return (
+                      <Pressable
+                        key={g}
+                        onPress={() =>
+                          setChartGroupByOverride(
+                            chartGroupByOverride === g ? null : g,
+                          )
+                        }
+                        style={[
+                          styles.revenueToggleBtn,
+                          active && {
+                            backgroundColor: colors.tint,
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.revenueToggleBtnText,
+                            active && { color: "#fff" },
+                          ]}
+                        >
+                          {g === "day" ? "Day" : "Week"}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : (
+                "Invoiced revenue by period"
+              )
+            }
             loading={revenueQuery.isLoading}
             error={revenueQuery.isError}
             empty={!revenue || revenue.series.length === 0}
@@ -514,18 +863,36 @@ export default function StatsScreen() {
               <>
                 <VerticalBars
                   colors={colors}
-                  bars={revenue.series.map((s) => ({
-                    key: s.period,
-                    value: toNumber(s.revenue),
-                    onPress: () => {
-                      const win = bucketWindow(s.periodStart, groupBy);
-                      if (win) drillIntoCases(win);
-                    },
-                  }))}
+                  bars={revenue.series.map((s) => {
+                    const val = toNumber(s.revenue);
+                    return {
+                      key: s.period,
+                      value: val,
+                      color: revenueBarColor(val, groupBy, resolvedThresholds),
+                      onPress: () => {
+                        const win = bucketWindow(s.periodStart, groupBy);
+                        if (win) drillIntoCases(win);
+                      },
+                    };
+                  })}
                   firstLabel={revenue.series[0]?.period ?? ""}
                   lastLabel={revenue.series[revenue.series.length - 1]?.period ?? ""}
                   styles={styles}
                 />
+                {/* Threshold legend */}
+                <View style={styles.revenueThresholdLegend}>
+                  {buildRevenueLegend(groupBy, resolvedThresholds).map((item) => (
+                    <View key={item.label} style={styles.revenueThresholdItem}>
+                      <View
+                        style={[
+                          styles.revenueThresholdDot,
+                          { backgroundColor: item.color },
+                        ]}
+                      />
+                      <Text style={styles.revenueThresholdLabel}>{item.label}</Text>
+                    </View>
+                  ))}
+                </View>
                 <Text style={styles.chartFootnote}>
                   {formatMoney(revenue.totals.revenue)} total ·{" "}
                   {revenue.totals.invoiceCount} invoices · avg{" "}
@@ -581,6 +948,29 @@ export default function StatsScreen() {
             ) : null}
           </ChartCard>
 
+          {/* ── Case type breakdown ─────────────────────────────────── */}
+          <ChartCard
+            styles={styles}
+            title="Case type breakdown"
+            subtitle="Cases by type (canonical only)"
+            loading={categoriesQuery.isLoading}
+            error={categoriesQuery.isError}
+            empty={!categories || !categories.caseTypes || categories.caseTypes.length === 0}
+            emptyTestID="stats-casetypes-empty"
+          >
+            {categories && categories.caseTypes && categories.caseTypes.length > 0 ? (
+              <HorizontalBars
+                styles={styles}
+                colors={colors}
+                rows={categories.caseTypes.map((t) => ({
+                  label: t.label,
+                  value: t.count,
+                  color: CASE_TYPE_BAR_COLORS[t.label],
+                }))}
+              />
+            ) : null}
+          </ChartCard>
+
           {/* ── Weekday volume ──────────────────────────────────────── */}
           <ChartCard
             styles={styles}
@@ -595,17 +985,42 @@ export default function StatsScreen() {
               <View style={styles.weekdayRow}>
                 {weekday.weekdays.map((d) => {
                   const max = Math.max(...weekday.weekdays.map((w) => w.total), 1);
-                  const pct = Math.round((d.total / max) * 100);
+                  const values = CATEGORY_OPTIONS.map((option) => ({
+                    key: option.key,
+                    value: d.byCategory?.[option.key] ?? 0,
+                    color: CASE_CATEGORY_COLORS[option.key],
+                  })).filter((segment) => segment.value > 0);
+                  const categorizedTotal = values.reduce((sum, segment) => sum + segment.value, 0);
+                  const segments =
+                    categorizedTotal === 0 && d.total > 0
+                      ? [{ key: "all", value: d.total, color: colors.tint }]
+                      : values;
+                  const unclassified = Math.max(0, d.total - categorizedTotal);
+                  if (unclassified > 0 && categorizedTotal > 0) {
+                    segments.push({
+                      key: "unclassified",
+                      value: unclassified,
+                      color: CASE_CATEGORY_COLORS.uncategorized,
+                    });
+                  }
                   return (
-                    <View key={d.weekday} style={styles.weekdayCol}>
+                    <View key={d.weekday} style={styles.weekdayCol} testID={`stats-weekday-bar-${d.weekday}`}>
                       <Text style={styles.weekdayCount}>{d.total || ""}</Text>
-                      <View style={styles.weekdayBarTrack}>
-                        <View
-                          style={[
-                            styles.weekdayBarFill,
-                            { height: `${Math.max(d.total > 0 ? 4 : 0, pct)}%` },
-                          ]}
-                        />
+                      <View style={styles.weekdayBarTrack} accessibilityLabel={`${d.total} cases on ${d.label}`}>
+                        <View style={styles.weekdayBarStack}>
+                          {segments.map((segment) => (
+                            <View
+                              key={segment.key}
+                              style={[
+                                styles.weekdayBarSegment,
+                                {
+                                  height: `${Math.max(0, (segment.value / max) * 100)}%`,
+                                  backgroundColor: segment.color,
+                                },
+                              ]}
+                            />
+                          ))}
+                        </View>
                       </View>
                       <Text style={styles.weekdayLabel}>{d.label.slice(0, 3)}</Text>
                     </View>
@@ -618,61 +1033,239 @@ export default function StatsScreen() {
           {/* ── Remakes (owner/admin only) ──────────────────────────────────────────── */}
           {isAdminForOrg && (
             <View testID="stats-remakes">
+              <View style={styles.remakeSectionHeader}>
+                <Ionicons name="refresh-outline" size={19} color={colors.tint} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.sectionTitle}>Remakes</Text>
+                  <Text style={styles.chartSubtitle}>Remade cases received in this period</Text>
+                </View>
+              </View>
+              {/* Remake filter chips */}
               <View style={styles.remakeTotalCard}>
-                <Text style={styles.remakeTitle}>Remakes</Text>
-                <Text style={styles.remakeSubtitle}>
-                  Remade cases received in this period
-                </Text>
+                <Text style={styles.remakeTitle}>Filters</Text>
+                <View style={styles.remakeFiltersGrid}>
+                  <View style={styles.remakeFilterCell}>
+                    <Text style={styles.filterLabel}>Trend by</Text>
+                    <ChipRow styles={styles} options={[{ key: "week", label: "Week" }, { key: "month", label: "Month" }]} selected={remakeGroupBy} onSelect={(k) => setRemakeGroupBy(k as "week" | "month")} testIDPrefix="remake-groupby" />
+                  </View>
+                  <View style={styles.remakeFilterCell}>
+                    <Text style={styles.filterLabel}>Category</Text>
+                    <ChipRow styles={styles} options={[{ key: "", label: "All" }, { key: "crown_bridge", label: "Crown & Bridge" }, { key: "removable", label: "Removable" }, { key: "implant", label: "Implant" }]} selected={remakeCat} onSelect={(k) => setRemakeCat(k as "crown_bridge" | "removable" | "implant" | "")} testIDPrefix="remake-cat" />
+                  </View>
+                  <View style={styles.remakeFilterCell}>
+                    <Text style={styles.filterLabel}>Recharged</Text>
+                    <ChipRow styles={styles} options={[{ key: "", label: "All" }, { key: "yes", label: "Recharged" }, { key: "no", label: "Not recharged" }]} selected={remakeRecharged} onSelect={(k) => setRemakeRecharged(k as "yes" | "no" | "")} testIDPrefix="remake-recharged" />
+                  </View>
+                  <View style={styles.remakeFilterCell}>
+                    <Text style={styles.filterLabel}>Returned to lab</Text>
+                    <ChipRow styles={styles} options={[{ key: "", label: "All" }, { key: "yes", label: "Returned" }, { key: "no", label: "Not returned" }]} selected={remakeReturnedToLab} onSelect={(k) => setRemakeReturnedToLab(k as "yes" | "no" | "")} testIDPrefix="remake-returned" />
+                  </View>
+                  <View style={[styles.remakeFilterCell, styles.remakeReasonFilter]}>
+                    <Text style={styles.filterLabel}>Reason</Text>
+                    <ChipRow styles={styles} options={[{ key: "", label: "All" }, ...REMAKE_REASON_OPTIONS]} selected={remakeReasonKey} onSelect={setRemakeReasonKey} testIDPrefix="remake-reason" />
+                  </View>
+                </View>
+              </View>
+
+              {/* Summary totals */}
+              <View style={styles.remakeMetricGrid} testID="stats-remakes-summary">
                 {remakesQuery.isLoading ? (
-                  <ActivityIndicator style={styles.remakeSpinner} />
+                  <View style={styles.remakeMetricCard}><ActivityIndicator style={styles.remakeSpinner} /></View>
                 ) : remakesQuery.isError ? (
-                  <Text style={styles.chartStateText}>Could not load remakes.</Text>
+                  <Text style={styles.chartStateText} testID="stats-remakes-error">Could not load remakes. Pull to refresh and try again.</Text>
                 ) : !remakes || remakes.totalRemakes === 0 ? (
-                  <Text style={styles.chartStateText} testID="stats-remakes-empty">
+                  <Text style={[styles.chartStateText, styles.remakeEmpty]} testID="stats-remakes-empty">
                     No remakes in this period
                   </Text>
                 ) : (
-                  <View>
+                  <>
+                  <View style={styles.remakeMetricCard}>
+                    <Text style={styles.remakeMetricLabel}>Total remakes</Text>
                     <Text style={styles.remakeTotal} testID="stats-remakes-total">
                       {remakes.totalRemakes}
                     </Text>
-                    <Text style={styles.remakeSubtitle}>Total remakes</Text>
-                    <View style={styles.remakeSplitRow}>
-                      <View style={styles.remakeSplitItem}>
-                        <Text style={[styles.remakeSplitValue, { color: "#059669" }]}>
-                          {remakes.rechargedRemakes}
-                        </Text>
-                        <Text style={styles.remakeSplitLabel}>Recharged</Text>
-                      </View>
-                      <View style={styles.remakeSplitItem}>
-                        <Text style={[styles.remakeSplitValue, { color: "#DC2626" }]}>
-                          {remakes.nonRechargedRemakes}
-                        </Text>
-                        <Text style={styles.remakeSplitLabel}>Not recharged</Text>
-                      </View>
-                    </View>
+                    <Text
+                      style={styles.remakeSubtitle}
+                      testID="stats-remakes-rate"
+                    >
+                      {(summary?.totalCases ?? 0) === 0
+                        ? "—"
+                        : `${formatRemakeRate(remakes.totalRemakes, summary!.totalCases)} of ${summary!.totalCases} cases`}
+                    </Text>
                   </View>
+                  <View style={styles.remakeMetricCard}>
+                    <Text style={styles.remakeMetricLabel}>Recharged</Text>
+                    <Text style={[styles.remakeSplitValue, { color: colors.success }]}>{remakes.rechargedRemakes}</Text>
+                    <Text style={styles.remakeSubtitle}>cases</Text>
+                  </View>
+                  <View style={styles.remakeMetricCard}>
+                    <Text style={styles.remakeMetricLabel}>Not recharged</Text>
+                    <Text style={[styles.remakeSplitValue, { color: colors.error }]}>{remakes.nonRechargedRemakes}</Text>
+                    <Text style={styles.remakeSubtitle}>cases</Text>
+                  </View>
+                  </>
                 )}
               </View>
+
+              {/* Reasons breakdown */}
               <View style={styles.remakeReasonsCard}>
                 <Text style={styles.remakeTitle}>Remake reasons</Text>
+                <Text style={styles.remakeSubtitle}>Grouped by reason, most frequent first</Text>
                 {remakesQuery.isLoading ? (
                   <ActivityIndicator style={styles.remakeSpinner} />
+                ) : remakesQuery.isError ? (
+                  <Text style={styles.chartStateText}>Could not load remake reasons.</Text>
                 ) : !remakes || remakes.remakeReasons.length === 0 ? (
                   <Text style={styles.chartStateText}>No remakes in this period</Text>
                 ) : (
                   <View testID="stats-remakes-reasons">
-                    {remakes.remakeReasons.map((r) => (
+                    {remakes.remakeReasons.map((r) => {
+                      const max = Math.max(...remakes.remakeReasons.map((item) => item.count), 1);
+                      return (
                       <View key={r.reason} style={styles.reasonRow}>
-                        <Text style={styles.reasonLabel} numberOfLines={1}>
+                        <Text style={styles.reasonLabel} numberOfLines={2}>
                           {r.reason}
                         </Text>
+                        <View style={styles.reasonBarTrack}>
+                          <View style={[styles.reasonBarFill, { width: `${Math.max(4, (r.count / max) * 100)}%`, backgroundColor: colors.tint }]} />
+                        </View>
                         <Text style={styles.reasonCount}>{r.count}</Text>
                       </View>
-                    ))}
+                    );})}
                   </View>
                 )}
               </View>
+
+              {/* Trend bars */}
+              {remakes && remakes.timeSeries.length > 0 && (
+                <View style={styles.remakeReasonsCard}>
+                  <Text style={styles.remakeTitle}>
+                    Remake trend (per {remakeGroupBy})
+                  </Text>
+                  {(() => {
+                    const max = Math.max(...remakes.timeSeries.map((p) => p.count), 1);
+                    return (
+                      <View testID="stats-remakes-trend">
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.trendColumnRow}>
+                          {remakes.timeSeries.map((p) => (
+                            <View key={p.period} style={styles.trendColumn}>
+                              <Text style={styles.trendCount}>{p.count}</Text>
+                              <View style={styles.trendTrack}>
+                                <View style={[styles.trendFill, { height: `${Math.max(p.count > 0 ? 5 : 0, (p.count / max) * 100)}%`, backgroundColor: colors.tint }]} />
+                              </View>
+                              <Text style={styles.trendLabel} numberOfLines={1}>{p.period}</Text>
+                            </View>
+                          ))}
+                        </ScrollView>
+                      </View>
+                    );
+                  })()}
+                </View>
+              )}
+
+              {/* Doctor breakdown */}
+              {remakes && remakes.byDoctor && remakes.byDoctor.length > 0 && (
+                <View style={styles.remakeReasonsCard}>
+                  <Text style={styles.remakeTitle}>By doctor</Text>
+                  <View testID="stats-remakes-by-doctor">
+                    {remakes.byDoctor.slice(0, 10).map((d) => {
+                      const max = remakes.byDoctor![0]?.count ?? 1;
+                      return (
+                        <View key={d.doctorName} style={styles.reasonRow}>
+                          <Text style={styles.reasonLabel} numberOfLines={1}>
+                            {d.doctorName}
+                          </Text>
+                          <View style={styles.reasonBarTrack}>
+                            <View style={[styles.reasonBarFill, { width: `${(d.count / max) * 100}%`, backgroundColor: colors.tint }]} />
+                          </View>
+                          <Text style={styles.reasonCount}>{d.count}</Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
+
+              {/* By type breakdown */}
+              {remakes && remakes.byType && remakes.byType.length > 0 && (
+                <View style={styles.remakeReasonsCard}>
+                  <Text style={styles.remakeTitle}>By type</Text>
+                  <View testID="stats-remakes-by-type">
+                    {(() => {
+                      const TYPE_COLORS: Record<string, string> = {
+                        Restorative: "hsl(150 55% 42%)",
+                        Removable: "hsl(32 90% 52%)",
+                        Implant: "hsl(262 60% 55%)",
+                        Other: "hsl(220 10% 55%)",
+                      };
+                      const max = remakes.byType![0]?.count ?? 1;
+                      return remakes.byType!.map((t) => (
+                        <View key={t.typeName} style={styles.reasonRow}>
+                          <Text style={styles.reasonLabel} numberOfLines={1}>
+                            {t.typeName}
+                          </Text>
+                          <View style={styles.reasonBarTrack}>
+                            <View style={[styles.reasonBarFill, { width: `${(t.count / max) * 100}%`, backgroundColor: TYPE_COLORS[t.typeName] ?? "hsl(220 10% 55%)" }]} />
+                          </View>
+                          <Text style={styles.reasonCount}>{t.count}</Text>
+                        </View>
+                      ));
+                    })()}
+                  </View>
+                </View>
+              )}
+
+              {/* Records list */}
+              {remakes && remakes.records.length > 0 && (
+                <View style={styles.remakeReasonsCard}>
+                  <Text style={styles.remakeTitle}>Remake records</Text>
+                  <Text style={styles.remakeSubtitle}>Newest first</Text>
+                  <View testID="stats-remakes-records">
+                    {remakes.records.map((rec) => (
+                      <Pressable
+                        key={rec.id}
+                        style={styles.remakeRecordRow}
+                        testID={`stats-remake-record-${rec.id}`}
+                        onPress={() => router.push({ pathname: "/cases/[id]", params: { id: rec.id } } as never)}
+                      >
+                        <View style={{ flex: 1 }}>
+                          {rec.doctorName ? (
+                            <Text style={[styles.remakeRecordCase, { fontSize: 13 }]} numberOfLines={1}>
+                              {rec.doctorName}
+                            </Text>
+                          ) : null}
+                          <Text style={styles.remakeRecordCase}>
+                            #{rec.caseNumber}
+                            {rec.originalCaseNumber ? (
+                              <Text style={styles.remakeRecordMeta}> → #{rec.originalCaseNumber}</Text>
+                            ) : null}
+                          </Text>
+                          <Text style={styles.remakeRecordMeta} numberOfLines={1}>
+                            {rec.reason}
+                            {rec.category ? ` · ${rec.category.replace("_", " & ")}` : ""}
+                          </Text>
+                          <Text style={styles.remakeRecordMeta}>
+                            {formatCalendarDate(rec.receivedAt)}
+                            {" · "}{rec.source}
+                          </Text>
+                        </View>
+                        <View style={{ alignItems: "flex-end", gap: 4 }}>
+                          {rec.recharged && (
+                            <Text style={[styles.remakeRecordBadge, { backgroundColor: "#d1fae5", color: "#065f46" }]}>
+                              Recharged
+                            </Text>
+                          )}
+                          {rec.returnedToLab && (
+                            <Text style={[styles.remakeRecordBadge, { backgroundColor: "#dbeafe", color: "#1e40af" }]}>
+                              Returned
+                            </Text>
+                          )}
+                        </View>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              )}
             </View>
           )}
         </ScrollView>
@@ -732,6 +1325,11 @@ function MetricTile({
   sub,
   changePct,
   loading,
+  onPress,
+  infoText,
+  infoTestID,
+  infoEntries,
+  onManagePress,
 }: {
   styles: Styles;
   colors: ThemeColors;
@@ -741,14 +1339,43 @@ function MetricTile({
   sub?: string;
   changePct?: number | null;
   loading?: boolean;
+  onPress?: () => void;
+  infoText?: string;
+  infoTestID?: string;
+  infoEntries?: Array<{ label: string; name?: string }>;
+  onManagePress?: () => void;
 }) {
+  const [infoExpanded, setInfoExpanded] = useState(false);
+  const toggleInfo = useCallback(() => setInfoExpanded((v) => !v), []);
+  const hasInfo = !!infoText;
   return (
-    <Card style={styles.metricTile}>
+    <Card style={styles.metricTile} onPress={onPress}>
       <View style={styles.metricHeader}>
         <Ionicons name={icon} size={14} color={colors.textSecondary} />
         <Text style={styles.metricLabel} numberOfLines={1}>
           {label}
         </Text>
+        {hasInfo ? (
+          <Pressable
+            onPress={toggleInfo}
+            hitSlop={8}
+            testID={infoTestID}
+            style={{ marginLeft: "auto" }}
+          >
+            <Ionicons
+              name={infoExpanded ? "information-circle" : "information-circle-outline"}
+              size={14}
+              color={colors.tint}
+            />
+          </Pressable>
+        ) : onPress ? (
+          <Ionicons
+            name="chevron-forward"
+            size={12}
+            color={colors.textTertiary}
+            style={{ marginLeft: "auto" }}
+          />
+        ) : null}
       </View>
       <Text style={styles.metricValue} numberOfLines={1}>
         {loading ? "…" : value}
@@ -771,8 +1398,76 @@ function MetricTile({
           </Text>
         ) : null}
       </View>
+      {hasInfo && infoExpanded ? (
+        <View style={styles.metricInfoPanel}>
+          <Text style={styles.metricInfoNote}>{infoText}</Text>
+          {infoEntries && infoEntries.length > 0 ? (
+            <View style={styles.metricInfoDateList}>
+              {infoEntries.map((entry) => (
+                <View key={entry.label} style={styles.metricInfoDateRow}>
+                  <Text style={styles.metricInfoDateLabel}>{entry.label}</Text>
+                  {entry.name ? (
+                    <Text style={styles.metricInfoDateNote} numberOfLines={1}>
+                      · {entry.name}
+                    </Text>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          ) : null}
+          {onManagePress ? (
+            <Pressable
+              onPress={onManagePress}
+              style={styles.manageClosedDaysBtn}
+              testID="stats-manage-closed-days"
+            >
+              <Ionicons name="calendar-outline" size={12} color={colors.tint} />
+              <Text style={[styles.manageClosedDaysBtnText, { color: colors.tint }]}>
+                Manage closed days
+              </Text>
+              <Ionicons name="chevron-forward" size={12} color={colors.tint} />
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
     </Card>
   );
+}
+
+function buildExcludedDaysText(
+  excludedDays:
+    | { holidayCount: number; customClosedCount: number }
+    | undefined
+    | null,
+): string | undefined {
+  if (!excludedDays) return undefined;
+  const { holidayCount, customClosedCount } = excludedDays;
+  const total = holidayCount + customClosedCount;
+  if (total === 0) return undefined;
+  const parts: string[] = [];
+  if (holidayCount > 0)
+    parts.push(`${holidayCount} US federal holiday${holidayCount !== 1 ? "s" : ""}`);
+  if (customClosedCount > 0)
+    parts.push(
+      `${customClosedCount} custom closed day${customClosedCount !== 1 ? "s" : ""}`,
+    );
+  return `Denominator excludes ${parts.join(" + ")} from the business-day count.`;
+}
+
+function buildExcludedDaysEntries(
+  excludedDays: StatsSummaryResultDataExcludedDays | undefined | null,
+): Array<{ label: string; name?: string }> | undefined {
+  if (!excludedDays || excludedDays.dates.length === 0) return undefined;
+  const years = [
+    ...new Set(excludedDays.dates.map((d) => parseInt(d.date.slice(0, 4), 10))),
+  ];
+  const nameMap = usHolidayNameMap(years);
+  return [...excludedDays.dates]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(({ date, reason }) => ({
+      label: formatExcludedDate(date),
+      name: reason === "holiday" ? (nameMap.get(date) ?? "Holiday") : undefined,
+    }));
 }
 
 function ChartCard({
@@ -787,7 +1482,7 @@ function ChartCard({
 }: {
   styles: Styles;
   title: string;
-  subtitle?: string;
+  subtitle?: string | React.ReactNode;
   loading?: boolean;
   error?: boolean;
   empty?: boolean;
@@ -797,7 +1492,11 @@ function ChartCard({
   return (
     <Card style={styles.chartCard}>
       <Text style={styles.chartTitle}>{title}</Text>
-      {subtitle ? <Text style={styles.chartSubtitle}>{subtitle}</Text> : null}
+      {subtitle != null
+        ? typeof subtitle === "string"
+          ? <Text style={styles.chartSubtitle}>{subtitle}</Text>
+          : subtitle
+        : null}
       <View style={styles.chartBody}>
         {loading ? (
           <Text style={styles.chartStateText}>Loading…</Text>
@@ -826,7 +1525,7 @@ function VerticalBars({
 }: {
   styles: Styles;
   colors: ThemeColors;
-  bars: Array<{ key: string; value: number; onPress?: () => void }>;
+  bars: Array<{ key: string; value: number; color?: string; onPress?: () => void }>;
   firstLabel: string;
   lastLabel: string;
 }) {
@@ -850,7 +1549,7 @@ function VerticalBars({
                   styles.vbarFill,
                   {
                     height: `${Math.max(b.value > 0 ? 3 : 0, pct)}%`,
-                    backgroundColor: colors.tint,
+                    backgroundColor: b.color ?? colors.tint,
                   },
                 ]}
               />
@@ -873,7 +1572,7 @@ function HorizontalBars({
 }: {
   styles: Styles;
   colors: ThemeColors;
-  rows: Array<{ label: string; value: number; onPress?: () => void }>;
+  rows: Array<{ label: string; value: number; color?: string; onPress?: () => void }>;
 }) {
   const max = Math.max(...rows.map((r) => r.value), 1);
   return (
@@ -895,7 +1594,7 @@ function HorizontalBars({
               <View
                 style={[
                   styles.hbarFill,
-                  { width: `${pct}%`, backgroundColor: colors.tint },
+                  { width: `${pct}%`, backgroundColor: r.color ?? colors.tint },
                 ]}
               />
             </View>
@@ -932,7 +1631,33 @@ function makeStyles(c: ThemeColors) {
     emptyTitle: { ...Typography.h3, color: c.text, textAlign: "center" },
     emptyBody: { ...Typography.body, color: c.textSecondary, textAlign: "center" },
     content: { padding: Spacing.lg, paddingTop: Spacing.sm, gap: Spacing.md },
-    chipRow: { gap: Spacing.xs, paddingRight: Spacing.lg },
+    filtersCard: {
+      backgroundColor: c.surface,
+      borderColor: c.border,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderRadius: Radius.md,
+      paddingVertical: Spacing.md,
+      gap: Spacing.sm,
+    },
+    filtersTitle: {
+      ...Typography.bodySemibold,
+      color: c.text,
+      paddingHorizontal: Spacing.md,
+    },
+    filterGroup: { gap: 5 },
+    filterLabel: {
+      ...Typography.label,
+      color: c.textSecondary,
+      textTransform: "uppercase",
+      paddingHorizontal: Spacing.md,
+    },
+    sectionTitle: { ...Typography.h3, color: c.text },
+    inlineError: {
+      ...Typography.caption,
+      color: c.error,
+      paddingHorizontal: Spacing.xs,
+    },
+    chipRow: { gap: Spacing.xs, paddingHorizontal: Spacing.md },
     chip: {
       paddingHorizontal: Spacing.md,
       paddingVertical: 7,
@@ -975,9 +1700,72 @@ function makeStyles(c: ThemeColors) {
     },
     metricChange: { ...Typography.captionSemibold },
     metricSub: { ...Typography.caption, color: c.textSecondary, flexShrink: 1 },
+    metricInfoPanel: {
+      marginTop: Spacing.xs,
+      gap: 4,
+    },
+    metricInfoNote: {
+      ...Typography.caption,
+      color: c.textSecondary,
+      fontStyle: "italic",
+    },
+    metricInfoDateList: {
+      marginTop: 4,
+      gap: 3,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+      paddingTop: 6,
+    },
+    metricInfoDateRow: {
+      flexDirection: "row",
+      alignItems: "baseline",
+      gap: 4,
+    },
+    metricInfoDateLabel: {
+      ...Typography.caption,
+      color: c.text,
+      minWidth: 46,
+    },
+    metricInfoDateNote: {
+      ...Typography.caption,
+      color: c.textSecondary,
+      flexShrink: 1,
+    },
+    manageClosedDaysBtn: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 4,
+      marginTop: Spacing.xs,
+      paddingTop: Spacing.xs,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+    },
+    manageClosedDaysBtnText: {
+      ...Typography.caption,
+      fontWeight: "600" as const,
+      flex: 1,
+    },
     chartCard: { gap: 2 },
     chartTitle: { ...Typography.bodySemibold, color: c.text },
     chartSubtitle: { ...Typography.caption, color: c.textSecondary },
+    revenueToggleRow: {
+      flexDirection: "row" as const,
+      gap: 4,
+      marginTop: 2,
+    },
+    revenueToggleBtn: {
+      paddingHorizontal: 10,
+      paddingVertical: 3,
+      borderRadius: 99,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface,
+    },
+    revenueToggleBtnText: {
+      ...Typography.caption,
+      color: c.textSecondary,
+      fontWeight: "600" as const,
+    },
     chartBody: { marginTop: Spacing.sm, minHeight: 60, justifyContent: "center" },
     chartStateText: {
       ...Typography.caption,
@@ -1005,6 +1793,26 @@ function makeStyles(c: ThemeColors) {
       marginTop: 4,
     },
     vbarLabel: { ...Typography.tiny, color: c.textTertiary },
+    revenueThresholdLegend: {
+      flexDirection: "row" as const,
+      justifyContent: "center" as const,
+      gap: Spacing.md,
+      marginTop: Spacing.sm,
+    },
+    revenueThresholdItem: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 5,
+    },
+    revenueThresholdDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+    },
+    revenueThresholdLabel: {
+      ...Typography.tiny,
+      color: c.textSecondary,
+    },
     hbarList: { gap: Spacing.sm },
     hbarRow: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
     hbarLabel: { ...Typography.caption, color: c.text, width: 110 },
@@ -1035,15 +1843,23 @@ function makeStyles(c: ThemeColors) {
       flex: 1,
       justifyContent: "flex-end",
     },
-    weekdayBarFill: {
+    weekdayBarStack: {
+      flex: 1,
+      flexDirection: "column-reverse" as const,
+      justifyContent: "flex-start",
+      overflow: "hidden" as const,
+      borderTopLeftRadius: 3,
+      borderTopRightRadius: 3,
+    },
+    weekdayBarSegment: {
       width: "100%",
-      borderRadius: 3,
-      backgroundColor: c.tint,
     },
     weekdayLabel: { ...Typography.tiny, color: c.textTertiary, marginTop: 4 },
     // Remake cards
     remakeTotalCard: {
       backgroundColor: c.surface,
+      borderColor: c.border,
+      borderWidth: StyleSheet.hairlineWidth,
       borderRadius: Radius.md,
       padding: Spacing.md,
       marginTop: Spacing.md,
@@ -1051,18 +1867,65 @@ function makeStyles(c: ThemeColors) {
     },
     remakeReasonsCard: {
       backgroundColor: c.surface,
+      borderColor: c.border,
+      borderWidth: StyleSheet.hairlineWidth,
       borderRadius: Radius.md,
       padding: Spacing.md,
       marginTop: Spacing.sm,
       gap: 4,
     },
+    remakeSectionHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      marginTop: Spacing.md,
+      marginBottom: Spacing.xs,
+    },
+    remakeFiltersGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      justifyContent: "space-between",
+      rowGap: Spacing.sm,
+      marginTop: Spacing.xs,
+    },
+    remakeFilterCell: { width: "48%", gap: 4 },
+    remakeReasonFilter: { width: "100%" },
+    remakeMetricGrid: {
+      flexDirection: "row",
+      gap: Spacing.xs,
+      marginTop: Spacing.sm,
+    },
+    remakeMetricCard: {
+      flex: 1,
+      minWidth: 0,
+      minHeight: 94,
+      justifyContent: "center",
+      backgroundColor: c.surface,
+      borderColor: c.border,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderRadius: Radius.md,
+      padding: Spacing.sm,
+      gap: 2,
+    },
+    remakeMetricLabel: {
+      ...Typography.tiny,
+      color: c.textSecondary,
+      textTransform: "uppercase",
+      minHeight: 26,
+    },
+    remakeEmpty: {
+      flex: 1,
+      backgroundColor: c.surface,
+      borderColor: c.border,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderRadius: Radius.md,
+      minHeight: 94,
+    },
     remakeTitle: { ...Typography.bodySemibold, color: c.text },
     remakeSubtitle: { ...Typography.caption, color: c.textSecondary },
     remakeTotal: {
-      ...Typography.h1,
+      ...Typography.h2,
       color: c.text,
-      marginTop: Spacing.sm,
-      textAlign: "center",
     },
     remakeSpinner: { marginVertical: Spacing.lg },
     remakeSplitRow: {
@@ -1077,15 +1940,78 @@ function makeStyles(c: ThemeColors) {
     reasonRow: {
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "space-between",
-      paddingVertical: 6,
+      gap: Spacing.sm,
+      paddingVertical: 7,
     },
-    reasonLabel: { ...Typography.body, color: c.text, flexShrink: 1, flex: 1 },
+    reasonLabel: { ...Typography.caption, color: c.text, flexShrink: 1, flex: 1.2 },
+    reasonBarTrack: {
+      flex: 1,
+      minWidth: 30,
+      height: 10,
+      backgroundColor: c.surfaceAlt,
+      borderRadius: 99,
+      overflow: "hidden",
+    },
+    reasonBarFill: { height: "100%", borderRadius: 99 },
     reasonCount: {
-      ...Typography.bodySemibold,
+      ...Typography.captionSemibold,
       color: c.textSecondary,
       minWidth: 24,
       textAlign: "right",
+    },
+    trendColumnRow: {
+      alignItems: "flex-end",
+      gap: Spacing.sm,
+      paddingVertical: Spacing.xs,
+      paddingHorizontal: 2,
+    },
+    trendColumn: {
+      width: 48,
+      height: 112,
+      alignItems: "center",
+      justifyContent: "flex-end",
+      gap: 4,
+    },
+    trendCount: { ...Typography.tiny, color: c.textSecondary },
+    trendTrack: {
+      width: 24,
+      flex: 1,
+      justifyContent: "flex-end",
+      backgroundColor: c.surfaceAlt,
+      borderTopLeftRadius: 4,
+      borderTopRightRadius: 4,
+      overflow: "hidden",
+    },
+    trendFill: {
+      width: "100%",
+      borderTopLeftRadius: 4,
+      borderTopRightRadius: 4,
+    },
+    trendLabel: { ...Typography.tiny, color: c.textTertiary, width: 48, textAlign: "center" },
+    remakeRecordRow: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      justifyContent: "space-between",
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: c.border,
+      gap: 8,
+    },
+    remakeRecordCase: {
+      ...Typography.bodySemibold,
+      color: c.tint,
+      marginBottom: 2,
+    },
+    remakeRecordMeta: {
+      ...Typography.caption,
+      color: c.textSecondary,
+    },
+    remakeRecordBadge: {
+      ...Typography.caption,
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 4,
+      overflow: "hidden",
     },
   });
 }

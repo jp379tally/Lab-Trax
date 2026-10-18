@@ -50,7 +50,6 @@ const whenReadyPromise = new Promise<void>((r) => {
 
 function injectModule(name: string, exports: unknown) {
   const filename = path.join(tmpDir, `__virt_${name.replace(/[^a-z0-9]/gi, "_")}.cjs`);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (require.cache as any)[filename] = {
     id: filename,
     filename,
@@ -61,7 +60,6 @@ function injectModule(name: string, exports: unknown) {
     path: tmpDir,
     parent: null,
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const M = Module as any;
   const origResolve = M._resolveFilename;
   M._resolveFilename = function patched(request: string, ...rest: unknown[]) {
@@ -113,7 +111,6 @@ beforeAll(async () => {
   process.env.ELECTRON_DEV = "0";
   delete process.env.UPDATE_FEED_URL;
 
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   require("../main.cjs");
   whenReadyResolve();
   // Let the whenReady().then(...) chain run.

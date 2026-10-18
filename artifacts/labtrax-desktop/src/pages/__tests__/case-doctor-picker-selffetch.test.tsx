@@ -30,12 +30,14 @@ const fakeCase: LabCase = {
   caseNumber: "26-1",
   patientFirstName: "Jane",
   patientLastName: "Doe",
-  doctorName: "Dr. Smith",
+  doctorName: "Dr. Synthetic063",
   status: "received",
   priority: "normal",
   dueDate: null,
   createdAt: new Date("2026-01-15T10:00:00Z").toISOString(),
   updatedAt: new Date("2026-01-15T10:00:00Z").toISOString(),
+  labOrganizationId: "lab-one",
+  providerOrganizationId: "practice-one",
   totalPrice: "0",
 } as unknown as LabCase;
 
@@ -53,12 +55,17 @@ const labCases: LabCase[] = [
 const fakeDoctorNames = Array.from(
   new Set(labCases.map((c) => c.doctorName).filter(Boolean)),
 ).sort((a, b) => a!.localeCompare(b!)) as string[];
+let reassignmentMemberships: Array<{ organizationId: string; role: string; status: string }> = [];
 
 beforeEach(() => {
+  reassignmentMemberships = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/auth/me")) {
+        return Response.json({ user: { id: "user-one" }, memberships: reassignmentMemberships });
+      }
       // Dedicated doctor-names endpoint — must be checked BEFORE the generic
       // /cases pattern so it returns string[] rather than LabCase[].
       if (url.includes("/cases/doctor-names")) {
@@ -84,7 +91,9 @@ beforeEach(() => {
       if (
         url.includes("/organizations") ||
         url.includes("/finance/vendors") ||
-        url.includes("/presets")
+        url.includes("/presets") ||
+        url.includes("/vocabulary") ||
+        url.includes("/pricing/billable-items")
       ) {
         return new Response("[]", {
           status: 200,
@@ -104,6 +113,29 @@ afterEach(() => {
 });
 
 describe("CaseDrawer doctor picker self-fetch", () => {
+  it.each([
+    ["owner", "lab-one", "active", true],
+    ["admin", "lab-one", "active", true],
+    ["user", "lab-one", "active", false],
+    ["billing", "lab-one", "active", false],
+    ["admin", "other-lab", "active", false],
+    ["owner", "lab-one", "pending", false],
+    ["owner", "practice-one", "active", false],
+  ])("gates reassignment by the active case-lab membership: %s/%s/%s", async (role, organizationId, status, allowed) => {
+    reassignmentMemberships = [{ role: String(role), organizationId: String(organizationId), status: String(status) }];
+    // Global admin alone is deliberately insufficient.
+    const Wrapper = makeAuthWrapper("/cases", {
+      user: { id: "user-one", username: "fixture", role: "admin" }, status: "authed",
+    });
+    render(<Wrapper>{withAiPanel(<CaseDrawer labCase={fakeCase} onClose={() => {}} />)}</Wrapper>);
+    await waitFor(() => expect(screen.getAllByText(/Jane/).length).toBeGreaterThan(0));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/auth/me"))).toBe(true));
+    if (allowed) {
+      expect(await screen.findByRole("button", { name: "Reassign" })).toBeInTheDocument();
+    } else {
+      expect(screen.queryByRole("button", { name: "Reassign" })).not.toBeInTheDocument();
+    }
+  });
   it("populates the doctor picker from the lab's cases when no doctorNames prop is provided", async () => {
     const Wrapper = makeAuthWrapper("/cases");
     // Rendered WITHOUT a doctorNames prop — mirrors the dashboard entry point.
@@ -120,7 +152,7 @@ describe("CaseDrawer doctor picker self-fetch", () => {
     // Enter edit mode, then open the DoctorNamePicker (its toggle shows the
     // case's current doctor name while the dropdown is closed).
     fireEvent.click(await screen.findByRole("button", { name: /Edit/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /Dr\. Smith/i }));
+    fireEvent.click(await screen.findByRole("button", { name: fakeCase.doctorName }));
 
     // Self-fetched doctor names appear as options instead of "No doctors found."
     expect(

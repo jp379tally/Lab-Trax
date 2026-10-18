@@ -121,7 +121,7 @@ function feedingCallee(
 describe("streaming fetch guard (RN global fetch cannot stream) — regression firewall", () => {
   const { consumers, sources } = findConsumers();
 
-  it("still covers the AI assistant SSE stream (guard is not vacuous)", () => {
+  it("still covers the AI assistant SSE stream (guard is not vacuous)", async () => {
     expect(
       consumers.some((c) => c.file === join("app", "ai-assistant.tsx")),
       "app/ai-assistant.tsx no longer contains a .body.getReader() consumer. " +
@@ -130,7 +130,7 @@ describe("streaming fetch guard (RN global fetch cannot stream) — regression f
     ).toBe(true);
   });
 
-  it("every .getReader() consumer gets its response from expo/fetch, not global fetch", () => {
+  it("every .getReader() consumer gets its response from expo/fetch, not global fetch", async () => {
     for (const { file, receiver, index } of consumers) {
       const src = sources.get(file)!;
 

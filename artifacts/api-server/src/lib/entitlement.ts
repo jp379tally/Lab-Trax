@@ -11,15 +11,56 @@ import type { Subscription } from "@workspace/db";
 import { logger } from "./logger";
 
 export type SubscriptionStatus =
+  | "free"
+  | "onboarding_pending"
   | "trialing"
   | "active"
   | "past_due"
   | "grace"
+  | "deactivated"
+  /** Legacy values retained for rows written before durable deactivation. */
   | "locked"
   | "canceled"
   | "legacy_free";
 
 export type AccessLevel = "full" | "read_only" | "locked";
+
+export const PROVIDER_PLANS = {
+  free: {
+    monthlyPriceUsd: 0,
+    capabilities: ["active_case_view"],
+  },
+  basic: {
+    monthlyPriceUsd: 99,
+    capabilities: ["active_case_view"],
+  },
+  standard: {
+    monthlyPriceUsd: 149,
+    capabilities: ["active_case_view", "billing_view_pay"],
+  },
+  premium: {
+    monthlyPriceUsd: 199,
+    capabilities: [
+      "active_case_view",
+      "billing_view_pay",
+      "lab_communication",
+    ],
+  },
+} as const;
+
+export type ProviderPlan = keyof typeof PROVIDER_PLANS;
+export type Capability =
+  | "active_case_view"
+  | "billing_view_pay"
+  | "lab_communication";
+
+export const CAPABILITIES: readonly Capability[] = [
+  "active_case_view",
+  "billing_view_pay",
+  "lab_communication",
+] as const;
+
+export type CapabilityEntitlements = Record<Capability, boolean>;
 
 export interface Entitlement {
   status: SubscriptionStatus;
@@ -32,6 +73,15 @@ export interface Entitlement {
   currentPeriodEnd: string | null;
   /** Whether this is a paying customer */
   hasPaymentMethod: boolean;
+  /** Selected provider plan; null for lab and non-provider subjects. */
+  providerPlan: ProviderPlan | null;
+  /** Centrally-derived application capabilities for this billing subject. */
+  capabilities: CapabilityEntitlements;
+  /**
+   * A currently effective administrative waiver. It only suppresses a payment
+   * lockout and never represents a payment method or paid subscription.
+   */
+  hasActiveWaiver: boolean;
   /** The billing subject */
   subjectType: string;
   subjectId: string;
@@ -56,7 +106,8 @@ const GRACE_DAYS = () =>
  * - Anyone without an org → subjectType="user"
  */
 export async function getSubjectForUser(
-  userId: string
+  userId: string,
+  authenticatedUserType?: string | null,
 ): Promise<BillingSubject> {
   const memberships = await db
     .select({
@@ -79,10 +130,10 @@ export async function getSubjectForUser(
       )
     );
 
-  const [user] = await db
+  const [user] = authenticatedUserType === undefined ? await db
     .select({ userType: users.userType })
     .from(users)
-    .where(eq(users.id, userId));
+    .where(eq(users.id, userId)) : [{ userType: authenticatedUserType }];
 
   if (user?.userType === "lab") {
     const labMem = memberships.find((m) => m.orgType === "lab");
@@ -90,6 +141,10 @@ export async function getSubjectForUser(
       return { subjectType: "lab_org", subjectId: labMem.labId };
     }
   } else {
+    const personal = await db.query.subscriptions.findFirst({
+      where: and(eq(subscriptions.subjectType, "user"), eq(subscriptions.subjectId, userId), isNull(subscriptions.deletedAt)),
+    });
+    if (personal?.providerOnboardingJson) return { subjectType: "user", subjectId: userId };
     const providerMem = memberships.find((m) => m.orgType === "provider");
     if (providerMem) {
       return { subjectType: "provider_org", subjectId: providerMem.labId };
@@ -106,25 +161,67 @@ export async function getSubjectForUser(
 export async function getEntitlement(
   subject: BillingSubject
 ): Promise<Entitlement> {
+  const resolvedSubject = await resolveLegacyProviderSubject(subject);
   const [row] = await db
     .select()
     .from(subscriptions)
     .where(
       and(
-        eq(subscriptions.subjectType, subject.subjectType),
-        eq(subscriptions.subjectId, subject.subjectId),
+        eq(subscriptions.subjectType, resolvedSubject.subjectType),
+        eq(subscriptions.subjectId, resolvedSubject.subjectId),
         isNull(subscriptions.deletedAt)
       )
     );
 
-  return computeEntitlement(subject, row ?? null);
+  // Do not strand a provider while its pre-organization subscription record
+  // is being migrated. The entitlement is nevertheless reported against the
+  // organization so all current callers share one billing subject.
+  if (
+    !row &&
+    resolvedSubject.subjectType === "provider_org" &&
+    (subject.subjectType === "provider_user" || subject.subjectType === "user")
+  ) {
+    const [legacyRow] = await db
+      .select()
+      .from(subscriptions)
+      .where(
+        and(
+          eq(subscriptions.subjectType, subject.subjectType),
+          eq(subscriptions.subjectId, subject.subjectId),
+          isNull(subscriptions.deletedAt)
+        )
+      );
+    return computeEntitlement(resolvedSubject, legacyRow ?? null);
+  }
+
+  return computeEntitlement(resolvedSubject, row ?? null);
 }
 
-function computeEntitlement(
+/**
+ * Canonicalize old per-provider-user subjects when the user now belongs to a
+ * provider organization. Other subject types are left untouched: resolving a
+ * lab or an unknown user here could incorrectly cross a billing boundary.
+ */
+async function resolveLegacyProviderSubject(
+  subject: BillingSubject
+): Promise<BillingSubject> {
+  if (subject.subjectType !== "provider_user" && subject.subjectType !== "user") {
+    return subject;
+  }
+
+  const resolved = await getSubjectForUser(subject.subjectId);
+  return resolved.subjectType === "provider_org" ? resolved : subject;
+}
+
+export function computeEntitlement(
   subject: BillingSubject,
-  row: Subscription | null
+  row: Subscription | null,
+  now = new Date()
 ): Entitlement {
-  const now = new Date();
+  const providerSubject = row?.planType === "provider" && subject.subjectType === "user"
+    ? { ...subject, subjectType: "provider_user" } : subject;
+  const providerPlan = getProviderPlan(providerSubject, row);
+  const capabilities = getCapabilities(providerSubject, row?.status === "onboarding_pending" ? "free" : providerPlan);
 
   if (!row) {
     return {
@@ -134,6 +231,9 @@ function computeEntitlement(
       graceDaysRemaining: null,
       currentPeriodEnd: null,
       hasPaymentMethod: false,
+      providerPlan,
+      capabilities,
+      hasActiveWaiver: false,
       subjectType: subject.subjectType,
       subjectId: subject.subjectId,
       subscriptionId: null,
@@ -143,6 +243,10 @@ function computeEntitlement(
   const status = row.status as SubscriptionStatus;
   let trialDaysRemaining: number | null = null;
   let graceDaysRemaining: number | null = null;
+  const trialExpired =
+    status === "trialing" &&
+    !!row.trialEndAt &&
+    row.trialEndAt.getTime() <= now.getTime();
 
   if (status === "trialing" && row.trialEndAt) {
     const msLeft = row.trialEndAt.getTime() - now.getTime();
@@ -156,9 +260,22 @@ function computeEntitlement(
     graceDaysRemaining = Math.max(0, Math.ceil(msLeft / (1000 * 60 * 60 * 24)));
   }
 
-  const accessLevel: AccessLevel =
-    status === "locked" || status === "canceled"
-      ? "locked"
+  // locked/canceled are legacy persisted values. They are intentionally
+  // interpreted as read-only, never as an authentication lockout.
+  const paymentReadOnly =
+    status === "locked" || status === "canceled" || status === "deactivated";
+  const hasActiveWaiver =
+    !!row.waiverReason &&
+    !!row.waiverStartsAt &&
+    row.waiverStartsAt.getTime() <= now.getTime() &&
+    (!row.waiverEndsAt || row.waiverEndsAt.getTime() > now.getTime());
+  const permanentReadOnly = row.status === "free" || row.status === "onboarding_pending";
+  const accessLevel: AccessLevel = permanentReadOnly
+    ? "read_only"
+    : hasActiveWaiver
+    ? "full"
+    : paymentReadOnly || trialExpired
+      ? "read_only"
       : status === "grace"
         ? "read_only"
         : "full";
@@ -170,10 +287,68 @@ function computeEntitlement(
     graceDaysRemaining,
     currentPeriodEnd: row.currentPeriodEnd?.toISOString() ?? null,
     hasPaymentMethod: row.paymentMethodOnFile,
+    providerPlan,
+    capabilities,
+    hasActiveWaiver,
     subjectType: subject.subjectType,
     subjectId: subject.subjectId,
     subscriptionId: row.id,
   };
+}
+
+export function expiredTrialTransition(paymentMethodOnFile: boolean): {
+  status: "grace";
+  reason: "trial_ended_awaiting_payment_confirmation" | "trial_ended_no_payment";
+} {
+  return {
+    status: "grace",
+    reason: paymentMethodOnFile
+      ? "trial_ended_awaiting_payment_confirmation"
+      : "trial_ended_no_payment",
+  };
+}
+
+function getProviderPlan(
+  subject: BillingSubject,
+  row: Subscription | null
+): ProviderPlan | null {
+  if (subject.subjectType !== "provider_org" && subject.subjectType !== "provider_user") {
+    return null;
+  }
+
+  // A missing row is the historical legacy-free state and must retain the
+  // complete portal until transition creates its explicit Premium waiver.
+  // A real row without a plan is least-privileged until backfill assigns one.
+  const plan = row ? (row.providerPlan ?? "basic") : "premium";
+  return isProviderPlan(plan) ? plan : "basic";
+}
+
+function getCapabilities(
+  subject: BillingSubject,
+  providerPlan: ProviderPlan | null
+): CapabilityEntitlements {
+  // Lab subscription behavior predates provider tiers; all listed
+  // capabilities remain available to lab subjects.
+  if (subject.subjectType !== "provider_org" && subject.subjectType !== "provider_user") {
+    return {
+      active_case_view: true,
+      billing_view_pay: true,
+      lab_communication: true,
+    };
+  }
+
+  const included: readonly Capability[] = providerPlan
+    ? PROVIDER_PLANS[providerPlan].capabilities
+    : [];
+  return {
+    active_case_view: included.includes("active_case_view"),
+    billing_view_pay: included.includes("billing_view_pay"),
+    lab_communication: included.includes("lab_communication"),
+  };
+}
+
+export function isProviderPlan(value: unknown): value is ProviderPlan {
+  return typeof value === "string" && Object.hasOwn(PROVIDER_PLANS, value);
 }
 
 /**
@@ -208,6 +383,9 @@ export async function startBillingTrial(
       subjectId,
       provider: "none",
       status: "trialing",
+      // New providers begin on the fixed entry plan. Legacy transition access
+      // is granted only by the explicit, auditable backfill.
+      providerPlan: subjectType === "provider_org" ? "basic" : null,
       trialStartAt: now,
       trialEndAt,
     })
@@ -244,7 +422,8 @@ export async function transitionSubscription(
   subscriptionId: string,
   newStatus: SubscriptionStatus,
   extra?: Partial<typeof subscriptions.$inferInsert>,
-  eventPayload?: Record<string, unknown>
+  eventPayload?: Record<string, unknown>,
+  expectedCurrentStatus?: SubscriptionStatus,
 ): Promise<Subscription | null> {
   const [existing] = await db
     .select()
@@ -267,8 +446,14 @@ export async function transitionSubscription(
   const [updated] = await db
     .update(subscriptions)
     .set(updates)
-    .where(eq(subscriptions.id, subscriptionId))
+    .where(and(
+      eq(subscriptions.id, subscriptionId),
+      ...(expectedCurrentStatus
+        ? [eq(subscriptions.status, expectedCurrentStatus)]
+        : []),
+    ))
     .returning();
+  if (!updated) return null;
 
   await appendSubscriptionEvent({
     subscriptionId,
@@ -291,7 +476,7 @@ export async function transitionSubscription(
     "[billing] Subscription status changed"
   );
 
-  return updated ?? null;
+  return updated;
 }
 
 /**

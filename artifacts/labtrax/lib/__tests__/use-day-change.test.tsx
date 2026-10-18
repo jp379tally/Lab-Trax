@@ -14,15 +14,15 @@ describe("useDayChange", () => {
     vi.useRealTimers();
   });
 
-  it("rolls the day key over when a scheduled midnight passes", () => {
+  it("rolls the day key over when a scheduled midnight passes", async () => {
     // Just before local midnight.
     vi.setSystemTime(new Date(2026, 6, 6, 23, 59, 0, 0));
 
-    const { result } = renderHook(() => useDayChange());
+    const { result } = await renderHook(() => useDayChange());
     const initial = result.current;
 
     // Advance the clock past midnight, then let the scheduled timer fire.
-    act(() => {
+    await act(() => {
       vi.setSystemTime(new Date(2026, 6, 7, 0, 1, 0, 0));
       vi.advanceTimersByTime(2 * 60 * 1000);
     });
@@ -30,10 +30,10 @@ describe("useDayChange", () => {
     expect(result.current).not.toBe(initial);
   });
 
-  it("rolls the day key over when the app resumes on a later day", () => {
+  it("rolls the day key over when the app resumes on a later day", async () => {
     vi.setSystemTime(new Date(2026, 6, 6, 23, 59, 0, 0));
 
-    const { result } = renderHook(() => useDayChange());
+    const { result } = await renderHook(() => useDayChange());
     const initial = result.current;
 
     // Grab the AppState "change" listener the hook registered.
@@ -43,7 +43,7 @@ describe("useDayChange", () => {
 
     // Simulate resuming from the background on the next day without the
     // midnight timer having fired (native timers are suspended in background).
-    act(() => {
+    await act(() => {
       vi.setSystemTime(new Date(2026, 6, 7, 9, 0, 0, 0));
       handler("active");
     });
@@ -51,10 +51,10 @@ describe("useDayChange", () => {
     expect(result.current).not.toBe(initial);
   });
 
-  it("keeps the same key when the day has not changed", () => {
+  it("keeps the same key when the day has not changed", async () => {
     vi.setSystemTime(new Date(2026, 6, 6, 8, 0, 0, 0));
 
-    const { result } = renderHook(() => useDayChange());
+    const { result } = await renderHook(() => useDayChange());
     const initial = result.current;
 
     // Advance a few hours, still the same calendar day.

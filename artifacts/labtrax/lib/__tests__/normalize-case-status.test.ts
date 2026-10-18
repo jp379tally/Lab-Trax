@@ -6,7 +6,7 @@ import {
 } from "../data";
 
 describe("normalizeCaseStatus", () => {
-  it("returns canonical lowercase statuses unchanged (identity)", () => {
+  it("returns canonical lowercase statuses unchanged (identity)", async () => {
     const canonical: CaseStatus[] = [
       "received",
       "in_design",
@@ -26,7 +26,7 @@ describe("normalizeCaseStatus", () => {
     }
   });
 
-  it("maps legacy uppercase mobile tokens to canonical statuses", () => {
+  it("maps legacy uppercase mobile tokens to canonical statuses", async () => {
     expect(normalizeCaseStatus("INTAKE")).toBe("received");
     expect(normalizeCaseStatus("DESIGN")).toBe("in_design");
     expect(normalizeCaseStatus("SCAN")).toBe("scan");
@@ -37,11 +37,12 @@ describe("normalizeCaseStatus", () => {
     expect(normalizeCaseStatus("PORCELAIN")).toBe("in_porcelain");
     expect(normalizeCaseStatus("QC")).toBe("qc");
     expect(normalizeCaseStatus("COMPLETE")).toBe("complete");
+    expect(normalizeCaseStatus("DELIVERED")).toBe("complete");
     expect(normalizeCaseStatus("SHIP")).toBe("shipped");
     expect(normalizeCaseStatus("REMAKE")).toBe("received");
   });
 
-  it("maps desktop-bridge tokens to canonical statuses (the shipped/on-hold fix)", () => {
+  it("maps desktop-bridge tokens to canonical statuses (the shipped/on-hold fix)", async () => {
     expect(normalizeCaseStatus("DELIVERY")).toBe("shipped");
     expect(normalizeCaseStatus("QC_CHECK")).toBe("qc");
     expect(normalizeCaseStatus("ON_HOLD")).toBe("on_hold");
@@ -49,12 +50,12 @@ describe("normalizeCaseStatus", () => {
     expect(normalizeCaseStatus("SINTERING_FURNACE")).toBe("sintering_furnace");
   });
 
-  it("trims surrounding whitespace before matching", () => {
+  it("trims surrounding whitespace before matching", async () => {
     expect(normalizeCaseStatus("  ON_HOLD  ")).toBe("on_hold");
     expect(normalizeCaseStatus(" shipped ")).toBe("shipped");
   });
 
-  it("falls back to 'received' for unknown or non-string input", () => {
+  it("falls back to 'received' for unknown or non-string input", async () => {
     expect(normalizeCaseStatus("totally-unknown")).toBe("received");
     expect(normalizeCaseStatus("")).toBe("received");
     expect(normalizeCaseStatus(undefined)).toBe("received");
@@ -65,7 +66,7 @@ describe("normalizeCaseStatus", () => {
 });
 
 describe("normalizeCaseStatuses", () => {
-  it("rewrites status + routeHistory[].station + activityLog[].station", () => {
+  it("rewrites status + routeHistory[].station + activityLog[].station", async () => {
     const input = {
       status: "DELIVERY",
       routeHistory: [
@@ -91,7 +92,7 @@ describe("normalizeCaseStatuses", () => {
     ]);
   });
 
-  it("preserves non-station fields and leaves entries without a station untouched", () => {
+  it("preserves non-station fields and leaves entries without a station untouched", async () => {
     const input = {
       status: "ON_HOLD",
       routeHistory: [{ station: "DELIVERY", timestamp: 99 }],
@@ -118,7 +119,7 @@ describe("normalizeCaseStatuses", () => {
     });
   });
 
-  it("returns a copy without mutating the original input", () => {
+  it("returns a copy without mutating the original input", async () => {
     const input = { status: "INTAKE", routeHistory: [{ station: "SHIP" }] };
     const result = normalizeCaseStatuses(input as any);
 

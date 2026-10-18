@@ -44,6 +44,12 @@ describe("classifyRestoration", () => {
     expect(classifyRestoration("Flipper", null)).toBe("removable");
   });
 
+  it("classifies AI-imported removable cases where restorationSubtype is null", () => {
+    // AI import stores restorationType="Removable" without a structured subtype.
+    expect(classifyRestoration("Removable", "Acrylic", null)).toBe("removable");
+    expect(classifyRestoration("Removable", null, null)).toBe("removable");
+  });
+
   it("falls back to other for unmatched non-blank text", () => {
     expect(classifyRestoration("Night Guard", null)).toBe("other");
     expect(classifyRestoration("Retainer", null)).toBe("other");

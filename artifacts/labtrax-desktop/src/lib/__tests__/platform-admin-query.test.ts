@@ -46,7 +46,7 @@ describe("platform-admin-query helpers", () => {
 
     it("supports a function base and short-circuits it on a 403", () => {
       let called = 0;
-      const interval = haltPollingIfForbidden((q: { state: { error: unknown } }) => {
+      const interval = haltPollingIfForbidden((_q: { state: { error: unknown } }) => {
         called += 1;
         return 1234;
       });

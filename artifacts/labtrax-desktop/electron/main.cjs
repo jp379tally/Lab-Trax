@@ -1,4 +1,5 @@
 const { app, BrowserWindow, protocol, net, dialog, ipcMain, Notification, shell } = require("electron");
+const { shouldUseAutoUpdater } = require("./auto-updater-policy.cjs");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -6,6 +7,7 @@ const { pathToFileURL } = require("url");
 const iteroPoller = require("./itero-poller.cjs");
 const platformAdmin = require("./platform-admin.cjs");
 const authStore = require("./auth-store.cjs");
+const { downloadBackupToFolder } = require("./backup-download.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
 
@@ -55,7 +57,10 @@ function isAllowedMediaUrl(urlStr) {
 }
 
 function registerMediaIpc() {
-  ipcMain.handle("media:fetch-authenticated", async (_e, url) => {
+  ipcMain.handle("media:fetch-authenticated", async (_e, payload) => {
+    const url = typeof payload === "string" ? payload : payload?.url;
+    const selectionHeaders = payload && typeof payload === "object" && payload.headers
+      ? payload.headers : {};
     if (typeof url !== "string" || !url) {
       return { ok: false, status: 0, error: "Invalid media URL." };
     }
@@ -72,6 +77,9 @@ function registerMediaIpc() {
     const headers = {};
     if (tokens && tokens.accessToken) {
       headers["Authorization"] = `Bearer ${tokens.accessToken}`;
+    }
+    if (typeof selectionHeaders["x-provider-organization-id"] === "string") {
+      headers["x-provider-organization-id"] = selectionHeaders["x-provider-organization-id"];
     }
     try {
       const res = await net.fetch(url, { headers });
@@ -334,7 +342,15 @@ function setupAutoUpdater() {
 // Lazy-load autoUpdater inside the IPC handlers so dev-mode launches (which
 // skip setupAutoUpdater) can still answer `get-update-state` / etc. cleanly.
 function getAutoUpdaterOrNull() {
-  if (isDev || process.env.LABTRAX_SKIP_AUTOUPDATER === "1") return null;
+  if (
+    !shouldUseAutoUpdater({
+      isDev,
+      isWindowsStore: process.windowsStore === true,
+      skipAutoUpdater: process.env.LABTRAX_SKIP_AUTOUPDATER === "1",
+    })
+  ) {
+    return null;
+  }
   try {
     return require("electron-updater").autoUpdater;
   } catch {
@@ -356,6 +372,30 @@ function snapshotUpdateState() {
 let mainWindow = null;
 
 app.whenReady().then(() => {
+  if (process.env.LABTRAX_BACKUP_DOWNLOAD_SMOKE === "1") {
+    const smokePath = path.join(
+      app.getAppPath(),
+      "scripts",
+      "backup-download-smoke.cjs",
+    );
+    const { runPackagedBackupDownloadSmoke } = require(smokePath);
+    runPackagedBackupDownloadSmoke({
+      fetch: net.fetch.bind(net),
+      downloadBackupToFolder,
+      isAllowedUrl: isAllowedMediaUrl,
+    }).then(
+      () => {
+        console.info("[backup-smoke] packaged Windows backup scenarios passed");
+        app.exit(0);
+      },
+      (error) => {
+        console.error("[backup-smoke] packaged backup scenario failed", error);
+        app.exit(1);
+      },
+    );
+    return;
+  }
+
   if (!isDev) {
     protocol.handle("app", (req) => {
       const { pathname } = new URL(req.url);
@@ -385,7 +425,13 @@ app.whenReady().then(() => {
   registerMediaIpc();
   createWindow();
 
-  if (!isDev && process.env.LABTRAX_SKIP_AUTOUPDATER !== "1") {
+  if (
+    shouldUseAutoUpdater({
+      isDev,
+      isWindowsStore: process.windowsStore === true,
+      skipAutoUpdater: process.env.LABTRAX_SKIP_AUTOUPDATER === "1",
+    })
+  ) {
     setupAutoUpdater();
   }
 
@@ -511,6 +557,31 @@ ipcMain.handle("backup:save-to-folder", async (_event, { buffer, fileName, folde
     return { ok: true, path: dest };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+});
+
+const backupDownloadWindows = new Set();
+ipcMain.handle("backup:download-to-folder", async (event, request) => {
+  if (backupDownloadWindows.has(event.sender.id)) {
+    return { ok: false, error: "A local backup is already running in this window." };
+  }
+  backupDownloadWindows.add(event.sender.id);
+  const controller = new AbortController();
+  const closed = () => controller.abort();
+  event.sender.once("destroyed", closed);
+  try {
+    return await downloadBackupToFolder(request, {
+      isAllowedUrl: isAllowedMediaUrl,
+      fetch: net.fetch.bind(net),
+      signal: controller.signal,
+      onRunId: (runId) => {
+        if (!event.sender.isDestroyed()) event.sender.send("backup:run-id", runId);
+      },
+      log: (metrics) => console.info("[local-backup]", metrics),
+    });
+  } finally {
+    event.sender.removeListener("destroyed", closed);
+    backupDownloadWindows.delete(event.sender.id);
   }
 });
 

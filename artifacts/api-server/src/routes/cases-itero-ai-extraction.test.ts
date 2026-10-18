@@ -111,6 +111,7 @@ function aiExtractedRx(overrides: Record<string, unknown> = {}) {
             material: "Zirconia",
             shade: "A2",
             teeth: "8, 9",
+            arch: "upper",
             dueDate: "2026-07-01",
             isRush: false,
             notes: "Match adjacent shade carefully; high translucency.",
@@ -255,6 +256,35 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
     await db.delete(users).where(eq(users.id, adminUserId));
   });
 
+  it("persists reviewed multipart invoice lines with their child charges instead of extracted prices", async () => {
+    const adminToken = await makeSession(adminUserId);
+    const reviewed = [
+      { description: "Corrected crown", quantity: 1, unitPrice: 10, subItems: [
+        { description: "Layered Porcelain", quantity: 1, unitPrice: 37 },
+      ] },
+      { description: "Rush fee", quantity: 1, unitPrice: 15 },
+    ];
+    const result = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", makeTempRxFile(), "iTero_Rx_reviewed.pdf")
+      .field("iteroOrderId", rid("order"))
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId)
+      .field("confirmNewDoctor", "true")
+      .field("invoiceOverrideLines", JSON.stringify(reviewed));
+    expect(result.status, JSON.stringify(result.body)).toBe(201);
+    const { db, invoices, invoiceLineItems } = dbMod as any;
+    const [invoice] = await db.select().from(invoices).where(eq(invoices.caseId, result.body.data.caseId));
+    expect(Number(invoice.total)).toBe(62);
+    const rows = await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoice.id));
+    expect(rows).toHaveLength(3);
+    const parent = rows.find((row: any) => row.description === "Corrected crown");
+    const child = rows.find((row: any) => row.description === "Layered Porcelain");
+    expect(child.parentLineItemId).toBe(parent.id);
+    expect(rows.every((row: any) => row.sourceType === "manual")).toBe(true);
+  }, 60_000);
+
   it("persists AI-extracted Rx fields to the case, restorations, and a non-zero invoice (no client hints)", async () => {
     const adminToken = await makeSession(adminUserId);
     const orderId = rid("order");
@@ -267,12 +297,17 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
       .attach("file", rxFile, "iTero_Rx_123.pdf")
       .field("iteroOrderId", orderId)
       .field("labOrganizationId", labOrgId)
-      .field("providerOrganizationId", providerOrgId);
+      .field("providerOrganizationId", providerOrgId)
+      // "Dr. Babbage" is not on file for this fresh practice, so the strict
+      // doctor-not-on-file gate would otherwise 409. This test is about AI
+      // extraction persistence, not doctor gating, so confirm the new doctor.
+      .field("confirmNewDoctor", "true");
 
     expect(r.status).toBe(201);
     expect(r.body.ok).toBe(true);
     const caseId = r.body.data.caseId as string;
     expect(caseId).toBeTruthy();
+    expect(r.body.data.needsAiReview).toBe(false);
 
     // The route used the supported vision path and NOT the unsupported Files
     // API (the exact regression that produced blank cases in production).
@@ -299,6 +334,7 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
         patientFirstName: cases.patientFirstName,
         doctorName: cases.doctorName,
         needsAiReview: cases.needsAiReview,
+        aiImportSource: cases.aiImportSource,
       })
       .from(cases)
       .where(eq(cases.id, caseId));
@@ -307,7 +343,8 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
     expect(caseRow.dueDate).toBeTruthy();
     expect(caseRow.patientFirstName).toBe("Ada");
     expect(caseRow.doctorName).toBe("Dr. Babbage");
-    expect(caseRow.needsAiReview).toBe(true);
+    expect(caseRow.needsAiReview).toBe(false);
+    expect(caseRow.aiImportSource).toBe("itero");
 
     // ── Restoration rows (one per tooth) ──
     const restorations = await db
@@ -330,7 +367,7 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
       .from(invoices)
       .where(eq(invoices.caseId, caseId));
     expect(invoice, "auto-invoice must be created").toBeDefined();
-    expect(invoice.status).toBe("draft");
+    expect(invoice.status).toBe("open");
     expect(Number(invoice.total)).toBe(300);
     expect(Number(invoice.subtotal)).toBe(300);
     expect(Number(invoice.balanceDue)).toBe(300);
@@ -366,6 +403,7 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
     expect(r.body.ok).toBe(true);
     const caseId = r.body.data.caseId as string;
     expect(caseId).toBeTruthy();
+    expect(r.body.data.needsAiReview).toBe(false);
 
     // Supported vision path used; unsupported Files/Responses APIs untouched.
     expect(mockChatCreate).toHaveBeenCalled();
@@ -384,6 +422,7 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
         patientFirstName: cases.patientFirstName,
         doctorName: cases.doctorName,
         needsAiReview: cases.needsAiReview,
+        aiImportSource: cases.aiImportSource,
       })
       .from(cases)
       .where(eq(cases.id, caseId));
@@ -392,7 +431,8 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
     expect(caseRow.dueDate).toBeTruthy();
     expect(caseRow.patientFirstName).toBe("Ada");
     expect(caseRow.doctorName).toBe("Dr. Babbage");
-    expect(caseRow.needsAiReview).toBe(true);
+    expect(caseRow.needsAiReview).toBe(false);
+    expect(caseRow.aiImportSource).toBe("itero");
 
     const restorations = await db
       .select()
@@ -412,7 +452,7 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
       .from(invoices)
       .where(eq(invoices.caseId, caseId));
     expect(invoice, "auto-invoice must be created").toBeDefined();
-    expect(invoice.status).toBe("draft");
+    expect(invoice.status).toBe("open");
     expect(Number(invoice.total)).toBe(300);
     expect(Number(invoice.subtotal)).toBe(300);
     expect(Number(invoice.balanceDue)).toBe(300);
@@ -426,6 +466,49 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
       0
     );
     expect(lineTotalSum).toBe(300);
+  });
+
+  it("ZIP import with dueDateHint sets expectedDeliveryDate to null (dueDate precedence guard)", async () => {
+    // Regression guard: when the iTero ZIP import has a due date — either from
+    // the AI extraction or from the client dueDateHint field — expectedDeliveryDate
+    // must be stored as null.  This is the guard that would have caught the bug
+    // where expectedDeliveryDate overrode an explicit dueDate on the ZIP path.
+    const adminToken = await makeSession(adminUserId);
+    const zipBuf = makeIteroZipBuffer(`95${Math.floor(Math.random() * 1e6)}`);
+    const explicitDue = "2026-10-15";
+
+    // Override the AI mock so it returns NO dueDate — the dueDateHint from the
+    // client is then the sole source of truth for iteroZipSuppliedDate.
+    mockChatCreate.mockResolvedValue(aiExtractedRx({ dueDate: null }));
+
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-zip")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", zipBuf, "iTero_Export.zip")
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId)
+      .field("dueDateHint", explicitDue);
+
+    expect(r.status).toBe(201);
+    const caseId = r.body.data.caseId as string;
+    expect(caseId).toBeTruthy();
+
+    const { db, cases } = dbMod as any;
+    const [row] = await db
+      .select({
+        dueDate: cases.dueDate,
+        expectedDeliveryDate: cases.expectedDeliveryDate,
+      })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+
+    expect(
+      row.expectedDeliveryDate,
+      "expectedDeliveryDate must be null when dueDateHint is supplied on the ZIP path",
+    ).toBeNull();
+    const dueDateIso =
+      row.dueDate instanceof Date ? row.dueDate.toISOString() : String(row.dueDate);
+    expect(dueDateIso).toMatch(/^2026-10-15/);
   });
 
   it("falls back to notesHint for cases.rxNotes when AI extracts no notes (ZIP path)", async () => {
@@ -458,5 +541,289 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
     expect(caseRow.rxNotes).toBe(hintNote);
     // Other AI-extracted fields are unaffected.
     expect(caseRow.shade).toBe("A2");
+  });
+
+  it("Removable case with 4 teeth creates 1 restoration row (QTY = 1), not 4", async () => {
+    // Regression guard: a Nesbit partial / any Removable appliance is one
+    // billable unit regardless of how many teeth it covers. Before the fix,
+    // each tooth produced its own restoration row and the invoice showed QTY 4.
+    const adminToken = await makeSession(adminUserId);
+    const rxFile = makeTempRxFile();
+
+    mockChatCreate.mockResolvedValue(
+      aiExtractedRx({
+        caseType: "Removable",
+        removableSubtype: "partial",
+        material: "Acrylic",
+        teeth: "28, 29, 30, 31",
+        shade: null,
+      }),
+    );
+
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", rxFile, "iTero_Rx_removable.pdf")
+      .field("iteroOrderId", rid("order"))
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId)
+      .field("confirmNewDoctor", "true");
+
+    expect(r.status).toBe(201);
+    const caseId = r.body.data.caseId as string;
+    expect(caseId).toBeTruthy();
+
+    const { db, cases: casesTable, caseRestorations, invoices, invoiceLineItems } = dbMod as any;
+
+    // ── 1 restoration row, toothNumber carries all 4 teeth ──
+    const restorations = await db
+      .select()
+      .from(caseRestorations)
+      .where(eq(caseRestorations.caseId, caseId));
+    expect(restorations).toHaveLength(1);
+    expect(restorations[0].restorationType).toBe("Removable");
+    // All four teeth must be joined in the single row's toothNumber field.
+    expect(restorations[0].toothNumber).toContain("28");
+    expect(restorations[0].toothNumber).toContain("29");
+    expect(restorations[0].toothNumber).toContain("30");
+    expect(restorations[0].toothNumber).toContain("31");
+    // quantity defaults to 1 — one appliance.
+    expect(restorations[0].quantity).toBe(1);
+
+    // ── Invoice line items: exactly 1 line, QTY = 1 ──
+    const [invoice] = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.caseId, caseId));
+    expect(invoice, "auto-invoice must be created").toBeDefined();
+
+    const lineItems = await db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, invoice.id));
+    const billableLines = lineItems.filter((li: any) => li.quantity > 0);
+    expect(billableLines).toHaveLength(1);
+    expect(billableLines[0].quantity).toBe(1);
+
+    try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
+  });
+
+  it("Crown & Bridge case with 4 teeth still creates 4 restoration rows (unaffected)", async () => {
+    // Sanity guard: the Removable collapse must not touch Crown & Bridge cases.
+    const adminToken = await makeSession(adminUserId);
+    const rxFile = makeTempRxFile();
+
+    mockChatCreate.mockResolvedValue(
+      aiExtractedRx({
+        caseType: "Crown",
+        material: "Zirconia",
+        teeth: "5, 6, 7, 8",
+        shade: "A1",
+      }),
+    );
+
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", rxFile, "iTero_Rx_cnb4teeth.pdf")
+      .field("iteroOrderId", rid("order"))
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId)
+      .field("confirmNewDoctor", "true");
+
+    expect(r.status).toBe(201);
+    const caseId = r.body.data.caseId as string;
+    expect(caseId).toBeTruthy();
+
+    const { db, cases, caseRestorations, invoices, invoiceLineItems } = dbMod as any;
+    const [importedCase] = await db
+      .select({
+        needsAiReview: cases.needsAiReview,
+        aiImportSource: cases.aiImportSource,
+      })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+    expect(importedCase.needsAiReview).toBe(false);
+    expect(importedCase.aiImportSource).toBe("itero");
+
+    // 4 separate restoration rows — one per tooth — as before.
+    const restorations = await db
+      .select()
+      .from(caseRestorations)
+      .where(eq(caseRestorations.caseId, caseId));
+    expect(restorations).toHaveLength(4);
+    for (const rest of restorations) {
+      expect(rest.restorationType).toBe("Crown & Bridge");
+      expect(rest.quantity).toBe(1);
+    }
+
+    // Invoice total = 4 × $150 = $600.
+    const [invoice] = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.caseId, caseId));
+    expect(Number(invoice.total)).toBe(600);
+
+    const lineItems = await db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, invoice.id));
+    const totalQty = lineItems.reduce((s: number, li: any) => s + li.quantity, 0);
+    expect(totalQty).toBe(4);
+
+    try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
+  });
+
+  it("Flipper case with 2 teeth and per-tooth shades creates 2 restoration rows with correct shades", async () => {
+    // A flipper for tooth 3 and a flipper for tooth 29 are two separate physical
+    // appliances (upper vs lower arch). The import must produce one restoration row
+    // per tooth — each QTY 1 — with the per-tooth shade from the prescription.
+    const adminToken = await makeSession(adminUserId);
+    const rxFile = makeTempRxFile();
+
+    mockChatCreate.mockResolvedValue(
+      aiExtractedRx({
+        caseType: "Removable",
+        removableSubtype: "flipper",
+        material: "Flexible",
+        teeth: "3, 29",
+        shade: null,
+        perToothShades: { "3": "A4", "29": "C2" },
+      }),
+    );
+
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", rxFile, "iTero_Rx_flipper.pdf")
+      .field("iteroOrderId", rid("order"))
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId)
+      .field("confirmNewDoctor", "true");
+
+    expect(r.status).toBe(201);
+    const caseId = r.body.data.caseId as string;
+    expect(caseId).toBeTruthy();
+
+    const { db, caseRestorations, invoices, invoiceLineItems } = dbMod as any;
+
+    // ── 2 restoration rows, one per tooth ──
+    const restorations = await db
+      .select()
+      .from(caseRestorations)
+      .where(eq(caseRestorations.caseId, caseId));
+    expect(restorations).toHaveLength(2);
+
+    const byTooth = Object.fromEntries(
+      restorations.map((row: any) => [row.toothNumber, row]),
+    );
+    expect(byTooth["3"], "tooth 3 restoration must exist").toBeDefined();
+    expect(byTooth["29"], "tooth 29 restoration must exist").toBeDefined();
+
+    // Each row must be QTY 1 with the correct per-tooth shade.
+    expect(byTooth["3"].quantity).toBe(1);
+    expect(byTooth["3"].shade).toBe("A4");
+    expect(byTooth["29"].quantity).toBe(1);
+    expect(byTooth["29"].shade).toBe("C2");
+
+    // Both rows carry the Flexible material and Removable type.
+    expect(byTooth["3"].material).toBe("Flexible");
+    expect(byTooth["29"].material).toBe("Flexible");
+    expect(byTooth["3"].restorationType).toBe("Removable");
+    expect(byTooth["29"].restorationType).toBe("Removable");
+
+    // ── Invoice must have 2 billable line items, one per flipper ──
+    const [invoice] = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.caseId, caseId));
+    expect(invoice, "auto-invoice must be created").toBeDefined();
+
+    const lineItems = await db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, invoice.id));
+    const billableLines = lineItems.filter((li: any) => li.quantity > 0);
+    expect(billableLines).toHaveLength(2);
+    billableLines.forEach((li: any) => expect(li.quantity).toBe(1));
+
+    try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
+  });
+
+  it("ZIP batch import: Removable case with 4 teeth creates 1 restoration row (QTY = 1), not 4", async () => {
+    // Regression guard: processOneIteroZipFile (the shared ZIP processor used by
+    // both the single-ZIP and batch routes) has its own prebuiltRestorations
+    // Removable-collapse block. This test exercises the batch route
+    // (POST /api/cases/import-from-itero-zip-batch) specifically so that path
+    // is covered — previously only the single-file Rx path had a guard.
+    const adminToken = await makeSession(adminUserId);
+    const zipBuf = makeIteroZipBuffer(`92${Math.floor(Math.random() * 1e6)}`);
+
+    mockChatCreate.mockResolvedValue(
+      aiExtractedRx({
+        caseType: "Removable",
+        material: "Acrylic",
+        teeth: "3, 4, 5, 6",
+        shade: null,
+      }),
+    );
+
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-zip-batch")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("files[]", zipBuf, "iTero_Export_batch.zip")
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId);
+
+    expect(r.status).toBe(207);
+    expect(r.body.ok).toBe(true);
+    const results = r.body.data.results as Array<{
+      status: string;
+      caseId?: string;
+      error?: string;
+    }>;
+    expect(results).toHaveLength(1);
+    expect(results[0].status).toBe("created");
+    const caseId = results[0].caseId as string;
+    expect(caseId).toBeTruthy();
+
+    const { db, cases, caseRestorations, invoices, invoiceLineItems } = dbMod as any;
+    const [importedCase] = await db
+      .select({
+        needsAiReview: cases.needsAiReview,
+        aiImportSource: cases.aiImportSource,
+      })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+    expect(importedCase.needsAiReview).toBe(false);
+    expect(importedCase.aiImportSource).toBe("itero");
+
+    // ── 1 restoration row; toothNumber carries all 4 teeth ──
+    const restorations = await db
+      .select()
+      .from(caseRestorations)
+      .where(eq(caseRestorations.caseId, caseId));
+    expect(restorations).toHaveLength(1);
+    expect(restorations[0].restorationType).toBe("Removable");
+    expect(restorations[0].toothNumber).toContain("3");
+    expect(restorations[0].toothNumber).toContain("4");
+    expect(restorations[0].toothNumber).toContain("5");
+    expect(restorations[0].toothNumber).toContain("6");
+    expect(restorations[0].quantity).toBe(1);
+
+    // ── Invoice: exactly 1 billable line with QTY = 1 ──
+    const [invoice] = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.caseId, caseId));
+    expect(invoice, "auto-invoice must be created").toBeDefined();
+
+    const lineItems = await db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, invoice.id));
+    const billableLines = lineItems.filter((li: any) => li.quantity > 0);
+    expect(billableLines).toHaveLength(1);
+    expect(billableLines[0].quantity).toBe(1);
   });
 });

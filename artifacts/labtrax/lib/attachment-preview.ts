@@ -61,6 +61,9 @@ export interface PreviewAttachment {
   url: string;
   fileName?: string | null;
   fileType?: string | null;
+  /** Backend-declared companion texture; resolved only with case context. */
+  caseId?: string | null;
+  textureAttachmentId?: string | null;
 }
 
 export interface OpenAttachmentPreviewOptions {
@@ -113,6 +116,11 @@ export async function openAttachmentPreview(
         fileName: att.fileName ?? "",
         fileType: att.fileType ?? "",
         format,
+        ...(att.caseId && att.textureAttachmentId
+          ? {
+              textureUrl: attachmentFileUrl(att.caseId, att.textureAttachmentId),
+            }
+          : {}),
       },
     });
     return "scan-viewer";

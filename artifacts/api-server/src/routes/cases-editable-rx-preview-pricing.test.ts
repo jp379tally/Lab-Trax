@@ -54,9 +54,10 @@ maybe("Editable Rx preview pricing (db integration)", () => {
   const providerOrgId = rid("prov");
   const createdCaseIds: string[] = [];
 
-  // Default tier prices: PFM crown $100, zirconia crown $150.
+  // Default tier prices: PFM crown $100, zirconia crown $150, emax crown $120.
   const PFM_PRICE = 100;
   const ZIRC_PRICE = 150;
+  const EMAX_PRICE = 120;
 
   async function makeSession(userId: string) {
     const { db, userSessions } = dbMod;
@@ -128,7 +129,7 @@ maybe("Editable Rx preview pricing (db integration)", () => {
     await db.insert(pricingTiers).values({
       labOrganizationId: labOrgId,
       name: "Default",
-      pricesJson: { pfm_crown: PFM_PRICE, zirconia_crown: ZIRC_PRICE },
+      pricesJson: { pfm_crown: PFM_PRICE, zirconia_crown: ZIRC_PRICE, emax_crown: EMAX_PRICE },
       createdByUserId: labOwnerId,
     });
   });
@@ -183,13 +184,15 @@ maybe("Editable Rx preview pricing (db integration)", () => {
   it("(1) preview-draft returns restorationIndices for grouped and single lines", async () => {
     const { access } = await makeSession(labOwnerId);
 
-    // Index 0 + 1: two same-material PFM crowns → collapse into ONE grouped
+    // Index 0 + 1: two same-material Zirconia crowns → collapse into ONE grouped
     // line whose restorationIndices is [0, 1].
-    // Index 2: a single zirconia crown → its own line, restorationIndices [2].
+    // Index 2: a single emax crown → its own line, restorationIndices [2].
+    // (PFM crowns are now per-tooth singletons and cannot be used as the grouped
+    // example; Zirconia crowns still collapse as expected.)
     const restorations = [
-      { toothNumber: "3", restorationType: "Crown", material: "PFM", quantity: 1 },
-      { toothNumber: "4", restorationType: "Crown", material: "PFM", quantity: 1 },
-      { toothNumber: "13", restorationType: "Crown", material: "Zirconia", quantity: 1 },
+      { toothNumber: "3", restorationType: "Crown", material: "Zirconia", quantity: 1 },
+      { toothNumber: "4", restorationType: "Crown", material: "Zirconia", quantity: 1 },
+      { toothNumber: "13", restorationType: "Crown", material: "Emax", quantity: 1 },
     ];
 
     const prev = await request(appMod.default)
@@ -226,10 +229,10 @@ maybe("Editable Rx preview pricing (db integration)", () => {
     expect([...groupedLine.restorationIndices].sort((a: number, b: number) => a - b)).toEqual([0, 1]);
     expect(singleLine.restorationIndices).toEqual([2]);
 
-    // Sanity: the grouped line is the PFM group, the single line is zirconia,
-    // and both resolved their tier price.
-    expect(Number(groupedLine.unitPrice)).toBe(PFM_PRICE);
-    expect(Number(singleLine.unitPrice)).toBe(ZIRC_PRICE);
+    // Sanity: the grouped line is Zirconia (two crowns), the single line is
+    // Emax — both resolved their tier price.
+    expect(Number(groupedLine.unitPrice)).toBe(ZIRC_PRICE);
+    expect(Number(singleLine.unitPrice)).toBe(EMAX_PRICE);
   }, 20000);
 
   // ── (2) explicit $0 override is preserved, not auto-priced ──────────────────

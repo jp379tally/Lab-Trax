@@ -423,8 +423,10 @@ export function PlatformAdminUnlockModal({
 
 export function PlatformAdminSetupNotice({
   variant = "block",
+  purpose = "default",
 }: {
   variant?: "block" | "inline";
+  purpose?: "default" | "creator";
 }) {
   const hasBridge = !!getBridge();
   const [showModal, setShowModal] = useState(false);
@@ -454,6 +456,7 @@ export function PlatformAdminSetupNotice({
     setShowModal(false);
     void qc.invalidateQueries({ queryKey: ["admin"] });
     void qc.invalidateQueries({ queryKey: ["admin-subscriptions"] });
+    void qc.invalidateQueries({ queryKey: ["admin-subscriptions-access"] });
   }
 
   return (
@@ -467,10 +470,16 @@ export function PlatformAdminSetupNotice({
           <Wrench size={14} className="mt-0.5 text-muted-foreground shrink-0" />
           <div className="space-y-1.5 min-w-0">
             <div className="font-medium text-foreground">
-              {hasBridge ? "Platform admin secret not configured" : "Admin access required"}
+              {purpose === "creator"
+                ? "Creator access required"
+                : hasBridge
+                  ? "Platform admin secret not configured"
+                  : "Admin access required"}
             </div>
             <p className="text-xs text-muted-foreground">
-              {hasBridge ? (
+              {purpose === "creator" ? (
+                <>Enter your admin PIN to unlock the subscription console for this signed-in session.</>
+              ) : hasBridge ? (
                 <>
                   Platform-wide maintenance endpoints require the deployment&rsquo;s{" "}
                   <code className="font-mono">PLATFORM_ADMIN_SECRET</code> to be saved on this machine.
@@ -488,7 +497,7 @@ export function PlatformAdminSetupNotice({
                 <Lock size={11} />
                 Enter admin PIN
               </button>
-              {hasBridge && (
+              {hasBridge && purpose === "default" && (
                 <Link
                   to="/settings?tab=platform-admin"
                   className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary hover:underline"

@@ -27,9 +27,9 @@ function flatLabels(items: Array<{ label: string; children?: Array<{ label: stri
 }
 
 describe("NAV primary sidebar items", () => {
-  it("contains Dashboard first, then Cases", () => {
+  it("contains Dashboard first, then Cases, then Messages", () => {
     const labels = NAV.map((n) => n.label);
-    expect(labels).toEqual(["Dashboard", "Cases"]);
+    expect(labels).toEqual(["Dashboard", "Cases", "Messages"]);
   });
 
   it("has no item labelled with two-factor / 2FA language", () => {
@@ -41,12 +41,12 @@ describe("NAV primary sidebar items", () => {
 });
 
 describe("SECONDARY sidebar items", () => {
-  it("top-level order is exactly: Subscription, Admin Settings, Maintenance, Download Desktop App", () => {
+  it("top-level order is exactly: Subscription, Admin Settings, Creator, Download Desktop App", () => {
     const topLabels = SECONDARY.map((n) => n.label);
     expect(topLabels).toEqual([
       "Subscription",
       "Admin Settings",
-      "Maintenance",
+      "Creator",
       "Download Desktop App",
     ]);
   });
@@ -64,6 +64,11 @@ describe("SECONDARY sidebar items", () => {
     expect(childLabels).toContain("Reports");
   });
 
+  it("has no separate Stats entry — Stats is a tab inside Reports", () => {
+    const labels = flatLabels(SECONDARY as Parameters<typeof flatLabels>[0]);
+    expect(labels).not.toContain("Stats");
+  });
+
   it("Financial sub-group contains Invoices, Statements, Bank Register in that order", () => {
     const adminGroup = SECONDARY.find(
       (n) => "children" in n && n.label === "Admin Settings",
@@ -72,7 +77,7 @@ describe("SECONDARY sidebar items", () => {
       (c) => "children" in c && c.label === "Financial",
     ) as { label: string; children: Array<{ label: string }> } | undefined;
     const finLabels = (financialGroup?.children ?? []).map((c) => c.label);
-    expect(finLabels).toEqual(["Invoices", "Statements", "Bank Register"]);
+    expect(finLabels).toEqual(["Invoices", "Statements", "Bank Register", "Recovery Billing"]);
   });
 
   it("has no item labelled with two-factor / 2FA language", () => {
@@ -82,9 +87,13 @@ describe("SECONDARY sidebar items", () => {
     }
   });
 
-  it("Maintenance is marked adminOnly", () => {
-    const maintenance = SECONDARY.find((n) => n.label === "Maintenance");
+  it("Maintenance lives inside the Admin Settings group and stays adminOnly", () => {
+    expect(SECONDARY.some((n) => n.label === "Maintenance")).toBe(false);
+    const adminGroup = SECONDARY.find(
+      (n) => "children" in n && n.label === "Admin Settings",
+    ) as { label: string; children: Array<{ label: string; adminOnly?: boolean }> } | undefined;
+    const maintenance = adminGroup?.children.find((c) => c.label === "Maintenance");
     expect(maintenance).toBeDefined();
-    expect((maintenance as { adminOnly?: boolean })?.adminOnly).toBe(true);
+    expect(maintenance?.adminOnly).toBe(true);
   });
 });

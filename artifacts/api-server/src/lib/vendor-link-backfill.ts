@@ -19,6 +19,7 @@
 import { and, eq, isNull, isNotNull, sql } from "drizzle-orm";
 import { db, systemSettings, bankTransactions, vendors } from "@workspace/db";
 import { logger } from "./logger";
+import { historicalStartupMaintenanceEnabled } from "./startup-maintenance";
 
 const SETTING_KEY = "vendor_link_backfill_done";
 
@@ -143,6 +144,10 @@ async function runBackfill(): Promise<void> {
  * background without blocking the event loop or startup.
  */
 export function scheduleVendorLinkBackfillIfNeeded(): void {
+  if (!historicalStartupMaintenanceEnabled()) {
+    logger.warn("vendor-link backfill: deferred outside explicit development startup");
+    return;
+  }
   setImmediate(() => {
     void (async () => {
       try {

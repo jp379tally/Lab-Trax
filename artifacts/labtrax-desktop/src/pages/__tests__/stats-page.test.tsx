@@ -7,8 +7,8 @@
  * - Empty states render when the window has no data.
  * - Non-billing user sees the restricted card and no metrics.
  */
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const SUMMARY = {
@@ -70,6 +70,13 @@ const CATEGORIES = {
       { material: "Zirconia", restorations: 20, units: 25 },
       { material: "Lithium Disilicate (Emax)", restorations: 6, units: 6 },
     ],
+    caseTypes: [
+      { label: "Restorative", count: 32 },
+      { label: "Removable", count: 5 },
+      { label: "Other", count: 2 },
+    ],
+    caseSubtypes: [],
+    caseMaterialSubtypes: [],
   },
 };
 
@@ -131,7 +138,7 @@ const EMPTY_SUMMARY = {
 };
 const EMPTY_CATEGORIES = {
   ok: true,
-  data: { ...CATEGORIES.data, totalCases: 0, categories: [], materials: [] },
+  data: { ...CATEGORIES.data, totalCases: 0, categories: [], materials: [], caseTypes: [] },
 };
 const EMPTY_REVENUE = {
   ok: true,
@@ -154,14 +161,109 @@ const EMPTY_WEEKDAYS = {
   },
 };
 
+// Two doctors so tests can exercise both the Doctor dropdown's population
+// and the doctorName filter's wiring/combination with other filters.
+const REMAKES = {
+  ok: true,
+  data: {
+    from: "2026-03-01T00:00:00.000Z",
+    to: "2026-03-31T23:59:59.999Z",
+    timeZone: "UTC",
+    totalRemakes: 3,
+    rechargedRemakes: 2,
+    nonRechargedRemakes: 1,
+    remakeReasons: [
+      { reason: "Shade mismatch", count: 2 },
+      { reason: "Fit: Margins", count: 1 },
+    ],
+    byDoctor: [
+      { doctorName: "Dr Stats", count: 2 },
+      { doctorName: "Dr Second", count: 1 },
+    ],
+    byReason: [
+      { reason: "Shade mismatch", count: 2 },
+      { reason: "Fit: Margins", count: 1 },
+    ],
+    byType: [
+      { typeName: "Restorative", count: 2 },
+      { typeName: "Removable", count: 1 },
+    ],
+    timeSeries: [
+      { period: "2026-W10", periodStart: "2026-03-02T00:00:00.000Z", count: 3 },
+    ],
+    records: [
+      {
+        id: "case-1",
+        caseNumber: "SYN-CASE-001",
+        originalCaseId: "case-0",
+        originalCaseNumber: "C-1000",
+        receivedAt: "2026-03-15T12:00:00.000Z",
+        reason: "Shade mismatch",
+        reasonKey: "shade_wrong",
+        recharged: true,
+        returnedToLab: false,
+        category: "crown_bridge",
+        source: "canonical",
+        doctorName: "Dr Stats",
+      },
+      {
+        id: "case-2",
+        caseNumber: "C-1002",
+        originalCaseId: null,
+        originalCaseNumber: null,
+        receivedAt: "2026-03-10T09:00:00.000Z",
+        reason: "Shade mismatch",
+        reasonKey: "shade_wrong",
+        recharged: true,
+        returnedToLab: true,
+        category: "crown_bridge",
+        source: "canonical",
+        doctorName: "Dr Stats",
+      },
+      {
+        id: "case-3",
+        caseNumber: "C-1003",
+        originalCaseId: null,
+        originalCaseNumber: null,
+        receivedAt: "2026-03-05T09:00:00.000Z",
+        reason: "Fit: Margins",
+        reasonKey: "fit_margins",
+        recharged: false,
+        returnedToLab: false,
+        category: "removable",
+        source: "canonical",
+        doctorName: "Dr Second",
+      },
+    ],
+  },
+};
+
 let summaryPayload: unknown = SUMMARY;
 let categoriesPayload: unknown = CATEGORIES;
 let revenuePayload: unknown = REVENUE;
 let weekdaysPayload: unknown = WEEKDAYS;
+// Independently controllable so tests can prove the Doctor dropdown is
+// sourced from the date-scoped options query, not the (possibly further
+// filtered) main remakes query.
+let remakesPayload: unknown = undefined;
+let remakesDoctorOptionsPayload: unknown = undefined;
 // Captures the params passed to the stats hooks so tests can assert the
 // category/material filters are threaded through.
 const seenSummaryParams: Array<Record<string, unknown>> = [];
 const seenCategoriesParams: Array<Record<string, unknown>> = [];
+const seenRemakesParams: Array<Record<string, unknown>> = [];
+const seenRemakesDoctorOptionsParams: Array<Record<string, unknown>> = [];
+let statsHookLoading = false;
+let statsHookError = false;
+let remakesHookLoading = false;
+let remakesHookError = false;
+
+afterEach(() => {
+  statsHookLoading = false;
+  statsHookError = false;
+  remakesHookLoading = false;
+  remakesHookError = false;
+});
 
 vi.mock("@workspace/api-client-react", async (importOriginal) => {
   const actual =
@@ -172,33 +274,42 @@ vi.mock("@workspace/api-client-react", async (importOriginal) => {
       seenSummaryParams.push(params);
       return {
         data: summaryPayload,
-        isLoading: false,
-        isError: false,
+        isLoading: statsHookLoading,
+        isError: statsHookError,
       };
     },
     useGetStatsCaseCategories: (params: Record<string, unknown>) => {
       seenCategoriesParams.push(params);
       return {
         data: categoriesPayload,
-        isLoading: false,
-        isError: false,
+        isLoading: statsHookLoading,
+        isError: statsHookError,
       };
     },
     useGetStatsRevenueSeries: () => ({
       data: revenuePayload,
-      isLoading: false,
-      isError: false,
+      isLoading: statsHookLoading,
+      isError: statsHookError,
     }),
     useGetStatsWeekdayVolume: () => ({
       data: weekdaysPayload,
-      isLoading: false,
-      isError: false,
+      isLoading: statsHookLoading,
+      isError: statsHookError,
     }),
-    useGetStatsRemakes: () => ({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    }),
+    useGetStatsRemakes: (
+      params: Record<string, unknown>,
+      options?: { query?: { queryKey?: unknown[] } },
+    ) => {
+      const key = options?.query?.queryKey;
+      const isDoctorOptionsQuery =
+        Array.isArray(key) && key.includes("doctor-options");
+      if (isDoctorOptionsQuery) {
+        seenRemakesDoctorOptionsParams.push(params);
+        return { data: remakesDoctorOptionsPayload, isLoading: remakesHookLoading, isError: remakesHookError };
+      }
+      seenRemakesParams.push(params);
+      return { data: remakesPayload, isLoading: remakesHookLoading, isError: remakesHookError };
+    },
   };
 });
 
@@ -242,15 +353,19 @@ vi.mock("recharts", async (importOriginal) => {
   };
 });
 
-import StatsPage from "@/pages/stats";
+import ReportsPage from "@/pages/reports";
 
+// Stats now lives as a tab inside the Reports page, so every test drives the
+// merged page with `?tab=stats` selected (the tab is read from the URL on
+// mount, exactly as an old /stats bookmark redirect delivers it).
 function renderPage() {
+  window.history.pushState({}, "", "/reports?tab=stats");
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={qc}>
-      <StatsPage />
+      <ReportsPage />
     </QueryClientProvider>,
   );
 }
@@ -285,6 +400,8 @@ describe("StatsPage", () => {
     expect(screen.getAllByText("Zirconia").length).toBeGreaterThan(0); // top category
     expect(screen.getAllByText("Monday").length).toBeGreaterThan(0);
     expect(screen.getByTestId("stats-materials-list")).toBeTruthy();
+    expect(screen.getByTestId("stats-casetypes-chart")).toBeTruthy();
+    expect(screen.getByTestId("stats-case-analytics-grid")).toBeTruthy();
     expect(screen.queryByTestId("stats-restricted")).toBeNull();
   });
 
@@ -338,7 +455,24 @@ describe("StatsPage", () => {
     });
     expect(screen.getByTestId("stats-categories-empty")).toBeTruthy();
     expect(screen.getByTestId("stats-materials-empty")).toBeTruthy();
+    expect(screen.getByTestId("stats-casetypes-empty")).toBeTruthy();
     expect(screen.getByTestId("stats-weekday-empty")).toBeTruthy();
+  });
+
+  it("keeps loading and error states legible inside the dashboard cards", async () => {
+    meMemberships = [OWNER_MEMBERSHIP];
+    statsHookLoading = true;
+    renderPage();
+    expect(await screen.findAllByText("Loading…")).not.toHaveLength(0);
+
+    cleanup();
+    statsHookLoading = false;
+    statsHookError = true;
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByTestId("stats-summary-error")).toBeTruthy();
+      expect(screen.getAllByText(/Could not load this chart/).length).toBeGreaterThan(0);
+    });
   });
 
   it("exports CSVs and the PDF report with the active filters threaded through", async () => {
@@ -450,8 +584,351 @@ describe("StatsPage", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByTestId("stats-restricted")).toBeTruthy();
+      expect(screen.getByTestId("reports-restricted")).toBeTruthy();
     });
     expect(screen.queryByTestId("stats-summary-cards")).toBeNull();
+    // The Stats tab itself is not offered without a billing role.
+    expect(screen.queryByRole("button", { name: "Stats" })).toBeNull();
+  });
+
+  it("renders the Stats dashboard inside the Reports page tab strip", async () => {
+    meMemberships = [OWNER_MEMBERSHIP];
+    summaryPayload = SUMMARY;
+    categoriesPayload = CATEGORIES;
+    revenuePayload = REVENUE;
+    weekdaysPayload = WEEKDAYS;
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("stats-summary-cards")).toBeTruthy();
+    });
+    // The merged page keeps its Reports identity and the full tab strip.
+    expect(screen.getByRole("heading", { name: "Reports" })).toBeTruthy();
+    for (const label of [
+      "Summary",
+      "Production",
+      "Sales",
+      "Forecast",
+      "Profit & Loss",
+      "Balance Sheet",
+      "Stats",
+    ]) {
+      expect(screen.getByRole("button", { name: label })).toBeTruthy();
+    }
+  });
+
+  it('switches to the Forecast tab in-page from "View full forecast"', async () => {
+    meMemberships = [OWNER_MEMBERSHIP];
+    summaryPayload = SUMMARY;
+    categoriesPayload = CATEGORIES;
+    revenuePayload = REVENUE;
+    weekdaysPayload = WEEKDAYS;
+    renderPage();
+
+    const link = await waitFor(() =>
+      screen.getByTestId("forecast-view-details-link"),
+    );
+    // It is an in-page tab switch, never a navigation away from Reports.
+    expect(link.tagName).toBe("BUTTON");
+    fireEvent.click(link);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("stats-summary-cards")).toBeNull();
+    });
+    expect(window.location.pathname).toBe("/reports");
+  });
+
+  it("keeps the Stats filters from clobbering the other tabs' date range", async () => {
+    meMemberships = [OWNER_MEMBERSHIP];
+    summaryPayload = SUMMARY;
+    categoriesPayload = CATEGORIES;
+    revenuePayload = REVENUE;
+    weekdaysPayload = WEEKDAYS;
+    renderPage();
+
+    // The Stats tab owns its own filter bar (the shared Reports header
+    // controls step aside for it), so this picker belongs to Stats.
+    await waitFor(() => screen.getByTestId("stats-groupby-select"));
+    fireEvent.change(screen.getByTestId("date-range-preset"), {
+      target: { value: "year" },
+    });
+    await waitFor(() => {
+      const last = seenSummaryParams[seenSummaryParams.length - 1]!;
+      expect(new Date(last["dateFrom"] as string).getMonth()).toBe(0);
+    });
+    fireEvent.change(screen.getByTestId("stats-groupby-select"), {
+      target: { value: "year" },
+    });
+    const statsUrl = new URLSearchParams(window.location.search);
+    expect(statsUrl.get("tab")).toBe("stats");
+    expect(statsUrl.get("stats-preset")).toBe("year");
+    expect(statsUrl.get("stats-groupBy")).toBe("year");
+    expect(statsUrl.get("preset")).toBe("month");
+
+    // Switching to a finance tab reveals the shared header range, which the
+    // Stats filter must not have moved off its own default (this month).
+    fireEvent.click(screen.getByRole("button", { name: "Summary" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("stats-groupby-select")).toBeNull();
+    });
+    expect(
+      (screen.getByTestId("date-range-preset") as HTMLSelectElement).value,
+    ).toBe("month");
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe("summary");
+    fireEvent.click(screen.getByRole("button", { name: "Stats" }));
+    await waitFor(() => expect((screen.getByTestId("stats-groupby-select") as HTMLSelectElement).value).toBe("year"));
+    expect((screen.getByTestId("date-range-preset") as HTMLSelectElement).value).toBe("year");
+  });
+});
+
+describe("Remake Records filters", () => {
+  function setBaseline() {
+    meMemberships = [OWNER_MEMBERSHIP];
+    summaryPayload = SUMMARY;
+    categoriesPayload = CATEGORIES;
+    revenuePayload = REVENUE;
+    weekdaysPayload = WEEKDAYS;
+    remakesPayload = REMAKES;
+    remakesDoctorOptionsPayload = REMAKES;
+    seenSummaryParams.length = 0;
+    seenCategoriesParams.length = 0;
+    seenRemakesParams.length = 0;
+    seenRemakesDoctorOptionsParams.length = 0;
+  }
+
+  it("renders the remake summary and lower report sections as separate visual panels", async () => {
+    setBaseline();
+    renderPage();
+
+    await waitFor(() => screen.getByTestId("stats-remakes-summary"));
+    expect(screen.getByTestId("stats-remakes-total").textContent).toBe("3");
+    for (const title of [
+      "Remake reasons",
+      "Remake trend",
+      "By type",
+      "By doctor",
+      "Remake records",
+    ]) {
+      expect(screen.getByRole("heading", { name: title })).toBeTruthy();
+    }
+
+    const reasonBars = within(screen.getByTestId("stats-remakes-reasons"));
+    expect(reasonBars.getByRole("img", { name: "2 remakes" })).toBeTruthy();
+    expect(reasonBars.getByRole("img", { name: "1 remake" })).toBeTruthy();
+    expect(reasonBars.getByText("2", { exact: true })).toBeTruthy();
+    expect(reasonBars.getByText("1", { exact: true })).toBeTruthy();
+    expect(screen.getByTestId("stats-remakes-records").textContent).toContain("SYN-CASE-001");
+  });
+
+  it("shows a compact remake error state when the report is unavailable", async () => {
+    setBaseline();
+    remakesHookError = true;
+    renderPage();
+
+    expect(await screen.findByText("Could not load remakes.")).toBeTruthy();
+    expect(screen.queryByTestId("stats-remakes-summary")).toBeNull();
+  });
+
+  it("labels the existing category filter as a remake-type filter", async () => {
+    setBaseline();
+    renderPage();
+
+    const typeSelect = await waitFor(
+      () => screen.getByTestId("stats-remakes-type-select") as HTMLSelectElement,
+    );
+    expect(typeSelect.getAttribute("aria-label")).toBe("Remake type");
+    expect(Array.from(typeSelect.options).map((o) => o.textContent)).toEqual([
+      "All types",
+      "Crown & Bridge",
+      "Removable",
+      "Implant",
+    ]);
+  });
+
+  it("populates the Doctor filter from the date-scoped options query, not the (possibly further-filtered) main query", async () => {
+    setBaseline();
+    // Simulate a reason filter already narrowing the main query's byDoctor
+    // down to one doctor, while the options query (no reason filter) still
+    // sees both — the dropdown must reflect the latter.
+    remakesPayload = {
+      ok: true,
+      data: { ...REMAKES.data, byDoctor: [{ doctorName: "Dr Stats", count: 2 }] },
+    };
+    remakesDoctorOptionsPayload = REMAKES;
+    renderPage();
+
+    const doctorSelect = await waitFor(
+      () => screen.getByTestId("stats-remakes-doctor-select") as HTMLSelectElement,
+    );
+    const labels = Array.from(doctorSelect.options).map((o) => o.textContent);
+    expect(labels).toEqual(["All doctors", "Dr Stats", "Dr Second"]);
+  });
+
+  it("threads the selected doctor into the remakes query but not the doctor-options query", async () => {
+    setBaseline();
+    renderPage();
+
+    const doctorSelect = await waitFor(
+      () => screen.getByTestId("stats-remakes-doctor-select") as HTMLSelectElement,
+    );
+    seenRemakesParams.length = 0;
+    seenRemakesDoctorOptionsParams.length = 0;
+    fireEvent.change(doctorSelect, { target: { value: "Dr Second" } });
+
+    await waitFor(() => {
+      const last = seenRemakesParams[seenRemakesParams.length - 1];
+      expect(last?.["doctorName"]).toBe("Dr Second");
+    });
+    expect(
+      seenRemakesDoctorOptionsParams.every((p) => p["doctorName"] === undefined),
+    ).toBe(true);
+  });
+
+  it("scopes the date-range preset to the remakes queries without changing the page-wide Stats range", async () => {
+    setBaseline();
+    renderPage();
+
+    await waitFor(() =>
+      screen.getByTestId("stats-remakes-date-preset"),
+    );
+    const firstSummary = seenSummaryParams[0]!;
+    seenRemakesParams.length = 0;
+    seenRemakesDoctorOptionsParams.length = 0;
+
+    fireEvent.change(screen.getByTestId("stats-remakes-date-preset"), {
+      target: { value: "year" },
+    });
+
+    await waitFor(() => {
+      expect(seenRemakesParams.length).toBeGreaterThan(0);
+    });
+    const lastRemakes = seenRemakesParams[seenRemakesParams.length - 1]!;
+    const lastDoctorOptions =
+      seenRemakesDoctorOptionsParams[seenRemakesDoctorOptionsParams.length - 1]!;
+    const from = new Date(lastRemakes["dateFrom"] as string);
+    expect(from.getMonth()).toBe(0);
+    expect(from.getDate()).toBe(1);
+    expect(from.getFullYear()).toBe(new Date().getFullYear());
+    // Both remake queries move together...
+    expect(lastDoctorOptions["dateFrom"]).toBe(lastRemakes["dateFrom"]);
+    expect(lastDoctorOptions["dateTo"]).toBe(lastRemakes["dateTo"]);
+    // ...but the rest of the Stats page's date range is untouched.
+    const lastSummary = seenSummaryParams[seenSummaryParams.length - 1]!;
+    expect(lastSummary["dateFrom"]).toBe(firstSummary["dateFrom"]);
+    expect(lastSummary["dateTo"]).toBe(firstSummary["dateTo"]);
+  });
+
+  it("supports a custom start/end date range", async () => {
+    setBaseline();
+    renderPage();
+
+    const presetSelect = await waitFor(
+      () => screen.getByTestId("stats-remakes-date-preset") as HTMLSelectElement,
+    );
+    fireEvent.change(presetSelect, { target: { value: "custom" } });
+
+    const fromInput = await waitFor(
+      () => screen.getByTestId("stats-remakes-date-from") as HTMLInputElement,
+    );
+    const toInput = screen.getByTestId("stats-remakes-date-to") as HTMLInputElement;
+
+    fireEvent.change(fromInput, { target: { value: "2026-01-05" } });
+    fireEvent.blur(fromInput);
+    fireEvent.change(toInput, { target: { value: "2026-01-20" } });
+    fireEvent.blur(toInput);
+
+    await waitFor(() => {
+      const last = seenRemakesParams[seenRemakesParams.length - 1]!;
+      expect(last["dateFrom"]).toBe(new Date(2026, 0, 5).toISOString());
+      expect(last["dateTo"]).toBe(
+        new Date(2026, 0, 20, 23, 59, 59, 999).toISOString(),
+      );
+    });
+  });
+
+  it("combines date, doctor, and type filters into a single remakes query", async () => {
+    setBaseline();
+    renderPage();
+    await waitFor(() => screen.getByTestId("stats-remakes-doctor-select"));
+    seenRemakesParams.length = 0;
+
+    fireEvent.change(screen.getByTestId("stats-remakes-date-preset"), {
+      target: { value: "year" },
+    });
+    fireEvent.change(screen.getByTestId("stats-remakes-doctor-select"), {
+      target: { value: "Dr Second" },
+    });
+    fireEvent.change(screen.getByTestId("stats-remakes-type-select"), {
+      target: { value: "crown_bridge" },
+    });
+
+    await waitFor(() => {
+      const last = seenRemakesParams[seenRemakesParams.length - 1]!;
+      expect(last["doctorName"]).toBe("Dr Second");
+      expect(last["remakeCategory"]).toBe("crown_bridge");
+    });
+    const last = seenRemakesParams[seenRemakesParams.length - 1]!;
+    const from = new Date(last["dateFrom"] as string);
+    expect(from.getMonth()).toBe(0);
+    expect(from.getDate()).toBe(1);
+  });
+
+  it('shows "Clear filters" once any remake filter is active, and it resets date, doctor, type, and reason together', async () => {
+    setBaseline();
+    renderPage();
+
+    await waitFor(() => screen.getByTestId("stats-remakes-doctor-select"));
+    expect(screen.queryByText("Clear filters")).toBeNull();
+
+    fireEvent.change(screen.getByTestId("stats-remakes-date-preset"), {
+      target: { value: "year" },
+    });
+    fireEvent.change(screen.getByTestId("stats-remakes-doctor-select"), {
+      target: { value: "Dr Second" },
+    });
+    fireEvent.change(screen.getByLabelText("Reason"), {
+      target: { value: "shade_wrong" },
+    });
+
+    const clearBtn = await screen.findByText("Clear filters");
+    fireEvent.click(clearBtn);
+
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId("stats-remakes-date-preset") as HTMLSelectElement).value,
+      ).toBe("month");
+    });
+    expect(
+      (screen.getByTestId("stats-remakes-doctor-select") as HTMLSelectElement).value,
+    ).toBe("");
+    expect((screen.getByLabelText("Reason") as HTMLSelectElement).value).toBe("");
+    expect(screen.queryByText("Clear filters")).toBeNull();
+  });
+
+  it("exports exactly the rows currently shown in the remake records table", async () => {
+    setBaseline();
+    let capturedBlob: Blob | undefined;
+    const createObjectURL = vi.fn((b: Blob) => {
+      capturedBlob = b;
+      return "blob:mock";
+    });
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal(
+      "URL",
+      Object.assign(Object.create(URL), { createObjectURL, revokeObjectURL }),
+    );
+
+    renderPage();
+    const exportBtn = await screen.findByText("Export CSV");
+    fireEvent.click(exportBtn);
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    const csvText = await capturedBlob!.text();
+    const lines = csvText.trim().split("\r\n");
+    expect(lines.length).toBe(1 + REMAKES.data.records.length);
+    for (const rec of REMAKES.data.records) {
+      expect(csvText).toContain(rec.caseNumber);
+    }
+    vi.unstubAllGlobals();
   });
 });

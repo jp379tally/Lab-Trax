@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import RegisterPage from "@/pages/finance/register";
 import type { BankAccount, BankTransaction } from "@/lib/types";
@@ -63,6 +63,10 @@ function rowFor(payee: string): HTMLTableRowElement {
 }
 
 const SELECTED_CLASS = "bg-sky-100";
+const timingSensitiveRepeats = Number.parseInt(
+  process.env.DESKTOP_TIMING_SENSITIVE_REPEATS ?? "0",
+  10,
+);
 
 beforeEach(() => {
   // jsdom lacks these — the register relies on both.
@@ -93,13 +97,17 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("register keyboard navigation", () => {
+describe("register keyboard navigation", { repeats: timingSensitiveRepeats }, () => {
   it("moves the selection with Up/Down, opens the editor with Enter, and clears with Esc", async () => {
     const Wrapper = makeAuthWrapper("/finance/register");
     render(<RegisterPage />, { wrapper: Wrapper });
 
     // Rows arrive from the stubbed transactions query.
     await waitFor(() => expect(screen.getByText("Alpha")).toBeTruthy());
+    // The rows render from an effect-driven query update; flush the following
+    // passive effects before dispatching a document-level keyboard event so
+    // the navigation listener has the loaded rows in its closure.
+    await act(async () => {});
 
     // Nothing selected initially.
     expect(rowFor("Alpha").className).not.toContain(SELECTED_CLASS);
@@ -133,6 +141,7 @@ describe("register keyboard navigation", () => {
     render(<RegisterPage />, { wrapper: Wrapper });
 
     await waitFor(() => expect(screen.getByText("Alpha")).toBeTruthy());
+    await act(async () => {});
 
     const searchBox = screen.getByPlaceholderText("Search payee, memo, check #…");
     fireEvent.keyDown(searchBox, { key: "ArrowDown" });

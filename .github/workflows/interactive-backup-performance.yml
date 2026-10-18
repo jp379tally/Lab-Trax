@@ -1,0 +1,99 @@
+name: Isolated backup performance
+
+on:
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      approve_baseline:
+        description: "Explicitly approve this synthetic run as the next baseline (review its report afterward)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: isolated-backup-performance
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      LABTRAX_LATENCY_RUNNER: ubuntu-24.04
+      LABTRAX_LATENCY_POSTGRES_MAJOR: "16"
+      LABTRAX_LATENCY_REPORT_DIR: ${{ github.workspace }}/generated-artifacts/interactive-latency
+      LABTRAX_LATENCY_APPROVE_BASELINE: ${{ github.event_name == 'workflow_dispatch' && inputs.approve_baseline && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install benchmark dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16 postgresql-client-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - name: Check reporting logic and workflow structure
+        run: |
+          node --test scripts/latency-report.test.mjs
+          pnpm --filter @workspace/scripts run validate-workflows
+      - name: Download latest explicitly approved baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p generated-artifacts/baseline
+          # Baselines are immutable artifacts, not caches automatically replaced
+          # by the last run. Scope to this workflow and the repository default
+          # branch so manual branch experiments cannot replace the reference.
+          artifact_id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name == "interactive-performance-baseline" and .expired == false) | .id' \
+            | while read -r id; do
+                run_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" --jq '.workflow_run.id')"
+                valid="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
+                  --jq 'select(.path == ".github/workflows/interactive-backup-performance.yml" and .conclusion == "success") | .head_branch')"
+                if [ "$valid" = "${{ github.event.repository.default_branch }}" ]; then
+                  echo "$id"; break
+                fi
+              done)"
+          if [ -n "$artifact_id" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > generated-artifacts/baseline.zip
+            unzip -q generated-artifacts/baseline.zip -d generated-artifacts/baseline
+            echo "LABTRAX_LATENCY_BASELINE=$GITHUB_WORKSPACE/generated-artifacts/baseline/report.json" >> "$GITHUB_ENV"
+          else
+            echo "No approved baseline. Report will be inconclusive unless explicitly bootstrapping."
+          fi
+      - name: Run isolated production-scale synthetic distributions
+        run: bash scripts/run-isolated-interactive-latency.sh --report
+      - name: Add readable report to run summary
+        if: always()
+        run: |
+          if [ -f "$LABTRAX_LATENCY_REPORT_DIR/report.md" ]; then
+            cat "$LABTRAX_LATENCY_REPORT_DIR/report.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Benchmark incomplete. See failing step; no valid distribution report was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Save report and raw timing samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interactive-performance-report
+          path: generated-artifacts/interactive-latency/
+          retention-days: 90
+          if-no-files-found: warn
+      - name: Save explicitly approved baseline
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.approve_baseline && github.ref_name == github.event.repository.default_branch
+        uses: actions/upload-artifact@v4
+        with:
+          name: interactive-performance-baseline
+          path: generated-artifacts/interactive-latency/report.json
+          retention-days: 90
+          if-no-files-found: error

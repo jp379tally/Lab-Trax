@@ -151,7 +151,7 @@ describe("Customer Center — legacy/providerless doctor bucket", () => {
     );
     await waitFor(() =>
       expect(
-        apiFetchMock.mock.calls.some((c) => c[0] === "/cases"),
+        apiFetchMock.mock.calls.some((c) => c[0] === "/cases/customer-center-summary"),
       ).toBe(true),
     );
 

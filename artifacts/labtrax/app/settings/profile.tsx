@@ -9,18 +9,23 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Keyboard,
 } from "react-native";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import { Ionicons } from "@expo/vector-icons";
+import { formatAccountNumberForDisplay } from "@workspace/account-number";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell, SettingsSection } from "@/components/settings/SettingsRow";
-import { resilientFetch, getApiUrl, getAccessToken } from "@/lib/query-client";
-import { ME_QUERY_KEY } from "@/lib/auth-me";
+import { scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
+import { resilientFetch, getApiUrl, getAccessToken, loadTokens, refreshAndGetAccessToken } from "@/lib/query-client";
+import { ME_QUERY_KEY, useMe } from "@/lib/auth-me";
+import { useProfilePhoto } from "@/lib/use-profile-photo";
+import { useProfilePhotoUpload } from "@/lib/use-profile-photo-upload";
 
 interface MeUser {
   id?: string;
@@ -29,6 +34,7 @@ interface MeUser {
   firstName?: string | null;
   lastName?: string | null;
   email?: string | null;
+  emailVerifiedAt?: string | null;
   phone?: string | null;
   phoneVerifiedAt?: string | null;
   practiceName?: string | null;
@@ -66,16 +72,9 @@ export default function ProfileScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const qc = useQueryClient();
+  const scrollRef = useRef<ScrollView>(null);
 
-  const meQuery = useQuery<{ user?: MeUser; memberships?: unknown[] }>({
-    queryKey: ME_QUERY_KEY,
-    queryFn: async () => {
-      const res = await resilientFetch("/api/auth/me");
-      if (!res.ok) throw new Error("Could not load profile");
-      return res.json();
-    },
-    staleTime: 60_000,
-  });
+  const meQuery = useMe(true);
 
   const user = meQuery.data?.user as MeUser | undefined;
   const isAdmin = user?.role === "admin";
@@ -103,9 +102,19 @@ export default function ProfileScreen() {
   const [isVerifying, setIsVerifying] = useState(false);
   const resendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Email verification state
+  const [emailVerifyStep, setEmailVerifyStep] = useState<"idle" | "sending" | "otp">("idle");
+  const [emailOtpCode, setEmailOtpCode] = useState("");
+  const [emailOtpError, setEmailOtpError] = useState<string | null>(null);
+  const [emailResendCountdown, setEmailResendCountdown] = useState(0);
+  const [emailResending, setEmailResending] = useState(false);
+  const [isVerifyingEmail, setIsVerifyingEmail] = useState(false);
+  const emailResendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
     return () => {
       if (resendTimerRef.current) clearInterval(resendTimerRef.current);
+      if (emailResendTimerRef.current) clearInterval(emailResendTimerRef.current);
     };
   }, []);
 
@@ -122,6 +131,9 @@ export default function ProfileScreen() {
       setPhoneVerifyStep("idle");
       setOtpCode("");
       setOtpError(null);
+      setEmailVerifyStep("idle");
+      setEmailOtpCode("");
+      setEmailOtpError(null);
     }
   }, [user?.id]);
 
@@ -134,6 +146,15 @@ export default function ProfileScreen() {
     phone === user.phone
   );
 
+  // Same rule applied to email: verified only while the current input still
+  // matches the server-confirmed value.
+  const isEmailVerified = !!(
+    user?.emailVerifiedAt &&
+    user?.email &&
+    email.trim() !== "" &&
+    email === user.email
+  );
+
   function startResendTimer(seconds = 60) {
     setResendCountdown(seconds);
     if (resendTimerRef.current) clearInterval(resendTimerRef.current);
@@ -142,6 +163,21 @@ export default function ProfileScreen() {
         if (c <= 1) {
           clearInterval(resendTimerRef.current!);
           resendTimerRef.current = null;
+          return 0;
+        }
+        return c - 1;
+      });
+    }, 1000);
+  }
+
+  function startEmailResendTimer(seconds = 60) {
+    setEmailResendCountdown(seconds);
+    if (emailResendTimerRef.current) clearInterval(emailResendTimerRef.current);
+    emailResendTimerRef.current = setInterval(() => {
+      setEmailResendCountdown((c) => {
+        if (c <= 1) {
+          clearInterval(emailResendTimerRef.current!);
+          emailResendTimerRef.current = null;
           return 0;
         }
         return c - 1;
@@ -251,6 +287,108 @@ export default function ProfileScreen() {
     }
   }
 
+  async function handleSendEmailVerificationCode() {
+    const emailToVerify = email.trim();
+    if (!emailToVerify || !user?.id) return;
+    // When called as a resend (OTP panel already open), keep the panel visible
+    // throughout the request so errors surface inline and Cancel still works.
+    const isResend = emailVerifyStep === "otp";
+    if (isResend) {
+      setEmailResending(true);
+    } else {
+      setEmailVerifyStep("sending");
+    }
+    setEmailOtpError(null);
+    try {
+      // If email was edited, save it first so the server can bind the code to the user's account.
+      if (email !== (user?.email ?? "")) {
+        const saveRes = await resilientFetch(`/api/auth/users/${user.id}/profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ firstName, lastName, email, phone, practiceName, username }),
+        });
+        if (!saveRes.ok) {
+          const e = await saveRes.json().catch(() => ({}));
+          throw new Error((e as any)?.error || `Save failed (${saveRes.status})`);
+        }
+        qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      }
+      const codeRes = await resilientFetch("/api/send-email-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: emailToVerify }),
+      });
+      if (codeRes.status === 429) {
+        // Server throttled the request — start a countdown so the user knows
+        // when they can retry. Use the Retry-After header if present, otherwise
+        // default to 30 s (the server's cooldown window).
+        const ra = codeRes.headers.get("Retry-After");
+        const waitSecs = ra ? (parseInt(ra, 10) || 30) : 30;
+        startEmailResendTimer(waitSecs);
+        const e = await codeRes.json().catch(() => ({}));
+        setEmailOtpError((e as any)?.error || "Please wait before requesting another verification code.");
+        if (!isResend) setEmailVerifyStep("idle");
+        return;
+      }
+      if (!codeRes.ok) {
+        const e = await codeRes.json().catch(() => ({}));
+        throw new Error((e as any)?.error || "Failed to send verification code.");
+      }
+      setEmailVerifyStep("otp");
+      setEmailOtpCode("");
+      startEmailResendTimer();
+    } catch (err: unknown) {
+      setEmailOtpError((err as Error).message || "Failed to send verification code.");
+      // For a resend, stay in the OTP panel so the user sees the error inline
+      // and can retry or cancel. Only drop back to idle for the initial send.
+      if (!isResend) {
+        setEmailVerifyStep("idle");
+      }
+    } finally {
+      setEmailResending(false);
+    }
+  }
+
+  async function handleVerifyEmailOtp() {
+    if (!emailOtpCode.trim() || isVerifyingEmail) return;
+    setEmailOtpError(null);
+    setIsVerifyingEmail(true);
+    try {
+      const res = await resilientFetch("/api/verify-email-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), code: emailOtpCode.trim() }),
+      });
+      const result = await res.json() as { verified: boolean; error?: string };
+      if (!result.verified) {
+        setEmailOtpError(result.error || "Incorrect code. Please try again.");
+        return;
+      }
+      setEmailVerifyStep("idle");
+      setEmailOtpCode("");
+      if (emailResendTimerRef.current) {
+        clearInterval(emailResendTimerRef.current);
+        emailResendTimerRef.current = null;
+      }
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+    } catch (err: unknown) {
+      setEmailOtpError((err as Error).message || "Verification failed. Please try again.");
+    } finally {
+      setIsVerifyingEmail(false);
+    }
+  }
+
+  function cancelEmailVerify() {
+    setEmailVerifyStep("idle");
+    setEmailResending(false);
+    setEmailOtpCode("");
+    setEmailOtpError(null);
+    if (emailResendTimerRef.current) {
+      clearInterval(emailResendTimerRef.current);
+      emailResendTimerRef.current = null;
+    }
+  }
+
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!user?.id) throw new Error("Not signed in.");
@@ -267,6 +405,8 @@ export default function ProfileScreen() {
     onSuccess: async () => {
       const phoneChanged = phone !== (user?.phone ?? "");
       setSaved(true);
+      Keyboard.dismiss();
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
       qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
       setTimeout(() => setSaved(false), 2500);
       // Auto-start SMS verification when the phone number changes on save.
@@ -311,29 +451,7 @@ export default function ProfileScreen() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ME_QUERY_KEY }),
   });
 
-  const photoMutation = useMutation({
-    mutationFn: async (uri: string) => {
-      if (!user?.id) throw new Error("Not signed in.");
-      return new Promise<void>((resolve, reject) => {
-        const filename = uri.split("/").pop() ?? "photo.jpg";
-        const ext = filename.split(".").pop()?.toLowerCase() ?? "jpeg";
-        const mime = ext === "png" ? "image/png" : "image/jpeg";
-        const base = getApiUrl().replace(/\/api\/?$/, "");
-        const url = `${base}/api/auth/users/${user.id}/profile-photo`;
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", url);
-        xhr.onload = () => (xhr.status < 300 ? resolve() : reject(new Error(`Upload failed (${xhr.status})`)));
-        xhr.onerror = () => reject(new Error("Network error"));
-        const token = getAccessToken();
-        if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-        const fd = new FormData();
-        fd.append("photo", { uri, name: filename, type: mime } as unknown as Blob);
-        xhr.send(fd);
-      });
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ME_QUERY_KEY }),
-    onError: (err: Error) => Alert.alert("Photo upload failed", err.message),
-  });
+  const { pickAndUploadPhoto, isUploading: isPhotoUploading } = useProfilePhotoUpload(user?.id);
 
   const logoPlacementsMutation = useMutation({
     mutationFn: async (opts: { placements: string[]; logoPdfSize: string }) => {
@@ -356,28 +474,6 @@ export default function ProfileScreen() {
     },
     onError: (err: Error) => Alert.alert("Could not save logo settings", err.message),
   });
-
-  async function pickPhoto() {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert("Permission required", "Allow access to your photo library to upload a profile photo.");
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 1,
-    });
-    if (!result.canceled && result.assets[0]) {
-      const resized = await ImageManipulator.manipulateAsync(
-        result.assets[0].uri,
-        [{ resize: { width: 600, height: 600 } }],
-        { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
-      );
-      photoMutation.mutate(resized.uri);
-    }
-  }
 
   async function pickLogo() {
     const orgId = user?.practiceOrganizationId;
@@ -403,33 +499,58 @@ export default function ProfileScreen() {
     const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "svg" ? "image/svg+xml" : ext === "webp" ? "image/webp" : "image/png";
 
     setLogoUploading(true);
-    const base = getApiUrl().replace(/\/api\/?$/, "");
-    const url = `${base}/api/organizations/${orgId}/logo`;
-    const xhr = new XMLHttpRequest();
-    logoXhrRef.current = xhr;
-    xhr.open("POST", url);
-    xhr.onload = () => {
-      setLogoUploading(false);
-      if (xhr.status < 300) {
-        qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
-      } else {
-        try {
-          const e = JSON.parse(xhr.responseText);
-          Alert.alert("Logo upload failed", e?.error || `Status ${xhr.status}`);
-        } catch {
-          Alert.alert("Logo upload failed", `Status ${xhr.status}`);
-        }
-      }
-    };
-    xhr.onerror = () => {
-      setLogoUploading(false);
-      Alert.alert("Logo upload failed", "Network error.");
-    };
-    const logoToken = getAccessToken();
-    if (logoToken) xhr.setRequestHeader("Authorization", `Bearer ${logoToken}`);
+    await loadTokens();
+    const url = new URL(`/api/organizations/${orgId}/logo`, getApiUrl()).toString();
     const fd = new FormData();
     fd.append("file", { uri, name: filename, type: mime } as unknown as Blob);
-    xhr.send(fd);
+
+    const doLogoUpload = (token: string | null) =>
+      new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        logoXhrRef.current = xhr;
+        xhr.open("POST", url);
+        xhr.onload = () => {
+          if (xhr.status < 300) {
+            resolve();
+          } else {
+            const err: any = new Error(`Status ${xhr.status}`);
+            err.status = xhr.status;
+            err.responseText = xhr.responseText;
+            reject(err);
+          }
+        };
+        xhr.onerror = () => reject(new Error("Network error"));
+        if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+        xhr.send(fd);
+      });
+
+    try {
+      let token = getAccessToken();
+      try {
+        await doLogoUpload(token);
+      } catch (err: any) {
+        if (err?.status === 401) {
+          token = await refreshAndGetAccessToken();
+          await doLogoUpload(token);
+        } else {
+          throw err;
+        }
+      }
+      setLogoUploading(false);
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+    } catch (err: any) {
+      setLogoUploading(false);
+      if (err?.responseText) {
+        try {
+          const e = JSON.parse(err.responseText);
+          Alert.alert("Logo upload failed", e?.error || err.message);
+        } catch {
+          Alert.alert("Logo upload failed", err.message);
+        }
+      } else {
+        Alert.alert("Logo upload failed", err.message ?? "Unknown error");
+      }
+    }
   }
 
   function togglePlacement(key: string) {
@@ -441,16 +562,20 @@ export default function ProfileScreen() {
   const currentStatus = WORK_STATUS_OPTIONS.find((s) => s.value === user?.workStatus) ?? WORK_STATUS_OPTIONS[0];
   const fullName = [user?.firstName, user?.lastName].filter(Boolean).join(" ");
   const avatarLetter = (fullName || user?.username || "A").charAt(0).toUpperCase();
-  const photoUrl = user?.profilePhotoUrl
-    ? `${getApiUrl().replace(/\/api\/?$/, "")}${user.profilePhotoUrl}`
-    : null;
+  const { photoUrl, onPhotoError } = useProfilePhoto(user);
   const logoUrl = user?.practiceLogoUrl
     ? `${getApiUrl().replace(/\/api\/?$/, "")}${user.practiceLogoUrl}`
     : null;
 
   return (
     <ScreenShell title="Profile" subtitle="Your personal info" onBack={() => router.back()} insetTop={insets.top}>
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView
+        ref={scrollRef}
+        testID="profile-scroll-view"
+        contentContainerStyle={styles.body}
+        keyboardDismissMode={scrollKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
+      >
         {meQuery.isLoading ? (
           <ActivityIndicator color={colors.tint} style={{ marginTop: Spacing.xxl }} />
         ) : (
@@ -464,16 +589,16 @@ export default function ProfileScreen() {
             {/* Avatar / photo section */}
             <SettingsSection title="Profile photo">
               <View style={styles.avatarSection}>
-                <Pressable onPress={pickPhoto} disabled={photoMutation.isPending} style={styles.avatarWrap}>
+                <Pressable onPress={pickAndUploadPhoto} disabled={isPhotoUploading} style={styles.avatarWrap}>
                   {photoUrl ? (
-                    <Image source={{ uri: photoUrl }} style={styles.avatarImg} />
+                    <Image key={photoUrl} source={{ uri: photoUrl }} style={styles.avatarImg} onError={onPhotoError} />
                   ) : (
                     <View style={[styles.avatarFallback, { backgroundColor: colors.tint + "20" }]}>
                       <Text style={[styles.avatarLetter, { color: colors.tint }]}>{avatarLetter}</Text>
                     </View>
                   )}
                   <View style={[styles.avatarBadge, { backgroundColor: colors.tint }]}>
-                    {photoMutation.isPending
+                    {isPhotoUploading
                       ? <ActivityIndicator size={10} color="#fff" />
                       : <Ionicons name="camera" size={12} color="#fff" />}
                   </View>
@@ -481,9 +606,9 @@ export default function ProfileScreen() {
                 <View style={styles.avatarInfo}>
                   <Text style={[styles.avatarName, { color: colors.text }]}>{fullName || user?.username || "—"}</Text>
                   <Text style={[styles.avatarSub, { color: colors.textSecondary }]}>{user?.email ?? ""}</Text>
-                  <Pressable onPress={pickPhoto} disabled={photoMutation.isPending}>
+                  <Pressable onPress={pickAndUploadPhoto} disabled={isPhotoUploading}>
                     <Text style={[styles.avatarLink, { color: colors.tint }]}>
-                      {photoMutation.isPending ? "Uploading…" : photoUrl ? "Change photo" : "Upload photo"}
+                      {isPhotoUploading ? "Uploading…" : photoUrl ? "Change photo" : "Upload photo"}
                     </Text>
                   </Pressable>
                 </View>
@@ -538,17 +663,117 @@ export default function ProfileScreen() {
                 />
               </View>
               <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
-                <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Email</Text>
+                <View style={styles.phoneRow}>
+                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Email</Text>
+                  {isEmailVerified ? (
+                    <View style={[styles.verifiedBadge, { backgroundColor: colors.success + "18", borderColor: colors.success + "40" }]}>
+                      <Ionicons name="checkmark-circle" size={12} color={colors.success} />
+                      <Text style={[styles.verifiedText, { color: colors.success }]}>Verified</Text>
+                    </View>
+                  ) : email.trim() !== "" && emailVerifyStep === "idle" ? (
+                    <View style={[styles.verifiedBadge, { backgroundColor: "#F59E0B18", borderColor: "#F59E0B40" }]}>
+                      <Ionicons name="alert-circle-outline" size={12} color="#F59E0B" />
+                      <Text style={[styles.verifiedText, { color: "#F59E0B" }]}>Not verified</Text>
+                    </View>
+                  ) : null}
+                </View>
                 <TextInput
                   value={email}
-                  onChangeText={setEmail}
+                  onChangeText={(v) => {
+                    setEmail(v);
+                    if (emailVerifyStep !== "idle") cancelEmailVerify();
+                  }}
                   keyboardType="email-address"
                   autoCapitalize="none"
-                  style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
+                  editable={emailVerifyStep === "idle"}
+                  style={[
+                    styles.input,
+                    { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface },
+                    emailVerifyStep !== "idle" && { opacity: 0.6 },
+                  ]}
                   placeholderTextColor={colors.textTertiary}
                   placeholder="you@example.com"
                 />
+
+                {/* Verify button — shown when email is set and not yet verified (or edited) */}
+                {emailVerifyStep === "idle" && email.trim() !== "" && !isEmailVerified && (
+                  <Pressable
+                    style={[
+                      styles.verifyBtn,
+                      { borderColor: colors.tint, backgroundColor: colors.tint + "12" },
+                      emailResendCountdown > 0 && { opacity: 0.5 },
+                    ]}
+                    onPress={emailResendCountdown > 0 ? undefined : handleSendEmailVerificationCode}
+                    disabled={emailResendCountdown > 0}
+                  >
+                    <Ionicons name="shield-checkmark-outline" size={14} color={colors.tint} />
+                    <Text style={[styles.verifyBtnText, { color: colors.tint }]}>
+                      {emailResendCountdown > 0 ? `Try again in ${emailResendCountdown}s` : "Verify"}
+                    </Text>
+                  </Pressable>
+                )}
+
+                {/* Sending spinner */}
+                {emailVerifyStep === "sending" && (
+                  <View style={styles.verifyRow}>
+                    <ActivityIndicator size={14} color={colors.tint} />
+                    <Text style={[styles.verifyHint, { color: colors.textSecondary }]}>Sending code…</Text>
+                  </View>
+                )}
+
+                {emailOtpError && emailVerifyStep === "idle" && (
+                  <Text style={[styles.otpError, { color: colors.error }]}>{emailOtpError}</Text>
+                )}
               </View>
+
+              {/* OTP entry — rendered below the email row */}
+              {emailVerifyStep === "otp" && (
+                <View style={[styles.otpSection, { borderTopColor: colors.border, backgroundColor: colors.surfaceAlt }]}>
+                  <Text style={[styles.otpTitle, { color: colors.text }]}>Enter verification code</Text>
+                  <Text style={[styles.otpSubtitle, { color: colors.textSecondary }]}>
+                    We sent a 6-digit code to {email}. Enter it below to verify your email address.
+                  </Text>
+                  <TextInput
+                    value={emailOtpCode}
+                    onChangeText={setEmailOtpCode}
+                    keyboardType="number-pad"
+                    maxLength={6}
+                    placeholder="000000"
+                    placeholderTextColor={colors.textTertiary}
+                    style={[styles.otpInput, { color: colors.text, borderColor: colors.tint, backgroundColor: colors.surface }]}
+                    autoFocus
+                  />
+                  {emailOtpError && (
+                    <Text style={[styles.otpError, { color: colors.error }]}>{emailOtpError}</Text>
+                  )}
+                  <View style={styles.otpActions}>
+                    <Pressable
+                      testID="confirm-email-otp-btn"
+                      style={[styles.otpConfirmBtn, { backgroundColor: colors.tint }]}
+                      onPress={emailOtpCode.trim().length !== 6 || isVerifyingEmail ? undefined : handleVerifyEmailOtp}
+                      disabled={emailOtpCode.trim().length !== 6 || isVerifyingEmail}
+                    >
+                      <Text style={styles.otpConfirmText}>{isVerifyingEmail ? "Verifying…" : "Confirm"}</Text>
+                    </Pressable>
+                    <Pressable
+                      testID="resend-email-otp-btn"
+                      style={[styles.otpSecondaryBtn, { borderColor: colors.border }]}
+                      onPress={emailResendCountdown > 0 || emailResending ? undefined : handleSendEmailVerificationCode}
+                      disabled={emailResendCountdown > 0 || emailResending}
+                    >
+                      <Text style={[styles.otpSecondaryText, { color: emailResendCountdown > 0 || emailResending ? colors.textTertiary : colors.tint }]}>
+                        {emailResending ? "Sending…" : emailResendCountdown > 0 ? `Resend (${emailResendCountdown}s)` : "Resend"}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.otpSecondaryBtn, { borderColor: colors.border }]}
+                      onPress={cancelEmailVerify}
+                    >
+                      <Text style={[styles.otpSecondaryText, { color: colors.textSecondary }]}>Cancel</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
 
               {/* Phone field with verification */}
               <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
@@ -698,7 +923,9 @@ export default function ProfileScreen() {
               {user?.platformAccountNumber ? (
                 <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
                   <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Account number</Text>
-                  <Text style={[styles.readOnly, { color: colors.textSecondary }]}>{user.platformAccountNumber}</Text>
+                  <Text style={[styles.readOnly, { color: colors.textSecondary }]}>
+                    {formatAccountNumberForDisplay(user.platformAccountNumber)}
+                  </Text>
                 </View>
               ) : null}
             </SettingsSection>
@@ -816,10 +1043,10 @@ export default function ProfileScreen() {
               style={[
                 styles.saveBtn,
                 { backgroundColor: colors.tint },
-                (saveMutation.isPending || phoneVerifyStep === "otp") && { opacity: 0.6 },
+                (saveMutation.isPending || phoneVerifyStep === "otp" || emailVerifyStep === "otp") && { opacity: 0.6 },
               ]}
               onPress={() => saveMutation.mutate()}
-              disabled={saveMutation.isPending || phoneVerifyStep === "otp"}
+              disabled={saveMutation.isPending || phoneVerifyStep === "otp" || emailVerifyStep === "otp"}
             >
               <Text style={styles.saveBtnText}>
                 {saveMutation.isPending ? "Saving…" : "Save profile"}

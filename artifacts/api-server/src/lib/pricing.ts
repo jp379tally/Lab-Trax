@@ -13,6 +13,7 @@ import {
   materialToPriceKey,
   normalizeMaterialName,
 } from "./material-mapping.js";
+import { resolveRestorationPriceKey } from "./restoration-pricing.js";
 
 export {
   DEFAULT_TIER_ITEMS,
@@ -108,6 +109,91 @@ export async function fetchLabItemLabels(
     out[row.priceKey] = row.label;
   }
   return out;
+}
+
+export interface ResolvedDiscountCatalogItem {
+  key: string;
+  label: string;
+  unitPrice: number;
+  isDiscount: true;
+}
+
+/**
+ * Resolve explicit fixed-amount discount items for invoice editors. These
+ * items intentionally live outside resolveAllPricesForContext so they can
+ * never be mistaken for case/restoration prices.
+ */
+export async function resolveDiscountItemsForContext(
+  ctx: ResolvedPriceContext,
+): Promise<ResolvedDiscountCatalogItem[]> {
+  const [labels, override, labOrg, tiers] = await Promise.all([
+    db.query.labItemLabels.findMany({
+      where: and(
+        eq(labItemLabels.labOrganizationId, ctx.labOrganizationId),
+        eq(labItemLabels.isDiscount, true),
+      ),
+    }),
+    findDoctorOverride(ctx.labOrganizationId, ctx.doctorName),
+    db.query.organizations.findFirst({
+      where: eq(organizations.id, ctx.labOrganizationId),
+      columns: { defaultDoctorTierName: true },
+    }),
+    db.query.pricingTiers.findMany({
+      where: eq(pricingTiers.labOrganizationId, ctx.labOrganizationId),
+    }),
+  ]);
+  let connectionTierName: string | null = null;
+  if (ctx.providerOrganizationId) {
+    const connection = await db.query.organizationConnections.findFirst({
+      where: and(
+        eq(organizationConnections.labOrganizationId, ctx.labOrganizationId),
+        eq(
+          organizationConnections.providerOrganizationId,
+          ctx.providerOrganizationId,
+        ),
+      ),
+    });
+    connectionTierName = connection?.tierName ?? null;
+  }
+  const sortedTiers = [...tiers].sort((a, b) => {
+    const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return at - bt;
+  });
+  const findTier = (name: string | null | undefined) =>
+    name
+      ? sortedTiers.find(
+          (tier) => tier.name.trim().toLowerCase() === name.trim().toLowerCase(),
+        )
+      : undefined;
+  const candidates = [
+    findTier(override?.tierName),
+    findTier(connectionTierName),
+    findTier(ctx.tierName),
+    findTier(labOrg?.defaultDoctorTierName),
+    findTier("Standard"),
+    sortedTiers[0],
+    ...sortedTiers,
+  ].filter(
+    (tier, index, all): tier is (typeof sortedTiers)[number] =>
+      !!tier && all.findIndex((candidate) => candidate?.id === tier.id) === index,
+  );
+  return labels.flatMap((row) => {
+    for (const tier of candidates) {
+      const amount = Number(
+        ((tier.pricesJson ?? {}) as Record<string, unknown>)[row.priceKey],
+      );
+      if (Number.isFinite(amount) && amount > 0) {
+        return [{
+          key: row.priceKey,
+          label: row.label,
+          unitPrice: amount,
+          isDiscount: true as const,
+        }];
+      }
+    }
+    return [];
+  });
 }
 
 /**
@@ -277,11 +363,13 @@ export async function resolveServerPrice(
   ctx: ResolvedPriceContext,
   material?: string | null,
   restorationType?: string | null,
+  restorationSubtype?: string | null,
 ): Promise<number | null> {
   const details = await resolveServerPriceWithSource(
     ctx,
     material,
     restorationType,
+    restorationSubtype,
   );
   return details ? details.amount : null;
 }
@@ -290,9 +378,24 @@ export async function resolveServerPriceWithSource(
   ctx: ResolvedPriceContext,
   material?: string | null,
   restorationType?: string | null,
+  restorationSubtype?: string | null,
 ): Promise<ResolvedPriceDetails | null> {
-  const key = materialToPriceKey(material, restorationType);
+  const key = await resolveRestorationPriceKey({
+    labOrganizationId: ctx.labOrganizationId,
+    material,
+    restorationType,
+    restorationSubtype,
+  });
   if (!key) return null;
+  const discountCatalogItem = await db.query.labItemLabels.findFirst({
+    where: and(
+      eq(labItemLabels.labOrganizationId, ctx.labOrganizationId),
+      eq(labItemLabels.priceKey, key),
+      eq(labItemLabels.isDiscount, true),
+    ),
+    columns: { id: true },
+  });
+  if (discountCatalogItem) return null;
 
   let doctorTierName: string | null = null;
 
@@ -691,7 +794,20 @@ export async function resolveAllPricesForContext(
   // 4. Resolve each known item key against the same priority chain
   //    used by resolveServerPriceWithSource.
   const defaultKeySet = new Set<string>(DEFAULT_TIER_ITEMS.map((i) => i.key));
-  const defaultRows: ResolvedItemRow[] = DEFAULT_TIER_ITEMS.map((item) => {
+  const discountKeys = new Set(
+    (
+      await db.query.labItemLabels.findMany({
+        where: and(
+          eq(labItemLabels.labOrganizationId, ctx.labOrganizationId),
+          eq(labItemLabels.isDiscount, true),
+        ),
+        columns: { priceKey: true },
+      })
+    ).map((row) => row.priceKey),
+  );
+  const defaultRows: ResolvedItemRow[] = DEFAULT_TIER_ITEMS
+    .filter((item) => !discountKeys.has(item.key))
+    .map((item) => {
     const key = item.key;
     if (overrideRow) {
       const prices = (overrideRow.pricesJson ?? {}) as Record<
@@ -800,7 +916,7 @@ export async function resolveAllPricesForContext(
   if (overrideRow) {
     const prices = (overrideRow.pricesJson ?? {}) as Record<string, unknown>;
     for (const [k, v] of Object.entries(prices)) {
-      if (!defaultKeySet.has(k)) {
+      if (!defaultKeySet.has(k) && !discountKeys.has(k)) {
         const n = Number(v);
         if (Number.isFinite(n) && n > 0) {
           customKeyMap.set(k, {
@@ -818,7 +934,11 @@ export async function resolveAllPricesForContext(
   for (const { tier, source } of candidateTiers) {
     const prices = (tier.pricesJson ?? {}) as Record<string, unknown>;
     for (const [k, v] of Object.entries(prices)) {
-      if (!defaultKeySet.has(k) && !customKeyMap.has(k)) {
+      if (
+        !defaultKeySet.has(k) &&
+        !discountKeys.has(k) &&
+        !customKeyMap.has(k)
+      ) {
         const n = Number(v);
         if (Number.isFinite(n) && n > 0) {
           customKeyMap.set(k, {

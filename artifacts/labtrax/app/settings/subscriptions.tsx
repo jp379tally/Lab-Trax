@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -9,21 +9,29 @@ import {
   Linking,
   Alert,
 } from "react-native";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell } from "@/components/settings/SettingsRow";
-import { resilientFetch, loadTokens, getAccessToken } from "@/lib/query-client";
+import {
+  resilientFetch,
+  loadTokens,
+  getAccessToken,
+  getApiUrl,
+} from "@/lib/query-client";
 
 type SubscriptionStatus =
+  | "free"
+  | "onboarding_pending"
   | "trialing"
   | "active"
   | "past_due"
   | "grace"
   | "locked"
+  | "deactivated"
   | "canceled"
   | "legacy_free";
 
@@ -38,6 +46,41 @@ interface SubscriptionEntitlement {
   billingInterval: "month" | "year" | null;
   cancelAtPeriodEnd: boolean;
   hasStripeSubscription: boolean;
+  subjectType?: string | null;
+  providerPlan?: string | null;
+  trialEndAt?: string | null;
+}
+
+interface BillingPlan {
+  id: string;
+  currency: string;
+  unitAmount: number | null;
+  interval: string | null;
+  productName: string | null;
+  productDescription: string | null;
+  planType: "lab" | "provider" | null;
+}
+
+export function filterRenewalPlans(
+  plans: BillingPlan[],
+  subjectType: string | null | undefined,
+  planType: "lab" | "provider" | null | undefined,
+): BillingPlan[] {
+  const wanted =
+    subjectType === "provider_org" ||
+    subjectType === "provider_user" ||
+    planType === "provider"
+      ? "provider"
+      : "lab";
+  return plans.filter((plan) => plan.planType === wanted);
+}
+
+export function subscriptionBillingReturnUrl(
+  checkout: "success" | "cancel",
+): string {
+  const url = new URL("api/billing/mobile-return", getApiUrl());
+  url.searchParams.set("checkout", checkout);
+  return url.href;
 }
 
 interface StripeInvoice {
@@ -66,6 +109,14 @@ const STATUS_META: Record<
   SubscriptionStatus,
   { label: string; color: string; bg: string; icon: string; description: string }
 > = {
+  free: {
+    label: "Free", color: "#64748B", bg: "#64748B20", icon: "eye-outline",
+    description: "Permanent read-only access to cases shared by approved partner labs. No card or renewal required.",
+  },
+  onboarding_pending: {
+    label: "Signup incomplete", color: "#F59E0B", bg: "#F59E0B20", icon: "time-outline",
+    description: "Your selected paid plan is not active until Stripe verifies card collection.",
+  },
   trialing: {
     label: "Free Trial",
     color: "#3B82F6",
@@ -95,11 +146,18 @@ const STATUS_META: Record<
     description: "Read-only access. Add a payment method to restore full access.",
   },
   locked: {
-    label: "Locked",
+    label: "Read-only",
     color: "#EF4444",
     bg: "#EF444420",
     icon: "lock-closed-outline",
-    description: "Your account is locked. Subscribe to restore access.",
+    description: "Your legacy subscription state is read-only. Renew to restore full access.",
+  },
+  deactivated: {
+    label: "Read-only",
+    color: "#EF4444",
+    bg: "#EF444420",
+    icon: "lock-closed-outline",
+    description: "Your account is deactivated and currently has read-only access.",
   },
   canceled: {
     label: "Canceled",
@@ -122,7 +180,7 @@ const EVENT_LABELS: Record<string, string> = {
   status_changed_to_active: "Subscription activated",
   status_changed_to_past_due: "Payment failed",
   status_changed_to_grace: "Entered grace period",
-  status_changed_to_locked: "Account locked",
+  status_changed_to_locked: "Read-only access started",
   status_changed_to_canceled: "Subscription canceled",
   checkout_completed: "Checkout completed",
   invoice_payment_succeeded: "Payment succeeded",
@@ -141,8 +199,8 @@ function formatDate(s: string | null | undefined) {
   if (!s) return "—";
   try {
     return new Date(s).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
+      month: "2-digit",
+      day: "2-digit",
       year: "numeric",
     });
   } catch {
@@ -189,6 +247,7 @@ export default function SubscriptionsScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const qc = useQueryClient();
+  const { checkout } = useLocalSearchParams<{ checkout?: string }>();
 
   const subQuery = useQuery({
     queryKey: ["billing", "subscription"],
@@ -224,6 +283,19 @@ export default function SubscriptionsScreen() {
       return body.events ?? [];
     },
     staleTime: 60_000,
+  });
+
+  const plansQuery = useQuery({
+    queryKey: ["billing", "plans"],
+    queryFn: async () => {
+      const headers = await getAuthHeaders();
+      const res = await resilientFetch("/api/billing/plans", { headers });
+      if (!res.ok) throw new Error(`Failed (${res.status})`);
+      const body = (await res.json()) as { ok: boolean; plans: BillingPlan[] };
+      return body.plans ?? [];
+    },
+    enabled: false,
+    staleTime: 5 * 60_000,
   });
 
   const portalMutation = useMutation({
@@ -292,18 +364,66 @@ export default function SubscriptionsScreen() {
       Alert.alert("Could not reactivate subscription", err.message),
   });
 
+  const checkoutMutation = useMutation({
+    mutationFn: async (priceId: string) => {
+      const headers = await getAuthHeaders();
+      const successUrl = subscriptionBillingReturnUrl("success");
+      const cancelUrl = subscriptionBillingReturnUrl("cancel");
+      const res = await resilientFetch("/api/billing/checkout-session", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ priceId, successUrl, cancelUrl }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        message?: string;
+        url?: string;
+      };
+      if (!res.ok || !body.url) {
+        throw new Error(body.error || body.message || `Failed (${res.status})`);
+      }
+      return body.url;
+    },
+    onSuccess: async (url) => {
+      const supported = await Linking.canOpenURL(url);
+      if (supported) {
+        await Linking.openURL(url);
+      } else {
+        Alert.alert("Could not start renewal", "Your device cannot open the secure checkout page.");
+      }
+    },
+    onError: (err: Error) =>
+      Alert.alert("Could not start renewal", err.message),
+  });
+
+  // A successful hosted checkout never grants access locally. Re-read the
+  // server entitlement when the deep-link return arrives; the status card and
+  // all access affordances remain read-only until that response says full.
+  useEffect(() => {
+    if (checkout !== "success" && checkout !== "cancel") return;
+    void qc.invalidateQueries({ queryKey: ["billing", "subscription"] });
+    void qc.invalidateQueries({ queryKey: ["billing", "history"] });
+    void qc.invalidateQueries({ queryKey: ["billing", "plans"] });
+  }, [checkout, qc]);
+
   const entitlement = subQuery.data;
   const meta = entitlement ? (STATUS_META[entitlement.status] ?? STATUS_META.active) : null;
 
   const needsPayment =
-    entitlement?.status === "trialing" ||
+    (entitlement?.status === "trialing" && !entitlement.hasStripeSubscription) ||
     entitlement?.status === "grace" ||
     entitlement?.status === "locked" ||
+    entitlement?.status === "deactivated" ||
     entitlement?.status === "past_due" ||
     entitlement?.status === "canceled";
 
   const canManage =
     entitlement?.status === "active" || entitlement?.status === "past_due";
+  const renewalPlans = filterRenewalPlans(
+    plansQuery.data ?? [],
+    entitlement?.subjectType,
+    entitlement?.planType,
+  );
 
   function handleCancelPress() {
     const periodEnd = entitlement?.currentPeriodEnd
@@ -409,7 +529,7 @@ export default function SubscriptionsScreen() {
                 label="Plan"
                 value={
                   entitlement.planType || entitlement.billingInterval
-                    ? planLabel(entitlement.planType, entitlement.billingInterval)
+                    ? entitlement.providerPlan ? `${entitlement.providerPlan[0]?.toUpperCase()}${entitlement.providerPlan.slice(1)}${entitlement.providerPlan === "free" ? " — $0 permanent" : " — Monthly"}` : planLabel(entitlement.planType, entitlement.billingInterval)
                     : "—"
                 }
                 styles={styles}
@@ -471,21 +591,66 @@ export default function SubscriptionsScreen() {
               {needsPayment && (
                 <Pressable
                   style={[styles.primaryBtn, { backgroundColor: colors.tint }]}
-                  onPress={handlePortalPress}
-                  disabled={portalMutation.isPending}
+                  onPress={() => void plansQuery.refetch()}
+                  disabled={plansQuery.isFetching}
                 >
-                  {portalMutation.isPending ? (
+                  {plansQuery.isFetching ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
                     <Ionicons name="card-outline" size={16} color="#fff" />
                   )}
                   <Text style={styles.primaryBtnText}>
-                    {entitlement.status === "locked" || entitlement.status === "canceled"
+                    {entitlement.status === "locked" || entitlement.status === "deactivated" || entitlement.status === "canceled"
                       ? "Reactivate Subscription"
                       : "Add Payment Method"}
                   </Text>
                   <Ionicons name="open-outline" size={13} color="rgba(255,255,255,0.7)" />
                 </Pressable>
+              )}
+
+              {needsPayment && plansQuery.isFetched && renewalPlans.length > 0 && (
+                <View style={styles.planChoices}>
+                  <Text style={[styles.planChoiceHeading, { color: colors.text }]}>
+                    Select a plan
+                  </Text>
+                  {renewalPlans.map((plan) => (
+                    <Pressable
+                      key={plan.id}
+                      testID={`subscription-plan-${plan.id}`}
+                      style={[
+                        styles.planChoice,
+                        { backgroundColor: colors.surface, borderColor: colors.border },
+                      ]}
+                      disabled={checkoutMutation.isPending}
+                      onPress={() => checkoutMutation.mutate(plan.id)}
+                    >
+                      <View style={styles.planChoiceCopy}>
+                        <Text style={[styles.planChoiceName, { color: colors.text }]}>
+                          {plan.productName ?? "LabTrax"}
+                        </Text>
+                        {!!plan.productDescription && (
+                          <Text style={[styles.planChoiceDescription, { color: colors.textSecondary }]}>
+                            {plan.productDescription}
+                          </Text>
+                        )}
+                      </View>
+                      <Text style={[styles.planChoicePrice, { color: colors.tint }]}>
+                        {plan.unitAmount == null
+                          ? "Select"
+                          : `${formatCurrency(plan.unitAmount, plan.currency)}${plan.interval === "year" ? "/yr" : "/mo"}`}
+                      </Text>
+                    </Pressable>
+                  ))}
+                  <Text style={[styles.mobileNote, { color: colors.textSecondary }]}>
+                    Full access returns only after the server confirms payment.
+                  </Text>
+                </View>
+              )}
+
+              {needsPayment && plansQuery.isFetched && renewalPlans.length === 0 && (
+                <Text style={[styles.mobileNote, { color: colors.textSecondary }]}>
+                  No renewal plans are currently configured for this account.
+                </Text>
               )}
 
               {canManage && (
@@ -568,10 +733,11 @@ export default function SubscriptionsScreen() {
                 </>
               )}
 
-              <Text style={[styles.mobileNote, { color: colors.textSecondary }]}>
-                Plan changes are handled through the web or desktop app. Mobile billing
-                is managed through your device's subscription settings.
-              </Text>
+              {!needsPayment && (
+                <Text style={[styles.mobileNote, { color: colors.textSecondary }]}>
+                  Billing changes open in Stripe's secure customer portal.
+                </Text>
+              )}
             </View>
 
             {/* Invoices */}
@@ -818,6 +984,20 @@ function makeStyles(c: ThemeColors) {
       paddingHorizontal: Spacing.lg,
     },
     secondaryBtnText: { ...Typography.bodyMedium, flex: 1, textAlign: "center" },
+    planChoices: { gap: Spacing.sm, marginTop: Spacing.sm },
+    planChoiceHeading: { ...Typography.bodyMedium },
+    planChoice: {
+      borderWidth: 1,
+      borderRadius: Radius.md,
+      padding: Spacing.md,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.md,
+    },
+    planChoiceCopy: { flex: 1, gap: 2 },
+    planChoiceName: { ...Typography.bodyMedium },
+    planChoiceDescription: { ...Typography.caption },
+    planChoicePrice: { ...Typography.bodyMedium },
 
     mobileNote: {
       ...Typography.caption,

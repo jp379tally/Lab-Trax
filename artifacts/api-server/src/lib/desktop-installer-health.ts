@@ -18,6 +18,7 @@
  * See docs/desktop-publish-pipeline.md for the wider pipeline context.
  */
 import { db, systemSettings } from "@workspace/db";
+import { formatNumericDateTime } from "./date-format";
 import { inArray } from "drizzle-orm";
 import { getDownloadInterruptionStats, type DownloadInterruptionStats } from "./download-interruptions.js";
 import {
@@ -507,7 +508,7 @@ export async function runDesktopInstallerHealthCheck(
     issues.push(
       `downloadInterruptions: ${downloadInterruptions.retryFailCount24h} retry failure${downloadInterruptions.retryFailCount24h !== 1 ? "s" : ""} in the past 24 h` +
         (downloadInterruptions.lastOccurredAt
-          ? ` (last: ${new Date(downloadInterruptions.lastOccurredAt).toUTCString()})`
+          ? ` (last: ${formatNumericDateTime(downloadInterruptions.lastOccurredAt)})`
           : ""),
     );
   }

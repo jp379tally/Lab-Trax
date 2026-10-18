@@ -357,7 +357,8 @@ maybe("lab-inbox storagePath normalization", () => {
 
       expect(res.status).toBe(200);
       expect(res.headers["content-type"]).toMatch(/application\/pdf/);
-      expect(res.headers["content-disposition"]).toMatch(/^inline/);
+      expect(res.headers["content-disposition"]).toMatch(/^attachment/);
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
       // Object storage must be opened with the NORMALIZED key.
       expect(openStreamSpy).toHaveBeenCalledWith(bare, "application/pdf");
       expect(Buffer.from(res.body).equals(fileContent)).toBe(true);

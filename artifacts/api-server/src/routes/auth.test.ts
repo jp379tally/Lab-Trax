@@ -22,6 +22,10 @@ vi.mock("../lib/backup.js", () => ({
 }));
 vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
+vi.mock("../lib/entitlement.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/entitlement.js")>(),
+  startBillingTrial: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
   caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-auth-reg"),
@@ -49,22 +53,33 @@ maybe("Auth registration and password reset (db integration)", () => {
   let appMod: { default: import("express").Express };
 
   const createdUserIds: string[] = [];
+  const createdOrgIds: string[] = [];
 
   beforeAll(async () => {
     process.env["JWT_SECRET"] =
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-auth-reg";
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
+    // Route registration is asynchronous; a missing email returns 400 only
+    // once the auth routes are mounted. Do not race startup's temporary 503.
+    await vi.waitFor(async () => {
+      const ready = await request(appMod.default).get("/api/auth/check-email");
+      expect(ready.status).toBe(400);
+    }, { timeout: 20_000, interval: 50 });
   });
 
   afterAll(async () => {
     if (!SHOULD_RUN || createdUserIds.length === 0) return;
-    const { db, auditLogs, userSessions, organizationMemberships, users } = dbMod as any;
+    const { db, auditLogs, userSessions, organizationMemberships, organizationJoinRequests, organizations, users } = dbMod as any;
     await db.delete(auditLogs).where(inArray(auditLogs.userId, createdUserIds));
     await db.delete(userSessions).where(inArray(userSessions.userId, createdUserIds));
     await db.delete(organizationMemberships).where(
       inArray(organizationMemberships.userId, createdUserIds)
     );
+    if (createdOrgIds.length) {
+      await db.delete(organizationJoinRequests).where(inArray(organizationJoinRequests.labId, createdOrgIds));
+      await db.delete(organizations).where(inArray(organizations.id, createdOrgIds));
+    }
     await db.delete(users).where(inArray(users.id, createdUserIds));
   });
 
@@ -130,6 +145,12 @@ maybe("Auth registration and password reset (db integration)", () => {
     expect(first.status).toBe(200);
     if (first.body.user?.id) createdUserIds.push(first.body.user.id);
 
+    const availability = await request(appMod.default)
+      .get("/api/auth/check-email")
+      .query({ email: email.toUpperCase() });
+    expect(availability.status).toBe(200);
+    expect(availability.body.data?.available).toBe(false);
+
     const second = await request(appMod.default)
       .post("/api/auth/register")
       .send({ username: uname("ub"), password: "OtherPass!", email, userType: "lab", clientType: "mobile" });
@@ -138,6 +159,64 @@ maybe("Auth registration and password reset (db integration)", () => {
     const dupEmailMsg: string = second.body.message ?? second.body.error ?? "";
     expect(dupEmailMsg).not.toMatch(/insert into|duplicate key|violates|drizzle/i);
     expect(dupEmailMsg.length).toBeGreaterThan(0);
+  });
+
+  it("logs distinct registered accounts in by their own usernames", async () => {
+    const firstUsername = uname("shared");
+    const secondUsername = uname("shared");
+    const firstEmail = `${rid("first")}@example.com`;
+    const secondEmail = `${rid("second")}@example.com`;
+    const first = await request(appMod.default)
+      .post("/api/auth/register")
+      .send({
+        username: firstUsername,
+        password: "Pass1234!",
+        email: firstEmail,
+        userType: "lab",
+        clientType: "mobile",
+      });
+    expect(first.status).toBe(200);
+    if (first.body.user?.id) createdUserIds.push(first.body.user.id);
+
+    const availability = await request(appMod.default)
+      .get("/api/auth/check-email")
+      .query({ email: firstEmail.toUpperCase() });
+    expect(availability.status).toBe(200);
+    expect(availability.body.data?.available).toBe(false);
+
+    const second = await request(appMod.default)
+      .post("/api/auth/register")
+      .send({
+        username: secondUsername,
+        password: "Pass1234!",
+        email: secondEmail,
+        userType: "lab",
+        clientType: "mobile",
+      });
+    expect(second.status).toBe(200);
+    if (second.body.user?.id) createdUserIds.push(second.body.user.id);
+
+    const duplicateUsername = await request(appMod.default)
+      .post("/api/auth/register")
+      .send({
+        username: firstUsername,
+        password: "OtherPass!",
+        email: firstEmail,
+        userType: "lab",
+        clientType: "mobile",
+      });
+    expect(duplicateUsername.status).toBe(409);
+    expect(duplicateUsername.body.message ?? duplicateUsername.body.error).toMatch(
+      /username already taken/i,
+    );
+
+    for (const username of [firstUsername, secondUsername]) {
+      const login = await request(appMod.default)
+        .post("/api/auth/login")
+        .send({ identifier: username, password: "Pass1234!", clientType: "mobile" });
+      expect(login.status).toBe(200);
+      expect(login.body.user?.username).toBe(username);
+    }
   });
 
   it("register that creates a lab org without required fields returns 400 LAB_FIELDS_REQUIRED", async () => {
@@ -196,6 +275,63 @@ maybe("Auth registration and password reset (db integration)", () => {
   });
 
   // ── POST /api/forgot-password (no-enumeration) ────────────────────────────
+  for (const userType of ["lab", "provider"] as const) {
+    it.each(["user", "admin", "master_admin"])(
+      `${userType} creator is Owner/admin immediately and after reauthentication despite submitted role %s`,
+      async (role) => {
+        const username = uname("creator");
+        const r = await request(appMod.default).post("/api/auth/register").send({
+          username, password: "TestPassword1!", email: `${username}@example.com`,
+          userType, clientType: "mobile", role, createOrganization: true,
+          practiceName: `Creator ${username}`, licenseNumber: "LIC-123",
+          practiceAddress: "123 Test St, Austin, TX, 78701", practicePhone: "5125550199",
+          address: { line1: "123 Test St", city: "Austin", state: "TX", zip: "78701" },
+        });
+        if (r.body.user?.id) createdUserIds.push(r.body.user.id);
+        if (r.body.organization?.id) createdOrgIds.push(r.body.organization.id);
+        expect(r.status).toBe(200);
+        expect(r.body.user).toMatchObject({ role: "admin", membershipRole: "owner" });
+        const { db, users, organizationMemberships } = dbMod;
+        const stored = await db.query.users.findFirst({ where: eq(users.id, r.body.user.id) });
+        expect(stored?.role).toBe("user");
+        const member = await db.query.organizationMemberships.findFirst({
+          where: eq(organizationMemberships.userId, r.body.user.id),
+        });
+        expect(member).toMatchObject({ role: "owner", status: "active", labId: r.body.organization.id });
+        const me = await request(appMod.default).get("/api/auth/me").set("Authorization", `Bearer ${r.body.accessToken}`);
+        expect(me.status).toBe(200);
+        expect(me.body.user).toMatchObject({ role: "admin", membershipRole: "owner" });
+        expect(me.body.memberships).toEqual(expect.arrayContaining([expect.objectContaining({ role: "owner", status: "active" })]));
+        const refresh = await request(appMod.default).post("/api/auth/refresh").send({ refreshToken: r.body.refreshToken, clientType: "mobile" });
+        expect(refresh.status).toBe(200);
+        const refreshedMe = await request(appMod.default).get("/api/auth/me").set("Authorization", `Bearer ${refresh.body.data.accessToken}`);
+        expect(refreshedMe.body.user).toMatchObject({ role: "admin", membershipRole: "owner" });
+        const login = await request(appMod.default).post("/api/auth/login").send({ identifier: username, password: "TestPassword1!", clientType: "mobile" });
+        expect(login.status).toBe(200);
+        expect(login.body.user).toMatchObject({ role: "admin", membershipRole: "owner" });
+      },
+    );
+
+    it(`${userType} joining an existing organization cannot self-grant ownership`, async () => {
+      const orgId = rid("joinorg");
+      createdOrgIds.push(orgId);
+      await dbMod.db.insert(dbMod.organizations).values({ id: orgId, name: orgId, type: userType === "lab" ? "lab" : "provider" });
+      const username = uname("join");
+      const r = await request(appMod.default).post("/api/auth/register").send({
+        username, password: "TestPassword1!", email: `${username}@example.com`,
+        userType, clientType: "mobile", role: "owner", createOrganization: true,
+        joinOrganizationId: orgId, practiceName: "Must not create",
+        practiceAddress: "123 Test St", practicePhone: "5125550199", licenseNumber: "LIC-123",
+        address: { line1: "123 Test St", city: "Austin", state: "TX", zip: "78701" },
+      });
+      if (r.body.user?.id) createdUserIds.push(r.body.user.id);
+      expect(r.status).toBe(200);
+      expect(r.body.pendingJoinRequest).toBe(true);
+      expect(r.body.user).toMatchObject({ role: "user", membershipRole: null });
+      const members = await dbMod.db.select().from(dbMod.organizationMemberships).where(eq(dbMod.organizationMemberships.userId, r.body.user.id));
+      expect(members).toHaveLength(0);
+    });
+  }
 
   it("forgot-password returns 200 for a non-existent email (no enumeration)", async () => {
     const r = await request(appMod.default)

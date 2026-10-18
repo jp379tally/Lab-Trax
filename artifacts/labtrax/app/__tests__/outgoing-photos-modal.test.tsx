@@ -48,27 +48,27 @@ afterEach(() => {
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
 describe("outgoingPromptTitle", () => {
-  it("uses singular wording for one case and plural for many", () => {
+  it("uses singular wording for one case and plural for many", async () => {
     expect(outgoingPromptTitle(1)).toBe("Take a photo of the outgoing case?");
     expect(outgoingPromptTitle(3)).toBe("Take photos of the outgoing cases?");
   });
 });
 
 describe("outgoingPhotoFileName", () => {
-  it("builds a filename-safe .jpg name from the case number", () => {
+  it("builds a filename-safe .jpg name from the case number", async () => {
     expect(outgoingPhotoFileName("C-1042", 1700000000000)).toBe(
       "outgoing-case-C-1042-1700000000000.jpg",
     );
   });
 
-  it("strips unsafe characters and tolerates a missing case number", () => {
+  it("strips unsafe characters and tolerates a missing case number", async () => {
     expect(outgoingPhotoFileName("A/B #7", 5)).toBe("outgoing-case-A-B-7-5.jpg");
     expect(outgoingPhotoFileName(null, 5)).toBe("outgoing-case-5.jpg");
   });
 });
 
 describe("advanceButtonLabel", () => {
-  it("offers Skip case before a photo, Next case after, Done on the last case", () => {
+  it("offers Skip case before a photo, Next case after, Done on the last case", async () => {
     expect(advanceButtonLabel({ isLast: false, photoCount: 0 })).toBe("Skip case");
     expect(advanceButtonLabel({ isLast: false, photoCount: 2 })).toBe("Next case");
     expect(advanceButtonLabel({ isLast: true, photoCount: 0 })).toBe("Done");
@@ -83,7 +83,7 @@ describe("outgoingPhotoCasesForBatch", () => {
     { caseId: "c1", caseNumber: "N1", patientName: "Amy", barcode: "b1" },
   ] as any[];
 
-  it("returns succeeded cases in scan order for the complete station", () => {
+  it("returns succeeded cases in scan order for the complete station", async () => {
     const out = outgoingPhotoCasesForBatch(
       scannedNewestFirst as any,
       ["c1", "c3"],
@@ -93,7 +93,7 @@ describe("outgoingPhotoCasesForBatch", () => {
     expect(out[0]).toEqual({ caseId: "c1", patientName: "Amy", caseNumber: "N1" });
   });
 
-  it("returns nothing for other stations or when nothing succeeded", () => {
+  it("returns nothing for other stations or when nothing succeeded", async () => {
     expect(
       outgoingPhotoCasesForBatch(scannedNewestFirst as any, ["c1"], "polishing"),
     ).toEqual([]);
@@ -104,7 +104,7 @@ describe("outgoingPhotoCasesForBatch", () => {
 });
 
 describe("eventIsOutgoingPhoto", () => {
-  it("detects outgoing category in object and JSON-string metadata", () => {
+  it("detects outgoing category in object and JSON-string metadata", async () => {
     expect(
       eventIsOutgoingPhoto({
         eventType: "case_attachment_added",
@@ -119,7 +119,7 @@ describe("eventIsOutgoingPhoto", () => {
     ).toBe(true);
   });
 
-  it("rejects non-attachment events and attachments without the category", () => {
+  it("rejects non-attachment events and attachments without the category", async () => {
     expect(
       eventIsOutgoingPhoto({
         eventType: "status_changed",
@@ -146,8 +146,8 @@ const batchCases: OutgoingPhotoCase[] = [
 ];
 
 describe("OutgoingPhotosModal", () => {
-  it("renders nothing when there are no cases", () => {
-    const { queryByTestId } = render(
+  it("renders nothing when there are no cases", async () => {
+    const { queryByTestId } = await render(
       <OutgoingPhotosModal cases={[]} onDone={() => {}} />,
     );
     expect(queryByTestId("outgoing-photos-modal")).toBeNull();
@@ -155,20 +155,20 @@ describe("OutgoingPhotosModal", () => {
 
   it("declining the prompt calls onDone without uploading", async () => {
     const onDone = vi.fn();
-    const { getByTestId, getByText } = render(
+    const { getByTestId, getByText } = await render(
       <OutgoingPhotosModal cases={singleCase} onDone={onDone} />,
     );
     expect(getByText("Take a photo of the outgoing case?")).toBeTruthy();
-    fireEvent.press(getByTestId("outgoing-photos-decline"));
+    await fireEvent.press(getByTestId("outgoing-photos-decline"));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(uploadMock).not.toHaveBeenCalled();
   });
 
-  it("accepting shows the guided capture step with patient details", () => {
-    const { getByTestId, getByText, queryByTestId } = render(
+  it("accepting shows the guided capture step with patient details", async () => {
+    const { getByTestId, getByText, queryByTestId } = await render(
       <OutgoingPhotosModal cases={singleCase} onDone={() => {}} />,
     );
-    fireEvent.press(getByTestId("outgoing-photos-accept"));
+    await fireEvent.press(getByTestId("outgoing-photos-accept"));
     expect(getByTestId("outgoing-photos-patient")).toBeTruthy();
     expect(getByText("Jane Doe")).toBeTruthy();
     expect(getByText("Case #C-100")).toBeTruthy();
@@ -182,11 +182,11 @@ describe("OutgoingPhotosModal", () => {
       canceled: false,
       assets: [{ uri: "file:///tmp/raw.jpg" }],
     } as any);
-    const { getByTestId, getByText } = render(
+    const { getByTestId, getByText } = await render(
       <OutgoingPhotosModal cases={singleCase} onDone={() => {}} />,
     );
-    fireEvent.press(getByTestId("outgoing-photos-accept"));
-    fireEvent.press(getByTestId("outgoing-photos-take"));
+    await fireEvent.press(getByTestId("outgoing-photos-accept"));
+    await fireEvent.press(getByTestId("outgoing-photos-take"));
 
     await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(1));
     const args = uploadMock.mock.calls[0]![0];
@@ -199,33 +199,33 @@ describe("OutgoingPhotosModal", () => {
 
   it("steps through a batch: step counter, Skip case advances, Done finishes", async () => {
     const onDone = vi.fn();
-    const { getByTestId, getByText } = render(
+    const { getByTestId, getByText } = await render(
       <OutgoingPhotosModal cases={batchCases} onDone={onDone} />,
     );
     expect(getByText("Take photos of the outgoing cases?")).toBeTruthy();
-    fireEvent.press(getByTestId("outgoing-photos-accept"));
+    await fireEvent.press(getByTestId("outgoing-photos-accept"));
 
     expect(getByText("Case 1 of 2")).toBeTruthy();
     expect(getByText("Jane Doe")).toBeTruthy();
     expect(getByText("Skip case")).toBeTruthy();
 
-    fireEvent.press(getByTestId("outgoing-photos-advance"));
+    await fireEvent.press(getByTestId("outgoing-photos-advance"));
     expect(getByText("Case 2 of 2")).toBeTruthy();
     expect(getByText("John Roe")).toBeTruthy();
     expect(getByText("Done")).toBeTruthy();
 
-    fireEvent.press(getByTestId("outgoing-photos-advance"));
+    await fireEvent.press(getByTestId("outgoing-photos-advance"));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(uploadMock).not.toHaveBeenCalled();
   });
 
   it("a cancelled camera session uploads nothing", async () => {
     cameraMock.mockResolvedValueOnce({ canceled: true, assets: [] } as any);
-    const { getByTestId } = render(
+    const { getByTestId } = await render(
       <OutgoingPhotosModal cases={singleCase} onDone={() => {}} />,
     );
-    fireEvent.press(getByTestId("outgoing-photos-accept"));
-    fireEvent.press(getByTestId("outgoing-photos-take"));
+    await fireEvent.press(getByTestId("outgoing-photos-accept"));
+    await fireEvent.press(getByTestId("outgoing-photos-take"));
     await waitFor(() => expect(cameraMock).toHaveBeenCalled());
     expect(uploadMock).not.toHaveBeenCalled();
   });

@@ -126,7 +126,7 @@ vi.mock("@workspace/db", () => {
     // returned as opaque markers since this test never queries them.
     labCases: {}, labPendingFiles: {}, labPendingFileNoteEdits: {}, organizations: {},
     organizationMemberships: {}, cases: {}, caseAttachments: {}, caseEvents: {},
-    mediaCleanupRuns: {}, subscriptions: {}, backupRuns: {}, rxPracticeNameAliases: {},
+    mediaCleanupRuns: {}, subscriptions: {}, backupRuns: {}, rxPracticeNameAliases: {}, rxDoctorPracticeMemory: {},
     invoices: {}, invoiceAttachments: {}, bankTransactions: {}, pricingTiers: {},
     pricingOverrides: {}, vendorTypes: {}, aiMemory: {},
   };
@@ -162,6 +162,7 @@ vi.mock("./lib/backup.js", () => ({
   ALL_SCHEDULE_SETTINGS: [] as string[],
   SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS: "x", SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS: "x",
   SETTING_BACKUP_STALE_DAYS: "x", DEFAULT_BACKUP_STALE_DAYS: 7,
+  SETTING_ONEDRIVE_RETENTION_MAX_BACKUPS: "x", DEFAULT_ONEDRIVE_RETENTION_MAX_BACKUPS: 30,
 }));
 vi.mock("./lib/mail.js", () => ({
   sendInstallerPublishFailureAlertEmail: vi.fn(),

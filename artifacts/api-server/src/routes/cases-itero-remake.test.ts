@@ -476,8 +476,8 @@ maybe("iTero Rx import remake invariants (db integration)", () => {
         .where(eq(invoices.caseId, caseId));
       if (invoice) break;
     }
-    expect(invoice, "no-charge remake must still create the draft invoice").toBeDefined();
-    expect(invoice.status).toBe("draft");
+    expect(invoice, "no-charge remake must still create the invoice").toBeDefined();
+    expect(invoice.status).toBe("open");
 
     // ── Invoice totals zeroed ──
     expect(Number(invoice.subtotal)).toBe(0);
@@ -511,18 +511,89 @@ maybe("iTero Rx import remake invariants (db integration)", () => {
     try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
   });
 
-  // ── (4) Duplicate-doctor auto-merge on import ────────────────────────────
+  // ── (3b) Remake of a remake via iTero gets C, not BB ────────────────────
   //
-  // The manual create-case flow rejects a near-duplicate doctor with a 409 so
-  // a human can confirm. Auto-import has no human at create time, so instead of
-  // rejecting it adopts the existing spelling when the parsed name clears the
-  // lab similarity threshold within the SAME practice — and records a
-  // "doctor_auto_merged_from_itero" audit event. Below threshold it must keep
-  // the parsed name verbatim and emit no merge event.
+  // The iTero import path must resolve the chain root before counting
+  // descendants, just like the generic /cases create path.
 
-  it("(4a) near-duplicate parsed doctor is merged into the existing spelling + audit event", async () => {
+  it("(3b) remake-of-a-remake via iTero import gets suffix C (not BB) — root traversal regression", async () => {
     const adminToken = await makeSession(adminUserId);
-    const { db, cases, caseEvents } = dbMod as any;
+    const { db, cases } = dbMod as any;
+
+    // Seed the root original.
+    const rootId = rid("root3b");
+    const rootNumber = rid("IROOT");
+    await db.insert(cases).values({
+      id: rootId,
+      caseNumber: rootNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Ada",
+      patientLastName: "Lovelace",
+      doctorName: "Dr. Babbage",
+      createdByUserId: adminUserId,
+    });
+    createdCaseIds.push(rootId);
+
+    // First iTero remake → "IROOTB".
+    const orderId1 = rid("order");
+    const rxFile1 = makeTempRxFile();
+    const r1 = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", rxFile1, "iTero_Rx_3b1.pdf")
+      .field("iteroOrderId", orderId1)
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId)
+      .field("remakeOfCaseId", rootId)
+      .field("remakeReason", "First remake")
+      .field("remakeCharged", "true");
+    expect(r1.status, `expected 201 but got ${r1.status}: ${JSON.stringify(r1.body)}`).toBe(201);
+    const remakeBId = r1.body.data.caseId as string;
+    expect(remakeBId).toBeTruthy();
+    createdCaseIds.push(remakeBId);
+    expect(r1.body.data.caseNumber).toBe(`${rootNumber}B`);
+    try { fs.unlinkSync(rxFile1); } catch { /* ignore */ }
+
+    // Second iTero remake — of the B case → must be "IROOTC", not "IROOTBB".
+    const orderId2 = rid("order");
+    const rxFile2 = makeTempRxFile();
+    const r2 = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", rxFile2, "iTero_Rx_3b2.pdf")
+      .field("iteroOrderId", orderId2)
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId)
+      .field("remakeOfCaseId", remakeBId)
+      .field("remakeReason", "Remake of the remake")
+      .field("remakeCharged", "true");
+    expect(r2.status, `expected 201 but got ${r2.status}: ${JSON.stringify(r2.body)}`).toBe(201);
+    const remakeCId = r2.body.data.caseId as string;
+    expect(remakeCId).toBeTruthy();
+    createdCaseIds.push(remakeCId);
+    expect(
+      r2.body.data.caseNumber,
+      `remaking "${rootNumber}B" via iTero must produce "${rootNumber}C", not "${rootNumber}BB"`,
+    ).toBe(`${rootNumber}C`);
+    try { fs.unlinkSync(rxFile2); } catch { /* ignore */ }
+  });
+
+  // ── (4) Strict "doctor not on file" gate on iTero Rx import ──────────────
+  //
+  // The iTero Rx import endpoint no longer auto-merges or silently creates a
+  // doctor. It applies the SAME strict exact-match rule the mobile AI reader
+  // uses (GET /doctors/resolve-name): unless the scanned name is an EXACT match
+  // — trim + collapse internal whitespace + case-insensitive, with NO title/name
+  // stripping — to an existing doctor in the same practice, it blocks creation
+  // with a structured 409 DOCTOR_CONFIRMATION_REQUIRED listing similar doctors.
+  // An exact match adopts the stored spelling. confirmNewDoctor="true" bypasses
+  // the gate and creates the scanned name verbatim.
+
+  it("(4a) near-duplicate parsed doctor is BLOCKED with 409 + candidates (no auto-merge, no case created)", async () => {
+    const adminToken = await makeSession(adminUserId);
+    const { db, cases } = dbMod as any;
 
     // Seed an existing doctor in this practice.
     const existingDoctor = "Dr. Katherine Johnson";
@@ -540,7 +611,8 @@ maybe("iTero Rx import remake invariants (db integration)", () => {
     });
     createdCaseIds.push(seedId);
 
-    // The AI "extracts" a near-duplicate spelling (missing period).
+    // The AI "extracts" a near-duplicate spelling (missing period) — a fuzzy
+    // match but NOT an exact one, so it must be blocked, not silently merged.
     const parsedDoctor = "Dr Katherine Johnson";
     mockChatCreate.mockResolvedValue(aiExtractedRx({ doctorName: parsedDoctor }));
 
@@ -554,38 +626,22 @@ maybe("iTero Rx import remake invariants (db integration)", () => {
       .field("labOrganizationId", labOrgId)
       .field("providerOrganizationId", providerOrgId);
 
-    expect(r.status, `expected 201 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(201);
-    const caseId = r.body.data.caseId as string;
-    createdCaseIds.push(caseId);
-
-    // Created case adopted the existing spelling, not the parsed one.
-    const [caseRow] = await db
-      .select({ doctorName: cases.doctorName })
-      .from(cases)
-      .where(eq(cases.id, caseId));
-    expect(caseRow.doctorName).toBe(existingDoctor);
-
-    // A merge audit event was recorded with both names + similarity.
-    const events = await db
-      .select()
-      .from(caseEvents)
-      .where(
-        and(
-          eq(caseEvents.caseId, caseId),
-          eq(caseEvents.eventType, "doctor_auto_merged_from_itero"),
-        ),
-      );
-    expect(events.length).toBe(1);
-    expect(events[0].metadataJson.parsedDoctorName).toBe(parsedDoctor);
-    expect(events[0].metadataJson.mergedToDoctorName).toBe(existingDoctor);
-    expect(typeof events[0].metadataJson.similarity).toBe("number");
+    expect(r.status, `expected 409 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(409);
+    expect(r.body.details?.code).toBe("DOCTOR_CONFIRMATION_REQUIRED");
+    // The similar existing doctor is surfaced as a candidate for the user.
+    const candidateNames: string[] = (r.body.details?.candidates ?? []).map(
+      (c: any) => c.doctorName,
+    );
+    expect(candidateNames).toContain(existingDoctor);
+    // No case was created (creation is blocked before insert).
+    expect(r.body.data?.caseId).toBeFalsy();
 
     try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
   });
 
-  it("(4b) below-threshold parsed doctor is kept verbatim with no merge event", async () => {
+  it("(4b) below-threshold parsed doctor is BLOCKED with 409 (empty candidates) until confirmed, then created verbatim", async () => {
     const adminToken = await makeSession(adminUserId);
-    const { db, cases, caseEvents } = dbMod as any;
+    const { db, cases } = dbMod as any;
 
     // Seed an unrelated doctor in this practice.
     const seedId = rid("seed");
@@ -602,8 +658,74 @@ maybe("iTero Rx import remake invariants (db integration)", () => {
     });
     createdCaseIds.push(seedId);
 
-    // A completely different parsed name — well below the similarity threshold.
+    // A completely different parsed name — well below the similarity threshold,
+    // so there are no candidates, but it is still not on file → blocked.
     const parsedDoctor = "Dr. Grace Hopper";
+    mockChatCreate.mockResolvedValue(aiExtractedRx({ doctorName: parsedDoctor }));
+
+    const orderId = rid("order");
+    const rxFile = makeTempRxFile();
+    const blocked = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", rxFile, "iTero_Rx_nomerge.pdf")
+      .field("iteroOrderId", orderId)
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId);
+
+    expect(blocked.status, `expected 409 but got ${blocked.status}: ${JSON.stringify(blocked.body)}`).toBe(409);
+    expect(blocked.body.details?.code).toBe("DOCTOR_CONFIRMATION_REQUIRED");
+    expect(blocked.body.details?.candidates ?? []).toHaveLength(0);
+
+    // Re-submit with confirmNewDoctor="true" — the user chose "add new doctor".
+    const confirmedOrderId = rid("order");
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", rxFile, "iTero_Rx_nomerge2.pdf")
+      .field("iteroOrderId", confirmedOrderId)
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId)
+      .field("confirmNewDoctor", "true");
+
+    expect(r.status, `expected 201 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(201);
+    const caseId = r.body.data.caseId as string;
+    createdCaseIds.push(caseId);
+
+    // Parsed name kept verbatim (no auto-merge to the unrelated doctor).
+    const [caseRow] = await db
+      .select({ doctorName: cases.doctorName })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+    expect(caseRow.doctorName).toBe(parsedDoctor);
+
+    try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
+  });
+
+  it("(4c) exact-match parsed doctor adopts the stored spelling and is created without confirmation", async () => {
+    const adminToken = await makeSession(adminUserId);
+    const { db, cases } = dbMod as any;
+
+    // Seed an existing doctor whose stored spelling differs only by case +
+    // surrounding whitespace from what the AI will "extract".
+    const storedDoctor = "Dr. Rosalind Franklin";
+    const seedId = rid("seed");
+    await db.insert(cases).values({
+      id: seedId,
+      caseNumber: rid("EXA"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Seed",
+      patientLastName: "Patient",
+      doctorName: storedDoctor,
+      createdByUserId: adminUserId,
+    });
+    createdCaseIds.push(seedId);
+
+    // Scanned name is an EXACT match under the strict rule (case-insensitive +
+    // collapsed whitespace, no title stripping).
+    const parsedDoctor = "  dr.   rosalind   franklin ";
     mockChatCreate.mockResolvedValue(aiExtractedRx({ doctorName: parsedDoctor }));
 
     const orderId = rid("order");
@@ -611,7 +733,7 @@ maybe("iTero Rx import remake invariants (db integration)", () => {
     const r = await request(appMod.default)
       .post("/api/cases/import-from-itero-rx")
       .set("Authorization", `Bearer ${adminToken}`)
-      .attach("file", rxFile, "iTero_Rx_nomerge.pdf")
+      .attach("file", rxFile, "iTero_Rx_exact.pdf")
       .field("iteroOrderId", orderId)
       .field("labOrganizationId", labOrgId)
       .field("providerOrganizationId", providerOrgId);
@@ -620,24 +742,68 @@ maybe("iTero Rx import remake invariants (db integration)", () => {
     const caseId = r.body.data.caseId as string;
     createdCaseIds.push(caseId);
 
-    // Parsed name kept verbatim.
+    // Created case adopted the stored canonical spelling, not the scanned one.
     const [caseRow] = await db
       .select({ doctorName: cases.doctorName })
       .from(cases)
       .where(eq(cases.id, caseId));
-    expect(caseRow.doctorName).toBe(parsedDoctor);
+    expect(caseRow.doctorName).toBe(storedDoctor);
 
-    // No merge event.
-    const events = await db
-      .select()
-      .from(caseEvents)
-      .where(
-        and(
-          eq(caseEvents.caseId, caseId),
-          eq(caseEvents.eventType, "doctor_auto_merged_from_itero"),
-        ),
-      );
-    expect(events.length).toBe(0);
+    try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
+  });
+
+  it("(4d) picking an existing candidate uses the existing doctor even when AI re-extracts a near-miss", async () => {
+    const adminToken = await makeSession(adminUserId);
+    const { db, cases } = dbMod as any;
+
+    // Seed the existing doctor the user will pick from the resolution step.
+    const existingDoctor = "Dr. Katherine Johnson";
+    const seedId = rid("seed");
+    await db.insert(cases).values({
+      id: seedId,
+      caseNumber: rid("PICK"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Seed",
+      patientLastName: "Patient",
+      doctorName: existingDoctor,
+      createdByUserId: adminUserId,
+    });
+    createdCaseIds.push(seedId);
+
+    // The server's own AI re-extraction still yields the near-miss spelling from
+    // the PDF. The desktop resolution step, however, forwards the user's pick as
+    // doctorNameHint + confirmNewDoctor="true". The human-confirmed identity must
+    // win: the created case should be the existing doctor, NOT the near-miss.
+    mockChatCreate.mockResolvedValue(
+      aiExtractedRx({ doctorName: "Dr Katherine Johnson" }),
+    );
+
+    const orderId = rid("order");
+    const rxFile = makeTempRxFile();
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", rxFile, "iTero_Rx_pick.pdf")
+      .field("iteroOrderId", orderId)
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId)
+      .field("doctorNameHint", existingDoctor)
+      .field("confirmNewDoctor", "true");
+
+    expect(r.status, `expected 201 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(201);
+    const caseId = r.body.data.caseId as string;
+    createdCaseIds.push(caseId);
+
+    // The case is linked to the existing doctor's canonical spelling, and no new
+    // near-miss doctor identity leaked in.
+    const [caseRow] = await db
+      .select({ doctorName: cases.doctorName })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+    expect(caseRow.doctorName).toBe(existingDoctor);
+    expect(caseRow.doctorName).not.toBe("Dr Katherine Johnson");
 
     try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
   });

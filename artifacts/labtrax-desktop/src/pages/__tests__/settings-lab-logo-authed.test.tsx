@@ -94,7 +94,6 @@ const USER_WITHOUT_LOGO = {
 describe("Settings lab-logo authenticated rendering", () => {
   it("calls authedMediaFetch with the practiceLogoUrl (not a direct unauthenticated fetch)", async () => {
     const Wrapper = makeAuthWrapper("/settings", {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       user: USER_WITH_LOGO as any,
       status: "authed",
       restoreStatus: "ok",
@@ -113,7 +112,6 @@ describe("Settings lab-logo authenticated rendering", () => {
 
   it("never renders a plain <img src={practiceLogoUrl}> (raw unauthenticated URL)", async () => {
     const Wrapper = makeAuthWrapper("/settings", {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       user: USER_WITH_LOGO as any,
       status: "authed",
       restoreStatus: "ok",
@@ -135,7 +133,6 @@ describe("Settings lab-logo authenticated rendering", () => {
 
   it("renders the logo img with the blob object URL as src after authed fetch resolves", async () => {
     const Wrapper = makeAuthWrapper("/settings", {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       user: USER_WITH_LOGO as any,
       status: "authed",
       restoreStatus: "ok",
@@ -152,7 +149,6 @@ describe("Settings lab-logo authenticated rendering", () => {
 
   it("does NOT call authedMediaFetch for a logo URL when practiceLogoUrl is null", async () => {
     const Wrapper = makeAuthWrapper("/settings", {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       user: USER_WITHOUT_LOGO as any,
       status: "authed",
       restoreStatus: "ok",

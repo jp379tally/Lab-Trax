@@ -8,6 +8,7 @@ import {
 } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
 import type { Organization } from "@/lib/types";
+import { formatAccountNumberForDisplay } from "@workspace/account-number";
 
 interface PracticeMemberLite {
   userId: string;
@@ -91,6 +92,9 @@ export function RemoveDoctorDialog({
   const [destination, setDestination] = useState<string>("unassigned");
   const [existingCases, setExistingCases] = useState<"leave" | "move">("leave");
   const [error, setError] = useState<string | null>(null);
+  // Set when the server matched this doctor to the account they already have
+  // instead of creating one. Shown as a confirmation, never as an error.
+  const [reusedNote, setReusedNote] = useState<string | null>(null);
 
   // Resolve the doctor's real provider user id (if any) so the server drops
   // the existing membership instead of promoting a duplicate account.
@@ -130,11 +134,28 @@ export function RemoveDoctorDialog({
 
   const removeMutation = useRemoveDoctorFromPractice({
     mutation: {
-      onSuccess: () => {
+      onSuccess: (res: unknown) => {
         invalidateAfterMove(queryClient, labOrganizationId, [
           practiceId,
           destination === "unassigned" ? "" : destination,
         ]);
+        // Removing a doctor never creates an account. When the typed name
+        // resolved to an account they already had, say which one — the admin
+        // should never be left guessing whether a second one was made.
+        const data = ((res as any)?.data ?? res) as {
+          reusedExistingAccount?: boolean;
+          platformAccountNumber?: string | null;
+        } | null;
+        if (data?.reusedExistingAccount) {
+          setReusedNote(
+            `${doctorName} already has account ${
+              data.platformAccountNumber
+                ? formatAccountNumberForDisplay(data.platformAccountNumber)
+                : "on file"
+            } — that account was used. No new account was created.`,
+          );
+          return;
+        }
         onDone?.();
         onClose();
       },
@@ -184,7 +205,8 @@ export function RemoveDoctorDialog({
             Detach <span className="font-medium text-foreground">{doctorName}</span>{" "}
             from{" "}
             <span className="font-medium text-foreground">{practiceName}</span>.
-            This does not delete the doctor — they keep their account.
+            This does not delete the doctor — they keep any account they have,
+            and removing them never creates one.
           </p>
 
           <div>
@@ -253,6 +275,12 @@ export function RemoveDoctorDialog({
             )}
           </div>
 
+          {reusedNote && (
+            <div className="text-sm text-foreground bg-primary/10 px-3 py-2 rounded-md">
+              {reusedNote}
+            </div>
+          )}
+
           {error && (
             <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
               {error}
@@ -261,26 +289,41 @@ export function RemoveDoctorDialog({
         </div>
 
         <footer className="flex items-center justify-end gap-2 px-5 py-4 border-t border-border">
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-9 px-3 rounded-md border border-border text-sm hover:bg-secondary"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={removeMutation.isPending || membersQuery.isLoading}
-            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90 disabled:opacity-60"
-          >
-            {removeMutation.isPending ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <UserMinus size={14} />
-            )}
-            {toUnassigned ? "Remove" : "Reassign"}
-          </button>
+          {reusedNote ? (
+            <button
+              type="button"
+              onClick={() => {
+                onDone?.();
+                onClose();
+              }}
+              className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90"
+            >
+              Done
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onClose}
+                className="h-9 px-3 rounded-md border border-border text-sm hover:bg-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={removeMutation.isPending || membersQuery.isLoading}
+                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90 disabled:opacity-60"
+              >
+                {removeMutation.isPending ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <UserMinus size={14} />
+                )}
+                {toUnassigned ? "Remove" : "Reassign"}
+              </button>
+            </>
+          )}
         </footer>
       </div>
     </div>
@@ -300,7 +343,12 @@ export function ReassignUnassignedDialog({
   onDone,
 }: {
   labOrganizationId: string;
-  userId: string;
+  /**
+   * Null for a name-only entry — a doctor who has no provider account because
+   * removing a doctor never creates one. Such a doctor is identified by name,
+   * and reassigning them simply moves their cases to the destination.
+   */
+  userId: string | null;
   doctorName: string;
   onClose: () => void;
   onDone?: () => void;
@@ -354,8 +402,11 @@ export function ReassignUnassignedDialog({
       data: {
         labOrganizationId,
         userId,
+        doctorName,
         destinationOrganizationId: destination,
-        existingCases,
+        // A doctor with no account has nothing but their cases to move, so
+        // the server always moves them — don't imply a choice that isn't one.
+        existingCases: userId ? existingCases : "move",
       },
     });
   }
@@ -404,6 +455,12 @@ export function ReassignUnassignedDialog({
             <label className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
               Existing cases &amp; invoices
             </label>
+            {!userId ? (
+              <p className="text-xs text-muted-foreground mt-1.5 border border-border rounded-md px-3 py-2">
+                This doctor has no account, so their cases and invoices move
+                with them to the destination practice.
+              </p>
+            ) : (
             <div className="mt-1.5 space-y-2">
               <label className="flex items-start gap-2 text-sm cursor-pointer">
                 <input
@@ -439,6 +496,7 @@ export function ReassignUnassignedDialog({
                 </span>
               </label>
             </div>
+            )}
           </div>
 
           {error && (

@@ -18,13 +18,16 @@ import {
   Mic,
   MicOff,
   PenSquare,
+  Play,
   Plus,
   Printer,
   RotateCcw,
   Search,
   Send,
   Sparkles,
+  Square,
   Trash2,
+  VolumeX,
   X,
   Zap,
 } from "lucide-react";
@@ -121,7 +124,14 @@ function printCaseHistory(data: CaseHistoryData): void {
 
   const formatDate = (iso: string | null | undefined): string => {
     if (!iso) return "—";
-    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+    try {
+      const d = new Date(iso);
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      const yyyy = d.getFullYear();
+      const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      return `${mm}/${dd}/${yyyy}, ${timeStr}`;
+    } catch { return iso; }
   };
 
   const rows = timeline
@@ -159,7 +169,7 @@ function printCaseHistory(data: CaseHistoryData): void {
 </head>
 <body>
 <h1>Case History Report</h1>
-<div class="meta">Printed ${new Date().toLocaleString()}</div>
+<div class="meta">Printed ${(() => { const _d = new Date(); const _mm = String(_d.getMonth()+1).padStart(2,"0"); const _dd = String(_d.getDate()).padStart(2,"0"); const _yyyy = _d.getFullYear(); const _t = _d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}); return `${_mm}/${_dd}/${_yyyy}, ${_t}`; })()}</div>
 ${c.remakeOf ? `<div class="remake-banner">⚠ This case is a remake of case <strong>${c.remakeOf}</strong>${c.remakeReason ? ` — Reason: ${c.remakeReason}` : ""}${c.remakeCharged != null ? ` · Charged: ${c.remakeCharged ? "Yes" : "No"}` : ""}</div>` : ""}
 <div class="info-grid">
   <div class="info-item"><span class="info-label">Case #</span><span class="info-value">${c.caseNumber}</span></div>
@@ -167,7 +177,7 @@ ${c.remakeOf ? `<div class="remake-banner">⚠ This case is a remake of case <st
   <div class="info-item"><span class="info-label">Patient</span><span class="info-value">${c.patientName}</span></div>
   <div class="info-item"><span class="info-label">Doctor</span><span class="info-value">${c.doctorName}</span></div>
   <div class="info-item"><span class="info-label">Due Date</span><span class="info-value">${formatDate(c.dueDate)}</span></div>
-  <div class="info-item"><span class="info-label">Received</span><span class="info-value">${formatDate(c.receivedAt ?? c.createdAt)}</span></div>
+  <div class="info-item"><span class="info-label">Created</span><span class="info-value">${formatDate(c.createdAt)}</span></div>
 </div>
 <h2 style="font-size:14px; margin-bottom:6px;">Timeline (${timeline.length} entries)</h2>
 <table>
@@ -321,7 +331,7 @@ const WELCOME_MSG: ChatMsg = {
   id: "welcome",
   role: "assistant",
   content:
-    "Hi! I'm Maynard. I can answer questions and take actions — like marking invoices paid, updating case status, merging doctors, and sending statements. How can I help?",
+    "Hi! I'm LabTrax Assistant. I can answer questions and take actions — like marking invoices paid, updating case status, merging doctors, and sending statements. How can I help?",
 };
 
 function buildWelcome(cases: AiCaseContext[]): ChatMsg {
@@ -331,14 +341,14 @@ function buildWelcome(cases: AiCaseContext[]): ChatMsg {
     return {
       id: "welcome",
       role: "assistant",
-      content: `Hi! I'm Maynard, ready to help with case ${c.caseNumber}${c.patientName ? ` (${c.patientName})` : ""}. I can answer questions or take actions. What would you like to do?`,
+      content: `Hi! I'm LabTrax Assistant, ready to help with case ${c.caseNumber}${c.patientName ? ` (${c.patientName})` : ""}. I can answer questions or take actions. What would you like to do?`,
     };
   }
   const nums = cases.map((c) => c.caseNumber).join(", ");
   return {
     id: "welcome",
     role: "assistant",
-    content: `Hi! I'm Maynard. I have ${cases.length} cases pinned: ${nums}. Ask me anything or tell me what action to take.`,
+    content: `Hi! I'm LabTrax Assistant. I have ${cases.length} cases pinned: ${nums}. Ask me anything or tell me what action to take.`,
   };
 }
 
@@ -461,7 +471,7 @@ function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, o
       <div className="flex items-center justify-between gap-1.5 mb-2">
         <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
           <Zap size={13} />
-          <span className="text-xs font-semibold">Proposed action</span>
+          <span className="text-xs font-semibold">Review</span>
         </div>
         {state === "pending" && (
           <div className="flex items-center gap-1 text-amber-600 dark:text-amber-500">
@@ -605,7 +615,7 @@ function ToolSourcesBadge({ toolOutputs }: { toolOutputs: Array<{ name: string; 
         className={`flex items-center gap-1 text-[10px] text-muted-foreground/60 ${
           canExpand ? "hover:text-muted-foreground transition-colors cursor-pointer" : "cursor-default"
         }`}
-        title="Data Maynard looked up to answer this"
+        title="Data LabTrax Assistant looked up to answer this"
       >
         <Search size={9} />
         <span>Looked up: {labels.join(", ")}</span>
@@ -633,31 +643,47 @@ function ToolSourcesBadge({ toolOutputs }: { toolOutputs: Array<{ name: string; 
 // ─── Voice preference persistence ───────────────────────────────────────────
 
 const VOICE_PREFS_KEY = "labtrax_ai_voice_prefs_v1";
+const LEGACY_VOICE_PREFS_KEYS = ["maynard_ai_voice_prefs_v1", "maynard_voice_prefs"];
 
-type TtsVoice = "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
+type TtsVoice = "alloy" | "ash" | "ballad" | "coral" | "echo" | "sage" | "shimmer" | "verse";
 
 const TTS_VOICES: { value: TtsVoice; label: string }[] = [
-  { value: "alloy", label: "Alloy" },
-  { value: "echo", label: "Echo" },
-  { value: "fable", label: "Fable" },
-  { value: "nova", label: "Nova" },
-  { value: "onyx", label: "Onyx" },
-  { value: "shimmer", label: "Shimmer" },
+  { value: "alloy",   label: "Alloy (Neutral 1)" },
+  { value: "ash",     label: "Ash (Masculine 1)" },
+  { value: "ballad",  label: "Ballad (Masculine 2)" },
+  { value: "coral",   label: "Coral (Feminine 1)" },
+  { value: "echo",    label: "Echo (Neutral 2)" },
+  { value: "sage",    label: "Sage (Feminine 2)" },
+  { value: "shimmer", label: "Shimmer (Feminine 3)" },
+  { value: "verse",   label: "Verse (Neutral 3)" },
 ];
 
 function readVoicePrefs(): { voiceMode: boolean; ttsVoice: TtsVoice } {
   try {
-    const raw = localStorage.getItem(VOICE_PREFS_KEY);
-    if (!raw) return { voiceMode: false, ttsVoice: "onyx" };
+    let raw = localStorage.getItem(VOICE_PREFS_KEY);
+    if (!raw) {
+      for (const legacyKey of LEGACY_VOICE_PREFS_KEYS) {
+        const legacy = localStorage.getItem(legacyKey);
+        if (legacy) {
+          raw = legacy;
+          localStorage.setItem(VOICE_PREFS_KEY, legacy);
+          localStorage.removeItem(legacyKey);
+          break;
+        }
+      }
+    } else {
+      for (const legacyKey of LEGACY_VOICE_PREFS_KEYS) localStorage.removeItem(legacyKey);
+    }
+    if (!raw) return { voiceMode: false, ttsVoice: "alloy" };
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return {
       voiceMode: typeof parsed.voiceMode === "boolean" ? parsed.voiceMode : false,
       ttsVoice: TTS_VOICES.some((v) => v.value === parsed.ttsVoice)
         ? (parsed.ttsVoice as TtsVoice)
-        : "onyx",
+        : "alloy",
     };
   } catch {
-    return { voiceMode: false, ttsVoice: "onyx" };
+    return { voiceMode: false, ttsVoice: "alloy" };
   }
 }
 
@@ -687,8 +713,8 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   const [messages, setMessages] = useState<ChatMsg[]>([buildWelcome(initialCases)]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [autoExecute, setAutoExecute] = useState(false);
   const [streamingToolCall, setStreamingToolCall] = useState<string | null>(null);
+  const [streamingProgress, setStreamingProgress] = useState<string | null>(null);
   const [promptsDismissed, setPromptsDismissed] = useState(false);
   // Pagination for older server-side history ("load earlier messages").
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
@@ -722,6 +748,11 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   const [micErrorMsg, setMicErrorMsg] = useState<string | null>(null);
   const [micErrorKind, setMicErrorKind] = useState<"permission" | "other">("other");
   const [isSpeaking, setIsSpeaking] = useState(false);
+  // Set whenever a spoken reply fails to play (request failure, no audio
+  // returned, or the browser can't play it) — mirrors the mobile AiChatPanel
+  // speakErrorMsg fix. Gates auto-listen (see the effect below) so the mic
+  // never silently reopens after a reply nobody actually heard.
+  const [speakErrorMsg, setSpeakErrorMsg] = useState<string | null>(null);
   const [voiceMode, setVoiceMode] = useState<boolean>(() => readVoicePrefs().voiceMode);
   // When the panel mounts with voice mode remembered as ON, browsers won't let
   // us start mic capture without a user gesture — so the mode would sit in a
@@ -732,7 +763,11 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   const [ttsVoice, setTtsVoice] = useState<TtsVoice>(() => readVoicePrefs().ttsVoice);
   const recognitionRef = useRef<any>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const voiceModeRef = useRef(false);
+  const [showVoiceDropdown, setShowVoiceDropdown] = useState(false);
+  const [previewingVoice, setPreviewingVoice] = useState<TtsVoice | null>(null);
+  const voiceDropdownRef = useRef<HTMLDivElement>(null);
   // When true, the next MediaRecorder onstop is a teardown stop (voice-mode
   // exit or unmount): the captured audio is discarded — no STT, no auto-send.
   const discardNextStopRef = useRef(false);
@@ -743,6 +778,31 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   const prevIsSpeakingRef = useRef(false);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionsDropdownRef = useRef<HTMLDivElement>(null);
+  // VAD (voice activity detection) state — lives in a ref object so the RAF
+  // loop can access the latest values without stale closures.
+  const analyserRef = useRef<{
+    ctx: AudioContext;
+    analyser: AnalyserNode;
+    rafId: number;
+    speechDetected: boolean;
+    silenceStart: number | null;
+    /** When the currently buffering capture started, for idle recycling. */
+    captureStartedAt: number;
+  } | null>(null);
+  // When true, the next MediaRecorder onstop is an idle recycle: the buffered
+  // (silence-only) audio is dropped and a fresh recorder is armed on the SAME
+  // live MediaStream — no STT upload, and the microphone is never released.
+  const recycleNextStopRef = useRef(false);
+  /** Monotonic id for the current listen attempt. Bumped by every start, stop,
+   *  cancel and unmount so a getUserMedia() promise that resolves *after* the
+   *  user turned voice mode off (or closed the panel) can tell it is stale,
+   *  release the tracks it was handed, and set nothing up. */
+  const listenSessionRef = useRef(0);
+  // Guards the auto-listen effect against a race where the previous TTS audio
+  // element hasn't fully released the Web Audio session before the mic opens.
+  const audioSessionSettlingRef = useRef(false);
+  // Phase shown in the status footer while voice-mode recording is active.
+  const [vadPhase, setVadPhase] = useState<"waiting" | "speaking">("waiting");
 
   const sessionsForKey = allSessions
     .filter((s) => s.key === sessionKey)
@@ -971,22 +1031,45 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     }
   }, [voiceResumePending, micState, isSpeaking, sending]);
 
-  // Auto-listen after Maynard finishes speaking (voice mode only, idle only).
+  // Auto-listen after LabTrax Assistant finishes speaking (voice mode only, idle only).
   // Reads voiceModeRef.current (not the voiceMode state) so it never captures
   // a stale closure across the async speaking boundary — same pattern as the
-  // mobile AiChatPanel voice-sync fix.
+  // mobile AiChatPanel voice-sync fix. Skipped when speech playback failed
+  // (speakErrorMsg set): silently re-opening the mic after a failed reply
+  // made the flow feel like "voice → text only", with no indication anything
+  // went wrong. Guarded against an audio-session race via audioSessionSettlingRef.
   useEffect(() => {
-    if (prevIsSpeakingRef.current && !isSpeaking && voiceModeRef.current && !sending && micState === "idle") {
-      startListening();
+    if (
+      prevIsSpeakingRef.current &&
+      !isSpeaking &&
+      voiceModeRef.current &&
+      !sending &&
+      micState === "idle" &&
+      !speakErrorMsg
+    ) {
+      if (audioSessionSettlingRef.current) {
+        // Audio session still releasing — defer by 120 ms.
+        setTimeout(() => {
+          if (!audioSessionSettlingRef.current && voiceModeRef.current && micState === "idle") {
+            void startListening();
+          }
+        }, 120);
+      } else {
+        void startListening();
+      }
     }
     prevIsSpeakingRef.current = isSpeaking;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSpeaking, sending, micState]);
+  }, [isSpeaking, sending, micState, speakErrorMsg]);
 
   // Unmount cleanup: stop any active recording (releasing all MediaStream
   // tracks so the browser mic indicator turns off) and stop TTS playback.
   useEffect(() => {
     return () => {
+      tearDownVad();
+      // Invalidate any getUserMedia() still in flight: its continuation must not
+      // start a recorder or hold the mic open after the panel is gone.
+      listenSessionRef.current++;
       const rec = recognitionRef.current as { mr: MediaRecorder; stream: MediaStream } | null;
       recognitionRef.current = null;
       if (rec) {
@@ -1000,7 +1083,13 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         try { audio.pause(); } catch { /* ignore */ }
         currentAudioRef.current = null;
       }
+      const preview = previewAudioRef.current;
+      if (preview) {
+        try { preview.pause(); } catch { /* ignore */ }
+        previewAudioRef.current = null;
+      }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -1138,14 +1227,34 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       .slice(0, 2000);
   }
 
+  /** Stage that failed when a spoken reply couldn't be played, for safe,
+   *  non-sensitive diagnostics — never logs raw provider output or secrets. */
+  type TtsFailureStage = "request" | "empty_audio" | "playback";
+
   async function speakText(text: string) {
     const stripped = stripMarkdownForSpeech(text);
     if (!stripped) return;
     stopSpeaking();
+    setSpeakErrorMsg(null);
     setIsSpeaking(true);
+
+    // Every failure is logged with a stage tag (via console.warn, matching the
+    // [AI stream] diagnostic convention elsewhere in this file) and surfaced in
+    // the UI. The old implementation swallowed all errors, which made assistant
+    // finished replying but never spoke" undiagnosable and left the mic
+    // silently reopening as if playback had succeeded.
+    const failSpeech = (stage: TtsFailureStage, detail: Record<string, unknown> = {}) => {
+      console.warn("[AI TTS] playback failed", { stage, ...detail });
+      setSpeakErrorMsg(
+        "LabTrax Assistant couldn't speak that reply. Check your volume, then click the headphones button to try again.",
+      );
+      setIsSpeaking(false);
+    };
+
+    let resp: Response;
     try {
       const token = getAccessToken();
-      const resp = await fetch(apiUrl("/ai-tts"), {
+      resp = await fetch(apiUrl("/ai-tts"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1153,23 +1262,50 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         },
         body: JSON.stringify({ text: stripped, voice: ttsVoiceRef.current }),
       });
-      if (!resp.ok) { setIsSpeaking(false); return; }
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      currentAudioRef.current = audio;
-      audio.onended = () => {
-        setIsSpeaking(false);
-        URL.revokeObjectURL(url);
-        currentAudioRef.current = null;
-      };
-      audio.onerror = () => {
-        setIsSpeaking(false);
-        currentAudioRef.current = null;
-      };
-      await audio.play();
-    } catch {
+    } catch (err) {
+      failSpeech("request", { message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    if (!resp.ok) {
+      failSpeech("request", { status: resp.status });
+      return;
+    }
+
+    let blob: Blob;
+    try {
+      blob = await resp.blob();
+    } catch (err) {
+      failSpeech("request", { message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    if (!blob.size) {
+      failSpeech("empty_audio");
+      return;
+    }
+
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    currentAudioRef.current = audio;
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      currentAudioRef.current = null;
+      // Set settling flag before flipping isSpeaking so the auto-listen effect
+      // sees it synchronously and can defer the mic open to avoid an audio-session race.
+      audioSessionSettlingRef.current = true;
       setIsSpeaking(false);
+      setTimeout(() => { audioSessionSettlingRef.current = false; }, 100);
+    };
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      currentAudioRef.current = null;
+      failSpeech("playback");
+    };
+    try {
+      await audio.play();
+    } catch (err) {
+      URL.revokeObjectURL(url);
+      currentAudioRef.current = null;
+      failSpeech("playback", { message: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -1182,6 +1318,76 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     setIsSpeaking(false);
   }
 
+  /** Play a short sample clip for the given voice so users can evaluate before committing. */
+  async function previewVoiceSample(voice: TtsVoice) {
+    // Stop any running preview first.
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current = null;
+    }
+    // Toggle off when tapping the same voice again.
+    if (previewingVoice === voice) {
+      setPreviewingVoice(null);
+      return;
+    }
+    setPreviewingVoice(voice);
+    try {
+      const token = getAccessToken();
+      const resp = await fetch(apiUrl("/ai-tts"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ text: "Hi, I'm LabTrax Assistant.", voice }),
+      });
+      if (!resp.ok) { setPreviewingVoice(null); return; }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      previewAudioRef.current = audio;
+      audio.onended = () => {
+        setPreviewingVoice(null);
+        URL.revokeObjectURL(url);
+        previewAudioRef.current = null;
+      };
+      audio.onerror = () => {
+        setPreviewingVoice(null);
+        previewAudioRef.current = null;
+      };
+      await audio.play();
+    } catch {
+      setPreviewingVoice(null);
+    }
+  }
+
+  /** Tear down the AudioContext VAD analyser and cancel its RAF loop. */
+  function tearDownVad() {
+    const vad = analyserRef.current;
+    if (!vad) return;
+    analyserRef.current = null;
+    cancelAnimationFrame(vad.rafId);
+    try { vad.ctx.close(); } catch { /* ignore */ }
+  }
+
+  /**
+   * Idle recycle: stop the current recorder and immediately arm a fresh one on
+   * the same live MediaStream. Keeps buffers bounded through arbitrarily long
+   * silences without uploading silence for transcription, without touching the
+   * VAD analyser, and without releasing/re-acquiring the microphone (so the
+   * browser mic indicator stays steady).
+   */
+  function recycleCapture() {
+    const rec = recognitionRef.current as { mr: MediaRecorder; stream: MediaStream } | null;
+    if (!rec || !voiceModeRef.current || discardNextStopRef.current) return;
+    recycleNextStopRef.current = true;
+    try {
+      rec.mr.stop();
+    } catch {
+      recycleNextStopRef.current = false;
+    }
+  }
+
   async function startListening() {
     if (!navigator.mediaDevices?.getUserMedia) {
       setMicState("error");
@@ -1189,6 +1395,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       return;
     }
     stopSpeaking();
+    tearDownVad();
     const prev = recognitionRef.current as { mr: MediaRecorder; stream: MediaStream } | null;
     if (prev) {
       try { prev.mr.stop(); } catch { /* ignore */ }
@@ -1198,10 +1405,18 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     setMicErrorMsg(null);
     setMicErrorKind("other");
 
+    // Claim this listen attempt. Anything that tears listening down (stop,
+    // cancel, voice-mode exit, unmount) bumps the counter, which makes the
+    // continuation below a no-op instead of quietly re-opening the mic.
+    const session = ++listenSessionRef.current;
+
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e: unknown) {
+      // Torn down while the permission prompt was open: stay quiet, the user
+      // already asked us to stop.
+      if (listenSessionRef.current !== session) return;
       const name = (e as { name?: string }).name ?? "";
       if (name === "NotAllowedError" || name === "PermissionDeniedError" || name === "SecurityError") {
         setMicState("error");
@@ -1217,20 +1432,124 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       return;
     }
 
+    // Permission can resolve long after the request: if listening was torn down
+    // (toggle-off, stop, unmount) in the meantime, release the tracks the
+    // browser just handed us and set nothing up — no VAD, no recorder, no state.
+    if (listenSessionRef.current !== session) {
+      try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+      return;
+    }
+
+    // Wire up VAD via an AudioContext analyser. Only active in voice mode
+    // (voiceModeRef.current); dictation falls through with no VAD overhead.
+    if (voiceModeRef.current) {
+      try {
+        const ctx = new AudioContext();
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+
+        const bufLen = analyser.frequencyBinCount;
+        const buf = new Uint8Array(bufLen);
+
+        const RMS_SPEECH = 0.06;   // ≈ −45 dB
+        const RMS_SILENCE = 0.02;  // ≈ −50 dB
+        const SILENCE_MS = 1500;
+        // How long a silent capture may buffer before it is recycled. There is
+        // deliberately no "no speech detected" watchdog: a voice conversation
+        // stays armed through arbitrarily long pauses and only ends when the
+        // user turns it off, closes the panel, or something genuinely fails.
+        const IDLE_RECYCLE_MS = 20000;
+
+        const vadState = {
+          ctx,
+          analyser,
+          rafId: 0,
+          speechDetected: false,
+          silenceStart: null as number | null,
+          captureStartedAt: Date.now(),
+        };
+        analyserRef.current = vadState;
+        setVadPhase("waiting");
+
+        const loop = () => {
+          if (analyserRef.current !== vadState) return; // already torn down
+          analyser.getByteTimeDomainData(buf);
+          let sumSq = 0;
+          for (let i = 0; i < bufLen; i++) {
+            const n = (buf[i]! / 128) - 1;
+            sumSq += n * n;
+          }
+          const rms = Math.sqrt(sumSq / bufLen);
+
+          if (rms > RMS_SPEECH) {
+            if (!vadState.speechDetected) {
+              vadState.speechDetected = true;
+              setVadPhase("speaking");
+            }
+            vadState.silenceStart = null;
+          } else if (rms < RMS_SILENCE && vadState.speechDetected) {
+            if (!vadState.silenceStart) {
+              vadState.silenceStart = Date.now();
+            } else if (Date.now() - vadState.silenceStart > SILENCE_MS) {
+              // End of utterance → auto-stop (triggers STT via onstop).
+              tearDownVad();
+              stopListening();
+              return;
+            }
+          } else if (!vadState.speechDetected && Date.now() - vadState.captureStartedAt > IDLE_RECYCLE_MS) {
+            // Nothing but silence for a long stretch: swap in a fresh recorder
+            // so buffers stay bounded. Listening (and this VAD loop) continues
+            // uninterrupted on the same microphone stream.
+            vadState.captureStartedAt = Date.now();
+            recycleCapture();
+          }
+          vadState.rafId = requestAnimationFrame(loop);
+        };
+        vadState.rafId = requestAnimationFrame(loop);
+      } catch {
+        // AudioContext unavailable (e.g. test environment) — continue without VAD.
+      }
+    }
+
+    armRecorder(stream);
+    setMicState("listening");
+  }
+
+  /**
+   * Arm (and start) a MediaRecorder on an already-open MediaStream. Split out
+   * of startListening so an idle voice-mode capture can be recycled onto the
+   * same stream without re-running getUserMedia.
+   */
+  function armRecorder(stream: MediaStream) {
     const chunks: BlobPart[] = [];
     const mr = new MediaRecorder(stream);
     recognitionRef.current = { mr, stream } as any;
 
     mr.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
     mr.onstop = async () => {
-      try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+      const recycling = recycleNextStopRef.current;
+      recycleNextStopRef.current = false;
+      const teardown = discardNextStopRef.current;
+      if (teardown) discardNextStopRef.current = false;
+      // An idle recycle keeps the microphone stream open so the browser mic
+      // indicator never flickers; every other stop releases it.
+      const keepStream = recycling && !teardown && voiceModeRef.current;
+      if (!keepStream) {
+        try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+      }
       if (recognitionRef.current && (recognitionRef.current as any).mr === mr) {
         recognitionRef.current = null;
       }
-      if (discardNextStopRef.current) {
+      if (teardown) {
         // Teardown stop (voice-mode exit or unmount): drop the captured audio —
         // no STT upload and no auto-send.
-        discardNextStopRef.current = false;
+        return;
+      }
+      if (recycling) {
+        // Silence-only buffer: drop it and keep listening on the same stream.
+        if (keepStream) armRecorder(stream);
         return;
       }
       const blob = new Blob(chunks, { type: mr.mimeType || "audio/webm" });
@@ -1265,6 +1584,10 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           }
         } else {
           setMicState("idle");
+          // Nothing was said in that turn (e.g. a cough or background noise
+          // ended the capture): re-arm instead of dropping out of the
+          // conversation with nothing running.
+          if (voiceModeRef.current) void startListening();
         }
       } catch {
         setMicState("error");
@@ -1275,16 +1598,21 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     mr.onerror = () => {
       try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
       recognitionRef.current = null;
+      recycleNextStopRef.current = false;
       setMicState("error");
       setMicErrorKind("other");
       setMicErrorMsg("Recording failed. Please try again.");
     };
 
     mr.start();
-    setMicState("listening");
   }
 
   function stopListening() {
+    tearDownVad();
+    // A recycle may have been issued in the same frame; this stop supersedes it.
+    recycleNextStopRef.current = false;
+    // Invalidate any getUserMedia() still in flight so it can't revive the mic.
+    listenSessionRef.current++;
     const rec = recognitionRef.current as { mr: MediaRecorder; stream: MediaStream } | null;
     recognitionRef.current = null;
     if (rec) {
@@ -1297,6 +1625,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   /** Stop any active recording and discard the captured audio (no STT, no
    *  auto-send). Used for teardown paths: voice-mode exit and unmount. */
   function cancelListening() {
+    tearDownVad();
     if (recognitionRef.current) discardNextStopRef.current = true;
     stopListening();
   }
@@ -1310,8 +1639,11 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     snapshotPinnedCases: AiCaseContext[],
   ) {
     setSending(true);
+    setStreamingProgress(null);
 
-    const body: Record<string, unknown> = { messages: buildHistory(currentMessages), auto_execute: autoExecute };
+    // Actions must always go through the explicit Review → Confirm flow. Keep
+    // the legacy flag false for older servers, but never expose a bypass toggle.
+    const body: Record<string, unknown> = { messages: buildHistory(currentMessages), auto_execute: false };
     if (snapshotPinnedCases.length === 1) {
       body.caseId = snapshotPinnedCases[0]!.caseId;
     } else if (snapshotPinnedCases.length > 1) {
@@ -1399,6 +1731,17 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             continue;
           }
 
+          if (evt.progress !== undefined) {
+            const progress = evt.progress;
+            const text = typeof progress === "string"
+              ? progress
+              : progress && typeof progress === "object"
+                ? String((progress as { message?: unknown; status?: unknown }).message ??
+                  (progress as { status?: unknown }).status ?? "")
+                : "";
+            if (text) setStreamingProgress(text);
+          }
+
           if (evt.tool_call && typeof evt.tool_call === "object") {
             const tc = evt.tool_call as { name?: string };
             setStreamingToolCall(tc.name ?? null);
@@ -1427,7 +1770,8 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             break outer;
           }
 
-          // Auto-executed action — executed inline, no confirm needed
+          // Older servers may still emit this event. Do not treat it as an
+          // approval bypass: present it as a completed server result only.
           if (evt.auto_executed && typeof evt.auto_executed === "object") {
             const ae = evt.auto_executed as {
               toolName?: string;
@@ -1435,7 +1779,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
               result?: unknown;
             };
             // Append a small system indicator to the streaming message
-            const indicator = `\n✅ *Auto-executed: ${ae.summary || ae.toolName || "action"}*\n`;
+            const indicator = `\n✅ *Completed: ${ae.summary || ae.toolName || "action"}*\n`;
             fullContent += indicator;
             setMessages((prev) =>
               prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
@@ -1675,7 +2019,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             <Sparkles size={16} className="text-primary" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold">Maynard</div>
+            <div className="text-sm font-semibold">LabTrax Assistant</div>
             {pinnedCases.length === 0 ? (
               <div className="text-[11px] text-muted-foreground">Can answer & take actions</div>
             ) : (
@@ -2144,7 +2488,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             </div>
             <div className="bg-secondary px-3 py-2 rounded-2xl rounded-bl-sm flex items-center gap-1.5">
               <Loader2 size={13} className="animate-spin text-muted-foreground" />
-              <span className="text-xs text-muted-foreground">Thinking…</span>
+              <span className="text-xs text-muted-foreground" aria-live="polite">
+                {streamingProgress ?? (streamingToolCall ? `Working on ${getToolCallLabel(streamingToolCall)}…` : "Thinking…")}
+              </span>
             </div>
           </div>
         )}
@@ -2154,162 +2500,239 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
 
       {/* Input */}
       <div className="shrink-0 border-t border-border p-3 bg-card">
-        {/* Auto-execute toggle */}
-        <div className="flex items-center gap-1.5 mb-2">
-          <button
-            type="button"
-            onClick={() => setAutoExecute((prev) => !prev)}
-            title={autoExecute ? "Auto-execute is ON — impactful actions run without confirmation" : "Auto-execute is OFF — Maynard will ask for confirmation"}
-            className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border transition-colors ${
-              autoExecute
-                ? "bg-amber-50 border-amber-300 text-amber-700"
-                : "bg-secondary border-input text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <Zap size={10} />
-            Auto-execute
-          </button>
-          <span className="text-[10px] text-muted-foreground/60">
-            {autoExecute ? "Maynard will run actions without asking" : "Maynard will ask before changing data"}
-          </span>
-        </div>
-        <div className="flex gap-2 items-end">
+        {/* Composer — the message box gets a full-width row of its own, with
+            the mic / voice-conversation / voice-picker / send controls on a
+            second row beneath it. The box starts ~3 lines tall, grows with the
+            typed content, then caps and scrolls internally so it never pushes
+            the conversation off screen. */}
+        <div className="flex flex-col gap-2" data-testid="ai-composer">
           <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
-            rows={1}
+            rows={3}
             maxLength={1000}
             disabled={sending}
-            className="flex-1 resize-none rounded-lg border border-input bg-secondary px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50 min-h-[38px] max-h-[100px] scrollbar-thin"
+            className="w-full resize-none rounded-lg border border-input bg-secondary px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50 min-h-[76px] max-h-[168px] overflow-y-auto scrollbar-thin"
             style={{ fieldSizing: "content" } as React.CSSProperties}
           />
-          <button
-            type="button"
-            onClick={() => {
-              if (micState === "listening") {
-                stopListening();
-              } else if (micState === "processing") {
-                // no-op while waiting for AI
-              } else if (micState === "error") {
-                setMicState("idle");
-                setMicErrorMsg(null);
-              } else if (isSpeaking) {
-                stopSpeaking();
-                startListening();
-              } else {
-                startListening();
+          <div className="flex items-center gap-2" data-testid="ai-composer-controls">
+            <button
+              type="button"
+              onClick={() => {
+                if (micState === "listening") {
+                  stopListening();
+                } else if (micState === "processing") {
+                  // no-op while waiting for AI
+                } else if (micState === "error") {
+                  setMicState("idle");
+                  setMicErrorMsg(null);
+                } else if (isSpeaking) {
+                  stopSpeaking();
+                  startListening();
+                } else {
+                  startListening();
+                }
+              }}
+              disabled={sending || micState === "processing"}
+              aria-label={
+                micState === "listening"
+                  ? "Stop listening"
+                  : micState === "processing"
+                  ? "Processing..."
+                  : micState === "error"
+                  ? micErrorKind === "permission" ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss"
+                  : "Dictate message"
               }
-            }}
-            disabled={sending || micState === "processing"}
-            aria-label={
-              micState === "listening"
-                ? "Stop listening"
-                : micState === "processing"
-                ? "Processing..."
-                : micState === "error"
-                ? micErrorKind === "permission" ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss"
-                : "Dictate message"
-            }
-            title={
-              micState === "listening"
-                ? "Stop listening"
-                : micState === "processing"
-                ? "Processing..."
-                : micState === "error"
-                ? micErrorKind === "permission" ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss"
-                : "Dictate message"
-            }
-            className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-              micState === "listening"
-                ? "bg-destructive text-destructive-foreground animate-pulse"
-                : micState === "processing"
-                ? "bg-secondary border border-input text-muted-foreground"
-                : micState === "error"
-                ? "bg-destructive/10 border border-destructive/30 text-destructive"
-                : "bg-secondary border border-input text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {micState === "listening" ? (
-              <VoiceWaveform />
-            ) : micState === "processing" ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : micState === "error" ? (
-              <MicOff size={15} />
-            ) : (
-              <Mic size={15} />
-            )}
-          </button>
+              title={
+                micState === "listening"
+                  ? "Stop listening"
+                  : micState === "processing"
+                  ? "Processing..."
+                  : micState === "error"
+                  ? micErrorKind === "permission" ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss"
+                  : "Dictate message"
+              }
+              className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                micState === "listening"
+                  ? "bg-destructive text-destructive-foreground animate-pulse"
+                  : micState === "processing"
+                  ? "bg-secondary border border-input text-muted-foreground"
+                  : micState === "error"
+                  ? "bg-destructive/10 border border-destructive/30 text-destructive"
+                  : "bg-secondary border border-input text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {micState === "listening" ? (
+                <VoiceWaveform />
+              ) : micState === "processing" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : micState === "error" ? (
+                <MicOff size={15} />
+              ) : (
+                <Mic size={15} />
+              )}
+            </button>
 
-          {/* Voice conversation button — toggles voice mode, lives right of mic */}
-          <button
-            type="button"
-            onClick={() => {
-              if (voiceMode && voiceResumePending) {
-                // Remembered-on mount: this click is the user gesture that
-                // resumes the full voice loop (mic starts, speak → auto-listen
-                // continues). Don't toggle voice mode off.
+            {/* Voice conversation button — toggles voice mode, lives right of mic */}
+            <button
+              type="button"
+              onClick={() => {
+                if (voiceMode && voiceResumePending) {
+                  // Remembered-on mount: this click is the user gesture that
+                  // resumes the full voice loop (mic starts, speak → auto-listen
+                  // continues). Don't toggle voice mode off.
+                  setVoiceResumePending(false);
+                  voiceModeRef.current = true;
+                  if (!sending && !isSpeaking && (micState === "idle" || micState === "error")) {
+                    startListening();
+                  }
+                  return;
+                }
+                const next = !voiceMode;
+                setVoiceMode(next);
+                // Sync the ref in the same tick: startListening() below reads it
+                // to decide whether to arm the VAD, and it runs before React has
+                // flushed the effect that normally keeps the ref in step.
+                voiceModeRef.current = next;
                 setVoiceResumePending(false);
+                if (!next) {
+                  // Exiting voice mode mid-capture is a teardown: discard the
+                  // in-flight audio so no STT upload / auto-send fires after exit.
+                  cancelListening();
+                  stopSpeaking();
+                  return;
+                }
+                // Entering voice mode from idle: start mic capture immediately from
+                // this direct user gesture so getUserMedia runs (permission prompt /
+                // browser mic indicator). If the assistant is currently speaking, leave it
+                // to the auto-listen effect that fires when speech ends. If a reply
+                // is in flight, the TTS → auto-listen loop takes over as before.
                 if (!sending && !isSpeaking && (micState === "idle" || micState === "error")) {
                   startListening();
                 }
-                return;
+              }}
+              title={
+                voiceMode
+                  ? voiceResumePending
+                    ? "Tap to resume voice conversation"
+                    : "Exit voice mode"
+                  : "Voice conversation — LabTrax Assistant will speak and listen automatically"
               }
-              const next = !voiceMode;
-              setVoiceMode(next);
-              setVoiceResumePending(false);
-              if (!next) {
-                // Exiting voice mode mid-capture is a teardown: discard the
-                // in-flight audio so no STT upload / auto-send fires after exit.
-                cancelListening();
-                stopSpeaking();
-                return;
+              aria-label={
+                voiceMode
+                  ? voiceResumePending
+                    ? "Resume voice conversation"
+                    : "Exit voice mode"
+                  : "Start voice conversation"
               }
-              // Entering voice mode from idle: start mic capture immediately from
-              // this direct user gesture so getUserMedia runs (permission prompt /
-              // browser mic indicator). If Maynard is currently speaking, leave it
-              // to the auto-listen effect that fires when speech ends. If a reply
-              // is in flight, the TTS → auto-listen loop takes over as before.
-              if (!sending && !isSpeaking && (micState === "idle" || micState === "error")) {
-                startListening();
-              }
-            }}
-            title={
-              voiceMode
-                ? voiceResumePending
-                  ? "Tap to resume voice conversation"
-                  : "Exit voice mode"
-                : "Voice conversation — Maynard will speak and listen automatically"
-            }
-            aria-label={
-              voiceMode
-                ? voiceResumePending
-                  ? "Resume voice conversation"
-                  : "Exit voice mode"
-                : "Start voice conversation"
-            }
-            className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 transition-colors ${
-              voiceMode
-                ? voiceResumePending
-                  ? "bg-foreground text-background animate-pulse ring-2 ring-ring/50"
-                  : "bg-foreground text-background"
-                : "bg-secondary border border-input text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {voiceMode && (micState === "listening" || isSpeaking) ? <VoiceWaveform /> : <Headphones size={15} />}
-          </button>
+              className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+                voiceMode
+                  ? voiceResumePending
+                    ? "bg-foreground text-background animate-pulse ring-2 ring-ring/50"
+                    : "bg-foreground text-background"
+                  : "bg-secondary border border-input text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {voiceMode && (micState === "listening" || isSpeaking) ? <VoiceWaveform /> : <Headphones size={15} />}
+            </button>
 
-          <button
-            type="button"
-            onClick={() => sendMessage(input)}
-            disabled={!input.trim() || sending}
-            className="h-9 w-9 rounded-lg bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-            aria-label="Send message"
-          >
-            <Send size={15} />
-          </button>
+            {/* Voice picker — lets users choose the assistant's speaking voice and
+                preview each option with a short sample clip. Note: OpenAI does
+                not officially assign genders; labels are user-reported
+                descriptions only. */}
+            <div className="relative shrink-0" ref={voiceDropdownRef}>
+              <button
+                type="button"
+                onClick={() => setShowVoiceDropdown((v) => !v)}
+                title="Choose assistant voice"
+                aria-label="Assistant voice"
+                aria-haspopup="listbox"
+                aria-expanded={showVoiceDropdown}
+                className="h-9 rounded-lg border border-input bg-secondary text-xs text-foreground pl-2 pr-6 focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer max-w-[130px] flex items-center relative"
+              >
+                <span className="truncate">
+                  {TTS_VOICES.find((v) => v.value === ttsVoice)?.label ?? ttsVoice}
+                </span>
+                <ChevronDown
+                  size={11}
+                  className={`absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-transform ${showVoiceDropdown ? "rotate-180" : ""}`}
+                />
+              </button>
+              {showVoiceDropdown && (
+                <>
+                  {/* Click-outside backdrop */}
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowVoiceDropdown(false)}
+                  />
+                  <div
+                    role="listbox"
+                    aria-label="Choose assistant voice"
+                    className="absolute bottom-full mb-1.5 right-0 z-50 w-56 rounded-xl border border-border bg-popover shadow-xl overflow-hidden"
+                  >
+                    <p className="px-3 pt-2.5 pb-1 text-[10px] text-muted-foreground/70 font-semibold uppercase tracking-wider">
+                      Assistant Voice
+                    </p>
+                    {TTS_VOICES.map((v) => {
+                      const isSelected = v.value === ttsVoice;
+                      const isPreviewing = previewingVoice === v.value;
+                      return (
+                        <div
+                          key={v.value}
+                          role="option"
+                          aria-selected={isSelected}
+                          className={`flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer hover:bg-accent/70 transition-colors ${isSelected ? "bg-primary/5" : ""}`}
+                          onClick={() => {
+                            setTtsVoice(v.value);
+                            setShowVoiceDropdown(false);
+                          }}
+                        >
+                          <span className="w-3.5 shrink-0">
+                            {isSelected && <Check size={12} className="text-primary" />}
+                          </span>
+                          <span className={`flex-1 text-xs ${isSelected ? "font-medium text-foreground" : "text-foreground/90"}`}>
+                            {v.label}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void previewVoiceSample(v.value);
+                            }}
+                            title={isPreviewing ? "Stop preview" : "Play sample"}
+                            aria-label={isPreviewing ? `Stop preview for ${v.label}` : `Play sample for ${v.label}`}
+                            className={`shrink-0 w-6 h-6 rounded flex items-center justify-center transition-colors ${
+                              isPreviewing
+                                ? "bg-primary text-primary-foreground"
+                                : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                            }`}
+                          >
+                            {isPreviewing ? <Square size={9} fill="currentColor" /> : <Play size={9} />}
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <p className="px-3 py-2 text-[9px] text-muted-foreground/50 border-t border-border leading-snug">
+                      OpenAI does not officially assign genders; labels are user-reported descriptions only.
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => sendMessage(input)}
+              disabled={!input.trim() || sending}
+              className="h-9 w-9 rounded-lg bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed shrink-0 ml-auto"
+              aria-label="Send message"
+            >
+              <Send size={15} />
+            </button>
+          </div>
         </div>
 
         {/* Microphone permission / error banner */}
@@ -2328,20 +2751,41 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           </div>
         )}
 
+        {/* Spoken-reply playback failure banner — shown whenever speakText
+            couldn't play a reply aloud (request failure, no audio returned,
+            or the browser couldn't play it). Independent of the mic banner:
+            typed chat and dictation are unaffected by this failure. */}
+        {speakErrorMsg && (
+          <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-3 py-2">
+            <VolumeX size={13} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <p className="flex-1 text-[11px] text-amber-800 dark:text-amber-200 leading-snug">{speakErrorMsg}</p>
+            <button
+              type="button"
+              onClick={() => setSpeakErrorMsg(null)}
+              className="shrink-0 text-amber-600/60 dark:text-amber-400/60 hover:text-amber-700 dark:hover:text-amber-300"
+              aria-label="Dismiss voice playback error"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
         <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">
           {voiceMode
-            ? micState === "listening"
-              ? "Voice mode on — listening…"
+              ? micState === "listening"
+              ? vadPhase === "speaking"
+                  ? "Listening — got it, finishing up…"
+                  : "Listening — still listening, take your time…"
               : micState === "processing"
-              ? "Voice mode on — transcribing…"
+              ? "Thinking — transcribing…"
               : isSpeaking
-              ? "Voice mode on — Maynard is speaking"
+              ? "Speaking — LabTrax Assistant is speaking"
               : micState === "error"
-              ? "Voice mode on — microphone unavailable"
+              ? "Error — microphone unavailable"
               : voiceResumePending
               ? (
                   <>
-                    Voice mode remembered — tap the headphones to resume the conversation ·{" "}
+                    Paused — voice mode remembered — tap the headphones to resume the conversation ·{" "}
                     <button
                       type="button"
                       onClick={() => {
@@ -2357,7 +2801,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                     </button>
                   </>
                 )
-              : "Voice mode on — Maynard will speak and listen automatically"
+              : "Paused — LabTrax Assistant will speak and listen automatically"
             : "Mic to dictate · Headphones for voice conversation · Enter to send"}
         </p>
       </div>

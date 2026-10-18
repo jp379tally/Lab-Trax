@@ -50,6 +50,7 @@ export interface StoredSession {
 // ─── Storage constants ───────────────────────────────────────────────────────
 
 export const STORAGE_KEY = "labtrax_chat_sessions_v1";
+const LEGACY_STORAGE_KEYS = ["maynard_chat_sessions_v1", "maynard_ai_sessions_v1"];
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_SESSIONS_PER_KEY = 10;
 
@@ -57,13 +58,35 @@ export const MAX_SESSIONS_PER_KEY = 10;
 
 export function readStoredSessions(): StoredSession[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    let raw = localStorage.getItem(STORAGE_KEY);
+    // One-time, non-destructive migration from the retired assistant name.
+    // Prefer the current cache when both exist, then remove obsolete state so
+    // old sessions cannot be surfaced again.
+    if (!raw) {
+      for (const legacyKey of LEGACY_STORAGE_KEYS) {
+        const legacy = localStorage.getItem(legacyKey);
+        if (legacy) {
+          raw = legacy;
+          localStorage.setItem(STORAGE_KEY, legacy);
+          localStorage.removeItem(legacyKey);
+          break;
+        }
+      }
+    } else {
+      for (const legacyKey of LEGACY_STORAGE_KEYS) localStorage.removeItem(legacyKey);
+    }
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     const now = Date.now();
-    return (parsed.sessions ?? []).filter(
-      (s: StoredSession) => now - s.lastActive < SESSION_TTL_MS,
-    );
+    return (parsed.sessions ?? [])
+      .filter((s: StoredSession) => now - s.lastActive < SESSION_TTL_MS)
+      // Normalize older/raw cache entries too. Live, unexpired pending
+      // confirmations remain interactive; stale pending and confirmed actions
+      // cannot survive as expired or indefinitely-running cards.
+      .map((s: StoredSession) => ({
+        ...s,
+        messages: sanitizeMessagesForRestore(s.messages),
+      }));
   } catch {
     return [];
   }
@@ -112,9 +135,9 @@ function trimToolOutputForStorage(output: ToolOutput): ToolOutput {
  * - Strips the synthetic "welcome" message (it is rebuilt on restore).
  * - Trims tool outputs to label-only metadata so the full result JSON does not
  *   bloat stored sessions (see `trimToolOutputForStorage`).
- * - Collapses any proposedAction whose state is still "pending" to "rejected"
- *   so that restored sessions never show an interactive confirmation card for
- *   an action whose server-side TTL has already expired.
+ * - Preserves a pending action only when expiresAt is a finite future
+ *   timestamp; stale or missing-expiry pending actions and all confirmed
+ *   actions become rejected before persistence.
  */
 export function sanitizeMessagesForStorage(msgs: ChatMsg[]): ChatMsg[] {
   return msgs
@@ -124,12 +147,55 @@ export function sanitizeMessagesForStorage(msgs: ChatMsg[]): ChatMsg[] {
       if (m.toolOutputs && m.toolOutputs.length > 0) {
         next = { ...next, toolOutputs: m.toolOutputs.map(trimToolOutputForStorage) };
       }
-      if (next.proposedAction?.state === "pending") {
+      const action = next.proposedAction;
+      const shouldExpire =
+        action?.state === "confirmed" ||
+        (action?.state === "pending" &&
+          !(
+            typeof action.expiresAt === "number" &&
+            Number.isFinite(action.expiresAt) &&
+            action.expiresAt > Date.now()
+          ));
+      if (shouldExpire && action) {
         const now = Date.now();
         next = {
           ...next,
           proposedAction: {
-            ...next.proposedAction,
+            ...action,
+            state: "rejected" as const,
+            expiresAt: now - 1,
+          },
+        };
+      }
+      return next;
+    });
+}
+
+/**
+ * Normalize messages read from localStorage without destroying a live
+ * confirmation. Persistence is intentionally stricter (it collapses every
+ * pending action), but a session written by the streaming path can be read
+ * before that action's five-minute TTL expires and must still be confirmable.
+ */
+function sanitizeMessagesForRestore(msgs: ChatMsg[]): ChatMsg[] {
+  const now = Date.now();
+  return msgs
+    .filter((m) => m.id !== "welcome")
+    .map((m) => {
+      let next = m;
+      if (m.toolOutputs && m.toolOutputs.length > 0) {
+        next = { ...next, toolOutputs: m.toolOutputs.map(trimToolOutputForStorage) };
+      }
+      const action = next.proposedAction;
+      const shouldExpire =
+        action?.state === "confirmed" ||
+        (action?.state === "pending" &&
+          (!action.expiresAt || action.expiresAt <= now));
+      if (shouldExpire && action) {
+        next = {
+          ...next,
+          proposedAction: {
+            ...action,
             state: "rejected" as const,
             expiresAt: now - 1,
           },

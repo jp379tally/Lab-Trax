@@ -98,6 +98,11 @@ const ALLOWED_MAIN_STDERR = [
   /ANGLE|SwiftShader/i,
   // Source-map / DevTools warnings.
   /DevTools listening/i,
+  // Playwright's Electron driver closes its local inspector during normal
+  // shutdown; accept only the anchored loopback debugger-ending diagnostic.
+  /^Debugger ending on ws:\/\/127\.0\.0\.1:\d+\/[0-9a-f-]+$/i,
+  // Node prints this exact help URL after the debugger shutdown line.
+  /^For help, see: https:\/\/nodejs\.org\/learn\/getting-started\/debugging$/,
   // electron-updater logs to stderr at "info" level via electron-log when no
   // file transport is configured; we already gate the updater off in CI but
   // keep this defensive.

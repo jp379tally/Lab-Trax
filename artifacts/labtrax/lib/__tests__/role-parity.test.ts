@@ -40,7 +40,7 @@ function parseStringList(source: string, marker: string): string[] {
 }
 
 describe("role parity: mobile edit gate mirrors desktop billing gate", () => {
-  it("mobile EDIT_ROLES equals desktop BILLING_ROLES (the billingOnly predicate)", () => {
+  it("mobile EDIT_ROLES equals desktop BILLING_ROLES (the billingOnly predicate)", async () => {
     const desktop = readFileSync(DESKTOP_APPLAYOUT, "utf8");
     const mobile = readFileSync(MOBILE_AUTH_ME, "utf8");
 
@@ -56,7 +56,7 @@ describe("role parity: mobile edit gate mirrors desktop billing gate", () => {
   // The mobile screens gate their admin affordances on ADMIN_ROLES in
   // auth-me.ts, which must mirror the server. The server rbac is the actual
   // enforcement boundary, so anchor parity there.
-  it("mobile ADMIN_ROLES equals server rbac ADMIN_ROLES", () => {
+  it("mobile ADMIN_ROLES equals server rbac ADMIN_ROLES", async () => {
     const mobile = readFileSync(MOBILE_AUTH_ME, "utf8");
     const server = readFileSync(SERVER_RBAC, "utf8");
 
@@ -67,7 +67,7 @@ describe("role parity: mobile edit gate mirrors desktop billing gate", () => {
     expect(mobileAdmin).toEqual(serverAdmin);
   });
 
-  it("mobile EDIT_ROLES equals server rbac BILLING_ROLES", () => {
+  it("mobile EDIT_ROLES equals server rbac BILLING_ROLES", async () => {
     const mobile = readFileSync(MOBILE_AUTH_ME, "utf8");
     const server = readFileSync(SERVER_RBAC, "utf8");
 

@@ -24,12 +24,15 @@ import { apiFetch } from "@/lib/api";
 
 interface Entitlement {
   status:
+    | "free"
+    | "onboarding_pending"
     | "trialing"
     | "active"
     | "past_due"
     | "grace"
     | "locked"
     | "canceled"
+    | "deactivated"
     | "legacy_free";
   accessLevel: "full" | "read_only" | "locked";
   trialDaysRemaining: number | null;
@@ -44,6 +47,8 @@ interface Entitlement {
   stripePriceId: string | null;
   cancelAtPeriodEnd: boolean;
   hasStripeSubscription: boolean;
+  providerPlan?: string | null;
+  trialEndAt?: string | null;
 }
 
 interface Plan {
@@ -92,6 +97,14 @@ type StatusConfig = {
 };
 
 const STATUS_CONFIG: Record<string, StatusConfig> = {
+  free: {
+    label: "Free — permanent", icon: Lock, iconColor: "text-slate-500", bgColor: "bg-slate-500/10",
+    borderColor: "border-slate-500/20", description: "Read-only cases shared by approved partner labs. No card, trial expiry, or subscription renewal.",
+  },
+  onboarding_pending: {
+    label: "Signup incomplete", icon: Timer, iconColor: "text-amber-500", bgColor: "bg-amber-500/10",
+    borderColor: "border-amber-500/20", description: "Your paid plan is not active until Stripe verifies card collection. Retry or explicitly choose Free.",
+  },
   trialing: {
     label: "Free Trial",
     icon: Timer,
@@ -140,6 +153,14 @@ const STATUS_CONFIG: Record<string, StatusConfig> = {
     borderColor: "border-zinc-200",
     description: "Your subscription has been canceled. Subscribe again to restore access.",
   },
+  deactivated: {
+    label: "Deactivated",
+    icon: Lock,
+    iconColor: "text-red-600",
+    bgColor: "bg-red-50",
+    borderColor: "border-red-200",
+    description: "Your subscription is deactivated. Renew to restore full access, or continue with permanent read-only access.",
+  },
   legacy_free: {
     label: "Legacy Access",
     icon: Zap,
@@ -172,11 +193,11 @@ const EVENT_LABELS: Record<string, string> = {
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "—";
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${mm}/${dd}/${d.getFullYear()}`;
   } catch {
     return "—";
   }
@@ -185,11 +206,11 @@ function fmtDate(iso: string | null): string {
 function fmtShortDate(iso: string | null): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "—";
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${mm}/${dd}/${d.getFullYear()}`;
   } catch {
     return "—";
   }
@@ -254,6 +275,12 @@ export default function BillingPage() {
   });
   const plans = plansData?.plans ?? [];
   const grouped = groupPlansByType(plans);
+  const relevantPlanType =
+    entitlement?.subjectType === "provider_org" ||
+    entitlement?.subjectType === "provider_user" ||
+    entitlement?.planType === "provider"
+      ? "provider"
+      : "lab";
 
   const { data: invoicesData, isLoading: invoicesLoading } = useQuery({
     queryKey: ["billing", "invoices"],
@@ -368,11 +395,12 @@ export default function BillingPage() {
   }, [qc]);
 
   const needsPayment =
-    entitlement?.status === "trialing" ||
+    (entitlement?.status === "trialing" && !entitlement.hasStripeSubscription) ||
     entitlement?.status === "grace" ||
     entitlement?.status === "locked" ||
     entitlement?.status === "past_due" ||
-    entitlement?.status === "canceled";
+    entitlement?.status === "canceled" ||
+    entitlement?.status === "deactivated";
 
   const canManage = entitlement?.status === "active" || entitlement?.status === "past_due";
   const canSwitchPlan = canManage && entitlement?.hasStripeSubscription;
@@ -464,7 +492,7 @@ export default function BillingPage() {
               <tr className="border-b border-border">
                 <td className="px-4 py-3 text-muted-foreground w-40">Plan</td>
                 <td className="px-4 py-3 font-medium">
-                  {planLabel(entitlement.planType, entitlement.billingInterval)}
+                  {entitlement.providerPlan ? `${entitlement.providerPlan[0]?.toUpperCase()}${entitlement.providerPlan.slice(1)}${entitlement.providerPlan === "free" ? " — $0 permanent" : " — Monthly"}` : planLabel(entitlement.planType, entitlement.billingInterval)}
                 </td>
               </tr>
               <tr className="border-b border-border">
@@ -564,7 +592,7 @@ export default function BillingPage() {
           {plans.length > 0 ? (
             <div className="space-y-3">
               <h2 className="text-sm font-semibold text-foreground">Choose a plan</h2>
-              {(["lab", "provider"] as const).map((type) => {
+              {([relevantPlanType] as const).map((type) => {
                 const typePlans = grouped[type];
                 if (typePlans.length === 0) return null;
                 return (

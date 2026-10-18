@@ -55,6 +55,7 @@ maybe("GET /api/auth/me — desktop-critical field contract", () => {
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-auth-me";
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
+    await (await import("./index.js")).labtraxRoutesReady;
   });
 
   afterAll(async () => {

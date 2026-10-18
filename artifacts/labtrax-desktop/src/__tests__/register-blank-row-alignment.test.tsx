@@ -21,7 +21,7 @@
  *     created via Receive Payments), so the "Add entry" affordance is disabled.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import RegisterPage from "@/pages/finance/register";
 import { makeAuthWrapper } from "./test-utils";
@@ -85,6 +85,7 @@ function makeTxn(bankAccountId: string) {
 function installFetchMock(accountType: AccountType) {
   const account = makeAccount(accountType);
   const txns = [makeTxn(account.id)];
+  const transactionPosts: unknown[] = [];
 
   function json(body: unknown) {
     return new Response(JSON.stringify(body), {
@@ -93,7 +94,7 @@ function installFetchMock(accountType: AccountType) {
     });
   }
 
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.includes("/api/organizations")) {
       return json([{ id: ORG_ID, name: "Test Lab", type: "lab" }]);
@@ -111,10 +112,15 @@ function installFetchMock(accountType: AccountType) {
       return json({ count: 0, total: 0 });
     }
     if (url.includes("/api/finance/transactions")) {
+      if (init?.method === "POST") {
+        transactionPosts.push(JSON.parse(String(init.body)));
+        return json({ id: "txn-new" });
+      }
       return json(txns);
     }
     return json({});
   }) as typeof fetch;
+  return transactionPosts;
 }
 
 function renderRegister() {
@@ -151,25 +157,28 @@ describe("Register inline-add row alignment", () => {
     if (!Element.prototype.scrollIntoView) {
       Element.prototype.scrollIntoView = () => {};
     }
+    HTMLElement.prototype.scrollTo = vi.fn();
   });
 
-  it("colSpan=9 (Balance present): inline-add inputs line up under each header column", async () => {
+  it("11-col (Balance present): inline-add inputs line up under each header column", async () => {
     installFetchMock("checking");
     const { container } = renderRegister();
 
     // Wait for the register to finish loading (header + data row present).
     await screen.findByText("Acme Supply");
 
-    // Standard accounts expose all 9 columns:
-    // Date | Num | Payee | Account | Payment | ✓ | Deposit | Balance | Actions
-    expect(headerCells(container)).toHaveLength(9);
-    expect(colgroupCols(container)).toHaveLength(9);
+    // Standard accounts expose all 11 columns:
+    // Date | Num | Payee | Account | Category | Payment | Deposit | ✓ | Balance | Memo | Actions
+    expect(headerCells(container)).toHaveLength(11);
+    expect(colgroupCols(container)).toHaveLength(11);
+    expect(screen.getByRole("columnheader", { name: "Cleared" })).toBeTruthy();
 
     // Open the inline-add row.
     fireEvent.click(screen.getByRole("button", { name: /add entry/i }));
 
     // The Num input uniquely identifies the inline-add row.
     const numInput = await screen.findByPlaceholderText("Num");
+    await waitFor(() => expect(numInput).toHaveFocus());
     const blankRow = numInput.closest("tr");
     expect(blankRow).not.toBeNull();
 
@@ -178,49 +187,115 @@ describe("Register inline-add row alignment", () => {
     ) as HTMLTableCellElement[];
 
     // One cell per header column keeps the fixed-layout grid aligned.
-    expect(cells).toHaveLength(9);
+    expect(cells).toHaveLength(11);
 
     // Each input sits in the cell whose ordinal position matches its header.
     // Date (0) holds no input here — when the date picker chip is shown the
     // date lives in a separate full-width row above the inputs.
     expect(cells[1].querySelector('input[placeholder="Num"]')).not.toBeNull();
     expect(cells[2].querySelector('input[placeholder="Payee"]')).not.toBeNull();
-    // Account/Category (3) is the CategorySelect typeahead input.
-    expect(cells[3].querySelector("input")).not.toBeNull();
-    // Payment (4) and Deposit (6) are the two numeric amount inputs.
-    expect(cells[4].querySelector('input[type="number"]')).not.toBeNull();
+    // Account (3) is the register's own account: read-only text, no input.
+    expect(cells[3].querySelector("input")).toBeNull();
+    expect(cells[3].textContent).toContain("Checking");
+    // Category (4) is the CategorySelect typeahead input.
+    expect(cells[4].querySelector("input")).not.toBeNull();
+    // Payment (5) and Deposit (6) are the two numeric amount inputs.
+    expect(cells[5].querySelector('input[type="number"]')).not.toBeNull();
     expect(cells[6].querySelector('input[type="number"]')).not.toBeNull();
-    // Actions (8) holds the Save control.
+    // Memo (9) is a text input after Balance (8).
+    expect(cells[9].querySelector('input[placeholder="Memo"]')).not.toBeNull();
+    // Actions (10) holds the Save control.
     expect(
-      cells[8].querySelector('button[aria-label="Save row"]')
+      cells[10].querySelector('button[aria-label="Save row"]')
     ).not.toBeNull();
 
     // The full-width date-picker row must span exactly the column count, or it
     // would push the inputs out of alignment.
-    const dateRow = container.querySelector('td[colspan="9"]');
+    const dateRow = container.querySelector('td[colspan="11"]');
     expect(dateRow).not.toBeNull();
     expect(dateRow!.getAttribute("colspan")).toBe(String(headerCells(container).length));
   });
 
-  it("colSpan=8 (Undeposited Funds): Balance column drops out and inline-add is disabled", async () => {
+  it("opens one row, refocuses it on repeated clicks, and dismisses then reopens cleanly", async () => {
+    installFetchMock("checking");
+    renderRegister();
+    await screen.findByText("Acme Supply");
+
+    const addEntry = screen.getByRole("button", { name: /add entry/i });
+    fireEvent.click(addEntry);
+    const numInput = await screen.findByPlaceholderText("Num");
+    await waitFor(() => expect(numInput).toHaveFocus());
+    expect(screen.getAllByPlaceholderText("Num")).toHaveLength(1);
+
+    fireEvent.blur(numInput);
+    fireEvent.click(addEntry);
+    await waitFor(() => expect(numInput).toHaveFocus());
+    expect(screen.getAllByPlaceholderText("Num")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /dismiss row/i }));
+    await waitFor(() => expect(screen.queryByPlaceholderText("Num")).toBeNull());
+
+    fireEvent.click(addEntry);
+    const reopenedInput = await screen.findByPlaceholderText("Num");
+    await waitFor(() => expect(reopenedInput).toHaveFocus());
+    expect(screen.getAllByPlaceholderText("Num")).toHaveLength(1);
+  });
+
+  it("saves a valid row, dismisses the fresh row, and reopens one focused row", async () => {
+    const transactionPosts = installFetchMock("checking");
+    renderRegister();
+    await screen.findByText("Acme Supply");
+
+    fireEvent.click(screen.getByRole("button", { name: /add entry/i }));
+    fireEvent.change(await screen.findByPlaceholderText("Payee"), {
+      target: { value: "New Vendor" },
+    });
+    fireEvent.change(screen.getAllByPlaceholderText("0.00")[0], {
+      target: { value: "25.50" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save row/i }));
+
+    await waitFor(() => expect(transactionPosts).toHaveLength(1));
+    await waitFor(() => expect(screen.getAllByPlaceholderText("Num")).toHaveLength(1));
+    await waitFor(() => expect(screen.getByPlaceholderText("Num")).toHaveFocus());
+    expect(transactionPosts[0]).toMatchObject({
+      payee: "New Vendor",
+      payment: 25.5,
+      bankAccountId: "acct-chk",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /dismiss row/i }));
+    await waitFor(() => expect(screen.queryByPlaceholderText("Num")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: /add entry/i }));
+    const reopenedInput = await screen.findByPlaceholderText("Num");
+    await waitFor(() => expect(reopenedInput).toHaveFocus());
+    expect(screen.getAllByPlaceholderText("Num")).toHaveLength(1);
+  });
+
+  it("10-col (Undeposited Funds): Balance column drops out and inline-add is disabled", async () => {
     installFetchMock("undeposited_funds");
     const { container } = renderRegister();
 
     await screen.findByText("Acme Supply");
 
     // UF accounts hide the Balance column everywhere: colgroup, header, and
-    // every data row collapse from 9 to 8 columns in lockstep.
-    expect(headerCells(container)).toHaveLength(8);
-    expect(colgroupCols(container)).toHaveLength(8);
+    // every data row collapse from 11 to 10 columns in lockstep.
+    expect(headerCells(container)).toHaveLength(10);
+    expect(colgroupCols(container)).toHaveLength(10);
 
     const dataRow = screen.getByText("Acme Supply").closest("tr");
     expect(dataRow).not.toBeNull();
-    expect(dataRow!.querySelectorAll(":scope > td")).toHaveLength(8);
+    expect(dataRow!.querySelectorAll(":scope > td")).toHaveLength(10);
 
     // Inline-add is intentionally unavailable for UF accounts, so no BlankRow
-    // is ever mounted into the 8-column grid.
+    // is ever mounted into the 10-column grid.
     const addEntry = screen.getByRole("button", { name: /add entry/i });
     expect(addEntry).toBeDisabled();
+    expect(addEntry).toHaveAttribute(
+      "title",
+      expect.stringMatching(/receive payments/i)
+    );
 
     fireEvent.click(addEntry);
     await waitFor(() => {

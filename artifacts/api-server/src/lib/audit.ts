@@ -18,6 +18,22 @@ type AuditInput = {
   details?: unknown;
 };
 
+/** Transactional variant used when the audit event is part of a state change. */
+export async function writeAuditLogTx(tx: any, input: AuditInput) {
+  await tx.insert(auditLogs).values({
+    userId: input.userId ?? (input.req as any)?.auth?.userId ?? null,
+    organizationId: input.organizationId ?? input.labId ?? null,
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId ?? null,
+    ipAddress: input.req?.ip ?? null,
+    userAgent: input.req?.get("user-agent") ?? null,
+    beforeJson: input.beforeJson ?? null,
+    afterJson: input.afterJson ?? null,
+    metadataJson: ((input.metadataJson ?? input.details) as Record<string, unknown>) ?? {},
+  });
+}
+
 export async function writeAuditLog(input: AuditInput) {
   try {
     await db.insert(auditLogs).values({

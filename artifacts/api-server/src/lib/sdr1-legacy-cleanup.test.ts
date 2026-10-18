@@ -1,158 +1,103 @@
-/**
- * Unit tests for the SDR1 legacy cleanup matching logic (pure, no DB).
- *
- * The dangerous failure modes this guards against:
- *  - matching by invoice/case number alone (numbers 26-1…26-51 were re-used
- *    by legitimate canonical cases with different patients);
- *  - matching a different patient who shares a surname;
- *  - deleting rows whose blob is unparseable or dated outside the legacy era.
- */
 import { describe, expect, it } from "vitest";
 import {
-  SDR1_ERA_END_MS,
-  SDR1_ERA_START_MS,
-  SDR1_TARGET_PATIENTS,
   classifySdr1LegacyRows,
   findMatchingTarget,
   namesMatch,
   parseLegacyTimestampMs,
+  type Sdr1CleanupConfiguration,
 } from "./sdr1-legacy-cleanup";
 
-const ERA_MS = Date.parse("2026-05-01T00:00:00.000Z"); // inside the window
+const start = Date.parse("2026-03-01T00:00:00.000Z");
+const end = Date.parse("2026-07-01T00:00:00.000Z");
+const inside = Date.parse("2026-05-01T00:00:00.000Z");
+const targets = ["Sample/Patient", "Alex Fixture"];
+const cleanup: Sdr1CleanupConfiguration = {
+  eraStartMs: start,
+  eraEndMs: end,
+  targetPatients: targets,
+};
 
 function legacyRow(id: string, blob: Record<string, unknown> | string) {
   return {
     id,
-    organizationId: "org-sdr1",
+    organizationId: "synthetic-organization",
     caseData: typeof blob === "string" ? blob : JSON.stringify(blob),
   };
 }
 
-describe("namesMatch", () => {
-  it("matches identical names and ignores case/order/punctuation", () => {
-    expect(namesMatch("Fred Fisher", "Fisher/Fred")).toBe(true);
-    expect(namesMatch("Fisher, Fred", "Fisher/Fred")).toBe(true);
-    expect(namesMatch("MCNEIL, NORMA", "Mcneil/Norma")).toBe(true);
-    expect(namesMatch("Stephanie Sunderman- Barnes", "Stephanie Sunderman-Barnes")).toBe(true);
+describe("legacy cleanup name matching", () => {
+  it("matches exact tokens across case, order, and punctuation", () => {
+    expect(namesMatch("Patient, Sample", "Sample/Patient")).toBe(true);
+    expect(namesMatch("SAMPLE PATIENT", "Patient/Sample")).toBe(true);
+    expect(namesMatch("Sample Patient Jr", "Patient/Sample")).toBe(true);
   });
 
-  it("allows at most one extra token (nickname annotations)", () => {
-    expect(namesMatch("Zapata, Yilder (Mark)", "Zapata/Yilder")).toBe(true);
-    expect(namesMatch("Zapata, Yilder Mark Extra", "Zapata/Yilder")).toBe(false);
+  it("rejects shared-surname and substring matches", () => {
+    expect(namesMatch("Other Sample", "Sample/Patient")).toBe(false);
+    expect(namesMatch("Sample Patient Extra Token", "Sample/Patient")).toBe(false);
+    expect(namesMatch("Sample Patientson", "Sample/Patient")).toBe(false);
   });
 
-  it("never matches a different patient sharing a surname", () => {
-    expect(namesMatch("Stuart Strickland", "Corinne Strickland")).toBe(false);
-    expect(namesMatch("Kevin Smith", "Mike Smith")).toBe(false);
-    // "Jane Doe" must not match "John David Doe" (both are real targets).
-    expect(namesMatch("John David Doe", "Jane Doe")).toBe(false);
-  });
-
-  it("requires whole-token matches, not substrings", () => {
-    expect(namesMatch("Mike Smithson", "Mike Smith")).toBe(false);
+  it("finds only a supplied synthetic target", () => {
+    expect(findMatchingTarget("Patient, Sample", targets)).toBe("Sample/Patient");
+    expect(findMatchingTarget("Unlisted Person", targets)).toBeNull();
+    expect(findMatchingTarget(null, targets)).toBeNull();
   });
 });
 
-describe("findMatchingTarget", () => {
-  it("resolves blob-format variants to the target entry", () => {
-    expect(findMatchingTarget("Fred Fisher")).toBe("Fisher/Fred");
-    expect(findMatchingTarget("Zurko, Cindee")).toBe("Zurko/Cindee");
-    expect(findMatchingTarget("Erica Luggery")).toBe("Erica Luggery");
+describe("legacy cleanup timestamp parsing", () => {
+  it("accepts epoch milliseconds, numeric strings, and ISO dates", () => {
+    expect(parseLegacyTimestampMs(1780000000000)).toBe(1780000000000);
+    expect(parseLegacyTimestampMs("1780000000000")).toBe(1780000000000);
+    expect(parseLegacyTimestampMs("2026-05-01T00:00:00.000Z")).toBe(inside);
   });
 
-  it("returns null for names not on the list", () => {
-    expect(findMatchingTarget("Susan Bryant")).toBeNull();
-    expect(findMatchingTarget("Wil Humes")).toBeNull();
-    expect(findMatchingTarget("")).toBeNull();
-    expect(findMatchingTarget(null)).toBeNull();
-  });
-
-  it("every target-list entry matches itself", () => {
-    for (const target of SDR1_TARGET_PATIENTS) {
-      expect(findMatchingTarget(target)).not.toBeNull();
-    }
-  });
-});
-
-describe("parseLegacyTimestampMs", () => {
-  it("accepts epoch-ms numbers and numeric strings", () => {
-    expect(parseLegacyTimestampMs(1776191569140)).toBe(1776191569140);
-    expect(parseLegacyTimestampMs("1776191569140")).toBe(1776191569140);
-  });
-  it("rejects garbage, empty, and epoch-seconds-scale values", () => {
+  it("rejects malformed, empty, and epoch-seconds values", () => {
     expect(parseLegacyTimestampMs("not-a-date")).toBeNull();
     expect(parseLegacyTimestampMs("")).toBeNull();
     expect(parseLegacyTimestampMs(null)).toBeNull();
     expect(parseLegacyTimestampMs(undefined)).toBeNull();
-    expect(parseLegacyTimestampMs(1776191569)).toBeNull(); // epoch-seconds
-    expect(parseLegacyTimestampMs(0)).toBeNull();
+    expect(parseLegacyTimestampMs(1780000000)).toBeNull();
   });
 });
 
-describe("classifySdr1LegacyRows", () => {
-  it("matches target names in the era window, in real blob formats", () => {
+describe("legacy cleanup classification", () => {
+  it("matches configured target names only inside the configured era", () => {
     const rows = [
-      legacyRow("a", { patientName: "Hiram Dodd", caseNumber: "26-2", invoiceId: "17785063x", createdAt: ERA_MS }),
-      legacyRow("b", { patientName: "Fred Fisher", caseNumber: "26-31", createdAt: String(ERA_MS) }),
-      legacyRow("c", { patientName: "Zapata, Yilder (Mark)", caseNumber: "26-13", createdAt: ERA_MS }),
+      legacyRow("a", { patientName: "Patient, Sample", caseNumber: "SYNTH-001", invoiceId: "SYNTH-INV-1", createdAt: inside }),
+      legacyRow("b", { patientName: "Alex Fixture", caseNumber: "SYNTH-002", createdAt: String(inside) }),
     ];
-    const out = classifySdr1LegacyRows(rows);
-    expect(out.matched.map((r) => r.id).sort()).toEqual(["a", "b", "c"]);
-    expect(out.matched.find((r) => r.id === "a")?.invoiceRef).toBe("17785063x");
-    expect(out.matched.find((r) => r.id === "b")?.matchedTarget).toBe("Fisher/Fred");
-    expect(out.ambiguous).toHaveLength(0);
-    expect(out.nonTarget).toHaveLength(0);
+    const result = classifySdr1LegacyRows(rows, cleanup);
+    expect(result.matched.map((row) => row.id).sort()).toEqual(["a", "b"]);
+    expect(result.matched.find((row) => row.id === "a")?.matchedTarget).toBe("Sample/Patient");
+    expect(result.matched.find((row) => row.id === "a")?.invoiceRef).toBe("SYNTH-INV-1");
+    expect(result.ambiguous).toHaveLength(0);
+    expect(result.nonTarget).toHaveLength(0);
   });
 
-  it("classifies non-target names as nonTarget (never matched)", () => {
-    const out = classifySdr1LegacyRows([
-      legacyRow("x", { patientName: "Susan Bryant", caseNumber: "26-1", createdAt: ERA_MS }),
-      legacyRow("y", { patientName: "Wil Humes", caseNumber: "26-44", createdAt: ERA_MS }),
+  it("keeps non-targets and malformed or out-of-window rows out of the matched set", () => {
+    const result = classifySdr1LegacyRows([
+      legacyRow("non-target", { patientName: "Unlisted Person", createdAt: inside }),
+      legacyRow("missing-date", { patientName: "Sample Patient" }),
+      legacyRow("bad-date", { patientName: "Sample Patient", createdAt: "not-a-date" }),
+      legacyRow("too-early", { patientName: "Sample Patient", createdAt: start - 1 }),
+      legacyRow("too-late", { patientName: "Sample Patient", createdAt: end }),
+      legacyRow("in-window", { patientName: "Sample Patient", createdAt: start }),
+    ], cleanup);
+    expect(result.matched.map((row) => row.id)).toEqual(["in-window"]);
+    expect(result.nonTarget.map((row) => row.id)).toEqual(["non-target"]);
+    expect(result.ambiguous.map((row) => row.id).sort()).toEqual([
+      "bad-date", "missing-date", "too-early", "too-late",
     ]);
-    expect(out.matched).toHaveLength(0);
-    expect(out.nonTarget.map((r) => r.id).sort()).toEqual(["x", "y"]);
+    expect(result.ambiguous.every((row) => row.matchedTarget === "Sample/Patient")).toBe(true);
   });
 
-  it("fails closed on missing/unparseable dates and out-of-window dates", () => {
-    const out = classifySdr1LegacyRows([
-      legacyRow("no-date", { patientName: "Jane Doe", caseNumber: "26-9" }),
-      legacyRow("bad-date", { patientName: "Jane Doe", caseNumber: "26-9", createdAt: "garbage" }),
-      legacyRow("too-early", { patientName: "Jane Doe", caseNumber: "26-9", createdAt: SDR1_ERA_START_MS - 1 }),
-      legacyRow("too-late", { patientName: "Jane Doe", caseNumber: "26-9", createdAt: SDR1_ERA_END_MS }),
-      legacyRow("in-window", { patientName: "Jane Doe", caseNumber: "26-9", createdAt: SDR1_ERA_START_MS }),
-    ]);
-    expect(out.matched.map((r) => r.id)).toEqual(["in-window"]);
-    expect(out.ambiguous.map((r) => r.id).sort()).toEqual([
-      "bad-date",
-      "no-date",
-      "too-early",
-      "too-late",
-    ]);
-    expect(out.ambiguous.every((r) => r.matchedTarget === "Jane Doe")).toBe(true);
-  });
-
-  it("fails closed on unparseable blobs", () => {
-    const out = classifySdr1LegacyRows([legacyRow("junk", "{not json")]);
-    expect(out.matched).toHaveLength(0);
-    expect(out.ambiguous).toHaveLength(1);
-    expect(out.ambiguous[0]!.reason).toBe("unparseable_blob");
-  });
-
-  it("reports target names with no active rows as unmatchedTargets", () => {
-    const out = classifySdr1LegacyRows([
-      legacyRow("a", { patientName: "Sally Test", caseNumber: "26-40", createdAt: ERA_MS }),
-    ]);
-    expect(out.unmatchedTargets).toContain("Jane Doe");
-    expect(out.unmatchedTargets).not.toContain("Sally Test");
-    expect(out.unmatchedTargets).toHaveLength(SDR1_TARGET_PATIENTS.length - 1);
-  });
-
-  it("matches duplicate rows for the same patient (Debra Hudson had 3 rows)", () => {
-    const out = classifySdr1LegacyRows([
-      legacyRow("d1", { patientName: "Debra Hudson", caseNumber: "26-1", createdAt: ERA_MS }),
-      legacyRow("d2", { patientName: "Debra Hudson", caseNumber: "26-45", createdAt: ERA_MS }),
-      legacyRow("d3", { patientName: "Debra Hudson", caseNumber: "26-48", invoiceId: "abc", createdAt: ERA_MS }),
-    ]);
-    expect(out.matched).toHaveLength(3);
+  it("fails closed on unparseable blobs and reports unmatched configured targets", () => {
+    const result = classifySdr1LegacyRows([
+      legacyRow("malformed", "{not json"),
+      legacyRow("sample", { patientName: "Sample Patient", createdAt: inside }),
+    ], cleanup);
+    expect(result.ambiguous).toMatchObject([{ id: "malformed", reason: "unparseable_blob" }]);
+    expect(result.unmatchedTargets).toEqual(["Alex Fixture"]);
   });
 });

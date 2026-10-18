@@ -1,11 +1,11 @@
-// Sales Forecaster — owner-only sales pace projection.
+// Sales Forecaster — admin+owner sales pace projection.
 //
-// Stricter than the other manage screens: the server gates
-// GET /stats/sales-forecast on OWNER_ROLES (owner only), so this screen is
-// gated with canOwnAnyLab and scoped to the labs the user owns. All the math
-// (business-day pace, forecast, insufficient-data guards) lives on the server —
-// this screen only renders the returned numbers. The generated hook returns the
-// `{ ok, data }` envelope, so every read is `query.data?.data?.X`.
+// The server gates GET /stats/sales-forecast on ADMIN_ROLES (admin + owner),
+// so this screen is gated with canAdminAnyLab and scoped to the labs the user
+// admins or owns. All the math (business-day pace, forecast, insufficient-data
+// guards) lives on the server — this screen only renders the returned numbers.
+// The generated hook returns the `{ ok, data }` envelope, so every read is
+// `query.data?.data?.X`.
 import React, { useMemo, useState } from "react";
 import {
   View,
@@ -27,7 +27,7 @@ import {
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
-import { useMe, canOwnAnyLab, ownerLabMemberships } from "@/lib/auth-me";
+import { useMe, canAdminAnyLab, adminLabMemberships } from "@/lib/auth-me";
 import { formatMoney } from "@/lib/format";
 
 function localTimeZone(): string {
@@ -45,11 +45,11 @@ export default function SalesForecastScreen() {
   const meQuery = useMe();
   const me = meQuery.data;
 
-  // Labs the user OWNS — mirrors the server's OWNER_ROLES gate exactly, so the
+  // Labs the user ADMINS or OWNS — mirrors the server's ADMIN_ROLES gate, so the
   // screen never loads data the server would refuse.
   const ownerLabs = useMemo(() => {
     const seen = new Set<string>();
-    return ownerLabMemberships(me)
+    return adminLabMemberships(me)
       .filter((m) => {
         if (seen.has(m.organizationId)) return false;
         seen.add(m.organizationId);
@@ -62,7 +62,7 @@ export default function SalesForecastScreen() {
           "Lab",
       }));
   }, [me]);
-  const canView = canOwnAnyLab(me);
+  const canView = canAdminAnyLab(me);
 
   const [orgIdOverride, setOrgIdOverride] = useState<string | null>(null);
   const orgId =
@@ -111,7 +111,7 @@ export default function SalesForecastScreen() {
           <Ionicons name="lock-closed-outline" size={40} color={colors.textTertiary} />
           <Text style={styles.emptyTitle}>Not available</Text>
           <Text style={styles.emptyBody}>
-            The Sales Forecaster is available to lab owners only.
+            The Sales Forecaster is available to lab admins and owners only.
           </Text>
         </View>
       ) : (
@@ -151,8 +151,8 @@ export default function SalesForecastScreen() {
 
           <Text style={styles.explainer}>
             Projected from your current sales pace using Monday–Friday business
-            days only. Forecast = sales so far ÷ business days elapsed × total
-            business days in the period.
+            days only. Week/month: avg/day × total days. Year: sales so far +
+            (avg/day × remaining business days).
           </Text>
 
           {forecastQuery.isError ? (

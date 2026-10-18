@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation } from "wouter";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useLocation, useSearch, Redirect } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, BookOpen, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Mail, Monitor, Package, Pencil, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, UserPlus, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Ban, BookOpen, Calendar, CalendarOff, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, FileText, Github, History, KeyRound, LayoutList, Loader2, LogOut, Mail, Monitor, Pencil, Play, Plus, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, UserPlus, Wrench, X } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,10 +19,25 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
-import { apiFetch, apiFetchArrayBuffer, apiUploadWithProgress, ApiError, notifySessionCleared, getApiOrigin, createRestoreUploadSession, sendRestoreUploadChunk } from "@/lib/api";
+import { apiFetch, apiFetchArrayBuffer, apiDownloadBackupToFolder, apiFetchDownloadResponse, readBoundedBackupBuffer, apiUploadWithProgress, ApiError, notifySessionCleared, createRestoreUploadSession, sendRestoreUploadChunk } from "@/lib/api";
+import {
+  executeLocalBackup,
+  verifyCompleteBackupHeaders,
+  verifyStreamedBackup,
+  watchBackupLiveStatus,
+  type LocalBackupLiveStatus,
+} from "@/lib/local-backup-execution";
+import {
+  getScheduledLocalBackupProgress,
+  subscribeScheduledLocalBackupProgress,
+  backupLiveMediaText,
+  backupLivePhaseLabel,
+  backupLiveProgressText,
+  formatBackupSize,
+} from "@/lib/local-backup-progress";
 import { toast } from "@/hooks/use-toast";
 import { AuthedImage } from "@/components/AuthedMedia";
+import { ProfilePhotoControl } from "@/components/ProfilePhotoControl";
 import {
   DEFAULT_DUP_SIMILARITY_THRESHOLD,
   buildDuplicateClusters,
@@ -33,11 +48,11 @@ import {
   DEFAULT_PRACTICE_DUP_SIMILARITY_THRESHOLD,
   buildPracticeDuplicateClusters,
 } from "@/pages/practices";
-import type { LabCase, Invoice } from "@/lib/types";
+import type { LabCase, Invoice, Organization } from "@/lib/types";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
-import { retryUnlessForbidden } from "@/lib/platform-admin-query";
+import { haltPollingIfForbidden, retryUnlessForbidden } from "@/lib/platform-admin-query";
 import { getSessionSecret, clearSessionSecret, useSessionSecretVersion } from "@/lib/platform-admin-session";
-import { formatPhone } from "@/lib/format";
+import { formatPhone, formatDate, formatDateTime } from "@/lib/format";
 import {
   computeShiftClickRange,
   shiftKeyFromChangeEvent,
@@ -45,9 +60,16 @@ import {
 } from "@/lib/shift-click-range";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse } from "@/lib/types";
+import { PracticeOwnershipAction } from "@/components/PracticeOwnershipAction";
 import { InvoiceLayoutPanel } from "@/pages/invoice-layout-panel";
 import { StatementLayoutPanel } from "@/pages/statement-layout-panel";
 import { CorrespondenceLayoutPanel } from "@/pages/correspondence-layout-panel";
+import { formatAccountNumberForDisplay } from "@workspace/account-number";
+import {
+  formatBackupAge,
+  type BackupAlertAttempt,
+} from "@/components/BackupStalenessBanner";
+import type { GoogleDriveBackupStatusResult } from "@workspace/api-client-react";
 
 interface AdminUser {
   id: string;
@@ -60,13 +82,14 @@ interface AdminUser {
   practiceName?: string | null;
   lastLoginAt?: string | null;
 }
-
-type TabKey = "profile" | "password" | "sessions" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "statement-email" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit" | "vocabulary" | "ai-assistant";
+type TabKey = "profile" | "password" | "sessions" | "users" | "backup" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "statement-email" | "payment-receipt" | "card-authorization" | "autopay-authorization" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit" | "vocabulary" | "ai-assistant" | "doctor-practice-memory" | "closed-days" | "employee-hours" | "permission-outline" | "lab-preferences";
 
 // NOTE: "users" is intentionally omitted here so the old `?tab=users` deep link
 // falls back to the default Profile section instead of opening the now-hidden
 // Users panel. The "users" TabKey + UsersPanel are kept intact for easy restore.
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "statement-email", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit", "vocabulary", "ai-assistant"];
+// "desktop" is also omitted: the Settings → Desktop app section was removed in
+// favour of the standalone /download page, so the stale deep link lands on Profile.
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "backup", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "statement-email", "payment-receipt", "card-authorization", "autopay-authorization", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit", "vocabulary", "ai-assistant", "doctor-practice-memory", "closed-days", "employee-hours", "permission-outline", "lab-preferences"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -83,31 +106,55 @@ function readInitialTab(): TabKey {
 export default function SettingsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const hasPlatformAdminBridge = typeof window !== "undefined" &&
-    !!(window as { electronAPI?: { platformAdmin?: unknown } }).electronAPI?.platformAdmin;
-  const tabs: Array<{ key: TabKey; label: string; icon: typeof UserIcon; show: boolean; parentKey?: TabKey }> = [
+  const isOwner = user?.role === "owner";
+  const backupMembershipsQuery = useQuery<MeResponse>({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+    enabled: !!user,
+    staleTime: 60_000,
+  });
+  const canManageScopedBackup = (backupMembershipsQuery.data?.memberships ?? []).some((membership) =>
+    membership.status === "active" &&
+    (membership.role === "owner" || membership.role === "admin") &&
+    membership.organization?.type === "lab" &&
+    membership.organization.isActive === true &&
+    !membership.organization.deletedAt,
+  );
+  const canAccessBackup = isAdmin || canManageScopedBackup;
+  // `parentKey` builds the nav tree. It nests up to two levels deep:
+  // Lab Preferences → Templates → Invoice layout.
+  // `groupOnly` marks a parent that has no panel of its own, so clicking it
+  // selects its first child instead of rendering an empty pane.
+  const tabs: Array<{ key: TabKey; label: string; icon: typeof UserIcon; show: boolean; parentKey?: TabKey; groupOnly?: boolean }> = [
     { key: "profile", label: "Profile", icon: UserIcon, show: true },
-    { key: "password", label: "Password", icon: KeyRound, show: true },
-    { key: "sessions", label: "Active sessions", icon: Monitor, show: true },
+    { key: "password", label: "Password", icon: KeyRound, show: true, parentKey: "profile" },
+    { key: "sessions", label: "Active sessions", icon: Monitor, show: true, parentKey: "profile" },
+    { key: "notifications", label: "Notifications", icon: Monitor, show: true, parentKey: "profile" },
+    { key: "lab-preferences", label: "Lab Preferences", icon: Wrench, show: true },
     // Hidden from navigation: customers live in Customer Center and the internal
     // lab team lives under Profile → Lab team status. Set back to `isAdmin` to restore.
     { key: "users", label: "Users", icon: ShieldCheck, show: false },
-    { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
-    { key: "deleted-cases", label: "Deleted Cases", icon: Trash2, show: isAdmin },
-    { key: "deletion-audit", label: "Deletion Audit Log", icon: History, show: isAdmin },
-    { key: "vocabulary", label: "Lab Catalog", icon: BookOpen, show: isAdmin },
-    { key: "ai-assistant", label: "AI Assistant", icon: Sparkles, show: isAdmin },
-    { key: "desktop", label: "Desktop app", icon: Download, show: true },
-    { key: "templates", label: "Templates", icon: LayoutList, show: isAdmin },
+    { key: "backup", label: "Backup", icon: ShieldCheck, show: canAccessBackup, parentKey: "lab-preferences" },
+    { key: "vocabulary", label: "Lab Catalog", icon: BookOpen, show: isAdmin, parentKey: "lab-preferences" },
+    { key: "doctor-practice-memory", label: "Remembered doctor practices", icon: Sparkles, show: isAdmin, parentKey: "lab-preferences" },
+    { key: "closed-days", label: "Closed Days", icon: CalendarOff, show: isAdmin, parentKey: "lab-preferences" },
+    { key: "permission-outline", label: "Permission Outline", icon: ShieldCheck, show: isAdmin || isOwner, parentKey: "lab-preferences" },
+    { key: "templates", label: "Templates", icon: LayoutList, show: isAdmin, parentKey: "lab-preferences", groupOnly: true },
     { key: "invoice-layout", label: "Invoice layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
     { key: "statement-layout", label: "Statement layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
     { key: "statement-email", label: "Statement email", icon: Mail, show: isAdmin, parentKey: "templates" },
+    { key: "payment-receipt", label: "Payment receipt", icon: Mail, show: isAdmin, parentKey: "templates" },
+    { key: "card-authorization", label: "Card on File authorization", icon: FileText, show: isAdmin, parentKey: "templates" },
+    { key: "autopay-authorization", label: "Auto-Pay authorization", icon: FileText, show: isAdmin, parentKey: "templates" },
     { key: "correspondence-layout", label: "Correspondence layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
+    { key: "deleted-cases", label: "Deleted Cases", icon: Trash2, show: isAdmin },
+    { key: "deletion-audit", label: "Deletion Audit Log", icon: History, show: isAdmin },
+    { key: "ai-assistant", label: "AI Assistant", icon: Sparkles, show: isAdmin },
+    { key: "employee-hours", label: "Employee Hours", icon: Calendar, show: isAdmin },
     { key: "mobile", label: "Mobile app", icon: Smartphone, show: isAdmin },
     { key: "itero", label: "iTero auto-import", icon: Sparkles, show: isAdmin && typeof window !== "undefined" && !!(window as { electronAPI?: { itero?: unknown } }).electronAPI?.itero },
     { key: "platform-admin", label: "Platform admin", icon: Wrench, show: isAdmin },
-    { key: "subscriptions", label: "Subscriptions", icon: CreditCard, show: isAdmin },
-    { key: "notifications", label: "Notifications", icon: Monitor, show: true },
+    { key: "subscriptions", label: "Subscriptions", icon: CreditCard, show: false },
   ];
   const [tab, setTab] = useState<TabKey>(readInitialTab);
 
@@ -126,6 +173,64 @@ export default function SettingsPage() {
     return Number.isNaN(t) ? true : Date.now() - t > staleDays * 24 * 60 * 60 * 1000;
   })();
 
+  type TabDef = (typeof tabs)[number];
+  const childrenOf = (key: TabKey): TabDef[] => tabs.filter((c) => c.show && c.parentKey === key);
+  // True when this entry, or anything nested beneath it, is the selected tab.
+  // Drives which ancestor groups stay expanded + highlighted.
+  const subtreeActive = (key: TabKey): boolean =>
+    tab === key || childrenOf(key).some((c) => subtreeActive(c.key));
+  // Backup lives under Lab Preferences now, so surface the overdue warning on
+  // the parent too — otherwise it is invisible while the group is collapsed.
+  const showsBackupWarning = (key: TabKey) =>
+    !!backupOverdue && (key === "backup" || (key === "lab-preferences" && !subtreeActive("lab-preferences")));
+
+  function renderNavEntry(t: TabDef, depth: number) {
+    const Icon = t.icon;
+    const children = childrenOf(t.key);
+    const active = tab === t.key;
+    const descendantActive = children.some((c) => subtreeActive(c.key));
+    const expanded = children.length > 0 && (active || descendantActive);
+    const warn = showsBackupWarning(t.key);
+    return (
+      <li key={t.key}>
+        <button
+          type="button"
+          onClick={() => setTab(t.groupOnly && children.length > 0 ? children[0].key : t.key)}
+          aria-expanded={children.length > 0 ? expanded : undefined}
+          title={warn ? "Backup overdue — check backup settings" : undefined}
+          className={
+            depth === 0
+              ? `w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  active
+                    ? "bg-primary/10 text-primary"
+                    : descendantActive
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                }`
+              : `w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  active
+                    ? "bg-primary/10 text-primary"
+                    : descendantActive
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                }`
+          }
+        >
+          {depth === 0 && <Icon size={14} />}
+          <span className="flex-1 text-left">{t.label}</span>
+          {warn && (
+            <AlertTriangle size={13} className="shrink-0 text-amber-400" aria-label="Backup overdue" />
+          )}
+        </button>
+        {expanded && (
+          <ul className="mt-0.5 ml-3 border-l border-border/50 space-y-0.5 pl-2">
+            {children.map((c) => renderNavEntry(c, depth + 1))}
+          </ul>
+        )}
+      </li>
+    );
+  }
+
   return (
     <div className="px-8 py-7 max-w-[1100px] mx-auto">
       <div className="mb-6">
@@ -138,56 +243,7 @@ export default function SettingsPage() {
       <div className="flex gap-6">
         <nav className="w-48 shrink-0">
           <ul className="space-y-1">
-            {tabs.filter((t) => t.show && !t.parentKey).map((t) => {
-              const Icon = t.icon;
-              const active = tab === t.key;
-              const children = tabs.filter((c) => c.show && c.parentKey === t.key);
-              const childActive = children.some((c) => c.key === tab);
-              return (
-                <li key={t.key}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (children.length > 0) {
-                        setTab(children[0].key);
-                      } else {
-                        setTab(t.key);
-                      }
-                    }}
-                    title={t.key === "backup" && backupOverdue ? "Backup overdue — check backup settings" : undefined}
-                    className={`w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                      active ? "bg-primary/10 text-primary" : childActive ? "text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-                    }`}
-                  >
-                    <Icon size={14} />
-                    <span className="flex-1 text-left">{t.label}</span>
-                    {t.key === "backup" && backupOverdue && (
-                      <AlertTriangle size={13} className="shrink-0 text-amber-400" aria-label="Backup overdue" />
-                    )}
-                  </button>
-                  {children.length > 0 && (
-                    <ul className="mt-0.5 ml-3 border-l border-border/50 space-y-0.5 pl-2">
-                      {children.map((c) => {
-                        const childIsActive = tab === c.key;
-                        return (
-                          <li key={c.key}>
-                            <button
-                              type="button"
-                              onClick={() => setTab(c.key)}
-                              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                                childIsActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-                              }`}
-                            >
-                              <span className="flex-1 text-left">{c.label}</span>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </li>
-              );
-            })}
+            {tabs.filter((t) => t.show && !t.parentKey).map((t) => renderNavEntry(t, 0))}
           </ul>
         </nav>
         <div className="flex-1 min-w-0 bg-card border border-border rounded-xl">
@@ -195,21 +251,31 @@ export default function SettingsPage() {
           {tab === "password" && <PasswordPanel />}
           {tab === "sessions" && <SessionsPanel />}
           {tab === "users" && isAdmin && <UsersPanel />}
-          {tab === "backup" && isAdmin && <BackupPanel />}
-          {tab === "desktop" && (isAdmin ? <DesktopInstallerPanel /> : <DesktopAppUserPanel />)}
+          {tab === "backup" && canAccessBackup && <BackupPanel labOnly={!isAdmin} />}
           {tab === "invoice-layout" && isAdmin && <InvoiceLayoutPanel />}
           {tab === "statement-layout" && isAdmin && <StatementLayoutPanel />}
           {tab === "statement-email" && isAdmin && <StatementEmailPanel />}
+          {tab === "payment-receipt" && isAdmin && <PaymentReceiptTemplatePanel />}
+          {tab === "card-authorization" && isAdmin && <AuthorizationTemplatePanel templateType="card_on_file" />}
+          {tab === "autopay-authorization" && isAdmin && <AuthorizationTemplatePanel templateType="autopay" />}
           {tab === "correspondence-layout" && isAdmin && <CorrespondenceLayoutPanel />}
           {tab === "mobile" && isAdmin && <MobileBuildPanel />}
           {tab === "itero" && isAdmin && <IteroPanel />}
-          {tab === "platform-admin" && isAdmin && <PlatformAdminPanel />}
-          {tab === "subscriptions" && isAdmin && <SubscriptionsPanel />}
+          {tab === "platform-admin" && isAdmin && (
+            <PlatformAdminPanel
+            />
+          )}
+          {tab === "subscriptions" && <Redirect to="/creator?tab=subscriptions" />}
           {tab === "notifications" && <NotificationsPanel isAdmin={isAdmin} />}
+          {tab === "lab-preferences" && <LabPreferencesPanel />}
           {tab === "deleted-cases" && isAdmin && <DeletedCasesPanel />}
           {tab === "deletion-audit" && isAdmin && <DeletionAuditPanel />}
           {tab === "vocabulary" && isAdmin && <VocabularyPanel />}
           {tab === "ai-assistant" && isAdmin && <AiAssistantPanel />}
+          {tab === "doctor-practice-memory" && isAdmin && <DoctorPracticeMemoryPanel />}
+          {tab === "closed-days" && isAdmin && <ClosedDaysPanel />}
+          {tab === "employee-hours" && isAdmin && <EmployeeHoursPanel />}
+          {tab === "permission-outline" && (isAdmin || isOwner) && <PermissionOutlinePanel />}
         </div>
       </div>
     </div>
@@ -270,12 +336,25 @@ interface PendingInvite {
   lastEmailError?: string | null;
 }
 
+/**
+ * Message shown when the mail server rejected the SMTP login (reason
+ * `auth_failed`) — actionable, unlike the generic "failed to send".
+ */
+export const SMTP_AUTH_FAILED_MESSAGE =
+  "Email provider rejected the login — update the SMTP credentials in Secrets.";
+
 /** Human-readable label for a failed/skipped invite email delivery. */
-function inviteDeliveryProblem(inv: PendingInvite): string | null {
+export function inviteDeliveryProblem(
+  inv: Pick<PendingInvite, "lastEmailStatus" | "lastEmailError">
+): string | null {
   if (inv.lastEmailStatus === "failed") {
-    return inv.lastEmailError === "recipient_opted_out"
-      ? "Recipient opted out of invite emails"
-      : "Invite email failed to send";
+    if (inv.lastEmailError === "recipient_opted_out") {
+      return "Recipient opted out of invite emails";
+    }
+    if (inv.lastEmailError === "auth_failed") {
+      return SMTP_AUTH_FAILED_MESSAGE;
+    }
+    return "Invite email failed to send";
   }
   if (inv.lastEmailStatus === "skipped") {
     return "Email skipped — recipient opted out";
@@ -287,6 +366,9 @@ interface PendingJoinRequest {
   id: string;
   organizationId: string;
   labName: string | null;
+  // "lab" for lab join requests, "provider" for practice join requests
+  // (providers asking to join an existing practice during sign-up).
+  organizationType?: string | null;
   requestedByUserId: string;
   requestedRole: string | null;
   message: string | null;
@@ -309,7 +391,10 @@ const LOGO_PLACEMENT_OPTIONS = [
 
 function ProfilePanel() {
   const { user, refresh } = useAuth();
+  const [, navigate] = useLocation();
   const queryClient = useQueryClient();
+  const requestSearch = useSearch();
+  const highlightedRequestId = new URLSearchParams(requestSearch).get("joinRequestId");
   const [firstName, setFirstName] = useState(user?.firstName ?? "");
   const [lastName, setLastName] = useState(user?.lastName ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
@@ -323,6 +408,15 @@ function ProfilePanel() {
   const [showPlacementsModal, setShowPlacementsModal] = useState(false);
   const [placementsSelection, setPlacementsSelection] = useState<string[]>([]);
   const [placementsError, setPlacementsError] = useState<string | null>(null);
+  const profileTopRef = useRef<HTMLDivElement | null>(null);
+
+  const [labDueDays, setLabDueDays] = useState("");
+  const [labDueDaysSaved, setLabDueDaysSaved] = useState(false);
+  const [labInvoiceDay, setLabInvoiceDay] = useState("");
+  const [labInvoiceDaySaved, setLabInvoiceDaySaved] = useState(false);
+  const [labRevenueLow, setLabRevenueLow] = useState("");
+  const [labRevenueHigh, setLabRevenueHigh] = useState("");
+  const [labRevenueSaved, setLabRevenueSaved] = useState(false);
 
   const [phoneVerifyStep, setPhoneVerifyStep] = useState<"idle" | "sending" | "otp">("idle");
   const [resending, setResending] = useState(false);
@@ -484,6 +578,10 @@ function ProfilePanel() {
     onSuccess: async () => {
       setSuccess(true);
       setError(null);
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+      profileTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       const phoneChanged = phone !== (user?.phone ?? "");
       await refresh();
       setTimeout(() => setSuccess(false), 2500);
@@ -520,6 +618,100 @@ function ProfilePanel() {
     },
   });
 
+  const isLabAdmin =
+    user?.role === "admin" || user?.role === "owner";
+
+  // Non-admin/owner lab members can view their own custom permission grants.
+  const selfPermissionsQuery = useQuery<{
+    membershipId: string;
+    permissions: { id: string; name: string; description?: string | null; capabilityKey: string }[];
+  }>({
+    queryKey: ["self-permissions", user?.practiceOrganizationId],
+    queryFn: () =>
+      apiFetch(`/organizations/${user!.practiceOrganizationId}/members/self/permissions`),
+    enabled: !isLabAdmin && !!user?.practiceOrganizationId,
+    staleTime: 60_000,
+  });
+
+  const labOrgQuery = useQuery<{ id: string; defaultCaseDueDays?: number | null; invoiceDueDayOfMonth?: number | null; revenueTargetLow?: number | null; revenueTargetHigh?: number | null }>({
+    queryKey: ["lab-org-settings", user?.practiceOrganizationId],
+    queryFn: () => apiFetch(`/organizations/${user!.practiceOrganizationId}`),
+    enabled: !!(user?.practiceOrganizationId) && isLabAdmin,
+  });
+
+  useEffect(() => {
+    if (labOrgQuery.data) {
+      setLabDueDays(
+        labOrgQuery.data.defaultCaseDueDays != null
+          ? String(labOrgQuery.data.defaultCaseDueDays)
+          : ""
+      );
+      setLabInvoiceDay(
+        labOrgQuery.data.invoiceDueDayOfMonth != null
+          ? String(labOrgQuery.data.invoiceDueDayOfMonth)
+          : ""
+      );
+      setLabRevenueLow(
+        labOrgQuery.data.revenueTargetLow != null
+          ? String(labOrgQuery.data.revenueTargetLow)
+          : ""
+      );
+      setLabRevenueHigh(
+        labOrgQuery.data.revenueTargetHigh != null
+          ? String(labOrgQuery.data.revenueTargetHigh)
+          : ""
+      );
+    }
+  }, [labOrgQuery.data?.defaultCaseDueDays, labOrgQuery.data?.invoiceDueDayOfMonth, labOrgQuery.data?.revenueTargetLow, labOrgQuery.data?.revenueTargetHigh]);
+
+  const labDueDaysMutation = useMutation({
+    mutationFn: (days: number | null) =>
+      apiFetch(`/organizations/${user!.practiceOrganizationId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ defaultCaseDueDays: days }),
+      }),
+    onSuccess: () => {
+      setLabDueDaysSaved(true);
+      void queryClient.invalidateQueries({ queryKey: ["lab-org-settings", user?.practiceOrganizationId] });
+      setTimeout(() => setLabDueDaysSaved(false), 2000);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not save turnaround", description: err.message, variant: "destructive", duration: 4000 });
+    },
+  });
+
+  const labInvoiceDayMutation = useMutation({
+    mutationFn: (day: number | null) =>
+      apiFetch(`/organizations/${user!.practiceOrganizationId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ invoiceDueDayOfMonth: day }),
+      }),
+    onSuccess: () => {
+      setLabInvoiceDaySaved(true);
+      void queryClient.invalidateQueries({ queryKey: ["lab-org-settings", user?.practiceOrganizationId] });
+      setTimeout(() => setLabInvoiceDaySaved(false), 2000);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not save invoice due day", description: err.message, variant: "destructive", duration: 4000 });
+    },
+  });
+
+  const labRevenueMutation = useMutation({
+    mutationFn: (values: { revenueTargetLow: number | null; revenueTargetHigh: number | null }) =>
+      apiFetch(`/organizations/${user!.practiceOrganizationId}`, {
+        method: "PATCH",
+        body: JSON.stringify(values),
+      }),
+    onSuccess: () => {
+      setLabRevenueSaved(true);
+      void queryClient.invalidateQueries({ queryKey: ["lab-org-settings", user?.practiceOrganizationId] });
+      setTimeout(() => setLabRevenueSaved(false), 2000);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not save revenue targets", description: err.message, variant: "destructive", duration: 4000 });
+    },
+  });
+
   // Status selector — fires on click, no Save needed. Other lab
   // teammates see the new status the next time they re-fetch.
   const statusMutation = useMutation({
@@ -541,6 +733,12 @@ function ProfilePanel() {
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
   });
+  useEffect(() => {
+    if (!highlightedRequestId) return;
+    const row = document.getElementById(`join-request-${highlightedRequestId}`);
+    row?.scrollIntoView({ behavior: "smooth", block: "center" });
+    row?.focus({ preventScroll: true });
+  }, [highlightedRequestId, teamQuery.data]);
 
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
@@ -551,6 +749,7 @@ function ProfilePanel() {
   const [confirmRemoveMemberId, setConfirmRemoveMemberId] = useState<string | null>(null);
   const [confirmRemoveName, setConfirmRemoveName] = useState<string>("");
   const [transferTarget, setTransferTarget] = useState<{ membershipId: string; name: string } | null>(null);
+  const [transferPhrase, setTransferPhrase] = useState("");
 
   const isTeamAdmin =
     teamQuery.data?.callerRole === "admin" ||
@@ -579,6 +778,13 @@ function ProfilePanel() {
           toast({
             title: "Invite saved — email not sent",
             description: `${inviteEmail} has opted out of invite emails. Share the invite with them directly.`,
+            variant: "destructive",
+            duration: 8000,
+          });
+        } else if (delivery.reason === "auth_failed") {
+          toast({
+            title: "Invite saved, but the email could not be sent",
+            description: SMTP_AUTH_FAILED_MESSAGE,
             variant: "destructive",
             duration: 8000,
           });
@@ -619,17 +825,51 @@ function ProfilePanel() {
 
   const resendInviteMutation = useMutation({
     mutationFn: async (inviteId: string) => {
-      return apiFetch<{ id: string; email: string | null }>(`/organizations/invites/${inviteId}/resend`, {
+      return apiFetch<{
+        id: string;
+        email: string | null;
+        emailDelivery?: InviteEmailDelivery;
+      }>(`/organizations/invites/${inviteId}/resend`, {
         method: "POST",
       });
     },
+    // Resend is non-fatal: it returns 200 with an `emailDelivery` outcome even
+    // when the email fails or is skipped. Read that outcome here and render a
+    // truthful state instead of treating a non-delivery as a thrown error.
     onSuccess: (invite) => {
       setInviteSuccess(true);
       setInviteError(null);
       setInviteEmail("");
       setInviteRole("user");
       void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
-      toast({ title: "Invite resent", description: `An invite was resent to ${invite.email ?? "that address"}.`, duration: 4000 });
+      const to = invite.email ?? "that address";
+      const delivery = invite?.emailDelivery;
+      if (delivery && !delivery.sent) {
+        if (delivery.status === "skipped") {
+          toast({
+            title: "Invite link refreshed — email not sent",
+            description: `${to} has opted out of invite emails. Share the invite with them directly.`,
+            variant: "destructive",
+            duration: 8000,
+          });
+        } else if (delivery.reason === "auth_failed") {
+          toast({
+            title: "Invite link refreshed, but the email was not sent",
+            description: SMTP_AUTH_FAILED_MESSAGE,
+            variant: "destructive",
+            duration: 8000,
+          });
+        } else {
+          toast({
+            title: "Invite link refreshed, but the email was not sent",
+            description: `The invite for ${to} was refreshed, but the email failed to send. Try again or contact them directly.`,
+            variant: "destructive",
+            duration: 8000,
+          });
+        }
+      } else {
+        toast({ title: "Invite resent", description: `An invite was resent to ${to}.`, duration: 4000 });
+      }
       setTimeout(() => {
         setInviteSuccess(false);
         setShowInviteModal(false);
@@ -740,26 +980,79 @@ function ProfilePanel() {
 
   const transferOwnershipMutation = useMutation({
     mutationFn: async ({ targetMembershipId }: { targetMembershipId: string }) => {
-      const selfMember = teamQuery.data?.team.find((m) => m.isSelf);
-      if (!selfMember?.membershipId) throw new Error("Could not resolve your membership.");
-      await apiFetch(`/organizations/memberships/${targetMembershipId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ role: "owner" }),
-      });
-      await apiFetch(`/organizations/memberships/${selfMember.membershipId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ role: "admin" }),
+      const target = teamQuery.data?.team.find((m) => m.membershipId === targetMembershipId && m.status === "active");
+      if (!target || !user?.practiceOrganizationId) throw new Error("Select an active member of this organization.");
+      await apiFetch("/owner/transfer-ownership", {
+        method: "POST",
+        body: JSON.stringify({
+          organizationId: user.practiceOrganizationId,
+          newOwnerUserId: target.id,
+          confirmationPhrase: transferPhrase,
+        }),
       });
     },
     onSuccess: () => {
       setTransferTarget(null);
       void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
+      void queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+      void queryClient.invalidateQueries({ queryKey: ["owner"] });
+      void refresh().catch(() => toast({ title: "Ownership transferred", description: "Roles could not refresh. Reload to see your confirmed access.", duration: 5000 }));
       toast({ title: "Ownership transferred", duration: 4000 });
     },
     onError: (err: Error) => {
       toast({ title: "Could not transfer ownership", description: err.message, variant: "destructive", duration: 4000 });
     },
   });
+
+  // ── Member-permissions sheet (owner views / revokes per-member grants) ─────
+  const memberPermSheetOrgId = user?.practiceOrganizationId ?? "";
+  const isCallerOwnerForSheet = teamQuery.data?.callerRole === "owner";
+
+  const [memberPermSheetTarget, setMemberPermSheetTarget] = useState<{
+    membershipId: string;
+    name: string;
+  } | null>(null);
+
+  const memberPermDefsQuery = useQuery<PermissionDef[]>({
+    queryKey: ["permission-definitions", memberPermSheetOrgId],
+    queryFn: () =>
+      apiFetch<PermissionDef[]>(
+        `/organizations/${memberPermSheetOrgId}/permission-definitions`
+      ),
+    enabled: isCallerOwnerForSheet && !!memberPermSheetOrgId,
+    staleTime: 30_000,
+  });
+
+  const memberPermGrantsQuery = useQuery<MemberPermissionGrants>({
+    queryKey: [
+      "member-permissions",
+      memberPermSheetOrgId,
+      memberPermSheetTarget?.membershipId,
+    ],
+    queryFn: () =>
+      apiFetch<MemberPermissionGrants>(
+        `/organizations/${memberPermSheetOrgId}/members/${memberPermSheetTarget!.membershipId}/permissions`
+      ),
+    enabled: !!memberPermSheetTarget?.membershipId && !!memberPermSheetOrgId,
+    staleTime: 0,
+  });
+
+  const revokePermMutation = useMutation({
+    mutationFn: ({ membershipId, defId }: { membershipId: string; defId: string }) =>
+      apiFetch(
+        `/organizations/${memberPermSheetOrgId}/members/${membershipId}/permissions/${defId}`,
+        { method: "DELETE" }
+      ),
+    onSuccess: (_, { membershipId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["member-permissions", memberPermSheetOrgId, membershipId],
+      });
+      toast({ title: "Permission revoked", duration: 3000 });
+    },
+    onError: (e: Error) =>
+      toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+  // ──────────────────────────────────────────────────────────────────────────
 
   const placementsMutation = useMutation({
     mutationFn: async (placements: string[]) => {
@@ -848,10 +1141,12 @@ function ProfilePanel() {
   return (
     <>
     <PanelShell title="Profile" subtitle="Your personal info shown across LabTrax.">
+      <div ref={profileTopRef} data-testid="profile-panel-top" />
       {error && <Alert tone="danger">{error}</Alert>}
       {success && <Alert tone="success">Profile saved.</Alert>}
 
       {/* Lab logo */}
+      <ProfilePhotoControl />
       <div className="rounded-lg border border-border bg-secondary/20 p-4 mb-2">
         <div className="flex items-center gap-4">
           <div className="w-20 h-20 rounded-lg bg-background border border-border overflow-hidden flex items-center justify-center text-xs text-muted-foreground">
@@ -1130,7 +1425,7 @@ function ProfilePanel() {
         </Field>
         {user?.platformAccountNumber && (
           <Field label="Account number">
-            <input value={user.platformAccountNumber} disabled className={`${inputCls} bg-secondary/40 text-muted-foreground cursor-not-allowed font-mono`} />
+            <input value={formatAccountNumberForDisplay(user.platformAccountNumber)} disabled className={`${inputCls} bg-secondary/40 text-muted-foreground cursor-not-allowed font-mono`} />
           </Field>
         )}
       </div>
@@ -1197,10 +1492,185 @@ function ProfilePanel() {
         </div>
       </div>
 
+      {/* Lab defaults — admin / owner of a lab org only */}
+      {isLabAdmin && user?.practiceOrganizationId && (
+        <div className="mt-6">
+          <div className="mb-2">
+            <h2 className="text-base font-semibold tracking-tight">Lab defaults</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Defaults applied when creating cases and invoices for this lab.
+            </p>
+          </div>
+          <div className="rounded-lg border border-border bg-secondary/20 p-4 space-y-4">
+            {/* Case turnaround */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-medium">Case turnaround (days)</label>
+                {labDueDaysSaved && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                    <Check size={11} />
+                    Saved
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground mb-2">
+                Days after the created date to set as due date on new cases. Leave blank for no default.
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={labDueDays}
+                  onChange={(e) => setLabDueDays(e.target.value)}
+                  placeholder="e.g. 7"
+                  className="h-8 w-24 px-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <span className="text-xs text-muted-foreground">days</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const val = labDueDays.trim();
+                    const num = val === "" ? null : parseInt(val, 10);
+                    if (num !== null && (isNaN(num) || num < 1 || num > 365)) return;
+                    labDueDaysMutation.mutate(num);
+                  }}
+                  disabled={labDueDaysMutation.isPending}
+                  className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60"
+                >
+                  {labDueDaysMutation.isPending ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </div>
+
+            {/* Invoice due day of month */}
+            <div className="pt-3 border-t border-border">
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-medium">Invoice due day of month</label>
+                {labInvoiceDaySaved && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                    <Check size={11} />
+                    Saved
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground mb-2">
+                Day of the month (1–28) on which new invoices become due. Leave blank to use the default (10th).
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  max={28}
+                  value={labInvoiceDay}
+                  onChange={(e) => setLabInvoiceDay(e.target.value)}
+                  placeholder="e.g. 10"
+                  className="h-8 w-24 px-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <span className="text-xs text-muted-foreground">of month</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const val = labInvoiceDay.trim();
+                    const num = val === "" ? null : parseInt(val, 10);
+                    if (num !== null && (isNaN(num) || num < 1 || num > 28)) return;
+                    labInvoiceDayMutation.mutate(num);
+                  }}
+                  disabled={labInvoiceDayMutation.isPending}
+                  className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60"
+                >
+                  {labInvoiceDayMutation.isPending ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </div>
+
+            {/* Revenue targets */}
+            <div className="pt-3 border-t border-border">
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-medium">Monthly revenue targets</label>
+                {labRevenueSaved && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                    <Check size={11} />
+                    Saved
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground mb-2">
+                Monthly revenue thresholds for the red/yellow/green chart coloring. Leave blank to use the defaults ($85k / $95k).
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: "#eab308" }} />
+                  <span className="text-xs text-muted-foreground">Low ($)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={labRevenueLow}
+                    onChange={(e) => setLabRevenueLow(e.target.value)}
+                    placeholder="85000"
+                    data-testid="revenue-target-low-input"
+                    className="h-8 w-28 px-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: "#22c55e" }} />
+                  <span className="text-xs text-muted-foreground">High ($)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={labRevenueHigh}
+                    onChange={(e) => setLabRevenueHigh(e.target.value)}
+                    placeholder="95000"
+                    data-testid="revenue-target-high-input"
+                    className="h-8 w-28 px-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+                <button
+                  type="button"
+                  data-testid="revenue-target-save-btn"
+                  onClick={() => {
+                    const lo = labRevenueLow.trim();
+                    const hi = labRevenueHigh.trim();
+                    const numLo = lo === "" ? null : parseInt(lo, 10);
+                    const numHi = hi === "" ? null : parseInt(hi, 10);
+                    if (numLo !== null && (isNaN(numLo) || numLo < 0)) return;
+                    if (numHi !== null && (isNaN(numHi) || numHi < 0)) return;
+                    if (numLo !== null && numHi !== null && numLo >= numHi) return;
+                    labRevenueMutation.mutate({ revenueTargetLow: numLo, revenueTargetHigh: numHi });
+                  }}
+                  disabled={labRevenueMutation.isPending}
+                  className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60"
+                >
+                  {labRevenueMutation.isPending ? "Saving…" : "Save"}
+                </button>
+              </div>
+              {(() => {
+                const lo = labRevenueLow.trim();
+                const hi = labRevenueHigh.trim();
+                const numLo = lo === "" ? null : parseInt(lo, 10);
+                const numHi = hi === "" ? null : parseInt(hi, 10);
+                if (numLo !== null && numHi !== null && !isNaN(numLo) && !isNaN(numHi) && numLo >= numHi) {
+                  return (
+                    <p className="mt-1 text-xs text-destructive">
+                      Low threshold must be less than the high threshold.
+                    </p>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Current lab / environment name — sourced from the signed-in member's
           lab from the lab-team data, falling back to the profile practice name,
           then a neutral label. */}
       <div className="mt-6 mb-1">
+        <PracticeOwnershipAction
+          preferredOrganizationId={user?.practiceOrganizationId}
+          onTransfer={(organizationId) => navigate(`/owner?transferOnly=1&organizationId=${encodeURIComponent(organizationId)}`)}
+        />
         <h2 className="text-base font-semibold tracking-tight">
           {(teamQuery.data?.team.find((m) => m.isSelf)?.labNames?.[0]?.trim()
             || user?.practiceName?.trim()
@@ -1277,15 +1747,16 @@ function ProfilePanel() {
                         onChange={(e) => {
                           const newRole = e.target.value;
                           if (newRole === "owner") {
+                            setTransferPhrase("");
                             setTransferTarget({ membershipId: m.membershipId!, name });
                           } else {
                             changeRoleMutation.mutate({ membershipId: m.membershipId!, role: newRole });
                           }
                         }}
-                        disabled={changeRoleMutation.isPending}
+                        disabled={changeRoleMutation.isPending || transferOwnershipMutation.isPending}
                         className="h-5 text-xs border border-border rounded px-1 bg-background text-foreground cursor-pointer focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
                       >
-                        {isCallerOwner && <option value="owner">Owner</option>}
+                        {isCallerOwner && m.status === "active" && <option value="owner">Owner</option>}
                         <option value="admin">Admin</option>
                         <option value="billing">Billing</option>
                         <option value="user">User</option>
@@ -1303,6 +1774,21 @@ function ProfilePanel() {
                       <span className={`w-2 h-2 rounded-full ${meta.dot}`} />
                       {meta.label}
                     </div>
+                  )}
+                  {isCallerOwner && !m.isOwner && !!m.membershipId && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setMemberPermSheetTarget({
+                          membershipId: m.membershipId!,
+                          name,
+                        })
+                      }
+                      title="View permissions"
+                      className="text-muted-foreground hover:text-primary transition-colors"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                    </button>
                   )}
                   {canSuspend && (
                     <button
@@ -1380,7 +1866,7 @@ function ProfilePanel() {
                     className="text-xs text-destructive truncate"
                     title={
                       inv.lastEmailAttemptAt
-                        ? `Last attempt: ${new Date(inv.lastEmailAttemptAt).toLocaleString()}`
+                        ? `Last attempt: ${formatDateTime(String(inv.lastEmailAttemptAt))}`
                         : undefined
                     }
                   >
@@ -1414,17 +1900,22 @@ function ProfilePanel() {
           {isTeamAdmin && (teamQuery.data?.pendingJoinRequests ?? []).map((reqItem) => {
             const requesterLabel =
               reqItem.requesterName || reqItem.requesterUsername || "Someone";
+            const isPracticeRequest = reqItem.organizationType === "provider";
             return (
               <li
                 key={reqItem.id}
-                className="px-4 py-2.5 flex items-center justify-between text-sm"
+                id={`join-request-${reqItem.id}`}
+                tabIndex={-1}
+                className={`px-4 py-2.5 flex items-center justify-between text-sm ${highlightedRequestId === reqItem.id ? "bg-sky-500/10 ring-2 ring-inset ring-sky-500" : ""}`}
               >
                 <div className="min-w-0">
                   <div className="font-medium truncate">{requesterLabel}</div>
                   <div className="text-xs text-muted-foreground truncate">
                     {reqItem.requestedRole || "user"} ·{" "}
                     <span className="text-sky-500 font-medium">
-                      Wants to join
+                      {isPracticeRequest
+                        ? `Wants to join practice${reqItem.labName ? ` ${reqItem.labName}` : ""}`
+                        : "Wants to join"}
                     </span>
                     {reqItem.requesterEmail && (
                       <span className="text-muted-foreground/60"> · {reqItem.requesterEmail}</span>
@@ -1470,6 +1961,140 @@ function ProfilePanel() {
             )}
         </ul>
       </div>
+
+      {/* My Permissions — shown to non-admin/non-owner lab members only */}
+      {!isLabAdmin && !!user?.practiceOrganizationId && (
+        <div className="mt-6">
+          <div className="mb-2">
+            <h2 className="text-base font-semibold tracking-tight">My permissions</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Custom capabilities your lab owner has granted to your account.
+            </p>
+          </div>
+          <div className="rounded-lg border border-border bg-secondary/20 p-4">
+            {selfPermissionsQuery.isLoading && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 size={12} className="animate-spin" />
+                Loading…
+              </div>
+            )}
+            {selfPermissionsQuery.isError && (
+              <p className="text-xs text-destructive">Could not load your permissions.</p>
+            )}
+            {selfPermissionsQuery.isSuccess && (
+              selfPermissionsQuery.data.permissions.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No custom permissions assigned to your account.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {selfPermissionsQuery.data.permissions.map((perm) => (
+                    <li key={perm.id} className="flex items-start gap-2">
+                      <ShieldCheck size={13} className="text-primary mt-0.5 shrink-0" />
+                      <div>
+                        <div className="text-sm font-medium leading-tight">{perm.name}</div>
+                        {perm.description && (
+                          <div className="text-xs text-muted-foreground mt-0.5">{perm.description}</div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Member permissions sheet — owner views & revokes individual grants */}
+      <Sheet
+        open={!!memberPermSheetTarget}
+        onOpenChange={(open) => {
+          if (!open) setMemberPermSheetTarget(null);
+        }}
+      >
+        <SheetContent side="right" className="w-[360px]">
+          <SheetHeader>
+            <SheetTitle className="text-base">
+              Permissions — {memberPermSheetTarget?.name}
+            </SheetTitle>
+            <SheetDescription className="text-xs">
+              Custom capabilities granted to this team member. Click{" "}
+              <strong>Revoke</strong> to remove an individual permission. Full
+              editing is available in the Permission Outline settings tab.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="mt-5 space-y-3">
+            {(memberPermGrantsQuery.isLoading ||
+              memberPermDefsQuery.isLoading) && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 size={12} className="animate-spin" />
+                Loading…
+              </div>
+            )}
+            {memberPermGrantsQuery.isSuccess &&
+              memberPermDefsQuery.isSuccess &&
+              (() => {
+                const grantedIds = new Set(
+                  memberPermGrantsQuery.data?.permissionDefinitionIds ?? []
+                );
+                const grantedDefs = (memberPermDefsQuery.data ?? []).filter(
+                  (d) => grantedIds.has(d.id)
+                );
+                return grantedDefs.length === 0 ? (
+                  <p className="text-sm text-muted-foreground italic">
+                    No custom permissions assigned to this member.
+                  </p>
+                ) : (
+                  <ul className="space-y-2">
+                    {grantedDefs.map((def) => (
+                      <li
+                        key={def.id}
+                        className="flex items-start justify-between gap-3 rounded-md border border-border px-3 py-2.5"
+                      >
+                        <div className="flex items-start gap-2 min-w-0">
+                          <ShieldCheck
+                            size={13}
+                            className="text-primary mt-0.5 shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium leading-tight truncate">
+                              {def.name}
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              {CAPABILITY_LABELS_DESKTOP[def.capabilityKey] ??
+                                def.capabilityKey}
+                            </p>
+                            {def.description && (
+                              <p className="text-xs text-muted-foreground/70 mt-0.5 truncate">
+                                {def.description}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            revokePermMutation.mutate({
+                              membershipId:
+                                memberPermSheetTarget!.membershipId,
+                              defId: def.id,
+                            })
+                          }
+                          disabled={revokePermMutation.isPending}
+                          title={`Revoke "${def.name}"`}
+                          className="shrink-0 text-xs font-medium text-destructive hover:text-destructive/80 disabled:opacity-50 transition-colors"
+                        >
+                          Revoke
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                );
+              })()}
+          </div>
+        </SheetContent>
+      </Sheet>
 
       {/* Invite member modal */}
       {showInviteModal && (
@@ -1577,6 +2202,16 @@ function ProfilePanel() {
             This action cannot be undone by you once confirmed.
           </AlertDialogDescription>
         </AlertDialogHeader>
+        <label className="text-sm">
+          Type {user?.practiceName} to confirm
+          <input
+            aria-label="Organization name confirmation"
+            className="w-full h-10 px-3 mt-2 rounded-md border border-input bg-background"
+            value={transferPhrase}
+            onChange={(e) => setTransferPhrase(e.target.value)}
+            disabled={transferOwnershipMutation.isPending}
+          />
+        </label>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={transferOwnershipMutation.isPending}>Cancel</AlertDialogCancel>
           <AlertDialogAction
@@ -1586,7 +2221,7 @@ function ProfilePanel() {
                 transferOwnershipMutation.mutate({ targetMembershipId: transferTarget.membershipId });
               }
             }}
-            disabled={transferOwnershipMutation.isPending}
+            disabled={!transferPhrase.trim() || transferOwnershipMutation.isPending}
             className="bg-primary text-primary-foreground hover:bg-primary/90"
           >
             {transferOwnershipMutation.isPending ? (
@@ -1763,7 +2398,10 @@ function UsersPanel() {
   }, [list, search]);
 
   return (
-    <PanelShell title="Users" subtitle="Everyone with a LabTrax account.">
+    <PanelShell
+      title="Users"
+      subtitle="Everyone in your lab and the provider practices under it."
+    >
       <div className="flex items-center gap-3 mb-3">
         <input
           type="search"
@@ -1839,7 +2477,21 @@ function UsersPanel() {
   );
 }
 
-type BackupDestinationType = "local" | "network";
+type BackupDestinationType = "local" | "network" | "onedrive" | "google-drive";
+
+interface OneDriveStatusData {
+  ok: boolean;
+  connected: boolean;
+  accountName: string | null;
+  accountEmail: string | null;
+  folder: string;
+  error: string | null;
+  userMessage?: string | null;
+  diagnostic?: string | null;
+  manageUrl: string | null;
+}
+
+type GoogleDriveStatusData = GoogleDriveBackupStatusResult;
 type BackupIntervalUnit = "minutes" | "hours";
 
 interface BackupScheduleData {
@@ -1852,10 +2504,93 @@ interface BackupScheduleData {
   staleAlertThresholdDays: number;
   staleAlertRateLimitDays: number;
   staleAfterDays: number;
+  /** What the server is actually running, not what this form has unsaved. */
+  effectiveIntervalMinutes?: number | null;
+  effectiveDestination?: BackupDestinationType | null;
+  /** The editable schedule row's own interval, which may be slower. */
+  scheduleIntervalMinutes?: number | null;
+  /** The independent off-site protection job on the deployed server. */
+  offsite?: {
+    enabled: boolean;
+    running: boolean;
+    intervalMinutes: number;
+    lastVerifiedAt: string | null;
+    /** Judged from the archive confirmed off-site, not the DB watermark. */
+    stale?: boolean;
+    ageMinutes?: number | null;
+    windowMinutes?: number;
+    source?: "onedrive" | "database" | "none";
+    reason?: string | null;
+    destinationUnreadable?: boolean;
+  } | null;
+  /** Alert attempts and whether anyone could actually be told. */
+  alertDelivery?: {
+    undelivered: BackupAlertAttempt | null;
+    recent: BackupAlertAttempt[];
+  } | null;
+  fullArchiveIntervalMinutes?: number | null;
+  nextDueAt?: string | null;
+  lastAttemptAt?: string | null;
+  /** Newest archive actually present at the destination. */
+  newestArchive?: {
+    name: string;
+    createdAt: string;
+    sizeBytes: number;
+    ageMinutes: number;
+  } | null;
+  newestArchiveError?: string | null;
+  newestArchiveErrorMessage?: string | null;
+  newestArchiveErrorDiagnostic?: string | null;
+  archiveCount?: number | null;
 }
 
 const DEFAULT_BACKUP_STALE_DAYS = 7;
 
+/** "every 15 minutes" / "every 2 hours" from a minute count. */
+function describeIntervalMinutes(minutes: number | null | undefined): string | null {
+  if (minutes === null || minutes === undefined || !Number.isFinite(minutes) || minutes <= 0) {
+    return null;
+  }
+  if (minutes % 1440 === 0) {
+    const days = minutes / 1440;
+    return days === 1 ? "every 24 hours" : `every ${days} days`;
+  }
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return hours === 1 ? "every hour" : `every ${hours} hours`;
+  }
+  return `every ${minutes} minutes`;
+}
+
+/** Human name for a destination the server reports it is writing to. */
+function describeBackupDestination(
+  destination: BackupDestinationType | null | undefined,
+): string {
+  if (destination === "onedrive") return "OneDrive";
+  if (destination === "google-drive") return "Google Drive";
+  if (destination === "network") return "Network (SFTP)";
+  if (destination === "local") return "Local folder / USB";
+  return "not configured";
+}
+
+/** "4 minutes ago" / "3 hours ago" from an age in minutes. */
+function describeAgeMinutes(ageMinutes: number): string {
+  if (ageMinutes < 1) return "just now";
+  if (ageMinutes < 60) return `${ageMinutes} minute${ageMinutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(ageMinutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/**
+ * Open the hosting-workspace page where a managed backup connector is linked.
+ * The account handshake completes there; the admin returns here to check it.
+ */
+function openBackupConnectorManagePage(manageUrl: string | null): void {
+  if (!manageUrl) return;
+  window.open(manageUrl, "_blank", "noopener,noreferrer");
+}
 function isBackupStale(lastSuccessfulBackupAt: string | null, staleDays: number = DEFAULT_BACKUP_STALE_DAYS): boolean {
   if (!lastSuccessfulBackupAt) return true;
   const last = new Date(lastSuccessfulBackupAt).getTime();
@@ -1864,13 +2599,10 @@ function isBackupStale(lastSuccessfulBackupAt: string | null, staleDays: number 
 }
 
 const INTERVAL_OPTIONS: Array<{ interval: number; unit: BackupIntervalUnit; label: string }> = [
+  { interval: 5, unit: "minutes", label: "Every 5 minutes" },
+  { interval: 10, unit: "minutes", label: "Every 10 minutes" },
   { interval: 15, unit: "minutes", label: "Every 15 minutes" },
-  { interval: 30, unit: "minutes", label: "Every 30 minutes" },
   { interval: 1, unit: "hours", label: "Every hour" },
-  { interval: 2, unit: "hours", label: "Every 2 hours" },
-  { interval: 4, unit: "hours", label: "Every 4 hours" },
-  { interval: 8, unit: "hours", label: "Every 8 hours" },
-  { interval: 24, unit: "hours", label: "Every 24 hours" },
 ];
 
 function intervalKey(interval: number, unit: BackupIntervalUnit): string {
@@ -1884,13 +2616,6 @@ function parseIntervalKey(key: string): { interval: number; unit: BackupInterval
   return { interval: n, unit: u };
 }
 
-function formatBackupSize(bytes: number): string {
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${bytes} B`;
-}
-
 interface BackupRunRow {
   id: number;
   triggeredBy: string;
@@ -1900,17 +2625,228 @@ interface BackupRunRow {
   sizeBytes: number | null;
   status: string;
   error: string | null;
+  userMessage?: string | null;
   completedAt: string;
+  mediaFileCount: number | null;
+  attachmentRowCount: number | null;
+  partialFailure: boolean | null;
+  warnings: string | null;
+  /**
+   * "full" (database + media) or "database-only". Database-only archives are
+   * taken on the fast schedule and cannot be used as a restore source — the
+   * server rejects them, and the Restore action below refuses them up front so
+   * an admin is not told only after a multi-hundred-megabyte download.
+   */
+  archiveKind?: string | null;
 }
 
-function BackupPanel() {
+/** Database-only archives are not a restore source: they carry no media. */
+function isDatabaseOnlyRun(run: Pick<BackupRunRow, "archiveKind">): boolean {
+  return run.archiveKind === "database-only";
+}
+
+function LabScopedBackupCard() {
+  const meQuery = useQuery<MeResponse>({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+    staleTime: 60_000,
+  });
+  const eligibleLabs = (meQuery.data?.memberships ?? []).filter((membership) =>
+    membership.status === "active" &&
+    (membership.role === "owner" || membership.role === "admin") &&
+    membership.organization?.type === "lab" &&
+    membership.organization.isActive === true &&
+    !membership.organization.deletedAt,
+  );
+  const { user } = useAuth();
+  const [selectedLabId, setSelectedLabId] = useState("");
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadMessage, setDownloadMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    if (!selectedLabId && eligibleLabs.length === 1) {
+      setSelectedLabId(eligibleLabs[0]!.organizationId);
+    } else if (
+      !selectedLabId &&
+      user?.practiceOrganizationId &&
+      eligibleLabs.some((membership) => membership.organizationId === user.practiceOrganizationId)
+    ) {
+      setSelectedLabId(user.practiceOrganizationId);
+    }
+  }, [eligibleLabs, selectedLabId, user?.practiceOrganizationId]);
+
+  async function downloadLabBackup() {
+    const membership = eligibleLabs.find((item) => item.organizationId === selectedLabId);
+    if (!membership || isDownloading) return;
+    setDownloadMessage(null);
+    setIsDownloading(true);
+    let fileHandle: { createWritable: () => Promise<WritableStream<Uint8Array>> } | null = null;
+    try {
+      const suggestedName = `labtrax-${membership.organization?.name || "lab"}-backup.zip.enc`
+        .replace(/[^a-zA-Z0-9._-]+/g, "-");
+      const picker = (window as Window & {
+        showSaveFilePicker?: (options: { suggestedName: string }) => Promise<{
+          createWritable: () => Promise<WritableStream<Uint8Array>>;
+        }>;
+      }).showSaveFilePicker;
+      // Open the save picker while the user gesture is still active. The file
+      // body then streams directly to disk on browsers that support this API.
+      if (picker) fileHandle = await picker({ suggestedName });
+
+      const response = await apiFetchDownloadResponse(
+        `/lab/backup/generate?labOrganizationId=${encodeURIComponent(selectedLabId)}`,
+      );
+      if (!response.ok) {
+        let message = `Backup download failed (${response.status}).`;
+        try {
+          const body = await response.json() as { error?: string; message?: string };
+          message = body.error || body.message || message;
+        } catch {
+          /* Keep the status-based message when the server did not return JSON. */
+        }
+        throw new Error(message);
+      }
+      if (!response.body) throw new Error("The server returned an empty backup download.");
+
+      if (fileHandle) {
+        const writable = await fileHandle.createWritable();
+        await response.body.pipeTo(writable);
+      } else {
+        // Blob download is the compatibility path for browsers without the
+        // File System Access API; the server still creates and sends the
+        // encrypted archive as a stream.
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = response.headers.get("content-disposition")
+          ?.match(/filename="([^"]+)"/)?.[1] ?? suggestedName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+      }
+      setDownloadMessage({
+        kind: "success",
+        text: `Backup downloaded for ${membership.organization?.name ?? "the selected lab"}. Recovery instructions are included in the archive.`,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setDownloadMessage({
+        kind: "error",
+        text: error instanceof Error
+          ? error.message
+          : "Could not download the backup. Check your connection and try again.",
+      });
+    } finally {
+      setIsDownloading(false);
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-border bg-card p-4 space-y-3" data-testid="lab-scoped-backup">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 rounded-md bg-primary/10 p-2 text-primary">
+          <ShieldCheck size={16} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold">Download a lab backup</h3>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            Creates an encrypted archive of one lab&rsquo;s records and referenced case media.
+            Recovery instructions are included; restore it only into a new, isolated database.
+          </p>
+        </div>
+      </div>
+
+      {meQuery.isLoading ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 size={13} className="animate-spin" /> Checking lab access…
+        </div>
+      ) : meQuery.isError ? (
+        <p className="text-xs text-destructive" role="alert">
+          Could not check your lab access. Refresh the page and try again.
+        </p>
+      ) : eligibleLabs.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          An active owner or admin membership is required to download a lab backup.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          {eligibleLabs.length > 1 && (
+            <label className="flex-1 space-y-1 text-xs">
+              <span className="font-medium">Lab</span>
+              <select
+                aria-label="Lab for backup"
+                data-testid="lab-backup-lab-select"
+                value={selectedLabId}
+                onChange={(event) => setSelectedLabId(event.target.value)}
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                disabled={isDownloading}
+              >
+                <option value="">Choose a lab</option>
+                {eligibleLabs.map((membership) => (
+                  <option key={membership.organizationId} value={membership.organizationId}>
+                    {membership.organization?.name ?? "Lab"}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <button
+            type="button"
+            data-testid="download-lab-backup"
+            onClick={() => void downloadLabBackup()}
+            disabled={isDownloading || !eligibleLabs.some((item) => item.organizationId === selectedLabId)}
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isDownloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+            {isDownloading ? "Preparing backup…" : "Download lab backup"}
+          </button>
+        </div>
+      )}
+
+      {downloadMessage && (
+        <p
+          className={`text-xs ${downloadMessage.kind === "success" ? "text-green-700 dark:text-green-400" : "text-destructive"}`}
+          role={downloadMessage.kind === "error" ? "alert" : "status"}
+          data-testid={`lab-backup-${downloadMessage.kind}`}
+        >
+          {downloadMessage.text}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function BackupPanel({ labOnly }: { labOnly: boolean }) {
+  if (labOnly) {
+    return (
+      <PanelShell title="Backup" subtitle="Download an encrypted backup of a lab you administer.">
+        <LabScopedBackupCard />
+      </PanelShell>
+    );
+  }
+  return <PlatformBackupPanel />;
+}
+
+function PlatformBackupPanel() {
   const queryClient = useQueryClient();
+  const scheduledBackupProgress = useSyncExternalStore(
+    subscribeScheduledLocalBackupProgress,
+    getScheduledLocalBackupProgress,
+    getScheduledLocalBackupProgress,
+  );
+  const [scheduledElapsedSeconds, setScheduledElapsedSeconds] = useState(0);
   const [nowDest, setNowDest] = useState<BackupDestinationType>("local");
   const [nowPath, setNowPath] = useState("");
-  const [backupResult, setBackupResult] = useState<{ size: number; completedAt: string; fileName: string; savedTo?: string | null; viaBrowser?: boolean } | null>(null);
+  const [backupResult, setBackupResult] = useState<{ size: number; completedAt: string; fileName: string; savedTo?: string | null; viaBrowser?: boolean; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null } | null>(null);
   const [backupError, setBackupError] = useState<string | null>(null);
+  const [backupPhase, setBackupPhase] = useState("");
+  const [backupStartedAt, setBackupStartedAt] = useState(0);
+  const [backupElapsedSeconds, setBackupElapsedSeconds] = useState(0);
+  const [backupLiveStatus, setBackupLiveStatus] = useState<LocalBackupLiveStatus | null>(null);
 
-  const [schedIntervalKey, setSchedIntervalKey] = useState<string>(intervalKey(1, "hours"));
+  const [schedIntervalKey, setSchedIntervalKey] = useState<string>(intervalKey(15, "minutes"));
   const [schedDest, setSchedDest] = useState<BackupDestinationType>("local");
   const [schedPath, setSchedPath] = useState("");
   const [schedEnabled, setSchedEnabled] = useState(false);
@@ -1919,8 +2855,13 @@ function BackupPanel() {
   const [schedStaleDays, setSchedStaleDays] = useState<number>(DEFAULT_BACKUP_STALE_DAYS);
   const [schedError, setSchedError] = useState<string | null>(null);
   const [schedSuccess, setSchedSuccess] = useState(false);
-  const [schedRunNowResult, setSchedRunNowResult] = useState<{ size: number; completedAt: string; fileName: string } | null>(null);
+  const [schedRunNowResult, setSchedRunNowResult] = useState<{ size: number; completedAt: string; fileName: string; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null } | null>(null);
   const [schedRunNowError, setSchedRunNowError] = useState<string | null>(null);
+
+  const [selectedRestoreRunId, setSelectedRestoreRunId] = useState<number | null>(null);
+  const [restoreFromHistoryLoading, setRestoreFromHistoryLoading] = useState(false);
+  const [restoreFromHistoryError, setRestoreFromHistoryError] = useState<string | null>(null);
+  const [preloadedFile, setPreloadedFile] = useState<File | null>(null);
 
   const scheduleQuery = useQuery<BackupScheduleData>({
     queryKey: ["admin", "backup-schedule-v2"],
@@ -1928,11 +2869,71 @@ function BackupPanel() {
     retry: retryUnlessForbidden,
   });
 
+  // Where the server says archives are actually being written, which is not
+  // necessarily the destination saved in this form: off-site protection keeps
+  // uploading to OneDrive even when the editable schedule points elsewhere.
+  const serverDestination: BackupDestinationType | null =
+    scheduleQuery.data?.effectiveDestination ?? scheduleQuery.data?.destination ?? null;
+
   const historyQuery = useQuery<{ ok: boolean; runs: BackupRunRow[] }>({
     queryKey: ["admin", "backup-history"],
     queryFn: () => apiFetch("/admin/backup/history"),
     staleTime: 30_000,
   });
+
+  const oneDriveStatusEnabled = nowDest === "onedrive" || schedDest === "onedrive";
+  const oneDriveStatusQuery = useQuery<OneDriveStatusData>({
+    queryKey: ["admin", "backup-onedrive-status"],
+    queryFn: async () => {
+      const status = await apiFetch<OneDriveStatusData>("/admin/backup/onedrive-status");
+      if (typeof status?.connected !== "boolean" || typeof status.folder !== "string") {
+        throw new Error("The server did not return a OneDrive connection status. Check the Desktop connection settings or update LabTrax.");
+      }
+      return status;
+    },
+    staleTime: 60_000,
+    retry: retryUnlessForbidden,
+    refetchInterval: haltPollingIfForbidden(60_000),
+    enabled: oneDriveStatusEnabled,
+  });
+  const googleDriveStatusEnabled =
+    nowDest === "google-drive" || schedDest === "google-drive";
+  const googleDriveStatusQuery = useQuery<GoogleDriveStatusData>({
+    queryKey: ["admin", "backup-google-drive-status"],
+    queryFn: async () => {
+      const status = await apiFetch<GoogleDriveStatusData>(
+        "/admin/backup/google-drive-status",
+      );
+      if (typeof status?.connected !== "boolean" || typeof status.folder !== "string") {
+        throw new Error(
+          "The server did not return a Google Drive connection status. Check the Desktop connection settings or update LabTrax.",
+        );
+      }
+      return status;
+    },
+    staleTime: 60_000,
+    retry: retryUnlessForbidden,
+    refetchInterval: haltPollingIfForbidden(60_000),
+    enabled: googleDriveStatusEnabled,
+  });
+  const { refetch: refetchOneDriveStatus } = oneDriveStatusQuery;
+  useEffect(() => {
+    if (!oneDriveStatusEnabled) return;
+    // OAuth completes in an external browser. Electron can regain focus
+    // without a visibilitychange, so don't rely on Query's visibility listener.
+    const refresh = () => { void refetchOneDriveStatus({ cancelRefetch: false }); };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [oneDriveStatusEnabled, refetchOneDriveStatus]);
+  const { refetch: refetchGoogleDriveStatus } = googleDriveStatusQuery;
+  useEffect(() => {
+    if (!googleDriveStatusEnabled) return;
+    // Google account linking completes in the hosting workspace. Refresh the
+    // status when the admin returns from that browser window.
+    const refresh = () => { void refetchGoogleDriveStatus({ cancelRefetch: false }); };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [googleDriveStatusEnabled, refetchGoogleDriveStatus]);
 
   const retentionQuery = useQuery<{
     ok: boolean;
@@ -1980,6 +2981,8 @@ function BackupPanel() {
       const { interval, unit } = scheduleQuery.data;
       if (interval !== null && unit !== null) {
         setSchedIntervalKey(intervalKey(interval, unit));
+      } else {
+        setSchedIntervalKey(intervalKey(15, "minutes"));
       }
       setSchedDest((scheduleQuery.data.destination as BackupDestinationType | null) ?? "local");
       setSchedPath(scheduleQuery.data.path ?? "");
@@ -1991,26 +2994,62 @@ function BackupPanel() {
   }, [scheduleQuery.data]);
 
   const backupNowMutation = useMutation({
-    mutationFn: async (): Promise<{ size: number; completedAt: string; fileName: string; savedTo: string | null; viaBrowser: boolean }> => {
+    mutationFn: async (): Promise<{ size: number; completedAt: string; fileName: string; savedTo: string | null; viaBrowser: boolean; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null }> => {
+      setBackupStartedAt(Date.now());
+      setBackupElapsedSeconds(0);
+      setBackupLiveStatus(null);
+      setBackupPhase(
+        nowDest === "onedrive"
+          ? "Preparing, uploading and verifying the full archive in OneDrive"
+          : nowDest === "google-drive"
+            ? "Preparing, uploading and verifying the encrypted archive in Google Drive"
+            : "Generating and downloading the full archive",
+      );
+      if (nowDest === "onedrive" || nowDest === "google-drive") {
+        const provider = nowDest === "onedrive" ? "OneDrive" : "Google Drive";
+        const runId = crypto.randomUUID();
+        const stopWatching = watchBackupLiveStatus(
+          runId,
+          (id) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(id)}`),
+          (status) => {
+            setBackupLiveStatus(status);
+            setBackupPhase(backupLivePhaseLabel(status.phase));
+          },
+        );
+        try {
+          const res = await apiFetch<{ size: number; completedAt: string; fileName: string; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null }>("/admin/backup/run", {
+            method: "POST",
+            body: JSON.stringify({ destination: nowDest, runId }),
+          });
+          return { ...res, savedTo: provider, viaBrowser: false };
+        } finally {
+          stopWatching();
+        }
+      }
       const isNetworkSftp = nowDest === "network" && nowPath.trim().startsWith("sftp://");
       if (isNetworkSftp) {
-        const res = await apiFetch<{ size: number; completedAt: string; fileName: string }>("/admin/backup/run", {
-          method: "POST",
-          body: JSON.stringify({ destination: nowDest, path: nowPath.trim() || undefined }),
-        });
-        return { ...res, savedTo: nowPath.trim(), viaBrowser: false };
+        const runId = crypto.randomUUID();
+        const stopWatching = watchBackupLiveStatus(
+          runId,
+          (id) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(id)}`),
+          (status) => {
+            setBackupLiveStatus(status);
+            setBackupPhase(backupLivePhaseLabel(status.phase));
+          },
+        );
+        try {
+          const res = await apiFetch<{ size: number; completedAt: string; fileName: string; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null }>("/admin/backup/run", {
+            method: "POST",
+            body: JSON.stringify({ destination: nowDest, path: nowPath.trim() || undefined, runId }),
+          });
+          return { ...res, savedTo: nowPath.trim(), viaBrowser: false };
+        } finally {
+          stopWatching();
+        }
       }
-      const { buffer, headers } = await apiFetchArrayBuffer("/admin/backup/generate", {
-        method: "POST",
-      });
-      const disposition = headers.get("Content-Disposition") ?? "";
-      const nameMatch = /filename="([^"]+)"/.exec(disposition);
-      const fileName = nameMatch?.[1] ?? "labtrax-backup.zip.enc";
-      const size = buffer.byteLength;
-      const completedAt = new Date().toISOString();
-      const electronAPI = (window as unknown as { electronAPI?: { saveBackupToFolder?: (buf: Uint8Array, name: string, folder: string) => Promise<{ ok: boolean; path?: string; error?: string }> } }).electronAPI;
+      const electronAPI = (window as ElectronWindow).electronAPI;
       const wantsPath = !!nowPath.trim();
-      if (wantsPath && !electronAPI?.saveBackupToFolder) {
+      if (wantsPath && !electronAPI?.saveBackupToFolder && !electronAPI?.downloadBackupToFolder) {
         // Running in a regular browser — we cannot write to an arbitrary
         // filesystem path. Refuse instead of silently downloading to the
         // browser's default Downloads folder while pretending we saved to
@@ -2019,23 +3058,62 @@ function BackupPanel() {
           `This browser cannot save directly to "${nowPath.trim()}". Install and open the LabTrax Desktop app to back up to a specific folder, or clear the folder path to download the backup file through your browser instead.`,
         );
       }
-      if (electronAPI?.saveBackupToFolder && wantsPath) {
-        const result = await electronAPI.saveBackupToFolder(new Uint8Array(buffer), fileName, nowPath.trim());
-        if (!result.ok) {
-          throw new Error(result.error ?? "Failed to save backup to folder.");
-        }
-        return { size, completedAt, fileName, savedTo: result.path ?? nowPath.trim(), viaBrowser: false };
+      if (wantsPath && (electronAPI?.saveBackupToFolder || electronAPI?.downloadBackupToFolder)) {
+        const result = await executeLocalBackup({
+          apiFetch, apiFetchArrayBuffer,
+          saveBackupToFolder: electronAPI.saveBackupToFolder,
+          downloadBackupToFolder: electronAPI.downloadBackupToFolder ? apiDownloadBackupToFolder : undefined,
+          onDownloadRunId: electronAPI.onBackupRunId,
+          getLiveStatus: (runId) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(runId)}`),
+          onLiveStatus: (status) => {
+            setBackupLiveStatus(status);
+            setBackupPhase(backupLivePhaseLabel(status.phase));
+          },
+          onPhase: setBackupPhase,
+        }, nowPath.trim(), "manual");
+        return { size: result.sizeBytes, completedAt: result.completedAt, fileName: result.fileName, savedTo: result.path, viaBrowser: false };
       }
-      const blob = new Blob([buffer], { type: "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      return { size, completedAt, fileName, savedTo: null, viaBrowser: true };
+      const runId = crypto.randomUUID();
+      const stopWatching = watchBackupLiveStatus(
+        runId,
+        (id) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(id)}`),
+        (status) => {
+          setBackupLiveStatus(status);
+          setBackupPhase(backupLivePhaseLabel(status.phase));
+        },
+      );
+      try {
+        const response = await apiFetchDownloadResponse(
+          `/admin/backup/generate?runId=${encodeURIComponent(runId)}`,
+          { method: "POST" },
+        );
+        if (!response.ok) {
+          let message = `Backup download failed (${response.status}).`;
+          try {
+            const body = await response.json() as { error?: string; message?: string };
+            message = body.error ?? body.message ?? message;
+          } catch { /* Keep the status-based message. */ }
+          throw new Error(message);
+        }
+        verifyCompleteBackupHeaders(response.headers);
+        const buffer = await readBoundedBackupBuffer(response);
+        verifyStreamedBackup(buffer, response.headers);
+        const fileName = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ?? "labtrax-backup.zip.enc";
+        const size = buffer.byteLength;
+        const completedAt = new Date().toISOString();
+        const blob = new Blob([buffer], { type: "application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return { size, completedAt, fileName, savedTo: null, viaBrowser: true };
+      } finally {
+        stopWatching();
+      }
     },
     onSuccess: (data) => {
       setBackupResult(data);
@@ -2050,6 +3128,24 @@ function BackupPanel() {
     },
   });
 
+  useEffect(() => {
+    if (!backupNowMutation.isPending || !backupStartedAt) return;
+    const timer = window.setInterval(() => setBackupElapsedSeconds(Math.floor((Date.now() - backupStartedAt) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [backupNowMutation.isPending, backupStartedAt]);
+
+  useEffect(() => {
+    if (!scheduledBackupProgress) {
+      setScheduledElapsedSeconds(0);
+      return;
+    }
+    const updateElapsed = () =>
+      setScheduledElapsedSeconds(Math.floor((Date.now() - scheduledBackupProgress.startedAt) / 1000));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [scheduledBackupProgress?.startedAt]);
+
   const saveScheduleMutation = useMutation({
     mutationFn: () => {
       const parsed = parseIntervalKey(schedIntervalKey) ?? { interval: 1, unit: "hours" as BackupIntervalUnit };
@@ -2059,7 +3155,7 @@ function BackupPanel() {
           interval: parsed.interval,
           unit: parsed.unit,
           destination: schedDest,
-          path: schedPath.trim() || null,
+          path: needsPath(schedDest) ? schedPath.trim() || null : null,
           enabled: schedEnabled,
           staleAlertThresholdDays: staleThresholdDays,
           staleAlertRateLimitDays: staleRateLimitDays,
@@ -2092,7 +3188,14 @@ function BackupPanel() {
 
   const schedRunNowMutation = useMutation({
     mutationFn: () => apiFetch("/admin/backup/schedule/run-now", { method: "POST" }),
-    onSuccess: (data: { size: number; completedAt: string; fileName: string }) => {
+    onSuccess: (data: {
+      size: number;
+      completedAt: string;
+      fileName: string;
+      partialFailure?: boolean;
+      warnings?: string | null;
+      warningMessage?: string | null;
+    }) => {
       setSchedRunNowResult(data);
       setSchedRunNowError(null);
       queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
@@ -2117,6 +3220,8 @@ function BackupPanel() {
 
   const gate = usePlatformAdminGate([
     scheduleQuery.error,
+    oneDriveStatusQuery.error,
+    googleDriveStatusQuery.error,
     backupNowMutation.error,
     saveScheduleMutation.error,
     disableScheduleMutation.error,
@@ -2124,26 +3229,336 @@ function BackupPanel() {
   ]);
 
   const needsPath = (d: BackupDestinationType) => d === "local" || d === "network";
+  const hasCurrentIntervalChoice = INTERVAL_OPTIONS.some(
+    (option) => intervalKey(option.interval, option.unit) === schedIntervalKey,
+  );
+  const legacyIntervalChoice = !hasCurrentIntervalChoice
+    ? parseIntervalKey(schedIntervalKey)
+    : null;
+  const legacyIntervalLabel = legacyIntervalChoice
+    ? `Current: every ${legacyIntervalChoice.interval} ${
+        legacyIntervalChoice.unit === "minutes"
+          ? legacyIntervalChoice.interval === 1 ? "minute" : "minutes"
+          : legacyIntervalChoice.interval === 1 ? "hour" : "hours"
+      } (legacy)`
+    : null;
 
-  const stale = isBackupStale(scheduleQuery.data?.lastSuccessfulBackupAt ?? null, scheduleQuery.data?.staleAfterDays ?? DEFAULT_BACKUP_STALE_DAYS);
+  const oneDriveRefreshButton = (
+    <button
+      type="button"
+      data-testid="onedrive-check-again-button"
+      onClick={() => refetchOneDriveStatus()}
+      disabled={oneDriveStatusQuery.isFetching}
+      className="inline-flex items-center gap-1 text-[11px] font-semibold underline disabled:opacity-60"
+    >
+      {oneDriveStatusQuery.isFetching ? "Checking…" : "Check again"}
+    </button>
+  );
+
+  const oneDriveNotice = oneDriveStatusQuery.isPending ? (
+    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+      <Loader2 size={11} className="animate-spin" />
+      Checking OneDrive connection…
+    </div>
+  ) : oneDriveStatusQuery.isError ? (
+    <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300" data-testid="onedrive-status-error">
+      <p className="font-semibold mb-0.5">Could not check OneDrive</p>
+      <p>
+        {oneDriveStatusQuery.error instanceof Error
+          ? oneDriveStatusQuery.error.message
+          : "The connection-status request failed."}{" "}
+        This does not mean the Microsoft account is disconnected.
+      </p>
+      <div className="mt-1.5">{oneDriveRefreshButton}</div>
+    </div>
+  ) : oneDriveStatusQuery.data?.connected ? (
+    <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-[11px] leading-snug text-success" data-testid="onedrive-status-connected">
+      OneDrive connected
+      {oneDriveStatusQuery.data.accountName || oneDriveStatusQuery.data.accountEmail
+        ? ` as ${oneDriveStatusQuery.data.accountName ?? ""}${oneDriveStatusQuery.data.accountEmail ? ` (${oneDriveStatusQuery.data.accountEmail})` : ""}`
+        : ""}
+      . Backups are saved to <span className="font-mono">{oneDriveStatusQuery.data.folder}</span> in that account.
+      {oneDriveStatusQuery.data.manageUrl && (
+        <button
+          type="button"
+          data-testid="onedrive-reconnect-button"
+          onClick={() => openBackupConnectorManagePage(oneDriveStatusQuery.data?.manageUrl ?? null)}
+          className="ml-1.5 inline-flex items-center gap-1 text-[11px] font-semibold underline"
+        >
+          Reconnect a different account
+        </button>
+      )}
+      <div className="mt-1.5">{oneDriveRefreshButton}</div>
+    </div>
+  ) : (
+    <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300" data-testid="onedrive-status-disconnected">
+      <p className="font-semibold mb-0.5">OneDrive is not connected</p>
+      <p>
+        {oneDriveStatusQuery.data?.userMessage ?? "OneDrive is not connected. Connect the Microsoft integration or reconnect the account, then check again."}{" "}
+        {oneDriveStatusQuery.data?.manageUrl
+          ? "Use Connect OneDrive to open the LabTrax hosting workspace and link a Microsoft account (Integrations \u2192 OneDrive), then check again here."
+          : "Connect the Microsoft OneDrive integration in the LabTrax hosting workspace (Replit \u2192 Integrations \u2192 OneDrive), then check again."}
+      </p>
+      {oneDriveStatusQuery.data?.diagnostic && (
+        <details className="mt-1 text-[11px]">
+          <summary className="cursor-pointer">Connection details</summary>
+          <p className="mt-1 whitespace-pre-wrap break-words">{oneDriveStatusQuery.data.diagnostic}</p>
+        </details>
+      )}
+      <div className="mt-1.5 flex items-center gap-3">
+        {oneDriveStatusQuery.data?.manageUrl && (
+          <button
+            type="button"
+            data-testid="onedrive-connect-button"
+            onClick={() => openBackupConnectorManagePage(oneDriveStatusQuery.data?.manageUrl ?? null)}
+            className="inline-flex items-center gap-1 rounded border border-amber-500/60 bg-amber-100 dark:bg-amber-900/40 px-2 py-1 text-[11px] font-semibold"
+          >
+            Connect OneDrive
+          </button>
+        )}
+        {oneDriveRefreshButton}
+      </div>
+    </div>
+  );
+
+  const googleDriveRefreshButton = (
+    <button
+      type="button"
+      data-testid="google-drive-check-again-button"
+      onClick={() => refetchGoogleDriveStatus()}
+      disabled={googleDriveStatusQuery.isFetching}
+      className="inline-flex items-center gap-1 text-[11px] font-semibold underline disabled:opacity-60"
+    >
+      {googleDriveStatusQuery.isFetching ? "Checking…" : "Check again"}
+    </button>
+  );
+
+  const googleDriveNotice = googleDriveStatusQuery.isPending ? (
+    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+      <Loader2 size={11} className="animate-spin" />
+      Checking Google Drive connection…
+    </div>
+  ) : googleDriveStatusQuery.isError ? (
+    <div
+      className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300"
+      data-testid="google-drive-status-error"
+    >
+      <p className="font-semibold mb-0.5">Could not check Google Drive</p>
+      <p>
+        {googleDriveStatusQuery.error instanceof Error
+          ? googleDriveStatusQuery.error.message
+          : "The connection-status request failed."}{" "}
+        This does not mean the Google account is disconnected.
+      </p>
+      <div className="mt-1.5">{googleDriveRefreshButton}</div>
+    </div>
+  ) : googleDriveStatusQuery.data?.connected ? (
+    <div
+      className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-[11px] leading-snug text-success"
+      data-testid="google-drive-status-connected"
+    >
+      Google Drive connected
+      {googleDriveStatusQuery.data.accountName || googleDriveStatusQuery.data.accountEmail
+        ? ` as ${googleDriveStatusQuery.data.accountName ?? ""}${googleDriveStatusQuery.data.accountEmail ? ` (${googleDriveStatusQuery.data.accountEmail})` : ""}`
+        : ""}
+      . Backups are saved to <span className="font-mono">{googleDriveStatusQuery.data.folder}</span> in that account.
+      {googleDriveStatusQuery.data.manageUrl && (
+        <button
+          type="button"
+          data-testid="google-drive-reconnect-button"
+          onClick={() => openBackupConnectorManagePage(googleDriveStatusQuery.data?.manageUrl ?? null)}
+          className="ml-1.5 inline-flex items-center gap-1 text-[11px] font-semibold underline"
+        >
+          Reconnect a different account
+        </button>
+      )}
+      <div className="mt-1.5">{googleDriveRefreshButton}</div>
+    </div>
+  ) : (
+    <div
+      className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300"
+      data-testid="google-drive-status-disconnected"
+    >
+      <p className="font-semibold mb-0.5">Google Drive is not connected</p>
+      <p>
+        {googleDriveStatusQuery.data?.error ??
+          "No usable Google Drive connection was reported by the server."}{" "}
+        {googleDriveStatusQuery.data?.manageUrl
+          ? "Use Connect Google Drive to open the LabTrax hosting workspace and link a Google account (Integrations → Google Drive), then check again here. A desktop browser may not complete account linking."
+          : "Connect the Google Drive integration in the LabTrax hosting workspace (Replit → Integrations → Google Drive), then check again."}
+      </p>
+      <div className="mt-1.5 flex items-center gap-3">
+        {googleDriveStatusQuery.data?.manageUrl && (
+          <button
+            type="button"
+            data-testid="google-drive-connect-button"
+            onClick={() => openBackupConnectorManagePage(googleDriveStatusQuery.data?.manageUrl ?? null)}
+            className="inline-flex items-center gap-1 rounded border border-amber-500/60 bg-amber-100 dark:bg-amber-900/40 px-2 py-1 text-[11px] font-semibold"
+          >
+            Connect Google Drive
+          </button>
+        )}
+        {googleDriveRefreshButton}
+      </div>
+    </div>
+  );
+
+  // Freshness follows the archive confirmed present off-site. The database
+  // watermark is only consulted when off-site protection is switched off:
+  // during the eighteen-day outage the watermark was the figure shown here,
+  // and it said nothing was wrong.
+  const offsiteFreshness = scheduleQuery.data?.offsite ?? null;
+  const offsiteWatched = offsiteFreshness?.enabled === true;
+  const stale = offsiteWatched
+    ? offsiteFreshness?.stale === true
+    : isBackupStale(scheduleQuery.data?.lastSuccessfulBackupAt ?? null, scheduleQuery.data?.staleAfterDays ?? DEFAULT_BACKUP_STALE_DAYS);
   const lastBackupAt = scheduleQuery.data?.lastSuccessfulBackupAt ?? null;
+  const confirmedArchiveAgeMinutes = offsiteWatched
+    ? (offsiteFreshness?.ageMinutes ?? null)
+    : lastBackupAt
+      ? Math.round((Date.now() - new Date(lastBackupAt).getTime()) / 60000)
+      : null;
+  const undeliveredAlert: BackupAlertAttempt | null =
+    scheduleQuery.data?.alertDelivery?.undelivered ?? null;
+
+  // Most recent local-folder run — if it's an error and there's no newer success,
+  // surface a targeted banner so the admin knows why backups are failing.
+  const lastLocalRun = historyQuery.data?.runs?.find((r) => r.destination === "local") ?? null;
+  const lastLocalError = lastLocalRun?.status === "error" ? lastLocalRun : null;
 
   return (
-    <PanelShell title="Backup" subtitle="Back up all LabTrax data to keep your records safe.">
-      {gate.blocked && <PlatformAdminSetupNotice />}
+    <PanelShell title="Backup" subtitle="Download an encrypted backup of a lab you administer.">
+      <div data-testid="backup-page-content" className="flex min-w-0 flex-col gap-4">
+      {!gate.blocked && (
+        <section
+          data-testid="backup-summary"
+          aria-label="Backup status summary"
+          className="rounded-lg border border-border bg-card p-3.5 shadow-sm"
+        >
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Recovery readiness</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Verified backup status and the next protection window.</p>
+            </div>
+            <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+              (scheduleQuery.data?.enabled || scheduleQuery.data?.offsite?.enabled) && !stale
+                ? "bg-success/10 text-success"
+                : "bg-warning/15 text-amber-800 dark:text-amber-300"
+            }`} data-testid="backup-summary-health">
+              <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${(scheduleQuery.data?.enabled || scheduleQuery.data?.offsite?.enabled) && !stale ? "bg-success" : "bg-warning"}`} />
+              {scheduleQuery.isLoading
+                ? "Checking status"
+                : stale
+                  ? "Recovery point needs attention"
+                  : scheduleQuery.data?.enabled
+                    ? "Automatic backups active"
+                    : scheduleQuery.data?.offsite?.enabled
+                      ? "Off-site protection active"
+                      : "Automatic backups paused"}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className="min-w-0 rounded-md border border-border/70 bg-muted/25 px-3 py-2.5" data-testid="backup-summary-latest">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Latest confirmed backup</p>
+              <p className="mt-1 truncate text-sm font-semibold text-foreground">
+                {scheduleQuery.isLoading
+                  ? "Checking…"
+                  : offsiteWatched
+                    ? offsiteFreshness?.lastVerifiedAt
+                      ? formatDateTime(offsiteFreshness.lastVerifiedAt)
+                      : "No confirmed off-site backup"
+                    : lastBackupAt
+                      ? formatDateTime(lastBackupAt)
+                      : "No successful backup"}
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                {confirmedArchiveAgeMinutes == null ? "No complete recovery point confirmed" : `Confirmed ${formatBackupAge(confirmedArchiveAgeMinutes)} ago`}
+              </p>
+            </div>
+            <div className="min-w-0 rounded-md border border-border/70 bg-muted/25 px-3 py-2.5" data-testid="backup-summary-upcoming">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Next scheduled backup</p>
+              <p className="mt-1 truncate text-sm font-semibold text-foreground">
+                {scheduleQuery.isLoading
+                  ? "Checking…"
+                  : scheduleQuery.data?.enabled
+                    ? scheduleQuery.data.nextDueAt
+                      ? formatDateTime(scheduleQuery.data.nextDueAt)
+                      : "Runs automatically"
+                    : scheduleQuery.data?.offsite?.enabled
+                      ? "Off-site protection active"
+                      : "Not scheduled"}
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                {scheduleQuery.data?.enabled
+                  ? describeIntervalMinutes(scheduleQuery.data.effectiveIntervalMinutes) ?? "Automatic schedule enabled"
+                  : scheduleQuery.data?.offsite?.enabled
+                    ? describeIntervalMinutes(scheduleQuery.data.offsite.intervalMinutes) ?? "Automatic off-site protection"
+                    : "Enable a schedule below to protect new work"}
+              </p>
+            </div>
+            <div className="min-w-0 rounded-md border border-border/70 bg-muted/25 px-3 py-2.5" data-testid="backup-summary-destination">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Backup destination</p>
+              <p className="mt-1 truncate text-sm font-semibold text-foreground">
+                {scheduleQuery.isLoading ? "Checking…" : describeBackupDestination(serverDestination)}
+              </p>
+              <p className="mt-0.5 truncate text-[11px] text-muted-foreground" title={scheduleQuery.data?.path ?? undefined}>
+                {scheduleQuery.data?.path || (serverDestination === "onedrive" ? "Off-site recovery storage" : serverDestination === "google-drive" ? "Connected Google Drive storage" : "Destination path not configured")}
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {!gate.blocked && lastLocalError && (
+        <div
+          className="flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/5 px-3.5 py-3 text-destructive dark:text-red-400"
+          data-testid="local-backup-error-banner"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+          <div className="flex-1 text-xs leading-snug space-y-0.5">
+            <p className="font-semibold">Local folder backup failed</p>
+            {lastLocalError.path && (
+              <p className="text-[11px] opacity-80">
+                Path: <code className="font-mono">{lastLocalError.path}</code>
+              </p>
+            )}
+            <p className="text-[11px] opacity-80 mt-0.5">
+              {lastLocalError.userMessage ?? "The backup did not complete, so no new complete recovery point was created. Check the destination and failure details."}
+            </p>
+            {lastLocalError.error && (
+              <details className="text-[11px] mt-1">
+                <summary className="cursor-pointer">Failure details</summary>
+                <p className="whitespace-pre-wrap break-words mt-1">{lastLocalError.error}</p>
+              </details>
+            )}
+            <p className="text-[10px] opacity-60 mt-0.5">
+              {formatDateTime(lastLocalError.completedAt)}
+            </p>
+          </div>
+        </div>
+      )}
 
       {!gate.blocked && !scheduleQuery.isLoading && stale && (
         <div className="flex items-center gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
           <div className="flex-1 text-xs leading-snug space-y-0.5">
-            <p className="font-semibold">
-              {lastBackupAt ? "Backup overdue" : "Backup never completed"}
+            <p className="font-semibold" data-testid="backup-stale-headline">
+              {confirmedArchiveAgeMinutes === null
+                ? "No backup archive has been confirmed"
+                : `No backup confirmed for ${formatBackupAge(confirmedArchiveAgeMinutes)}`}
             </p>
             <p className="text-amber-700 dark:text-amber-400">
-              {lastBackupAt
-                ? `Last successful backup was ${Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / (24 * 60 * 60 * 1000))} day(s) ago.`
-                : "A successful backup has never been run for this lab."}
+              {offsiteFreshness?.reason ??
+                (lastBackupAt
+                  ? "The last successful backup on record is older than the allowed window."
+                  : "A successful backup has never been run for this lab.")}
             </p>
+            {offsiteWatched && offsiteFreshness?.source === "database" && (
+              <p className="text-amber-700/80 dark:text-amber-400/80">
+                This is based on the last run recorded here — the backup folder itself could not
+                be read.
+              </p>
+            )}
           </div>
           <button
             type="button"
@@ -2158,131 +3573,35 @@ function BackupPanel() {
         </div>
       )}
 
-      {/* ── Back up now ── */}
-      <div className="border border-border rounded-lg p-4 space-y-4">
-        <div className="flex items-center gap-2">
-          <ShieldCheck size={14} className="text-muted-foreground" />
-          <h3 className="text-sm font-semibold">Back up LabTrax data now</h3>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Creates a full backup ZIP containing all cases, patients, doctors, invoices, payments, bank transactions, pricing, and media attachments.
-        </p>
-
-        {backupError && !gate.blocked && <Alert tone="danger">{backupError}</Alert>}
-        {backupResult && (
-          <Alert tone="success">
-            Backup complete — {formatBackupSize(backupResult.size)}{" "}
-            {backupResult.viaBrowser ? (
-              <>
-                downloaded by your browser as{" "}
-                <code className="font-mono text-xs">{backupResult.fileName}</code>. Check your
-                browser's downloads folder.
-              </>
-            ) : backupResult.savedTo ? (
-              <>
-                saved to{" "}
-                <code className="font-mono text-xs">{backupResult.savedTo}</code>.
-              </>
-            ) : (
-              <>
-                saved as{" "}
-                <code className="font-mono text-xs">{backupResult.fileName}</code>.
-              </>
-            )}{" "}
-            <span className="opacity-70">{new Date(backupResult.completedAt).toLocaleString()}</span>
-          </Alert>
-        )}
-
-        <div className="space-y-3">
-          <div>
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Destination</div>
-            <div className="flex flex-wrap gap-4">
-              {(["local", "network"] as const).map((d) => (
-                <label key={d} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input
-                    type="radio"
-                    name="now-destination"
-                    value={d}
-                    checked={nowDest === d}
-                    onChange={() => { setNowDest(d); setBackupResult(null); setBackupError(null); }}
-                    className="accent-primary"
-                  />
-                  {d === "local" ? "Local folder / USB" : "Network server"}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {needsPath(nowDest) && (
-            <div className="space-y-1.5">
-              {!electron?.saveBackupToFolder && nowDest === "local" && (
-                <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300">
-                  You're using LabTrax in a web browser. Browsers can't save files
-                  to a specific folder like <span className="font-mono">E:\Lab Software\LabTrax Backup</span>.
-                  Either install and open the LabTrax Desktop app to save to a chosen
-                  folder, or clear the folder path below to download the backup file
-                  through your browser instead.
-                </div>
-              )}
-              <div className="flex gap-2 items-end">
-                <div className="flex-1">
-                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                    {nowDest === "local" ? "Folder path" : "Network path (UNC/SMB or SFTP URL)"}
-                  </label>
-                  <input
-                    value={nowPath}
-                    onChange={(e) => setNowPath(e.target.value)}
-                    placeholder={nowDest === "local" ? "C:\\Backups\\LabTrax" : "\\\\server\\share\\LabTrax  or  sftp://user@host/backups"}
-                    className={inputCls}
-                  />
-                </div>
-                {electron?.showFolderDialog && nowDest === "local" && (
-                  <button
-                    type="button"
-                    onClick={() => pickFolderFor(setNowPath)}
-                    className="h-9 px-3 rounded-md border border-border bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 shrink-0"
-                  >
-                    Browse…
-                  </button>
-                )}
-              </div>
-              {nowDest === "network" && nowPath.trim() && (
-                <p className="text-[11px] text-muted-foreground leading-snug">
-                  {nowPath.trim().startsWith("sftp://")
-                    ? "SFTP — the file will be uploaded by the server directly to this location."
-                    : "UNC/SMB — the file will be saved by this desktop app directly. The app must be open when you click Back up now."}
-                </p>
-              )}
-              {nowDest === "network" && !nowPath.trim() && (
-                <p className="text-[11px] text-muted-foreground leading-snug">
-                  Use <span className="font-mono">\\server\share\LabTrax</span> for a network share (saved by this app) or <span className="font-mono">sftp://user@host/path</span> for SFTP (saved by the server).
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-
-        <button
-          type="button"
-          onClick={() => backupNowMutation.mutate()}
-          disabled={
-            backupNowMutation.isPending ||
-            gate.blocked ||
-            (needsPath(nowDest) && !nowPath.trim() && !!electron?.saveBackupToFolder)
-          }
-          className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
+      {/* An alert nobody could receive is its own failure — show it here
+          rather than leaving it in the server log, where the last one sat. */}
+      {!gate.blocked && undeliveredAlert && (
+        <div
+          className="flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/5 px-3.5 py-3 text-destructive dark:text-red-400"
+          data-testid="backup-alert-undelivered-notice"
         >
-          {backupNowMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-          {backupNowMutation.isPending ? "Backing up…" : "Back up now"}
-        </button>
-      </div>
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><path d="M8.7 3A6 6 0 0 1 18 8c0 2.3.4 4 1 5"/><path d="M6 8a6 6 0 0 1 .5-2.5"/><path d="M4 19h12"/><path d="m2 2 20 20"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+          <div className="flex-1 text-xs leading-snug space-y-0.5">
+            <p className="font-semibold">A backup alert could not be delivered</p>
+            <p className="text-[11px] opacity-80">
+              The {undeliveredAlert.channel === "email" ? "email" : "in-app"} alert raised by{" "}
+              {undeliveredAlert.source} failed
+              {undeliveredAlert.detail ? `: ${undeliveredAlert.detail}` : "."} Until this is fixed,
+              a backup outage may go unreported.
+            </p>
+            <p className="text-[10px] opacity-60">{formatDateTime(undeliveredAlert.at)}</p>
+          </div>
+        </div>
+      )}
+
+      {gate.blocked && <PlatformAdminSetupNotice />}
 
       {/* ── Schedule ── */}
-      <div className="border border-border rounded-lg p-4 space-y-4">
+      <div data-testid="backup-schedule-section" className="min-w-0 border border-border rounded-lg p-4 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Clock size={14} className="text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Schedule routine backups</h3>
+            <h3 className="text-sm font-semibold">Schedule automatic backups</h3>
           </div>
           {scheduleQuery.data?.enabled && (
             <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full bg-success/15 text-success">
@@ -2291,8 +3610,86 @@ function BackupPanel() {
           )}
         </div>
         <p className="text-xs text-muted-foreground">
-          Automatically back up LabTrax at a regular interval to protect against data loss.
+          Production protection requires a complete database-and-files recovery point in OneDrive every 15 minutes.
+          Database-only, partial and historical narrower archives do not satisfy this requirement.
         </p>
+
+        {/*
+          Read back from the server rather than from this form's state: the
+          form shows what is about to be saved, which is not evidence that any
+          backup is running. The archive age comes from the destination's own
+          listing, so an empty folder cannot look healthy.
+        */}
+        {!scheduleQuery.isLoading && scheduleQuery.data && (
+          <div
+            className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-[11px] leading-relaxed"
+            data-testid="backup-server-status"
+          >
+            <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+              <span data-testid="backup-effective-interval">
+                <span className="text-muted-foreground">Server cadence: </span>
+                <span className="font-semibold">
+                  {describeIntervalMinutes(scheduleQuery.data.effectiveIntervalMinutes) ??
+                    (scheduleQuery.data.enabled ? "not configured" : "paused")}
+                </span>
+                {scheduleQuery.data.offsite?.running && scheduleQuery.data.offsite.enabled && (
+                  <span className="text-muted-foreground"> (off-site protection)</span>
+                )}
+              </span>
+              <span data-testid="backup-effective-destination">
+                <span className="text-muted-foreground">Destination: </span>
+                <span className="font-semibold">
+                  {describeBackupDestination(
+                    scheduleQuery.data.effectiveDestination ?? scheduleQuery.data.destination,
+                  )}
+                </span>
+              </span>
+              {serverDestination === "onedrive" &&
+                describeIntervalMinutes(scheduleQuery.data.fullArchiveIntervalMinutes) && (
+                  <span data-testid="backup-full-archive-interval">
+                    <span className="text-muted-foreground">Full backup (with media): </span>
+                    <span className="font-semibold">
+                      every scheduled run (all durable files)
+                    </span>
+                  </span>
+                )}
+            </div>
+            {serverDestination === "onedrive" && (
+              <div className="mt-1" data-testid="backup-newest-archive">
+                {scheduleQuery.data.newestArchiveError ? (
+                  <div className="text-destructive dark:text-red-400">
+                    <span>{scheduleQuery.data.newestArchiveErrorMessage ?? "LabTrax could not check the OneDrive backup folder, so a complete recovery point could not be confirmed. Check the OneDrive connection and review the details below."}</span>
+                    {scheduleQuery.data.newestArchiveErrorDiagnostic && (
+                      <details className="mt-1">
+                        <summary className="cursor-pointer">Failure details</summary>
+                        <span className="block whitespace-pre-wrap">{scheduleQuery.data.newestArchiveErrorDiagnostic}</span>
+                      </details>
+                    )}
+                  </div>
+                ) : scheduleQuery.data.newestArchive ? (
+                  <>
+                    <span className="text-muted-foreground">Newest archive in OneDrive: </span>
+                    <span className="font-semibold">
+                      {describeAgeMinutes(scheduleQuery.data.newestArchive.ageMinutes)}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {" "}
+                      ({scheduleQuery.data.newestArchive.name}
+                      {scheduleQuery.data.archiveCount
+                        ? `, ${scheduleQuery.data.archiveCount} kept`
+                        : ""}
+                      )
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-destructive dark:text-red-400">
+                    No archives found in the OneDrive backup folder.
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {schedError && !gate.blocked && <Alert tone="danger">{schedError}</Alert>}
         {schedSuccess && <Alert tone="success">Schedule saved.</Alert>}
@@ -2304,13 +3701,17 @@ function BackupPanel() {
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
               <Field label="Interval">
                 <select
                   value={schedIntervalKey}
                   onChange={(e) => setSchedIntervalKey(e.target.value)}
                   className={inputCls}
+                  data-testid="backup-schedule-interval"
                 >
+                  {legacyIntervalChoice && legacyIntervalLabel && (
+                    <option value={schedIntervalKey}>{legacyIntervalLabel}</option>
+                  )}
                   {INTERVAL_OPTIONS.map((opt) => (
                     <option key={intervalKey(opt.interval, opt.unit)} value={intervalKey(opt.interval, opt.unit)}>
                       {opt.label}
@@ -2326,6 +3727,8 @@ function BackupPanel() {
                 >
                   <option value="local">Local folder / USB</option>
                   <option value="network">Network server</option>
+                  <option value="onedrive">OneDrive</option>
+                  <option value="google-drive">Google Drive</option>
                 </select>
               </Field>
             </div>
@@ -2370,21 +3773,38 @@ function BackupPanel() {
               </div>
             )}
 
+            {/* Local-folder schedules run from this desktop app while it is open */}
+            {schedDest === "local" && (
+              <div className="flex items-start gap-2.5 rounded-md border border-border bg-secondary/50 px-3.5 py-3" data-testid="sched-local-desktop-notice">
+                <ShieldCheck size={13} className="shrink-0 mt-0.5 text-muted-foreground" />
+                <div className="text-xs leading-snug space-y-1">
+                  <p className="font-semibold">Runs from this desktop app</p>
+                  <p className="text-muted-foreground">
+                    Local folder / USB backups are written by the LabTrax Desktop app on this computer, so the app must be
+                    open when a scheduled backup is due. If the app is closed at that time, the backup runs the next time
+                    you open it. For backups that run 24/7 without the app open, choose <strong>OneDrive</strong>, <strong>Google Drive</strong>, or an
+                    SFTP network destination.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Warn when the scheduled destination can't be reached from the server */}
-            {(schedDest === "local" || (schedDest === "network" && !!schedPath.trim() && !schedPath.trim().startsWith("sftp://"))) && (
+            {schedDest === "network" && !!schedPath.trim() && !schedPath.trim().startsWith("sftp://") && (
               <div className="flex items-start gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
                 <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
                 <div className="text-xs leading-snug space-y-1">
                   <p className="font-semibold">Scheduled backups can't write to this destination</p>
                   <p className="text-amber-700 dark:text-amber-400">
-                    {schedDest === "local"
-                      ? "Local folder and USB paths exist on your Windows machine, but scheduled backups run on the server (Linux) where those paths don't exist. The file would never reach you."
-                      : "UNC/SMB network paths (\\\\server\\share) exist on your Windows network, but scheduled backups run on the server (Linux) where those paths aren't mounted."}
-                    {" "}Use an <strong>SFTP URL</strong> (<code className="font-mono">sftp://user@host/path</code>) for scheduled backups, or use <strong>Back up now</strong> for local folder / USB backups.
+                    UNC/SMB network paths (\\server\share) exist on your Windows network, but scheduled backups run on the server (Linux) where those paths aren't mounted.
+                    {" "}Use an <strong>SFTP URL</strong> (<code className="font-mono">sftp://user@host/path</code>), <strong>OneDrive</strong>, <strong>Google Drive</strong>, or a <strong>local folder</strong> (written by this desktop app while it is open).
                   </p>
                 </div>
               </div>
             )}
+
+            {schedDest === "onedrive" && oneDriveNotice}
+            {schedDest === "google-drive" && googleDriveNotice}
 
             {/* Warn when network destination path looks like SFTP but is missing required fields */}
             {schedDest === "network" && schedPath.trim().startsWith("sftp://") && (
@@ -2454,10 +3874,7 @@ function BackupPanel() {
               scheduleQuery.isLoading ||
               gate.blocked ||
               (schedEnabled && needsPath(schedDest) && !schedPath.trim()) ||
-              schedEnabled && (
-                schedDest === "local" ||
-                (schedDest === "network" && !!schedPath.trim() && !schedPath.trim().startsWith("sftp://"))
-              )
+              (schedEnabled && schedDest === "network" && !!schedPath.trim() && !schedPath.trim().startsWith("sftp://"))
             }
             className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
           >
@@ -2475,8 +3892,10 @@ function BackupPanel() {
             </button>
           )}
           {scheduleQuery.data?.enabled &&
-            scheduleQuery.data?.destination === "network" &&
-            !!scheduleQuery.data?.path?.startsWith("sftp://") && (
+            (scheduleQuery.data?.destination === "onedrive" ||
+              scheduleQuery.data?.destination === "google-drive" ||
+              (scheduleQuery.data?.destination === "network" &&
+                !!scheduleQuery.data?.path?.startsWith("sftp://"))) && (
               <button
                 type="button"
                 onClick={() => {
@@ -2484,7 +3903,15 @@ function BackupPanel() {
                   setSchedRunNowError(null);
                   schedRunNowMutation.mutate();
                 }}
-                disabled={schedRunNowMutation.isPending || gate.blocked}
+                disabled={
+                  schedRunNowMutation.isPending ||
+                  gate.blocked ||
+                  (scheduleQuery.data?.destination === "google-drive" && (
+                    googleDriveStatusQuery.isError ||
+                    googleDriveStatusQuery.isPending ||
+                    !googleDriveStatusQuery.data?.connected
+                  ))
+                }
                 className="h-9 px-3 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground disabled:opacity-60 inline-flex items-center gap-1.5"
               >
                 {schedRunNowMutation.isPending
@@ -2495,9 +3922,23 @@ function BackupPanel() {
         </div>
 
         {schedRunNowResult && !gate.blocked && (
-          <Alert tone="success">
-            Schedule test complete — {formatBackupSize(schedRunNowResult.size)} saved as{" "}
+          <Alert tone={schedRunNowResult.partialFailure ? "warning" : "success"}>
+            {schedRunNowResult.partialFailure
+              ? "Schedule test completed with warnings"
+              : "Schedule test complete"}{" "}
+            — {formatBackupSize(schedRunNowResult.size)} saved as{" "}
             <code className="font-mono text-xs">{schedRunNowResult.fileName}</code>.
+            {schedRunNowResult.partialFailure && (
+              <span className="block mt-1 text-xs">
+                {schedRunNowResult.warningMessage ?? "The backup finished, but some content was left out. This is not a complete recovery point, and restoring it will not recover the missing content."}
+                {schedRunNowResult.warnings && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer">Failure details</summary>
+                    <span className="block whitespace-pre-wrap">{schedRunNowResult.warnings}</span>
+                  </details>
+                )}
+              </span>
+            )}
           </Alert>
         )}
         {schedRunNowError && !gate.blocked && (
@@ -2505,8 +3946,201 @@ function BackupPanel() {
         )}
       </div>
 
+      {/* ── Back up now ── */}
+      <div data-testid="backup-manual-section" className="min-w-0 border border-border rounded-lg p-4 space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <ShieldCheck size={14} className="text-muted-foreground" />
+          <h3 className="text-sm font-semibold">Manual backup</h3>
+          <span className="ml-auto inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-semibold text-success">
+            <ShieldCheck size={11} />
+            Encrypted archive
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Creates a full backup ZIP containing all cases, patients, doctors, invoices, payments, bank transactions, pricing, and media attachments.
+        </p>
+
+        {scheduledBackupProgress && !gate.blocked && (
+          <div
+            role="status"
+            className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground space-y-1"
+            data-testid="scheduled-backup-live-progress"
+          >
+            <p>
+              <span className="font-semibold text-foreground">Scheduled Desktop backup</span>
+              {" — "}
+              {scheduledBackupProgress.liveStatus &&
+              (scheduledBackupProgress.liveStatus.state === "running" ||
+                scheduledBackupProgress.liveStatus.state === "awaiting_verification")
+                ? backupLivePhaseLabel(scheduledBackupProgress.liveStatus.phase)
+                : scheduledBackupProgress.phase}
+              {" — "}
+              {scheduledElapsedSeconds}s elapsed. Keep this window open.
+            </p>
+            {scheduledBackupProgress.liveStatus && (
+              <p className="flex flex-wrap gap-x-3 gap-y-1" data-testid="scheduled-backup-live-metrics">
+                {backupLiveProgressText(scheduledBackupProgress.liveStatus)}
+                {backupLiveMediaText(scheduledBackupProgress.liveStatus)}
+              </p>
+            )}
+          </div>
+        )}
+        {backupError && !gate.blocked && <Alert tone="danger">{backupError}</Alert>}
+        {backupNowMutation.isPending && (
+          <div role="status" className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground space-y-1" data-testid="backup-live-progress">
+            <p>{backupPhase} — {backupElapsedSeconds}s elapsed. Keep this window open.</p>
+            <BackupProgressBar status={backupLiveStatus} />
+            {backupLiveStatus && (
+              <p className="flex flex-wrap gap-x-3 gap-y-1" data-testid="backup-live-metrics">
+                {backupLiveProgressText(backupLiveStatus)}
+                {backupLiveMediaText(backupLiveStatus)}
+              </p>
+            )}
+          </div>
+        )}
+        {backupResult && (
+          <Alert tone={backupResult.partialFailure ? "warning" : "success"}>
+            {backupResult.partialFailure ? "Backup completed with warnings" : "Backup complete."} —{" "}
+            {formatBackupSize(backupResult.size)}{" "}
+            {backupResult.viaBrowser ? (
+              <>
+                downloaded by your browser as{" "}
+                <code className="font-mono text-xs">{backupResult.fileName}</code>. Check your
+                browser's downloads folder.
+              </>
+            ) : backupResult.savedTo ? (
+              <>
+                saved to{" "}
+                <code className="font-mono text-xs">{backupResult.savedTo}</code>.
+              </>
+            ) : (
+              <>
+                saved as{" "}
+                <code className="font-mono text-xs">{backupResult.fileName}</code>.
+              </>
+            )}{" "}
+            <span className="opacity-70">{formatDateTime(backupResult.completedAt)}</span>
+            {backupResult.partialFailure && (
+              <span className="block mt-1 text-xs">
+                {backupResult.warningMessage ?? "The backup finished, but some content was left out. This is not a complete recovery point, and restoring it will not recover the missing content."}
+                {backupResult.warnings && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer">Failure details</summary>
+                    <span className="block whitespace-pre-wrap">{backupResult.warnings}</span>
+                  </details>
+                )}
+              </span>
+            )}
+          </Alert>
+        )}
+
+        <div className="space-y-3">
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Destination</div>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+              {(["local", "network", "onedrive", "google-drive"] as const).map((d) => (
+                <label key={d} className={`flex min-h-10 min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-xs font-medium cursor-pointer transition-colors ${
+                  nowDest === d ? "border-primary bg-primary/5 text-foreground ring-1 ring-primary/20" : "border-border bg-background text-muted-foreground hover:bg-muted/40"
+                }`}>
+                  <input
+                    type="radio"
+                    name="now-destination"
+                    value={d}
+                    checked={nowDest === d}
+                    onChange={() => { setNowDest(d); setBackupResult(null); setBackupError(null); }}
+                    className="shrink-0 accent-primary"
+                  />
+                  {d === "local"
+                    ? "Local folder / USB"
+                    : d === "network"
+                      ? "Network server"
+                      : d === "onedrive"
+                        ? "OneDrive"
+                        : "Google Drive"}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {needsPath(nowDest) && (
+            <div className="space-y-1.5">
+              {!electron?.saveBackupToFolder && nowDest === "local" && (
+                <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300">
+                  You're using LabTrax in a web browser. Browsers can't save files
+                  to a specific folder like <span className="font-mono">E:\Lab Software\LabTrax Backup</span>.
+                  Either install and open the LabTrax Desktop app to save to a chosen
+                  folder, or clear the folder path below to download the backup file
+                  through your browser instead.
+                </div>
+              )}
+              <div className="flex gap-2 items-end">
+                <div className="flex-1">
+                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                    {nowDest === "local" ? "Folder path" : "Network path (UNC/SMB or SFTP URL)"}
+                  </label>
+                  <input
+                    value={nowPath}
+                    onChange={(e) => setNowPath(e.target.value)}
+                    placeholder={nowDest === "local" ? "C:\\Backups\\LabTrax" : "\\\\server\\share\\LabTrax  or  sftp://user@host/backups"}
+                    className={inputCls}
+                  />
+                </div>
+                {electron?.showFolderDialog && nowDest === "local" && (
+                  <button
+                    type="button"
+                    onClick={() => pickFolderFor(setNowPath)}
+                    className="h-9 px-3 rounded-md border border-border bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 shrink-0"
+                  >
+                    Browse…
+                  </button>
+                )}
+              </div>
+              {nowDest === "network" && nowPath.trim() && (
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                  {nowPath.trim().startsWith("sftp://")
+                    ? "SFTP — the file will be uploaded by the server directly to this location."
+                    : "UNC/SMB — the file will be saved by this desktop app directly. The app must be open when you click Back up now."}
+                </p>
+              )}
+              {nowDest === "network" && !nowPath.trim() && (
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                  Use <span className="font-mono">\\server\share\LabTrax</span> for a network share (saved by this app) or <span className="font-mono">sftp://user@host/path</span> for SFTP (saved by the server).
+                </p>
+              )}
+            </div>
+          )}
+
+          {nowDest === "onedrive" && oneDriveNotice}
+          {nowDest === "google-drive" && googleDriveNotice}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => backupNowMutation.mutate()}
+          disabled={
+            backupNowMutation.isPending ||
+            gate.blocked ||
+            (needsPath(nowDest) && !nowPath.trim() && !!electron?.saveBackupToFolder) ||
+            (nowDest === "onedrive" && (
+              oneDriveStatusQuery.isError ||
+              oneDriveStatusQuery.isPending ||
+              !oneDriveStatusQuery.data?.connected
+            )) ||
+            (nowDest === "google-drive" && (
+              googleDriveStatusQuery.isError ||
+              googleDriveStatusQuery.isPending ||
+              !googleDriveStatusQuery.data?.connected
+            ))
+          }
+          className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
+        >
+          {backupNowMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+          {backupNowMutation.isPending ? "Backing up…" : "Back up now"}
+        </button>
+      </div>
+
       {/* ── Recent backups ── */}
-      <div className="border border-border rounded-lg p-4 space-y-3">
+      <div data-testid="backup-history-section" className="min-w-0 border border-border rounded-lg p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <History size={14} className="text-muted-foreground" />
@@ -2596,10 +4230,18 @@ function BackupPanel() {
         ) : !historyQuery.data?.runs?.length ? (
           <p className="text-xs text-muted-foreground">No backups recorded yet. Run your first backup above.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs border-collapse">
+          <>
+          <div
+            className="max-w-full overflow-x-auto rounded-md border border-border/70"
+            role="region"
+            aria-label="Recent backup history"
+            tabIndex={0}
+            data-testid="backup-history-scroll-region"
+          >
+            <table className="w-full min-w-[920px] text-xs border-collapse">
               <thead>
                 <tr className="border-b border-border">
+                  <th className="text-left py-1.5 pr-2 font-medium text-muted-foreground">Select for restore</th>
                   <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">Status</th>
                   <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">When</th>
                   <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">Destination</th>
@@ -2609,66 +4251,254 @@ function BackupPanel() {
                 </tr>
               </thead>
               <tbody>
-                {historyQuery.data.runs.map((run) => (
-                  <tr key={run.id} className="border-b border-border/50 last:border-0 hover:bg-muted/30">
-                    <td className="py-1.5 pr-3 align-top">
-                      {run.status === "success" ? (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-success/15 text-success">
-                          <Check size={9} />
-                          OK
-                        </span>
-                      ) : run.error?.includes("unreachable from the server") ? (
+                {historyQuery.data.runs.map((run) => {
+                  const isSftp = run.destination === "sftp";
+                  const isGoogleDrive = run.destination === "google-drive";
+                  const isChecked = selectedRestoreRunId === run.id;
+                  return (
+                    <tr key={run.id} className="border-b border-border/50 last:border-0 hover:bg-muted/30">
+                      <td className="py-1.5 pr-2 align-top">
                         <span
-                          className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 cursor-help"
                           title={
-                            (run.error ?? "") +
-                            "\n\nTo fix this, update the scheduled destination in the Schedule section above."
+                            isSftp
+                              ? "SFTP backups must be restored via the file picker below."
+                              : isGoogleDrive
+                                ? "Google Drive backups cannot be restored directly from history yet."
+                                : undefined
                           }
                         >
-                          Skipped
+                          <input
+                            type="checkbox"
+                            disabled={isSftp || isGoogleDrive}
+                            checked={isChecked}
+                            onChange={() => {
+                              setRestoreFromHistoryError(null);
+                              setSelectedRestoreRunId(isChecked ? null : run.id);
+                            }}
+                            aria-label={`Select backup from ${formatDateTime(run.completedAt)}`}
+                            className="accent-primary cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                          />
                         </span>
-                      ) : (
-                        <span
-                          className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive cursor-help"
-                          title={run.error ?? "Unknown error"}
-                        >
-                          Error
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-1.5 pr-3 align-top whitespace-nowrap text-muted-foreground">
-                      {new Date(run.completedAt).toLocaleString(undefined, {
-                        month: "short", day: "numeric", year: "numeric",
-                        hour: "numeric", minute: "2-digit",
-                      })}
-                    </td>
-                    <td className="py-1.5 pr-3 align-top capitalize">
-                      {run.destination}
-                      {run.path && (
-                        <span className="block text-[10px] text-muted-foreground font-mono truncate max-w-[140px]" title={run.path}>
-                          {run.path}
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-1.5 pr-3 align-top whitespace-nowrap">
-                      {run.sizeBytes != null ? formatBackupSize(run.sizeBytes) : "—"}
-                    </td>
-                    <td className="py-1.5 pr-3 align-top font-mono max-w-[160px] truncate" title={run.fileName ?? undefined}>
-                      {run.fileName ?? "—"}
-                    </td>
-                    <td className="py-1.5 align-top text-muted-foreground">
-                      {run.triggeredBy}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="py-1.5 pr-3 align-top">
+                        <div className="flex flex-col gap-0.5 items-start">
+                          {run.status === "success" ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-success/15 text-success">
+                              <Check size={9} />
+                              OK
+                            </span>
+                          ) : run.error?.includes("unreachable from the server") ? (
+                            <span
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 cursor-help"
+                              title={
+                                (run.userMessage ?? "This backup was skipped.") +
+                                "\n\nTo fix this, update the scheduled destination in the Schedule section above."
+                              }
+                            >
+                              Skipped
+                            </span>
+                          ) : (
+                            <span
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive cursor-help"
+                              title={run.userMessage ?? "The backup did not complete. Open Failure details for more information."}
+                            >
+                              Error
+                            </span>
+                          )}
+                          {run.status === "error" && run.error && (
+                            <div className="max-w-sm text-[11px] text-destructive">
+                              <p>{run.userMessage ?? "The backup did not complete, so no new complete recovery point was created."}</p>
+                              <details className="mt-1">
+                                <summary className="cursor-pointer">Failure details</summary>
+                                <p className="whitespace-pre-wrap break-words mt-1">{run.error}</p>
+                              </details>
+                            </div>
+                          )}
+                          {run.status === "success" &&
+                            run.attachmentRowCount != null &&
+                            run.attachmentRowCount > 0 &&
+                            run.mediaFileCount != null &&
+                            run.mediaFileCount === 0 && (
+                            <span
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 cursor-help"
+                              title={`This backup has ${run.attachmentRowCount} live attachment row(s) recorded in the database but no media files were found in uploads/case-media at backup time.`}
+                            >
+                              No media
+                            </span>
+                          )}
+                          {run.status === "success" && run.partialFailure && (
+                            <span
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 cursor-help"
+                              title={
+                                run.warnings ??
+                                "This backup completed but had to drop part of the payload — check the server logs for details."
+                              }
+                            >
+                              Partial
+                            </span>
+                          )}
+                          {run.status === "success" &&
+                            run.mediaFileCount == null &&
+                            run.attachmentRowCount == null && (
+                            <span
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground cursor-help"
+                              title="This backup was created before media-file tracking was added. Media content cannot be verified from this record alone."
+                            >
+                              No metrics
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-1.5 pr-3 align-top whitespace-nowrap text-muted-foreground">
+                        {formatDateTime(run.completedAt)}
+                      </td>
+                      <td className="py-1.5 pr-3 align-top capitalize">
+                        {run.destination === "google-drive" ? "Google Drive" : run.destination}
+                        {run.path && (
+                          <span className="block text-[10px] text-muted-foreground font-mono truncate max-w-[140px]" title={run.path}>
+                            {run.path}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-1.5 pr-3 align-top whitespace-nowrap">
+                        {run.sizeBytes != null ? formatBackupSize(run.sizeBytes) : "—"}
+                      </td>
+                      <td className="py-1.5 pr-3 align-top max-w-[160px]" title={run.fileName ?? undefined}>
+                        <span className="block font-mono truncate">{run.fileName ?? "—"}</span>
+                        {isDatabaseOnlyRun(run) && (
+                          <span
+                            className="mt-0.5 inline-block rounded bg-amber-500/15 px-1 py-px text-[10px] font-semibold text-amber-700 dark:text-amber-400"
+                            data-testid="backup-run-database-only"
+                          >
+                            Database only — no media
+                          </span>
+                        )}
+                        {!isDatabaseOnlyRun(run) && (
+                          <span
+                            className="mt-0.5 inline-block rounded bg-muted px-1 py-px text-[10px] font-semibold"
+                            data-testid="backup-run-coverage"
+                          >
+                            {run.partialFailure ? "Partial — not complete protection" :
+                              run.archiveKind === "complete-production" ? "Complete production database + all files" :
+                              run.archiveKind === "complete-non-production" ? "Complete non-production — not production protection" :
+                              "Historical full — narrower/unverified coverage"}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-1.5 align-top text-muted-foreground">
+                        {run.triggeredBy}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+
+          {/* ── Restore from This Point button ── */}
+          {(() => {
+            const selectedRun = selectedRestoreRunId != null
+              ? historyQuery.data.runs.find((r) => r.id === selectedRestoreRunId) ?? null
+              : null;
+            const isWarning = selectedRun != null && selectedRun.status !== "success";
+            const isDatabaseOnly = selectedRun != null && isDatabaseOnlyRun(selectedRun);
+            return (
+              <div className="pt-3 space-y-1.5">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button
+                    type="button"
+                    disabled={selectedRestoreRunId == null || restoreFromHistoryLoading || isDatabaseOnly}
+                    onClick={async () => {
+                      if (selectedRun == null) return;
+                      if (isDatabaseOnlyRun(selectedRun)) {
+                        // Restoring one of these would replace the database and
+                        // leave every case photo behind. The server refuses it
+                        // too; refusing here avoids a pointless download first.
+                        setRestoreFromHistoryError(
+                          "This is a database-only archive — it contains no case media. Choose a full backup to restore from.",
+                        );
+                        return;
+                      }
+                      setRestoreFromHistoryError(null);
+                      setRestoreFromHistoryLoading(true);
+                      try {
+                        let file: File;
+                        if (selectedRun.destination === "local" || selectedRun.destination === "network") {
+                          const electron = typeof window !== "undefined"
+                            ? (window as ElectronWindow).electronAPI
+                            : null;
+                          if (!electron?.readLocalFile) {
+                            throw new Error("File reading is not supported in this version of LabTrax Desktop.");
+                          }
+                          if (!selectedRun.path) {
+                            throw new Error("This backup run has no local file path recorded.");
+                          }
+                          const result = await electron.readLocalFile(selectedRun.path);
+                          if (!result.ok || !result.buffer) {
+                            throw new Error(result.error || "Could not read the backup file from disk.");
+                          }
+                          const name = selectedRun.fileName ?? selectedRun.path.replace(/\\/g, "/").split("/").pop() ?? "backup.zip.enc";
+                          file = new File([new Uint8Array(result.buffer)], name, { type: "application/octet-stream" });
+                        } else if (selectedRun.destination === "onedrive") {
+                          const { buffer } = await apiFetchArrayBuffer(
+                            `/admin/backup/history/${selectedRun.id}/download`,
+                          );
+                          const name = selectedRun.fileName ?? "backup.zip.enc";
+                          file = new File([new Uint8Array(buffer)], name, { type: "application/octet-stream" });
+                        } else {
+                          throw new Error("This backup type cannot be restored directly.");
+                        }
+                        setPreloadedFile(file);
+                      } catch (err: unknown) {
+                        setRestoreFromHistoryError(
+                          err instanceof Error ? err.message : "Failed to load the backup file.",
+                        );
+                      } finally {
+                        setRestoreFromHistoryLoading(false);
+                      }
+                    }}
+                    className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
+                  >
+                    {restoreFromHistoryLoading ? (
+                      <><Loader2 size={13} className="animate-spin" />Loading…</>
+                    ) : (
+                      <><RotateCcw size={13} />Restore from This Point</>
+                    )}
+                  </button>
+                  {isDatabaseOnly ? (
+                    <span className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                      <AlertTriangle size={11} />
+                      Database-only archive — contains no case media. Pick a full backup to restore.
+                    </span>
+                  ) : isWarning ? (
+                    <span className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                      <AlertTriangle size={11} />
+                      This backup ended with an error — restore may be incomplete.
+                    </span>
+                  ) : null}
+                </div>
+                {restoreFromHistoryError && (
+                  <p className="text-xs text-destructive">{restoreFromHistoryError}</p>
+                )}
+              </div>
+            );
+          })()}
+          </>
         )}
       </div>
 
       {/* ── Restore from backup ── */}
-      <RestoreSection gate={gate} scheduleData={scheduleQuery.data ?? null} queryClient={queryClient} />
+      <div data-testid="backup-restore-section" className="min-w-0">
+        <RestoreSection
+          gate={gate}
+          scheduleData={scheduleQuery.data ?? null}
+          queryClient={queryClient}
+          preloadedFile={preloadedFile}
+          onPreloadConsumed={() => setPreloadedFile(null)}
+        />
+      </div>
+      <LabScopedBackupCard />
+      </div>
     </PanelShell>
   );
 }
@@ -2703,10 +4533,14 @@ function RestoreSection({
   gate,
   scheduleData,
   queryClient,
+  preloadedFile,
+  onPreloadConsumed,
 }: {
   gate: { blocked: boolean };
   scheduleData: { destination?: string | null; enabled?: boolean } | null;
   queryClient: ReturnType<typeof useQueryClient>;
+  preloadedFile?: File | null;
+  onPreloadConsumed?: () => void;
 }) {
   const electron = typeof window !== "undefined"
     ? (window as ElectronWindow).electronAPI
@@ -2719,6 +4553,7 @@ function RestoreSection({
   const [restorePhase, setRestorePhase] = useState<RestorePhase>("idle");
   const [restoreMessage, setRestoreMessage] = useState<string | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreDiagnostic, setRestoreDiagnostic] = useState<string | null>(null);
   const [restoreSuccess, setRestoreSuccess] = useState(false);
   const [relaunchCountdown, setRelaunchCountdown] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -2733,6 +4568,21 @@ function RestoreSection({
   }, []);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
+
+  const openConfirm = useCallback(() => {
+    setConfirmStep(1);
+    setRestoreError(null);
+    setRestoreDiagnostic(null);
+    setRestoreSuccess(false);
+    setShowConfirm(true);
+  }, []);
+
+  useEffect(() => {
+    if (!preloadedFile) return;
+    setSelectedFile(preloadedFile);
+    openConfirm();
+    onPreloadConsumed?.();
+  }, [preloadedFile, openConfirm, onPreloadConsumed]);
 
   const cancelRelaunch = useCallback(() => {
     if (countdownTimerRef.current !== null) {
@@ -2768,7 +4618,7 @@ function RestoreSection({
     stopPolling();
     pollRef.current = setInterval(async () => {
       try {
-        const res = await apiFetch<{ phase: RestorePhase; message: string | null }>("/admin/backup/restore/status");
+        const res = await apiFetch<{ phase: RestorePhase; message: string | null; diagnosticMessage?: string | null }>("/admin/backup/restore/status");
         setRestorePhase(res.phase);
         setRestoreMessage(res.message);
         if (res.phase === "done") {
@@ -2778,6 +4628,7 @@ function RestoreSection({
         } else if (res.phase === "error") {
           stopPolling();
           setRestoreError(res.message || "Restore failed.");
+          setRestoreDiagnostic(res.diagnosticMessage ?? null);
         }
       } catch {
         // polling errors are transient; keep trying
@@ -2820,12 +4671,6 @@ function RestoreSection({
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  function openConfirm() {
-    setConfirmStep(1);
-    setRestoreError(null);
-    setRestoreSuccess(false);
-    setShowConfirm(true);
-  }
 
   async function runRestore() {
     if (!selectedFile) return;
@@ -2923,7 +4768,15 @@ function RestoreSection({
               </div>
             )}
             {restoreError && (
-              <Alert tone="danger">{restoreError}</Alert>
+              <Alert tone="danger">
+                {restoreError}
+                {restoreDiagnostic && (
+                  <details className="mt-2 text-xs">
+                    <summary className="cursor-pointer">Failure details</summary>
+                    <p className="mt-1 whitespace-pre-wrap break-words">{restoreDiagnostic}</p>
+                  </details>
+                )}
+              </Alert>
             )}
 
             {isRunning && (
@@ -3069,2350 +4922,6 @@ function RestoreSection({
         </div>
       )}
     </>
-  );
-}
-
-interface InstallerSlotInfo {
-  available: boolean;
-  size: number | null;
-  uploadedAt: string | null;
-  error: string | null;
-}
-
-interface DesktopInstallerPublicInfo {
-  version: string;
-  downloadUrl: string;
-  fileName: string;
-  releaseNotes: string | null;
-  installerObject: { size: number; uploadedAt: string } | null;
-  available: boolean;
-  fileFound: boolean;
-}
-
-interface DesktopInstallerInfo {
-  version: string;
-  dbVersion: string | null;
-  envVersion: string;
-  downloadUrl: string;
-  dbDownloadUrl: string | null;
-  envDownloadUrl: string;
-  fileName: string | null;
-  repoUrl: string | null;
-  repoOwner: string | null;
-  repoName: string | null;
-  tokenConfigured: boolean;
-  urlError: string | null;
-  repoUrlWarning?: string;
-  releaseNotes: string | null;
-  dbReleaseNotes: string | null;
-  installerObject: { size: number; uploadedAt: string } | null;
-  installerSlots?: { zip: InstallerSlotInfo; exe: InstallerSlotInfo; dmg: InstallerSlotInfo };
-  installerStatus: "ok" | "missing" | "stale" | "external" | "unknown";
-  installerStatusMessage: string | null;
-  settingsUpdatedAt: string | null;
-  buildCounterWarning: {
-    runUrl: string | null;
-    runId: string | null;
-    workflowName: string | null;
-    ref: string | null;
-    attemptedBuildNumber: number | null;
-    reportedAt: string;
-  } | null;
-  downloadInterruptionAlertThreshold: number;
-  downloadInterruptionAlertThresholdSource: "db" | "env";
-  envDownloadInterruptionAlertThreshold: number;
-  lastDesktopBuildTrigger: {
-    triggeredAt: string;
-    triggeredByUsername: string;
-    apiBaseUrl: string;
-  } | null;
-}
-
-interface DesktopBuildRun {
-  id: number;
-  name: string;
-  status: string;
-  conclusion: string | null;
-  htmlUrl: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface DesktopBuildStatus {
-  run: DesktopBuildRun | null;
-}
-
-function formatInstallerSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${bytes} B`;
-}
-
-function formatInstallerTimestamp(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-function InstallerStatusBadge({ status }: { status: DesktopInstallerInfo["installerStatus"] }) {
-  const map: Record<DesktopInstallerInfo["installerStatus"], { label: string; cls: string }> = {
-    ok: { label: "Ready", cls: "bg-success/15 text-success" },
-    missing: { label: "Missing", cls: "bg-destructive/15 text-destructive" },
-    stale: { label: "Stale", cls: "bg-amber-500/15 text-amber-700 dark:text-amber-400" },
-    external: { label: "External", cls: "bg-secondary text-muted-foreground" },
-    unknown: { label: "Unknown", cls: "bg-destructive/15 text-destructive" },
-  };
-  const { label, cls } = map[status] ?? map.unknown;
-  return (
-    <span className={`text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full ${cls}`}>
-      {label}
-    </span>
-  );
-}
-
-function parseVersionFromFilename(filename: string): string | null {
-  const match = filename.match(/(\d+\.\d+(?:\.\d+)*(?:-[\w.]+)?)/);
-  return match ? match[1] : null;
-}
-
-function compareVersions(a: string, b: string): number {
-  const normalize = (v: string) =>
-    v
-      .replace(/^v/, "")
-      .split(/[-+]/)[0]
-      .split(".")
-      .map((p) => parseInt(p, 10) || 0);
-  const pa = normalize(a);
-  const pb = normalize(b);
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-}
-
-interface DesktopUpdateState {
-  status: "idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "error";
-  lastCheckedAt: string | null;
-  currentVersion: string | null;
-  latestVersion: string | null;
-  downloadProgress: number | null;
-  releaseNotes: string | null;
-  error: string | null;
-  feedUrl: string | null;
-  autoUpdaterEnabled: boolean;
-}
-
-interface DesktopUpdaterApi {
-  getAppVersion?: () => Promise<string>;
-  getUpdateState?: () => Promise<DesktopUpdateState>;
-  checkForUpdates?: () => Promise<DesktopUpdateState>;
-  downloadUpdate?: () => Promise<DesktopUpdateState>;
-  installUpdate?: () => Promise<void>;
-  onUpdateState?: (cb: (state: DesktopUpdateState) => void) => () => void;
-}
-
-function getDesktopUpdaterApi(): DesktopUpdaterApi | null {
-  if (typeof window === "undefined") return null;
-  const api = (window as unknown as { electronAPI?: DesktopUpdaterApi }).electronAPI;
-  if (!api || typeof api.getUpdateState !== "function") return null;
-  return api;
-}
-
-// Non-admin Desktop app panel: shows just the version + Check for updates
-// card so any signed-in user can self-report their version and trigger an
-// on-demand check without waiting for the 4-hour background poll. Admin-only
-// controls (installer upload, build pipeline, etc.) stay in DesktopInstallerPanel.
-function DesktopAppUserPanel() {
-  const api = getDesktopUpdaterApi();
-  return (
-    <PanelShell
-      title="Desktop app"
-      subtitle="Your installed version and update status."
-    >
-      {api ? (
-        <AppVersionCard />
-      ) : (
-        <Alert tone="warning">
-          App version info is only available inside the LabTrax desktop app.
-        </Alert>
-      )}
-    </PanelShell>
-  );
-}
-
-// Card shown at the top of Settings → Desktop App: surfaces the currently
-// installed app version and lets an admin trigger an on-demand update check
-// without waiting for the 4-hour background poll in `electron/main.cjs`.
-// When auto-download is in progress or an update is staged for install, the
-// card mirrors that status so admins can re-launch from this card too.
-export function AppVersionCard() {
-  const api = getDesktopUpdaterApi();
-  const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [state, setState] = useState<DesktopUpdateState | null>(null);
-  // Tracks whether the initial getUpdateState() IPC round-trip has settled
-  // (resolved or rejected). While the bridge is present but this first call is
-  // still in flight — e.g. a cold start on a slow connection — we render a
-  // loading skeleton instead of the empty "Installed v— · never" card so the
-  // panel never looks broken or like the browser-preview fallback.
-  const [initialLoadDone, setInitialLoadDone] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!api) return;
-    let mounted = true;
-    api.getAppVersion?.().then((v) => mounted && setAppVersion(v)).catch(() => {});
-    Promise.resolve(api.getUpdateState?.())
-      .then((s) => {
-        if (mounted && s) setState(s);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (mounted) setInitialLoadDone(true);
-      });
-    const off = api.onUpdateState?.((s) => mounted && setState(s));
-    return () => {
-      mounted = false;
-      off?.();
-    };
-  }, [api]);
-
-  // When not running inside the installed Electron desktop app, the
-  // electron-updater IPC bridge is unavailable — there is no "current
-  // version" to report and no way to trigger a download. Render a
-  // placeholder card so admins viewing in a browser/PWA still see where
-  // the update controls live (and aren't left wondering why the
-  // Refresh / Check-for-updates button is missing).
-  if (!api) {
-    return (
-      <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="text-sm font-semibold">App version</div>
-          <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-secondary text-muted-foreground">
-            Browser preview
-          </span>
-        </div>
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          Update controls (<strong>Check for updates</strong>,{" "}
-          <strong>Download</strong>, <strong>Restart &amp; install</strong>) only appear when
-          you open this page inside the <em>installed</em> LabTrax Desktop app —
-          they rely on Electron auto-update IPC that the browser can&apos;t
-          provide. Download &amp; install the desktop app from{" "}
-          <strong>Download Desktop App</strong> in the sidebar, then sign in
-          there and revisit Settings → Desktop app to see the version banner and
-          the Check-for-updates button.
-        </p>
-      </div>
-    );
-  }
-
-  // The bridge is present but the first getUpdateState() round-trip hasn't
-  // settled yet (e.g. cold start on a slow connection). Show a loading skeleton
-  // so the panel doesn't flash an empty "Installed v— · never" card — and so it
-  // is never mistaken for the browser-preview fallback above.
-  if (!state && !initialLoadDone) {
-    return (
-      <div
-        className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3"
-        data-testid="update-card-loading"
-        aria-busy="true"
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0 space-y-2">
-            <div className="flex items-center gap-2">
-              <div className="text-sm font-semibold">App version</div>
-              <Skeleton className="h-4 w-20 rounded-full" />
-            </div>
-            <Skeleton className="h-3 w-52" />
-          </div>
-          <Skeleton className="h-8 w-32 rounded-md" />
-        </div>
-        <span className="sr-only">Checking update status…</span>
-      </div>
-    );
-  }
-
-  const currentVersion = state?.currentVersion ?? appVersion ?? "—";
-  const status = state?.status ?? "idle";
-  const isChecking = status === "checking" || busy;
-  const isDownloading = status === "downloading";
-  const isDownloaded = status === "downloaded";
-  const lastChecked = state?.lastCheckedAt
-    ? new Date(state.lastCheckedAt).toLocaleString()
-    : "never";
-  // autoUpdaterEnabled is false in dev builds and when LABTRAX_SKIP_AUTOUPDATER=1.
-  // When false, "Check for updates" still calls the IPC but will return an error state.
-  const updaterEnabled = state?.autoUpdaterEnabled !== false;
-
-  async function handleCheck() {
-    const check = api?.checkForUpdates;
-    if (!check) return;
-    setBusy(true);
-    try {
-      const next = await check();
-      setState(next);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleDownload() {
-    const dl = api?.downloadUpdate;
-    if (!dl) return;
-    setBusy(true);
-    try {
-      const next = await dl();
-      setState(next);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleInstall() {
-    await api?.installUpdate?.();
-  }
-
-  let statusLabel: string;
-  let statusCls: string;
-  switch (status) {
-    case "checking":
-      statusLabel = "Checking…";
-      statusCls = "bg-secondary text-muted-foreground";
-      break;
-    case "available":
-      statusLabel = state?.latestVersion ? `Update available: v${state.latestVersion}` : "Update available";
-      statusCls = "bg-primary/10 text-primary";
-      break;
-    case "downloading":
-      statusLabel = `Downloading${state?.downloadProgress != null ? ` ${state.downloadProgress}%` : "…"}`;
-      statusCls = "bg-primary/10 text-primary";
-      break;
-    case "downloaded":
-      statusLabel = state?.latestVersion ? `Ready to install v${state.latestVersion}` : "Ready to install";
-      statusCls = "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400";
-      break;
-    case "not-available":
-      statusLabel = "Up to date";
-      statusCls = "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400";
-      break;
-    case "error":
-      statusLabel = "Check failed";
-      statusCls = "bg-destructive/10 text-destructive";
-      break;
-    default:
-      statusLabel = "Idle";
-      statusCls = "bg-secondary text-muted-foreground";
-  }
-
-  return (
-    <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="text-sm font-semibold">App version</div>
-            <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${statusCls}`}>
-              {statusLabel}
-            </span>
-          </div>
-          <div className="text-xs text-muted-foreground mt-0.5">
-            Installed v{currentVersion} · last checked {lastChecked}
-            {!updaterEnabled && (
-              <span
-                className="ml-1.5 text-amber-600 dark:text-amber-400"
-                data-testid="updater-disabled-note"
-              >
-                · auto-update disabled (dev build)
-              </span>
-            )}
-            {state?.feedUrl ? <> · feed <code className="font-mono text-[10px]">{state.feedUrl}</code></> : null}
-          </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {isDownloaded && (
-            <button
-              type="button"
-              onClick={handleInstall}
-              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2"
-            >
-              <Download size={14} />
-              Restart &amp; install
-            </button>
-          )}
-          {(status === "available" || (status === "error" && state?.latestVersion)) && !isDownloaded && (
-            <button
-              type="button"
-              onClick={handleDownload}
-              disabled={busy || isDownloading}
-              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-2"
-            >
-              {isDownloading ? (
-                <Loader2 size={13} className="animate-spin" />
-              ) : (
-                <Download size={13} />
-              )}
-              {isDownloading
-                ? `Downloading${state?.downloadProgress != null ? ` ${state.downloadProgress}%` : "…"}`
-                : status === "error"
-                  ? "Retry download"
-                  : "Download now"}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={handleCheck}
-            disabled={isChecking || isDownloading}
-            className="h-9 px-4 rounded-md border border-border bg-background text-sm font-semibold hover:bg-secondary disabled:opacity-50 inline-flex items-center gap-2"
-          >
-            {isChecking ? (
-              <Loader2 size={13} className="animate-spin" />
-            ) : (
-              <RefreshCcw size={13} />
-            )}
-            {isChecking ? "Checking…" : "Check for updates"}
-          </button>
-        </div>
-      </div>
-      {status === "error" && state?.error && (
-        <div className="text-[11px] rounded-md px-3 py-2 bg-destructive/10 text-destructive">
-          {state.error}
-        </div>
-      )}
-      {isDownloading && state?.downloadProgress != null && (
-        <div className="w-full h-1.5 rounded-full bg-secondary overflow-hidden">
-          <div
-            className="h-full bg-primary transition-all"
-            style={{ width: `${state.downloadProgress}%` }}
-          />
-        </div>
-      )}
-      {isDownloaded && state?.releaseNotes && (
-        <div className="rounded-md border border-border bg-background px-4 py-3 space-y-1">
-          <div className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground">
-            Release notes
-          </div>
-          <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-            {state.releaseNotes}
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DesktopInstallerPanel() {
-  const queryClient = useQueryClient();
-  const [urlInput, setUrlInput] = useState<string>("");
-  const [versionInput, setVersionInput] = useState<string>("");
-  const [releaseNotesInput, setReleaseNotesInput] = useState<string>("");
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [saveSuccess, setSaveSuccess] = useState(false);
-  const [alertThresholdInput, setAlertThresholdInput] = useState<string>("");
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadSuccess, setUploadSuccess] = useState(false);
-  const [importNotesLoading, setImportNotesLoading] = useState(false);
-  const [importNotesError, setImportNotesError] = useState<string | null>(null);
-  const [duplicatePrompt, setDuplicatePrompt] = useState<{
-    file: File;
-    message: string;
-  } | null>(null);
-  const [uploadConfirmPending, setUploadConfirmPending] = useState<File | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const uploadInputRef = useRef<HTMLInputElement | null>(null);
-
-  // Desktop build trigger state
-  const [buildTriggerError, setBuildTriggerError] = useState<string | null>(null);
-  const [buildTriggerSuccess, setBuildTriggerSuccess] = useState(false);
-  const [buildTriggerTimestamp, setBuildTriggerTimestamp] = useState<string | null>(null);
-
-  const { user } = useAuth();
-
-  // Public query — accessible to any authenticated user; drives the simplified card.
-  const publicQuery = useQuery({
-    queryKey: ["desktop-installer-public"],
-    queryFn: () => apiFetch<DesktopInstallerPublicInfo>("/desktop-installer"),
-  });
-  const publicInfo = publicQuery.data;
-
-  // Admin query — platform-admin gated; 403 for regular admins (gate detects it).
-  const query = useQuery({
-    queryKey: ["admin", "desktop-installer"],
-    queryFn: () => apiFetch<DesktopInstallerInfo>("/admin/settings/desktop-installer"),
-  });
-
-  const interruptionStatsQuery = useQuery({
-    queryKey: ["admin", "desktop-installer", "interruption-stats"],
-    queryFn: () =>
-      apiFetch<{ count24h: number; retryFailCount24h: number; lastOccurredAt: string | null }>(
-        "/admin/desktop-installer/interruption-stats",
-      ),
-    refetchInterval: 5 * 60 * 1000,
-    staleTime: 60 * 1000,
-  });
-
-  useEffect(() => {
-    if (query.data) {
-      setUrlInput(query.data.downloadUrl);
-      setVersionInput(query.data.version);
-      setReleaseNotesInput(query.data.releaseNotes ?? "");
-      setAlertThresholdInput(String(query.data.downloadInterruptionAlertThreshold));
-    }
-  }, [query.data]);
-
-  const saveMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean; downloadUrl: string }>("/admin/settings/desktop-installer", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          downloadUrl: urlInput.trim(),
-          version: versionInput.trim(),
-          releaseNotes: releaseNotesInput.trim() || null,
-          downloadInterruptionAlertThreshold: (() => {
-            const v = parseInt(alertThresholdInput.trim(), 10);
-            return Number.isFinite(v) && v > 0 ? v : undefined;
-          })(),
-        }),
-      }),
-    onSuccess: () => {
-      setSaveError(null);
-      setSaveSuccess(true);
-      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
-      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer", "history"] });
-      setTimeout(() => setSaveSuccess(false), 2500);
-    },
-    onError: (err: Error) => {
-      setSaveSuccess(false);
-      setSaveError(err.message || "Failed to save installer settings.");
-    },
-  });
-
-  const resetMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean }>("/admin/settings/desktop-installer", { method: "DELETE" }),
-    onSuccess: () => {
-      setSaveError(null);
-      setSaveSuccess(false);
-      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
-    },
-    onError: (err: Error) => {
-      setSaveError(err.message || "Failed to reset installer settings.");
-    },
-  });
-
-  const dismissBuildCounterWarningMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean }>(
-        "/admin/settings/desktop-installer/build-counter-warning",
-        { method: "DELETE" },
-      ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
-    },
-  });
-
-  const uploadMutation = useMutation({
-    mutationFn: async ({ file, force }: { file: File; force?: boolean }) => {
-      const fd = new FormData();
-      fd.append("file", file);
-      const path = force
-        ? "/admin/desktop-installer/upload?force=1"
-        : "/admin/desktop-installer/upload";
-      return apiFetch<{ success: boolean; installerObject: { size: number; uploadedAt: string } }>(
-        path,
-        { method: "POST", body: fd },
-      );
-    },
-    onSuccess: () => {
-      setUploadError(null);
-      setUploadSuccess(true);
-      setDuplicatePrompt(null);
-      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
-      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer", "uploads"] });
-      setTimeout(() => setUploadSuccess(false), 3000);
-    },
-    onError: (err: Error, variables) => {
-      setUploadSuccess(false);
-      if (
-        err instanceof ApiError &&
-        err.status === 409 &&
-        err.body &&
-        typeof err.body === "object" &&
-        (err.body as { code?: unknown }).code === "duplicate_installer" &&
-        !variables.force
-      ) {
-        setUploadError(null);
-        setDuplicatePrompt({ file: variables.file, message: err.message });
-        return;
-      }
-      setUploadError(err.message || "Failed to upload installer.");
-    },
-  });
-
-  const buildTriggerMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ ok: boolean; trigger: DesktopInstallerInfo["lastDesktopBuildTrigger"]; apiBaseUrl: string }>(
-        "/admin/desktop-build/trigger",
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) },
-      ),
-    onSuccess: () => {
-      const ts = new Date().toISOString();
-      setBuildTriggerError(null);
-      setBuildTriggerSuccess(true);
-      setBuildTriggerTimestamp(ts);
-      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
-      setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ["admin", "desktop-build-status"] });
-      }, 5_000);
-      setTimeout(() => setBuildTriggerSuccess(false), 4000);
-    },
-    onError: (err: Error) => {
-      setBuildTriggerSuccess(false);
-      setBuildTriggerError(err.message || "Failed to trigger build.");
-    },
-  });
-
-  const buildStatusQuery = useQuery({
-    queryKey: ["admin", "desktop-build-status"],
-    queryFn: () => apiFetch<DesktopBuildStatus>("/admin/desktop-build/status"),
-    enabled: !!(query.data?.tokenConfigured && query.data?.repoOwner && query.data?.repoName),
-    refetchInterval: (q) => {
-      if (!buildTriggerTimestamp) return false;
-      const run = q.state.data?.run;
-      if (!run) return 30_000;
-      if (new Date(run.createdAt) >= new Date(buildTriggerTimestamp) && run.status === "completed") return false;
-      return 30_000;
-    },
-  });
-
-  useEffect(() => {
-    if (!buildTriggerTimestamp) return;
-    const run = buildStatusQuery.data?.run;
-    if (!run) return;
-    if (new Date(run.createdAt) >= new Date(buildTriggerTimestamp) && run.status === "completed") {
-      setBuildTriggerTimestamp(null);
-    }
-  }, [buildTriggerTimestamp, buildStatusQuery.data]);
-
-  const isBuildPolling = buildTriggerTimestamp !== null;
-
-  function handleUploadButtonClick() {
-    setUploadError(null);
-    setUploadSuccess(false);
-    uploadInputRef.current?.click();
-  }
-
-  function handleUploadInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    if (!/\.(zip|exe|dmg)$/i.test(file.name)) {
-      setUploadError(
-        "Pick a .zip (LabTrax-Windows-Portable.zip), .exe (LabTrax-Setup.exe), or .dmg (LabTrax.dmg) file.",
-      );
-      return;
-    }
-    setDuplicatePrompt(null);
-    setUploadConfirmPending(file);
-  }
-
-  const gate = usePlatformAdminGate([
-    query.error,
-    saveMutation.error,
-    uploadMutation.error,
-    resetMutation.error,
-  ]);
-
-  const isPlatformAdmin = user?.role === "admin" && gate.configured && !gate.blocked;
-
-  const info = query.data;
-  // Use the public endpoint's URL for display; fall back to admin URL if available.
-  // This ensures the simplified card works for non-platform-admin lab admins.
-  const displayUrl = publicInfo?.downloadUrl ?? info?.downloadUrl ?? "";
-  // Convert relative /downloads/… paths to absolute URLs so the link works in
-  // the Electron renderer (origin is app://labtrax, not the API host).
-  const absDownloadUrl = displayUrl.startsWith("/")
-    ? `${getApiOrigin() || (typeof window !== "undefined" ? window.location.origin : "")}${displayUrl}`
-    : displayUrl;
-  const isExe = displayUrl.toLowerCase().endsWith(".exe");
-  const isDmg = displayUrl.toLowerCase().endsWith(".dmg");
-  const isZip = displayUrl.toLowerCase().endsWith(".zip") || (!isExe && !isDmg);
-  const hasDbOverrides = info !== undefined && (info.dbDownloadUrl !== null || info.dbVersion !== null || info.dbReleaseNotes !== null);
-
-  const hasChanges =
-    !!info &&
-    (urlInput.trim() !== info.downloadUrl ||
-      versionInput.trim() !== info.version ||
-      (releaseNotesInput.trim() || null) !== info.releaseNotes ||
-      (() => {
-        const v = parseInt(alertThresholdInput.trim(), 10);
-        return Number.isFinite(v) && v > 0 && v !== info.downloadInterruptionAlertThreshold;
-      })());
-
-  return (
-    <PanelShell
-      title="Desktop app"
-      subtitle={
-        isDmg
-          ? "Download and distribute LabTrax Desktop to staff Mac machines."
-          : "Download and distribute LabTrax Desktop to staff Windows machines."
-      }
-    >
-      <AppVersionCard />
-      {publicQuery.isLoading && !publicInfo && (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 size={13} className="animate-spin" />
-          Loading…
-        </div>
-      )}
-      {publicQuery.isError && !publicInfo && (
-        <Alert tone="danger">{(publicQuery.error as Error).message}</Alert>
-      )}
-      {publicInfo && (
-        <div className="space-y-5">
-          {/* ── Simplified download card — visible to all admins ──────── */}
-          <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3">
-            <div className="flex items-center justify-between gap-4">
-              <div className="min-w-0">
-                <div className="text-sm font-semibold">
-                  {isDmg ? "LabTrax Desktop for Mac" : "LabTrax Desktop for Windows"}
-                </div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  Version {publicInfo.version}
-                  {publicInfo.installerObject
-                    ? <> · updated {formatInstallerTimestamp(publicInfo.installerObject.uploadedAt)}</>
-                    : null}
-                </div>
-              </div>
-              {publicInfo.downloadUrl ? (
-                <a
-                  href={absDownloadUrl}
-                  download
-                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
-                >
-                  <Download size={14} />
-                  {isZip ? "Download Portable ZIP" : isDmg ? "Download macOS DMG" : "Download for Windows"}
-                </a>
-              ) : (
-                <button
-                  type="button"
-                  disabled
-                  className="h-9 px-4 rounded-md bg-primary/40 text-primary-foreground/70 text-sm font-semibold cursor-not-allowed inline-flex items-center gap-2 shrink-0"
-                >
-                  <Download size={14} />
-                  {isZip ? "Download Portable ZIP" : isDmg ? "Download macOS DMG" : "Download for Windows"}
-                </button>
-              )}
-            </div>
-            {!publicInfo.available && (
-              <p className="text-sm text-muted-foreground">
-                The desktop app installer is temporarily unavailable. Please contact support.
-              </p>
-            )}
-            {isPlatformAdmin && publicInfo.available && !publicInfo.fileFound && publicInfo.downloadUrl.startsWith("/downloads/") && (
-              <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-950/30 px-3 py-2.5 text-sm text-amber-800 dark:text-amber-200">
-                <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
-                <span>No installer file found in storage. Upload one in the section below.</span>
-              </div>
-            )}
-            {publicInfo.releaseNotes && (
-              <div className="rounded-md border border-border bg-background px-4 py-3 space-y-1">
-                <div className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground">
-                  Release notes
-                </div>
-                <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-                  {publicInfo.releaseNotes}
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* ── How to install ───────────────────────────────────────── */}
-          <div className="rounded-lg border border-border px-5 py-4 space-y-3">
-            <div className="text-sm font-semibold">
-              {isZip ? "How to install (portable ZIP)" : isDmg ? "How to install (macOS)" : "How to install"}
-            </div>
-            {isDmg ? (
-              <ol className="space-y-2 text-sm text-muted-foreground list-none">
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
-                  <span>Download <strong>LabTrax.dmg</strong> using the button above.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
-                  <span>Double-click the downloaded <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">.dmg</code> file to mount the disk image.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
-                  <span>Drag the <strong>LabTrax</strong> icon into the <strong>Applications</strong> folder, then launch LabTrax from Applications or Spotlight.</span>
-                </li>
-              </ol>
-            ) : isZip ? (
-              <ol className="space-y-2 text-sm text-muted-foreground list-none">
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
-                  <span>Download <strong>LabTrax-Windows-Portable.zip</strong> using the button above.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
-                  <span>Right-click the ZIP and choose <strong>Extract All…</strong> — make sure to extract the entire folder, not just the <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">LabTrax.exe</code> file on its own.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
-                  <span>Open the extracted <strong>LabTrax</strong> folder and run <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">LabTrax.exe</code> from inside it.</span>
-                </li>
-              </ol>
-            ) : (
-              <ol className="space-y-2 text-sm text-muted-foreground list-none">
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
-                  <span>Download the installer using the button above.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
-                  <span>Double-click the downloaded <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">.exe</code> file to launch the setup wizard.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
-                  <span>Follow the on-screen steps. LabTrax Desktop will be installed and a shortcut placed on the Desktop.</span>
-                </li>
-              </ol>
-            )}
-          </div>
-
-          {/* ── Advanced — Platform Admin only ───────────────────────── */}
-          {isPlatformAdmin && (
-            <div className="space-y-4">
-              <button
-                type="button"
-                onClick={() => setAdvancedOpen((v) => !v)}
-                className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <ChevronDown
-                  size={13}
-                  className={`transition-transform ${advancedOpen ? "" : "-rotate-90"}`}
-                />
-                Advanced
-              </button>
-              {advancedOpen && (
-                <div className="space-y-5">
-                  {!info && (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 size={13} className="animate-spin" />
-                      Loading…
-                    </div>
-                  )}
-                  {info && <>
-                  {info.repoUrlWarning && (
-                    <Alert tone="warning">{info.repoUrlWarning}</Alert>
-                  )}
-                  {info.buildCounterWarning && (
-            <div className="rounded-lg border border-amber-400/50 bg-amber-500/10 px-4 py-3 space-y-2">
-              <div className="flex items-start gap-2">
-                <svg
-                  className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5"
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
-                  <path d="M12 9v4" />
-                  <path d="M12 17h.01" />
-                </svg>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-semibold text-amber-700 dark:text-amber-300">
-                    Build counter may be out of sync
-                  </div>
-                  <p className="text-xs text-amber-700/80 dark:text-amber-400/80 mt-0.5 leading-relaxed">
-                    A recent CI build
-                    {info.buildCounterWarning.attemptedBuildNumber !== null
-                      ? ` (build #${info.buildCounterWarning.attemptedBuildNumber})`
-                      : ""}
-                    {info.buildCounterWarning.workflowName
-                      ? ` from "${info.buildCounterWarning.workflowName}"`
-                      : ""}
-                    {" "}
-                    failed to push the updated <code className="font-mono bg-amber-500/15 px-1 py-0.5 rounded">build-number.json</code> to the repo.
-                    The next build may reuse the same number. Apply the fallback artifact to fix this.
-                  </p>
-                  <div className="flex flex-wrap items-center gap-2 mt-2">
-                    {info.repoUrl ? (
-                      <a
-                        href={`${info.repoUrl.replace(/\/$/, "")}/blob/main/docs/build-counter-recovery.md`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:no-underline"
-                      >
-                        Recovery guide
-                      </a>
-                    ) : (
-                      <details className="w-full">
-                        <summary className="text-xs font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:no-underline cursor-pointer list-none">
-                          Recovery guide
-                        </summary>
-                        <ol className="mt-2 text-xs text-amber-700/80 dark:text-amber-400/80 space-y-1 leading-relaxed border-t border-amber-400/30 pt-2 list-decimal list-inside">
-                          <li>Open the failed GitHub Actions run and download the <code className="font-mono bg-amber-500/15 px-1 py-0.5 rounded">build-counter-fallback</code> artifact.</li>
-                          <li>Extract the zip and find the <code className="font-mono bg-amber-500/15 px-1 py-0.5 rounded">buildNumber</code> value in <code className="font-mono bg-amber-500/15 px-1 py-0.5 rounded">build-number.json</code>.</li>
-                          <li>Paste that number into the Build counter recovery field below and click <strong>Apply counter</strong>.</li>
-                        </ol>
-                      </details>
-                    )}
-                    {info.buildCounterWarning.runUrl && (
-                      <a
-                        href={info.buildCounterWarning.runUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:no-underline"
-                      >
-                        View failed run
-                        {info.buildCounterWarning.runId
-                          ? ` #${info.buildCounterWarning.runId}`
-                          : ""}
-                      </a>
-                    )}
-                    {info.buildCounterWarning.ref && (
-                      <span className="text-[11px] text-amber-600/70 dark:text-amber-400/60">
-                        branch: {info.buildCounterWarning.ref}
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => dismissBuildCounterWarningMutation.mutate()}
-                      disabled={dismissBuildCounterWarningMutation.isPending}
-                      className="ml-auto text-xs font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:no-underline disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {dismissBuildCounterWarningMutation.isPending ? "Dismissing…" : "Mark as resolved"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-          {info.urlError && (
-            <Alert tone="danger">
-              Current download URL is invalid: {info.urlError} Use the field below to fix it.
-            </Alert>
-          )}
-          <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3">
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="text-sm font-semibold">Installer status</div>
-              <InstallerStatusBadge status={info.installerStatus} />
-            </div>
-            <div className="text-[11px] text-muted-foreground">
-              {info.installerObject ? (
-                <>
-                  Current installer: {formatInstallerSize(info.installerObject.size)} · uploaded{" "}
-                  {formatInstallerTimestamp(info.installerObject.uploadedAt)}
-                </>
-              ) : info.installerStatus === "external" ? (
-                <>External download — file is hosted outside App Storage.</>
-              ) : (
-                <span className="text-amber-600 dark:text-amber-400">
-                  No installer has been uploaded yet — the download link will return 404 until an admin uploads a file below.
-                </span>
-              )}
-            </div>
-            {info.installerStatusMessage && info.installerStatus !== "ok" && (
-              <div
-                className={`text-[12px] rounded-md px-3 py-2 ${
-                  info.installerStatus === "missing" || info.installerStatus === "unknown"
-                    ? "bg-destructive/10 text-destructive"
-                    : info.installerStatus === "stale"
-                      ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
-                      : "bg-secondary text-muted-foreground"
-                }`}
-              >
-                {info.installerStatusMessage}
-              </div>
-            )}
-            {(() => {
-              const stats = interruptionStatsQuery.data;
-              if (!stats) return null;
-              const threshold = info.downloadInterruptionAlertThreshold;
-              const isAlert = stats.retryFailCount24h >= threshold;
-              const hasAny = stats.count24h > 0;
-              return (
-                <div
-                  className={`text-[11px] rounded-md px-3 py-2 flex items-center gap-2 flex-wrap ${
-                    isAlert
-                      ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
-                      : "bg-secondary/60 text-muted-foreground"
-                  }`}
-                >
-                  <span className="font-medium shrink-0">Last 24 h:</span>
-                  {hasAny ? (
-                    <>
-                      <span>
-                        {stats.count24h} interruption{stats.count24h !== 1 ? "s" : ""}
-                        {stats.retryFailCount24h > 0 && (
-                          <> · <span className={isAlert ? "font-semibold" : ""}>{stats.retryFailCount24h} retry failure{stats.retryFailCount24h !== 1 ? "s" : ""}</span></>
-                        )}
-                      </span>
-                      {stats.lastOccurredAt && (
-                        <span className="text-muted-foreground">
-                          · last {new Date(stats.lastOccurredAt).toLocaleString()}
-                        </span>
-                      )}
-                      {isAlert && (
-                        <span className="font-semibold">
-                          ⚠ Retry failures at or above alert threshold ({threshold})
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    <span>no interruptions</span>
-                  )}
-                </div>
-              );
-            })()}
-          </div>
-
-          <div className="rounded-lg border border-border px-5 py-4 space-y-3">
-            <div className="text-sm font-semibold">Download URL, Version &amp; Release Notes</div>
-            <p className="text-xs text-muted-foreground">
-              Paste the GitHub Release asset URL (or a <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/</code> path) here after each build.
-              Must start with <code className="font-mono bg-secondary px-1 py-0.5 rounded">https://</code> or <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/</code>.
-            </p>
-            {saveError && <Alert tone="danger">{saveError}</Alert>}
-            {saveSuccess && <Alert tone="success">Settings saved.</Alert>}
-            <div className="flex gap-2 items-start">
-              <input
-                className={`${inputCls} flex-1`}
-                type="url"
-                value={urlInput}
-                onChange={(e) => setUrlInput(e.target.value)}
-                placeholder="https://github.com/…/releases/download/…/LabTrax-Setup.exe"
-              />
-              <input
-                className={`${inputCls} w-28 shrink-0`}
-                type="text"
-                value={versionInput}
-                onChange={(e) => setVersionInput(e.target.value)}
-                placeholder="1.0.0"
-                aria-label="Version"
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="text-xs font-medium text-muted-foreground shrink-0">
-                Alert after
-              </label>
-              <input
-                className={`${inputCls} w-20 shrink-0`}
-                type="number"
-                min={1}
-                max={1000}
-                step={1}
-                value={alertThresholdInput}
-                onChange={(e) => setAlertThresholdInput(e.target.value)}
-                aria-label="Alert threshold: number of retry failures in 24 h"
-              />
-              <span className="text-xs text-muted-foreground">
-                retry failure{alertThresholdInput === "1" ? "" : "s"} in 24 h
-                {info && info.downloadInterruptionAlertThresholdSource === "env" && (
-                  <span className="ml-1.5 text-[11px] text-muted-foreground/70">
-                    (env default: {info.envDownloadInterruptionAlertThreshold})
-                  </span>
-                )}
-              </span>
-            </div>
-
-            <div className="space-y-1">
-              <div className="flex items-center justify-between gap-2">
-                <label className="text-xs font-medium text-muted-foreground">
-                  Release notes <span className="font-normal">(optional)</span>
-                </label>
-                <button
-                  type="button"
-                  disabled={importNotesLoading || !versionInput.trim()}
-                  title={!versionInput.trim() ? "Enter a version number first" : `Import notes for v${versionInput.trim()} from RELEASE_NOTES.md`}
-                  onClick={async () => {
-                    const ver = versionInput.trim();
-                    if (!ver) return;
-                    setImportNotesLoading(true);
-                    setImportNotesError(null);
-                    try {
-                      const result = await apiFetch<{ version: string; notes: string | null }>(
-                        `/admin/settings/desktop-installer/release-notes-file?version=${encodeURIComponent(ver)}`,
-                      );
-                      if (result.notes) {
-                        setReleaseNotesInput(result.notes);
-                      } else {
-                        setImportNotesError(`No entry for ${result.version} found in RELEASE_NOTES.md.`);
-                      }
-                    } catch (err) {
-                      setImportNotesError(
-                        err instanceof Error ? err.message : "Could not load RELEASE_NOTES.md.",
-                      );
-                    } finally {
-                      setImportNotesLoading(false);
-                    }
-                  }}
-                  className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {importNotesLoading ? (
-                    <Loader2 size={11} className="animate-spin" />
-                  ) : (
-                    <FileDown size={11} />
-                  )}
-                  Import from RELEASE_NOTES.md
-                </button>
-              </div>
-              {importNotesError && (
-                <p className="text-[11px] text-destructive">{importNotesError}</p>
-              )}
-              <textarea
-                className="w-full px-2.5 py-2 rounded-md bg-background border border-input text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
-                rows={3}
-                value={releaseNotesInput}
-                onChange={(e) => setReleaseNotesInput(e.target.value)}
-                placeholder="e.g. v1.2.0 — fixed PDF print crash, improved startup time"
-                maxLength={1000}
-              />
-              <p className="text-[11px] text-muted-foreground text-right">
-                {releaseNotesInput.length}/1000
-              </p>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                {hasDbOverrides ? (
-                  <button
-                    type="button"
-                    onClick={() => resetMutation.mutate()}
-                    disabled={resetMutation.isPending || saveMutation.isPending}
-                    className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
-                  >
-                    {resetMutation.isPending ? (
-                      <Loader2 size={11} className="animate-spin" />
-                    ) : (
-                      <RotateCcw size={11} />
-                    )}
-                    Reset to env defaults (v{info.envVersion} · {info.envDownloadUrl.split("/").pop()})
-                  </button>
-                ) : (
-                  <p className="text-[11px] text-muted-foreground">
-                    Using env defaults: v{info.envVersion} · <code className="font-mono bg-secondary px-0.5 rounded">{info.envDownloadUrl}</code>
-                  </p>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => saveMutation.mutate()}
-                disabled={saveMutation.isPending || resetMutation.isPending || !urlInput.trim() || !hasChanges}
-                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 shrink-0 inline-flex items-center gap-1.5"
-              >
-                {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
-                Save
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-border px-5 py-4 space-y-3">
-            <div className="text-sm font-semibold">Upload a refreshed installer</div>
-            <p className="text-xs text-muted-foreground">
-              After a fresh build, upload the Windows installer (
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Setup.exe</code> or{" "}
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Portable.zip</code>)
-              or the macOS installer (
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax.dmg</code>).
-              Max size 300 MB.
-            </p>
-            {uploadError && <Alert tone="danger">{uploadError}</Alert>}
-            {uploadSuccess && <Alert tone="success">Installer uploaded.</Alert>}
-            <div className="flex items-center gap-3">
-              <input
-                ref={uploadInputRef}
-                type="file"
-                accept=".zip,application/zip,.exe,application/vnd.microsoft.portable-executable,application/x-msdownload,.dmg,application/x-apple-diskimage"
-                className="hidden"
-                onChange={handleUploadInputChange}
-              />
-              <button
-                type="button"
-                onClick={handleUploadButtonClick}
-                disabled={uploadMutation.isPending}
-                className="h-9 px-4 rounded-md border border-border text-sm font-semibold hover:bg-secondary/40 disabled:opacity-50 inline-flex items-center gap-2"
-              >
-                {uploadMutation.isPending ? (
-                  <Loader2 size={13} className="animate-spin" />
-                ) : (
-                  <Upload size={13} />
-                )}
-                {uploadMutation.isPending ? "Uploading…" : "Choose ZIP, EXE, or DMG and upload"}
-              </button>
-              {info.installerObject && (
-                <span className="text-[11px] text-muted-foreground">
-                  Replaces the current {formatInstallerSize(info.installerObject.size)} file.
-                </span>
-              )}
-            </div>
-          </div>
-
-          <AlertDialog
-            open={uploadConfirmPending !== null}
-            onOpenChange={(open) => {
-              if (!open) setUploadConfirmPending(null);
-            }}
-          >
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Upload installer?</AlertDialogTitle>
-                <AlertDialogDescription asChild>
-                  <div className="space-y-2 text-sm">
-                    {(() => {
-                      const liveVersion = info?.version ?? null;
-                      const newVersion = uploadConfirmPending
-                        ? parseVersionFromFilename(uploadConfirmPending.name)
-                        : null;
-                      const isDowngrade =
-                        liveVersion &&
-                        newVersion &&
-                        compareVersions(newVersion, liveVersion) < 0;
-                      return isDowngrade ? (
-                        <div className="flex items-start gap-2 rounded-md border border-amber-400/60 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-amber-800 dark:text-amber-300">
-                          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-                          <span className="text-xs font-medium leading-snug">
-                            Downgrade warning — you are about to replace{" "}
-                            <strong>v{liveVersion}</strong> with{" "}
-                            <strong>v{newVersion}</strong>. Users who have already
-                            updated will be prompted to "downgrade". Proceed only
-                            if this is intentional.
-                          </span>
-                        </div>
-                      ) : null;
-                    })()}
-                    <p>
-                      This will replace the live installer that all users download. Review the details below before continuing.
-                    </p>
-                    <div className="rounded-md border border-border bg-secondary/40 px-4 py-3 space-y-1 text-xs font-mono">
-                      <div>
-                        <span className="text-muted-foreground">File:&nbsp;</span>
-                        <span className="font-semibold break-all">{uploadConfirmPending?.name}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Size:&nbsp;</span>
-                        <span>{uploadConfirmPending ? formatInstallerSize(uploadConfirmPending.size) : "—"}</span>
-                      </div>
-                      {uploadConfirmPending && parseVersionFromFilename(uploadConfirmPending.name) && (
-                        <div>
-                          <span className="text-muted-foreground">New version:&nbsp;</span>
-                          <span>{parseVersionFromFilename(uploadConfirmPending.name)}</span>
-                        </div>
-                      )}
-                      <div>
-                        <span className="text-muted-foreground">Current version:&nbsp;</span>
-                        <span>{info?.version ?? "—"}</span>
-                      </div>
-                      {info?.installerObject && (
-                        <div>
-                          <span className="text-muted-foreground">Current size:&nbsp;</span>
-                          <span>{formatInstallerSize(info.installerObject.size)}</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel onClick={() => setUploadConfirmPending(null)}>
-                  Cancel
-                </AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={() => {
-                    const file = uploadConfirmPending;
-                    setUploadConfirmPending(null);
-                    if (file) uploadMutation.mutate({ file });
-                  }}
-                >
-                  Upload
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-
-          <AlertDialog
-            open={duplicatePrompt !== null}
-            onOpenChange={(open) => {
-              if (!open) setDuplicatePrompt(null);
-            }}
-          >
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Upload the same file again?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {duplicatePrompt?.message ??
-                    "This is the same file as your previous upload — did you forget to rebuild?"}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel onClick={() => setDuplicatePrompt(null)}>
-                  Cancel
-                </AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={() => {
-                    if (duplicatePrompt) {
-                      const { file } = duplicatePrompt;
-                      setDuplicatePrompt(null);
-                      uploadMutation.mutate({ file, force: true });
-                    }
-                  }}
-                >
-                  Upload anyway
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-
-          <div className="rounded-lg border border-border bg-secondary/20 px-5 py-4 space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-sm font-semibold">
-                <Package size={14} />
-                Build &amp; publish installer
-              </div>
-              {info.repoUrl && (
-                <a
-                  href={`${info.repoUrl.replace(/\/$/, "")}/actions`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-border bg-background text-xs font-semibold hover:bg-secondary shrink-0"
-                >
-                  <Github size={12} />
-                  Open GitHub Actions
-                  <ExternalLink size={10} className="text-muted-foreground" />
-                </a>
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Trigger the <strong>Build Windows Installer (Test)</strong> workflow from GitHub Actions. When the
-              {" "}<code className="font-mono bg-secondary px-1 py-0.5 rounded">PLATFORM_ADMIN_SECRET</code> and{" "}
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">PUBLISH_API_BASE_URL</code> secrets are
-              configured in your repo, the built installer is automatically published to the live download page — no manual upload needed.
-            </p>
-
-            {/* Trigger button — shown when token + repo are configured; falls back to the Actions link otherwise */}
-            {info.tokenConfigured && info.repoOwner && info.repoName ? (
-              <div className="space-y-3">
-                {buildTriggerError && <Alert tone="danger">{buildTriggerError}</Alert>}
-                {buildTriggerSuccess && (
-                  <Alert tone="success">
-                    Build triggered — the <strong>Build Windows Installer (Test)</strong> workflow is now queued on GitHub Actions. Status will update automatically below.
-                  </Alert>
-                )}
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setBuildTriggerError(null);
-                      setBuildTriggerSuccess(false);
-                      buildTriggerMutation.mutate();
-                    }}
-                    disabled={buildTriggerMutation.isPending}
-                    className="inline-flex items-center gap-2 h-8 px-4 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60"
-                  >
-                    {buildTriggerMutation.isPending ? (
-                      <Loader2 size={13} className="animate-spin" />
-                    ) : (
-                      <Play size={13} />
-                    )}
-                    {buildTriggerMutation.isPending ? "Triggering…" : "Trigger build"}
-                  </button>
-                  {info.lastDesktopBuildTrigger && (
-                    <span className="text-[11px] text-muted-foreground">
-                      Last triggered{" "}
-                      {new Date(info.lastDesktopBuildTrigger.triggeredAt).toLocaleString()}{" "}
-                      by {info.lastDesktopBuildTrigger.triggeredByUsername}
-                    </span>
-                  )}
-                </div>
-
-                {/* Live run status */}
-                {buildStatusQuery.data !== undefined && (
-                  <div className="rounded-md border border-border bg-background px-4 py-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Latest build run</div>
-                      <button
-                        type="button"
-                        onClick={() => queryClient.invalidateQueries({ queryKey: ["admin", "desktop-build-status"] })}
-                        disabled={buildStatusQuery.isFetching}
-                        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
-                      >
-                        <RefreshCcw size={11} className={buildStatusQuery.isFetching ? "animate-spin" : ""} />
-                        Refresh
-                      </button>
-                    </div>
-                    {buildStatusQuery.data.run ? (
-                      <div className="space-y-1.5">
-                        <div className="flex items-center gap-2">
-                          <BuildStatusBadge run={{
-                            ...buildStatusQuery.data.run,
-                            htmlUrl: buildStatusQuery.data.run.htmlUrl,
-                          }} />
-                          {isBuildPolling && buildStatusQuery.data.run.status !== "completed" && (
-                            <span className="text-[11px] text-muted-foreground">Auto-refreshing every 30 s…</span>
-                          )}
-                        </div>
-                        <div className="text-[11px] text-muted-foreground">
-                          <Clock size={11} className="inline mr-1 -mt-px" />
-                          Started {new Date(buildStatusQuery.data.run.createdAt).toLocaleString()}
-                          {buildStatusQuery.data.run.status === "completed" && (
-                            <> · Updated {new Date(buildStatusQuery.data.run.updatedAt).toLocaleString()}</>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <p className="text-[11px] text-muted-foreground">No runs found for <code className="font-mono">build-windows.yml</code>.</p>
-                    )}
-                  </div>
-                )}
-                {buildStatusQuery.isLoading && (
-                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                    <Loader2 size={11} className="animate-spin" />
-                    Loading run status…
-                  </div>
-                )}
-              </div>
-            ) : (
-              /* Fallback: no token or repo — explain what needs to be set up */
-              <div className="space-y-2">
-                {!info.repoUrl && (
-                  <p className="text-[11px] text-muted-foreground">
-                    Set <code className="font-mono bg-secondary px-1 rounded">GITHUB_REPO_URL</code> to your repository URL to enable in-app build triggering.
-                  </p>
-                )}
-                {info.repoUrl && !info.tokenConfigured && (
-                  <p className="text-[11px] text-muted-foreground">
-                    Set <code className="font-mono bg-secondary px-1 rounded">GITHUB_ACTIONS_TOKEN</code> (a fine-grained PAT with <em>Actions: Read and write</em> access) to enable in-app build triggering.
-                  </p>
-                )}
-              </div>
-            )}
-
-            {(info.installerStatus === "missing" || info.installerStatus === "unknown") && (
-              <div className="rounded-md border border-blue-300/60 bg-blue-50 dark:border-blue-800/40 dark:bg-blue-950/30 px-4 py-3 space-y-2">
-                <div className="flex items-start gap-2">
-                  <svg className="text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10" />
-                    <path d="M12 16v-4" />
-                    <path d="M12 8h.01" />
-                  </svg>
-                  <div>
-                    <div className="text-xs font-semibold text-blue-800 dark:text-blue-300">One-time setup: add two secrets to your GitHub repo</div>
-                    <p className="text-[11px] text-blue-700 dark:text-blue-400/90 mt-0.5 leading-relaxed">
-                      For CI to auto-publish after each build, add these two Actions secrets under{" "}
-                      <strong>Settings → Secrets and variables → Actions</strong> in your GitHub repo:
-                    </p>
-                    <dl className="mt-2 space-y-1.5 text-[11px]">
-                      <div className="flex gap-2 items-start">
-                        <dt className="font-mono bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 px-1.5 py-0.5 rounded shrink-0 font-semibold">
-                          PLATFORM_ADMIN_SECRET
-                        </dt>
-                        <dd className="text-blue-700 dark:text-blue-400/80 pt-0.5">
-                          Must match the <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">PLATFORM_ADMIN_SECRET</code> env var set on this server.
-                        </dd>
-                      </div>
-                      <div className="flex gap-2 items-start">
-                        <dt className="font-mono bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 px-1.5 py-0.5 rounded shrink-0 font-semibold">
-                          PUBLISH_API_BASE_URL
-                        </dt>
-                        <dd className="text-blue-700 dark:text-blue-400/80 pt-0.5">
-                          The public base URL of this server, e.g.{" "}
-                          <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">https://your-app.replit.app</code>
-                        </dd>
-                      </div>
-                    </dl>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <DesktopBuildCounterRecovery repoUrl={info.repoUrl} />
-          <DesktopInstallerPipelineHealthPanel />
-          <DesktopInstallerUploadsPanel />
-          <DesktopInstallerHistoryPanel repoUrl={info.repoUrl} />
-                  </>}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </PanelShell>
-  );
-}
-
-// ── Pipeline Health card (Task #749) ─────────────────────────────────────────
-//
-// One-click end-to-end audit of the publish pipeline. Calls
-// GET /admin/desktop-installer/health which folds the four independent
-// probes (settings, storage, /downloads HEAD, GitHub Releases manifest)
-// into a single JSON report. Surfacing this in-app means admins no longer
-// have to grep server logs to figure out why "Download for Windows"
-// returns a stale or broken file.
-
-interface InstallerHealthSlotStatus {
-  ok: boolean;
-  size: number | null;
-  uploadedAt: string | null;
-  error: string | null;
-}
-
-interface InstallerHealthReport {
-  ok: boolean;
-  checkedAt: string;
-  settings: { version: string | null; downloadUrl: string | null; activeKind: string | null; error: string | null };
-  storage: { ok: boolean; size: number | null; uploadedAt: string | null; etag: string | null; error: string | null };
-  storageSlots?: { zip: InstallerHealthSlotStatus; exe: InstallerHealthSlotStatus; dmg: InstallerHealthSlotStatus };
-  download: {
-    ok: boolean;
-    checked: boolean;
-    url: string | null;
-    status: number | null;
-    contentLength: number | null;
-    etag: string | null;
-    etagMatchesStorage: boolean | null;
-    error: string | null;
-  };
-  downloadSpeed?: {
-    checked: boolean;
-    bytesPerSecond: number | null;
-    estimatedSeconds: number | null;
-    slow: boolean;
-    error: string | null;
-  };
-  githubRelease: {
-    ok: boolean;
-    configured: boolean;
-    tagName: string | null;
-    publishedAt: string | null;
-    manifestUrl: string | null;
-    hasManifest: boolean;
-    issue: string | null;
-  };
-  downloadInterruptions?: {
-    count24h: number;
-    retryFailCount24h: number;
-    lastOccurredAt: string | null;
-  };
-  issues: string[];
-}
-
-function DesktopInstallerPipelineHealthPanel() {
-  const [report, setReport] = useState<InstallerHealthReport | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function runHealthCheck() {
-    setLoading(true);
-    setError(null);
-    try {
-      const r = await apiFetch<InstallerHealthReport>("/admin/desktop-installer/health");
-      setReport(r);
-    } catch (e: any) {
-      setError(e?.message ?? "Failed to run health check.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  const StatusDot = ({ ok, label }: { ok: boolean | null; label: string }) => (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        marginRight: 12,
-        fontSize: 13,
-      }}
-    >
-      <span
-        style={{
-          display: "inline-block",
-          width: 10,
-          height: 10,
-          borderRadius: 5,
-          backgroundColor: ok === true ? "#16a34a" : ok === false ? "#dc2626" : "#9ca3af",
-        }}
-      />
-      {label}
-    </span>
-  );
-
-  return (
-    <div style={{ border: "1px solid var(--border, #e5e7eb)", borderRadius: 8, padding: 16, marginTop: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: 16 }}>Pipeline health</h3>
-          <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--muted, #6b7280)" }}>
-            End-to-end audit: settings → App Storage → /downloads → GitHub Release manifest.
-          </p>
-        </div>
-        <button onClick={runHealthCheck} disabled={loading} style={{ minWidth: 120 }}>
-          {loading ? "Checking…" : report ? "Re-run" : "Run health check"}
-        </button>
-      </div>
-
-      {error && (
-        <div style={{ color: "#dc2626", fontSize: 13, marginTop: 8 }}>Error: {error}</div>
-      )}
-
-      {report && (
-        <>
-          <div style={{ marginTop: 12 }}>
-            <StatusDot ok={!report.settings.error} label="Settings" />
-            <StatusDot ok={report.storage.ok} label="App Storage" />
-            <StatusDot ok={report.download.checked ? report.download.ok : null} label="Live /downloads HEAD" />
-            <StatusDot
-              ok={
-                report.downloadSpeed?.checked
-                  ? report.downloadSpeed.slow || report.downloadSpeed.error != null
-                    ? false
-                    : true
-                  : null
-              }
-              label="Download speed"
-            />
-            <StatusDot
-              ok={report.githubRelease.configured ? report.githubRelease.ok : null}
-              label="GitHub Release"
-            />
-            {report.downloadInterruptions != null && (
-              <StatusDot
-                ok={report.downloadInterruptions.retryFailCount24h > 0 ? false : true}
-                label={`Interruptions (24 h): ${report.downloadInterruptions.count24h}`}
-              />
-            )}
-          </div>
-          <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.5 }}>
-            <div>
-              <strong>Configured:</strong> {report.settings.version ?? "—"} →{" "}
-              <code>{report.settings.downloadUrl ?? "—"}</code>
-            </div>
-            {report.storage.uploadedAt && (
-              <div>
-                <strong>Storage:</strong>{" "}
-                {report.storage.size != null
-                  ? `${(report.storage.size / 1_048_576).toFixed(1)} MB`
-                  : "?"}
-                , uploaded {new Date(report.storage.uploadedAt).toLocaleString()}
-              </div>
-            )}
-            {report.storageSlots && (
-              <div style={{ marginTop: 8 }}>
-                <strong>Installer slots:</strong>
-                <table style={{ marginTop: 4, borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
-                  <thead>
-                    <tr style={{ textAlign: "left", color: "var(--muted, #6b7280)" }}>
-                      <th style={{ paddingRight: 12, fontWeight: 500 }}>Kind</th>
-                      <th style={{ paddingRight: 12, fontWeight: 500 }}>Status</th>
-                      <th style={{ paddingRight: 12, fontWeight: 500 }}>Size</th>
-                      <th style={{ fontWeight: 500 }}>Uploaded</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(["zip", "exe", "dmg"] as const).map((kind) => {
-                      const slot = report.storageSlots![kind];
-                      return (
-                        <tr key={kind}>
-                          <td style={{ paddingRight: 12, fontFamily: "monospace" }}>{kind}</td>
-                          <td style={{ paddingRight: 12, color: slot.ok ? "#16a34a" : "#dc2626" }}>
-                            {slot.ok ? "✓ present" : "✗ missing"}
-                          </td>
-                          <td style={{ paddingRight: 12 }}>
-                            {slot.size != null ? `${(slot.size / 1_048_576).toFixed(1)} MB` : "—"}
-                          </td>
-                          <td>
-                            {slot.uploadedAt ? new Date(slot.uploadedAt).toLocaleString() : "—"}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            {report.download.checked && (
-              <div>
-                <strong>Download HEAD:</strong> HTTP {report.download.status ?? "?"}
-                {report.download.etagMatchesStorage === false && (
-                  <span style={{ color: "#dc2626" }}> — ETag mismatch (stale copy?)</span>
-                )}
-              </div>
-            )}
-            {report.downloadSpeed?.checked && (
-              <div style={{ marginTop: 2 }}>
-                <strong>Download speed:</strong>{" "}
-                {report.downloadSpeed.bytesPerSecond != null
-                  ? `${(report.downloadSpeed.bytesPerSecond / 1_048_576).toFixed(2)} MB/s`
-                  : "—"}
-                {report.downloadSpeed.estimatedSeconds != null && (
-                  <span style={{ marginLeft: 6, color: report.downloadSpeed.slow ? "#b45309" : "inherit" }}>
-                    {`(est. ${report.downloadSpeed.estimatedSeconds < 60
-                      ? `${Math.round(report.downloadSpeed.estimatedSeconds)}s`
-                      : `${Math.round(report.downloadSpeed.estimatedSeconds / 60)} min`} total)`}
-                    {report.downloadSpeed.slow && (
-                      <span style={{ marginLeft: 6, fontWeight: 600 }}>
-                        ⚠ Slow — may time out through proxy. Consider a GitHub Release URL.
-                      </span>
-                    )}
-                  </span>
-                )}
-                {report.downloadSpeed.error && (
-                  <span style={{ marginLeft: 6, color: "#6b7280" }}>({report.downloadSpeed.error})</span>
-                )}
-              </div>
-            )}
-            {report.githubRelease.configured && (
-              <div>
-                <strong>Latest Release:</strong> {report.githubRelease.tagName ?? "—"}
-                {report.githubRelease.publishedAt && (
-                  <> ({new Date(report.githubRelease.publishedAt).toLocaleDateString()})</>
-                )}
-                {!report.githubRelease.hasManifest && (
-                  <span style={{ color: "#dc2626" }}> — no latest.yml/latest-mac.yml asset</span>
-                )}
-              </div>
-            )}
-            {report.downloadInterruptions != null && (
-              <div style={{ marginTop: 4 }}>
-                <strong>Download interruptions (24 h):</strong>{" "}
-                {report.downloadInterruptions.count24h === 0 ? (
-                  <span style={{ color: "#16a34a" }}>none</span>
-                ) : (
-                  <>
-                    <span style={{ color: report.downloadInterruptions.retryFailCount24h > 0 ? "#dc2626" : "#b45309" }}>
-                      {report.downloadInterruptions.count24h} total
-                      {report.downloadInterruptions.retryFailCount24h > 0 && (
-                        <>, {report.downloadInterruptions.retryFailCount24h} retry failure{report.downloadInterruptions.retryFailCount24h !== 1 ? "s" : ""}</>
-                      )}
-                    </span>
-                    {report.downloadInterruptions.lastOccurredAt && (
-                      <span style={{ marginLeft: 6, color: "var(--muted, #6b7280)" }}>
-                        — last {new Date(report.downloadInterruptions.lastOccurredAt).toLocaleString()}
-                      </span>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
-            <div style={{ marginTop: 4, color: "var(--muted, #6b7280)", fontSize: 12 }}>
-              Checked {new Date(report.checkedAt).toLocaleString()}
-            </div>
-          </div>
-          {report.issues.length > 0 && (
-            <ul style={{ marginTop: 12, paddingLeft: 20, color: "#b45309", fontSize: 13 }}>
-              {report.issues.map((issue, i) => (
-                <li key={i}>{issue}</li>
-              ))}
-            </ul>
-          )}
-          {report.ok && (
-            <div style={{ marginTop: 8, color: "#16a34a", fontSize: 13 }}>
-              All probes healthy — pipeline is in sync.
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-interface InstallerUploadEntry {
-  id: string;
-  sizeBytes: number;
-  version: string | null;
-  checksumSha256: string | null;
-  uploadedByUserId: string | null;
-  uploadedByUsername: string | null;
-  createdAt: string;
-}
-
-function ChecksumCell({ checksum }: { checksum: string | null }) {
-  const [copied, setCopied] = useState(false);
-  if (!checksum) {
-    return <span className="text-muted-foreground">—</span>;
-  }
-  const onCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(checksum);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore clipboard errors
-    }
-  };
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="font-mono" title={checksum}>
-        {checksum.slice(0, 12)}
-      </span>
-      <button
-        type="button"
-        onClick={onCopy}
-        className="text-muted-foreground hover:text-foreground transition-colors"
-        title={copied ? "Copied!" : "Copy full SHA-256"}
-        aria-label={copied ? "Checksum copied" : "Copy full SHA-256 checksum"}
-      >
-        {copied ? <Check size={12} /> : <Copy size={12} />}
-      </button>
-    </div>
-  );
-}
-
-function DesktopBuildCounterRecovery({ repoUrl }: { repoUrl: string | null }) {
-  const queryClient = useQueryClient();
-  const [buildNumberInput, setBuildNumberInput] = useState("");
-  const [applyError, setApplyError] = useState<string | null>(null);
-  const [applySuccess, setApplySuccess] = useState<{ buildNumber: number; commitUrl: string | null } | null>(null);
-
-  const applyMutation = useMutation({
-    mutationFn: (buildNumber: number) =>
-      apiFetch<{ ok: boolean; buildNumber: number; commitSha: string | null; commitUrl: string | null }>(
-        "/admin/settings/build-counter",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target: "desktop", buildNumber }),
-        },
-      ),
-    onSuccess: (data) => {
-      setApplyError(null);
-      setApplySuccess({ buildNumber: data.buildNumber, commitUrl: data.commitUrl });
-      setBuildNumberInput("");
-      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
-      setTimeout(() => setApplySuccess(null), 8000);
-    },
-    onError: (err: Error) => {
-      setApplySuccess(null);
-      setApplyError(err.message || "Failed to apply build counter.");
-    },
-  });
-
-  function handleApply() {
-    const n = parseInt(buildNumberInput.trim(), 10);
-    if (!buildNumberInput.trim() || Number.isNaN(n) || n < 1) {
-      setApplyError("Enter a valid positive integer build number.");
-      return;
-    }
-    setApplyError(null);
-    setApplySuccess(null);
-    applyMutation.mutate(n);
-  }
-
-  return (
-    <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/20 px-5 py-4 space-y-3">
-      <div className="flex items-start gap-2">
-        <RotateCcw size={14} className="mt-0.5 text-amber-600 dark:text-amber-400 shrink-0" />
-        <div>
-          <div className="text-sm font-semibold">Build counter recovery</div>
-          <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-            If a build workflow exited with a warning that the counter wasn't persisted, paste the <code className="font-mono bg-secondary px-0.5 rounded">buildNumber</code> from the <code className="font-mono bg-secondary px-0.5 rounded">build-counter-fallback</code> artifact here. The correct value is committed directly to <code className="font-mono bg-secondary px-0.5 rounded">main</code> via the GitHub API using <code className="font-mono bg-secondary px-0.5 rounded">BUILD_BOT_TOKEN</code> (or <code className="font-mono bg-secondary px-0.5 rounded">GITHUB_ACTIONS_TOKEN</code>) so the next build gets a higher number.
-          </p>
-        </div>
-      </div>
-      {applyError && <Alert tone="danger">{applyError}</Alert>}
-      {applySuccess && (
-        <Alert tone="success">
-          Build counter set to <strong>{applySuccess.buildNumber}</strong> and committed to main.
-          {applySuccess.commitUrl && (
-            <>
-              {" "}
-              <a
-                href={applySuccess.commitUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline font-medium"
-              >
-                View commit
-              </a>
-            </>
-          )}
-        </Alert>
-      )}
-      <div className="flex items-center gap-3">
-        <input
-          type="number"
-          min={1}
-          step={1}
-          value={buildNumberInput}
-          onChange={(e) => setBuildNumberInput(e.target.value)}
-          placeholder="e.g. 42"
-          className={`${inputCls} w-36 font-mono`}
-          onKeyDown={(e) => { if (e.key === "Enter") handleApply(); }}
-        />
-        <button
-          type="button"
-          onClick={handleApply}
-          disabled={applyMutation.isPending || !buildNumberInput.trim()}
-          className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 disabled:opacity-50"
-        >
-          {applyMutation.isPending ? (
-            <Loader2 size={13} className="animate-spin" />
-          ) : (
-            <RotateCcw size={13} />
-          )}
-          {applyMutation.isPending ? "Applying…" : "Apply counter"}
-        </button>
-        {repoUrl && (
-          <a
-            href={`${repoUrl.replace(/\/$/, "")}/actions`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-          >
-            <ExternalLink size={11} />
-            Actions
-          </a>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function DesktopInstallerUploadsPanel() {
-  const [open, setOpen] = useState(false);
-  const queryClient = useQueryClient();
-  const query = useQuery({
-    queryKey: ["admin", "desktop-installer", "uploads"],
-    queryFn: () =>
-      apiFetch<{ uploads: InstallerUploadEntry[] }>(
-        "/admin/desktop-installer/uploads?limit=20",
-      ),
-    enabled: open,
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) =>
-      apiFetch<{ success: boolean }>(
-        `/admin/desktop-installer/uploads/${id}`,
-        { method: "DELETE" },
-      ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["admin", "desktop-installer", "uploads"],
-      });
-    },
-  });
-
-  const clearAllMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean; deletedCount: number }>(
-        "/admin/desktop-installer/uploads",
-        { method: "DELETE" },
-      ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["admin", "desktop-installer", "uploads"],
-      });
-    },
-  });
-
-  const uploads = query.data?.uploads ?? [];
-  const pendingDeleteId = deleteMutation.isPending
-    ? (deleteMutation.variables as string | undefined)
-    : undefined;
-
-  return (
-    <div className="rounded-lg border border-border px-5 py-4 space-y-3">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between gap-3 text-left"
-        aria-expanded={open}
-      >
-        <div className="flex items-center gap-2">
-          <History size={14} className="text-muted-foreground" />
-          <div className="text-sm font-semibold">Recent uploads</div>
-          <span className="text-xs text-muted-foreground">
-            (last 20 zip uploads)
-          </span>
-        </div>
-        {open ? (
-          <ChevronDown size={14} className="text-muted-foreground" />
-        ) : (
-          <ChevronRight size={14} className="text-muted-foreground" />
-        )}
-      </button>
-
-      {open && (
-        <div className="space-y-2">
-          {query.isLoading && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 size={12} className="animate-spin" />
-              Loading uploads…
-            </div>
-          )}
-          {query.error && (
-            <Alert tone="danger">{(query.error as Error).message}</Alert>
-          )}
-          {!query.isLoading && !query.error && uploads.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              No installer uploads yet. Each time an admin uploads a refreshed
-              zip above, an entry will appear here.
-            </p>
-          )}
-          {deleteMutation.error && (
-            <Alert tone="danger">
-              {(deleteMutation.error as Error).message}
-            </Alert>
-          )}
-          {clearAllMutation.error && (
-            <Alert tone="danger">
-              {(clearAllMutation.error as Error).message}
-            </Alert>
-          )}
-          {uploads.length > 0 && (
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={() => {
-                  if (
-                    !window.confirm(
-                      "Clear ALL upload history entries? The uploaded zips themselves are not affected. This cannot be undone.",
-                    )
-                  ) {
-                    return;
-                  }
-                  clearAllMutation.mutate();
-                }}
-                disabled={clearAllMutation.isPending}
-                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-destructive hover:border-destructive disabled:opacity-50 disabled:cursor-not-allowed"
-                aria-label="Clear all upload history"
-              >
-                {clearAllMutation.isPending ? (
-                  <Loader2 size={11} className="animate-spin" />
-                ) : (
-                  <Trash2 size={11} />
-                )}
-                Clear all
-              </button>
-            </div>
-          )}
-          {uploads.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-muted-foreground border-b border-border">
-                    <th className="font-medium py-2 pr-3">When</th>
-                    <th className="font-medium py-2 pr-3">Version</th>
-                    <th className="font-medium py-2 pr-3">Size</th>
-                    <th className="font-medium py-2 pr-3">SHA-256</th>
-                    <th className="font-medium py-2 pr-3">Uploaded by</th>
-                    <th className="font-medium py-2 w-px"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {uploads.map((u) => {
-                    const isDeleting = pendingDeleteId === u.id;
-                    return (
-                      <tr key={u.id} className="border-b border-border/60 align-top">
-                        <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
-                          {formatHistoryTimestamp(u.createdAt)}
-                        </td>
-                        <td className="py-2 pr-3 whitespace-nowrap font-mono">
-                          {u.version ?? "—"}
-                        </td>
-                        <td className="py-2 pr-3 whitespace-nowrap">
-                          {formatInstallerSize(u.sizeBytes)}
-                        </td>
-                        <td className="py-2 pr-3 whitespace-nowrap">
-                          <ChecksumCell checksum={u.checksumSha256} />
-                        </td>
-                        <td className="py-2 pr-3 whitespace-nowrap">
-                          {u.uploadedByUsername ?? (
-                            <span className="text-muted-foreground">unknown</span>
-                          )}
-                        </td>
-                        <td className="py-2 whitespace-nowrap text-right">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (
-                                !window.confirm(
-                                  "Remove this upload entry from the history? The uploaded zip itself is not affected.",
-                                )
-                              ) {
-                                return;
-                              }
-                              deleteMutation.mutate(u.id);
-                            }}
-                            disabled={isDeleting}
-                            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-destructive hover:border-destructive disabled:opacity-50 disabled:cursor-not-allowed"
-                            aria-label="Delete upload entry"
-                          >
-                            {isDeleting ? (
-                              <Loader2 size={11} className="animate-spin" />
-                            ) : (
-                              <Trash2 size={11} />
-                            )}
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-interface InstallerHistoryEntry {
-  id: string;
-  downloadUrl: string;
-  version: string | null;
-  releaseNotes: string | null;
-  savedByUserId: string | null;
-  savedByUsername: string | null;
-  createdAt: string;
-  source?: "ci" | "manual";
-  ciMetadata?: {
-    runId: string | null;
-    commitSha: string | null;
-    releaseTag: string | null;
-  } | null;
-}
-
-function formatHistoryTimestamp(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
-}
-
-function DesktopInstallerHistoryPanel({ repoUrl }: { repoUrl: string | null }) {
-  const [open, setOpen] = useState(false);
-  const [sourceFilter, setSourceFilter] = useState<"all" | "manual" | "ci">("all");
-  const repoBase = repoUrl ? repoUrl.replace(/\/$/, "") : null;
-  const query = useQuery({
-    queryKey: ["admin", "desktop-installer", "history"],
-    queryFn: () =>
-      apiFetch<{ entries: InstallerHistoryEntry[] }>(
-        "/admin/settings/desktop-installer/history?limit=20",
-      ),
-    enabled: open,
-  });
-
-  const allEntries = query.data?.entries ?? [];
-  const entries =
-    sourceFilter === "all"
-      ? allEntries
-      : allEntries.filter((e) => (e.source ?? "manual") === sourceFilter);
-  const manualCount = allEntries.filter((e) => (e.source ?? "manual") === "manual").length;
-  const ciCount = allEntries.filter((e) => e.source === "ci").length;
-
-  const filterOptions: { value: "all" | "manual" | "ci"; label: string; count: number }[] = [
-    { value: "all", label: "All", count: allEntries.length },
-    { value: "manual", label: "Manual", count: manualCount },
-    { value: "ci", label: "GitHub Actions", count: ciCount },
-  ];
-
-  return (
-    <div className="rounded-lg border border-border px-5 py-4 space-y-3">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between gap-3 text-left"
-        aria-expanded={open}
-      >
-        <div className="flex items-center gap-2">
-          <History size={14} className="text-muted-foreground" />
-          <div className="text-sm font-semibold">Change history</div>
-          <span className="text-xs text-muted-foreground">
-            (last 20 saves)
-          </span>
-        </div>
-        {open ? (
-          <ChevronDown size={14} className="text-muted-foreground" />
-        ) : (
-          <ChevronRight size={14} className="text-muted-foreground" />
-        )}
-      </button>
-
-      {open && (
-        <div className="space-y-2">
-          {query.isLoading && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 size={12} className="animate-spin" />
-              Loading history…
-            </div>
-          )}
-          {query.error && (
-            <Alert tone="danger">{(query.error as Error).message}</Alert>
-          )}
-          {!query.isLoading && !query.error && allEntries.length > 0 && (
-            <div
-              role="radiogroup"
-              aria-label="Filter history by source"
-              className="inline-flex rounded-md border border-border bg-muted/30 p-0.5 text-xs"
-            >
-              {filterOptions.map((opt) => {
-                const active = sourceFilter === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    onClick={() => setSourceFilter(opt.value)}
-                    className={
-                      "px-2.5 py-1 rounded-sm transition-colors " +
-                      (active
-                        ? "bg-background text-foreground shadow-sm font-medium"
-                        : "text-muted-foreground hover:text-foreground")
-                    }
-                  >
-                    {opt.label}
-                    <span className="ml-1 text-muted-foreground">({opt.count})</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {!query.isLoading && !query.error && allEntries.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              No previous saves yet. Each time you save a new download URL, version, or release notes, a history entry will appear here.
-            </p>
-          )}
-          {!query.isLoading && !query.error && allEntries.length > 0 && entries.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              No {sourceFilter === "ci" ? "GitHub Actions" : "manual"} entries in the last {allEntries.length} saves.
-            </p>
-          )}
-          {entries.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-muted-foreground border-b border-border">
-                    <th className="font-medium py-2 pr-3">When</th>
-                    <th className="font-medium py-2 pr-3">Version</th>
-                    <th className="font-medium py-2 pr-3">Download URL</th>
-                    <th className="font-medium py-2 pr-3">Release notes</th>
-                    <th className="font-medium py-2">Saved by</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {entries.map((e) => (
-                    <tr key={e.id} className="border-b border-border/60 align-top">
-                      <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
-                        {formatHistoryTimestamp(e.createdAt)}
-                      </td>
-                      <td className="py-2 pr-3 whitespace-nowrap font-mono">
-                        {e.version ?? "—"}
-                      </td>
-                      <td className="py-2 pr-3 max-w-[280px]">
-                        <a
-                          href={
-                            e.downloadUrl.startsWith("/")
-                              ? `${getApiOrigin() || (typeof window !== "undefined" ? window.location.origin : "")}${e.downloadUrl}`
-                              : e.downloadUrl
-                          }
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary hover:underline break-all font-mono"
-                        >
-                          {e.downloadUrl}
-                        </a>
-                      </td>
-                      <td className="py-2 pr-3 max-w-[260px]">
-                        {e.releaseNotes ? (
-                          <span className="whitespace-pre-wrap text-foreground">
-                            {e.releaseNotes}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                        {e.source === "ci" && e.ciMetadata && (e.ciMetadata.runId || e.ciMetadata.commitSha || e.ciMetadata.releaseTag) && (
-                          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-                            {e.ciMetadata.releaseTag && (
-                              <span>
-                                Release:{" "}
-                                {repoBase ? (
-                                  <a
-                                    href={`${repoBase}/releases/tag/${e.ciMetadata.releaseTag}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-primary hover:underline font-mono"
-                                  >
-                                    {e.ciMetadata.releaseTag}
-                                  </a>
-                                ) : (
-                                  <span className="font-mono">{e.ciMetadata.releaseTag}</span>
-                                )}
-                              </span>
-                            )}
-                            {e.ciMetadata.runId && (
-                              <span>
-                                Run:{" "}
-                                {repoBase ? (
-                                  <a
-                                    href={`${repoBase}/actions/runs/${e.ciMetadata.runId}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-primary hover:underline font-mono"
-                                  >
-                                    {e.ciMetadata.runId}
-                                  </a>
-                                ) : (
-                                  <span className="font-mono">{e.ciMetadata.runId}</span>
-                                )}
-                              </span>
-                            )}
-                            {e.ciMetadata.commitSha && (
-                              <span>
-                                Commit:{" "}
-                                {repoBase ? (
-                                  <a
-                                    href={`${repoBase}/commit/${e.ciMetadata.commitSha}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-primary hover:underline font-mono"
-                                  >
-                                    {e.ciMetadata.commitSha.slice(0, 7)}
-                                  </a>
-                                ) : (
-                                  <span className="font-mono">{e.ciMetadata.commitSha.slice(0, 7)}</span>
-                                )}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-2 whitespace-nowrap">
-                        {e.source === "ci" ? (
-                          <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[11px] font-medium text-foreground">
-                            <Github size={11} />
-                            GitHub Actions
-                          </span>
-                        ) : e.savedByUsername && e.savedByUsername !== "ci:platform-admin-secret" ? (
-                          e.savedByUsername
-                        ) : (
-                          <span className="text-muted-foreground">unknown</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -5710,7 +5219,11 @@ function MobileBuildPanel() {
   function formatTriggerTime(iso: string): string {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso;
-    return d.toLocaleString();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    return `${mm}/${dd}/${yyyy}, ${timeStr}`;
   }
 
   const platformLabels: Record<string, string> = { all: "All (iOS + Android)", ios: "iOS only", android: "Android only" };
@@ -6244,7 +5757,7 @@ function formatRelative(iso: string | null): string {
   if (hr < 24) return suffix(`${hr} hr`);
   const day = Math.round(hr / 24);
   if (day < 30) return suffix(`${day} day${day === 1 ? "" : "s"}`);
-  return new Date(iso).toLocaleDateString();
+  return formatDate(iso);
 }
 
 function SessionsPanel() {
@@ -6443,7 +5956,7 @@ type PlatformAdminAPI = {
   testSecret: (payload: string | { apiBaseUrl: string }) => Promise<PlatformAdminTestResult>;
   onChanged: (cb: (s: PlatformAdminStatus) => void) => () => void;
 };
-type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; readLocalFile?: (path: string) => Promise<{ ok: boolean; buffer?: Uint8Array; error?: string }>; relaunch?: () => void; openExternal?: (url: string) => Promise<boolean>; saveBackupToFolder?: (buffer: Uint8Array, fileName: string, folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string }>; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
+type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; readLocalFile?: (path: string) => Promise<{ ok: boolean; buffer?: Uint8Array; error?: string }>; relaunch?: () => void; openExternal?: (url: string) => Promise<boolean>; saveBackupToFolder?: (buffer: Uint8Array, fileName: string, folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string }>; downloadBackupToFolder?: unknown; onBackupRunId?: (callback: (runId: string) => void) => () => void; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
 
 function CaseDeletionPinStatus({
   securityConfigQuery,
@@ -6502,7 +6015,11 @@ function CaseDeletionPinStatus({
   );
 }
 
-function PlatformAdminPanel() {
+function PlatformAdminPanel({
+  showCreatorUnlock = false,
+}: {
+  showCreatorUnlock?: boolean;
+}) {
   const electron = typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null;
   const platformAdmin = electron?.platformAdmin;
 
@@ -6601,7 +6118,15 @@ function PlatformAdminPanel() {
     }
   }
 
-  const fmt = (n: number | null | undefined) => (n ? new Date(n).toLocaleString() : "Never");
+  const fmt = (n: number | null | undefined) => {
+    if (!n) return "Never";
+    const d = new Date(n);
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    return `${mm}/${dd}/${yyyy}, ${timeStr}`;
+  };
 
   return (
     <PanelShell
@@ -6609,6 +6134,9 @@ function PlatformAdminPanel() {
       subtitle="Required to call platform-wide maintenance endpoints (Media Cleanup, Backup schedule, Cleanup alerts). The secret is encrypted on this machine via the OS keychain and attached as the X-Platform-Admin-Secret header on /admin/* requests."
     >
       <div className="px-6 py-5 space-y-6">
+        {showCreatorUnlock && (
+          <PlatformAdminSetupNotice purpose="creator" />
+        )}
         {!status?.available && (
           <Alert tone="danger">
             OS keychain is unavailable on this machine — the secret cannot be stored securely. On Linux this requires gnome-keyring or kwallet.
@@ -6859,7 +6387,7 @@ function IteroPanel() {
     }
   }
 
-  const fmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : "Never");
+  const fmt = (iso?: string | null) => (iso ? formatDateTime(iso) : "Never");
 
   return (
     <PanelShell
@@ -7123,251 +6651,6 @@ function IteroPanel() {
   );
 }
 
-// ── Subscriptions Panel ────────────────────────────────────────────────────
-
-interface SubscriptionItem {
-  id: string;
-  subjectType: string;
-  subjectId: string;
-  subjectName: string;
-  subjectOrgType: string | null;
-  subjectEmail: string | null;
-  provider: string;
-  status: string;
-  currentPeriodEnd: string | null;
-  cancelAtPeriodEnd: boolean;
-  paymentMethodOnFile: boolean;
-  revenueCatAppUserId: string | null;
-  stripeCustomerId: string | null;
-  stripeSubscriptionId: string | null;
-  createdAt: string;
-}
-
-interface SubscriptionsResponse {
-  ok: boolean;
-  items: SubscriptionItem[];
-  total: number;
-  limit: number;
-  offset: number;
-}
-
-const PROVIDER_LABELS: Record<string, { label: string; cls: string }> = {
-  stripe: { label: "Stripe", cls: "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300" },
-  revenuecat: { label: "RevenueCat", cls: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300" },
-  none: { label: "None", cls: "bg-secondary text-muted-foreground" },
-};
-
-const STATUS_LABELS: Record<string, { label: string; cls: string }> = {
-  trialing: { label: "Trialing", cls: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300" },
-  active: { label: "Active", cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300" },
-  past_due: { label: "Past due", cls: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300" },
-  grace: { label: "Grace", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" },
-  locked: { label: "Locked", cls: "bg-destructive/10 text-destructive" },
-  canceled: { label: "Canceled", cls: "bg-secondary text-muted-foreground" },
-  legacy_free: { label: "Legacy free", cls: "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300" },
-};
-
-const PAGE_SIZE = 50;
-
-function SubscriptionsPanel() {
-  const [page, setPage] = useState(0);
-  const [providerFilter, setProviderFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-
-  const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE) });
-  if (providerFilter) params.set("provider", providerFilter);
-  if (statusFilter) params.set("status", statusFilter);
-
-  const query = useQuery<SubscriptionsResponse>({
-    queryKey: ["admin-subscriptions", page, providerFilter, statusFilter],
-    queryFn: () => apiFetch<SubscriptionsResponse>(`/admin/subscriptions?${params.toString()}`),
-    retry: false,
-  });
-
-  const { blocked } = usePlatformAdminGate([query.error]);
-
-  if (blocked) {
-    return (
-      <PanelShell title="Subscriptions" subtitle="View all billing subscriptions across the platform.">
-        <PlatformAdminSetupNotice />
-      </PanelShell>
-    );
-  }
-
-  const data = query.data;
-  const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
-
-  function fmtDate(iso: string | null | undefined) {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-  }
-
-  function ProviderBadge({ provider }: { provider: string }) {
-    const meta = PROVIDER_LABELS[provider] ?? { label: provider, cls: "bg-secondary text-muted-foreground" };
-    return <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold ${meta.cls}`}>{meta.label}</span>;
-  }
-
-  function StatusBadge({ status }: { status: string }) {
-    const meta = STATUS_LABELS[status] ?? { label: status, cls: "bg-secondary text-muted-foreground" };
-    return <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold ${meta.cls}`}>{meta.label}</span>;
-  }
-
-  return (
-    <PanelShell
-      title="Subscriptions"
-      subtitle="All billing subscriptions across the platform — provider, status, and renewal date."
-    >
-      {/* Filters */}
-      <div className="flex gap-3 flex-wrap items-center">
-        <div className="flex items-center gap-1.5">
-          <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Provider</label>
-          <select
-            value={providerFilter}
-            onChange={(e) => { setProviderFilter(e.target.value); setPage(0); }}
-            className="h-8 px-2 text-sm rounded-md border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-          >
-            <option value="">All</option>
-            <option value="stripe">Stripe</option>
-            <option value="revenuecat">RevenueCat</option>
-            <option value="none">None</option>
-          </select>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Status</label>
-          <select
-            value={statusFilter}
-            onChange={(e) => { setStatusFilter(e.target.value); setPage(0); }}
-            className="h-8 px-2 text-sm rounded-md border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-          >
-            <option value="">All</option>
-            <option value="trialing">Trialing</option>
-            <option value="active">Active</option>
-            <option value="past_due">Past due</option>
-            <option value="grace">Grace</option>
-            <option value="locked">Locked</option>
-            <option value="canceled">Canceled</option>
-            <option value="legacy_free">Legacy free</option>
-          </select>
-        </div>
-        {data && (
-          <span className="ml-auto text-xs text-muted-foreground">
-            {data.total} total
-          </span>
-        )}
-      </div>
-
-      {/* Error */}
-      {query.isError && (
-        <Alert tone="danger">{(query.error as Error)?.message ?? "Failed to load subscriptions."}</Alert>
-      )}
-
-      {/* Loading */}
-      {query.isLoading && (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground py-6">
-          <Loader2 size={14} className="animate-spin" />
-          Loading…
-        </div>
-      )}
-
-      {/* Table */}
-      {data && data.items.length === 0 && (
-        <p className="text-sm text-muted-foreground py-4">No subscriptions found.</p>
-      )}
-
-      {data && data.items.length > 0 && (
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-secondary/40 text-left">
-                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">Account</th>
-                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">Provider</th>
-                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">Status</th>
-                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">Renews / Expires</th>
-                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">RC App User ID</th>
-                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">Stripe Customer</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.items.map((item, idx) => (
-                <tr
-                  key={item.id}
-                  className={`border-b border-border last:border-0 ${idx % 2 === 0 ? "" : "bg-secondary/20"}`}
-                >
-                  <td className="px-3 py-2.5 min-w-[160px]">
-                    <div className="font-medium text-foreground truncate max-w-[200px]" title={item.subjectName}>
-                      {item.subjectName}
-                    </div>
-                    <div className="text-[11px] text-muted-foreground capitalize">
-                      {["lab_org", "provider_org"].includes(item.subjectType) && item.subjectOrgType
-                        ? item.subjectOrgType
-                        : item.subjectType.replace(/_/g, " ")}
-                      {item.subjectEmail && <span className="ml-1">· {item.subjectEmail}</span>}
-                    </div>
-                  </td>
-                  <td className="px-3 py-2.5 whitespace-nowrap">
-                    <ProviderBadge provider={item.provider} />
-                  </td>
-                  <td className="px-3 py-2.5 whitespace-nowrap">
-                    <StatusBadge status={item.status} />
-                    {item.cancelAtPeriodEnd && (
-                      <span className="ml-1 text-[10px] text-muted-foreground">(cancels)</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                    {fmtDate(item.currentPeriodEnd)}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    {item.revenueCatAppUserId ? (
-                      <code className="text-[11px] font-mono text-muted-foreground bg-secondary/60 px-1.5 py-0.5 rounded">
-                        {item.revenueCatAppUserId}
-                      </code>
-                    ) : (
-                      <span className="text-[11px] text-muted-foreground/50">—</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    {item.stripeCustomerId ? (
-                      <code className="text-[11px] font-mono text-muted-foreground bg-secondary/60 px-1.5 py-0.5 rounded">
-                        {item.stripeCustomerId}
-                      </code>
-                    ) : (
-                      <span className="text-[11px] text-muted-foreground/50">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center gap-3 justify-end pt-1">
-          <button
-            type="button"
-            disabled={page === 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-            className="h-8 px-3 rounded-md bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 disabled:opacity-40"
-          >
-            Previous
-          </button>
-          <span className="text-xs text-muted-foreground">
-            Page {page + 1} of {totalPages}
-          </span>
-          <button
-            type="button"
-            disabled={page >= totalPages - 1}
-            onClick={() => setPage((p) => p + 1)}
-            className="h-8 px-3 rounded-md bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 disabled:opacity-40"
-          >
-            Next
-          </button>
-        </div>
-      )}
-    </PanelShell>
-  );
-}
 
 type EmailPrefsData = {
   caseNoteNotifications: boolean;
@@ -7377,12 +6660,29 @@ type EmailPrefsData = {
   installerAlerts: boolean;
   backupAlerts: boolean;
   cleanupAlerts: boolean;
+  caseCreatedNotifications: boolean;
+  messageReceivedNotifications: boolean;
+  rushCaseNotifications: boolean;
+  providerNoteNotifications: boolean;
 };
 
 type SmsPrefsData = {
   accountLinkInvites: boolean;
   caseNoteNotifications: boolean;
   billingReminders: boolean;
+};
+
+type InAppPrefsData = {
+  inAppNewCase: boolean;
+  inAppTeammateMessage: boolean;
+  inAppDoctorPracticeMessage: boolean;
+  inAppExceptionCase: boolean;
+  inAppRushCase: boolean;
+};
+
+type InAppPrefsResponse = {
+  preferences?: Partial<InAppPrefsData>;
+  hasActiveOwnerOrAdminLabMembership?: boolean;
 };
 
 function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
@@ -7394,6 +6694,10 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     installerAlerts: true,
     backupAlerts: true,
     cleanupAlerts: true,
+    caseCreatedNotifications: true,
+    messageReceivedNotifications: true,
+    rushCaseNotifications: true,
+    providerNoteNotifications: true,
   });
   const [smsPrefs, setSmsPrefs] = useState<SmsPrefsData>({
     accountLinkInvites: true,
@@ -7402,6 +6706,18 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
   });
   const [saving, setSaving] = useState<Partial<Record<keyof EmailPrefsData, boolean>>>({});
   const [smsSaving, setSmsSaving] = useState<Partial<Record<keyof SmsPrefsData, boolean>>>({});
+  const [inAppPrefs, setInAppPrefs] = useState<InAppPrefsData>({
+    inAppNewCase: true,
+    inAppTeammateMessage: true,
+    inAppDoctorPracticeMessage: true,
+    inAppExceptionCase: true,
+    inAppRushCase: true,
+  });
+  const [inAppSaving, setInAppSaving] = useState<
+    Partial<Record<keyof InAppPrefsData, boolean>>
+  >({});
+  const [inAppEligible, setInAppEligible] = useState<boolean | null>(null);
+  const [inAppLoadError, setInAppLoadError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<{ tone: "success" | "danger"; message: string } | null>(null);
   const saveStatusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -7413,6 +6729,15 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     apiFetch("/users/me/sms-preferences")
       .then((data: SmsPrefsData) => setSmsPrefs(data))
       .catch(() => {});
+    apiFetch("/auth/notification-preferences")
+      .then((data: InAppPrefsResponse) => {
+        setInAppEligible(!!data.hasActiveOwnerOrAdminLabMembership);
+        setInAppPrefs((current) => ({ ...current, ...(data.preferences ?? {}) }));
+      })
+      .catch((err: Error) => {
+        setInAppEligible(false);
+        setInAppLoadError(err.message || "Could not load in-app notification preferences.");
+      });
   }, []);
 
   useEffect(() => {
@@ -7461,7 +6786,35 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
+  async function toggleInApp(key: keyof InAppPrefsData, value: boolean) {
+    setInAppPrefs((current) => ({ ...current, [key]: value }));
+    setInAppSaving((current) => ({ ...current, [key]: true }));
+    try {
+      const result = await apiFetch<InAppPrefsResponse>("/auth/notification-preferences", {
+        method: "PATCH",
+        body: JSON.stringify({ [key]: value }),
+      });
+      if (result.preferences) {
+        setInAppPrefs((current) => ({ ...current, ...result.preferences }));
+      }
+      showSaveStatus("success", "Preference saved.");
+    } catch (err) {
+      setInAppPrefs((current) => ({ ...current, [key]: !value }));
+      showSaveStatus(
+        "danger",
+        (err instanceof Error ? err.message : null) || "Could not save preference.",
+      );
+    } finally {
+      setInAppSaving((current) => ({ ...current, [key]: false }));
+    }
+  }
+
   const accountRows: Array<{ prefKey: keyof EmailPrefsData; label: string; desc: string }> = [
+    {
+      prefKey: "providerNoteNotifications",
+      label: "Provider adds a note or file",
+      desc: "Receive an email when a provider adds a note or attachment to a case",
+    },
     {
       prefKey: "caseNoteNotifications",
       label: "Case note alerts",
@@ -7520,6 +6873,38 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     },
   ];
 
+  const inAppRows: Array<{
+    prefKey: keyof InAppPrefsData;
+    label: string;
+    desc: string;
+  }> = [
+    {
+      prefKey: "inAppNewCase",
+      label: "New cases",
+      desc: "Bell alerts when a standard case is created",
+    },
+    {
+      prefKey: "inAppTeammateMessage",
+      label: "Teammate messages",
+      desc: "Bell alerts for internal teammate messages when available",
+    },
+    {
+      prefKey: "inAppDoctorPracticeMessage",
+      label: "Doctor and practice messages",
+      desc: "Bell alerts for provider messages, notes, and uploads",
+    },
+    {
+      prefKey: "inAppExceptionCase",
+      label: "Exception cases",
+      desc: "Bell alerts when a case is flagged for lab review",
+    },
+    {
+      prefKey: "inAppRushCase",
+      label: "Rush cases",
+      desc: "Bell alerts when a rush case is created",
+    },
+  ];
+
   function ToggleRow({ prefKey, label, desc }: { prefKey: keyof EmailPrefsData; label: string; desc: string }) {
     return (
       <div className="flex items-center justify-between px-4 py-3 bg-card">
@@ -7566,6 +6951,37 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     );
   }
 
+  function InAppToggleRow({
+    prefKey,
+    label,
+    desc,
+  }: {
+    prefKey: keyof InAppPrefsData;
+    label: string;
+    desc: string;
+  }) {
+    return (
+      <div className="flex items-center justify-between px-4 py-3 bg-card">
+        <div className="min-w-0 mr-6">
+          <p className="text-sm font-medium text-foreground">{label}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={inAppPrefs[prefKey]}
+          disabled={!!inAppSaving[prefKey]}
+          onClick={() => toggleInApp(prefKey, !inAppPrefs[prefKey])}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${inAppPrefs[prefKey] ? "bg-primary" : "bg-input"}`}
+        >
+          <span
+            className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${inAppPrefs[prefKey] ? "translate-x-5" : "translate-x-0"}`}
+          />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <PanelShell
       title="Notifications"
@@ -7582,6 +6998,40 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
           <ToggleRow key={row.prefKey} {...row} />
         ))}
       </div>
+
+      {inAppLoadError && (
+        <div className="space-y-1 pt-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground px-0.5">
+            In-app notifications
+          </p>
+          <Alert tone="danger">{inAppLoadError}</Alert>
+        </div>
+      )}
+      {inAppEligible === null && !inAppLoadError && (
+        <div className="space-y-1 pt-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground px-0.5">
+            In-app notifications
+          </p>
+          <p className="text-xs text-muted-foreground">Loading in-app notification controls…</p>
+        </div>
+      )}
+      {inAppEligible && (
+        <div className="space-y-2 pt-2">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground px-0.5">
+              In-app notifications
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Control operational alerts in the LabTrax notification bell. Email, text, and push settings are unchanged.
+            </p>
+          </div>
+          <div className="divide-y divide-border rounded-lg border border-border overflow-hidden">
+            {inAppRows.map((row) => (
+              <InAppToggleRow key={row.prefKey} {...row} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {isAdmin && (
         <div className="space-y-2 pt-2">
@@ -7896,7 +7346,7 @@ function DeletedCasesPanel() {
                       </td>
                       <td className="py-2.5 text-muted-foreground text-xs whitespace-nowrap pr-4">
                         {c.deletedAt
-                          ? new Date(c.deletedAt).toLocaleDateString()
+                          ? formatDate(c.deletedAt)
                           : "—"}
                       </td>
                       <td className="px-3 py-2.5 text-right">
@@ -8000,7 +7450,7 @@ function DeletionAuditDetailDrawer({
             <div className="flex items-center gap-2">
               <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide w-20">Time</span>
               <span className="text-sm text-foreground">
-                {entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "—"}
+                {entry.createdAt ? formatDateTime(entry.createdAt) : "—"}
               </span>
             </div>
           </div>
@@ -8148,7 +7598,7 @@ function DeletionAuditPanel() {
       const casesText = entry.cases
         .map((c) => [c.caseNumber ? `#${c.caseNumber}` : "", c.patientName].filter(Boolean).join(" "))
         .join("; ");
-      const timestamp = entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "";
+      const timestamp = entry.createdAt ? formatDateTime(entry.createdAt) : "";
       return [eventLabel, actor, actorAccount, casesText, timestamp].map(escapeCsv).join(",");
     });
     const csv = [headers.map(escapeCsv).join(","), ...rows].join("\r\n");
@@ -8332,7 +7782,7 @@ function DeletionAuditPanel() {
                         </td>
                         <td className="py-2.5 text-muted-foreground text-xs whitespace-nowrap pr-3">
                           {entry.createdAt
-                            ? new Date(entry.createdAt).toLocaleString()
+                            ? formatDateTime(entry.createdAt)
                             : "—"}
                         </td>
                       </tr>
@@ -8628,7 +8078,7 @@ function AiAssistantPanel() {
   return (
     <PanelShell
       title="AI Assistant"
-      subtitle="Teach Maynard about your lab. Glossary terms, preferences, and facts you add here are included in the AI's context so its answers match how your lab works."
+      subtitle="Teach LabTrax Assistant about your lab. Glossary terms, preferences, and facts you add here are included in the assistant's context so its answers match how your lab works."
     >
       {adminLabs.length > 1 && (
         <div className="mb-2">
@@ -8891,10 +8341,31 @@ interface VocabItem {
   isDefault: boolean;
 }
 
+type CatalogEntryType = "subtype" | "material";
+type ShadeMaterialGapStatus = "fully_fixable" | "partially_fixable" | "not_fixable";
+
+interface ShadeMaterialGapRow {
+  invoiceId: string;
+  invoiceNumber: string;
+  caseId: string | null;
+  caseNumber: string | null;
+  practiceName: string | null;
+  patientName: string;
+  currentShade: string;
+  currentMaterial: string;
+  shadeMissing: boolean;
+  materialMissing: boolean;
+  derivedShade: string | null;
+  derivedMaterial: string | null;
+  status: ShadeMaterialGapStatus;
+}
+
 interface ShadeMaterialGapsData {
   labOrganizationId: string;
   totalCaseLinked: number;
   gapCount: number;
+  rows: ShadeMaterialGapRow[];
+  rowsTruncated: boolean;
 }
 
 interface ShadeMaterialBackfillResult {
@@ -8902,11 +8373,161 @@ interface ShadeMaterialBackfillResult {
   gapInvoicesFound: number;
   updated: number;
   skippedNoDerivable: number;
+  remainingGapCount: number;
+  remainingRows: ShadeMaterialGapRow[];
+  remainingRowsTruncated: boolean;
+}
+
+function CatalogInlineForm({
+  action,
+  value: initialValue,
+  onSave,
+  onCancel,
+  saving,
+}: {
+  action: string;
+  value?: string;
+  onSave: (value: string) => void;
+  onCancel: () => void;
+  saving?: boolean;
+}) {
+  const [value, setValue] = useState(initialValue ?? "");
+  return (
+    <div className="flex items-center gap-2 px-2 py-2 bg-primary/5 border-t border-border">
+      <span className="text-xs font-medium shrink-0">{action}</span>
+      <input
+        autoFocus
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") onSave(value);
+          if (event.key === "Escape") onCancel();
+        }}
+        disabled={saving}
+        className="flex-1 min-w-0 h-7 px-2 rounded bg-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+      />
+      <button type="button" onClick={() => onSave(value)} disabled={saving} className="inline-flex items-center gap-1 h-7 px-2 rounded bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60">
+        {saving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />} Save
+      </button>
+      <button type="button" onClick={onCancel} disabled={saving} className="h-7 px-2 rounded bg-secondary text-xs">
+        <X size={11} />
+      </button>
+    </div>
+  );
+}
+function ShadeMaterialGapStatusBadge({ status }: { status: ShadeMaterialGapStatus }) {
+  if (status === "not_fixable") {
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap bg-destructive/10 text-destructive">
+        Needs manual entry
+      </span>
+    );
+  }
+  if (status === "partially_fixable") {
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+        Partial fix only
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap bg-success/15 text-success">
+      Fully fixable
+    </span>
+  );
+}
+
+// Dense admin table shared by the pre-run "missing shade or material" list
+// and the post-run "Still needs review" list — same columns, same row
+// shape, just a different source array. Rows needing manual attention sort
+// first (see the server's SHADE_MATERIAL_GAP_STATUS_ORDER).
+function ShadeMaterialGapRowsTable({
+  rows,
+  onOpenCase,
+  onOpenInvoice,
+}: {
+  rows: ShadeMaterialGapRow[];
+  onOpenCase: (caseId: string) => void;
+  onOpenInvoice: (invoiceId: string) => void;
+}) {
+  return (
+    <div className="border border-border rounded-md overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="bg-secondary/40 text-muted-foreground">
+            <th className="text-left font-medium px-2.5 py-1.5 whitespace-nowrap">Invoice</th>
+            <th className="text-left font-medium px-2.5 py-1.5 whitespace-nowrap">Patient</th>
+            <th className="text-left font-medium px-2.5 py-1.5 whitespace-nowrap">Practice</th>
+            <th className="text-left font-medium px-2.5 py-1.5 whitespace-nowrap">Case</th>
+            <th className="text-left font-medium px-2.5 py-1.5">Missing</th>
+            <th className="text-left font-medium px-2.5 py-1.5">Would fill in</th>
+            <th className="text-left font-medium px-2.5 py-1.5 whitespace-nowrap">Status</th>
+            <th className="px-2.5 py-1.5" />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => {
+            const missingParts = [
+              row.shadeMissing ? "Shade" : null,
+              row.materialMissing ? "Material" : null,
+            ].filter((v): v is string => !!v);
+            const fillParts = [
+              row.derivedShade ? `Shade: ${row.derivedShade}` : null,
+              row.derivedMaterial ? `Material: ${row.derivedMaterial}` : null,
+            ].filter((v): v is string => !!v);
+            return (
+              <tr
+                key={row.invoiceId}
+                data-testid={`shade-material-gap-row-${row.invoiceId}`}
+                className={`border-t border-border ${i % 2 === 1 ? "bg-secondary/20" : ""}`}
+              >
+                <td className="px-2.5 py-1.5 font-medium whitespace-nowrap">{row.invoiceNumber}</td>
+                <td className="px-2.5 py-1.5">{row.patientName || "—"}</td>
+                <td className="px-2.5 py-1.5">{row.practiceName || "—"}</td>
+                <td className="px-2.5 py-1.5 whitespace-nowrap">{row.caseNumber || "—"}</td>
+                <td className="px-2.5 py-1.5 whitespace-nowrap">{missingParts.join(" & ") || "—"}</td>
+                <td className="px-2.5 py-1.5 text-muted-foreground">
+                  {fillParts.length > 0 ? fillParts.join("; ") : "—"}
+                </td>
+                <td className="px-2.5 py-1.5">
+                  <ShadeMaterialGapStatusBadge status={row.status} />
+                </td>
+                <td className="px-2.5 py-1.5">
+                  <div className="flex items-center gap-2.5 justify-end">
+                    {row.caseId && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenCase(row.caseId!)}
+                        data-testid={`shade-material-gap-open-case-${row.invoiceId}`}
+                        className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground whitespace-nowrap"
+                        title="Open case"
+                      >
+                        Case <ExternalLink size={10} />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => onOpenInvoice(row.invoiceId)}
+                      data-testid={`shade-material-gap-open-invoice-${row.invoiceId}`}
+                      className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground whitespace-nowrap"
+                      title="Open invoice"
+                    >
+                      Invoice <ExternalLink size={10} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 const DEFAULT_STMT_EMAIL_SUBJECT = "Statement for {{practiceName}} — {{periodLabel}}";
 const DEFAULT_STMT_EMAIL_BODY =
-  "Hello,\n\nPlease find attached the statement for {{practiceName}} covering {{periodLabel}}.\n\nTotal billed: {{totalBilled}}\nOpen balance: {{openBalance}}\n\nThank you,\n{{labName}}";
+  "Hello {{practiceName}},\n\nPlease find attached the statement for {{practiceName}} covering {{periodLabel}}.\n\nThank you,\n{{labName}}";
 
 function StatementEmailPanel() {
   const qc = useQueryClient();
@@ -8924,8 +8545,8 @@ function StatementEmailPanel() {
 
   useEffect(() => {
     if (query.data) {
-      setSubject(query.data.emailSubject ?? "");
-      setBody(query.data.emailBody ?? "");
+      setSubject(query.data.emailSubject ?? DEFAULT_STMT_EMAIL_SUBJECT);
+      setBody(query.data.emailBody ?? DEFAULT_STMT_EMAIL_BODY);
       setDirty(false);
     }
   }, [query.data]);
@@ -8949,8 +8570,8 @@ function StatementEmailPanel() {
   }
 
   function handleReset() {
-    setSubject("");
-    setBody("");
+    setSubject(DEFAULT_STMT_EMAIL_SUBJECT);
+    setBody(DEFAULT_STMT_EMAIL_BODY);
     setDirty(true);
   }
 
@@ -8969,32 +8590,30 @@ function StatementEmailPanel() {
     >
       <div className="space-y-5">
         <div className="text-xs text-muted-foreground bg-secondary/60 rounded-md px-3 py-2">
-          Available placeholders: <code className="text-foreground">{"{{practiceName}}"}</code>, <code className="text-foreground">{"{{labName}}"}</code>, <code className="text-foreground">{"{{periodLabel}}"}</code>, <code className="text-foreground">{"{{openBalance}}"}</code>, <code className="text-foreground">{"{{totalBilled}}"}</code>
+          Available placeholders: <code className="text-foreground">{"{{practiceName}}"}</code>, <code className="text-foreground">{"{{doctorName}}"}</code>, <code className="text-foreground">{"{{labName}}"}</code>, <code className="text-foreground">{"{{periodLabel}}"}</code>
         </div>
 
         <div className="space-y-4">
           <div>
-            <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Subject line</label>
+            <label htmlFor="statement-email-subject" className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Subject line</label>
             <input
+              id="statement-email-subject"
               type="text"
               value={subject}
               onChange={(e) => { setSubject(e.target.value); setDirty(true); }}
-              placeholder={DEFAULT_STMT_EMAIL_SUBJECT}
               className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
             />
-            <p className="text-[11px] text-muted-foreground mt-1">Leave blank to use the system default.</p>
           </div>
 
           <div>
-            <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Message body</label>
+            <label htmlFor="statement-email-body" className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Message body</label>
             <textarea
+              id="statement-email-body"
               value={body}
               onChange={(e) => { setBody(e.target.value); setDirty(true); }}
-              placeholder={DEFAULT_STMT_EMAIL_BODY}
               rows={8}
               className="w-full px-3 py-2 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary resize-y font-mono"
             />
-            <p className="text-[11px] text-muted-foreground mt-1">Leave blank to use the system default.</p>
           </div>
         </div>
 
@@ -9027,8 +8646,216 @@ function StatementEmailPanel() {
   );
 }
 
+type AuthorizationTemplateType = "card_on_file" | "autopay";
+
+function AuthorizationTemplatePanel({ templateType }: { templateType: AuthorizationTemplateType }) {
+  const qc = useQueryClient();
+  const meQuery = useQuery<MeResponse>({ queryKey: ["auth", "me"], queryFn: () => apiFetch("/auth/me"), staleTime: 60_000 });
+  const adminLabs = useMemo(
+    () => (meQuery.data?.memberships ?? []).filter(
+      (m) => m.organization?.type === "lab" && m.status === "active" &&
+        (m.role === "admin" || m.role === "owner"),
+    ),
+    [meQuery.data],
+  );
+  const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
+  const labId = selectedLabId ?? adminLabs[0]?.organizationId ?? null;
+  useEffect(() => {
+    if (selectedLabId && !adminLabs.some((membership) => membership.organizationId === selectedLabId)) {
+      setSelectedLabId(null);
+    }
+  }, [adminLabs, selectedLabId]);
+  const label = templateType === "card_on_file" ? "Card on File Authorization" : "Auto-Pay Authorization";
+  const defaultText = templateType === "card_on_file"
+    ? "Card on File Authorization\nI authorize {{labName}} to securely retain and charge the payment card on file for services and invoices issued to {{practiceName}}."
+    : "Auto-Pay Authorization\nI authorize {{labName}} to automatically charge the payment method on file for invoices issued to {{practiceName}} on the agreed payment schedule.";
+  const query = useQuery<Array<{ templateType: AuthorizationTemplateType; content: string; placeholders?: string[] }>>({
+    queryKey: ["authorization-template", labId, templateType],
+    enabled: !!labId,
+    queryFn: () => apiFetch(`/admin/authorization-templates?labOrganizationId=${encodeURIComponent(labId!)}`),
+  });
+  const [content, setContent] = useState(defaultText);
+  const [dirty, setDirty] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    const matching = query.data?.find((template) => template.templateType === templateType);
+    if (matching) { setContent(matching.content); setDirty(false); }
+  }, [query.data]);
+  useEffect(() => {
+    setContent(defaultText);
+    setDirty(false);
+    setNotice(null);
+  }, [labId, templateType]);
+  const save = useMutation({
+    mutationFn: () => apiFetch(`/admin/authorization-templates/${templateType}`, { method: "PUT", body: JSON.stringify({ labOrganizationId: labId, content }) }),
+    onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["authorization-template", labId, templateType] }); setDirty(false); setNotice("Template saved."); },
+    onError: (e: Error) => setNotice(e.message || "Unable to save template."),
+  });
+  async function exportBlank() {
+    try {
+      const { buffer } = await apiFetchArrayBuffer(`/admin/authorization-templates/${templateType}/pdf?labOrganizationId=${encodeURIComponent(labId ?? "")}`);
+      const url = URL.createObjectURL(new Blob([buffer], { type: "application/pdf" }));
+      const a = document.createElement("a"); a.href = url; a.download = `${templateType}-authorization.pdf`; a.click(); URL.revokeObjectURL(url);
+    } catch (e) { setNotice(e instanceof Error ? e.message : "Unable to export blank PDF."); }
+  }
+  return <PanelShell title={label} subtitle="Edit the blank form used outside the practice record. Completed authorizations must be uploaded as PDFs from the practice Card on File tab.">
+    {adminLabs.length > 1 && <div className="mb-4 max-w-md"><label htmlFor={`authorization-template-lab-${templateType}`} className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Lab</label><select id={`authorization-template-lab-${templateType}`} aria-label="Authorization template lab" value={labId ?? ""} onChange={(e) => setSelectedLabId(e.target.value || null)} className="h-9 w-full rounded-md border border-border bg-secondary px-2 text-sm"><option value="" disabled>Select a lab</option>{adminLabs.map((membership) => <option key={membership.organizationId} value={membership.organizationId}>{membership.organization?.displayName || membership.organization?.name || membership.organizationId}</option>)}</select></div>}
+    {query.isLoading ? <div className="text-sm text-muted-foreground"><Loader2 size={14} className="inline animate-spin mr-2" />Loading template…</div> :
+      query.isError ? <div className="text-sm text-destructive">Unable to load this template. {(query.error as Error).message}</div> :
+      <div className="space-y-4">
+        <div><label htmlFor={`authorization-template-${templateType}`} className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Authorization content</label>
+          <textarea id={`authorization-template-${templateType}`} data-testid={`authorization-template-${templateType}`} value={content} onChange={(e) => { setContent(e.target.value); setDirty(true); }} rows={12} className="w-full px-3 py-2 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary resize-y" />
+        </div>
+        <p className="text-xs text-muted-foreground">Placeholders: <code>{"{{labName}}"}</code>, <code>{"{{practiceName}}"}</code>, <code>{"{{signerName}}"}</code>, <code>{"{{date}}"}</code></p>
+        {notice && <p role="status" className={notice.includes("saved") ? "text-sm text-emerald-600" : "text-sm text-destructive"}>{notice}</p>}
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={() => save.mutate()} disabled={!dirty || save.isPending || !labId} className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50">{save.isPending && <Loader2 size={13} className="animate-spin" />}{save.isPending ? "Saving…" : "Save template"}</button>
+          <button type="button" onClick={() => { setContent(defaultText); setDirty(true); setNotice(null); }} disabled={save.isPending} className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm border border-border disabled:opacity-50"><RotateCcw size={13} />Reset to system default</button>
+          <button type="button" onClick={() => void exportBlank()} disabled={!labId} className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm border border-border disabled:opacity-50"><FileDown size={13} />Export blank PDF</button>
+        </div>
+      </div>}
+  </PanelShell>;
+}
+
+const DEFAULT_PAYMENT_RECEIPT_SUBJECT =
+  "Payment receipt from {{labName}} — {{receiptNumber}}";
+const DEFAULT_PAYMENT_RECEIPT_BODY = `Hello {{customerName}},
+
+Thank you for your payment to {{labName}}.
+Receipt: {{receiptNumber}}
+Payment date: {{paymentDate}}
+Amount received: {{amountReceived}}
+Amount applied: {{amountApplied}}
+Account credit: {{customerCredit}}
+Remaining account balance: {{openBalance}}
+Payment method: {{paymentMethod}}
+{{referenceLine}}
+
+Thank you,
+{{labName}}`;
+const PAYMENT_RECEIPT_PLACEHOLDERS = [
+  "{{receiptNumber}}", "{{labName}}", "{{customerName}}", "{{paymentDate}}",
+  "{{amountReceived}}", "{{amountApplied}}", "{{customerCredit}}",
+  "{{openBalance}}", "{{paymentMethod}}", "{{referenceNumber}}", "{{referenceLine}}",
+];
+
+function PaymentReceiptTemplatePanel() {
+  const qc = useQueryClient();
+  const meQuery = useQuery<MeResponse>({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch("/auth/me"),
+    staleTime: 60_000,
+  });
+  const adminLabs = useMemo(
+    () => (meQuery.data?.memberships ?? []).filter(
+      (m) => m.organization?.type === "lab" && m.status === "active" &&
+        (m.role === "admin" || m.role === "owner"),
+    ),
+    [meQuery.data],
+  );
+  const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
+  const labOrganizationId = selectedLabId ?? adminLabs[0]?.organizationId ?? null;
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const templateQuery = useQuery<{
+    emailSubject: string;
+    emailBody: string;
+    placeholders: string[];
+  }>({
+    queryKey: ["billing", "payment-receipt-template", labOrganizationId],
+    enabled: !!labOrganizationId,
+    queryFn: () => apiFetch(`/billing/${encodeURIComponent(labOrganizationId!)}/payment-receipt-template`),
+    staleTime: 60_000,
+  });
+
+  useEffect(() => {
+    if (templateQuery.data) {
+      setSubject(templateQuery.data.emailSubject);
+      setBody(templateQuery.data.emailBody);
+      setDirty(false);
+      setError(null);
+    }
+  }, [templateQuery.data]);
+
+  const saveTemplate = useMutation({
+    mutationFn: () => {
+      const emailSubject = subject.trim();
+      const emailBody = body.trim();
+      if (!emailSubject) throw new Error("Subject line cannot be blank.");
+      if (!emailBody) throw new Error("Message body cannot be blank.");
+      if (emailSubject.length > 998) throw new Error("Subject line must be 998 characters or fewer.");
+      if (emailBody.length > 20_000) throw new Error("Message body must be 20,000 characters or fewer.");
+      return apiFetch(`/billing/${encodeURIComponent(labOrganizationId!)}/payment-receipt-template`, {
+        method: "PATCH",
+        body: JSON.stringify({ emailSubject, emailBody }),
+      });
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["billing", "payment-receipt-template", labOrganizationId] });
+      setDirty(false);
+      toast({ title: "Payment receipt template saved" });
+    },
+    onError: (err: Error) => setError(err.message || "Could not save payment receipt template."),
+  });
+
+  return (
+    <PanelShell
+      title="Payment receipt template"
+      subtitle="Set the default subject and message used for statement-led payment receipts."
+    >
+      {!labOrganizationId ? (
+        <div className="text-sm text-muted-foreground">No lab organization is available.</div>
+      ) : templateQuery.isLoading ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 size={14} className="animate-spin" /> Loading…</div>
+      ) : (
+        <div className="space-y-5">
+          {adminLabs.length > 1 && (
+            <select
+              aria-label="Lab organization"
+              value={labOrganizationId}
+              onChange={(e) => setSelectedLabId(e.target.value || null)}
+              className="h-9 px-3 rounded-md bg-secondary text-sm border border-border focus:outline-none"
+            >
+              {adminLabs.map((m) => <option key={m.organizationId} value={m.organizationId}>{m.organization?.name ?? m.organizationId}</option>)}
+            </select>
+          )}
+          <div className="text-xs text-muted-foreground bg-secondary/60 rounded-md px-3 py-2">
+            Available placeholders: {PAYMENT_RECEIPT_PLACEHOLDERS.map((placeholder, index) => (
+              <span key={placeholder}><code className="text-foreground">{placeholder}</code>{index < PAYMENT_RECEIPT_PLACEHOLDERS.length - 1 ? ", " : ""}</span>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">Edits made while sending an individual receipt do not change this saved default.</p>
+          <div>
+            <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Subject line</label>
+            <input aria-label="Subject line" value={subject} maxLength={998} onChange={(e) => { setSubject(e.target.value); setDirty(true); }} className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary" />
+            <p className="text-[11px] text-muted-foreground mt-1">{subject.length}/998 characters</p>
+          </div>
+          <div>
+            <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Message body</label>
+            <textarea aria-label="Message body" value={body} maxLength={20_000} rows={12} onChange={(e) => { setBody(e.target.value); setDirty(true); }} className="w-full px-3 py-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary resize-y font-mono" />
+            <p className="text-[11px] text-muted-foreground mt-1">{body.length}/20,000 characters</p>
+          </div>
+          {error && <div className="text-sm text-destructive border border-destructive/30 bg-destructive/10 rounded-md px-3 py-2">{error}</div>}
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={() => { setError(null); saveTemplate.mutate(); }} disabled={!dirty || saveTemplate.isPending} className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50">
+              {saveTemplate.isPending && <Loader2 size={13} className="animate-spin" />} Save template
+            </button>
+            <button type="button" onClick={() => { setSubject(DEFAULT_PAYMENT_RECEIPT_SUBJECT); setBody(DEFAULT_PAYMENT_RECEIPT_BODY); setDirty(true); setError(null); }} disabled={saveTemplate.isPending} className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/70 border border-border disabled:opacity-50">
+              <RotateCcw size={13} /> Restore system default
+            </button>
+          </div>
+        </div>
+      )}
+    </PanelShell>
+  );
+}
+
 function VocabularyPanel() {
   const qc = useQueryClient();
+  const [, setLocation] = useLocation();
 
   const meQuery = useQuery<MeResponse>({
     queryKey: ["auth", "me"],
@@ -9090,15 +8917,7 @@ function VocabularyPanel() {
       staleTime: 30_000,
     }) as const;
 
-  const materialQ = useQuery(queryForKind("material"));
   const shadeQ = useQuery(queryForKind("shade"));
-  const restTypeQ = useQuery(queryForKind("restoration_type"));
-
-  const queriesByKind: Record<VocabKind, typeof materialQ> = {
-    material: materialQ,
-    shade: shadeQ,
-    restoration_type: restTypeQ,
-  };
 
   // Editing state
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -9180,7 +8999,7 @@ function VocabularyPanel() {
     }
   }
 
-  const isLoading = materialQ.isLoading || shadeQ.isLoading || restTypeQ.isLoading;
+  const isLoading = shadeQ.isLoading;
 
   return (
     <PanelShell
@@ -9220,137 +9039,42 @@ function VocabularyPanel() {
 
       {!isLoading && effectiveLabId && (
         <div className="space-y-8">
-          {VOCAB_KINDS.map((kind) => {
-            const q = queriesByKind[kind];
-            const items = (q.data ?? []).filter((it) => !it.isDefault);
-            const builtins = VOCAB_BUILTIN_DEFAULTS[kind] ?? [];
-
-            return (
-              <div key={kind}>
-                <h3 className="text-sm font-semibold mb-0.5">
-                  {VOCAB_KIND_LABELS[kind]}
-                </h3>
-                <p className="text-xs text-muted-foreground mb-3">
-                  {VOCAB_KIND_DESCRIPTIONS[kind]}
-                </p>
-                {q.isError && (
-                  <p className="text-sm text-destructive py-2">Failed to load.</p>
-                )}
-                {!q.isError && items.length === 0 && (
-                  <div className="rounded-md border border-border bg-secondary/20 px-3 py-2.5">
-                    <p className="text-xs text-muted-foreground mb-2">
-                      No custom {VOCAB_KIND_LABELS[kind].toLowerCase()} yet — your team will see the built-in defaults:
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {builtins.map((val) => (
-                        <span key={val} className="inline-block px-2 py-0.5 rounded bg-secondary text-xs text-muted-foreground border border-border/60">
-                          {val}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {!q.isError && items.length > 0 && (
-                  <div className="space-y-3">
-                    <div className="border border-border rounded-md overflow-hidden">
-                      {items.map((item, i) => {
-                      const isEditing = editingId === item.id;
-                      const isSaving = savingId === item.id;
-                      const isBeingDeleted = deletingId === item.id;
-
-                      return (
-                        <div
-                          key={item.id}
-                          className={`flex items-center gap-2 px-3 py-2 ${
-                            i > 0 ? "border-t border-border" : ""
-                          } ${i % 2 === 0 ? "" : "bg-secondary/20"}`}
-                        >
-                          {isEditing ? (
-                            <>
-                              <input
-                                autoFocus
-                                type="text"
-                                value={editValue}
-                                onChange={(e) => {
-                                  setEditValue(e.target.value);
-                                  setEditError(null);
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") void saveEdit(item);
-                                  if (e.key === "Escape") cancelEdit();
-                                }}
-                                disabled={isSaving}
-                                className="flex-1 h-7 px-2 rounded bg-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-60"
-                              />
-                              {editError && (
-                                <span className="text-xs text-destructive shrink-0">{editError}</span>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => void saveEdit(item)}
-                                disabled={isSaving}
-                                className="inline-flex items-center gap-1 h-7 px-2 rounded bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60 hover:bg-primary/90"
-                              >
-                                {isSaving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
-                                Save
-                              </button>
-                              <button
-                                type="button"
-                                onClick={cancelEdit}
-                                disabled={isSaving}
-                                className="inline-flex items-center h-7 px-2 rounded bg-secondary text-xs font-medium hover:bg-secondary/80 disabled:opacity-60"
-                              >
-                                <X size={11} />
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <span className="flex-1 text-sm truncate">{item.value}</span>
-                              <button
-                                type="button"
-                                onClick={() => startEdit(item)}
-                                disabled={isBeingDeleted || !!editingId}
-                                title="Rename"
-                                className="text-muted-foreground hover:text-foreground disabled:opacity-40 p-1 rounded"
-                              >
-                                <Pencil size={13} />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void initiateDelete(item)}
-                                disabled={isBeingDeleted || !!editingId}
-                                title="Delete"
-                                className="text-muted-foreground hover:text-destructive disabled:opacity-40 p-1 rounded"
-                              >
-                                {isBeingDeleted ? (
-                                  <Loader2 size={13} className="animate-spin" />
-                                ) : (
-                                  <Trash2 size={13} />
-                                )}
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">
-                      Built-in defaults (cannot be edited):
-                    </p>
-                    <div className="flex flex-wrap gap-1.5 mt-1.5">
-                      {builtins.map((val) => (
-                        <span key={val} className="inline-block px-2 py-0.5 rounded bg-secondary text-xs text-muted-foreground border border-border/60">
-                          {val}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
+          <CatalogTreeEditor labOrganizationId={effectiveLabId} />
+          <LegacyVocabularyReviewSection labOrganizationId={effectiveLabId} />
+          <div className="border-t border-border pt-5">
+            <h3 className="text-sm font-semibold mb-0.5">Shades</h3>
+            <p className="text-xs text-muted-foreground mb-3">{VOCAB_KIND_DESCRIPTIONS.shade}</p>
+            {shadeQ.isError && <p className="text-sm text-destructive py-2">Failed to load.</p>}
+            {!shadeQ.isError && (shadeQ.data ?? []).filter((item) => !item.isDefault).length === 0 && (
+              <div className="rounded-md border border-border bg-secondary/20 px-3 py-2.5">
+                <p className="text-xs text-muted-foreground mb-2">No custom shades yet — your team will see the built-in defaults:</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {(VOCAB_BUILTIN_DEFAULTS.shade ?? []).map((value) => <span key={value} className="inline-block px-2 py-0.5 rounded bg-secondary text-xs text-muted-foreground border border-border/60">{value}</span>)}
                 </div>
-                )}
               </div>
-            );
-          })}
+            )}
+            {!shadeQ.isError && (shadeQ.data ?? []).filter((item) => !item.isDefault).length > 0 && (
+              <div className="border border-border rounded-md overflow-hidden">
+                {(shadeQ.data ?? []).filter((item) => !item.isDefault).map((item, index) => {
+                  const isEditing = editingId === item.id;
+                  const isSaving = savingId === item.id;
+                  const isBeingDeleted = deletingId === item.id;
+                  return <div key={item.id} className={`flex items-center gap-2 px-3 py-2 ${index > 0 ? "border-t border-border" : ""} ${index % 2 === 0 ? "" : "bg-secondary/20"}`}>
+                    {isEditing ? <>
+                      <input autoFocus type="text" value={editValue} onChange={(event) => { setEditValue(event.target.value); setEditError(null); }} onKeyDown={(event) => { if (event.key === "Enter") void saveEdit(item); if (event.key === "Escape") cancelEdit(); }} disabled={isSaving} className="flex-1 h-7 px-2 rounded bg-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-60" />
+                      {editError && <span className="text-xs text-destructive shrink-0">{editError}</span>}
+                      <button type="button" onClick={() => void saveEdit(item)} disabled={isSaving} className="inline-flex items-center gap-1 h-7 px-2 rounded bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60">{isSaving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />} Save</button>
+                      <button type="button" onClick={cancelEdit} disabled={isSaving} className="inline-flex items-center h-7 px-2 rounded bg-secondary text-xs"><X size={11} /></button>
+                    </> : <>
+                      <span className="flex-1 text-sm truncate">{item.value}</span>
+                      <button type="button" onClick={() => startEdit(item)} disabled={isBeingDeleted || !!editingId} title="Rename" className="text-muted-foreground hover:text-foreground disabled:opacity-40 p-1 rounded"><Pencil size={13} /></button>
+                      <button type="button" onClick={() => void initiateDelete(item)} disabled={isBeingDeleted || !!editingId} title="Delete" className="text-muted-foreground hover:text-destructive disabled:opacity-40 p-1 rounded">{isBeingDeleted ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}</button>
+                    </>}
+                  </div>;
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -9393,21 +9117,69 @@ function VocabularyPanel() {
                 </div>
               )}
 
+              {gapsQuery.data && gapsQuery.data.rows.length > 0 && (
+                <div className="space-y-1.5" data-testid="shade-material-gaps-list">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Invoices missing shade or material
+                    </p>
+                    {gapsQuery.data.rowsTruncated && (
+                      <p className="text-[11px] text-muted-foreground shrink-0">
+                        Showing {gapsQuery.data.rows.length.toLocaleString()} of{" "}
+                        {gapsQuery.data.gapCount.toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                  <ShadeMaterialGapRowsTable
+                    rows={gapsQuery.data.rows}
+                    onOpenCase={(caseId) => setLocation(`/cases?caseId=${encodeURIComponent(caseId)}`)}
+                    onOpenInvoice={(invoiceId) => setLocation(`/invoices?invoiceId=${encodeURIComponent(invoiceId)}`)}
+                  />
+                </div>
+              )}
+
               {backfillError && (
                 <Alert tone="danger">{backfillError}</Alert>
               )}
 
               {backfillResult && (
-                <Alert tone="success">
-                  Done — {backfillResult.updated} invoice{backfillResult.updated === 1 ? "" : "s"} updated
-                  {backfillResult.skippedNoDerivable > 0
-                    ? `, ${backfillResult.skippedNoDerivable} skipped (no restoration data to draw from).`
-                    : "."}
-                </Alert>
+                <>
+                  <Alert tone="success">
+                    Done — {backfillResult.updated} invoice{backfillResult.updated === 1 ? "" : "s"} updated
+                    {backfillResult.skippedNoDerivable > 0
+                      ? `, ${backfillResult.skippedNoDerivable} skipped (no restoration data to draw from).`
+                      : "."}
+                  </Alert>
+                  {backfillResult.remainingRows.length > 0 ? (
+                    <div className="space-y-1.5" data-testid="shade-material-remaining-list">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          Still needs review
+                        </p>
+                        {backfillResult.remainingRowsTruncated && (
+                          <p className="text-[11px] text-muted-foreground shrink-0">
+                            Showing {backfillResult.remainingRows.length.toLocaleString()} of{" "}
+                            {backfillResult.remainingGapCount.toLocaleString()}
+                          </p>
+                        )}
+                      </div>
+                      <ShadeMaterialGapRowsTable
+                        rows={backfillResult.remainingRows}
+                        onOpenCase={(caseId) => setLocation(`/cases?caseId=${encodeURIComponent(caseId)}`)}
+                        onOpenInvoice={(invoiceId) => setLocation(`/invoices?invoiceId=${encodeURIComponent(invoiceId)}`)}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground" data-testid="shade-material-remaining-empty">
+                      Nothing left to review — every case-linked invoice has shade and material filled in.
+                    </p>
+                  )}
+                </>
               )}
 
               <button
                 type="button"
+                data-testid="shade-material-backfill-run-btn"
                 disabled={!effectiveLabId || backfillMutation.isPending || (gapsQuery.data?.gapCount === 0)}
                 onClick={() => {
                   setBackfillResult(null);
@@ -9448,18 +9220,745 @@ function VocabularyPanel() {
   );
 }
 
-function PanelShell({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+// ── US Federal Holiday helpers (client-side mirror of the server lib) ─────────
+
+function _dateToYmd(d: Date): string {
+  return (
+    `${d.getUTCFullYear()}-` +
+    `${String(d.getUTCMonth() + 1).padStart(2, "0")}-` +
+    `${String(d.getUTCDate()).padStart(2, "0")}`
+  );
+}
+
+function _observed(yr: number, mo1: number, day: number): string {
+  const d = new Date(Date.UTC(yr, mo1 - 1, day));
+  const dow = d.getUTCDay();
+  if (dow === 6) d.setUTCDate(d.getUTCDate() - 1);
+  if (dow === 0) d.setUTCDate(d.getUTCDate() + 1);
+  return _dateToYmd(d);
+}
+
+function _nthWeekday(yr: number, mo1: number, n: number, weekday: number): string {
+  const first = new Date(Date.UTC(yr, mo1 - 1, 1));
+  const offset = (weekday - first.getUTCDay() + 7) % 7;
+  const day = 1 + offset + (n - 1) * 7;
+  return _dateToYmd(new Date(Date.UTC(yr, mo1 - 1, day)));
+}
+
+function _lastWeekday(yr: number, mo1: number, weekday: number): string {
+  const last = new Date(Date.UTC(yr, mo1, 0));
+  const offset = (last.getUTCDay() - weekday + 7) % 7;
+  const day = last.getUTCDate() - offset;
+  return _dateToYmd(new Date(Date.UTC(yr, mo1 - 1, day)));
+}
+
+function usFederalHolidaysForYear(yr: number): Array<{ date: string; name: string }> {
+  return [
+    { date: _observed(yr, 1, 1),          name: "New Year's Day" },
+    { date: _nthWeekday(yr, 1, 3, 1),     name: "Martin Luther King Jr. Day" },
+    { date: _nthWeekday(yr, 2, 3, 1),     name: "Presidents' Day" },
+    { date: _lastWeekday(yr, 5, 1),       name: "Memorial Day" },
+    { date: _observed(yr, 6, 19),         name: "Juneteenth" },
+    { date: _observed(yr, 7, 4),          name: "Independence Day" },
+    { date: _nthWeekday(yr, 9, 1, 1),     name: "Labor Day" },
+    { date: _nthWeekday(yr, 10, 2, 1),    name: "Columbus Day" },
+    { date: _observed(yr, 11, 11),        name: "Veterans Day" },
+    { date: _nthWeekday(yr, 11, 4, 4),    name: "Thanksgiving Day" },
+    { date: _observed(yr, 12, 25),        name: "Christmas Day" },
+  ];
+}
+
+/** Build a name lookup map for all US federal holidays across the given years. */
+function buildFederalHolidayNames(years: number[]): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const yr of years) {
+    for (const h of usFederalHolidaysForYear(yr)) {
+      map[h.date] = h.name;
+    }
+  }
+  return map;
+}
+
+interface ClosedDay {
+  id: string;
+  date: string;
+  note: string | null;
+  createdAt: string;
+}
+
+function formatClosedDate(dateStr: string): string {
+  const [yr, mo, day] = dateStr.split("-").map(Number);
+  const d = new Date(Date.UTC(yr, mo - 1, day));
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const yyyy = d.getUTCFullYear();
+  return `${mm}/${dd}/${yyyy}`;
+}
+
+function ClosedDaysPanel() {
+  const qc = useQueryClient();
+
+  const meQuery = useQuery<MeResponse>({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch("/auth/me"),
+    staleTime: 60_000,
+  });
+
+  const adminLabs = useMemo(() => {
+    return (meQuery.data?.memberships ?? []).filter(
+      (m) =>
+        m.organization?.type === "lab" &&
+        m.status === "active" &&
+        (m.role === "admin" || m.role === "owner"),
+    );
+  }, [meQuery.data]);
+
+  const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
+  const effectiveLabId = selectedLabId ?? adminLabs[0]?.organizationId ?? null;
+
+  const closedDaysQuery = useQuery<{ closedDays: ClosedDay[] }>({
+    enabled: !!effectiveLabId,
+    queryKey: ["closed-days", effectiveLabId],
+    queryFn: () => apiFetch(`/organizations/${encodeURIComponent(effectiveLabId!)}/settings/closed-days`),
+    staleTime: 30_000,
+  });
+
+  // Compute US federal holidays for this year and next two years.
+  const federalHolidayNames = useMemo(() => {
+    const thisYear = new Date().getFullYear();
+    return buildFederalHolidayNames([thisYear - 1, thisYear, thisYear + 1, thisYear + 2]);
+  }, []);
+
+  // Build a merged list sorted by date: custom days + upcoming federal holidays.
+  const customDays = closedDaysQuery.data?.closedDays ?? [];
+  const customDayDates = useMemo(() => new Set(customDays.map((d) => d.date)), [customDays]);
+
+  // Upcoming federal holidays (this year + next 2 years, not already in custom days).
+  const upcomingFederalDays = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    return Object.entries(federalHolidayNames)
+      .filter(([date]) => date >= today)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(0, 20);
+  }, [federalHolidayNames]);
+
+  // Add form state.
+  const [newDate, setNewDate] = useState("");
+  const [newNote, setNewNote] = useState("");
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const addMutation = useMutation({
+    mutationFn: async () => {
+      if (!effectiveLabId) throw new Error("No lab selected.");
+      if (!newDate) throw new Error("Date is required.");
+      return apiFetch(`/organizations/${encodeURIComponent(effectiveLabId)}/settings/closed-days`, {
+        method: "POST",
+        body: JSON.stringify({ date: newDate, note: newNote.trim() || undefined }),
+      });
+    },
+    onSuccess: () => {
+      setNewDate("");
+      setNewNote("");
+      setAddError(null);
+      void qc.invalidateQueries({ queryKey: ["closed-days", effectiveLabId] });
+    },
+    onError: (err: Error) => {
+      setAddError(err.message || "Could not add closed day.");
+    },
+  });
+
+  const [deletingDate, setDeletingDate] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function handleDelete(date: string) {
+    if (!effectiveLabId) return;
+    setDeletingDate(date);
+    setDeleteError(null);
+    try {
+      await apiFetch(
+        `/organizations/${encodeURIComponent(effectiveLabId)}/settings/closed-days/${encodeURIComponent(date)}`,
+        { method: "DELETE" },
+      );
+      void qc.invalidateQueries({ queryKey: ["closed-days", effectiveLabId] });
+    } catch (err: unknown) {
+      setDeleteError(err instanceof Error ? err.message : "Could not delete entry.");
+    } finally {
+      setDeletingDate(null);
+    }
+  }
+
+  return (
+    <PanelShell
+      title="Closed Days"
+      subtitle="Custom dates when your lab is closed. These are excluded from business-day calculations in Stats."
+    >
+      {adminLabs.length > 1 && (
+        <div className="mb-2">
+          <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">Lab</label>
+          <select
+            value={effectiveLabId ?? ""}
+            onChange={(e) => setSelectedLabId(e.target.value || null)}
+            className="h-9 px-2 rounded-md border border-border bg-background text-sm"
+          >
+            {adminLabs.map((m) => (
+              <option key={m.organizationId} value={m.organizationId}>
+                {m.organization?.name ?? m.organizationId}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* Add new closed day */}
+      <div className="rounded-lg border border-border bg-muted/30 p-4 space-y-3">
+        <p className="text-xs font-medium text-foreground">Add a custom closed day</p>
+        <div className="flex flex-wrap gap-2 items-end">
+          <div>
+            <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">Date</label>
+            <input
+              type="date"
+              value={newDate}
+              onChange={(e) => { setNewDate(e.target.value); setAddError(null); }}
+              className="h-9 px-2 rounded-md border border-border bg-background text-sm w-44"
+            />
+          </div>
+          <div className="flex-1 min-w-[160px]">
+            <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">Note (optional)</label>
+            <input
+              type="text"
+              value={newNote}
+              onChange={(e) => setNewNote(e.target.value)}
+              placeholder="e.g. Studio closed for renovation"
+              maxLength={200}
+              className="h-9 px-2 rounded-md border border-border bg-background text-sm w-full"
+            />
+          </div>
+          <button
+            type="button"
+            disabled={!newDate || addMutation.isPending || !effectiveLabId}
+            onClick={() => void addMutation.mutate()}
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60 shrink-0"
+          >
+            {addMutation.isPending
+              ? <><Loader2 size={12} className="animate-spin" /> Adding…</>
+              : <><Calendar size={12} /> Add</>}
+          </button>
+        </div>
+        {addError && <Alert tone="danger">{addError}</Alert>}
+      </div>
+
+      {deleteError && <Alert tone="danger">{deleteError}</Alert>}
+
+      {/* Custom closed days list */}
+      <div className="space-y-2">
+        <p className="text-xs font-semibold text-foreground">Custom closed days</p>
+        {closedDaysQuery.isPending && !closedDaysQuery.data && (
+          <p className="text-xs text-muted-foreground py-2">Loading…</p>
+        )}
+        {closedDaysQuery.isError && (
+          <Alert tone="danger">Could not load closed days.</Alert>
+        )}
+        {closedDaysQuery.isSuccess && customDays.length === 0 && (
+          <p className="text-xs text-muted-foreground py-2 italic">No custom closed days yet.</p>
+        )}
+        {customDays.map((day) => {
+          const isFederal = !!federalHolidayNames[day.date];
+          return (
+            <div
+              key={day.id}
+              className="flex items-start justify-between gap-3 rounded-md border border-border bg-background px-3 py-2.5"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <CalendarOff size={13} className="text-muted-foreground shrink-0" />
+                  <span className="text-sm font-medium">{formatClosedDate(day.date)}</span>
+                  {isFederal && (
+                    <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                      US holiday
+                    </span>
+                  )}
+                </div>
+                {day.note && (
+                  <p className="text-xs text-muted-foreground mt-0.5 ml-5">{day.note}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                disabled={deletingDate === day.date}
+                onClick={() => void handleDelete(day.date)}
+                className="shrink-0 p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive disabled:opacity-50 transition-colors"
+                title="Remove this closed day"
+              >
+                {deletingDate === day.date ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* US Federal Holidays (read-only reference) */}
+      <div className="space-y-2 pt-1">
+        <div>
+          <p className="text-xs font-semibold text-foreground">US Federal Holidays</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            These are automatically excluded from business-day calculations. They cannot be removed.
+          </p>
+        </div>
+        <div className="rounded-lg border border-border overflow-hidden divide-y divide-border">
+          {upcomingFederalDays.map(([date, name]) => (
+            <div
+              key={date}
+              className={`flex items-center justify-between px-3 py-2 text-xs gap-3 ${
+                customDayDates.has(date) ? "bg-amber-50 dark:bg-amber-900/10" : "bg-background"
+              }`}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <Calendar size={12} className="text-muted-foreground shrink-0" />
+                <span className="font-medium truncate">{name}</span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-muted-foreground">{formatClosedDate(date)}</span>
+                {customDayDates.has(date) && (
+                  <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                    + custom note
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </PanelShell>
+  );
+}
+
+// ──────────────────────────── Permission Outline Panel ───────────────────────
+
+const CAPABILITY_LABELS_DESKTOP: Record<string, string> = {
+  delete_cases: "Delete Cases",
+  manage_pricing: "Manage Pricing",
+  view_financial_reports: "View Financial Reports",
+  export_data: "Export Data",
+  manage_team_members: "Manage Team Members",
+  configure_integrations: "Configure Integrations",
+  approve_invoices: "Approve Invoices",
+};
+
+const CAPABILITY_KEYS_DESKTOP = Object.keys(CAPABILITY_LABELS_DESKTOP);
+
+interface PermissionDef {
+  id: string;
+  labId: string;
+  name: string;
+  description?: string | null;
+  capabilityKey: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MemberPermissionGrants {
+  membershipId: string;
+  permissionDefinitionIds: string[];
+}
+
+function PermissionOutlinePanel() {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const orgId = user?.practiceOrganizationId ?? "";
+
+  const [showDefForm, setShowDefForm] = useState(false);
+  const [editingDef, setEditingDef] = useState<PermissionDef | null>(null);
+  const [defName, setDefName] = useState("");
+  const [defDesc, setDefDesc] = useState("");
+  const [defCapKey, setDefCapKey] = useState(CAPABILITY_KEYS_DESKTOP[0]);
+
+  const [memberPermsTarget, setMemberPermsTarget] = useState<{
+    membershipId: string;
+    name: string;
+  } | null>(null);
+  const [memberGrantIds, setMemberGrantIds] = useState<string[]>([]);
+  const [savingMemberPerms, setSavingMemberPerms] = useState(false);
+
+  const defsQuery = useQuery<PermissionDef[]>({
+    queryKey: ["permission-definitions", orgId],
+    queryFn: () => apiFetch<PermissionDef[]>(`/organizations/${orgId}/permission-definitions`),
+    enabled: !!orgId,
+    staleTime: 30_000,
+  });
+
+  const teamQuery = useQuery<{ team: LabTeamMember[]; callerRole: string | null }>({
+    queryKey: ["lab-team"],
+    queryFn: () => apiFetch("/auth/lab-team"),
+    staleTime: 30_000,
+  });
+
+  const createDefMutation = useMutation({
+    mutationFn: (input: { name: string; description?: string; capabilityKey: string }) =>
+      apiFetch(`/organizations/${orgId}/permission-definitions`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["permission-definitions", orgId] });
+      closeDefForm();
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const updateDefMutation = useMutation({
+    mutationFn: ({ id, ...input }: { id: string; name: string; description?: string; capabilityKey: string }) =>
+      apiFetch(`/organizations/${orgId}/permission-definitions/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["permission-definitions", orgId] });
+      closeDefForm();
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const deleteDefMutation = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/organizations/${orgId}/permission-definitions/${id}`, { method: "DELETE" }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["permission-definitions", orgId] }),
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const defs = defsQuery.data ?? [];
+  const callerRole = teamQuery.data?.callerRole;
+  const isCallerOwner = callerRole === "owner";
+  const members = (teamQuery.data?.team ?? []).filter((m) => !m.isOwner && !!m.membershipId);
+
+  function openCreateDef() {
+    setEditingDef(null);
+    setDefName("");
+    setDefDesc("");
+    setDefCapKey(CAPABILITY_KEYS_DESKTOP[0]);
+    setShowDefForm(true);
+  }
+
+  function openEditDef(def: PermissionDef) {
+    setEditingDef(def);
+    setDefName(def.name);
+    setDefDesc(def.description ?? "");
+    setDefCapKey(def.capabilityKey);
+    setShowDefForm(true);
+  }
+
+  function closeDefForm() {
+    setShowDefForm(false);
+    setEditingDef(null);
+    setDefName("");
+    setDefDesc("");
+    setDefCapKey(CAPABILITY_KEYS_DESKTOP[0]);
+  }
+
+  function saveDefForm() {
+    if (!defName.trim()) return;
+    const input = {
+      name: defName.trim(),
+      description: defDesc.trim() || undefined,
+      capabilityKey: defCapKey,
+    };
+    if (editingDef) {
+      updateDefMutation.mutate({ id: editingDef.id, ...input });
+    } else {
+      createDefMutation.mutate(input);
+    }
+  }
+
+  async function openMemberPerms(membershipId: string, name: string) {
+    setMemberPermsTarget({ membershipId, name });
+    setMemberGrantIds([]);
+    try {
+      const r = await apiFetch<MemberPermissionGrants>(
+        `/organizations/${orgId}/members/${membershipId}/permissions`
+      );
+      setMemberGrantIds((r as MemberPermissionGrants).permissionDefinitionIds ?? []);
+    } catch {
+      setMemberGrantIds([]);
+    }
+  }
+
+  async function saveMemberPerms() {
+    if (!memberPermsTarget) return;
+    setSavingMemberPerms(true);
+    try {
+      await apiFetch(`/organizations/${orgId}/members/${memberPermsTarget.membershipId}/permissions`, {
+        method: "PUT",
+        body: JSON.stringify({ permissionDefinitionIds: memberGrantIds }),
+      });
+      setMemberPermsTarget(null);
+      toast({ title: "Permissions updated", duration: 3000 });
+    } catch (e: unknown) {
+      toast({ title: "Error", description: (e as Error).message, variant: "destructive" });
+    } finally {
+      setSavingMemberPerms(false);
+    }
+  }
+
+  return (
+    <PanelShell
+      title="Permission Outline"
+      subtitle="Define custom permissions and assign them to lab team members. Owners and admins always have full access."
+    >
+      {!isCallerOwner && !teamQuery.isLoading && (
+        <div className="rounded-md bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-800/40">
+          Only the lab owner can manage permission definitions and assignments.
+        </div>
+      )}
+
+      {/* Permission Definitions */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold">Permission Definitions</h3>
+          {isCallerOwner && (
+            <button
+              type="button"
+              onClick={openCreateDef}
+              className="text-xs px-2.5 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
+            >
+              + New definition
+            </button>
+          )}
+        </div>
+
+        {defsQuery.isLoading && (
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        )}
+        {defs.length === 0 && !defsQuery.isLoading && (
+          <p className="text-sm text-muted-foreground italic">
+            No permission definitions yet.{isCallerOwner ? " Click \"+ New definition\" to create one." : ""}
+          </p>
+        )}
+
+        <ul className="divide-y divide-border rounded-lg border border-border overflow-hidden">
+          {defs.map((def) => (
+            <li key={def.id} className="px-4 py-3 flex items-start justify-between gap-3 text-sm">
+              <div className="min-w-0">
+                <p className="font-medium truncate">{def.name}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {CAPABILITY_LABELS_DESKTOP[def.capabilityKey] ?? def.capabilityKey}
+                </p>
+                {def.description && (
+                  <p className="text-xs text-muted-foreground/70 mt-0.5 truncate">{def.description}</p>
+                )}
+              </div>
+              {isCallerOwner && (
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => openEditDef(def)}
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                    title="Edit"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(`Delete "${def.name}" and remove all grants?`)) {
+                        deleteDefMutation.mutate(def.id);
+                      }
+                    }}
+                    disabled={deleteDefMutation.isPending}
+                    className="text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+                    title="Delete"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* Create / Edit Definition Form */}
+      {showDefForm && (
+        <div className="rounded-lg border border-border bg-muted/30 p-4 space-y-3">
+          <h4 className="text-sm font-semibold">{editingDef ? "Edit permission" : "New permission"}</h4>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2">
+              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">
+                Name *
+              </label>
+              <input
+                className="h-8 w-full px-2 rounded border border-border bg-background text-sm"
+                value={defName}
+                onChange={(e) => setDefName(e.target.value)}
+                placeholder="e.g. Finance Viewer"
+                autoFocus
+              />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">
+                Description
+              </label>
+              <input
+                className="h-8 w-full px-2 rounded border border-border bg-background text-sm"
+                value={defDesc}
+                onChange={(e) => setDefDesc(e.target.value)}
+                placeholder="Optional description"
+              />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">
+                Capability
+              </label>
+              <select
+                value={defCapKey}
+                onChange={(e) => setDefCapKey(e.target.value)}
+                className="h-8 w-full px-2 rounded border border-border bg-background text-sm"
+              >
+                {CAPABILITY_KEYS_DESKTOP.map((k) => (
+                  <option key={k} value={k}>{CAPABILITY_LABELS_DESKTOP[k]}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="flex gap-2 justify-end">
+            <button
+              type="button"
+              onClick={closeDefForm}
+              className="h-8 px-3 rounded border border-border bg-background text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={saveDefForm}
+              disabled={!defName.trim() || createDefMutation.isPending || updateDefMutation.isPending}
+              className="h-8 px-3 rounded bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
+            >
+              {createDefMutation.isPending || updateDefMutation.isPending ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Member Permissions */}
+      {defs.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold mb-3">Member Permissions</h3>
+          <p className="text-xs text-muted-foreground mb-3">
+            Click a member to assign or revoke custom permissions.
+          </p>
+
+          {teamQuery.isLoading && <p className="text-xs text-muted-foreground">Loading…</p>}
+          {members.length === 0 && !teamQuery.isLoading && (
+            <p className="text-sm text-muted-foreground italic">No team members found.</p>
+          )}
+
+          <ul className="divide-y divide-border rounded-lg border border-border overflow-hidden">
+            {members.map((m) => {
+              const name = [m.firstName, m.lastName].filter(Boolean).join(" ") || m.username;
+              return (
+                <li key={m.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
+                  <div>
+                    <p className="font-medium">{name}</p>
+                    <p className="text-xs text-muted-foreground capitalize">{(m.role ?? "user").replace("_", " ")}</p>
+                  </div>
+                  {isCallerOwner && (
+                    <button
+                      type="button"
+                      onClick={() => void openMemberPerms(m.membershipId!, name)}
+                      className="text-xs text-primary hover:underline"
+                    >
+                      Manage permissions →
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
+      {/* Member permissions sheet */}
+      <Sheet open={!!memberPermsTarget} onOpenChange={(open) => { if (!open) setMemberPermsTarget(null); }}>
+        <SheetContent side="right" className="w-[360px]">
+          <SheetHeader>
+            <SheetTitle className="text-base">Permissions for {memberPermsTarget?.name}</SheetTitle>
+            <SheetDescription className="text-xs">
+              Owners and admins always have full access. These extra permissions apply to non-admin members only.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="mt-4 space-y-2">
+            {defs.map((def) => {
+              const granted = memberGrantIds.includes(def.id);
+              return (
+                <label
+                  key={def.id}
+                  className="flex items-start gap-3 rounded-md border border-border px-3 py-2.5 cursor-pointer hover:bg-muted/50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={granted}
+                    onChange={(e) =>
+                      setMemberGrantIds((prev) =>
+                        e.target.checked ? [...prev, def.id] : prev.filter((id) => id !== def.id)
+                      )
+                    }
+                    className="mt-0.5 h-4 w-4 rounded border-border accent-primary"
+                  />
+                  <div>
+                    <p className="text-sm font-medium">{def.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {CAPABILITY_LABELS_DESKTOP[def.capabilityKey] ?? def.capabilityKey}
+                    </p>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+          <div className="mt-6 flex gap-2 justify-end">
+            <button
+              type="button"
+              onClick={() => setMemberPermsTarget(null)}
+              className="h-8 px-3 rounded border border-border bg-background text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void saveMemberPerms()}
+              disabled={savingMemberPerms}
+              className="h-8 px-3 rounded bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
+            >
+              {savingMemberPerms ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </SheetContent>
+      </Sheet>
+    </PanelShell>
+  );
+}
+
+export function PanelShell({ title, subtitle, children, actions }: { title: string; subtitle?: React.ReactNode; children: React.ReactNode; actions?: React.ReactNode }) {
   return (
     <div className="p-6 space-y-5">
-      <div>
-        <h2 className="text-base font-semibold">{title}</h2>
-        {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-base font-semibold">{title}</h2>
+          {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
+        </div>
+        {actions && <div className="shrink-0">{actions}</div>}
       </div>
       {children}
     </div>
   );
 }
 
+interface RememberedDoctorPracticeMapping {
+  id: string;
+  doctorName: string;
+  providerOrganizationId: string;
+  practiceName: string;
+  practiceAvailable: boolean;
+  updatedAt: string;
+}
 function Field({ label, full, children }: { label: string; full?: boolean; children: React.ReactNode }) {
   return (
     <div className={full ? "col-span-2" : ""}>
@@ -9467,6 +9966,903 @@ function Field({ label, full, children }: { label: string; full?: boolean; child
         {label}
       </label>
       {children}
+    </div>
+  );
+}
+
+// ─────────────────────────── Employee Hours Panel ────────────────────────────
+
+interface VacationRequestDay {
+  id: string;
+  date: string;
+  isAllDay: boolean;
+  startTime?: string | null;
+  endTime?: string | null;
+}
+
+interface VacationRequest {
+  id: string;
+  userId: string;
+  totalRequestedHours: string;
+  reason?: string | null;
+  status: "pending" | "approved" | "denied" | "cancelled";
+  adminDecisionNote?: string | null;
+  createdAt: string;
+  days: VacationRequestDay[];
+  employeeName?: string | null;
+}
+
+interface VacationBalance {
+  id?: string | null;
+  labId: string;
+  userId: string;
+  year: number;
+  annualVacationHours: string;
+  usedVacationHours: string;
+  pendingVacationHours: string;
+  membershipRole?: string | null;
+  employeeName?: string | null;
+  employeeInitials?: string | null;
+}
+
+function fmtVacHours(h: string | number): string {
+  const n = Number(h);
+  return Number.isNaN(n) ? "—" : `${n.toFixed(1)} h`;
+}
+
+function formatVacDate(d: string): string {
+  try {
+    const dt = new Date(d + "T00:00:00");
+    const mm = String(dt.getMonth() + 1).padStart(2, "0");
+    const dd = String(dt.getDate()).padStart(2, "0");
+    const yyyy = dt.getFullYear();
+    return `${mm}/${dd}/${yyyy}`;
+  } catch {
+    return d;
+  }
+}
+
+const VAC_STATUS_COLOR: Record<string, string> = {
+  pending: "text-amber-600 bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800",
+  approved: "text-green-700 bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800",
+  denied: "text-destructive bg-destructive/10 border-destructive/30",
+  cancelled: "text-muted-foreground bg-muted border-border",
+};
+
+type VacTab = "requests" | "balances";
+
+function EmployeeHoursPanel() {
+  const qc = useQueryClient();
+
+  const meQuery = useQuery<MeResponse>({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch("/auth/me"),
+    staleTime: 60_000,
+  });
+
+  const adminLabs = useMemo(() => {
+    return (meQuery.data?.memberships ?? []).filter(
+      (m) =>
+        m.organization?.type === "lab" &&
+        (m.role === "owner" || m.role === "admin")
+    );
+  }, [meQuery.data]);
+
+  const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
+  const labId = selectedLabId ?? adminLabs[0]?.organizationId ?? null;
+
+  const [vacTab, setVacTab] = useState<VacTab>("requests");
+  const [statusFilter, setStatusFilter] = useState<string>("pending");
+  const [denyNotes, setDenyNotes] = useState<Record<string, string>>({});
+  const [showDenyFor, setShowDenyFor] = useState<string | null>(null);
+  const [editingBalanceId, setEditingBalanceId] = useState<string | null>(null);
+  const [balanceInputs, setBalanceInputs] = useState<Record<string, string>>({});
+
+  const requestsQuery = useQuery<VacationRequest[]>({
+    enabled: !!labId && vacTab === "requests",
+    queryKey: ["vacation-requests-admin", labId, statusFilter],
+    queryFn: () =>
+      apiFetch<VacationRequest[]>(
+        `/vacation/requests?organizationId=${encodeURIComponent(labId!)}&status=${statusFilter}`
+      ),
+    staleTime: 30_000,
+  });
+
+  const balancesQuery = useQuery<VacationBalance[]>({
+    enabled: !!labId && vacTab === "balances",
+    queryKey: ["vacation-balances-admin", labId],
+    queryFn: () =>
+      apiFetch<VacationBalance[]>(`/vacation/balances?organizationId=${encodeURIComponent(labId!)}`),
+    staleTime: 30_000,
+  });
+
+  const approveMutation = useMutation({
+    mutationFn: (requestId: string) =>
+      apiFetch(`/vacation/requests/${requestId}/approve`, { method: "POST" }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["vacation-requests-admin", labId] });
+      toast({ title: "Request approved." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not approve", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const denyMutation = useMutation({
+    mutationFn: ({ requestId, note }: { requestId: string; note: string }) =>
+      apiFetch(`/vacation/requests/${requestId}/deny`, {
+        method: "POST",
+        body: JSON.stringify({ adminDecisionNote: note || null }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    onSuccess: (_data, vars) => {
+      setShowDenyFor(null);
+      setDenyNotes((p) => ({ ...p, [vars.requestId]: "" }));
+      void qc.invalidateQueries({ queryKey: ["vacation-requests-admin", labId] });
+      toast({ title: "Request denied." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not deny", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const updateBalanceMutation = useMutation({
+    mutationFn: ({ userId, hours }: { userId: string; hours: number }) =>
+      apiFetch(
+        `/vacation/balances/${userId}?organizationId=${encodeURIComponent(labId!)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ annualVacationHours: hours }),
+          headers: { "Content-Type": "application/json" },
+        }
+      ),
+    onSuccess: (_data, vars) => {
+      setEditingBalanceId(null);
+      setBalanceInputs((p) => ({ ...p, [vars.userId]: "" }));
+      void qc.invalidateQueries({ queryKey: ["vacation-balances-admin", labId] });
+      toast({ title: "Balance updated." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not update balance", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const requests = requestsQuery.data ?? [];
+  const balances = balancesQuery.data ?? [];
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div>
+        <h2 className="text-base font-semibold">Employee Hours</h2>
+        <p className="text-sm text-muted-foreground">
+          Manage vacation requests and annual hour allocations for lab members.
+        </p>
+      </div>
+
+      {/* Lab selector */}
+      {adminLabs.length > 1 && (
+        <select
+          className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-border"
+          value={labId ?? ""}
+          onChange={(e) => setSelectedLabId(e.target.value)}
+        >
+          {adminLabs.map((m) => (
+            <option key={m.organizationId} value={m.organizationId}>
+              {m.organization?.name ?? m.organizationId}
+            </option>
+          ))}
+        </select>
+      )}
+
+      {/* Tab bar */}
+      <div className="flex border-b border-border">
+        {(["requests", "balances"] as VacTab[]).map((t) => (
+          <button
+            key={t}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              vacTab === t
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => setVacTab(t)}
+          >
+            {t === "requests" ? "Requests" : "Balances"}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Requests tab ── */}
+      {vacTab === "requests" && (
+        <div className="space-y-3">
+          {/* Status filter */}
+          <div className="flex gap-2">
+            {["pending", "approved", "denied", "all"].map((s) => (
+              <button
+                key={s}
+                className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+                  statusFilter === s
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "border-border text-muted-foreground hover:bg-secondary"
+                }`}
+                onClick={() => setStatusFilter(s)}
+              >
+                {s.charAt(0).toUpperCase() + s.slice(1)}
+              </button>
+            ))}
+          </div>
+
+          {requestsQuery.isLoading && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 size={14} className="animate-spin" /> Loading…
+            </div>
+          )}
+
+          {!requestsQuery.isLoading && requests.length === 0 && (
+            <p className="text-sm text-muted-foreground">No {statusFilter} requests.</p>
+          )}
+
+          {requests.map((req) => (
+            <div key={req.id} className="rounded-lg border border-border bg-card overflow-hidden">
+              <div className="px-4 py-3 flex items-start gap-3">
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                  <span className="text-xs font-bold text-primary">
+                    {(req.employeeName ?? "?").slice(0, 2).toUpperCase()}
+                  </span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium text-sm">{req.employeeName ?? "Employee"}</span>
+                    <span
+                      className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${VAC_STATUS_COLOR[req.status] ?? VAC_STATUS_COLOR.cancelled}`}
+                    >
+                      {req.status.toUpperCase()}
+                    </span>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {fmtVacHours(req.totalRequestedHours)} · {req.days.length} day{req.days.length !== 1 ? "s" : ""}
+                  </p>
+                  {req.days.slice(0, 3).map((d) => (
+                    <p key={d.id} className="text-xs text-muted-foreground">
+                      {formatVacDate(d.date)}{d.isAllDay ? " (all day)" : ` ${d.startTime}–${d.endTime}`}
+                    </p>
+                  ))}
+                  {req.days.length > 3 && (
+                    <p className="text-xs text-muted-foreground">+{req.days.length - 3} more days</p>
+                  )}
+                  {req.reason && <p className="text-xs text-muted-foreground mt-0.5">{req.reason}</p>}
+                  {req.adminDecisionNote && (
+                    <p className="text-xs text-muted-foreground mt-0.5">Note: {req.adminDecisionNote}</p>
+                  )}
+                </div>
+              </div>
+
+              {req.status === "pending" && (
+                <div className="px-4 py-3 border-t border-border bg-muted/30 flex flex-col gap-2">
+                  {showDenyFor === req.id ? (
+                    <>
+                      <input
+                        className="h-8 px-2 rounded border border-border bg-background text-sm w-full"
+                        placeholder="Optional note to employee…"
+                        value={denyNotes[req.id] ?? ""}
+                        onChange={(e) =>
+                          setDenyNotes((p) => ({ ...p, [req.id]: e.target.value }))
+                        }
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          className="flex-1 h-8 rounded border border-border bg-background text-sm"
+                          onClick={() => setShowDenyFor(null)}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          className="flex-1 h-8 rounded bg-destructive text-destructive-foreground text-sm font-medium"
+                          onClick={() =>
+                            denyMutation.mutate({
+                              requestId: req.id,
+                              note: denyNotes[req.id] ?? "",
+                            })
+                          }
+                          disabled={denyMutation.isPending}
+                        >
+                          Confirm deny
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex gap-2">
+                      <button
+                        className="flex-1 h-8 rounded border border-border text-sm hover:bg-secondary"
+                        onClick={() => setShowDenyFor(req.id)}
+                      >
+                        Deny
+                      </button>
+                      <button
+                        className="flex-1 h-8 rounded bg-primary text-primary-foreground text-sm font-medium"
+                        onClick={() => approveMutation.mutate(req.id)}
+                        disabled={approveMutation.isPending}
+                      >
+                        Approve
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── Balances tab ── */}
+      {vacTab === "balances" && (
+        <div className="space-y-3">
+          {balancesQuery.isLoading && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 size={14} className="animate-spin" /> Loading…
+            </div>
+          )}
+
+          {!balancesQuery.isLoading && balances.length === 0 && (
+            <p className="text-sm text-muted-foreground">No team members found.</p>
+          )}
+
+          {balances.map((b) => {
+            const remaining = Math.max(
+              0,
+              Number(b.annualVacationHours) -
+                Number(b.usedVacationHours) -
+                Number(b.pendingVacationHours)
+            );
+            return (
+              <div key={b.userId} className="rounded-lg border border-border bg-card overflow-hidden">
+                <div className="px-4 py-3 flex items-center gap-3">
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                    <span className="text-xs font-bold text-primary">
+                      {(b.employeeInitials ?? b.employeeName ?? "?").slice(0, 2).toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-medium text-sm">{b.employeeName ?? b.userId}</p>
+                    <p className="text-xs text-muted-foreground">{b.membershipRole ?? "member"} · {b.year}</p>
+                  </div>
+                  <div className="flex gap-3 text-right">
+                    {[
+                      { label: "Annual", val: b.annualVacationHours },
+                      { label: "Used", val: b.usedVacationHours },
+                      { label: "Pending", val: b.pendingVacationHours },
+                      { label: "Left", val: remaining, color: "text-primary" },
+                    ].map(({ label, val, color }) => (
+                      <div key={label} className="text-center">
+                        <p className="text-[10px] text-muted-foreground">{label}</p>
+                        <p className={`text-sm font-semibold ${color ?? ""}`}>{fmtVacHours(val)}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="px-4 py-3 border-t border-border bg-muted/30">
+                  {editingBalanceId === b.userId ? (
+                    <div className="flex gap-2">
+                      <input
+                        className="h-8 flex-1 px-2 rounded border border-border bg-background text-sm"
+                        type="number"
+                        min={0}
+                        max={10000}
+                        step={0.5}
+                        placeholder="Annual hours (e.g. 80)"
+                        value={balanceInputs[b.userId] ?? ""}
+                        onChange={(e) =>
+                          setBalanceInputs((p) => ({ ...p, [b.userId]: e.target.value }))
+                        }
+                      />
+                      <button
+                        className="h-8 px-3 rounded bg-primary text-primary-foreground text-sm font-medium"
+                        onClick={() => {
+                          const hours = Number(balanceInputs[b.userId] ?? "");
+                          if (Number.isNaN(hours) || hours < 0) {
+                            toast({ title: "Enter a valid number of hours.", variant: "destructive" });
+                            return;
+                          }
+                          updateBalanceMutation.mutate({ userId: b.userId, hours });
+                        }}
+                        disabled={updateBalanceMutation.isPending}
+                      >
+                        Save
+                      </button>
+                      <button
+                        className="h-8 px-3 rounded border border-border bg-background text-sm"
+                        onClick={() => setEditingBalanceId(null)}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      className="text-sm text-primary hover:underline flex items-center gap-1"
+                      onClick={() => {
+                        setBalanceInputs((p) => ({ ...p, [b.userId]: b.annualVacationHours }));
+                        setEditingBalanceId(b.userId);
+                      }}
+                    >
+                      <Pencil size={12} /> Edit annual hours
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Lab Preferences Panel ────────────────────────────────────────────────────
+// Reusable quick reference note templates for the Add Note composer.
+// Available to all lab roles (owner / admin / user).
+interface QRNote {
+  id: string;
+  organizationId: string;
+  body: string;
+  label: string | null;
+  isActive: boolean;
+  displayOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function LabPreferencesPanel() {
+  const { user } = useAuth();
+  const orgId = user?.practiceOrganizationId;
+  const qc = useQueryClient();
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["quick-reference-notes", orgId] });
+
+  // ── Org settings (default turnaround days) ──────────────────────────────
+  const orgQuery = useQuery<{
+    defaultCaseDueDays?: number | null;
+    printProviderPreferencesOnLabSlips?: boolean | null;
+  }>({
+    queryKey: ["lab-org-settings", orgId],
+    enabled: !!orgId,
+    queryFn: () => apiFetch(`/organizations/${orgId}`),
+  });
+  const [dueDays, setDueDays] = useState("");
+  const [dueDaysSaved, setDueDaysSaved] = useState(false);
+  const [printProviderPreferences, setPrintProviderPreferences] = useState(false);
+  useEffect(() => {
+    if (orgQuery.data) {
+      setDueDays(orgQuery.data.defaultCaseDueDays != null ? String(orgQuery.data.defaultCaseDueDays) : "");
+    }
+  }, [orgQuery.data?.defaultCaseDueDays]);
+  useEffect(() => {
+    if (orgQuery.data) {
+      setPrintProviderPreferences(
+        orgQuery.data.printProviderPreferencesOnLabSlips === true,
+      );
+    }
+  }, [orgQuery.data?.printProviderPreferencesOnLabSlips]);
+
+  const dueDaysMutation = useMutation({
+    mutationFn: (days: number | null) =>
+      apiFetch(`/organizations/${orgId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ defaultCaseDueDays: days }),
+      }),
+    onSuccess: () => {
+      setDueDaysSaved(true);
+      void qc.invalidateQueries({ queryKey: ["lab-org-settings", orgId] });
+      setTimeout(() => setDueDaysSaved(false), 2000);
+    },
+    onError: () => toast({ title: "Could not save turnaround days", variant: "destructive" }),
+  });
+
+  const printProviderPreferencesMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      apiFetch(`/organizations/${orgId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ printProviderPreferencesOnLabSlips: enabled }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["lab-org-settings", orgId] });
+    },
+    onError: (err: Error) => {
+      setPrintProviderPreferences(
+        orgQuery.data?.printProviderPreferencesOnLabSlips === true,
+      );
+      toast({
+        title: "Could not save lab-slip preferences",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSaveDueDays = () => {
+    const val = dueDays.trim();
+    const num = val === "" ? null : parseInt(val, 10);
+    if (num !== null && (isNaN(num) || num < 1 || num > 365)) {
+      toast({ title: "Invalid value", description: "Enter a number between 1 and 365.", variant: "destructive" });
+      return;
+    }
+    dueDaysMutation.mutate(num);
+  };
+
+  // ── Quick Reference Notes ───────────────────────────────────────────────
+  const qrnQuery = useQuery<QRNote[]>({
+    queryKey: ["quick-reference-notes", orgId],
+    enabled: !!orgId,
+    queryFn: async () => {
+      const r = await apiFetch<{ notes: QRNote[] }>(`/organizations/${orgId}/quick-reference-notes`);
+      return r?.notes ?? [];
+    },
+  });
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editBody, setEditBody] = useState("");
+  const [editLabel, setEditLabel] = useState("");
+  const [newBody, setNewBody] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const [addingNew, setAddingNew] = useState(false);
+  const [seedLoading, setSeedLoading] = useState(false);
+
+  const handleSeed = async () => {
+    if (!orgId) return;
+    setSeedLoading(true);
+    try {
+      const r = await apiFetch<{ seeded: boolean; message?: string }>(`/organizations/${orgId}/quick-reference-notes/seed-defaults`, { method: "POST" });
+      if (!r?.seeded) {
+        toast({ title: "Templates already exist", description: "Your lab already has note templates.", variant: "default" });
+      } else {
+        toast({ title: "Default templates loaded" });
+        invalidate();
+      }
+    } catch (err) {
+      toast({ title: "Error seeding templates", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+    } finally { setSeedLoading(false); }
+  };
+
+  const handleCreate = async () => {
+    if (!orgId || !newBody.trim()) return;
+    const notes = qrnQuery.data ?? [];
+    try {
+      await apiFetch<QRNote>(`/organizations/${orgId}/quick-reference-notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: newBody.trim(), label: newLabel.trim() || null, displayOrder: notes.length }),
+      });
+      setNewBody(""); setNewLabel(""); setAddingNew(false); invalidate();
+    } catch (err) {
+      toast({ title: "Error creating template", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+    }
+  };
+
+  const handleUpdate = async (id: string) => {
+    if (!orgId || !editBody.trim()) return;
+    try {
+      await apiFetch<QRNote>(`/organizations/${orgId}/quick-reference-notes/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: editBody.trim(), label: editLabel.trim() || null }),
+      });
+      setEditingId(null); invalidate();
+    } catch (err) {
+      toast({ title: "Error saving template", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+    }
+  };
+
+  const handleToggle = async (note: QRNote) => {
+    if (!orgId) return;
+    try {
+      await apiFetch<QRNote>(`/organizations/${orgId}/quick-reference-notes/${note.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: !note.isActive }),
+      });
+      invalidate();
+    } catch (err) {
+      toast({ title: "Error updating template", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!orgId) return;
+    try {
+      await apiFetch<null>(`/organizations/${orgId}/quick-reference-notes/${id}`, { method: "DELETE" });
+      invalidate();
+    } catch (err) {
+      toast({ title: "Error deleting template", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+    }
+  };
+
+  const handleReorder = async (note: QRNote, direction: "up" | "down") => {
+    if (!orgId) return;
+    const sorted = [...(qrnQuery.data ?? [])].sort((a, b) => a.displayOrder - b.displayOrder);
+    const idx = sorted.findIndex((n) => n.id === note.id);
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= sorted.length) return;
+    const other = sorted[swapIdx];
+    const o1 = other.displayOrder === note.displayOrder
+      ? note.displayOrder + (direction === "up" ? -1 : 1)
+      : other.displayOrder;
+    try {
+      await Promise.all([
+        apiFetch<QRNote>(`/organizations/${orgId}/quick-reference-notes/${note.id}/order`, {
+          method: "PATCH", body: JSON.stringify({ displayOrder: o1 }),
+        }),
+        apiFetch<QRNote>(`/organizations/${orgId}/quick-reference-notes/${other.id}/order`, {
+          method: "PATCH", body: JSON.stringify({ displayOrder: note.displayOrder }),
+        }),
+      ]);
+      invalidate();
+    } catch (err) {
+      toast({ title: "Could not reorder templates", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+    }
+  };
+
+  const notes = qrnQuery.data ?? [];
+  const activeNotes = [...notes].filter((n) => n.isActive).sort((a, b) => a.displayOrder - b.displayOrder);
+  const inactiveNotes = notes.filter((n) => !n.isActive);
+
+  return (
+    <div className="p-6 space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold">Lab Preferences</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Lab-wide defaults for case workflow and the note template library.
+        </p>
+      </div>
+
+      {/* Default turnaround days */}
+      <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+        <div>
+          <h3 className="text-sm font-medium">Default case turnaround (days)</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            New cases will default to this many days from the created date. Leave blank to let staff set the due date manually.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={1}
+            max={365}
+            className="w-24 border border-border rounded px-3 py-1.5 text-sm bg-background"
+            placeholder="—"
+            value={dueDays}
+            onChange={(e) => setDueDays(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSaveDueDays()}
+          />
+          <button
+            className="h-8 px-3 rounded bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
+            onClick={handleSaveDueDays}
+            disabled={dueDaysMutation.isPending}
+          >
+            {dueDaysMutation.isPending ? "Saving…" : dueDaysSaved ? "✓ Saved" : "Save"}
+          </button>
+          {dueDays && (
+            <button
+              className="h-8 px-3 rounded border border-border bg-background text-sm text-muted-foreground hover:bg-accent"
+              onClick={() => { setDueDays(""); dueDaysMutation.mutate(null); }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-border bg-card p-4">
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-4 w-4"
+            checked={printProviderPreferences}
+            disabled={printProviderPreferencesMutation.isPending || orgQuery.isLoading}
+            onChange={(event) => {
+              const enabled = event.target.checked;
+              setPrintProviderPreferences(enabled);
+              printProviderPreferencesMutation.mutate(enabled);
+            }}
+          />
+          <span>
+            <span className="text-sm font-medium">Print provider preferences on lab slips</span>
+            <span className="block text-xs text-muted-foreground mt-0.5">
+              Include the provider&apos;s structured clinical preferences on desktop lab slips and compact labels.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      {/* Quick Reference Notes */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-base font-medium">Quick Reference Notes</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Staff can insert these templates into the Add Note field while working on a case.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {!qrnQuery.isError && notes.length === 0 && (
+              <button
+                className="text-sm px-3 py-1.5 rounded border border-border bg-background hover:bg-accent transition-colors"
+                onClick={handleSeed}
+                disabled={seedLoading}
+              >
+                {seedLoading ? "Loading…" : "Load default templates"}
+              </button>
+            )}
+            <button
+              className="text-sm px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+              onClick={() => setAddingNew(true)}
+            >
+              + New template
+            </button>
+          </div>
+        </div>
+
+        {qrnQuery.isLoading && <div className="text-sm text-muted-foreground py-4">Loading templates…</div>}
+
+        {qrnQuery.isError && (
+          <div className="flex items-center justify-between gap-3 py-2">
+            <Alert tone="danger">
+              {qrnQuery.error instanceof Error ? qrnQuery.error.message : "Couldn't load your note templates."}
+            </Alert>
+            <button
+              className="text-sm px-3 py-1.5 rounded border border-border bg-background hover:bg-accent transition-colors shrink-0"
+              onClick={() => qrnQuery.refetch()}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {!qrnQuery.isLoading && !qrnQuery.isError && notes.length === 0 && (
+          <div className="text-sm text-muted-foreground py-8 text-center border border-dashed border-border rounded-lg">
+            No templates yet. Add one above or load the default set.
+          </div>
+        )}
+
+        {addingNew && (
+          <div className="rounded-lg border border-primary/40 bg-card p-4 space-y-3">
+            <div className="text-sm font-medium">New template</div>
+            <input
+              className="w-full border border-border rounded px-3 py-1.5 text-sm bg-background"
+              placeholder="Short label (optional)"
+              value={newLabel}
+              onChange={(e) => setNewLabel(e.target.value)}
+            />
+            <textarea
+              className="w-full border border-border rounded px-3 py-1.5 text-sm bg-background min-h-[60px]"
+              placeholder="Template body (required)"
+              value={newBody}
+              onChange={(e) => setNewBody(e.target.value)}
+            />
+            <div className="flex gap-2">
+              <button
+                className="h-8 px-3 rounded bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
+                onClick={handleCreate}
+                disabled={!newBody.trim()}
+              >
+                Save
+              </button>
+              <button
+                className="h-8 px-3 rounded border border-border bg-background text-sm"
+                onClick={() => { setAddingNew(false); setNewBody(""); setNewLabel(""); }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          {activeNotes.map((note, idx) => (
+            <div key={note.id} className="rounded-lg border border-border bg-card p-3 space-y-1">
+              {editingId === note.id ? (
+                <div className="space-y-2">
+                  <input
+                    className="w-full border border-border rounded px-3 py-1.5 text-sm bg-background"
+                    placeholder="Short label (optional)"
+                    value={editLabel}
+                    onChange={(e) => setEditLabel(e.target.value)}
+                  />
+                  <textarea
+                    className="w-full border border-border rounded px-3 py-1.5 text-sm bg-background min-h-[60px]"
+                    value={editBody}
+                    onChange={(e) => setEditBody(e.target.value)}
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      className="h-7 px-3 rounded bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
+                      onClick={() => handleUpdate(note.id)}
+                      disabled={!editBody.trim()}
+                    >
+                      Save
+                    </button>
+                    <button
+                      className="h-7 px-3 rounded border border-border bg-background text-sm"
+                      onClick={() => setEditingId(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    {note.label && <div className="text-xs font-medium text-primary">{note.label}</div>}
+                    <div className="text-sm text-foreground">{note.body}</div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      className="h-7 px-1.5 rounded border border-border bg-background text-xs hover:bg-accent disabled:opacity-30"
+                      onClick={() => handleReorder(note, "up")}
+                      disabled={idx === 0}
+                      title="Move up"
+                    >▲</button>
+                    <button
+                      className="h-7 px-1.5 rounded border border-border bg-background text-xs hover:bg-accent disabled:opacity-30"
+                      onClick={() => handleReorder(note, "down")}
+                      disabled={idx === activeNotes.length - 1}
+                      title="Move down"
+                    >▼</button>
+                    <button
+                      className="h-7 px-2 rounded border border-border bg-background text-xs hover:bg-accent"
+                      onClick={() => { setEditingId(note.id); setEditBody(note.body); setEditLabel(note.label ?? ""); }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="h-7 px-2 rounded border border-border bg-background text-xs hover:bg-accent"
+                      onClick={() => handleToggle(note)}
+                      title="Deactivate"
+                    >
+                      Hide
+                    </button>
+                    <button
+                      className="h-7 px-2 rounded border border-destructive/30 text-destructive text-xs hover:bg-destructive/10"
+                      onClick={() => handleDelete(note.id)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {inactiveNotes.length > 0 && (
+          <details className="text-sm">
+            <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none py-1">
+              {inactiveNotes.length} hidden template{inactiveNotes.length > 1 ? "s" : ""}
+            </summary>
+            <div className="mt-2 space-y-2">
+              {inactiveNotes.map((note) => (
+                <div key={note.id} className="rounded-lg border border-border bg-card/50 p-3 flex items-start justify-between gap-2 opacity-60">
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    {note.label && <div className="text-xs font-medium text-primary">{note.label}</div>}
+                    <div className="text-sm text-foreground">{note.body}</div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      className="h-7 px-2 rounded border border-border bg-background text-xs hover:bg-accent"
+                      onClick={() => handleToggle(note)}
+                    >
+                      Restore
+                    </button>
+                    <button
+                      className="h-7 px-2 rounded border border-destructive/30 text-destructive text-xs hover:bg-destructive/10"
+                      onClick={() => handleDelete(note.id)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
     </div>
   );
 }
@@ -9479,4 +10875,752 @@ function Alert({ tone, children }: { tone: "danger" | "success" | "warning"; chi
         ? "bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-800/40"
         : "bg-success/15 text-success";
   return <div className={`text-sm rounded-md px-3 py-2 ${cls}`}>{children}</div>;
+}
+
+interface CatalogCaseTypeNode {
+  key: CatalogCaseType;
+  label: string;
+  subtypes: CatalogSubtypeNode[];
+}
+
+interface CatalogMaterialNode {
+  id: string | null;
+  key: string;
+  label: string;
+  isCustom: boolean;
+  isActive: boolean;
+  sortOrder: number;
+  priceKey?: string | null;
+}
+
+interface CatalogSubtypeNode extends CatalogMaterialNode {
+  materials: CatalogMaterialNode[];
+}
+
+function catalogTreeNodes(value: unknown): CatalogCaseTypeNode[] {
+  if (!value || typeof value !== "object") return [];
+  const nodes = (value as { caseTypes?: unknown }).caseTypes;
+  if (!Array.isArray(nodes)) return [];
+  return nodes.filter((node): node is CatalogCaseTypeNode => {
+    if (!node || typeof node !== "object") return false;
+    const item = node as Partial<CatalogCaseTypeNode>;
+    return typeof item.key === "string" && typeof item.label === "string" && Array.isArray(item.subtypes);
+  });
+}
+
+interface LegacyVocabularyReviewCandidate {
+  id: string;
+  value: string;
+  matchedTerm: string;
+  reason: string;
+}
+
+function LegacyVocabularyReviewSection({ labOrganizationId }: { labOrganizationId: string }) {
+  const qc = useQueryClient();
+  const reviewQuery = useQuery<LegacyVocabularyReviewCandidate[]>({
+    queryKey: ["catalog", "legacy-vocabulary-review", labOrganizationId],
+    queryFn: () => apiFetch<LegacyVocabularyReviewCandidate[]>(`/catalog/legacy-vocabulary-review?labOrganizationId=${encodeURIComponent(labOrganizationId)}`),
+    staleTime: 30_000,
+  });
+  const treeQuery = useQuery<EffectiveCatalogTree>({
+    queryKey: ["catalog", "tree", labOrganizationId],
+    queryFn: () => apiFetch<EffectiveCatalogTree>(`/catalog/tree?labOrganizationId=${encodeURIComponent(labOrganizationId)}`),
+    staleTime: 30_000,
+  });
+  const caseTypes = catalogTreeNodes(treeQuery.data);
+  const [mappingId, setMappingId] = useState<string | null>(null);
+  const [entryType, setEntryType] = useState<CatalogEntryType>("material");
+  const [caseType, setCaseType] = useState<CatalogCaseType>("restorative");
+  const [parentKey, setParentKey] = useState("");
+  const [label, setLabel] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ candidate: LegacyVocabularyReviewCandidate; blocked: boolean; usageCount?: number } | null>(null);
+
+  const selectedCase = caseTypes.find((item) => item.key === caseType) ?? caseTypes[0];
+  const subtypeOptions = selectedCase?.subtypes ?? [];
+  const invalidate = async () => {
+    await qc.invalidateQueries({ queryKey: ["catalog", "tree", labOrganizationId] });
+    await qc.invalidateQueries({ queryKey: ["catalog", "legacy-vocabulary-review", labOrganizationId] });
+  };
+
+  const openMapping = (candidate: LegacyVocabularyReviewCandidate) => {
+    const firstCase = caseTypes[0];
+    setMappingId(candidate.id);
+    setLabel(candidate.value);
+    setEntryType("material");
+    setCaseType(firstCase?.key ?? "restorative");
+    setParentKey(firstCase?.subtypes[0]?.key ?? "");
+    setError(null);
+  };
+
+  const markInactive = async (force: boolean) => {
+    if (!pendingDelete) return;
+    const state = pendingDelete;
+    setBusyId(state.candidate.id);
+    setError(null);
+    try {
+      await apiFetch(`/vocabulary/${encodeURIComponent(state.candidate.id)}${force ? "?force=true" : ""}`, { method: "DELETE" });
+      setPendingDelete(null);
+      setMappingId(null);
+      await invalidate();
+    } catch (err: unknown) {
+      if (err instanceof ApiError && err.status === 409) {
+        const body = err.body as { usageCount?: number } | null;
+        setPendingDelete({ ...state, blocked: true, usageCount: typeof body?.usageCount === "number" ? body.usageCount : 1 });
+      } else {
+        setError(err instanceof Error ? err.message : "Could not mark this term inactive.");
+      }
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const mapCandidate = async (candidate: LegacyVocabularyReviewCandidate) => {
+    const trimmed = label.trim();
+    if (!trimmed || (entryType === "material" && !parentKey)) {
+      setError(entryType === "material" ? "Choose a subtype and enter a label." : "Enter a label.");
+      return;
+    }
+    setBusyId(candidate.id);
+    setError(null);
+    try {
+      await apiFetch("/catalog/entries", {
+        method: "POST",
+        body: JSON.stringify({ labOrganizationId, entryType, caseType, label: trimmed, ...(entryType === "material" ? { parentKey } : {}) }),
+      });
+      try {
+        await apiFetch(`/vocabulary/${encodeURIComponent(candidate.id)}`, { method: "DELETE" });
+        setMappingId(null);
+      } catch (err: unknown) {
+        if (err instanceof ApiError && err.status === 409) {
+          const body = err.body as { usageCount?: number } | null;
+          setPendingDelete({ candidate, blocked: true, usageCount: typeof body?.usageCount === "number" ? body.usageCount : 1 });
+        } else {
+          setError("Added to the catalog, but the old vocabulary term is still present.");
+        }
+      }
+      await invalidate();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not map this vocabulary term.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (reviewQuery.isLoading) {
+    return <section className="space-y-2"><h3 className="text-sm font-semibold">Needs review</h3><div className="flex items-center gap-2 text-muted-foreground text-sm py-3"><Loader2 size={14} className="animate-spin" /> Checking legacy vocabulary…</div></section>;
+  }
+  if (reviewQuery.isError) {
+    return <section className="space-y-2"><h3 className="text-sm font-semibold">Needs review</h3><p className="text-sm text-destructive">Failed to load legacy vocabulary review.</p></section>;
+  }
+  const candidates = Array.isArray(reviewQuery.data) ? reviewQuery.data : [];
+  return (
+    <section className="space-y-3" data-testid="catalog-legacy-review">
+      <div>
+        <h3 className="text-sm font-semibold">Needs review</h3>
+        <p className="text-xs text-muted-foreground mt-0.5">These older terms may be mis-filed catalog entries. Review them one at a time; nothing changes automatically.</p>
+      </div>
+      {error && <Alert tone="danger">{error}</Alert>}
+      {candidates.length === 0 && <p className="text-sm text-muted-foreground rounded-md border border-border px-3 py-4">Nothing needs review.</p>}
+      <div className="space-y-2">
+        {candidates.map((candidate) => {
+          const isMapping = mappingId === candidate.id;
+          return (
+            <div key={candidate.id} className="border border-border rounded-md px-3 py-2.5">
+              <div className="flex items-start gap-3">
+                <div className="flex-1 min-w-0"><p className="text-sm font-medium">{candidate.value}</p><p className="text-xs text-muted-foreground mt-0.5">{candidate.reason}</p></div>
+                <button type="button" onClick={() => openMapping(candidate)} disabled={!!busyId} className="h-7 px-2 rounded bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60">Map to catalog</button>
+                <button type="button" onClick={() => setPendingDelete({ candidate, blocked: false })} disabled={!!busyId} className="h-7 px-2 rounded bg-secondary text-xs font-medium disabled:opacity-60">Mark inactive</button>
+              </div>
+              {isMapping && (
+                <div className="mt-3 pt-3 border-t border-border grid gap-2 sm:grid-cols-2">
+                  <label className="text-xs text-muted-foreground">Case type
+                    <select value={caseType} onChange={(event) => { const next = event.target.value as CatalogCaseType; setCaseType(next); setParentKey(caseTypes.find((item) => item.key === next)?.subtypes[0]?.key ?? ""); }} className="mt-1 block w-full h-8 px-2 rounded bg-background border border-border text-sm text-foreground">
+                      <option value="restorative">Restorative</option><option value="removable">Removable</option><option value="ortho">Ortho</option>
+                    </select>
+                  </label>
+                  <label className="text-xs text-muted-foreground">Catalog entry
+                    <select value={entryType} onChange={(event) => setEntryType(event.target.value as CatalogEntryType)} className="mt-1 block w-full h-8 px-2 rounded bg-background border border-border text-sm text-foreground"><option value="material">Material</option><option value="subtype">Subtype</option></select>
+                  </label>
+                  {entryType === "material" && <label className="text-xs text-muted-foreground">Parent subtype
+                    <select value={parentKey} onChange={(event) => setParentKey(event.target.value)} className="mt-1 block w-full h-8 px-2 rounded bg-background border border-border text-sm text-foreground"><option value="">Choose a subtype</option>{subtypeOptions.map((subtype) => <option key={subtype.key} value={subtype.key}>{subtype.label}</option>)}</select>
+                  </label>}
+                  <label className="text-xs text-muted-foreground">Label<input value={label} onChange={(event) => setLabel(event.target.value)} className="mt-1 block w-full h-8 px-2 rounded bg-background border border-border text-sm text-foreground" /></label>
+                  <div className="flex items-end gap-2"><button type="button" onClick={() => void mapCandidate(candidate)} disabled={busyId === candidate.id} className="h-8 px-3 rounded bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60">{busyId === candidate.id ? "Saving…" : "Save mapping"}</button><button type="button" onClick={() => setMappingId(null)} disabled={!!busyId} className="h-8 px-3 rounded bg-secondary text-xs">Cancel</button></div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <AlertDialog open={!!pendingDelete} onOpenChange={(open) => { if (!open && !busyId) setPendingDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{pendingDelete?.blocked ? `Mark "${pendingDelete.candidate.value}" inactive anyway?` : `Mark "${pendingDelete?.candidate.value}" inactive?`}</AlertDialogTitle>
+            <AlertDialogDescription>{pendingDelete?.blocked ? `This term is used in ${pendingDelete.usageCount ?? 1} existing case restoration(s). Existing cases keep their current text, but the term will leave suggestions.` : "This removes the legacy term from future suggestions. Existing cases keep their current text."}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel disabled={!!busyId}>Cancel</AlertDialogCancel><AlertDialogAction onClick={(event) => { event.preventDefault(); void markInactive(!!pendingDelete?.blocked); }} disabled={!!busyId} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{busyId ? <Loader2 size={13} className="animate-spin" /> : pendingDelete?.blocked ? "Mark inactive anyway" : "Mark inactive"}</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </section>
+  );
+}
+
+type CatalogCaseType = "restorative" | "removable" | "ortho";
+
+function CatalogTreeEditor({ labOrganizationId }: { labOrganizationId: string }) {
+  const qc = useQueryClient();
+  const treeQuery = useQuery<EffectiveCatalogTree>({
+    queryKey: ["catalog", "tree", labOrganizationId],
+    queryFn: () => apiFetch<EffectiveCatalogTree>(`/catalog/tree?labOrganizationId=${encodeURIComponent(labOrganizationId)}`),
+    staleTime: 30_000,
+  });
+  const caseTypes = catalogTreeNodes(treeQuery.data);
+  const [expandedCases, setExpandedCases] = useState<string[]>([]);
+  const [expandedSubtypes, setExpandedSubtypes] = useState<string[]>([]);
+  const [adding, setAdding] = useState<{ type: CatalogEntryType; caseType: CatalogCaseType; parentKey?: string } | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ entry: CatalogMaterialNode | CatalogSubtypeNode; type: CatalogEntryType; parentLabel?: string; blocked: boolean; usageCount?: number; childCount?: number } | null>(null);
+
+  useEffect(() => {
+    setExpandedCases(caseTypes.map((caseType) => caseType.key));
+  }, [treeQuery.data]);
+
+  const refresh = () => qc.invalidateQueries({ queryKey: ["catalog", "tree", labOrganizationId] });
+
+  const saveEntry = async (
+    entry: CatalogMaterialNode | CatalogSubtypeNode,
+    type: CatalogEntryType,
+    caseType: CatalogCaseType,
+    parentKey: string | undefined,
+    patch: { label?: string; isActive?: boolean; sortOrder?: number },
+  ) => {
+    setBusyKey(entry.id ?? `${type}:${entry.key}`);
+    setError(null);
+    try {
+      if (entry.isCustom && entry.id) {
+        await apiFetch(`/catalog/entries/${encodeURIComponent(entry.id)}`, { method: "PATCH", body: JSON.stringify(patch) });
+      } else {
+        await apiFetch("/catalog/builtin-overrides", {
+          method: "PATCH",
+          body: JSON.stringify({ labOrganizationId, entryType: type, caseType, ...(parentKey ? { parentKey } : {}), key: entry.key, ...patch }),
+        });
+      }
+      await refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not update the catalog.");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const addEntry = async (value: string) => {
+    if (!adding) return;
+    const label = value.trim();
+    if (!label) {
+      setError("Catalog labels must not be blank.");
+      return;
+    }
+    setBusyKey(`new:${adding.type}:${adding.parentKey ?? adding.caseType}`);
+    setError(null);
+    try {
+      await apiFetch("/catalog/entries", {
+        method: "POST",
+        body: JSON.stringify({ labOrganizationId, entryType: adding.type, caseType: adding.caseType, label, ...(adding.parentKey ? { parentKey: adding.parentKey } : {}) }),
+      });
+      setAdding(null);
+      await refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not add the catalog entry.");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const reorder = async (
+    entries: Array<CatalogMaterialNode | CatalogSubtypeNode>,
+    index: number,
+    direction: -1 | 1,
+    type: CatalogEntryType,
+    caseType: CatalogCaseType,
+    parentKey?: string,
+  ) => {
+    const target = index + direction;
+    if (target < 0 || target >= entries.length) return;
+    const reordered = [...entries];
+    [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
+    setBusyKey(`order:${entries[index].key}`);
+    setError(null);
+    try {
+      await Promise.all(reordered.map((entry, nextIndex) => {
+        if (entry.sortOrder === nextIndex) return Promise.resolve();
+        return saveEntry(entry, type, caseType, parentKey, { sortOrder: nextIndex });
+      }));
+      await refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not reorder the catalog.");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const removeEntry = async (force: boolean) => {
+    if (!pendingDelete) return;
+    const entry = pendingDelete.entry;
+    const deleteState = pendingDelete;
+    const entryId = entry.id;
+    if (!entryId) return;
+    setBusyKey(entryId);
+    setError(null);
+    try {
+      await apiFetch(`/catalog/entries/${encodeURIComponent(entryId)}${force ? "?force=true" : ""}`, { method: "DELETE" });
+      setPendingDelete(null);
+      await refresh();
+    } catch (err: unknown) {
+      if (err instanceof ApiError && err.status === 409) {
+        const body = err.body as { usageCount?: number } | null;
+        setPendingDelete({ ...deleteState, blocked: true, usageCount: typeof body?.usageCount === "number" ? body.usageCount : 1 });
+      } else {
+        setError(err instanceof Error ? err.message : "Could not delete the catalog entry.");
+      }
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const toggle = (values: string[], key: string, setter: (next: string[]) => void) => {
+    setter(values.includes(key) ? values.filter((item) => item !== key) : [...values, key]);
+  };
+
+  if (treeQuery.isLoading) return <div className="flex items-center gap-2 text-muted-foreground text-sm py-6"><Loader2 size={14} className="animate-spin" /> Loading catalog…</div>;
+  if (treeQuery.isError) return <p className="text-sm text-destructive py-2">Failed to load the catalog.</p>;
+
+  return (
+    <section className="space-y-3" data-testid="catalog-tree-editor">
+      <div>
+        <h3 className="text-sm font-semibold">Case catalog</h3>
+        <p className="text-xs text-muted-foreground mt-0.5">Organize restoration choices by fixed case type, subtype, and material.</p>
+      </div>
+      {error && <Alert tone="danger">{error}</Alert>}
+      {caseTypes.length === 0 && <p className="text-sm text-muted-foreground rounded-md border border-border px-3 py-4">No catalog entries are available yet.</p>}
+      <div className="space-y-2">
+        {caseTypes.map((caseType) => {
+          const caseOpen = expandedCases.includes(caseType.key);
+          const subtypes = [...caseType.subtypes].sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label));
+          return (
+            <div key={caseType.key} className="border border-border rounded-md overflow-hidden">
+              <div className="flex items-center gap-2 px-3 py-2 bg-secondary/30">
+                <button type="button" onClick={() => toggle(expandedCases, caseType.key, setExpandedCases)} aria-label={`${caseOpen ? "Collapse" : "Expand"} ${caseType.label}`} className="p-0.5">{caseOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button>
+                <span className="font-semibold text-sm flex-1">{caseType.label}</span>
+                <span className="text-[11px] text-muted-foreground">Fixed case type</span>
+              </div>
+              {caseOpen && (
+                <div className="p-2 space-y-1.5">
+                  {subtypes.map((subtype, subtypeIndex) => {
+                    const subtypeOpen = expandedSubtypes.includes(subtype.key);
+                    const subtypeBusy = busyKey === (subtype.id ?? `subtype:${subtype.key}`);
+                    const materials = [...(subtype.materials ?? [])].sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label));
+                    return (
+                      <div key={subtype.key} className="border border-border/70 rounded-md">
+                        <div className="flex items-center gap-2 px-2.5 py-2">
+                          <button type="button" onClick={() => toggle(expandedSubtypes, subtype.key, setExpandedSubtypes)} aria-label={`${subtypeOpen ? "Collapse" : "Expand"} ${subtype.label}`} className="p-0.5">{subtypeOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button>
+                          <span className={`flex-1 text-sm ${!subtype.isActive ? "line-through text-muted-foreground" : ""}`}>{subtype.label}</span>
+                          {!subtype.isActive && <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Inactive</span>}
+                          <button type="button" onClick={() => setAdding({ type: "material", caseType: caseType.key, parentKey: subtype.key })} title="Add material" className="p-1 text-muted-foreground hover:text-foreground"><Plus size={13} /></button>
+                          <button type="button" onClick={() => void reorder(subtypes, subtypeIndex, -1, "subtype", caseType.key)} disabled={subtypeIndex === 0 || !!busyKey} title="Move up" className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-30"><ArrowUp size={13} /></button>
+                          <button type="button" onClick={() => void reorder(subtypes, subtypeIndex, 1, "subtype", caseType.key)} disabled={subtypeIndex === subtypes.length - 1 || !!busyKey} title="Move down" className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-30"><ArrowDown size={13} /></button>
+                          <button type="button" onClick={() => void saveEntry(subtype, "subtype", caseType.key, undefined, { isActive: !subtype.isActive })} disabled={subtypeBusy || !!editingId} title={subtype.isActive ? "Disable subtype" : "Enable subtype"} className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-30">{subtypeBusy ? <Loader2 size={13} className="animate-spin" /> : <Ban size={13} />}</button>
+                          {subtype.isCustom && subtype.id && <><button type="button" onClick={() => { setEditingId(subtype.id!); setEditValue(subtype.label); }} disabled={!!busyKey || !!editingId} title="Rename subtype" className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-30"><Pencil size={13} /></button><button type="button" onClick={() => setPendingDelete({ entry: subtype, type: "subtype", parentLabel: caseType.label, blocked: false, childCount: materials.filter((material) => material.isCustom).length })} disabled={!!busyKey || !!editingId} title="Delete subtype" className="p-1 text-muted-foreground hover:text-destructive disabled:opacity-30"><Trash2 size={13} /></button></>}
+                        </div>
+                        {editingId === subtype.id && <CatalogInlineForm action="Rename" value={editValue} saving={busyKey === subtype.id} onCancel={() => setEditingId(null)} onSave={(value) => { const label = value.trim(); if (!label) { setError("Catalog labels must not be blank."); return; } void saveEntry(subtype, "subtype", caseType.key, undefined, { label }).then(() => setEditingId(null)); }} />}
+                        {subtypeOpen && <div className="border-t border-border/70 bg-secondary/10 p-2 pl-8 space-y-1">
+                          {materials.map((material, materialIndex) => {
+                            const materialWithParent = material;
+                            const materialBusy = busyKey === (material.id ?? `material:${material.key}`);
+                            return <div key={material.key} className="flex items-center gap-2 min-h-8">
+                              <span className={`flex-1 text-sm ${!material.isActive ? "line-through text-muted-foreground" : ""}`}>{material.label}</span>
+                              {!material.isActive && <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Inactive</span>}
+                              <button type="button" onClick={() => void reorder(materials, materialIndex, -1, "material", caseType.key, subtype.key)} disabled={materialIndex === 0 || !!busyKey} title="Move up" className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-30"><ArrowUp size={12} /></button>
+                              <button type="button" onClick={() => void reorder(materials, materialIndex, 1, "material", caseType.key, subtype.key)} disabled={materialIndex === materials.length - 1 || !!busyKey} title="Move down" className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-30"><ArrowDown size={12} /></button>
+                              <button type="button" onClick={() => void saveEntry(materialWithParent, "material", caseType.key, subtype.key, { isActive: !material.isActive })} disabled={materialBusy || !!editingId} title={material.isActive ? "Disable material" : "Enable material"} className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-30">{materialBusy ? <Loader2 size={12} className="animate-spin" /> : <Ban size={12} />}</button>
+                              {material.isCustom && material.id && <><button type="button" onClick={() => { setEditingId(material.id!); setEditValue(material.label); }} disabled={!!busyKey || !!editingId} title="Rename material" className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-30"><Pencil size={12} /></button><button type="button" onClick={() => setPendingDelete({ entry: material, type: "material", parentLabel: subtype.label, blocked: false })} disabled={!!busyKey || !!editingId} title="Delete material" className="p-1 text-muted-foreground hover:text-destructive disabled:opacity-30"><Trash2 size={12} /></button></>}
+                              {editingId === material.id && <CatalogInlineForm action="Rename" value={editValue} saving={busyKey === material.id} onCancel={() => setEditingId(null)} onSave={(value) => { const label = value.trim(); if (!label) { setError("Catalog labels must not be blank."); return; } void saveEntry(materialWithParent, "material", caseType.key, subtype.key, { label }).then(() => setEditingId(null)); }} />}
+                            </div>;
+                          })}
+                          {materials.length === 0 && <p className="text-xs text-muted-foreground py-1">No materials yet.</p>}
+                          {adding?.type === "material" && adding.parentKey === subtype.key && <CatalogInlineForm action="Add material" saving={busyKey === `new:material:${subtype.key}`} onCancel={() => setAdding(null)} onSave={addEntry} />}
+                        </div>}
+                      </div>
+                    );
+                  })}
+                  {adding?.type === "subtype" && adding.caseType === caseType.key && <CatalogInlineForm action="Add subtype" saving={busyKey === `new:subtype:${caseType.key}`} onCancel={() => setAdding(null)} onSave={addEntry} />}
+                  <button type="button" onClick={() => setAdding({ type: "subtype", caseType: caseType.key })} className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline px-1 py-1"><Plus size={13} /> Add subtype</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <AlertDialog open={!!pendingDelete} onOpenChange={(open) => { if (!open && !busyKey) setPendingDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{pendingDelete?.blocked ? `Delete "${pendingDelete.entry.label}" anyway?` : `Delete "${pendingDelete?.entry.label}"?`}</AlertDialogTitle>
+            <AlertDialogDescription>{pendingDelete?.blocked ? `This ${pendingDelete.type} is used in ${pendingDelete.usageCount ?? 1} existing case restoration(s). Existing cases keep their current text, but the entry will leave the catalog.` : <>This custom {pendingDelete?.type} will be removed from the catalog.{pendingDelete?.childCount ? ` It will also remove ${pendingDelete.childCount} custom material child${pendingDelete.childCount === 1 ? "" : "ren"}.` : ""} This cannot be undone.</>}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel disabled={!!busyKey}>Cancel</AlertDialogCancel><AlertDialogAction onClick={(event) => { event.preventDefault(); void removeEntry(!!pendingDelete?.blocked); }} disabled={!!busyKey} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{busyKey ? <Loader2 size={13} className="animate-spin" /> : pendingDelete?.blocked ? "Delete anyway" : "Delete"}</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </section>
+  );
+}
+
+interface EffectiveCatalogTree {
+  caseTypes: CatalogCaseTypeNode[];
+}
+
+function DoctorPracticeMemoryPanel() {
+  const { user } = useAuth();
+  const orgId = user?.practiceOrganizationId;
+  const queryClient = useQueryClient();
+  const queryKey = ["rx-doctor-practice-memory", orgId] as const;
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [selectedPracticeId, setSelectedPracticeId] = useState("");
+  const [pendingDelete, setPendingDelete] =
+    useState<RememberedDoctorPracticeMapping | null>(null);
+
+  const mappingsQuery = useQuery<RememberedDoctorPracticeMapping[]>({
+    queryKey,
+    enabled: !!orgId,
+    queryFn: async () => {
+      const response = await apiFetch<{
+        mappings?: RememberedDoctorPracticeMapping[];
+      }>(
+        `/rx-doctor-practice-memory?labOrganizationId=${encodeURIComponent(orgId!)}`,
+      );
+      return response.mappings ?? [];
+    },
+  });
+
+  const practicesQuery = useQuery<Organization[]>({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+    enabled: !!orgId,
+  });
+
+  const practices = useMemo(
+    () =>
+      (practicesQuery.data ?? [])
+        .filter(
+          (practice) =>
+            practice.type === "provider" &&
+            practice.parentLabOrganizationId === orgId &&
+            practice.isActive !== false &&
+            !practice.deletedAt,
+        )
+        .sort((a, b) =>
+          (a.displayName || a.name).localeCompare(b.displayName || b.name),
+        ),
+    [orgId, practicesQuery.data],
+  );
+
+  const updateMutation = useMutation({
+    mutationFn: async ({
+      mapping,
+      providerOrganizationId,
+    }: {
+      mapping: RememberedDoctorPracticeMapping;
+      providerOrganizationId: string;
+    }) => {
+      if (!orgId) throw new Error("No lab organization linked.");
+      return apiFetch("/rx-doctor-practice-memory", {
+        method: "POST",
+        body: JSON.stringify({
+          labOrganizationId: orgId,
+          doctorName: mapping.doctorName,
+          providerOrganizationId,
+        }),
+      });
+    },
+    onSuccess: async () => {
+      setEditingId(null);
+      setSelectedPracticeId("");
+      await queryClient.invalidateQueries({ queryKey });
+      toast({ title: "Remembered practice updated" });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Could not update remembered practice",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (mappingId: string) =>
+      apiFetch(
+        `/rx-doctor-practice-memory/${encodeURIComponent(mappingId)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: async () => {
+      setPendingDelete(null);
+      await queryClient.invalidateQueries({ queryKey });
+      toast({ title: "Remembered practice removed" });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Could not remove remembered practice",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const mappings = mappingsQuery.data ?? [];
+
+  return (
+    <PanelShell
+      title="Remembered doctor practices"
+      subtitle="Review the doctor-to-practice choices learned during prescription intake. Removing one makes the next prescription use the normal practice matching steps."
+    >
+      {mappingsQuery.isLoading ? (
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Loader2 size={15} className="animate-spin" />
+          Loading remembered practices…
+        </div>
+      ) : mappingsQuery.isError ? (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+          <p className="text-sm font-medium text-destructive">
+            Could not load remembered practices.
+          </p>
+          <button
+            type="button"
+            onClick={() => void mappingsQuery.refetch()}
+            className="mt-2 text-xs font-semibold text-primary hover:underline"
+          >
+            Try again
+          </button>
+        </div>
+      ) : mappings.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border px-5 py-8 text-center">
+          <p className="text-sm font-medium">No remembered practices yet</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Mappings appear here after a practice is confirmed during prescription intake.
+          </p>
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-border">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="px-4 py-2.5 font-medium">Doctor</th>
+                <th className="px-4 py-2.5 font-medium">Practice</th>
+                <th className="px-4 py-2.5 font-medium">Last confirmed</th>
+                <th className="px-4 py-2.5 text-right font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {mappings.map((mapping) => {
+                const editing = editingId === mapping.id;
+                const currentPracticeInOptions = practices.some(
+                  (practice) =>
+                    practice.id === mapping.providerOrganizationId,
+                );
+                return (
+                  <tr key={mapping.id} className="align-middle">
+                    <td className="px-4 py-3 font-medium">{mapping.doctorName}</td>
+                    <td className="px-4 py-3">
+                      {editing ? (
+                        <select
+                          aria-label={`Practice for ${mapping.doctorName}`}
+                          value={selectedPracticeId}
+                          onChange={(event) =>
+                            setSelectedPracticeId(event.target.value)
+                          }
+                          className="h-8 w-full min-w-44 rounded-md border border-input bg-background px-2 text-xs"
+                        >
+                          {!currentPracticeInOptions && (
+                            <option
+                              value={mapping.providerOrganizationId}
+                              disabled
+                            >
+                              {mapping.practiceName}
+                            </option>
+                          )}
+                          {practices.map((practice) => (
+                            <option key={practice.id} value={practice.id}>
+                              {practice.displayName || practice.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span
+                          className={
+                            mapping.practiceAvailable
+                              ? undefined
+                              : "text-muted-foreground italic"
+                          }
+                        >
+                          {mapping.practiceName}
+                        </span>
+                      )}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">
+                      {formatDateTime(mapping.updatedAt)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-1.5">
+                        {editing ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateMutation.mutate({
+                                  mapping,
+                                  providerOrganizationId: selectedPracticeId,
+                                })
+                              }
+                              disabled={
+                                !selectedPracticeId ||
+                                selectedPracticeId ===
+                                  mapping.providerOrganizationId ||
+                                updateMutation.isPending
+                              }
+                              className="h-8 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+                            >
+                              {updateMutation.isPending ? "Saving…" : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingId(null);
+                                setSelectedPracticeId("");
+                              }}
+                              disabled={updateMutation.isPending}
+                              className="h-8 rounded-md border border-input px-3 text-xs font-semibold hover:bg-secondary"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingId(mapping.id);
+                                setSelectedPracticeId(
+                                  mapping.providerOrganizationId,
+                                );
+                              }}
+                              disabled={practices.length === 0}
+                              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-input px-2.5 text-xs font-semibold hover:bg-secondary disabled:opacity-50"
+                            >
+                              <Pencil size={13} />
+                              Change
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setPendingDelete(mapping)}
+                              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-destructive/30 px-2.5 text-xs font-semibold text-destructive hover:bg-destructive/5"
+                            >
+                              <Trash2 size={13} />
+                              Remove
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <AlertDialog
+        open={!!pendingDelete}
+        onOpenChange={(open) => {
+          if (!open && !deleteMutation.isPending) setPendingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove this remembered practice?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The next prescription for {pendingDelete?.doctorName ?? "this doctor"} will
+              fall back to the prescription name and normal practice matching.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                if (pendingDelete) deleteMutation.mutate(pendingDelete.id);
+              }}
+              disabled={deleteMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteMutation.isPending ? "Removing…" : "Remove mapping"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </PanelShell>
+  );
+}
+
+function measuredBackupPhaseProgress(status: LocalBackupLiveStatus | null): {
+  completed: number;
+  total: number;
+} | null {
+  if (!status || (status.state !== "running" && status.state !== "awaiting_verification")) return null;
+  const metrics = status.metrics;
+  const pair = status.phase === "case-media transfer into archive"
+    ? [metrics.completedBytes, metrics.totalBytes]
+    : status.phase === "OneDrive transfer"
+      ? [metrics.uploadedBytes, metrics.uploadTotalBytes]
+      : status.phase === "SFTP transfer" || status.phase === "local download" || status.phase === "archive assembly/encryption and local transfer"
+        ? [metrics.transferredBytes, metrics.transferTotalBytes]
+        : null;
+  if (!pair || !Number.isFinite(pair[0]) || !Number.isFinite(pair[1]) || pair[1]! <= 0) return null;
+  return { completed: Math.min(pair[0]!, pair[1]!), total: pair[1]! };
+}
+
+function BackupProgressBar({ status }: { status: LocalBackupLiveStatus | null }) {
+  const progress = measuredBackupPhaseProgress(status);
+  const percent = progress ? Math.floor((progress.completed / progress.total) * 100) : null;
+  const description = percent === null
+    ? "Backup is running; this phase does not report a measurable percentage."
+    : `${percent}% of the current backup phase complete.`;
+  return (
+    <div className="flex items-center gap-2" data-testid="manual-backup-progress">
+      <div
+        role="progressbar"
+        aria-label="Backup progress"
+        aria-valuemin={progress ? 0 : undefined}
+        aria-valuemax={progress ? 100 : undefined}
+        aria-valuenow={percent ?? undefined}
+        aria-valuetext={description}
+        data-testid="manual-backup-progress-bar"
+        className="h-2 flex-1 overflow-hidden rounded-full bg-blue-100 dark:bg-blue-950/60"
+      >
+        <div
+          className="h-full rounded-full bg-blue-600 backup-progress-stripes"
+          style={{
+            width: `${percent ?? 100}%`,
+            backgroundImage: "repeating-linear-gradient(45deg,rgba(255,255,255,.32) 0,rgba(255,255,255,.32) 6px,transparent 6px,transparent 12px)",
+          }}
+        />
+      </div>
+      {percent !== null && <span className="min-w-9 text-right text-[11px] tabular-nums text-blue-700 dark:text-blue-300">{percent}%</span>}
+    </div>
+  );
 }

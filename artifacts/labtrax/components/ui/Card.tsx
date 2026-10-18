@@ -1,8 +1,19 @@
 import React from "react";
-import { View, Pressable, StyleSheet, ViewStyle, StyleProp } from "react-native";
+import {
+  View,
+  Pressable,
+  StyleSheet,
+  ViewStyle,
+  StyleProp,
+  type PressableProps,
+} from "react-native";
 import { useTheme } from "@/lib/theme-context";
 
-interface CardProps {
+interface CardProps
+  extends Pick<
+    PressableProps,
+    "accessibilityHint" | "accessibilityLabel" | "accessibilityRole"
+  > {
   children: React.ReactNode;
   /** Padding preset. `none` lets the caller control insets (e.g. list cards). */
   padding?: "none" | "sm" | "md" | "lg";
@@ -31,6 +42,9 @@ export function Card({
   delayLongPress,
   testID,
   style,
+  accessibilityHint,
+  accessibilityLabel,
+  accessibilityRole,
 }: CardProps) {
   const { colors, radius, spacing, shadows } = useTheme();
 
@@ -62,6 +76,9 @@ export function Card({
         onLongPress={onLongPress}
         delayLongPress={delayLongPress}
         testID={testID}
+        accessibilityHint={accessibilityHint}
+        accessibilityLabel={accessibilityLabel}
+        accessibilityRole={accessibilityRole}
         style={({ pressed }) => [cardStyle, pressed && { opacity: 0.85 }]}
       >
         {children}

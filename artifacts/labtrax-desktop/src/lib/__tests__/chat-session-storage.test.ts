@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   sanitizeMessagesForStorage,
   readStoredSessions,
@@ -14,7 +14,7 @@ import {
 describe("sanitizeMessagesForStorage", () => {
   it("strips the synthetic welcome message", () => {
     const msgs: ChatMsg[] = [
-      { id: "welcome", role: "assistant", content: "Hi! I'm Maynard." },
+      { id: "welcome", role: "assistant", content: "Hi! I'm LabTrax Assistant." },
       { id: "m1", role: "user", content: "Hello" },
     ];
     const result = sanitizeMessagesForStorage(msgs);
@@ -71,7 +71,7 @@ describe("sanitizeMessagesForStorage", () => {
     expect(result[0]!.proposedAction?.state).toBe("rejected");
   });
 
-  it("collapses a pending proposedAction to 'rejected'", () => {
+  it("preserves a pending proposedAction with a finite future expiry", () => {
     const msg: ChatMsg = {
       id: "a3",
       role: "assistant",
@@ -85,11 +85,10 @@ describe("sanitizeMessagesForStorage", () => {
     };
     const result = sanitizeMessagesForStorage([msg]);
     expect(result).toHaveLength(1);
-    expect(result[0]!.proposedAction?.state).toBe("rejected");
+    expect(result[0]!.proposedAction?.state).toBe("pending");
   });
 
-  it("sets expiresAt to a past timestamp when collapsing a pending action", () => {
-    const before = Date.now();
+  it("collapses a pending action with a missing expiry", () => {
     const msg: ChatMsg = {
       id: "a4",
       role: "assistant",
@@ -98,15 +97,13 @@ describe("sanitizeMessagesForStorage", () => {
         toolName: "markInvoicePaid",
         summary: "Pay invoice",
         state: "pending",
-        expiresAt: Date.now() + 60_000,
       },
     };
     const result = sanitizeMessagesForStorage([msg]);
-    const expiresAt = result[0]!.proposedAction!.expiresAt!;
-    expect(expiresAt).toBeLessThan(before + 1);
+    expect(result[0]!.proposedAction!.state).toBe("rejected");
   });
 
-  it("preserves all other fields on a collapsed pending message", () => {
+  it("preserves all other fields on an expired pending message", () => {
     const msg: ChatMsg = {
       id: "a5",
       role: "assistant",
@@ -116,7 +113,7 @@ describe("sanitizeMessagesForStorage", () => {
         toolName: "doSomething",
         summary: "Do something important",
         state: "pending",
-        expiresAt: Date.now() + 60_000,
+        expiresAt: Date.now() - 1,
       },
     };
     const result = sanitizeMessagesForStorage([msg]);
@@ -161,7 +158,7 @@ describe("sanitizeMessagesForStorage", () => {
     expect(pendingStates.every((s) => s === "rejected")).toBe(true);
   });
 
-  it("never writes a pending state — confirmed and done are passed through as-is", () => {
+  it("collapses pending and confirmed states, while preserving completed actions", () => {
     const msgs: ChatMsg[] = [
       {
         id: "c1",
@@ -181,7 +178,7 @@ describe("sanitizeMessagesForStorage", () => {
       },
     ];
     const result = sanitizeMessagesForStorage(msgs);
-    expect(result[0]!.proposedAction!.state).toBe("confirmed");
+    expect(result[0]!.proposedAction!.state).toBe("rejected");
     expect(result[1]!.proposedAction!.state).toBe("done");
   });
 
@@ -199,7 +196,7 @@ describe("sanitizeMessagesForStorage", () => {
               id: "abc",
               caseNumber: "1234",
               patientName: "Jane Doe",
-              doctorName: "Dr. Smith",
+              doctorName: "Dr. Synthetic063",
               notes: "x".repeat(5000),
             },
           },
@@ -402,5 +399,103 @@ describe("readStoredSessions / writeStoredSessions round-trip", () => {
     const parsed = JSON.parse(store[STORAGE_KEY]!);
     expect(Array.isArray(parsed.sessions)).toBe(true);
     expect(parsed.sessions[0].id).toBe("s1");
+  });
+
+  it("writes sanitized messages and restores live pending but not confirmed actions", () => {
+    const messages: ChatMsg[] = [
+      {
+        id: "live",
+        role: "assistant",
+        proposedAction: {
+          actionId: "live-action",
+          toolName: "updateCaseStatus",
+          summary: "Live",
+          state: "pending",
+          expiresAt: Date.now() + 60_000,
+        },
+      },
+      {
+        id: "running",
+        role: "assistant",
+        proposedAction: {
+          actionId: "running-action",
+          toolName: "updateCaseStatus",
+          summary: "Running",
+          state: "confirmed",
+        },
+      },
+    ];
+    const sanitized = sanitizeMessagesForStorage(messages);
+    writeStoredSessions([{
+      id: "sanitized",
+      key: "general",
+      pinnedCases: [],
+      messages: sanitized,
+      createdAt: Date.now(),
+      lastActive: Date.now(),
+    }]);
+
+    const restored = readStoredSessions()[0]!.messages;
+    expect(restored.find((m) => m.id === "live")!.proposedAction!.state).toBe("pending");
+    expect(restored.find((m) => m.id === "running")!.proposedAction!.state).toBe("rejected");
+  });
+
+  it("preserves an unexpired pending action on restore for confirmation", () => {
+    const session: StoredSession = {
+      id: "pending-live",
+      key: "general",
+      pinnedCases: [],
+      messages: [{
+        id: "a1",
+        role: "assistant",
+        proposedAction: {
+          actionId: "act-live",
+          toolName: "updateCaseStatus",
+          summary: "Update case",
+          state: "pending",
+          expiresAt: Date.now() + 60_000,
+        },
+      }],
+      createdAt: Date.now(),
+      lastActive: Date.now(),
+    };
+    writeStoredSessions([session]);
+    expect(readStoredSessions()[0]!.messages[0]!.proposedAction!.state).toBe("pending");
+  });
+
+  it("expires stale pending and all confirmed actions on restore", () => {
+    const session: StoredSession = {
+      id: "stale-actions",
+      key: "general",
+      pinnedCases: [],
+      messages: [
+        {
+          id: "stale",
+          role: "assistant",
+          proposedAction: {
+            actionId: "act-stale",
+            toolName: "updateCaseStatus",
+            summary: "Stale",
+            state: "pending",
+            expiresAt: Date.now() - 1,
+          },
+        },
+        {
+          id: "confirmed",
+          role: "assistant",
+          proposedAction: {
+            actionId: "act-confirmed",
+            toolName: "updateCaseStatus",
+            summary: "Confirmed",
+            state: "confirmed",
+          },
+        },
+      ],
+      createdAt: Date.now(),
+      lastActive: Date.now(),
+    };
+    writeStoredSessions([session]);
+    const actions = readStoredSessions()[0]!.messages.map((m) => m.proposedAction!.state);
+    expect(actions).toEqual(["rejected", "rejected"]);
   });
 });

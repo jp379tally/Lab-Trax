@@ -177,4 +177,26 @@ maybe("Admin PIN forgot flow (db integration)", () => {
     expect(stored).toMatch(/^\d{6}$/);
     expect(mailArg.text).toContain(stored);
   });
+
+  it("rate-limits repeated attempts to set the platform admin PIN", async () => {
+    const attempts = [];
+    for (let attempt = 0; attempt < 6; attempt++) {
+      attempts.push(
+        await request(appMod.default)
+          .post("/api/admin/pin/set")
+          .set("Authorization", `Bearer ${tokens.admin}`)
+          .send({ currentPin: "not-the-current-pin", newPin: "1234" }),
+      );
+    }
+
+    expect(attempts.map((response) => response.status)).toEqual([
+      403,
+      403,
+      403,
+      403,
+      403,
+      429,
+    ]);
+    expect(attempts[5].headers["retry-after"]).toBeTruthy();
+  });
 });

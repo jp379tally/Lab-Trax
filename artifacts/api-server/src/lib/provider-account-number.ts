@@ -1,8 +1,28 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { organizations } from "@workspace/db";
 import { HttpError } from "./http";
 import { notDeleted } from "./soft-delete";
+
+// Shared type for either the top-level db client or a Drizzle transaction,
+// which share the same query/insert/update interface. The same pattern is used
+// in lib/default-categories.ts.
+type DbOrTx = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Split a raw semicolon-separated account number string into individual
+ * segments. Trims each segment and filters out blanks. Returns an empty array
+ * when `raw` is null/undefined/empty.
+ *
+ * Example: "LAB-EXAMPLE-1280-BG-1; EXAMPLE-2603-BC-1" → ["LAB-EXAMPLE-1280-BG-1", "EXAMPLE-2603-BC-1"]
+ */
+export function parseAccountNumbers(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 /**
  * Derive a short uppercase acronym from a lab name to prefix new provider
@@ -41,7 +61,7 @@ function extractAddressNumerics(address: string | null | undefined): string {
 
 // Derive 1-3 character initials from a doctor name. Falls back to "DR" when
 // the name is empty/unusable so we never produce an empty token.
-function deriveDoctorInitials(doctorName: string | null | undefined): string {
+export function deriveDoctorInitials(doctorName: string | null | undefined): string {
   const cleaned = String(doctorName ?? "")
     .replace(/dr\.?\s*/i, "")
     .trim();
@@ -73,76 +93,94 @@ function buildAccountNumberBase(input: AccountNumberInput): string {
   return `${initials}`;
 }
 
+/** Deterministic standalone prefix, exported for maintenance tooling/tests. */
+export function standaloneAccountNumberBase(input: AccountNumberInput): string {
+  return `P-${buildAccountNumberBase(input)}`;
+}
+
 // Returns true if no other **active (non-deleted)** org under
-// `parentLabOrganizationId` already uses `accountNumber`.
-//
-// Soft-deleted orgs are excluded so their account numbers are treated as
-// reclaimed slots and can be reused by new practices. When the DB unique index
-// later rejects the insert (because the index has no `WHERE deleted_at IS NULL`
-// predicate), the caller must detect the `organizations_parent_lab_account_number_unique`
-// constraint and fall back to `isAccountNumberAvailableAllRows`.
+// `parentLabOrganizationId` already uses `accountNumber` as any of its
+// semicolon-separated segments.
 //
 // Excludes `excludeOrgId` from the check so PATCH callers can re-save without
 // colliding with themselves.
+//
+// `client` may be a transaction (tx) so this check can be made atomic with
+// the subsequent insert/update.
 async function isAccountNumberAvailable(
   parentLabOrganizationId: string,
   accountNumber: string,
-  excludeOrgId: string | null
+  excludeOrgId: string | null,
+  client: DbOrTx = db
 ): Promise<boolean> {
   const conditions = [
     eq(organizations.parentLabOrganizationId, parentLabOrganizationId),
-    eq(organizations.accountNumber, accountNumber),
     notDeleted(organizations),
   ];
   if (excludeOrgId) {
     conditions.push(ne(organizations.id, excludeOrgId));
   }
-  const existing = await db.query.organizations.findFirst({
+  const existingOrgs = await (client as typeof db).query.organizations.findMany({
     where: and(...conditions),
+    columns: { id: true, accountNumber: true },
   });
-  return !existing;
+  const usedSegments = new Set<string>();
+  for (const org of existingOrgs) {
+    for (const seg of parseAccountNumbers(org.accountNumber)) {
+      usedSegments.add(seg);
+    }
+  }
+  return !usedSegments.has(accountNumber);
 }
 
 // Returns true if no other org (including soft-deleted) under
-// `parentLabOrganizationId` already uses `accountNumber`.
+// `parentLabOrganizationId` already uses `accountNumber` as any segment.
 //
 // Used by the fallback generator: when the primary generator (which excludes
-// deleted rows) picks a reclaimed number that the DB unique index still holds,
-// the retry must skip ALL occupied numbers including soft-deleted ones.
+// deleted rows) picks a reclaimed number, the retry must skip ALL occupied
+// numbers including soft-deleted ones.
 async function isAccountNumberAvailableAllRows(
   parentLabOrganizationId: string,
   accountNumber: string,
-  excludeOrgId: string | null
+  excludeOrgId: string | null,
+  client: DbOrTx = db
 ): Promise<boolean> {
   const conditions = [
     eq(organizations.parentLabOrganizationId, parentLabOrganizationId),
-    eq(organizations.accountNumber, accountNumber),
   ];
   if (excludeOrgId) {
     conditions.push(ne(organizations.id, excludeOrgId));
   }
-  const existing = await db.query.organizations.findFirst({
+  const existingOrgs = await (client as typeof db).query.organizations.findMany({
     where: and(...conditions),
+    columns: { id: true, accountNumber: true },
   });
-  return !existing;
+  const usedSegments = new Set<string>();
+  for (const org of existingOrgs) {
+    for (const seg of parseAccountNumbers(org.accountNumber)) {
+      usedSegments.add(seg);
+    }
+  }
+  return !usedSegments.has(accountNumber);
 }
 
 // Generate a unique-within-the-lab account number from the practice info,
 // prepending the lab's acronym and appending an integer tiebreaker until a
 // free slot is found. Format: <ACRONYM>-<address-numerics>-<initials>-<n>
-// (e.g. "SDR1-2603-BC-1"). When the lab name cannot be resolved or produces
+// (e.g. "LAB-EXAMPLE-2603-BC-1"). When the lab name cannot be resolved or produces
 // an empty acronym, the legacy format (<address-numerics>-<initials>-<n>) is
 // used so callers always get a valid account number.
-// Excludes soft-deleted orgs from the availability check so reclaimed account
-// numbers (from deleted practices) can be reused. If the DB insert later
-// rejects with a unique-constraint violation (the index is non-partial and
-// still covers deleted rows), call `generateProviderAccountNumberFallback`
-// instead and retry the insert.
+//
+// Pass `client` (a Drizzle transaction) to make the availability check part of
+// an atomic check+write protected by an advisory lock.
 export async function generateProviderAccountNumber(
   parentLabOrganizationId: string,
-  input: AccountNumberInput
+  input: AccountNumberInput,
+  client: DbOrTx = db,
+  reservedAccountNumbers?: Set<string>,
 ): Promise<string> {
-  // Look up the parent lab to derive its acronym.
+  // Look up the parent lab to derive its acronym. Uses the top-level db
+  // (read-only, no need to run inside the caller's transaction).
   const labOrg = await db.query.organizations.findFirst({
     where: and(
       eq(organizations.id, parentLabOrganizationId),
@@ -158,7 +196,8 @@ export async function generateProviderAccountNumber(
     const rawCandidate = `${base}-${i}`;
     const candidate = acronym ? `${acronym}-${rawCandidate}` : rawCandidate;
     if (
-      await isAccountNumberAvailable(parentLabOrganizationId, candidate, null)
+      !reservedAccountNumbers?.has(candidate) &&
+      await isAccountNumberAvailable(parentLabOrganizationId, candidate, null, client)
     ) {
       return candidate;
     }
@@ -169,14 +208,33 @@ export async function generateProviderAccountNumber(
   );
 }
 
+/** Allocate a canonical number for a standalone provider.  Lab-linked
+ * practices deliberately continue to use the lab-scoped generator above. */
+export async function generateStandaloneProviderAccountNumber(
+  input: AccountNumberInput,
+  client: DbOrTx = db,
+  reservedAccountNumbers?: Set<string>,
+): Promise<string> {
+  const rows = await (client as typeof db).query.organizations.findMany({
+    where: and(eq(organizations.type, "provider")),
+    columns: { accountNumber: true },
+  });
+  const used = new Set(rows.flatMap((r) => parseAccountNumbers(r.accountNumber)));
+  for (let i = 1; i <= 9999; i++) {
+    const candidate = `${standaloneAccountNumberBase(input)}-${i}`;
+    if (!used.has(candidate) && !reservedAccountNumbers?.has(candidate)) return candidate;
+  }
+  throw new HttpError(500, "Could not allocate an account number; please supply one manually.");
+}
+
 // Fallback generator used when the primary generator's candidate collided
-// with the DB unique index (because the index covers soft-deleted rows).
-// This variant includes ALL rows — including soft-deleted — so it skips both
-// active and deleted orgs' account numbers, guaranteeing the candidate is
-// truly free in the database.
+// with a soft-deleted row. This variant includes ALL rows — including
+// soft-deleted — so it skips both active and deleted orgs' account number
+// segments, guaranteeing the candidate is truly free in the database.
 export async function generateProviderAccountNumberFallback(
   parentLabOrganizationId: string,
-  input: AccountNumberInput
+  input: AccountNumberInput,
+  client: DbOrTx = db
 ): Promise<string> {
   const base = buildAccountNumberBase(input);
   for (let i = 1; i <= 9999; i++) {
@@ -185,7 +243,8 @@ export async function generateProviderAccountNumberFallback(
       await isAccountNumberAvailableAllRows(
         parentLabOrganizationId,
         candidate,
-        null
+        null,
+        client
       )
     ) {
       return candidate;
@@ -197,34 +256,115 @@ export async function generateProviderAccountNumberFallback(
   );
 }
 
+/**
+ * Run `fn` inside a PostgreSQL transaction that first acquires a
+ * transaction-level advisory lock scoped to `labOrgId`. The lock is
+ * automatically released when the transaction commits or rolls back,
+ * ensuring that concurrent account-number checks + writes for the same lab
+ * are serialized rather than racing.
+ *
+ * Lock key: namespace=1 (our fixed app namespace), key2=hashtext(labOrgId).
+ * Uses the two-integer form of pg_advisory_xact_lock so it occupies a
+ * distinct keyspace from single-bigint advisory locks.
+ *
+ * When `labOrgId` is null (e.g. lab orgs being created), no lock is needed
+ * and `fn` runs against the bare `db` client without a wrapping transaction.
+ */
+export async function withAccountNumberLock<T>(
+  labOrgId: string | null,
+  fn: (client: DbOrTx) => Promise<T>
+): Promise<T> {
+  return db.transaction(async (tx: any) => {
+    // A fixed key serializes standalone provider allocation (where there is
+    // no parent lab); lab keys remain independently concurrent.
+    await tx.execute(
+      labOrgId
+        ? sql`SELECT pg_advisory_xact_lock(1, hashtext(${labOrgId}))`
+        : sql`SELECT pg_advisory_xact_lock(1, hashtext('standalone-provider-account-number'))`,
+    );
+    return fn(tx);
+  });
+}
+
 // Validate a caller-supplied account number: format and lab-scoped
-// uniqueness. Throws HttpError on failure; returns the trimmed value on
-// success.
+// uniqueness. Accepts a semicolon-separated list of segments; each segment is
+// validated individually for format, and each must be unique across all active
+// practices in the lab. Throws HttpError on failure; returns the trimmed raw
+// value (preserving the semicolons) on success.
+//
+// Pass `client` (a Drizzle transaction) so the uniqueness check is part of an
+// atomic check+write protected by withAccountNumberLock.
 export async function assertCustomAccountNumberAvailable(
   parentLabOrganizationId: string,
   accountNumber: string,
-  excludeOrgId: string | null
+  excludeOrgId: string | null,
+  client: DbOrTx = db
 ): Promise<string> {
   const trimmed = accountNumber.trim();
   if (!trimmed) {
     throw new HttpError(400, "Account number cannot be empty.");
   }
-  if (trimmed.length > 64) {
-    throw new HttpError(400, "Account number is too long.");
+
+  const segments = parseAccountNumbers(trimmed);
+  if (segments.length === 0) {
+    throw new HttpError(400, "Account number cannot be empty.");
   }
-  if (!/^[A-Za-z0-9._\- ]+$/.test(trimmed)) {
+
+  // Reject duplicate segments within the submitted list (e.g. "A; A").
+  const segmentSet = new Set(segments);
+  if (segmentSet.size !== segments.length) {
     throw new HttpError(
       400,
-      "Account number can only contain letters, numbers, spaces, dots, dashes, and underscores."
+      "Account number contains duplicate segments."
     );
   }
-  const available = await isAccountNumberAvailable(
-    parentLabOrganizationId,
-    trimmed,
-    excludeOrgId
-  );
-  if (!available) {
-    throw new HttpError(409, "That account number is already in use.");
+
+  // Validate each segment's format independently.
+  for (const segment of segments) {
+    if (segment.length > 64) {
+      throw new HttpError(
+        400,
+        `Account number segment "${segment}" is too long.`
+      );
+    }
+    if (!/^[A-Za-z0-9._\- ]+$/.test(segment)) {
+      throw new HttpError(
+        400,
+        "Account number can only contain letters, numbers, spaces, dots, dashes, and underscores."
+      );
+    }
   }
+
+  // Fetch all active practices under this lab (excluding the org being edited)
+  // and collect the full set of segments already in use.
+  const conditions = [
+    eq(organizations.parentLabOrganizationId, parentLabOrganizationId),
+    notDeleted(organizations),
+  ];
+  if (excludeOrgId) {
+    conditions.push(ne(organizations.id, excludeOrgId));
+  }
+  const existingOrgs = await (client as typeof db).query.organizations.findMany({
+    where: and(...conditions),
+    columns: { id: true, accountNumber: true },
+  });
+
+  const usedSegments = new Set<string>();
+  for (const org of existingOrgs) {
+    for (const seg of parseAccountNumbers(org.accountNumber)) {
+      usedSegments.add(seg);
+    }
+  }
+
+  // Check each incoming segment against the in-use set.
+  for (const segment of segments) {
+    if (usedSegments.has(segment)) {
+      throw new HttpError(
+        409,
+        `Account number '${segment}' already belongs to another customer. Semicolon-separated values are aliases for the same practice; use Provider Portal Access on the customer profile to grant access to an existing account.`,
+      );
+    }
+  }
+
   return trimmed;
 }

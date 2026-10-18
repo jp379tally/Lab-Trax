@@ -47,8 +47,11 @@ All three Replit-native paths:
 To update the auto-update feed so that NSIS-installed users receive an
 update notification, the GitHub Actions `release.yml` Windows build must run:
 
-1. Push a `v*` tag to trigger `release.yml`, **or** manually re-run the
-   `release.yml` workflow from the GitHub Actions tab.
+1. Run the `auto-tag-desktop-release.yml` workflow (it creates the
+   `vX.Y.Z` tag and then calls `release.yml` with it), **or** run the
+   `release.yml` workflow directly from the GitHub Actions tab and enter
+   an existing tag. Note that pushing a `v*` tag on its own does **not**
+   start a build — `release.yml` has no tag trigger.
 2. The Windows job builds `LabTrax-Setup.exe`, generates `latest.yml`
    referencing the EXE, and publishes both to App Storage via
    `/api/admin/desktop-installer/publish`.
@@ -68,32 +71,75 @@ the same `%LOCALAPPDATA%\Programs\LabTrax\` directory.
 
 **REGRESSION_GUARDRAILS.md** has the authoritative parity rule and step-by-step publish verification checklist.
 
+### Microsoft Store MSIX channel
+
+The Microsoft Store package is built and submitted separately from the
+standalone NSIS installer. The Store app relies on Store-managed updates and
+must not update itself with `LabTrax-Setup.exe`; `process.windowsStore` disables
+the generic `electron-updater` path only for the Store package. Direct NSIS
+installs continue to use `/downloads/latest.yml` and `LabTrax-Setup.exe` as
+before.
+
+Use [microsoft-store-submission-checklist.md](./microsoft-store-submission-checklist.md)
+for the Partner Center variables, independent Store-package checks, direct
+installer update smoke, listing requirements, and certification handoff.
+
 ---
 
 ### Mode B: GitHub Actions (requires GitHub remote + secrets)
 
-Every merge to `main` automatically tags a new patch release via
-`.github/workflows/auto-tag-desktop-release.yml`. That workflow:
+Every desktop-relevant push to `main` cuts and ships a new patch release
+with **no manual steps** — this is what keeps the Electron installer in
+sync with the web app. `.github/workflows/auto-tag-desktop-release.yml`
+runs on `push` (branch `main`) and:
 
-1. Skips when only non-desktop paths (`docs/**`, `**.md`, mobile app,
-   mockup sandbox, attached assets, EAS workflow, `.local/**`,
-   `.agents/**`) changed, or when the head commit message contains
-   `[skip desktop-release]` or `[skip ci]`.
-2. Bumps the patch version in `artifacts/labtrax-desktop/package.json`,
-   commits with `[skip ci]` (so the bump itself doesn't loop), tags
-   `vX.Y.Z`, and pushes both using `BUILD_BOT_TOKEN` (a fine-grained PAT
-   that can push to protected `main`).
-3. The pushed tag fires `.github/workflows/release.yml` which builds
-   Windows + macOS and **must** auto-publish to `/downloads/`. Both
-   publish steps now exit non-zero (not silently 0) when
-   `PLATFORM_ADMIN_SECRET` or `PUBLISH_API_BASE_URL` is missing — auto-
-   release is the primary delivery path, so a missing secret is a real
-   misconfiguration to surface, not a benign opt-out.
+1. Skips when only non-desktop paths changed. The `paths-ignore` filter
+   on the push trigger and the "Determine whether changes are
+   desktop-relevant" step both exclude `artifacts/labtrax/**`,
+   `artifacts/mockup-sandbox/**`, `docs/**`, `.local/**`,
+   `attached_assets/**`, and `**/*.md`. **Keep those two lists in sync.**
+   The step re-checks the diff since the last `v*` tag, because path
+   filters don't apply to `workflow_dispatch` and a single push may
+   bundle several commits.
+2. Skips when the head commit message contains `[skip desktop-release]`
+   or `[skip ci]` (the escape hatch for docs-only / infra-only merges).
+3. Bumps the patch version in `artifacts/labtrax-desktop/package.json`,
+   commits with `[skip ci]`, tags `vX.Y.Z`, and pushes both using
+   `BUILD_BOT_TOKEN` (a fine-grained PAT that can push to protected
+   `main`). The push is retried with a rebase if `main` moved underneath
+   the run.
+4. Calls `.github/workflows/release.yml` as a reusable workflow
+   (`workflow_call`) with the tag it just created, passing
+   `secrets: inherit`. That builds, signs, and notarizes Windows +
+   macOS and **must** auto-publish to `/downloads/`. Both publish steps
+   exit non-zero (not silently 0) when `PLATFORM_ADMIN_SECRET` or
+   `PUBLISH_API_BASE_URL` is missing — auto-release is the primary
+   delivery path, so a missing secret is a real misconfiguration to
+   surface, not a benign opt-out.
+
+Electron installs poll the feed every 4 hours, so users see the new
+version within 4 hours of the merge.
+
+**No infinite loop:** the bump commit touches
+`artifacts/labtrax-desktop/package.json`, which is deliberately *not* in
+`paths-ignore`, so the `[skip ci]` marker in
+`chore(desktop): release vX.Y.Z [skip ci]` is what stops the re-trigger.
+GitHub suppresses the push event for `[skip ci]` commits, and the `if:`
+on the `tag` job is the second, explicit guard. The same applies to
+`release.yml`'s `chore: bump desktop build number … [skip ci]` commit.
+
+**When it fails:** the release runs as a job inside the auto-tag run, so
+a build/publish failure fails that run and the standard GitHub Actions
+failure notification fires with a link to the failing job. The tag stays
+on origin — re-run by dispatching **Release** manually with that same
+tag. A failed release never blocks the next merge.
 
 To pause auto-release temporarily, disable the
 `auto-tag-desktop-release.yml` workflow in Actions → Workflows. To skip
 a single merge, append `[skip desktop-release]` to the merge commit
-message.
+message. To rebuild an existing tag, run **Release** from the Actions tab
+and enter the tag (`workflow_dispatch` is still supported alongside
+`workflow_call`).
 
 The runbook below verifies the *download / install swap* mechanics that
 unit tests can't cover. Run it before any release that changes

@@ -429,6 +429,38 @@ maybe(
       }
     );
 
+    it("persists prescription provenance without changing legacy history media semantics", async () => {
+      const app = appMod.default;
+      const { db, labCases, caseAttachments } = dbMod as any;
+      const fileName = "desktop-return-prescription.jpg";
+
+      const res = await request(app)
+        .post(`/api/cases/${legacyCaseId}/attachments`)
+        .set("Authorization", `Bearer ${tokens.member}`)
+        .send({
+          storageKey: `/uploads/case-media/${fileName}`,
+          fileName,
+          fileType: "image/jpeg",
+          category: "prescription",
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.data.category).toBe("prescription");
+      const row = await db.query.caseAttachments.findFirst({
+        where: eq(caseAttachments.id, res.body.data.id),
+      });
+      expect(row.category).toBe("prescription");
+
+      const caseRow = await db.query.labCases.findFirst({
+        where: eq(labCases.id, legacyCaseId),
+      });
+      const entry = JSON.parse(caseRow.caseData as string).activityLog.find(
+        (item: any) => item.attachmentId === res.body.data.id,
+      );
+      expect(entry.category).toBe("prescription");
+      expect(entry.type).toBe("document");
+    });
+
     it(
       "leaves category null and activityLog entries unstamped when no category is sent",
       async () => {

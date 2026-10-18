@@ -1,9 +1,325 @@
 name: Release
 
+# Manually triggered, but anchored to an existing version tag rather than to
+# whatever branch it is dispatched from. Without the required `tag` input, a
+# dispatch from the default branch (main) would name the release "LabTrax main"
+# and build whatever happens to be on main — not a specific vX.Y.Z. The build
+# jobs check out the tag, so the packaged version and the release name always
+# match the tag the operator selected.
+#
+# Two entry points, both anchored to a `tag` input:
+#  • workflow_call  — the normal path. "Auto-tag Desktop release on merge to
+#    main" creates the vX.Y.Z tag and then calls this workflow with it, so a
+#    desktop-relevant merge produces a signed, published installer with no
+#    manual step. The caller must pass `secrets: inherit` (signing,
+#    notarization, and publish secrets are all read from `secrets.*` below).
+#  • workflow_dispatch — the manual escape hatch. Run this workflow from the
+#    Actions tab and enter an existing tag to rebuild/republish it.
+#
+# Both paths read the tag from `inputs.tag`, so every job below is identical
+# regardless of how the run started. validate-tag applies the same format +
+# existence checks either way.
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Existing version tag to build and release (e.g. v1.0.5)."
+        required: true
+        type: string
+      include_store_package:
+        description: "Also build and attach the separately validated Microsoft Store MSIX"
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to build and release (e.g. v1.0.5)."
+        required: true
+        type: string
+      include_store_package:
+        description: "Also build and attach the separately validated Microsoft Store MSIX"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
+  # ── Tag validation ────────────────────────────────────────────────────────────
+  # Fail fast — before any build minutes are spent — if the operator supplied a
+  # ref that is not a proper vX.Y.Z tag, or a tag that does not exist on origin.
+  # This is what stops a dispatch from ever publishing a release named "main" or
+  # building an unintended version.
+  validate-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate tag format
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Input '$TAG' is not a valid version tag. Expected vMAJOR.MINOR.PATCH (e.g. v1.0.5), optionally with a prerelease suffix (e.g. v1.0.5-rc.1)."
+            exit 1
+          fi
+          echo "::notice::Tag input format OK: $TAG"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag exists on origin
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag }}"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} does not exist on origin. Run the auto-tag workflow first (or push the tag) before releasing."
+            exit 1
+          fi
+          echo "::notice::Tag ${TAG} exists on origin — proceeding."
+
+  # ── Provider isolation browser gate ──────────────────────────────────────────
+  # Exercise the tagged desktop renderer before allocating build numbers or
+  # packaging installers. The API process is started as well so this gate keeps
+  # matching the two-service release topology, even though the focused browser
+  # regression intercepts API responses to deterministically simulate two
+  # practices and delayed stale responses.
+  provider-isolation-browser:
+    needs: [validate-tag]
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/labtrax_e2e
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: labtrax_e2e
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d labtrax_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium and system dependencies
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Apply isolated browser-test database schema
+        run: pnpm --filter @workspace/db run push-force
+
+      - name: Start API and desktop services
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p playwright-service-logs
+
+          PORT=4174 \
+          NODE_ENV=test \
+          JWT_SECRET=provider-isolation-browser-test \
+          SESSION_SECRET=provider-isolation-browser-test \
+            pnpm --filter @workspace/api-server run dev \
+            >playwright-service-logs/api.log 2>&1 &
+          echo "$!" > playwright-service-logs/api.pid
+
+          PORT=4173 \
+          BASE_PATH=/desktop/ \
+          VITE_API_BASE_URL=http://127.0.0.1:4174 \
+            pnpm --filter @workspace/labtrax-desktop run dev \
+            >playwright-service-logs/desktop.log 2>&1 &
+          echo "$!" > playwright-service-logs/desktop.pid
+
+          for attempt in {1..90}; do
+            api_ready=false
+            desktop_ready=false
+            curl --fail --silent --output /dev/null http://127.0.0.1:4174/api/healthz && api_ready=true || true
+            curl --fail --silent --output /dev/null http://127.0.0.1:4173/desktop/ && desktop_ready=true || true
+            if [[ "$api_ready" == true && "$desktop_ready" == true ]]; then
+              exit 0
+            fi
+            if ! kill -0 "$(cat playwright-service-logs/api.pid)" 2>/dev/null; then
+              echo "::error::API service exited before becoming ready"
+              cat playwright-service-logs/api.log
+              exit 1
+            fi
+            if ! kill -0 "$(cat playwright-service-logs/desktop.pid)" 2>/dev/null; then
+              echo "::error::Desktop service exited before becoming ready"
+              cat playwright-service-logs/desktop.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "::error::Timed out waiting for API and desktop services"
+          cat playwright-service-logs/api.log
+          cat playwright-service-logs/desktop.log
+          exit 1
+
+      - name: Run provider practice isolation browser check
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:4173
+        run: pnpm run test:e2e:provider-isolation
+
+      - name: Stop API and desktop services
+        if: always()
+        shell: bash
+        run: |
+          for pid_file in playwright-service-logs/api.pid playwright-service-logs/desktop.pid; do
+            if [[ -f "$pid_file" ]]; then
+              kill "$(cat "$pid_file")" 2>/dev/null || true
+            fi
+          done
+
+      - name: Upload Playwright diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-isolation-playwright-diagnostics
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            playwright-report/
+            test-results/
+            playwright-service-logs/
+
+  # ── Approved Stripe authentication browser check ───────────────────────────
+  # This job is deliberately separate from the ordinary e2e suite. It runs in
+  # the protected stripe-test environment so repository/environment protection
+  # rules can require explicit approval before a test-mode payment is created.
+  # An incomplete configuration is a successful, explicitly skipped check; a
+  # complete configuration makes failures block build-number allocation.
+  stripe-authentication-browser:
+    needs: [validate-tag]
+    runs-on: ubuntu-latest
+    environment: stripe-test
+    env:
+      PLAYWRIGHT_STRIPE_RELEASE_VALIDATION: "1"
+      PLAYWRIGHT_STRIPE_LIVE: ${{ secrets.PLAYWRIGHT_STRIPE_LIVE }}
+      PLAYWRIGHT_BASE_URL: ${{ secrets.PLAYWRIGHT_BASE_URL }}
+      PLAYWRIGHT_STRIPE_ACCESS_TOKEN: ${{ secrets.PLAYWRIGHT_STRIPE_ACCESS_TOKEN }}
+      PLAYWRIGHT_STRIPE_TEST_SECRET_KEY: ${{ secrets.PLAYWRIGHT_STRIPE_TEST_SECRET_KEY }}
+      PLAYWRIGHT_STRIPE_LAB_ORGANIZATION_ID: ${{ secrets.PLAYWRIGHT_STRIPE_LAB_ORGANIZATION_ID }}
+      PLAYWRIGHT_STRIPE_CANCEL_CARD_NUMBER: ${{ secrets.PLAYWRIGHT_STRIPE_CANCEL_CARD_NUMBER }}
+      PLAYWRIGHT_STRIPE_CANCEL_CARD_EXPIRY: ${{ secrets.PLAYWRIGHT_STRIPE_CANCEL_CARD_EXPIRY }}
+      PLAYWRIGHT_STRIPE_CANCEL_CARD_CVC: ${{ secrets.PLAYWRIGHT_STRIPE_CANCEL_CARD_CVC }}
+      PLAYWRIGHT_STRIPE_SUCCESS_CARD_NUMBER: ${{ secrets.PLAYWRIGHT_STRIPE_SUCCESS_CARD_NUMBER }}
+      PLAYWRIGHT_STRIPE_SUCCESS_CARD_EXPIRY: ${{ secrets.PLAYWRIGHT_STRIPE_SUCCESS_CARD_EXPIRY }}
+      PLAYWRIGHT_STRIPE_SUCCESS_CARD_CVC: ${{ secrets.PLAYWRIGHT_STRIPE_SUCCESS_CARD_CVC }}
+      PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_PROVIDER_NAME: ${{ secrets.PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_PROVIDER_NAME }}
+      PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_INVOICE_NUMBER: ${{ secrets.PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_INVOICE_NUMBER }}
+      PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_AMOUNT: ${{ secrets.PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_AMOUNT }}
+      PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_PROVIDER_NAME: ${{ secrets.PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_PROVIDER_NAME }}
+      PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_INVOICE_NUMBER: ${{ secrets.PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_INVOICE_NUMBER }}
+      PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_AMOUNT: ${{ secrets.PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_AMOUNT }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check approved Stripe test-mode configuration
+        id: stripe-preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required=(
+            PLAYWRIGHT_STRIPE_LIVE
+            PLAYWRIGHT_BASE_URL
+            PLAYWRIGHT_STRIPE_ACCESS_TOKEN
+            PLAYWRIGHT_STRIPE_TEST_SECRET_KEY
+            PLAYWRIGHT_STRIPE_LAB_ORGANIZATION_ID
+            PLAYWRIGHT_STRIPE_CANCEL_CARD_NUMBER
+            PLAYWRIGHT_STRIPE_CANCEL_CARD_EXPIRY
+            PLAYWRIGHT_STRIPE_CANCEL_CARD_CVC
+            PLAYWRIGHT_STRIPE_SUCCESS_CARD_NUMBER
+            PLAYWRIGHT_STRIPE_SUCCESS_CARD_EXPIRY
+            PLAYWRIGHT_STRIPE_SUCCESS_CARD_CVC
+            PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_PROVIDER_NAME
+            PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_INVOICE_NUMBER
+            PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_AMOUNT
+            PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_PROVIDER_NAME
+            PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_INVOICE_NUMBER
+            PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_AMOUNT
+          )
+          missing=()
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            echo "::notice::Stripe authentication browser check skipped: approved configuration is incomplete (${#missing[@]} required values are unset)."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # These checks intentionally inspect only mode/transport prefixes.
+          # Never print the secret values, card values, or fixture values.
+          if [[ "$PLAYWRIGHT_STRIPE_LIVE" != "1" ]]; then
+            echo "::notice::Stripe authentication browser check skipped: explicit test-mode opt-in is not enabled."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$PLAYWRIGHT_BASE_URL" != https://* ]]; then
+            echo "::notice::Stripe authentication browser check skipped: target is not HTTPS."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$PLAYWRIGHT_STRIPE_TEST_SECRET_KEY" != sk_test_* ]]; then
+            echo "::notice::Stripe authentication browser check skipped: Stripe secret is not a test-mode key."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::notice::Approved Stripe test-mode configuration is complete; running the protected authentication check."
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install Chromium and system dependencies
+        if: steps.stripe-preflight.outputs.enabled == 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run protected Stripe authentication check
+        if: steps.stripe-preflight.outputs.enabled == 'true'
+        run: pnpm exec playwright test e2e/stripe-receive-payments-live.spec.ts --reporter=line
+
+      - name: Record safe Stripe authentication results
+        if: success() && steps.stripe-preflight.outputs.enabled == 'true'
+        run: |
+          echo "::notice::Stripe authentication cancellation passed: the payment stayed in its draft and accounting was unchanged."
+          echo "::notice::Stripe authentication success passed: only the confirmed payment was recorded."
+
   # ── Build-number allocation ───────────────────────────────────────────────────
   # Runs first, before any platform build job. Reads the current build counter
   # from the tag, claims two consecutive numbers (one per platform), commits the
@@ -15,6 +331,7 @@ jobs:
   # as already-bumped — so both shipped with the same build number. Now a single
   # atomic commit determines the allocation before either build begins.
   bump-build-number:
+    needs: [provider-isolation-browser, stripe-authentication-browser]
     runs-on: ubuntu-latest
 
     permissions:
@@ -48,9 +365,9 @@ jobs:
           echo "macos=${MACOS_NUM}"    >> "$GITHUB_OUTPUT"
           echo "Allocated: Windows=${WINDOWS_NUM}, macOS=${MACOS_NUM} (was ${CURRENT})"
 
-          # This workflow runs via manual workflow_dispatch. Switch to main so
-          # the updated counter is committed to the branch (the dispatch ref may
-          # be a tag or detached HEAD depending on how it was launched).
+          # The checked-out ref depends on how this run started (a tag for a
+          # manual dispatch, the caller's branch for a workflow_call). Switch to
+          # main so the updated counter is always committed to the branch.
           git fetch origin main
           git checkout -B main origin/main
 
@@ -122,7 +439,7 @@ jobs:
             --arg commitSha "${GITHUB_SHA}" \
             --arg ref "${GITHUB_REF_NAME}" \
             --arg stage "build-number-commit" \
-            --arg errorMessage "All 3 push attempts to persist build-number.json to main failed (triggered by workflow dispatch). The build number counter may not be correctly persisted — check branch protection rules or network connectivity." \
+            --arg errorMessage "All 3 push attempts to persist build-number.json to main failed. The build number counter may not be correctly persisted — check branch protection rules or network connectivity." \
             --argjson attemptedBuildNumber "${BUILD_NUM_FOR_ALERT:-null}" \
             '{workflowName:$workflowName, runUrl:$runUrl, runId:$runId, commitSha:$commitSha, ref:$ref, stage:$stage, errorMessage:$errorMessage, attemptedBuildNumber:$attemptedBuildNumber}')
           echo "Reporting build-number push failure to $BASE_URL/api/admin/desktop-installer/publish-failure"
@@ -149,7 +466,12 @@ jobs:
       contents: write
 
     steps:
+      # Check out the exact tag being released so the packaged version comes
+      # from the tag's tree, not from whatever branch the workflow was
+      # dispatched against.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -204,6 +526,22 @@ jobs:
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
 
+      - name: Build and validate Microsoft Store package
+        if: ${{ inputs.include_store_package }}
+        run: pnpm --filter @workspace/labtrax-desktop run electron:store-package
+        env:
+          STORE_PACKAGE_IDENTITY_NAME: ${{ vars.STORE_PACKAGE_IDENTITY_NAME }}
+          STORE_PACKAGE_PUBLISHER: ${{ vars.STORE_PACKAGE_PUBLISHER }}
+          STORE_PACKAGE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PACKAGE_PUBLISHER_DISPLAY_NAME }}
+
+      - name: Revalidate Microsoft Store package before publishing release assets
+        if: ${{ inputs.include_store_package }}
+        run: pnpm --filter @workspace/labtrax-desktop run electron:store-package:validate
+        env:
+          STORE_PACKAGE_IDENTITY_NAME: ${{ vars.STORE_PACKAGE_IDENTITY_NAME }}
+          STORE_PACKAGE_PUBLISHER: ${{ vars.STORE_PACKAGE_PUBLISHER }}
+          STORE_PACKAGE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PACKAGE_PUBLISHER_DISPLAY_NAME }}
+
       - name: Verify installer signature
         if: env.CSC_LINK != ''
         shell: pwsh
@@ -238,11 +576,13 @@ jobs:
         env:
           PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
           PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -uo pipefail
           if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
-            # Manual release workflow means this is now operator-driven, so
-            # missing secrets are still a misconfiguration — fail loud.
+            # Publishing to /downloads/ is the whole point of this job — a
+            # missing secret is a misconfiguration, not a benign opt-out.
+            # (When called from auto-tag, the caller must use `secrets: inherit`.)
             echo "::error::PLATFORM_ADMIN_SECRET and PUBLISH_API_BASE_URL must both be set so the freshly built installer can be published to /downloads/. Add them in repo Settings → Secrets and variables → Actions."
             exit 1
           fi
@@ -262,25 +602,10 @@ jobs:
           fi
           VERSION=$(node -p "require('./artifacts/labtrax-desktop/package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          NOTES=$(node -e "
-const fs = require('fs');
-const ver = 'v${VERSION}';
-let raw;
-try { raw = fs.readFileSync('artifacts/labtrax-desktop/RELEASE_NOTES.md', 'utf8'); } catch { process.exit(0); }
-const lines = raw.split(/\r?\n/);
-let inBlock = false, out = [];
-for (const line of lines) {
-  if (/^## v/.test(line)) {
-    if (inBlock) break;
-    if (line.replace(/^##\s+/, '').trim() === ver) inBlock = true;
-    continue;
-  }
-  if (inBlock) out.push(line);
-}
-process.stdout.write(out.join('\n').trim());
-" 2>/dev/null) || true
+          NOTES=$(node scripts/src/lib/parse-release-notes.mjs \
+            artifacts/labtrax-desktop/RELEASE_NOTES.md "v${VERSION}")
           if [[ -z "$NOTES" ]]; then
-            NOTES="Manually released from GitHub Actions workflow dispatch (run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA})."
+            NOTES="Released from GitHub Actions (event ${GITHUB_EVENT_NAME}, run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA})."
             echo "::notice::No entry for v${VERSION} found in RELEASE_NOTES.md — using generic notes."
           else
             echo "::notice::Using release notes for v${VERSION} from RELEASE_NOTES.md."
@@ -302,7 +627,7 @@ process.stdout.write(out.join('\n').trim());
             -F "runUrl=${RUN_URL}" \
             -F "runId=${GITHUB_RUN_ID}" \
             -F "commitSha=${GITHUB_SHA}" \
-            -F "ref=${GITHUB_REF_NAME}" \
+            -F "ref=${RELEASE_TAG}" \
             "$BASE_URL/api/admin/desktop-installer/publish") || true
           PUBLISH_STATUS="${PUBLISH_STATUS:-000}"
           cat "$PUBLISH_BODY"; echo
@@ -328,6 +653,14 @@ process.stdout.write(out.join('\n').trim());
             artifacts/labtrax-desktop/electron-dist/latest.yml
           if-no-files-found: error
 
+      - name: Upload Microsoft Store package as a separate workflow artifact
+        if: ${{ inputs.include_store_package }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: LabTrax-Windows-Store-MSIX
+          path: artifacts/labtrax-desktop/electron-dist/LabTrax-Store.msix
+          if-no-files-found: error
+
   # ── macOS build ──────────────────────────────────────────────────────────────
   build-macos:
     needs: [bump-build-number]
@@ -337,7 +670,12 @@ process.stdout.write(out.join('\n').trim());
       contents: write
 
     steps:
+      # Check out the exact tag being released so the packaged version comes
+      # from the tag's tree, not from whatever branch the workflow was
+      # dispatched against.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -422,10 +760,12 @@ process.stdout.write(out.join('\n').trim());
         env:
           PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
           PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
-            # Manual release workflow means this is now operator-driven, so
-            # missing secrets are still a misconfiguration — fail loud.
+            # Publishing to /downloads/ is the whole point of this job — a
+            # missing secret is a misconfiguration, not a benign opt-out.
+            # (When called from auto-tag, the caller must use `secrets: inherit`.)
             echo "::error::PLATFORM_ADMIN_SECRET and PUBLISH_API_BASE_URL must both be set so the freshly built DMG can be published to /downloads/. Add them in repo Settings → Secrets and variables → Actions."
             exit 1
           fi
@@ -460,25 +800,10 @@ process.stdout.write(out.join('\n').trim());
             exit 1
           fi
           VERSION=$(node -p "require('./artifacts/labtrax-desktop/package.json').version")
-          NOTES=$(node -e "
-const fs = require('fs');
-const ver = 'v${VERSION}';
-let raw;
-try { raw = fs.readFileSync('artifacts/labtrax-desktop/RELEASE_NOTES.md', 'utf8'); } catch { process.exit(0); }
-const lines = raw.split(/\r?\n/);
-let inBlock = false, out = [];
-for (const line of lines) {
-  if (/^## v/.test(line)) {
-    if (inBlock) break;
-    if (line.replace(/^##\s+/, '').trim() === ver) inBlock = true;
-    continue;
-  }
-  if (inBlock) out.push(line);
-}
-process.stdout.write(out.join('\n').trim());
-" 2>/dev/null) || true
+          NOTES=$(node scripts/src/lib/parse-release-notes.mjs \
+            artifacts/labtrax-desktop/RELEASE_NOTES.md "v${VERSION}")
           if [[ -z "$NOTES" ]]; then
-            NOTES="Manually released from GitHub Actions workflow dispatch (run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA})."
+            NOTES="Released from GitHub Actions (event ${GITHUB_EVENT_NAME}, run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA})."
             echo "::notice::No entry for v${VERSION} found in RELEASE_NOTES.md — using generic notes."
           else
             echo "::notice::Using release notes for v${VERSION} from RELEASE_NOTES.md."
@@ -500,7 +825,7 @@ process.stdout.write(out.join('\n').trim());
             -F "runUrl=${RUN_URL}" \
             -F "runId=${GITHUB_RUN_ID}" \
             -F "commitSha=${GITHUB_SHA}" \
-            -F "ref=${GITHUB_REF_NAME}" \
+            -F "ref=${RELEASE_TAG}" \
             "$BASE_URL/api/admin/desktop-installer/publish"
           echo
           echo "::notice::Published LabTrax.dmg v$VERSION to $BASE_URL (atomic /publish call)."
@@ -554,6 +879,13 @@ process.stdout.write(out.join('\n').trim());
           name: LabTrax-macOS-Assets
           path: dist/macos
 
+      - name: Download Microsoft Store package
+        if: ${{ inputs.include_store_package }}
+        uses: actions/download-artifact@v4
+        with:
+          name: LabTrax-Windows-Store-MSIX
+          path: dist/store
+
       - name: Verify expected release files are present
         # Fail fast if any required asset is missing before touching the release.
         # Auto-update manifests (latest.yml, latest-mac.yml) and their matching
@@ -581,21 +913,25 @@ process.stdout.write(out.join('\n').trim());
           check_file "dist/macos/*.zip"
           check_file "dist/macos/*.zip.blockmap"
           check_file "dist/macos/latest-mac.yml"
+          if [[ "${{ inputs.include_store_package }}" == "true" ]]; then
+            check_file "dist/store/LabTrax-Store.msix"
+          fi
           if [[ "$failed" == "true" ]]; then exit 1; fi
 
       - name: Create unified GitHub Release (draft)
         uses: softprops/action-gh-release@v2
         with:
-          name: LabTrax ${{ github.ref_name }}
+          name: LabTrax ${{ inputs.tag }}
+          tag_name: ${{ inputs.tag }}
           draft: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(inputs.tag, '-') }}
           body: |
-            ## LabTrax ${{ github.ref_name }}
+            ## LabTrax ${{ inputs.tag }}
 
             > **This release is a draft.** All installers have been built and attached.
             > A team member should verify the attached files and edit these release notes
             > before publishing. To publish, run the **Publish Draft Release** workflow
-            > from the Actions tab and enter `${{ github.ref_name }}` as the tag.
+            > from the Actions tab and enter `${{ inputs.tag }}` as the tag.
 
             ---
 
@@ -613,6 +949,8 @@ process.stdout.write(out.join('\n').trim());
             **Auto-update:** Existing installs are notified on next launch and can update with one click — no manual download needed.
 
             > The installer is code-signed, which reduces or eliminates Windows SmartScreen prompts.
+
+            ${{ inputs.include_store_package && 'A separate `LabTrax-Store.msix` package is also attached for Microsoft Store submission. It does not replace the standalone EXE.' || '' }}
 
             ---
 
@@ -644,3 +982,11 @@ process.stdout.write(out.join('\n').trim());
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attach Microsoft Store package to the draft release
+        if: ${{ inputs.include_store_package }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: gh release upload "$RELEASE_TAG" dist/store/LabTrax-Store.msix --clobber

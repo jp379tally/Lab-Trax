@@ -9,8 +9,6 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   ScrollView,
-  Keyboard,
-  TouchableWithoutFeedback,
   Modal,
   Alert,
   Image,
@@ -20,10 +18,16 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import Constants from "expo-constants";
 import { LinearGradient } from "expo-linear-gradient";
+import { StatusBar } from "expo-status-bar";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as Location from "expo-location";
 import * as Haptics from "expo-haptics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  classifyAccountNumberInput,
+  formatAccountNumberForDisplay,
+  INVALID_ACCOUNT_NUMBER_MESSAGE,
+} from "@workspace/account-number";
 import {
   GEO_MESSAGES,
   geolocationErrorMessage,
@@ -33,15 +37,44 @@ import { useAuth } from "@/lib/auth-context";
 import { apiRequest, getApiUrl } from "@/lib/query-client";
 import { generateId, GroupJoinRequest } from "@/lib/data";
 import Colors from "@/constants/colors";
+import ProviderPlanChoices from "./ProviderPlanChoices";
+import type { ProviderSignupTier } from "@workspace/api-client-react";
 import { Typography, Spacing } from "@/constants/tokens";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+  useDismissKeyboardOnTap,
+} from "@/components/ui/DismissKeyboardView";
 
-type SignUpStep = "welcome" | "credentials" | "user_type" | "lab_intent" | "lab_name" | "lab_info" | "license" | "practice_info" | "provider_match" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
+type SignUpStep = "plan_select" | "welcome" | "credentials" | "user_type" | "lab_intent" | "lab_name" | "lab_info" | "provider_intent" | "license" | "practice_info" | "join_practice" | "provider_match" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "join_group" | "hipaa_disclaimer" | "complete";
 
 interface ProviderMatchItem {
   orgId: string;
   practiceName: string;
   labName: string | null;
   platformAccountNumber: string | null;
+  city: string | null;
+  state: string | null;
+}
+
+// Result row from the public practice search used by the "join an existing
+// practice" sign-up flow (provider counterpart of the lab lookup).
+interface PracticeLookupItem {
+  id: string;
+  name: string;
+  displayName: string;
+  addressLine1: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  phone: string | null;
+  parentLabName: string | null;
+}
+
+interface PartnerLab {
+  id: string;
+  selectionKey?: string;
+  displayName: string;
   city: string | null;
   state: string | null;
 }
@@ -55,9 +88,16 @@ function validatePassword(pw: string): { valid: boolean; errors: string[] } {
   return { valid: errors.length === 0, errors };
 }
 
+const SHARED_TEST_EMAIL = "shared-test@example.com";
+
+function isSharedTestEmail(email: string): boolean {
+  return email.trim().toLowerCase() === SHARED_TEST_EMAIL;
+}
+
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
   const { login, completeTwoFactor, loginWithBiometric, register, registeredUsers } = useAuth();
+  const dismissKeyboardOnModalTap = useDismissKeyboardOnTap();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
 
   const [username, setUsername] = useState("");
@@ -85,7 +125,13 @@ export default function LoginScreen() {
   const [forgotError, setForgotError] = useState<string | null>(null);
   const [demoResetInfo, setDemoResetInfo] = useState<string | null>(null);
 
-  const [signUpStep, setSignUpStep] = useState<SignUpStep>("credentials");
+  const [signUpStep, setSignUpStepRaw] = useState<SignUpStep>("credentials");
+  const [providerPlan, setProviderPlan] = useState<ProviderSignupTier | null>(null);
+  const [reuseSubscriptionCard, setReuseSubscriptionCard] = useState(false);
+  const [providerPlanConfirmed, setProviderPlanConfirmed] = useState(false);
+  function setSignUpStep(next: SignUpStep) {
+    setSignUpStepRaw(next === "hipaa_disclaimer" && userType === "provider" && providerIntent !== "join" && !selectedMatchOrgId && !providerPlanConfirmed ? "plan_select" : next);
+  }
   const [signUpUsername, setSignUpUsername] = useState("");
   const [signUpPassword, setSignUpPassword] = useState("");
   const [signUpConfirmPassword, setSignUpConfirmPassword] = useState("");
@@ -95,7 +141,6 @@ export default function LoginScreen() {
   const [showSignUpPassword, setShowSignUpPassword] = useState(false);
   const [signUpError, setSignUpError] = useState<string | null>(null);
   const [signUpLoading, setSignUpLoading] = useState(false);
-  const [passwordTouched, setPasswordTouched] = useState(false);
   const [emailCheckLoading, setEmailCheckLoading] = useState(false);
   const [emailConflictError, setEmailConflictError] = useState<string | null>(null);
 
@@ -113,11 +158,11 @@ export default function LoginScreen() {
   const [doctorName, setDoctorName] = useState("");
   const [streetAddress, setStreetAddress] = useState("");
   const [city, setCity] = useState("");
+  const [state, setState] = useState("");
   const [zipCode, setZipCode] = useState("");
   const [fetchingLocation, setFetchingLocation] = useState(false);
   const [practicePhone, setPracticePhone] = useState("");
   const [phoneContactName, setPhoneContactName] = useState("");
-  const [selectedRole, setSelectedRole] = useState<"user" | "admin" | null>(null);
   const [hipaaAccepted, setHipaaAccepted] = useState(false);
   const [accountNumber, setAccountNumber] = useState("");
   const [joinGroupAdminUsername, setJoinGroupAdminUsername] = useState("");
@@ -135,9 +180,43 @@ export default function LoginScreen() {
   const [browseExistingLabs, setBrowseExistingLabs] = useState(false);
   const [allLabGroups, setAllLabGroups] = useState<{ organizationId: string; practiceName: string; username: string; practiceAddress?: string; phone?: string | null; memberCount?: number }[]>([]);
   const [labSearchFilter, setLabSearchFilter] = useState("");
+  const [partnerLabs, setPartnerLabs] = useState<PartnerLab[]>([]);
+  const [partnersConfirmed, setPartnersConfirmed] = useState(false);
+  const registrationInFlight = useRef(false);
+  const [webViewportHeight, setWebViewportHeight] = useState<number | undefined>();
+  const [webViewportTop, setWebViewportTop] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+    const update = () => {
+      setWebViewportHeight(window.visualViewport?.height ?? window.innerHeight);
+      setWebViewportTop(window.visualViewport?.offsetTop ?? 0);
+    };
+    update();
+    window.visualViewport?.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    return () => {
+      window.visualViewport?.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
+  const [partnerSearch, setPartnerSearch] = useState("");
+  const [partnerResults, setPartnerResults] = useState<PartnerLab[]>([]);
+  const [partnerLoading, setPartnerLoading] = useState(false);
+  const [partnerSearchError, setPartnerSearchError] = useState<string | null>(null);
   const [selectedMatchOrgId, setSelectedMatchOrgId] = useState<string | null>(null);
   const [providerMatches, setProviderMatches] = useState<ProviderMatchItem[]>([]);
   const [matchLookupLoading, setMatchLookupLoading] = useState(false);
+
+  // Provider intent: create a new practice vs. join an existing one.
+  const [providerIntent, setProviderIntent] = useState<"create" | "join" | null>(null);
+  const [practiceSearchFilter, setPracticeSearchFilter] = useState("");
+  const [practiceResults, setPracticeResults] = useState<PracticeLookupItem[]>([]);
+  const [practicesLoading, setPracticesLoading] = useState(false);
+  const [practicesError, setPracticesError] = useState<string | null>(null);
+  const [practicesRetryToken, setPracticesRetryToken] = useState(0);
+  const [joinPracticeOrgId, setJoinPracticeOrgId] = useState<string | null>(null);
 
   const codeInputRefs = useRef<(TextInput | null)[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -148,6 +227,36 @@ export default function LoginScreen() {
       if (val !== null) setRememberMe(val === "true");
     }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (signUpStep !== "join_group" || userType !== "provider") return;
+    let cancelled = false;
+    const q = partnerSearch.trim();
+    setPartnerResults([]);
+    setPartnerSearchError(null);
+    setPartnerLoading(q.length >= 2);
+    if (q.length < 2) return;
+    const handle = setTimeout(async () => {
+      try {
+        const res = await apiRequest("GET", `/api/labs/lookup?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        if (!cancelled) setPartnerResults(Array.isArray(data?.labs) ? data.labs : []);
+      } catch {
+        if (!cancelled) setPartnerSearchError("Could not search labs. Check your connection and search again.");
+      } finally {
+        if (!cancelled) setPartnerLoading(false);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(handle); };
+  }, [partnerSearch, signUpStep, userType]);
+
+  useEffect(() => {
+    if (userType !== "provider" || providerIntent === "join" || selectedMatchOrgId) {
+      setPartnerLabs([]);
+      setPartnersConfirmed(false);
+      setPartnerSearch("");
+    }
+  }, [userType, providerIntent, selectedMatchOrgId]);
 
   useEffect(() => {
     if (codeResendTimer > 0) {
@@ -166,7 +275,36 @@ export default function LoginScreen() {
     }
   }, [codeResendTimer]);
 
+  // Debounced public practice search for the "join an existing practice" flow.
+  useEffect(() => {
+    if (signUpStep !== "join_practice") return;
+    const q = practiceSearchFilter.trim();
+    if (q.length < 2) {
+      setPracticeResults([]);
+      setPracticesLoading(false);
+      setPracticesError(null);
+      return;
+    }
+    setPracticesLoading(true);
+    setPracticesError(null);
+    const handle = setTimeout(async () => {
+      try {
+        const res = await apiRequest("GET", `/api/practices/lookup?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        setPracticeResults(Array.isArray(data?.practices) ? data.practices : []);
+      } catch {
+        setPracticeResults([]);
+        setPracticesError("Could not search practices. Check your connection and try again.");
+      }
+      setPracticesLoading(false);
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [practiceSearchFilter, signUpStep, practicesRetryToken]);
+
   function switchToSignUp() {
+    setProviderPlan(null);
+    setReuseSubscriptionCard(false);
+    setProviderPlanConfirmed(false);
     setMode("signup");
     setSignUpStep("welcome");
     setSignUpUsername("");
@@ -176,7 +314,6 @@ export default function LoginScreen() {
     setSignUpPhone("");
     setWantsUpdates(false);
     setSignUpError(null);
-    setPasswordTouched(false);
     setEmailCheckLoading(false);
     setEmailConflictError(null);
     setPhoneCode("");
@@ -191,7 +328,6 @@ export default function LoginScreen() {
     setZipCode("");
     setPracticePhone("");
     setPhoneContactName("");
-    setSelectedRole(null);
     setHipaaAccepted(false);
     setAccountNumber("");
     setJoinGroupAdminUsername("");
@@ -203,6 +339,16 @@ export default function LoginScreen() {
     setSelectedMatchOrgId(null);
     setProviderMatches([]);
     setMatchLookupLoading(false);
+    setProviderIntent(null);
+    setPracticeSearchFilter("");
+    setPracticeResults([]);
+    setPracticesLoading(false);
+    setPracticesError(null);
+    setPracticesRetryToken(0);
+    setJoinPracticeOrgId(null);
+    setPartnerLabs([]);
+    setPartnersConfirmed(false);
+    setPartnerSearch("");
   }
 
   function switchToSignIn() {
@@ -255,9 +401,16 @@ export default function LoginScreen() {
       setError("Please enter both username and password.");
       return;
     }
+    const accountInput = classifyAccountNumberInput(username.trim());
+    if (accountInput.kind === "new-invalid") {
+      setError(INVALID_ACCOUNT_NUMBER_MESSAGE);
+      return;
+    }
+    const loginIdentifier =
+      accountInput.kind === "new-valid" ? accountInput.normalized : username.trim();
     setError(null);
     setIsLoggingIn(true);
-    const result = await login(username.trim(), password.trim(), rememberMe);
+    const result = await login(loginIdentifier, password.trim(), rememberMe);
     setIsLoggingIn(false);
     if (result.requiresTwoFactor && result.pendingToken) {
       setTwoFactorPendingToken(result.pendingToken);
@@ -332,9 +485,9 @@ export default function LoginScreen() {
     try {
       const resp = await apiRequest("POST", "/api/forgot-username", { email: forgotEmail.trim() });
       const data = await resp.json();
-      setForgotSuccess(data.message || "If an account with that email exists, your username has been sent.");
-      if (data.demoUsername) {
-        setDemoResetInfo(`Your username is: ${data.demoUsername}`);
+      setForgotSuccess(data.message || "If an account with that email exists, a link has been sent.");
+      if (data.demoRecoveryLink) {
+        setDemoResetInfo(`Demo link: ${data.demoRecoveryLink}`);
       }
     } catch (e: any) {
       setForgotError(e?.message || "Failed to process request. Please try again.");
@@ -351,7 +504,7 @@ export default function LoginScreen() {
     try {
       const res = await apiRequest("GET", `/api/auth/check-email?email=${encodeURIComponent(email)}`);
       const data = await res.json();
-      if (data?.data?.available === false) {
+      if (data?.data?.available === false && !isSharedTestEmail(email)) {
         setEmailConflictError("An account with this email already exists.");
       }
     } catch {
@@ -384,11 +537,18 @@ export default function LoginScreen() {
       setSignUpError("Please enter a valid email address.");
       return;
     }
-    if (emailConflictError) {
+    const allowsSharedEmail = isSharedTestEmail(signUpEmail);
+    if (emailConflictError && !allowsSharedEmail) {
       return;
     }
 
-    const emailMatch = registeredUsers.find(u => u.email && u.email.toLowerCase() === signUpEmail.trim().toLowerCase());
+    const emailMatch = allowsSharedEmail
+      ? null
+      : registeredUsers.find(
+          (u) =>
+            u.email &&
+            u.email.trim().toLowerCase() === signUpEmail.trim().toLowerCase(),
+        );
     if (emailMatch) {
       setSignUpError("This email address is already associated with another account. Please enter a different email.");
       return;
@@ -429,11 +589,14 @@ export default function LoginScreen() {
       setSignUpStep("phone_entry");
     } else if (userType === "lab" && labIntent === "create") {
       setSignUpStep("hipaa_disclaimer");
+    } else if (!wants && providerIntent === "join") {
+      // Practice joiner who skips updates: no role/lab-connect steps — straight to hipaa
+      setSignUpStep("hipaa_disclaimer");
     } else if (!wants && selectedMatchOrgId) {
-      // Matched provider who skips updates: skip role_select, go straight to hipaa
+      // Matched provider who skips updates goes straight to approval/terms.
       setSignUpStep("hipaa_disclaimer");
     } else {
-      setSignUpStep("role_select");
+      setSignUpStep(userType === "lab" ? "hipaa_disclaimer" : "join_group");
     }
   }
 
@@ -524,40 +687,37 @@ export default function LoginScreen() {
   }
 
   async function completeRegistration() {
+    if (registrationInFlight.current || !hipaaAccepted) return;
+    if (userType === "provider" && providerIntent !== "join" && !selectedMatchOrgId && !providerPlan) { setSignUpError("Please explicitly choose a provider plan."); return; }
+    registrationInFlight.current = true;
+    setSignUpError(null);
     setSignUpLoading(true);
     try {
-      let acctNum: string;
-      if (userType === "provider") {
-        const yy = new Date().getFullYear() % 100;
-        let count = 1;
-        try {
-          const raw = await AsyncStorage.getItem("@drivesync_provider_counter");
-          if (raw) {
-            const counter = JSON.parse(raw);
-            if (counter.year === yy) {
-              count = (counter.count || 0) + 1;
-            }
-          }
-        } catch {}
-        acctNum = `${yy}-${count}`;
-        await AsyncStorage.setItem("@drivesync_provider_counter", JSON.stringify({ year: yy, count }));
-      } else {
-        acctNum = "DS-" + Date.now().toString().slice(-6);
-      }
+      // Lab creation retains its legacy account number contract. Provider
+      // accounts must not invent a canonical account number on the client.
+      const acctNum = userType === "lab" ? "DS-" + Date.now().toString().slice(-6) : undefined;
 
       const isLab = (userType || "provider") === "lab";
       const resolvedAddress = isLab
         ? [labStreet.trim(), labCity.trim(), labState.trim(), labZip.trim()].filter(Boolean).join(", ")
-        : [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", ");
+        : [streetAddress.trim(), city.trim(), state.trim(), zipCode.trim()].filter(Boolean).join(", ");
+      const structuredAddress = isLab
+        ? { line1: labStreet.trim(), city: labCity.trim(), state: labState.trim(), zip: labZip.trim() }
+        : { line1: streetAddress.trim(), city: city.trim(), state: state.trim(), zip: zipCode.trim() };
       const resolvedPhone = isLab ? labPhone.trim() : practicePhone.trim();
       const resolvedEmail = isLab ? (labEmail.trim() || signUpEmail.trim()) : signUpEmail.trim();
 
       const isMatchedJoin = !isLab && !!selectedMatchOrgId;
 
-      const isLabCreate = isLab && labIntent === "create";
-      const isLabJoin = isLab && labIntent === "join" && !!matchingLabGroup;
+      const isLabJoin = isLab && labIntent === "join";
+      // Provider joining an existing practice via the "join an existing
+      // practice" flow — mirrors the desktop SignupWizard: no new org is
+      // created and practice details come from the target organization.
+      const isPracticeJoin = !isLab && providerIntent === "join";
 
       const result = await register({
+        providerPlan: userType === "provider" ? providerPlan ?? undefined : undefined,
+        reuseSubscriptionCard: userType === "provider" ? reuseSubscriptionCard : undefined,
         username: signUpUsername.trim(),
         password: signUpPassword,
         email: resolvedEmail,
@@ -565,27 +725,39 @@ export default function LoginScreen() {
         wantsUpdates,
         userType: userType || "provider",
         licenseNumber: licenseNumber.trim(),
-        practiceName: isLab ? labName.trim() : practiceName.trim(),
-        doctorName: doctorName.trim(),
-        practiceAddress: resolvedAddress,
-        practicePhone: resolvedPhone,
+        practiceName: isLabJoin || isPracticeJoin || isMatchedJoin ? undefined : (isLab ? labName.trim() : practiceName.trim()),
+        doctorName: isPracticeJoin || isMatchedJoin ? undefined : doctorName.trim(),
+        practiceAddress: isLabJoin || isPracticeJoin || isMatchedJoin ? undefined : resolvedAddress,
+        address: isLabJoin || isPracticeJoin || isMatchedJoin ? undefined : structuredAddress,
+        practicePhone: isLabJoin || isPracticeJoin || isMatchedJoin ? undefined : resolvedPhone,
         phoneContactName: wantsUpdates ? phoneContactName.trim() : undefined,
-        role: isLabCreate ? "admin" : (selectedRole || "user"),
-        accountNumber: acctNum,
-        createOrganization: isLabJoin ? false : !isMatchedJoin,
+        role: "user",
+        ...(acctNum ? { accountNumber: acctNum } : {}),
+        createOrganization: isLabJoin || isPracticeJoin || isMatchedJoin ? false : true,
         joinOrganizationId: isLabJoin
-          ? matchingLabGroup!.organizationId
+          ? matchingLabGroup?.organizationId
+          : isPracticeJoin
+          ? joinPracticeOrgId ?? undefined
           : isMatchedJoin
           ? selectedMatchOrgId
           : undefined,
         claimProvider: undefined,
+        partnerLabSelections: isLab ? undefined : partnerLabs.map((lab) => lab.id),
       });
       if (!result.success) {
         setSignUpError(result.error || "Registration failed.");
       } else {
+        if (!isLab && partnerLabs.length > 0) {
+          const message = `${partnerLabs.map((lab) => lab.displayName).join(", ")} — approval is pending from each lab.`;
+          if (Platform.OS === "web" && typeof window !== "undefined") {
+            window.alert(`Partnership requests submitted\n\n${message}`);
+          } else {
+            Alert.alert("Partnership requests submitted", message);
+          }
+        }
         // After successful registration the user has a valid session.
         // Flush any join requests that were queued during the join_group step.
-        try {
+        if (isLab) try {
           const stored = await AsyncStorage.getItem("@drivesync_group_join_requests");
           if (stored) {
             const existing: GroupJoinRequest[] = JSON.parse(stored);
@@ -607,7 +779,7 @@ export default function LoginScreen() {
                       "POST",
                       `/api/organizations/${targetGroup.organizationId}/join-requests`,
                       {
-                        requestedRole: selectedRole || "user",
+                        requestedRole: "user",
                         message: req.message || `${signUpUsername.trim()} would like to join ${targetGroup.practiceName}.`,
                       }
                     ).catch(() => {});
@@ -624,20 +796,43 @@ export default function LoginScreen() {
             }
           }
         } catch {}
+        // Auth navigation will unmount signup; keep successful registration
+        // fenced so a second activation cannot submit the account again.
+        return;
       }
     } catch {
       setSignUpError("Registration failed. Please try again.");
     }
     setSignUpLoading(false);
+    registrationInFlight.current = false;
   }
 
   const pwValidation = validatePassword(signUpPassword);
 
   if (mode === "signup") {
+    const isPartnershipStep = signUpStep === "join_group" && userType === "provider";
+    const isCredentialsStep = signUpStep === "credentials";
+    const credentialProgress = ["welcome", "credentials", "user_type"] as const;
+    const credentialStepIndex = credentialProgress.indexOf(
+      signUpStep as (typeof credentialProgress)[number],
+    );
+    const SignupScreenWrapper =
+      Platform.OS === "web" ? DismissKeyboardView : View;
+
     return (
-      <View style={styles.container}>
+      <SignupScreenWrapper
+        style={[styles.container, isPartnershipStep && Platform.OS === "web" && webViewportHeight ? {
+          position: "fixed" as any, top: webViewportTop, left: 0, right: 0,
+          height: webViewportHeight, minHeight: 0, flex: 0, zIndex: 20,
+        } : undefined]}
+        testID={
+          Platform.OS === "web"
+            ? "signup-screen-keyboard-dismiss"
+            : "signup-screen"
+        }
+      >
         <LinearGradient
-          colors={["#0F172A", "#1E293B", "#0F172A"]}
+          colors={isCredentialsStep ? ["#F4F8FC", "#F4F8FC"] : ["#0F172A", "#1E293B", "#0F172A"]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={StyleSheet.absoluteFill}
@@ -647,20 +842,28 @@ export default function LoginScreen() {
           style={styles.flex}
         >
           <ScrollView
+            style={styles.flex}
             contentContainerStyle={[
               styles.scrollContent,
               {
-                paddingTop: Platform.OS === "web" ? 67 + 30 : insets.top + 30,
-                paddingBottom: Platform.OS === "web" ? 34 + 20 : insets.bottom + 20,
+                paddingTop: isCredentialsStep
+                  ? (Platform.OS === "web" ? 18 : Math.max(insets.top, 12))
+                  : (Platform.OS === "web" ? 67 + 30 : insets.top + 30),
+                paddingBottom: isCredentialsStep
+                  ? (Platform.OS === "web" ? 24 : Math.max(insets.bottom, 16))
+                  : (Platform.OS === "web" ? 34 + 20 : insets.bottom + 20),
               },
+              isCredentialsStep && styles.credentialsScrollContent,
             ]}
             keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="on-drag"
+            keyboardDismissMode={scrollKeyboardDismissMode}
             showsVerticalScrollIndicator={false}
-            onScrollBeginDrag={Keyboard.dismiss}
+            testID="signup-scroll"
           >
             <Pressable
+              disabled={signUpLoading}
               onPress={() => {
+                if (signUpLoading) return;
                 setSignUpError(null);
                 if (signUpStep === "welcome") {
                   switchToSignIn();
@@ -674,8 +877,15 @@ export default function LoginScreen() {
                   setMatchingLabGroup(null);
                   setLabJoinRequestSent(false);
                   setSignUpStep("user_type");
-                } else if (signUpStep === "license") {
+                } else if (signUpStep === "provider_intent") {
+                  setProviderIntent(null);
+                  setJoinPracticeOrgId(null);
                   setSignUpStep("user_type");
+                } else if (signUpStep === "license") {
+                  setSignUpStep(userType === "provider" ? "provider_intent" : "user_type");
+                } else if (signUpStep === "join_practice") {
+                  setJoinPracticeOrgId(null);
+                  setSignUpStep("license");
                 } else if (signUpStep === "practice_info") {
                   setSignUpStep("license");
                 } else if (signUpStep === "lab_name") {
@@ -690,6 +900,8 @@ export default function LoginScreen() {
                 } else if (signUpStep === "email_verify") {
                   if (userType === "lab") {
                     setSignUpStep(labIntent === "join" ? "lab_name" : "lab_info");
+                  } else if (providerIntent === "join") {
+                    setSignUpStep("join_practice");
                   } else if (providerMatches.length > 0) {
                     setSignUpStep("provider_match");
                   } else {
@@ -703,112 +915,196 @@ export default function LoginScreen() {
                   setSignUpStep("phone_entry");
                 } else if (signUpStep === "phone_contact_name") {
                   setSignUpStep("phone_verify");
-                } else if (signUpStep === "role_select") {
-                  if (userType === "lab") {
-                    setSignUpStep("updates_opt_in");
-                  } else if (wantsUpdates) {
-                    setSignUpStep("phone_contact_name");
-                  } else {
-                    setSignUpStep("updates_opt_in");
-                  }
+                } else if (signUpStep === "plan_select") {
+                  setSignUpStep("join_group");
+                } else if (signUpStep === "hipaa_disclaimer" && userType === "provider" && providerIntent !== "join" && !selectedMatchOrgId) {
+                  setSignUpStepRaw("plan_select");
                 } else if (signUpStep === "hipaa_disclaimer") {
                   if (userType === "lab" && labIntent === "create") {
                     setSignUpStep("updates_opt_in");
                   } else if (userType === "lab" && labIntent === "join") {
-                    setSignUpStep("role_select");
-                  } else if (selectedMatchOrgId) {
                     setSignUpStep("updates_opt_in");
+                  } else if (providerIntent === "join") {
+                    setSignUpStep(wantsUpdates ? "phone_contact_name" : "updates_opt_in");
+                  } else if (selectedMatchOrgId) {
+                    setSignUpStep(wantsUpdates ? "phone_contact_name" : "updates_opt_in");
                   } else {
                     setSignUpStep("join_group");
                   }
                 } else if (signUpStep === "join_group") {
-                  setSignUpStep("role_select");
+                  setSignUpStep(wantsUpdates ? "phone_contact_name" : "updates_opt_in");
                 }
               }}
-              style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.6 }]}
+              style={({ pressed }) => [
+                styles.backBtn,
+                isCredentialsStep && styles.credentialsBackBtn,
+                pressed && { opacity: 0.6 },
+              ]}
               testID="signup-back-btn"
             >
-              <Ionicons name="arrow-back" size={22} color="rgba(255,255,255,0.7)" />
+              <Ionicons
+                name="arrow-back"
+                size={22}
+                color={isCredentialsStep ? "#426384" : "rgba(255,255,255,0.7)"}
+              />
             </Pressable>
 
-            <View style={styles.logoSection}>
-              <View style={styles.logoContainer}>
-                <LinearGradient
-                  colors={[Colors.light.tint, "#3B82F6"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.logoGradient}
-                >
-                  <Ionicons name="person-add" size={30} color="#FFF" />
-                </LinearGradient>
+            {isCredentialsStep ? (
+              <>
+                <View style={styles.credentialsBrandHeader} testID="signup-brand-header">
+                  <Image
+                    source={require("../assets/images/icon.png")}
+                    style={styles.credentialsBrandIcon}
+                    accessibilityLabel="LabTrax"
+                  />
+                  <View style={styles.credentialsBrandCopy}>
+                    <Text style={styles.credentialsBrandName}>LabTrax</Text>
+                    <Text style={styles.credentialsBrandTagline}>LAB OPERATIONS</Text>
+                  </View>
+                </View>
+                <View style={styles.credentialsCard} testID="signup-credentials-card">
+                  <View style={styles.credentialsProgress} accessibilityLabel={`Step ${credentialStepIndex + 1} of ${credentialProgress.length}`} testID="signup-credentials-progress">
+                    <View style={styles.credentialsProgressBars}>
+                      {credentialProgress.map((_, index) => (
+                        <View
+                          key={index}
+                          style={[
+                            styles.credentialsProgressBar,
+                            index <= credentialStepIndex && styles.credentialsProgressBarActive,
+                          ]}
+                        />
+                      ))}
+                    </View>
+                    <Text style={styles.credentialsProgressLabel}>
+                      STEP {credentialStepIndex + 1} OF {credentialProgress.length}
+                    </Text>
+                  </View>
+                  <Text style={styles.credentialsHeading}>Create your account</Text>
+                  <Text style={styles.credentialsSubheading}>
+                    Choose your username, email, and password.
+                  </Text>
+                  {renderCredentialsStep()}
+                  <View style={styles.credentialsSignIn}>
+                    <Text style={styles.credentialsSignInText}>Already have an account?</Text>
+                    <Pressable
+                      onPress={switchToSignIn}
+                      accessibilityRole="button"
+                      testID="switch-to-signin"
+                    >
+                      <Text style={styles.credentialsSignInLink}>Sign in</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </>
+            ) : (
+              <View style={styles.logoSection}>
+                <View style={styles.logoContainer}>
+                  <LinearGradient
+                    colors={[Colors.light.tint, "#3B82F6"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.logoGradient}
+                  >
+                    <Ionicons name="person-add" size={30} color="#FFF" />
+                  </LinearGradient>
+                </View>
+                <Text style={styles.appName}>Create Account</Text>
+                <Text style={styles.appTagline}>
+                  {signUpStep === "welcome" && "Your dental lab management platform"}
+                  {signUpStep === "user_type" && "What type of account?"}
+                  {signUpStep === "lab_intent" && "How do you want to get started?"}
+                  {signUpStep === "lab_name" && "Enter your lab name"}
+                  {signUpStep === "lab_info" && "Enter your lab details"}
+                  {signUpStep === "provider_intent" && "How do you want to get started?"}
+                  {signUpStep === "license" && (userType === "lab" ? "Enter your lab license number" : "Enter your dental license number")}
+                  {signUpStep === "practice_info" && "Tell us about your practice"}
+                  {signUpStep === "join_practice" && "Find your practice"}
+                  {signUpStep === "provider_match" && "We found a matching practice"}
+                  {signUpStep === "updates_opt_in" && "Stay connected with your lab"}
+                  {signUpStep === "phone_entry" && "Enter your phone number"}
+                  {signUpStep === "phone_verify" && "Verify your phone number"}
+                  {signUpStep === "phone_contact_name" && "Who will receive text updates?"}
+                  {signUpStep === "email_verify" && "Verify your email address"}
+                  {signUpStep === "plan_select" && "Choose your plan"}
+                  {signUpStep === "join_group" && (userType === "lab" ? "Connect with a Provider" : "Partner with a lab")}
+                  {signUpStep === "hipaa_disclaimer" && "Review & Accept Terms"}
+                </Text>
+                {((signUpStep === "lab_info" && labIntent === "create") || (signUpStep === "practice_info" && providerIntent === "create")) && (
+                  <Text style={styles.optionCardDesc} testID="creator-ownership-guidance">
+                    For a new organization, you’ll be Owner with administrator access. You can transfer ownership to an active member later.
+                  </Text>
+                )}
               </View>
-              <Text style={styles.appName}>Create Account</Text>
-              <Text style={styles.appTagline}>
-                {signUpStep === "welcome" && "Your dental lab management platform"}
-                {signUpStep === "credentials" && "Enter your details to get started"}
-                {signUpStep === "user_type" && "What type of account?"}
-                {signUpStep === "lab_intent" && "How do you want to get started?"}
-                {signUpStep === "lab_name" && "Enter your lab name"}
-                {signUpStep === "lab_info" && "Enter your lab details"}
-                {signUpStep === "license" && (userType === "lab" ? "Enter your lab license number" : "Enter your dental license number")}
-                {signUpStep === "practice_info" && "Tell us about your practice"}
-                {signUpStep === "provider_match" && "We found a matching practice"}
-                {signUpStep === "updates_opt_in" && "Stay connected with your lab"}
-                {signUpStep === "phone_entry" && "Enter your phone number"}
-                {signUpStep === "phone_verify" && "Verify your phone number"}
-                {signUpStep === "phone_contact_name" && "Who will receive text updates?"}
-                {signUpStep === "email_verify" && "Verify your email address"}
-                {signUpStep === "role_select" && "Select your role"}
-                {signUpStep === "join_group" && (userType === "lab" ? "Connect with a Provider" : "Connect with the Lab")}
-                {signUpStep === "hipaa_disclaimer" && "Review & Accept Terms"}
-              </Text>
-            </View>
+            )}
 
             {signUpStep === "welcome" && renderWelcome()}
-            {signUpStep === "credentials" && renderCredentialsStep()}
+            {Platform.OS === "web" && signUpStep === "welcome" && (
+              <Pressable
+                onPress={() => setSignUpStep("credentials")}
+                style={({ pressed }) => [
+                  styles.welcomeActionButton,
+                  pressed && { opacity: 0.85 },
+                ]}
+                testID="welcome-get-started-btn"
+              >
+                <Text style={styles.welcomeActionText}>Get Started →</Text>
+              </Pressable>
+            )}
             {signUpStep === "user_type" && renderUserType()}
             {signUpStep === "lab_intent" && renderLabIntent()}
             {signUpStep === "lab_name" && renderLabName()}
             {signUpStep === "lab_info" && renderLabInfo()}
+            {signUpStep === "provider_intent" && renderProviderIntent()}
             {signUpStep === "license" && renderLicense()}
             {signUpStep === "practice_info" && renderPracticeInfo()}
+            {signUpStep === "join_practice" && renderJoinPractice()}
             {signUpStep === "provider_match" && renderProviderMatch()}
             {signUpStep === "email_verify" && renderEmailVerify()}
             {signUpStep === "updates_opt_in" && renderUpdatesOptIn()}
             {signUpStep === "phone_entry" && renderPhoneEntry()}
             {signUpStep === "phone_verify" && renderPhoneVerify()}
             {signUpStep === "phone_contact_name" && renderPhoneContactName()}
-            {signUpStep === "role_select" && renderRoleSelect()}
             {signUpStep === "join_group" && renderJoinGroup()}
-            {signUpStep === "hipaa_disclaimer" && renderHipaaDisclaimer()}
-
-            {signUpStep === "credentials" && (
-              <View style={styles.bottomSection}>
-                <View style={styles.switchRow}>
-                  <Text style={styles.switchText}>Already have an account?</Text>
-                  <Pressable onPress={switchToSignIn} style={({ pressed }) => [pressed && { opacity: 0.7 }]} testID="switch-to-signin">
-                    <Text style={styles.switchLink}>Sign In</Text>
-                  </Pressable>
-                </View>
+            {partnersConfirmed && partnerLabs.length > 0 && (signUpStep === "hipaa_disclaimer" || signUpStep === "plan_select") && (
+              <View accessibilityRole="alert" style={[styles.optionCard, styles.optionCardSelected]} testID="partners-confirmed">
+                <Text style={styles.fieldLabel}>Partnership selections confirmed: {partnerLabs.map((lab) => lab.displayName).join(", ")}</Text>
+                <Text style={styles.optionCardDesc}>Requests will be sent when signup is completed. Each lab must approve your request.</Text>
               </View>
             )}
+            {signUpStep === "hipaa_disclaimer" && renderHipaaDisclaimer()}
+            {signUpStep === "plan_select" && <View style={{ gap: 16 }}>
+              <ProviderPlanChoices selected={providerPlan} onSelect={setProviderPlan} reuseCard={reuseSubscriptionCard} onReuseChange={setReuseSubscriptionCard} />
+              <Pressable testID="provider-plan-continue" accessibilityRole="button" accessibilityState={{ disabled: !providerPlan }}
+                disabled={!providerPlan} style={[styles.primaryBtn, !providerPlan && { opacity: 0.5 }]}
+                onPress={() => { if (!providerPlan) return; setProviderPlanConfirmed(true); setSignUpStepRaw("hipaa_disclaimer"); }}>
+                <Text style={styles.primaryBtnText}>Continue with selected plan</Text>
+              </Pressable>
+            </View>}
 
-            <View style={styles.stepIndicator}>
+            {!isCredentialsStep && <View style={styles.stepIndicator}>
               {(() => {
                 const labCreateSteps: SignUpStep[] = ["credentials", "user_type", "lab_intent", "lab_name", "lab_info", "email_verify", "updates_opt_in", "hipaa_disclaimer"];
-                const labJoinSteps: SignUpStep[] = ["credentials", "user_type", "lab_intent", "lab_name", "email_verify", "updates_opt_in", "role_select", "hipaa_disclaimer"];
+                const labJoinSteps: SignUpStep[] = ["credentials", "user_type", "lab_intent", "lab_name", "email_verify", "updates_opt_in", "hipaa_disclaimer"];
+                const providerJoinSteps: SignUpStep[] = wantsUpdates
+                  ? ["credentials", "user_type", "provider_intent", "license", "join_practice", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "hipaa_disclaimer"]
+                  : ["credentials", "user_type", "provider_intent", "license", "join_practice", "email_verify", "updates_opt_in", "hipaa_disclaimer"];
                 const providerSteps: SignUpStep[] = wantsUpdates
                   ? (selectedMatchOrgId
-                    ? ["credentials", "user_type", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "hipaa_disclaimer"]
+                    ? ["credentials", "user_type", "provider_intent", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "hipaa_disclaimer"]
                     : providerMatches.length > 0
-                    ? ["credentials", "user_type", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"]
-                    : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"])
+                    ? ["credentials", "user_type", "provider_intent", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"]
+                    : ["credentials", "user_type", "provider_intent", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"])
                   : (selectedMatchOrgId
-                    ? ["credentials", "user_type", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "hipaa_disclaimer"]
+                    ? ["credentials", "user_type", "provider_intent", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "hipaa_disclaimer"]
                     : providerMatches.length > 0
-                    ? ["credentials", "user_type", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"]
-                    : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"]);
-                const allSteps = userType === "lab" ? (labIntent === "join" ? labJoinSteps : labCreateSteps) : providerSteps;
+                    ? ["credentials", "user_type", "provider_intent", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"]
+                    : ["credentials", "user_type", "provider_intent", "license", "practice_info", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"]);
+                if (userType === "provider" && providerIntent !== "join" && !selectedMatchOrgId) {
+                  providerSteps.splice(providerSteps.indexOf("hipaa_disclaimer"), 0, "plan_select");
+                }
+                const allSteps = userType === "lab"
+                  ? (labIntent === "join" ? labJoinSteps : labCreateSteps)
+                  : (providerIntent === "join" ? providerJoinSteps : providerSteps);
                 const currentIdx = allSteps.indexOf(signUpStep);
                 return allSteps.map((s) => {
                   const stepIdx = allSteps.indexOf(s);
@@ -821,10 +1117,58 @@ export default function LoginScreen() {
                   );
                 });
               })()}
-            </View>
+            </View>}
           </ScrollView>
+          {isPartnershipStep && (
+            <View testID="partnership-action-bar" style={{
+              flexShrink: 0, paddingHorizontal: 20, paddingTop: 12,
+              paddingBottom: Math.max(insets.bottom, 12), backgroundColor: "#1E293B",
+              borderTopWidth: 1, borderTopColor: "#475569", gap: 8,
+            }}>
+              <Text style={styles.optionCardDesc}>Requests will be sent when signup is completed.</Text>
+              <Pressable accessibilityRole="button" accessibilityState={{ disabled: signUpLoading || partnerLabs.length === 0 }}
+                disabled={signUpLoading || partnerLabs.length === 0}
+                style={[styles.primaryBtn, (signUpLoading || partnerLabs.length === 0) && { opacity: 0.5 }]}
+                testID="partner-labs-continue" onPress={() => {
+                  if (signUpLoading || partnerLabs.length === 0) return;
+                  setSignUpError(null); setPartnersConfirmed(true); setSignUpStep("hipaa_disclaimer");
+                }}>
+                <Text style={styles.primaryBtnText}>Submit partnership request</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" disabled={signUpLoading} accessibilityState={{ disabled: signUpLoading }} testID="partner-labs-skip"
+                style={{ minHeight: 44, alignItems: "center", justifyContent: "center" }}
+                onPress={() => {
+                  if (signUpLoading) return;
+                  setPartnerLabs([]); setPartnersConfirmed(false); setSignUpError(null); setSignUpStep("hipaa_disclaimer");
+                }}>
+                <Text style={styles.optionCardDesc}>Skip for now</Text>
+              </Pressable>
+            </View>
+          )}
+          {Platform.OS !== "web" && signUpStep === "welcome" && (
+            <View
+              style={[
+                styles.welcomeActionFooter,
+                {
+                  paddingBottom: insets.bottom + 12,
+                },
+              ]}
+              testID="welcome-action-footer"
+            >
+              <Pressable
+                onPress={() => setSignUpStep("credentials")}
+                style={({ pressed }) => [
+                  styles.welcomeActionButton,
+                  pressed && { opacity: 0.85 },
+                ]}
+                testID="welcome-get-started-btn"
+              >
+                <Text style={styles.welcomeActionText}>Get Started →</Text>
+              </Pressable>
+            </View>
+          )}
         </KeyboardAvoidingView>
-      </View>
+      </SignupScreenWrapper>
     );
   }
 
@@ -841,8 +1185,12 @@ export default function LoginScreen() {
         <Pressable
           onPress={() => {
             setUserType("provider");
+            setProviderIntent(null);
+            setJoinPracticeOrgId(null);
+            setPracticeSearchFilter("");
+            setPracticeResults([]);
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep("license");
+            setSignUpStep("provider_intent");
           }}
           style={({ pressed }) => [
             styles.optionCard,
@@ -981,6 +1329,252 @@ export default function LoginScreen() {
     );
   }
 
+  function renderProviderIntent() {
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        <Pressable
+          onPress={() => {
+            setProviderIntent("join");
+            setJoinPracticeOrgId(null);
+            setPracticeSearchFilter("");
+            setPracticeResults([]);
+            setSignUpError(null);
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setSignUpStep("license");
+          }}
+          style={({ pressed }) => [
+            styles.optionCard,
+            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+          ]}
+          testID="provider-intent-join"
+        >
+          <View style={styles.optionCardHeader}>
+            <LinearGradient
+              colors={["#3B82F6", "#1D4ED8"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.optionCardIcon}
+            >
+              <Ionicons name="people" size={28} color="#FFF" />
+            </LinearGradient>
+          </View>
+          <Text style={styles.optionCardTitle}>Join an existing practice</Text>
+          <Text style={styles.optionCardDesc}>Your practice is already on LabTrax — request to join as a member</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => {
+            setProviderIntent("create");
+            setJoinPracticeOrgId(null);
+            setSignUpError(null);
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setSignUpStep("license");
+          }}
+          style={({ pressed }) => [
+            styles.optionCard,
+            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+          ]}
+          testID="provider-intent-create"
+        >
+          <View style={styles.optionCardHeader}>
+            <LinearGradient
+              colors={[Colors.light.tint, "#3B82F6"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.optionCardIcon}
+            >
+              <Ionicons name="medkit" size={28} color="#FFF" />
+            </LinearGradient>
+          </View>
+          <Text style={styles.optionCardTitle}>Set up a new practice</Text>
+          <Text style={styles.optionCardDesc}>Register your dental practice on LabTrax</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  function renderJoinPractice() {
+    const selectedPractice = joinPracticeOrgId
+      ? practiceResults.find((p) => p.id === joinPracticeOrgId) || null
+      : null;
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        {!selectedPractice ? (
+          <View style={{ gap: 12 }}>
+            <View style={styles.inputWrapper}>
+              <Ionicons name="search" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+              <TextInput
+                style={styles.input}
+                value={practiceSearchFilter}
+                onChangeText={(t) => { setPracticeSearchFilter(t); setSignUpError(null); }}
+                placeholder="Search practices by name..."
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                autoCapitalize="none"
+                testID="practice-search-input"
+              />
+            </View>
+
+            {practicesLoading ? (
+              <View style={{ padding: 24, alignItems: "center" }}>
+                <ActivityIndicator size="small" color="rgba(255,255,255,0.6)" />
+              </View>
+            ) : practicesError ? (
+              <View style={{ padding: 24, alignItems: "center", gap: 12 }} testID="practice-search-error">
+                <Ionicons name="cloud-offline-outline" size={32} color="rgba(239,68,68,0.7)" />
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(239,68,68,0.9)", marginTop: 4, textAlign: "center" }}>
+                  {practicesError}
+                </Text>
+                <Pressable
+                  onPress={() => setPracticesRetryToken((t) => t + 1)}
+                  testID="practice-search-retry-btn"
+                  style={({ pressed }) => ({
+                    paddingVertical: 8,
+                    paddingHorizontal: 20,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: "rgba(239,68,68,0.5)",
+                    opacity: pressed ? 0.7 : 1,
+                  })}
+                >
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "rgba(239,68,68,0.9)" }}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : practiceSearchFilter.trim().length < 2 ? (
+              <View style={{ padding: 24, alignItems: "center" }}>
+                <Ionicons name="business-outline" size={32} color="rgba(255,255,255,0.2)" />
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.4)", marginTop: 8, textAlign: "center" }}>
+                  Type at least 2 characters to search for your practice
+                </Text>
+              </View>
+            ) : practiceResults.length === 0 ? (
+              <View style={{ padding: 24, alignItems: "center" }}>
+                <Ionicons name="business-outline" size={32} color="rgba(255,255,255,0.2)" />
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.4)", marginTop: 8, textAlign: "center" }}>
+                  No practices match your search
+                </Text>
+              </View>
+            ) : (
+              <ScrollView
+                style={{ maxHeight: 240 }}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={scrollKeyboardDismissMode}
+              >
+                {practiceResults.map((p) => (
+                  <Pressable
+                    key={p.id}
+                    onPress={() => {
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setJoinPracticeOrgId(p.id);
+                      setSignUpError(null);
+                    }}
+                    style={({ pressed }) => ({
+                      flexDirection: "row", alignItems: "center", gap: 12,
+                      backgroundColor: pressed ? "rgba(59,130,246,0.15)" : "rgba(255,255,255,0.06)",
+                      borderRadius: 12, padding: 14, marginBottom: 8,
+                      borderWidth: 1, borderColor: "rgba(255,255,255,0.1)",
+                    })}
+                    testID={`practice-result-${p.id}`}
+                  >
+                    <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(59,130,246,0.2)", justifyContent: "center", alignItems: "center" }}>
+                      <Ionicons name="medkit" size={20} color="#3B82F6" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>{p.displayName || p.name}</Text>
+                      {(p.addressLine1 || p.city) && (
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>
+                          {[p.addressLine1, p.city, p.state].filter(Boolean).join(", ")}
+                        </Text>
+                      )}
+                      {p.parentLabName && (
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>
+                          Lab: {p.parentLabName}
+                        </Text>
+                      )}
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.3)" />
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
+
+            <Pressable
+              onPress={() => {
+                setProviderIntent("create");
+                setJoinPracticeOrgId(null);
+                setSignUpError(null);
+                setSignUpStep("practice_info");
+              }}
+              style={({ pressed }) => [
+                { alignItems: "center", paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: "rgba(255,255,255,0.15)" },
+                pressed && { opacity: 0.7 },
+              ]}
+              testID="practice-create-instead-btn"
+            >
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.6)" }}>Set Up a New Practice Instead</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={{ alignItems: "center", paddingVertical: 20, gap: 12 }}>
+            <View style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: "rgba(16,185,129,0.2)", justifyContent: "center", alignItems: "center" }}>
+              <Ionicons name="checkmark-circle" size={36} color="#10B981" />
+            </View>
+            <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Practice Selected</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center", lineHeight: 18 }}>
+              You'll request to join {selectedPractice.displayName || selectedPractice.name}. Complete registration to submit your join request — a practice admin (or its lab) will review it.
+            </Text>
+            <Pressable
+              onPress={() => {
+                sendEmailCode();
+              }}
+              disabled={codeSending}
+              style={({ pressed }) => [
+                styles.loginBtn,
+                { marginTop: 8 },
+                codeSending && { opacity: 0.6 },
+                pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+              ]}
+              testID="join-practice-continue-btn"
+            >
+              {codeSending ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <>
+                  <Text style={styles.loginBtnText}>Continue</Text>
+                  <Ionicons name="arrow-forward" size={20} color="#FFF" />
+                </>
+              )}
+            </Pressable>
+            <Pressable
+              onPress={() => { setJoinPracticeOrgId(null); setSignUpError(null); }}
+              style={({ pressed }) => [
+                { alignItems: "center", paddingVertical: 12, marginTop: 4 },
+                pressed && { opacity: 0.7 },
+              ]}
+              testID="practice-back-to-list-btn"
+            >
+              <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.5)" }}>Back to Practice List</Text>
+            </Pressable>
+          </View>
+        )}
+      </View>
+    );
+  }
+
   async function loadAllLabGroups() {
     try {
       const res = await apiRequest("GET", "/api/labs/groups");
@@ -1113,7 +1707,12 @@ export default function LoginScreen() {
               />
             </View>
 
-            <ScrollView style={{ maxHeight: 240 }} showsVerticalScrollIndicator={false}>
+            <ScrollView
+              style={{ maxHeight: 240 }}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={scrollKeyboardDismissMode}
+            >
               {allLabGroups
                 .filter(g => !labSearchFilter || g.practiceName.toLowerCase().includes(labSearchFilter.toLowerCase()))
                 .length === 0 ? (
@@ -1282,6 +1881,7 @@ export default function LoginScreen() {
             placeholder="Street Address"
             placeholderTextColor="rgba(255,255,255,0.3)"
             autoCapitalize="words"
+            testID="lab-info-street"
           />
         </View>
 
@@ -1294,6 +1894,7 @@ export default function LoginScreen() {
             placeholder="City"
             placeholderTextColor="rgba(255,255,255,0.3)"
             autoCapitalize="words"
+            testID="lab-info-city"
           />
         </View>
 
@@ -1307,6 +1908,7 @@ export default function LoginScreen() {
               placeholderTextColor="rgba(255,255,255,0.3)"
               autoCapitalize="characters"
               maxLength={2}
+              testID="lab-info-state"
             />
           </View>
           <View style={[styles.inputWrapper, { flex: 1 }]}>
@@ -1318,6 +1920,7 @@ export default function LoginScreen() {
               placeholderTextColor="rgba(255,255,255,0.3)"
               keyboardType="number-pad"
               maxLength={5}
+              testID="lab-info-zip"
             />
           </View>
         </View>
@@ -1331,6 +1934,7 @@ export default function LoginScreen() {
             placeholder="Office Phone Number"
             placeholderTextColor="rgba(255,255,255,0.3)"
             keyboardType="phone-pad"
+            testID="lab-info-phone"
           />
         </View>
 
@@ -1345,6 +1949,7 @@ export default function LoginScreen() {
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
+            testID="lab-info-email"
           />
         </View>
 
@@ -1382,6 +1987,7 @@ export default function LoginScreen() {
             !labInfoComplete && { opacity: 0.5 },
             pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
           ]}
+          testID="lab-info-next-btn"
         >
           <Text style={styles.loginBtnText}>Continue</Text>
           <Ionicons name="arrow-forward" size={20} color="#FFF" />
@@ -1421,7 +2027,7 @@ export default function LoginScreen() {
               return;
             }
             setSignUpError(null);
-            setSignUpStep("practice_info");
+            setSignUpStep(userType === "provider" && providerIntent === "join" ? "join_practice" : "practice_info");
           }}
           style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
           testID="license-next-btn"
@@ -1576,6 +2182,18 @@ export default function LoginScreen() {
                 testID="city"
               />
             </View>
+            <View style={[styles.inputWrapper, { flex: 0.55 }]}>
+              <TextInput
+                style={styles.input}
+                value={state}
+                onChangeText={(t) => { setState(t.toUpperCase()); setSignUpError(null); }}
+                placeholder="State"
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                autoCapitalize="characters"
+                maxLength={2}
+                testID="state"
+              />
+            </View>
             <View style={[styles.inputWrapper, { flex: 0.6 }]}>
               <TextInput
                 style={styles.input}
@@ -1607,7 +2225,7 @@ export default function LoginScreen() {
 
         <Pressable
           onPress={async () => {
-            if (!practiceName.trim() || !doctorName.trim() || !streetAddress.trim() || !city.trim() || !zipCode.trim() || !practicePhone.trim()) {
+            if (!practiceName.trim() || !doctorName.trim() || !streetAddress.trim() || !city.trim() || !state.trim() || !zipCode.trim() || !practicePhone.trim()) {
               setSignUpError("All fields are required.");
               return;
             }
@@ -1684,8 +2302,8 @@ export default function LoginScreen() {
               return;
             }
             setSignUpError(null);
-            // Matched providers don't pick a role — go straight to hipaa
-            setSignUpStep(selectedMatchOrgId ? "hipaa_disclaimer" : "role_select");
+            // Matched providers and practice joiners don't pick a role — go straight to hipaa
+            setSignUpStep(selectedMatchOrgId || providerIntent === "join" ? "hipaa_disclaimer" : "join_group");
           }}
           style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
           testID="phone-contact-next-btn"
@@ -1744,7 +2362,7 @@ export default function LoginScreen() {
             )}
             {match.platformAccountNumber && (
               <Text style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "monospace" }}>
-                #{match.platformAccountNumber}
+                #{formatAccountNumberForDisplay(match.platformAccountNumber)}
               </Text>
             )}
           </Pressable>
@@ -1776,84 +2394,8 @@ export default function LoginScreen() {
     );
   }
 
-  function renderRoleSelect() {
-    return (
-      <View style={styles.formSection}>
-        {signUpError && (
-          <View style={styles.errorBanner}>
-            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
-            <Text style={styles.errorText}>{signUpError}</Text>
-          </View>
-        )}
-
-        <Pressable
-          onPress={() => {
-            setSelectedRole("user");
-            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep((userType === "lab" && labIntent === "join") || selectedMatchOrgId ? "hipaa_disclaimer" : "join_group");
-          }}
-          style={({ pressed }) => [
-            styles.optionCard,
-            selectedRole === "user" && styles.optionCardSelected,
-            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
-          ]}
-          testID="role-user"
-        >
-          <View style={styles.optionCardHeader}>
-            <LinearGradient
-              colors={["#10B981", "#059669"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.optionCardIcon}
-            >
-              <Ionicons name="person" size={28} color="#FFF" />
-            </LinearGradient>
-            {selectedRole === "user" && (
-              <View style={styles.optionCheckBadge}>
-                <Ionicons name="checkmark-circle" size={24} color={Colors.light.tint} />
-              </View>
-            )}
-          </View>
-          <Text style={styles.optionCardTitle}>User</Text>
-          <Text style={styles.optionCardDesc}>Standard user with access to case management</Text>
-        </Pressable>
-
-        <Pressable
-          onPress={() => {
-            setSelectedRole("admin");
-            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep((userType === "lab" && labIntent === "join") || selectedMatchOrgId ? "hipaa_disclaimer" : "join_group");
-          }}
-          style={({ pressed }) => [
-            styles.optionCard,
-            selectedRole === "admin" && styles.optionCardSelected,
-            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
-          ]}
-          testID="role-admin"
-        >
-          <View style={styles.optionCardHeader}>
-            <LinearGradient
-              colors={["#F59E0B", "#D97706"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.optionCardIcon}
-            >
-              <Ionicons name="shield" size={28} color="#FFF" />
-            </LinearGradient>
-            {selectedRole === "admin" && (
-              <View style={styles.optionCheckBadge}>
-                <Ionicons name="checkmark-circle" size={24} color={Colors.light.tint} />
-              </View>
-            )}
-          </View>
-          <Text style={styles.optionCardTitle}>Administrator</Text>
-          <Text style={styles.optionCardDesc}>Full access including pricing and management</Text>
-        </Pressable>
-      </View>
-    );
-  }
-
   function renderJoinGroup() {
+    if (userType === "provider") return renderPartnerLabs();
     const isLabUser = userType === "lab";
     const searchTargetType = isLabUser ? "provider" : "lab";
     const searchLabel = isLabUser ? "Search for a dental provider..." : "Search for your lab...";
@@ -1936,7 +2478,11 @@ export default function LoginScreen() {
 
             {matchingResults.length > 0 && (
               <View style={{ marginTop: 4, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.08)", borderWidth: 1, borderColor: "rgba(255,255,255,0.1)", maxHeight: 200, overflow: "hidden" }}>
-                <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                <ScrollView
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  keyboardDismissMode={scrollKeyboardDismissMode}
+                >
                   {matchingResults.map((result, index) => (
                     <Pressable
                       key={result.username + index}
@@ -2022,6 +2568,66 @@ export default function LoginScreen() {
     );
   }
 
+  function renderPartnerLabs() {
+    return (
+      <View style={styles.formSection}>
+        <Text style={styles.fieldLabel}>Select one or multiple labs</Text>
+        <Text style={styles.optionCardDesc}>Optional. Each lab admin must approve your request before you have access.</Text>
+        <Text accessibilityLiveRegion="polite" style={styles.fieldLabel}>{partnerLabs.length} labs selected</Text>
+        <View style={styles.inputWrapper}>
+          <Ionicons name="search" size={18} color={Colors.light.textSecondary} style={styles.inputIcon} />
+          <TextInput style={styles.input} placeholder="Search for your lab..." placeholderTextColor={Colors.light.textSecondary}
+            value={partnerSearch} onChangeText={setPartnerSearch} autoCapitalize="none" autoCorrect={false} testID="partner-lab-search" />
+        </View>
+        {partnerLabs.map((lab) => (
+          <View key={lab.selectionKey ?? lab.id} style={styles.inputWrapper}>
+            <Text style={[styles.fieldLabel, { flex: 1 }]}>{lab.displayName}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${lab.displayName}`}
+              testID={`remove-partner-${lab.selectionKey ?? lab.id}`}
+              onPress={() => { setPartnersConfirmed(false); setPartnerLabs((current) => current.filter((item) => (item.selectionKey ?? item.id) !== (lab.selectionKey ?? lab.id))); }}>
+              <Text style={styles.fieldLabel}>Remove</Text>
+            </Pressable>
+          </View>
+        ))}
+        {partnerLoading ? <ActivityIndicator color={Colors.light.tint} /> : (
+          <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled keyboardShouldPersistTaps="handled" keyboardDismissMode={scrollKeyboardDismissMode}>
+            {partnerResults.map((lab) => {
+              const selected = partnerLabs.some((item) => (item.selectionKey ?? item.id) === (lab.selectionKey ?? lab.id));
+              return (
+                <Pressable key={lab.id} accessibilityRole="checkbox" accessibilityLabel={lab.displayName} accessibilityState={{ checked: selected, disabled: signUpLoading }}
+                  disabled={signUpLoading}
+                  testID={`partner-result-${lab.selectionKey ?? lab.id}`}
+                  style={[styles.optionCard, { flexDirection: "row", alignItems: "center", gap: 12 }, selected && styles.optionCardSelected]}
+                  onPress={() => {
+                    if (signUpLoading) return;
+                    setPartnersConfirmed(false);
+                    if (selected) {
+                      setPartnerLabs((current) => current.filter((item) => (item.selectionKey ?? item.id) !== (lab.selectionKey ?? lab.id)));
+                      return;
+                    }
+                    if (partnerLabs.length >= 20) { setSignUpError("Select up to 20 partner labs."); return; }
+                    setSignUpError(null);
+                    setPartnerLabs((current) => [...current, lab]);
+                  }}>
+                  <Ionicons name={selected ? "checkbox" : "square-outline"} size={24} color={selected ? Colors.light.tint : Colors.light.textSecondary} />
+                  <View style={{ flex: 1 }}>
+                  <Text style={styles.fieldLabel}>{lab.displayName}{selected ? " — Selected" : ""}</Text>
+                  <Text style={styles.optionCardDesc}>{[lab.city, lab.state].filter(Boolean).join(", ")}</Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        )}
+        {partnerSearchError && <Text style={styles.errorText}>{partnerSearchError}</Text>}
+        {!partnerLoading && !partnerSearchError && partnerResults.length === 0 && (
+          <Text style={styles.optionCardDesc}>{partnerSearch.trim().length >= 2 ? "No matching labs found" : "Type to search for labs…"}</Text>
+        )}
+        {signUpError && <Text style={styles.errorText}>{signUpError}</Text>}
+      </View>
+    );
+  }
+
   function renderHipaaDisclaimer() {
     const isEmailConflict = !!signUpError && signUpError.includes("email already exists");
     return (
@@ -2045,7 +2651,12 @@ export default function LoginScreen() {
         )}
 
         <View style={styles.hipaaCard}>
-          <ScrollView style={styles.hipaaScroll} nestedScrollEnabled>
+          <ScrollView
+            style={styles.hipaaScroll}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={scrollKeyboardDismissMode}
+          >
             <Text style={styles.hipaaTitle}>HIPAA COMPLIANCE NOTICE</Text>
             <Text style={styles.hipaaBody}>
               All information within this application is considered HIPAA compliant and is handled in accordance with applicable privacy regulations.
@@ -2193,71 +2804,65 @@ export default function LoginScreen() {
           </Text>
         </View>
 
-        <Pressable
-          onPress={() => setSignUpStep("credentials")}
-          style={({ pressed }) => [{
-            backgroundColor: Colors.light.tint,
-            borderRadius: 12,
-            paddingVertical: 14,
-            alignItems: "center",
-            opacity: pressed ? 0.85 : 1,
-          }]}
-          testID="welcome-get-started-btn"
-        >
-          <Text style={{ ...Typography.bodySemibold, color: "#fff", fontSize: 16 }}>
-            Get Started →
-          </Text>
-        </Pressable>
       </View>
     );
   }
 
   function renderCredentialsStep() {
     return (
-      <View style={styles.formSection}>
+      <View style={[styles.formSection, styles.credentialsFormSection]}>
         {signUpError && (
-          <View style={styles.errorBanner}>
+          <View style={[styles.errorBanner, styles.credentialsErrorBanner]}>
             <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
             <Text style={styles.errorText}>{signUpError}</Text>
           </View>
         )}
 
-        <View style={styles.inputGroup}>
-          <View style={styles.inputWrapper}>
-            <Ionicons name="person-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+        <View style={styles.credentialsFieldGroup}>
+          <Text style={styles.credentialsFieldLabel}>Username</Text>
+          <View style={[styles.inputWrapper, styles.credentialsInputWrapper]}>
+            <Ionicons name="person-outline" size={17} color="#71839A" style={styles.inputIcon} />
             <TextInput
-              style={styles.input}
+              style={[styles.input, styles.credentialsInput]}
               value={signUpUsername}
               onChangeText={(t) => { setSignUpUsername(t); setSignUpError(null); }}
-              placeholder="Username (3–12 letters, numbers, _)"
-              placeholderTextColor="rgba(255,255,255,0.3)"
+              placeholder="Enter a username"
+              placeholderTextColor="#91A1B5"
               autoCapitalize="none"
               autoCorrect={false}
+              autoComplete="username"
+              textContentType="username"
+              accessibilityLabel="Username"
               maxLength={12}
               editable={!signUpLoading}
               testID="signup-username"
             />
           </View>
+          <Text style={styles.credentialsFieldHint}>3–12 characters: letters, numbers, or underscores.</Text>
+        </View>
 
-          <View style={styles.inputWrapper}>
-            <Ionicons name="mail-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+        <View style={styles.credentialsFieldGroup}>
+          <Text style={styles.credentialsFieldLabel}>Email</Text>
+          <View style={[styles.inputWrapper, styles.credentialsInputWrapper]}>
+            <Ionicons name="mail-outline" size={17} color="#71839A" style={styles.inputIcon} />
             <TextInput
-              style={styles.input}
+              style={[styles.input, styles.credentialsInput]}
               value={signUpEmail}
               onChangeText={(t) => { setSignUpEmail(t); setSignUpError(null); setEmailConflictError(null); }}
               onBlur={handleEmailBlur}
-              placeholder="Email Address"
-              placeholderTextColor="rgba(255,255,255,0.3)"
+              placeholder="you@example.com"
+              placeholderTextColor="#91A1B5"
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="email-address"
-              textContentType="oneTimeCode"
-              autoComplete="off"
+              textContentType="emailAddress"
+              autoComplete="email"
+              accessibilityLabel="Email"
               editable={!signUpLoading}
               testID="signup-email"
             />
             {emailCheckLoading && (
-              <ActivityIndicator size="small" color="rgba(255,255,255,0.4)" style={{ marginRight: 8 }} />
+              <ActivityIndicator size="small" color="#2878C8" style={{ marginRight: 8 }} />
             )}
           </View>
           {emailConflictError && (
@@ -2268,29 +2873,47 @@ export default function LoginScreen() {
               </Text>
             </View>
           )}
+          {isSharedTestEmail(signUpEmail) && (
+            <View style={styles.credentialsSharedEmail} testID="shared-email-signup-guidance">
+              <Ionicons name="information-circle" size={18} color="#398DDD" />
+              <Text style={styles.credentialsSharedEmailText}>
+                This shared test email can be used for multiple accounts. Sign in to each with its unique username; email sign-in can’t distinguish them.
+              </Text>
+            </View>
+          )}
+        </View>
 
-          <View style={styles.inputWrapper}>
-            <Ionicons name="lock-closed-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+        <View style={styles.credentialsFieldGroup}>
+          <Text style={styles.credentialsFieldLabel}>Password</Text>
+          <View style={[styles.inputWrapper, styles.credentialsInputWrapper]}>
+            <Ionicons name="lock-closed-outline" size={17} color="#71839A" style={styles.inputIcon} />
             <TextInput
-              style={[styles.input, { flex: 1 }]}
+              style={[styles.input, styles.credentialsInput, { flex: 1 }]}
               value={signUpPassword}
-              onChangeText={(t) => { setSignUpPassword(t); setPasswordTouched(true); setSignUpError(null); }}
-              placeholder="Password"
-              placeholderTextColor="rgba(255,255,255,0.3)"
+              onChangeText={(t) => { setSignUpPassword(t); setSignUpError(null); }}
+              placeholder="Create a password"
+              placeholderTextColor="#91A1B5"
               secureTextEntry={!showSignUpPassword}
               autoCapitalize="none"
-              textContentType="oneTimeCode"
-              autoComplete="off"
+              textContentType="newPassword"
+              autoComplete="new-password"
+              accessibilityLabel="Password"
               editable={!signUpLoading}
               testID="signup-password"
             />
-            <Pressable onPress={() => setShowSignUpPassword(!showSignUpPassword)} style={styles.eyeBtn}>
-              <Ionicons name={showSignUpPassword ? "eye-off-outline" : "eye-outline"} size={18} color="rgba(255,255,255,0.4)" />
+            <Pressable
+              onPress={() => setShowSignUpPassword(!showSignUpPassword)}
+              style={[styles.eyeBtn, styles.credentialsEyeBtn]}
+              accessibilityRole="button"
+              accessibilityLabel={showSignUpPassword ? "Hide password" : "Show password"}
+              accessibilityState={{ checked: showSignUpPassword }}
+              testID="signup-password-visibility"
+            >
+              <Ionicons name={showSignUpPassword ? "eye-off-outline" : "eye-outline"} size={19} color="#60758E" />
             </Pressable>
           </View>
 
-          {passwordTouched && (
-            <View style={styles.pwRequirements}>
+          <View style={[styles.pwRequirements, styles.credentialsPwRequirements]} testID="signup-password-requirements">
               {[
                 { label: "8+ characters", met: signUpPassword.length >= 8 },
                 { label: "Uppercase letter", met: /[A-Z]/.test(signUpPassword) },
@@ -2301,26 +2924,29 @@ export default function LoginScreen() {
                   <Ionicons
                     name={req.met ? "checkmark-circle" : "ellipse-outline"}
                     size={14}
-                    color={req.met ? "#22C55E" : "rgba(255,255,255,0.3)"}
+                    color={req.met ? "#188B6A" : "#97A7B9"}
                   />
-                  <Text style={[styles.pwReqText, req.met && styles.pwReqMet]}>{req.label}</Text>
+                  <Text style={[styles.pwReqText, styles.credentialsPwReqText, req.met && styles.pwReqMet]}>{req.label}</Text>
                 </View>
               ))}
             </View>
-          )}
+        </View>
 
-          <View style={styles.inputWrapper}>
-            <Ionicons name="lock-closed-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+        <View style={styles.credentialsFieldGroup}>
+          <Text style={styles.credentialsFieldLabel}>Confirm Password</Text>
+          <View style={[styles.inputWrapper, styles.credentialsInputWrapper]}>
+            <Ionicons name="lock-closed-outline" size={17} color="#71839A" style={styles.inputIcon} />
             <TextInput
-              style={[styles.input, { flex: 1 }]}
+              style={[styles.input, styles.credentialsInput, { flex: 1 }]}
               value={signUpConfirmPassword}
               onChangeText={(t) => { setSignUpConfirmPassword(t); setSignUpError(null); }}
-              placeholder="Confirm Password"
-              placeholderTextColor="rgba(255,255,255,0.3)"
+              placeholder="Re-enter your password"
+              placeholderTextColor="#91A1B5"
               secureTextEntry={!showSignUpPassword}
               autoCapitalize="none"
-              textContentType="oneTimeCode"
-              autoComplete="off"
+              textContentType="newPassword"
+              autoComplete="new-password"
+              accessibilityLabel="Confirm Password"
               editable={!signUpLoading}
               testID="signup-confirm-password"
             />
@@ -2614,89 +3240,106 @@ export default function LoginScreen() {
   }
 
   return (
-    <View style={styles.container}>
-      <LinearGradient
-        colors={["#0F172A", "#1E293B", "#0F172A"]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
+    <DismissKeyboardView
+      style={styles.container}
+      testID="login-screen-keyboard-dismiss"
+    >
+      <StatusBar style="light" />
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.flex}
       >
         <ScrollView
           contentContainerStyle={[
-            styles.content,
+            styles.loginContent,
             {
-              paddingTop: Platform.OS === "web" ? 67 + 40 : insets.top + 40,
+              paddingTop: 0,
               paddingBottom: Platform.OS === "web" ? 34 + 20 : insets.bottom + 20,
             },
           ]}
           keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
+          keyboardDismissMode={scrollKeyboardDismissMode}
           showsVerticalScrollIndicator={false}
-          onScrollBeginDrag={Keyboard.dismiss}
+          testID="login-scroll"
         >
-          <View style={styles.logoSection}>
-            <View style={styles.logoContainer}>
+          <View
+            style={[
+              styles.signInBrandHeader,
+              {
+                paddingTop: Platform.OS === "web" ? 67 + 20 : insets.top + 20,
+              },
+            ]}
+            testID="login-brand-header"
+          >
+            <View style={styles.signInBrandRow}>
               <Image
                 source={require("@/assets/images/icon.png")}
-                style={{ width: 80, height: 80, borderRadius: 20 }}
+                style={styles.signInBrandIcon}
                 resizeMode="contain"
               />
+              <View style={styles.signInBrandCopy}>
+                <Pressable
+                  onPress={() => {
+                    const next = diagTapCount + 1;
+                    setDiagTapCount(next);
+                    if (next >= 5) {
+                      const apiUrl = getApiUrl();
+                      const domain = process.env.EXPO_PUBLIC_DOMAIN || "(not set)";
+                      Alert.alert("Diagnostics", `API: ${apiUrl}\nDomain env: ${domain}\nPlatform: ${Platform.OS}\nBuild: 51`);
+                      setDiagTapCount(0);
+                    }
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel="LabTrax"
+                  accessibilityHint="Tap five times to open diagnostics."
+                >
+                  <Text style={styles.signInBrandName}>LabTrax</Text>
+                </Pressable>
+                <Text style={styles.signInBrandTagline}>Built for dental professionals</Text>
+              </View>
             </View>
-            <Pressable onPress={() => {
-              const next = diagTapCount + 1;
-              setDiagTapCount(next);
-              if (next >= 5) {
-                const apiUrl = getApiUrl();
-                const domain = process.env.EXPO_PUBLIC_DOMAIN || "(not set)";
-                Alert.alert("Diagnostics", `API: ${apiUrl}\nDomain env: ${domain}\nPlatform: ${Platform.OS}\nBuild: 51`);
-                setDiagTapCount(0);
-              }
-            }}>
-              <Text style={styles.appName}>LabTrax</Text>
-            </Pressable>
-            <Text style={styles.appTagline}>Dental Laboratory Management</Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8, backgroundColor: "rgba(16,185,129,0.12)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20 }}>
-              <Ionicons name="shield-checkmark" size={12} color="#10B981" />
-              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#10B981" }}>HIPAA Compliant</Text>
+            <View style={styles.signInBrandRule}>
+              <View style={styles.signInBrandRuleLine} />
+              <Text style={styles.signInBrandCaption}>Your cases. Your workflow. Connected.</Text>
             </View>
           </View>
 
-          <View style={styles.formSection}>
+          <View style={[styles.formSection, styles.signInCard]} testID="login-card">
+            <View style={styles.signInCardHeading}>
+              <Text style={styles.signInHeading}>Welcome back</Text>
+              <Text style={styles.signInSubheading}>Sign in to your LabTrax account.</Text>
+            </View>
             {error && (
-              <View style={styles.errorBanner}>
-                <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
-                <Text style={styles.errorText}>{error}</Text>
+              <View style={styles.signInErrorBanner} accessibilityRole="alert">
+                <Ionicons name="alert-circle" size={17} color={Colors.light.errorText} />
+                <Text style={styles.signInErrorText}>{error}</Text>
               </View>
             )}
 
             {twoFactorPendingToken ? (
               <View style={{ gap: 12 }}>
                 <View style={{ alignItems: "center", marginBottom: 4 }}>
-                  <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: "rgba(59,130,246,0.15)", alignItems: "center", justifyContent: "center", marginBottom: 8 }}>
-                    <Ionicons name="shield-checkmark" size={26} color="#60A5FA" />
+                  <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: Colors.light.infoLight, alignItems: "center", justifyContent: "center", marginBottom: 8 }}>
+                    <Ionicons name="shield-checkmark" size={26} color={Colors.light.tint} />
                   </View>
-                  <Text style={{ fontSize: 17, fontFamily: "Inter_600SemiBold", color: "#FFF", marginBottom: 4 }}>Two-Factor Verification</Text>
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center" }}>
+                  <Text style={{ fontSize: 17, fontFamily: "Inter_600SemiBold", color: Colors.light.text, marginBottom: 4 }}>Two-Factor Verification</Text>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, textAlign: "center" }}>
                     {useBackupCode
                       ? "Enter one of your saved backup codes."
                       : "Enter the 6-digit code from your authenticator app."}
                   </Text>
                 </View>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="keypad-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+                <View style={styles.signInInputWrapper}>
+                  <Ionicons name="keypad-outline" size={18} color={Colors.light.textTertiary} style={styles.inputIcon} />
                   <TextInput
-                    style={[styles.input, { letterSpacing: 4, textAlign: "center" }]}
+                    style={[styles.signInInput, { letterSpacing: 4, textAlign: "center" }]}
                     value={totpCode}
                     onChangeText={(t) => {
                       setTotpCode(useBackupCode ? t.toUpperCase() : t.replace(/\D/g, "").slice(0, 6));
                       setError(null);
                     }}
                     placeholder={useBackupCode ? "BACKUP CODE" : "000000"}
-                    placeholderTextColor="rgba(255,255,255,0.3)"
+                    placeholderTextColor={Colors.light.textTertiary}
                     keyboardType={useBackupCode ? "default" : "number-pad"}
                     autoCapitalize="characters"
                     autoCorrect={false}
@@ -2711,27 +3354,27 @@ export default function LoginScreen() {
                 >
                   <View style={{
                     width: 22, height: 22, borderRadius: 5,
-                    borderWidth: 2, borderColor: trustDevice ? "#60A5FA" : "rgba(255,255,255,0.3)",
-                    backgroundColor: trustDevice ? "#60A5FA" : "transparent",
+                    borderWidth: 2, borderColor: trustDevice ? Colors.light.tint : Colors.light.border,
+                    backgroundColor: trustDevice ? Colors.light.tint : "transparent",
                     alignItems: "center", justifyContent: "center",
                   }}>
                     {trustDevice && <Ionicons name="checkmark" size={14} color="#FFF" />}
                   </View>
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)" }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>
                     Trust this device for 30 days
                   </Text>
                 </Pressable>
                 <Pressable
                   onPress={handleTwoFactorChallenge}
                   disabled={isChallenging || !totpCode.trim()}
-                  style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }, (isChallenging || !totpCode.trim()) && { opacity: 0.6 }]}
+                  style={({ pressed }) => [styles.signInPrimaryBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }, (isChallenging || !totpCode.trim()) && { opacity: 0.6 }]}
                 >
                   {isChallenging ? (
                     <ActivityIndicator size="small" color="#FFF" />
                   ) : (
                     <>
                       <Ionicons name="checkmark-circle-outline" size={20} color="#FFF" />
-                      <Text style={styles.loginBtnText}>Verify</Text>
+                      <Text style={styles.signInPrimaryBtnText}>Verify</Text>
                     </>
                   )}
                 </Pressable>
@@ -2740,7 +3383,7 @@ export default function LoginScreen() {
                     onPress={() => { setUseBackupCode(!useBackupCode); setTotpCode(""); setError(null); }}
                     style={({ pressed }) => [pressed && { opacity: 0.7 }]}
                   >
-                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#60A5FA" }}>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.tint }}>
                       {useBackupCode ? "Use authenticator app" : "Use backup code"}
                     </Text>
                   </Pressable>
@@ -2748,82 +3391,103 @@ export default function LoginScreen() {
                     onPress={() => { setTwoFactorPendingToken(null); setTotpCode(""); setError(null); }}
                     style={({ pressed }) => [pressed && { opacity: 0.7 }]}
                   >
-                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#60A5FA" }}>Back</Text>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.tint }}>Back</Text>
                   </Pressable>
                 </View>
               </View>
             ) : (
             <>
             <View style={styles.inputGroup}>
-              <View style={styles.inputWrapper}>
-                <Ionicons name="person-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+              <View>
+                <Text style={styles.signInFieldLabel}>Username</Text>
+                <View style={styles.signInInputWrapper}>
+                <Ionicons name="person-outline" size={18} color={Colors.light.textTertiary} style={styles.inputIcon} />
                 <TextInput
-                  style={styles.input}
+                  style={styles.signInInput}
                   value={username}
                   onChangeText={(t) => { setUsername(t); setError(null); }}
                   placeholder="Username"
-                  placeholderTextColor="rgba(255,255,255,0.3)"
+                  placeholderTextColor={Colors.light.textTertiary}
                   autoCapitalize="none"
                   autoCorrect={false}
                   editable={!isLoggingIn}
                   testID="login-username"
                 />
+                </View>
               </View>
+              {isSharedTestEmail(username) && (
+                <Text
+                  style={{ color: Colors.light.textSecondary, fontSize: 12, lineHeight: 18, paddingHorizontal: 4 }}
+                  testID="shared-email-login-guidance"
+                >
+                  These test accounts share an email address. Sign in with the account’s unique username because email sign-in can’t distinguish them.
+                </Text>
+              )}
 
-              <View style={styles.inputWrapper}>
-                <Ionicons name="lock-closed-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+              <View>
+                <Text style={styles.signInFieldLabel}>Password</Text>
+                <View style={styles.signInInputWrapper}>
+                <Ionicons name="lock-closed-outline" size={18} color={Colors.light.textTertiary} style={styles.inputIcon} />
                 <TextInput
-                  style={[styles.input, { flex: 1 }]}
+                  style={[styles.signInInput, { flex: 1 }]}
                   value={password}
                   onChangeText={(t) => { setPassword(t); setError(null); }}
                   placeholder="Password"
-                  placeholderTextColor="rgba(255,255,255,0.3)"
+                  placeholderTextColor={Colors.light.textTertiary}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
                   editable={!isLoggingIn}
                   testID="login-password"
                 />
-                <Pressable onPress={() => setShowPassword(!showPassword)} style={styles.eyeBtn}>
-                  <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={18} color="rgba(255,255,255,0.4)" />
+                <Pressable
+                  onPress={() => setShowPassword(!showPassword)}
+                  style={styles.signInEyeBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+                  testID="login-toggle-password"
+                >
+                  <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={19} color={Colors.light.tint} />
+                </Pressable>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.signInOptionsRow}>
+              <Pressable
+                onPress={() => setRememberMe(!rememberMe)}
+                style={styles.signInRememberToggle}
+                testID="remember-me-toggle"
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: rememberMe }}
+              >
+                <View style={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: 5,
+                  borderWidth: 1.5,
+                  borderColor: rememberMe ? Colors.light.tint : Colors.light.border,
+                  backgroundColor: rememberMe ? Colors.light.tint : Colors.light.surface,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}>
+                  {rememberMe && <Ionicons name="checkmark" size={13} color="#FFF" />}
+                </View>
+                <Text style={styles.signInRememberText}>Remember me</Text>
+              </Pressable>
+              <View style={styles.signInRecoveryLinks}>
+                <Pressable onPress={openForgotUsername} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
+                  <Text style={styles.signInLink}>Forgot username?</Text>
+                </Pressable>
+                <Pressable onPress={openForgotPassword} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
+                  <Text style={styles.signInLink}>Forgot password?</Text>
                 </Pressable>
               </View>
             </View>
 
-            <View style={{ flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 4, marginTop: 4, marginBottom: 12 }}>
-              <Pressable onPress={openForgotPassword} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#60A5FA" }}>Forgot Password?</Text>
-              </Pressable>
-              <Pressable onPress={openForgotUsername} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#60A5FA" }}>Forgot Username?</Text>
-              </Pressable>
-            </View>
-
-            <Pressable
-              onPress={() => setRememberMe(!rememberMe)}
-              style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 4, marginBottom: 16 }}
-              testID="remember-me-toggle"
-            >
-              <View style={{
-                width: 20,
-                height: 20,
-                borderRadius: 4,
-                borderWidth: 1.5,
-                borderColor: rememberMe ? "#60A5FA" : "rgba(255,255,255,0.3)",
-                backgroundColor: rememberMe ? "#60A5FA" : "transparent",
-                alignItems: "center",
-                justifyContent: "center",
-              }}>
-                {rememberMe && <Ionicons name="checkmark" size={13} color="#FFF" />}
-              </View>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.75)" }}>
-                Remember Me
-              </Text>
-            </Pressable>
-
             <Pressable
               onPress={handleLogin}
               disabled={isLoggingIn}
-              style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }, isLoggingIn && { opacity: 0.6 }]}
+              style={({ pressed }) => [styles.signInPrimaryBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }, isLoggingIn && { opacity: 0.6 }]}
               testID="login-submit"
             >
               {isLoggingIn ? (
@@ -2831,23 +3495,23 @@ export default function LoginScreen() {
               ) : (
                 <>
                   <Ionicons name="log-in-outline" size={20} color="#FFF" />
-                  <Text style={styles.loginBtnText}>Sign In</Text>
+                    <Text style={styles.signInPrimaryBtnText}>Sign In</Text>
                 </>
               )}
             </Pressable>
 
             {biometricAvailable && (
               <>
-                <View style={styles.dividerRow}>
-                  <View style={styles.dividerLine} />
-                  <Text style={styles.dividerText}>or</Text>
-                  <View style={styles.dividerLine} />
+                <View style={styles.signInDividerRow}>
+                  <View style={styles.signInDividerLine} />
+                  <Text style={styles.signInDividerText}>or</Text>
+                  <View style={styles.signInDividerLine} />
                 </View>
 
                 <Pressable
                   onPress={handleBiometricLogin}
                   disabled={isLoggingIn}
-                  style={({ pressed }) => [styles.biometricBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
+                  style={({ pressed }) => [styles.signInBiometricBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
                   testID="login-biometric"
                 >
                   <Ionicons
@@ -2864,37 +3528,43 @@ export default function LoginScreen() {
           </View>
 
           <View style={styles.bottomSection}>
-            <View style={{ paddingHorizontal: 24, paddingTop: 12 }}>
+            <Pressable
+              onPress={switchToSignUp}
+              accessibilityRole="button"
+              accessibilityLabel="Create account"
+              style={({ pressed }) => [
+                styles.createAccountButton,
+                pressed && { opacity: 0.82, transform: [{ scale: 0.98 }] },
+              ]}
+              testID="switch-mode-btn"
+            >
+              <Text style={styles.createAccountButtonText}>Create account</Text>
+            </Pressable>
+            <View style={{ paddingHorizontal: 24, paddingTop: 12 }} testID="login-hipaa-notice">
               <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#64748B", textAlign: "center", lineHeight: 16 }}>
                 By logging in, you acknowledge that this system contains Protected Health Information (PHI) subject to HIPAA regulations. Unauthorized access is prohibited and may result in civil and criminal penalties.
               </Text>
             </View>
-            <View style={styles.switchRow}>
-              <Text style={styles.switchText}>Don't have an account?</Text>
-              <Pressable onPress={switchToSignUp} style={({ pressed }) => [pressed && { opacity: 0.7 }]} testID="switch-mode-btn">
-                <Text style={styles.switchLink}>Sign Up</Text>
-              </Pressable>
-            </View>
             <View style={{ flexDirection: "row", justifyContent: "center", gap: 16, marginBottom: 8 }}>
-              <Pressable onPress={() => router.push("/privacy-policy")} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#60A5FA", textDecorationLine: "underline" }}>Privacy Policy</Text>
+              <Pressable onPress={() => router.push("/privacy-policy")} style={({ pressed }) => [pressed && { opacity: 0.7 }]} testID="login-privacy-policy">
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.tint, textDecorationLine: "underline" }}>Privacy Policy</Text>
               </Pressable>
-              <Pressable onPress={() => router.push("/terms-of-service")} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#60A5FA", textDecorationLine: "underline" }}>Terms of Service</Text>
+              <Pressable onPress={() => router.push("/terms-of-service")} style={({ pressed }) => [pressed && { opacity: 0.7 }]} testID="login-terms-of-service">
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.tint, textDecorationLine: "underline" }}>Terms of Service</Text>
               </Pressable>
             </View>
             <View style={styles.footer}>
               <Text style={styles.footerText}>Secure Access Only</Text>
-              <Ionicons name="shield-checkmark" size={14} color="rgba(255,255,255,0.25)" />
+              <Ionicons name="shield-checkmark" size={14} color={Colors.light.textTertiary} />
             </View>
-            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.2)", marginTop: 6 }}>v{Constants.expoConfig?.version || "1.0.0"} (Build {Constants.expoConfig?.ios?.buildNumber || "1"})</Text>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 6 }}>v{Constants.expoConfig?.version || "1.0.0"} (Build {Constants.expoConfig?.ios?.buildNumber || "1"})</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
 
       <Modal visible={showForgotPassword} transparent animationType="fade" onRequestClose={() => setShowForgotPassword(false)}>
         <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", padding: 24 }} onPress={() => setShowForgotPassword(false)}>
-          <Pressable style={{ backgroundColor: "#1E293B", borderRadius: 20, padding: 24, width: "100%", maxWidth: 400 }} onPress={() => {}}>
+          <Pressable style={{ backgroundColor: "#1E293B", borderRadius: 20, padding: 24, width: "100%", maxWidth: 400 }} onPress={dismissKeyboardOnModalTap}>
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#FFF" }}>Forgot Password</Text>
               <Pressable onPress={() => setShowForgotPassword(false)} hitSlop={12}>
@@ -2962,7 +3632,7 @@ export default function LoginScreen() {
 
       <Modal visible={showForgotUsername} transparent animationType="fade" onRequestClose={() => setShowForgotUsername(false)}>
         <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", padding: 24 }} onPress={() => setShowForgotUsername(false)}>
-          <Pressable style={{ backgroundColor: "#1E293B", borderRadius: 20, padding: 24, width: "100%", maxWidth: 400 }} onPress={() => {}}>
+          <Pressable style={{ backgroundColor: "#1E293B", borderRadius: 20, padding: 24, width: "100%", maxWidth: 400 }} onPress={dismissKeyboardOnModalTap}>
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#FFF" }}>Forgot Username</Text>
               <Pressable onPress={() => setShowForgotUsername(false)} hitSlop={12}>
@@ -2970,7 +3640,7 @@ export default function LoginScreen() {
               </Pressable>
             </View>
             <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: "#94A3B8", marginBottom: 20, lineHeight: 20 }}>
-              Enter the email address associated with your account. We'll send your username to that email.
+              Enter the email address associated with your account. We'll email you a secure link — open it and enter your password to view your username.
             </Text>
             {forgotError && (
               <View style={{ backgroundColor: "rgba(239,68,68,0.15)", borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", borderRadius: 10, padding: 12, marginBottom: 16 }}>
@@ -3011,7 +3681,7 @@ export default function LoginScreen() {
                   {forgotLoading ? (
                     <ActivityIndicator size="small" color="#FFF" />
                   ) : (
-                    <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Send Username</Text>
+                    <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Send Link</Text>
                   )}
                 </Pressable>
               </>
@@ -3027,16 +3697,228 @@ export default function LoginScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-    </View>
+    </DismissKeyboardView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: Colors.light.backgroundSolid,
   },
   flex: {
     flex: 1,
+  },
+  loginContent: {
+    flexGrow: 1,
+    width: "100%",
+    alignSelf: "center",
+    ...(Platform.OS === "web" ? { maxWidth: 480 as number } : {}),
+  },
+  signInBrandHeader: {
+    paddingHorizontal: 24,
+    paddingBottom: 23,
+    backgroundColor: Colors.light.tintDark,
+    borderBottomLeftRadius: 26,
+    borderBottomRightRadius: 26,
+    overflow: "hidden",
+  },
+  signInBrandRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+  },
+  signInBrandIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 16,
+    backgroundColor: "#FFFFFF",
+  },
+  signInBrandCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  signInBrandName: {
+    fontSize: 25,
+    lineHeight: 30,
+    fontFamily: "Inter_700Bold",
+    color: "#FFFFFF",
+    letterSpacing: -0.5,
+  },
+  signInBrandTagline: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.76)",
+    letterSpacing: 0.2,
+  },
+  signInBrandRule: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 18,
+  },
+  signInBrandRuleLine: {
+    width: 22,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: "#92C8F6",
+  },
+  signInBrandCaption: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.78)",
+  },
+  signInCard: {
+    marginHorizontal: 18,
+    marginTop: -12,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 20,
+    backgroundColor: Colors.light.surface,
+    shadowColor: "#173D68",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.1,
+    shadowRadius: 18,
+    elevation: 5,
+  },
+  signInCardHeading: {
+    gap: 4,
+    marginBottom: 2,
+  },
+  signInHeading: {
+    fontSize: 24,
+    lineHeight: 30,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    letterSpacing: -0.4,
+  },
+  signInSubheading: {
+    fontSize: 13,
+    lineHeight: 19,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+  },
+  signInFieldLabel: {
+    marginBottom: 7,
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  signInInputWrapper: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 50,
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 11,
+    paddingHorizontal: 13,
+  },
+  signInInput: {
+    flex: 1,
+    paddingVertical: 12,
+    fontSize: 15,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+  },
+  signInEyeBtn: {
+    minWidth: 38,
+    minHeight: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 4,
+  },
+  signInOptionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 2,
+  },
+  signInRememberToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    paddingVertical: 4,
+  },
+  signInRememberText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+  },
+  signInRecoveryLinks: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    flexWrap: "wrap",
+    gap: 11,
+  },
+  signInLink: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+  },
+  signInErrorBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    backgroundColor: Colors.light.errorSurface,
+    borderWidth: 1,
+    borderColor: Colors.light.errorLight,
+    borderRadius: 11,
+    padding: 12,
+  },
+  signInErrorText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.errorText,
+  },
+  signInPrimaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    minHeight: 50,
+    backgroundColor: Colors.light.tint,
+    paddingVertical: 14,
+    borderRadius: 11,
+    marginTop: 1,
+  },
+  signInPrimaryBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: "#FFFFFF",
+  },
+  signInDividerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  signInDividerLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: Colors.light.border,
+  },
+  signInDividerText: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textTertiary,
+  },
+  signInBiometricBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    minHeight: 50,
+    backgroundColor: Colors.light.infoSurface,
+    borderWidth: 1,
+    borderColor: Colors.light.infoLight,
+    paddingVertical: 13,
+    borderRadius: 11,
   },
   content: {
     flexGrow: 1,
@@ -3048,6 +3930,212 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 28,
     ...(Platform.OS === "web" ? { maxWidth: 480, alignSelf: "center" as const, width: "100%" as any } : {}),
+  },
+  credentialsScrollContent: {
+    paddingHorizontal: 20,
+  },
+  credentialsBackBtn: {
+    marginTop: -4,
+    marginBottom: 2,
+  },
+  credentialsBrandHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 16,
+    paddingHorizontal: 2,
+  },
+  credentialsBrandIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    backgroundColor: "#FFFFFF",
+  },
+  credentialsBrandCopy: {
+    gap: 2,
+  },
+  credentialsBrandName: {
+    fontSize: 21,
+    lineHeight: 25,
+    fontFamily: "Inter_700Bold",
+    color: "#10213D",
+    letterSpacing: -0.3,
+  },
+  credentialsBrandTagline: {
+    fontSize: 9,
+    fontFamily: "Inter_600SemiBold",
+    color: "#6C829C",
+    letterSpacing: 1.7,
+  },
+  credentialsCard: {
+    padding: 20,
+    borderWidth: 1,
+    borderColor: "#E3EBF5",
+    borderRadius: 18,
+    backgroundColor: "#FFFFFF",
+    shadowColor: "#173D68",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.09,
+    shadowRadius: 18,
+    elevation: 4,
+  },
+  credentialsProgress: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 16,
+  },
+  credentialsProgressBars: {
+    flex: 1,
+    flexDirection: "row",
+    gap: 4,
+  },
+  credentialsProgressBar: {
+    flex: 1,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#E8EEF5",
+  },
+  credentialsProgressBarActive: {
+    backgroundColor: "#1466B4",
+  },
+  credentialsProgressLabel: {
+    fontSize: 8,
+    fontFamily: "Inter_600SemiBold",
+    color: "#71839A",
+    letterSpacing: 1,
+  },
+  credentialsHeading: {
+    fontSize: 24,
+    lineHeight: 29,
+    fontFamily: "Inter_700Bold",
+    color: "#0B1433",
+    letterSpacing: -0.45,
+  },
+  credentialsSubheading: {
+    marginTop: 3,
+    marginBottom: 18,
+    fontSize: 13,
+    lineHeight: 19,
+    fontFamily: "Inter_400Regular",
+    color: "#5B6F8A",
+  },
+  credentialsFormSection: {
+    gap: 14,
+  },
+  credentialsErrorBanner: {
+    padding: 10,
+    borderRadius: 10,
+  },
+  credentialsFieldGroup: {
+    gap: 5,
+  },
+  credentialsFieldLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: "#10213D",
+  },
+  credentialsFieldHint: {
+    fontSize: 10,
+    lineHeight: 14,
+    fontFamily: "Inter_400Regular",
+    color: "#788BA2",
+  },
+  credentialsInputWrapper: {
+    minHeight: 45,
+    backgroundColor: "#F7FAFD",
+    borderColor: "#CFE0F2",
+    borderRadius: 9,
+    paddingHorizontal: 11,
+  },
+  credentialsInput: {
+    paddingVertical: 11,
+    fontSize: 14,
+    color: "#10213D",
+  },
+  credentialsEyeBtn: {
+    minWidth: 38,
+    minHeight: 38,
+    justifyContent: "center",
+    alignItems: "center",
+    marginLeft: 2,
+    padding: 0,
+  },
+  credentialsSharedEmail: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    borderWidth: 1,
+    borderColor: "#D4E7FA",
+    borderRadius: 9,
+    backgroundColor: "#EAF4FE",
+  },
+  credentialsSharedEmailText: {
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 16,
+    fontFamily: "Inter_400Regular",
+    color: "#385D84",
+  },
+  credentialsPwRequirements: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 5,
+    paddingHorizontal: 1,
+  },
+  credentialsPwReqRow: {
+    width: "48%",
+    gap: 5,
+  },
+  credentialsPwReqText: {
+    fontSize: 10,
+    color: "#71839A",
+  },
+  credentialsContinueButton: {
+    minHeight: 48,
+    paddingVertical: 12,
+    marginTop: 1,
+    borderRadius: 9,
+  },
+  credentialsSignIn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    marginTop: 15,
+    paddingTop: 13,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E3EBF5",
+  },
+  credentialsSignInText: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: "#71839A",
+  },
+  credentialsSignInLink: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: "#1768B7",
+  },
+  welcomeActionFooter: {
+    paddingHorizontal: 28,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(255,255,255,0.1)",
+    backgroundColor: "#0F172A",
+  },
+  welcomeActionButton: {
+    backgroundColor: Colors.light.tint,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  welcomeActionText: {
+    ...Typography.bodySemibold,
+    color: "#fff",
+    fontSize: 16,
   },
   backBtn: {
     width: 40,
@@ -3086,6 +4174,23 @@ const styles = StyleSheet.create({
   },
   formSection: {
     gap: 16,
+  },
+  fieldLabel: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.dark.text,
+    paddingVertical: 8,
+  },
+  primaryBtn: {
+    alignItems: "center",
+    backgroundColor: Colors.light.tint,
+    paddingVertical: 16,
+    borderRadius: 16,
+  },
+  primaryBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.dark.text,
   },
   errorBanner: {
     flexDirection: "row",
@@ -3144,6 +4249,22 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_700Bold",
     color: "#FFF",
   },
+  createAccountButton: {
+    width: "100%",
+    minHeight: 52,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: Colors.light.tint,
+    borderRadius: 12,
+    paddingVertical: 14,
+    backgroundColor: Colors.light.surface,
+  },
+  createAccountButtonText: {
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+  },
   dividerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -3176,8 +4297,19 @@ const styles = StyleSheet.create({
     color: Colors.light.tint,
   },
   bottomSection: {
-    gap: 16,
-    marginTop: 24,
+    gap: 12,
+    marginHorizontal: 18,
+    marginTop: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 18,
+    backgroundColor: Colors.light.surface,
+    shadowColor: "#173D68",
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    elevation: 2,
   },
   switchRow: {
     flexDirection: "row",
@@ -3204,7 +4336,7 @@ const styles = StyleSheet.create({
   footerText: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
-    color: "rgba(255,255,255,0.25)",
+    color: Colors.light.textTertiary,
   },
   pwRequirements: {
     gap: 6,

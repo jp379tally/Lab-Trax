@@ -75,6 +75,7 @@ const STATUS_ALIASES: Record<string, CaseStatus> = {
   QC: "qc",
   QC_CHECK: "qc",
   COMPLETE: "complete",
+  DELIVERED: "complete",
   SHIP: "shipped",
   DELIVERY: "shipped",
   HOLD: "on_hold",
@@ -216,6 +217,8 @@ export interface LabCase {
   assignedBarcode?: string;
   exocadWebviewUrl?: string;
   expectedDeliveryDate?: string | null;
+  providerAccountNumber?: string | null;
+  practiceAccountNumber?: string | null;
   restorations?: Array<{
     id?: string;
     toothNumber?: string | null;
@@ -829,7 +832,7 @@ export const SAMPLE_CLIENTS: Client[] = [
     practiceName: "Elite Dental Group",
     leadDoctor: "Dr. Aris",
     phone: "(555) 100-2000",
-    email: "front@elitedental.com",
+    email: "sample-client-01@example.com",
     address: "1200 Park Ave, Suite 400, New York, NY 10128",
     tier: "Elite",
     discountRate: 15,
@@ -842,7 +845,7 @@ export const SAMPLE_CLIENTS: Client[] = [
     practiceName: "City Smiles",
     leadDoctor: "Dr. Bloom",
     phone: "(555) 200-3000",
-    email: "office@citysmiles.com",
+    email: "sample-client-02@example.com",
     address: "345 Market St, Floor 2, San Francisco, CA 94105",
     tier: "Premium",
     discountRate: 10,
@@ -855,7 +858,7 @@ export const SAMPLE_CLIENTS: Client[] = [
     practiceName: "North Lab Dentistry",
     leadDoctor: "Dr. Chen",
     phone: "(555) 300-4000",
-    email: "info@northlabdent.com",
+    email: "sample-client-03@example.com",
     address: "890 Elm St, Chicago, IL 60614",
     tier: "Standard",
     discountRate: 0,
@@ -868,7 +871,7 @@ export const SAMPLE_CLIENTS: Client[] = [
     practiceName: "Pacific Dental Care",
     leadDoctor: "Dr. Patel",
     phone: "(555) 400-5000",
-    email: "hello@pacificdental.com",
+    email: "sample-client-04@example.com",
     address: "2100 Ocean Blvd, Suite 110, Los Angeles, CA 90015",
     tier: "Premium",
     discountRate: 10,
@@ -881,7 +884,7 @@ export const SAMPLE_CLIENTS: Client[] = [
     practiceName: "Sunrise Family Dental",
     leadDoctor: "Dr. Martinez",
     phone: "(555) 500-6000",
-    email: "contact@sunrisedental.com",
+    email: "sample-client-05@example.com",
     address: "456 Sunrise Blvd, Miami, FL 33101",
     tier: "Elite",
     discountRate: 15,
@@ -893,7 +896,7 @@ export const SAMPLE_USERS: LabUser[] = [
   {
     id: generateId(),
     name: "Alex Rivera",
-    email: "alex@drivesynclab.com",
+    email: "sample-user-01@example.com",
     role: "admin",
     station: "All",
     active: true,
@@ -902,7 +905,7 @@ export const SAMPLE_USERS: LabUser[] = [
   {
     id: generateId(),
     name: "Jordan Lee",
-    email: "jordan@drivesynclab.com",
+    email: "sample-user-02@example.com",
     role: "user",
     station: "Design",
     active: true,
@@ -911,7 +914,7 @@ export const SAMPLE_USERS: LabUser[] = [
   {
     id: generateId(),
     name: "Sam Torres",
-    email: "sam@drivesynclab.com",
+    email: "sample-user-03@example.com",
     role: "user",
     station: "Porcelain",
     active: true,
@@ -920,7 +923,7 @@ export const SAMPLE_USERS: LabUser[] = [
   {
     id: generateId(),
     name: "Maya Chen",
-    email: "maya@drivesynclab.com",
+    email: "sample-user-04@example.com",
     role: "user",
     station: "Wax-Up",
     active: false,

@@ -6,6 +6,7 @@ import { AlertTriangle, X, Zap } from "lucide-react";
 
 interface Entitlement {
   status: string;
+  accessLevel?: string;
   trialDaysRemaining: number | null;
   graceDaysRemaining: number | null;
   currentPeriodEnd: string | null;
@@ -43,6 +44,26 @@ export function TrialBanner() {
   const { status, trialDaysRemaining } = entitlement;
 
   if (status === "active" || status === "legacy_free") return null;
+
+  if (
+    status === "deactivated" ||
+    (entitlement.accessLevel === "read_only" && status !== "grace" && status !== "trialing")
+  ) {
+    return (
+      <div className="mb-4 flex items-center gap-3 px-4 py-3 rounded-lg bg-destructive/10 border border-destructive/30 text-sm">
+        <AlertTriangle size={15} className="shrink-0 text-destructive" />
+        <span className="flex-1 font-medium text-destructive">
+          Access deactivated — your account is read-only.
+        </span>
+        <Link href="/billing">
+          <span className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-destructive text-destructive-foreground text-xs font-semibold hover:bg-destructive/90 transition-colors cursor-pointer">
+            <Zap size={12} />
+            Renew now
+          </span>
+        </Link>
+      </div>
+    );
+  }
 
   if (status === "locked" || status === "canceled") {
     return (
@@ -218,6 +239,29 @@ export function DashboardSubscriptionBanner() {
   const { status, trialDaysRemaining } = entitlement;
 
   if (status === "active" || status === "legacy_free") return null;
+
+  if (
+    status === "deactivated" ||
+    (entitlement.accessLevel === "read_only" && status !== "grace" && status !== "trialing")
+  ) {
+    return (
+      <div className="mb-6 flex items-center gap-3 px-4 py-3 rounded-lg bg-destructive/10 border border-destructive/30 text-sm">
+        <AlertTriangle size={15} className="shrink-0 text-destructive" />
+        <span className="flex-1 font-medium text-destructive">
+          Access deactivated — your account is read-only.
+        </span>
+        <Link href="/billing">
+          <span className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-destructive text-destructive-foreground text-xs font-semibold hover:bg-destructive/90 transition-colors cursor-pointer shrink-0">
+            <Zap size={12} />
+            Renew now
+          </span>
+        </Link>
+        <button type="button" onClick={dismiss} className="shrink-0 opacity-60 hover:opacity-100 transition-opacity" aria-label="Dismiss">
+          <X size={14} />
+        </button>
+      </div>
+    );
+  }
 
   if (status === "locked" || status === "canceled") {
     return (

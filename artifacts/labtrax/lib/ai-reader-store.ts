@@ -17,10 +17,12 @@ export interface CapturedPage {
 }
 
 export interface ExtractedRx {
+  toothAssignments?: unknown;
   doctorName: string | null;
   patientName: string | null;
   patientInitials: string | null;
   caseType: string | null;
+  arch?: "upper" | "lower" | "both" | null;
   toothIndices: string | null;
   shade: string | null;
   material: string | null;
@@ -31,6 +33,9 @@ export interface ExtractedRx {
   practiceAddress: string | null;
   practicePhone: string | null;
   confidence: number | null;
+  step: "custom_tray" | "rims_and_plates" | "wax_setup" | "process" | null;
+  /** Gingival/tissue shade for removable cases — null for non-removable or when not on the Rx. */
+  gingivialShade: string | null;
 }
 
 export interface AiReaderRestoration {
@@ -38,6 +43,33 @@ export interface AiReaderRestoration {
   restorationType: string;
   material?: string;
   shade?: string;
+}
+
+/**
+ * Fields the user has manually edited on the extracted.tsx form.
+ * When present (even as an empty string), the override takes precedence
+ * over whatever the AI extracted, so re-scanning cannot silently overwrite
+ * an intentional edit.
+ */
+export interface AiReaderUserOverrides {
+  shade?: string;
+  material?: string;
+  caseType?: string;
+  arch?: "upper" | "lower" | "both" | null;
+  toothIndices?: string;
+  /** Per-tooth assignments explicitly confirmed by the operator. */
+  assignmentRoles?: Record<string, "Crown" | "Pontic">;
+  assignmentOverridesManual?: boolean;
+  assignmentValues?: Record<string, { material?: string; shade?: string; restorationSubtype?: string }>;
+  bridgeConnectors?: string;
+  doctorName?: string;
+  patientFirst?: string;
+  patientLast?: string;
+  dueDate?: string;
+  notes?: string;
+  priority?: "normal" | "rush";
+  step?: "custom_tray" | "rims_and_plates" | "wax_setup" | "process" | null;
+  gingivialShade?: string;
 }
 
 export interface AiReaderSession {
@@ -57,6 +89,27 @@ export interface AiReaderSession {
   patientName: string | null;
   /** Due date ISO string as submitted (for label printing). */
   dueDate: string | null;
+  /** Gingival shade as submitted (for label printing — removable cases only). */
+  gingivialShade: string | null;
+  /**
+   * Fields the user has explicitly edited on the extracted form.
+   * These survive a re-scan (setAiReaderSession({ extracted: … })) so the AI
+   * never silently overwrites a value the user intentionally changed.
+   * Cleared only by clearAiReaderSession() (i.e. a brand-new intake flow).
+   */
+  userOverrides: AiReaderUserOverrides;
+  /**
+   * Attach-to-existing-case mode. When set, the reader analyses the captured
+   * pages and uploads them to THIS case as attachments instead of walking on
+   * to the create-a-new-case form. Set by the returned-case wizard before it
+   * pushes the capture screen; cleared by clearAiReaderSession() so a normal
+   * "Scan Rx" intake never inherits it.
+   */
+  attachToCaseId: string | null;
+  /** Stable identity for an attach-to-existing scan across retry attempts. */
+  rxSubmissionId: string | null;
+  /** Page submission identities already registered for this scan. */
+  attachedRxPageIds: string[];
 }
 
 let _session: AiReaderSession = _emptySession();
@@ -73,6 +126,11 @@ function _emptySession(): AiReaderSession {
     doctorName: null,
     patientName: null,
     dueDate: null,
+    gingivialShade: null,
+    userOverrides: {},
+    attachToCaseId: null,
+    rxSubmissionId: null,
+    attachedRxPageIds: [],
   };
 }
 

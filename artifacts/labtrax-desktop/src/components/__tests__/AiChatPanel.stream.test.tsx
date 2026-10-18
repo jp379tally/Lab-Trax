@@ -185,7 +185,7 @@ describe("AiChatPanel — streaming text tokens", () => {
 
   it("displays streamed text tokens as an assistant message", async () => {
     renderPanel();
-    await submitMessage("Hi Maynard");
+    await submitMessage("Hi Assistant");
 
     await waitFor(
       () => { expect(screen.getByText("Hello there!")).toBeTruthy(); },
@@ -195,7 +195,7 @@ describe("AiChatPanel — streaming text tokens", () => {
 
   it("does not render a ConfirmCard when only text tokens are emitted", async () => {
     renderPanel();
-    await submitMessage("Hi Maynard");
+    await submitMessage("Hi Assistant");
 
     await waitFor(
       () => { expect(screen.getByText("Hello there!")).toBeTruthy(); },
@@ -254,16 +254,38 @@ describe("AiChatPanel — proposed_action SSE event → ConfirmCard rendering", 
     );
   });
 
-  it("renders 'Proposed action' chip above the summary", async () => {
+  it("renders the Review label above the action summary", async () => {
     seedSession([PENDING_MSG]);
     renderPanel();
 
     await waitFor(
       () => {
-        expect(screen.getByText("Proposed action")).toBeTruthy();
+        expect(screen.getByText("Review")).toBeTruthy();
       },
       { timeout: 3000 },
     );
+  });
+
+  it("shows a progress SSE event immediately while the response is streaming", async () => {
+    let release!: () => void;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encodeSseEvents([{ progress: { status: "Looking up case history" } }]));
+          release = () => {
+            controller.enqueue(encodeSseEvents([{ token: "Done" }, { done: true }]));
+            controller.close();
+          };
+        },
+      });
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }));
+
+    renderPanel();
+    await submitMessage("Show case history");
+    await waitFor(() => expect(screen.getByText("Looking up case history")).toBeTruthy());
+    await act(async () => release());
+    await waitFor(() => expect(screen.getByText("Done")).toBeTruthy());
   });
 
   it("collapses the ConfirmCard to 'Action cancelled' when Cancel is clicked", async () => {

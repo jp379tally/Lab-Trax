@@ -113,9 +113,12 @@ vi.mock("@workspace/db", () => {
     systemSettings,
     // Tables referenced by other routes the labtrax router loads.
     labCases: {}, labPendingFiles: {}, labPendingFileNoteEdits: {}, organizations: {},
+    notifications: {},
     organizationMemberships: {}, cases: {}, caseAttachments: {}, caseEvents: {},
-    mediaCleanupRuns: {}, subscriptions: {}, backupRuns: {}, rxPracticeNameAliases: {},
-    invoices: {}, invoiceAttachments: {}, bankTransactions: {}, pricingTiers: {},
+    mediaCleanupRuns: {}, subscriptions: {}, backupRuns: {}, rxPracticeNameAliases: {}, rxDoctorPracticeMemory: {},
+    invoices: {}, invoiceAttachments: {}, customerCredits: {},
+    statementPaymentApplications: {}, statementPaymentSessions: {}, statementPaymentReversals: {},
+    bankTransactions: {}, pricingTiers: {},
     pricingOverrides: {}, vendorTypes: {}, aiMemory: {}, installerChangelog: {}, installerUploads: {},
     users: { id: "id", email: "email", role: "role" },
   };
@@ -152,6 +155,7 @@ vi.mock("./lib/backup.js", () => ({
   ALL_SCHEDULE_SETTINGS: [] as string[],
   SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS: "x", SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS: "x",
   SETTING_BACKUP_STALE_DAYS: "x", DEFAULT_BACKUP_STALE_DAYS: 7,
+  SETTING_ONEDRIVE_RETENTION_MAX_BACKUPS: "x", DEFAULT_ONEDRIVE_RETENTION_MAX_BACKUPS: 30,
 }));
 vi.mock("./lib/mail.js", () => ({
   sendInstallerPublishFailureAlertEmail: vi.fn(),
@@ -188,6 +192,9 @@ describe("GET /admin/settings/desktop-installer — installerStatus", () => {
 
     const { default: app } = await import("./app.js");
     server = app.listen(0);
+    await vi.waitFor(async () => {
+      expect((await request(server).get("/api/__test_missing_route__")).status).toBe(404);
+    }, { timeout: 15_000, interval: 25 });
   });
 
   afterAll(async () => {
@@ -270,6 +277,9 @@ describe("GET /desktop-installer — server-side slot resolution", () => {
     process.env.DESKTOP_INSTALLER_VERSION = "1.0.0";
     const { default: app } = await import("./app.js");
     server = app.listen(0);
+    await vi.waitFor(async () => {
+      expect((await request(server).get("/api/__test_missing_route__")).status).toBe(404);
+    }, { timeout: 15_000, interval: 25 });
   });
 
   afterAll(async () => {

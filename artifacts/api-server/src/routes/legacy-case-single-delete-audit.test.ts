@@ -45,8 +45,11 @@ maybeDb("DELETE /api/legacy/cases/:caseId — audit entry (DB suite)", () => {
   let auth: typeof import("../lib/auth.js");
 
   const labOrgId = rid("lab");
+  const foreignLabOrgId = rid("lab-foreign");
   const userId = rid("uowner");
+  const adminUserId = rid("uadmin");
   let token = "";
+  let tenantAdminToken = "";
 
   async function makeSession(uid: string): Promise<string> {
     const { db, userSessions } = dbMod as any;
@@ -60,13 +63,13 @@ maybeDb("DELETE /api/legacy/cases/:caseId — audit entry (DB suite)", () => {
     return t;
   }
 
-  async function insertLegacy(): Promise<string> {
+  async function insertLegacy(organizationId = labOrgId): Promise<string> {
     const { db, labCases } = dbMod as any;
     const id = rid("legacy");
     await db.insert(labCases).values({
       id,
       ownerId: userId,
-      organizationId: labOrgId,
+      organizationId,
       caseData: JSON.stringify({
         caseNumber: "LC-001",
         patientName: "Legacy Pat",
@@ -89,12 +92,14 @@ maybeDb("DELETE /api/legacy/cases/:caseId — audit entry (DB suite)", () => {
 
     const { db, organizations, users, organizationMemberships } = dbMod as any;
 
-    await db
-      .insert(users)
-      .values([{ id: userId, username: rid("user"), password: "testpass" }]);
-    await db
-      .insert(organizations)
-      .values([{ id: labOrgId, type: "lab", name: "Single Delete Test Lab" }]);
+    await db.insert(users).values([
+      { id: userId, username: rid("user"), password: "testpass" },
+      { id: adminUserId, username: rid("admin"), password: "testpass" },
+    ]);
+    await db.insert(organizations).values([
+      { id: labOrgId, type: "lab", name: "Single Delete Test Lab" },
+      { id: foreignLabOrgId, type: "lab", name: "Foreign Single Delete Test Lab" },
+    ]);
     await db.insert(organizationMemberships).values([
       {
         id: rid("m"),
@@ -103,15 +108,31 @@ maybeDb("DELETE /api/legacy/cases/:caseId — audit entry (DB suite)", () => {
         role: "admin",
         status: "active",
       },
+      {
+        id: rid("m"),
+        labId: labOrgId,
+        userId: adminUserId,
+        role: "admin",
+        status: "active",
+      },
+      {
+        id: rid("m"),
+        labId: foreignLabOrgId,
+        userId,
+        role: "member",
+        status: "active",
+      },
     ]);
 
     token = await makeSession(userId);
+    tenantAdminToken = await makeSession(adminUserId);
   });
 
   // Refresh session token before every test so a concurrent user_sessions wipe
   // does not invalidate the shared token mid-suite.
   beforeEach(async () => {
     token = await makeSession(userId);
+    tenantAdminToken = await makeSession(adminUserId);
   });
 
   afterAll(async () => {
@@ -125,14 +146,14 @@ maybeDb("DELETE /api/legacy/cases/:caseId — audit entry (DB suite)", () => {
       labCases,
       auditLogs,
     } = dbMod as any;
-    await db.delete(auditLogs).where(eq(auditLogs.organizationId, labOrgId));
-    await db.delete(labCases).where(eq(labCases.organizationId, labOrgId));
+    await db.delete(auditLogs).where(inArray(auditLogs.organizationId, [labOrgId, foreignLabOrgId]));
+    await db.delete(labCases).where(inArray(labCases.organizationId, [labOrgId, foreignLabOrgId]));
     await db
       .delete(organizationMemberships)
-      .where(eq(organizationMemberships.userId, userId));
-    await db.delete(userSessions).where(eq(userSessions.userId, userId));
-    await db.delete(organizations).where(eq(organizations.id, labOrgId));
-    await db.delete(users).where(eq(users.id, userId));
+      .where(inArray(organizationMemberships.userId, [userId, adminUserId]));
+    await db.delete(userSessions).where(inArray(userSessions.userId, [userId, adminUserId]));
+    await db.delete(organizations).where(inArray(organizations.id, [labOrgId, foreignLabOrgId]));
+    await db.delete(users).where(inArray(users.id, [userId, adminUserId]));
   });
 
   it("soft-deletes the legacy case and writes a case_soft_deleted audit row", async () => {
@@ -179,5 +200,24 @@ maybeDb("DELETE /api/legacy/cases/:caseId — audit entry (DB suite)", () => {
     expect(softDeleteEntry.entityType).toBe("case");
     expect(softDeleteEntry.userId).toBe(userId);
     expect(softDeleteEntry.metadataJson?.legacy).toBe(true);
+  });
+
+  it("does not let a tenant admin delete a case from another organization via shared owner membership", async () => {
+    const { db, labCases } = dbMod as any;
+    const caseId = await insertLegacy(foreignLabOrgId);
+
+    const res = await request(appMod.default)
+      .delete(`/api/legacy/cases/${caseId}`)
+      .set("Authorization", `Bearer ${tenantAdminToken}`);
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+
+    const [row] = await db
+      .select({
+        deletedAt: labCases.deletedAt,
+      })
+      .from(labCases)
+      .where(eq(labCases.id, caseId));
+    expect(row).toBeTruthy();
+    expect(row.deletedAt).toBeNull();
   });
 });

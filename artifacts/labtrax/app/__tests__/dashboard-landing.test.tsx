@@ -42,7 +42,7 @@ describe("Dashboard landing — regression firewall", () => {
     );
   });
 
-  it("still navigates captured case deep-links to the case detail screen", () => {
+  it("still navigates captured case deep-links to the case detail screen", async () => {
     // The deep-link resolver lives in app/_layout.tsx (not exported), so this
     // pins the source: a /cases/<caseNumber> URL must be parsed and resolved to
     // /case/<id> rather than being overridden by the Dashboard landing, and a
@@ -74,5 +74,76 @@ describe("Dashboard landing — regression firewall", () => {
       layoutSource.includes("resolveCaseAndNavigate(cn)"),
       "AuthGate must drain pendingCaseNumber via resolveCaseAndNavigate after login.",
     ).toBe(true);
+  });
+});
+
+describe("Mobile dashboard — section header navigation", () => {
+  const dashboardSource = readFileSync(
+    join(__dirname, "..", "(tabs)", "dashboard.tsx"),
+    "utf8",
+  );
+
+  it("does not render All cases links in dashboard section headers", async () => {
+    expect(dashboardSource).not.toContain("All cases");
+    expect(dashboardSource).not.toContain('router.push("/(tabs)"');
+  });
+
+  it("keeps the chevron collapse controls for the remaining case sections", async () => {
+    expect(dashboardSource).toContain("pastDueOpen ? \"chevron-up\" : \"chevron-down\"");
+    expect(dashboardSource).toContain("dueTodayOpen ? \"chevron-up\" : \"chevron-down\"");
+    expect(dashboardSource).toContain("dueTomorrowOpen ? \"chevron-up\" : \"chevron-down\"");
+    expect(dashboardSource).toContain("recentOpen ? \"chevron-up\" : \"chevron-down\"");
+  });
+
+  it("does not render Logged today and keeps Due Tomorrow after Due Today", async () => {
+    // Locate each call site in the JSX return (curly-brace form is unique to
+    // the call site, not the function definition).
+    const idxDueToday = dashboardSource.indexOf("{renderDueToday()}");
+    const idxDueTomorrow = dashboardSource.indexOf("{renderDueTomorrow()}");
+    expect(idxDueToday, "renderDueToday() call must be present in dashboard source").toBeGreaterThan(-1);
+    expect(idxDueTomorrow, "renderDueTomorrow() call must be present in dashboard source").toBeGreaterThan(-1);
+    expect(dashboardSource).not.toContain("Logged today");
+    expect(dashboardSource).not.toContain("loggedToday");
+    expect(
+      idxDueToday < idxDueTomorrow,
+      "renderDueTomorrow() must appear after renderDueToday() in the JSX return.",
+    ).toBe(true);
+  });
+
+  it("persists the Due Tomorrow collapse state under the dueTomorrowOpen pref key", async () => {
+    // The pref key name is asserted at the source level so a rename is caught
+    // before it reaches production and silently resets all users' preferences.
+    expect(
+      dashboardSource,
+      "dashboard must reference 'dueTomorrowOpen' for the AsyncStorage collapse preference",
+    ).toContain("dueTomorrowOpen");
+  });
+
+  it("uses the guarded preference loader instead of chaining native storage promises", () => {
+    expect(dashboardSource).toContain("loadDashboardPrefs");
+    expect(dashboardSource).toContain("DASHBOARD_PREFS_KEY");
+    expect(dashboardSource).not.toContain(".finally(");
+  });
+
+  it("offers an accessible Due Tomorrow sort action without replacing the collapse control", async () => {
+    expect(dashboardSource).toContain("DUE_TOMORROW_SORT_LABELS");
+    expect(dashboardSource).toContain("Sort due tomorrow cases by");
+    expect(dashboardSource).toContain("e.stopPropagation();");
+    expect(dashboardSource).toContain("onSelect={(sort) =>");
+    expect(dashboardSource).toContain("<CaseSortSheet");
+    expect(dashboardSource).toContain('accessibilityRole="radio"');
+    expect(dashboardSource).toContain("dueTomorrowCases.slice(0, DUE_TOMORROW_CAP)");
+  });
+});
+
+describe("Mobile dashboard — assistant branding", () => {
+  const dashboardSource = readFileSync(
+    join(__dirname, "..", "(tabs)", "dashboard.tsx"),
+    "utf8",
+  );
+
+  it("labels the assistant launcher as LabTrax Assistant without retired branding", async () => {
+    expect(dashboardSource).toContain("LabTrax Assistant");
+    expect(dashboardSource).not.toContain("Maynard");
   });
 });

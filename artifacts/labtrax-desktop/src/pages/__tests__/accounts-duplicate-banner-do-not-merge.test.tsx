@@ -37,13 +37,13 @@ const CLUSTER = {
     {
       doctorName: "Dr. Kanesha Cole",
       providerOrganizationId: PROVIDER_ID,
-      practiceName: "Mahan Village Dental Care",
+      practiceName: "Summit Dental Care",
       totalCases: 3,
     },
     {
       doctorName: "Kanesha Cole",
       providerOrganizationId: PROVIDER_ID,
-      practiceName: "Mahan Village Dental Care",
+      practiceName: "Summit Dental Care",
       totalCases: 2,
     },
   ],
@@ -187,12 +187,12 @@ describe("Customer Center duplicate banner — Do not merge", () => {
           {
             doctorName: "Dr. Kanesha Cole",
             providerOrganizationId: PROVIDER_ID,
-            practiceName: "Mahan Village Dental Care",
+            practiceName: "Summit Dental Care",
           },
           {
             doctorName: "Kanesha Cole",
             providerOrganizationId: PROVIDER_ID,
-            practiceName: "Mahan Village Dental Care",
+            practiceName: "Summit Dental Care",
           },
         ],
       },

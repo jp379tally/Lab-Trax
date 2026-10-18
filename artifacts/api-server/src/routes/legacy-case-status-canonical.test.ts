@@ -160,7 +160,7 @@ maybe("Legacy case endpoints return canonical lowercase statuses", () => {
         providerOrganizationId: providerOrgId,
         patientFirstName: "Status",
         patientLastName: "Test",
-        doctorName: "Dr. Status",
+        doctorName: "Dr. Synthetic066",
         status,
       });
     expect(create.status).toBe(201);

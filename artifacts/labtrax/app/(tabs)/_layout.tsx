@@ -1,9 +1,12 @@
 import React from "react";
-import { Tabs } from "expo-router";
+import { Tabs, usePathname } from "expo-router";
 import { Platform, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/theme-context";
 import { useDuplicateDoctorClusters } from "@/lib/duplicate-doctors";
+import { useMessengerUnreadCount } from "@/lib/messenger";
+import { useInAppNotifications } from "@/lib/in-app-notifications";
+import { useAuth } from "@/lib/auth-context";
 
 // Land on Dashboard (not the Cases `index` route) when the authenticated tab
 // group mounts — on first login and on authenticated relaunch.
@@ -13,15 +16,21 @@ export const unstable_settings = {
 
 export default function TabLayout() {
   const { colors } = useTheme();
+  const pathname = usePathname();
+  const { userType } = useAuth();
+  const isDashboard = userType !== "provider" && pathname.endsWith("/dashboard");
   const isWeb = Platform.OS === "web";
   const { totalGroups } = useDuplicateDoctorClusters();
+  const { total: unreadMessages } = useMessengerUnreadCount();
+  const { unreadCount: unreadNotifications } = useInAppNotifications();
+  const moreBadgeCount = totalGroups + unreadMessages + unreadNotifications;
 
   return (
     <View
       style={{
         flex: 1,
         backgroundColor: colors.backgroundSolid,
-        maxWidth: isWeb ? 600 : undefined,
+        maxWidth: isWeb ? (isDashboard ? 1040 : 600) : undefined,
         alignSelf: isWeb ? ("center" as const) : undefined,
         width: isWeb ? "100%" : undefined,
       }}
@@ -29,11 +38,11 @@ export default function TabLayout() {
       <Tabs
         screenOptions={{
           headerShown: false,
-          tabBarActiveTintColor: colors.tint,
-          tabBarInactiveTintColor: colors.tabIconDefault,
+          tabBarActiveTintColor: isDashboard ? "#1D5FD8" : colors.tint,
+          tabBarInactiveTintColor: isDashboard ? "#BFD0F0" : colors.tabIconDefault,
           tabBarStyle: {
-            backgroundColor: colors.surface,
-            borderTopColor: colors.border,
+            backgroundColor: isDashboard ? "#0B1B3F" : colors.surface,
+            borderTopColor: isDashboard ? "#263A5C" : colors.border,
           },
         }}
       >
@@ -50,8 +59,19 @@ export default function TabLayout() {
           name="index"
           options={{
             title: "Cases",
+            tabBarActiveTintColor: colors.tint,
             tabBarIcon: ({ color, focused }) => (
-              <Ionicons name={focused ? "file-tray-full" : "file-tray-full-outline"} size={22} color={color} />
+              <View style={{
+                minWidth: 38,
+                height: 30,
+                paddingHorizontal: 7,
+                borderRadius: 11,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: focused ? colors.casesActiveTab : "transparent",
+              }}>
+                <Ionicons name={focused ? "file-tray-full" : "file-tray-full-outline"} size={22} color={color} />
+              </View>
             ),
           }}
         />
@@ -77,7 +97,7 @@ export default function TabLayout() {
           name="more"
           options={{
             title: "More",
-            tabBarBadge: totalGroups > 0 ? (totalGroups > 99 ? "99+" : totalGroups) : undefined,
+            tabBarBadge: moreBadgeCount > 0 ? (moreBadgeCount > 99 ? "99+" : moreBadgeCount) : undefined,
             tabBarBadgeStyle: { backgroundColor: "#ef4444", color: "#ffffff" },
             tabBarIcon: ({ color, focused }) => (
               <Ionicons name={focused ? "ellipsis-horizontal-circle" : "ellipsis-horizontal-circle-outline"} size={22} color={color} />

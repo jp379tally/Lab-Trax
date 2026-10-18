@@ -110,6 +110,8 @@ maybe("Finance / bank accounts (db integration)", () => {
       auditLogs,
       bankTransactions,
       bankAccounts,
+      reconciliationItems,
+      reconciliations,
       userSessions,
       organizationMemberships,
       organizations,
@@ -124,6 +126,18 @@ maybe("Finance / bank accounts (db integration)", () => {
     ).map((r: any) => r.id);
 
     if (acctIds.length) {
+      await db.delete(reconciliationItems).where(
+        inArray(
+          reconciliationItems.reconciliationId,
+          db
+            .select({ id: reconciliations.id })
+            .from(reconciliations)
+            .where(inArray(reconciliations.bankAccountId, acctIds)),
+        ),
+      );
+      await db.delete(reconciliations).where(
+        inArray(reconciliations.bankAccountId, acctIds),
+      );
       await db.delete(bankTransactions).where(
         inArray(bankTransactions.bankAccountId, acctIds)
       );
@@ -269,6 +283,97 @@ maybe("Finance / bank accounts (db integration)", () => {
     expect(ids).toContain(txnId);
   });
 
+  it("GET /api/finance/transactions keeps the legacy array and filters, while pagination is newest-first", async () => {
+    const { access } = await makeSession(adminId);
+    const acct = await request(appMod.default)
+      .post("/api/finance/accounts")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ organizationId: labOrgId, name: rid("PagedTxnAcct") });
+    expect(acct.status).toBe(201);
+    const bankAccountId = acct.body.data.id;
+
+    async function createTransaction(input: {
+      date: string;
+      payee: string;
+      status?: "posted" | "projected" | "void";
+      deposit?: number;
+    }) {
+      const result = await request(appMod.default)
+        .post("/api/finance/transactions")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          bankAccountId,
+          txnDate: input.date,
+          type: "deposit",
+          payee: input.payee,
+          deposit: input.deposit ?? 10,
+          status: input.status ?? "posted",
+        });
+      expect(result.status).toBe(201);
+      return result.body.data.id as string;
+    }
+
+    const oldestId = await createTransaction({
+      date: "2026-01-01",
+      payee: "Pagination Oldest",
+    });
+    const newestId = await createTransaction({
+      date: "2026-03-01",
+      payee: "Pagination Newest",
+    });
+    const projectedId = await createTransaction({
+      date: "2026-02-01",
+      payee: "Pagination Projected",
+      status: "projected",
+    });
+
+    const legacy = await request(appMod.default)
+      .get("/api/finance/transactions")
+      .query({ organizationId: labOrgId, bankAccountId, payee: "Pagination" })
+      .set("Authorization", `Bearer ${access}`);
+    expect(legacy.status).toBe(200);
+    expect(Array.isArray(legacy.body.data)).toBe(true);
+    expect(legacy.body.data.map((row: any) => row.id)).toEqual([
+      newestId,
+      projectedId,
+      oldestId,
+    ]);
+
+    const page = await request(appMod.default)
+      .get("/api/finance/transactions")
+      .query({
+        organizationId: labOrgId,
+        bankAccountId,
+        payee: "Pagination",
+        limit: 2,
+        offset: 0,
+      })
+      .set("Authorization", `Bearer ${access}`);
+    expect(page.status).toBe(200);
+    expect(page.body.data).toMatchObject({
+      total: 3,
+      limit: 2,
+      offset: 0,
+      hasMore: true,
+    });
+    expect(page.body.data.rows.map((row: any) => row.id)).toEqual([
+      newestId,
+      projectedId,
+    ]);
+
+    const filtered = await request(appMod.default)
+      .get("/api/finance/transactions")
+      .query({
+        organizationId: labOrgId,
+        bankAccountId,
+        status: "projected",
+        search: "Projected",
+      })
+      .set("Authorization", `Bearer ${access}`);
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.data.map((row: any) => row.id)).toEqual([projectedId]);
+  });
+
   it("POST /api/finance/accounts with openingBalance creates an opening transaction", async () => {
     const { access } = await makeSession(adminId);
     const name = rid("OpenBal");
@@ -368,5 +473,81 @@ maybe("Finance / bank accounts (db integration)", () => {
       await db.delete(invoicesTable).where(eq(invoicesTable.id, invId));
       await db.delete(orgsTable).where(eq(orgsTable.id, providerOrgId));
     }
+  });
+
+  it("GET /api/finance/reconciliation/history keeps the legacy array and pages newest-first with account filtering", async () => {
+    const { access } = await makeSession(adminId);
+    const acct = await request(appMod.default)
+      .post("/api/finance/accounts")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ organizationId: labOrgId, name: rid("ReconAcct") });
+    expect(acct.status).toBe(201);
+    const bankAccountId = acct.body.data.id as string;
+
+    async function createTransaction(date: string, deposit: number) {
+      const result = await request(appMod.default)
+        .post("/api/finance/transactions")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          bankAccountId,
+          txnDate: date,
+          type: "deposit",
+          payee: rid("ReconTxn"),
+          deposit,
+          status: "posted",
+        });
+      expect(result.status).toBe(201);
+      return result.body.data.id as string;
+    }
+
+    const firstTransactionId = await createTransaction("2026-04-01", 11);
+    const first = await request(appMod.default)
+      .post("/api/finance/reconciliation/finish")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        bankAccountId,
+        statementDate: "2026-04-30",
+        endingBalance: 11,
+        transactionIds: [firstTransactionId],
+      });
+    expect(first.status).toBe(201);
+
+    const secondTransactionId = await createTransaction("2026-05-01", 13);
+    const second = await request(appMod.default)
+      .post("/api/finance/reconciliation/finish")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        bankAccountId,
+        statementDate: "2026-05-31",
+        endingBalance: 24,
+        transactionIds: [secondTransactionId],
+      });
+    expect(second.status).toBe(201);
+
+    const legacy = await request(appMod.default)
+      .get("/api/finance/reconciliation/history")
+      .query({ organizationId: labOrgId, bankAccountId })
+      .set("Authorization", `Bearer ${access}`);
+    expect(legacy.status).toBe(200);
+    expect(Array.isArray(legacy.body.data)).toBe(true);
+    expect(legacy.body.data.slice(0, 2).map((row: any) => row.id)).toEqual([
+      second.body.data.id,
+      first.body.data.id,
+    ]);
+
+    const page = await request(appMod.default)
+      .get("/api/finance/reconciliation/history")
+      .query({ organizationId: labOrgId, bankAccountId, limit: 1 })
+      .set("Authorization", `Bearer ${access}`);
+    expect(page.status).toBe(200);
+    expect(page.body.data).toMatchObject({
+      total: 2,
+      limit: 1,
+      offset: 0,
+      hasMore: true,
+    });
+    expect(page.body.data.rows.map((row: any) => row.id)).toEqual([
+      second.body.data.id,
+    ]);
   });
 });

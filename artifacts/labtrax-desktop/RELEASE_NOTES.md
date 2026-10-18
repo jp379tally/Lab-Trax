@@ -20,6 +20,10 @@
   - Keep individual entries concise — one bullet point per change.
 -->
 
+## v1.0.6
+
+- Cases: reassign the doctor on one case only, with active lab-admin access controls and a short, case-specific Undo. Directory merging remains separate.
+
 ## v1.0.5
 
 - Stats dashboard: export cases to CSV or PDF for your accountant, plus per-material and per-case revenue metrics and an owner/admin Remakes section.

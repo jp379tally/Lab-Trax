@@ -23,11 +23,21 @@ export interface UploadCaseAttachmentParams {
   fileUri: string;
   fileName: string;
   mimeType: string;
+  /** Known native file size, supplied by local preparation to avoid a second stat. */
+  fileSize?: number;
   visibility?: AttachmentVisibility;
   /** Optional note saved alongside the attachment record. */
   note?: string;
+  /** Stable identity for retrying registration after an uncertain response. */
+  submissionId?: string;
   /** Optional semantic category persisted on the attachment row + history event. */
   category?: AttachmentCategory;
+  /**
+   * Links the attachment to an open case exception. The server validates the
+   * exception is active and belongs to this exact case identity, and forces
+   * `internal_lab_only` visibility regardless of what's requested here.
+   */
+  caseExceptionId?: string;
   /** Reports overall progress (0..1) across both upload + register steps. */
   onProgress?: (fraction: number) => void;
 }
@@ -38,6 +48,8 @@ export interface UploadedAttachment {
   fileType?: string;
   storageKey?: string;
   visibility?: string;
+  note?: string | null;
+  caseExceptionId?: string | null;
   [key: string]: unknown;
 }
 
@@ -48,7 +60,7 @@ export type UploadCaseAttachmentResult =
 export async function uploadCaseAttachment(
   params: UploadCaseAttachmentParams,
 ): Promise<UploadCaseAttachmentResult> {
-  const { caseId, fileUri, fileName, mimeType, visibility, note, category, onProgress } = params;
+  const { caseId, fileUri, fileName, mimeType, fileSize, visibility, note, submissionId, category, caseExceptionId, onProgress } = params;
 
   // Step 1 — binary upload. Reserve the final 5% of the bar for the register
   // call so a row never reads 100% before the case actually references it.
@@ -61,6 +73,7 @@ export async function uploadCaseAttachment(
       fileName,
       mimeType,
       (fraction) => onProgress?.(Math.min(fraction * 0.95, 0.95)),
+      fileSize,
     );
   } catch (e) {
     return {
@@ -86,7 +99,9 @@ export async function uploadCaseAttachment(
           fileType: mimeType,
           ...(visibility ? { visibility } : {}),
           ...(note ? { note } : {}),
+          ...(submissionId ? { submissionId } : {}),
           ...(category ? { category } : {}),
+          ...(caseExceptionId ? { caseExceptionId } : {}),
         }),
       },
     );

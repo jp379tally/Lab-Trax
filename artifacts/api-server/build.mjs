@@ -15,7 +15,12 @@ async function buildAll() {
   await rm(distDir, { recursive: true, force: true });
 
   await esbuild({
-    entryPoints: [path.resolve(artifactDir, "src/index.ts")],
+    entryPoints: [
+      path.resolve(artifactDir, "src/index.ts"),
+      // Scheduled job that must be runnable as its own process: a watchdog
+      // hosted by the API server cannot report the API server being dead.
+      path.resolve(artifactDir, "src/jobs/check-backup-freshness.ts"),
+    ],
     platform: "node",
     bundle: true,
     format: "esm",

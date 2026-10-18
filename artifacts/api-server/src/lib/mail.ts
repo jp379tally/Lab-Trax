@@ -1,11 +1,21 @@
-import type { Transporter } from "nodemailer";
+import type {
+  SendMailOptions as NodemailerSendMailOptions,
+  Transporter,
+} from "nodemailer";
 import { promises as dns } from "node:dns";
 import { logger } from "./logger";
+import { backupErrorMessage, partialBackupMessage } from "./backup-error-copy";
 import {
   createTransport,
   getMailerConfig,
   type MailerConfig,
 } from "./mailer";
+import { classifySmtpError } from "./smtp-error";
+import { formatNumericDate, formatNumericDateTime } from "./date-format";
+
+type MailAttachment = NonNullable<
+  NodemailerSendMailOptions["attachments"]
+>[number];
 
 let cachedTransport: { key: string; transporter: Transporter } | null = null;
 
@@ -133,6 +143,12 @@ export interface SendMailOptions {
   subject: string;
   html: string;
   text?: string;
+  cc?: string | string[] | null;
+  replyTo?: string | null;
+  fromName?: string | null;
+  attachments?: MailAttachment[];
+  messageId?: string;
+  classifyRecipientFailure?: boolean;
 }
 
 export interface SendMailResult {
@@ -181,19 +197,45 @@ export async function sendMail(opts: SendMailOptions): Promise<SendMailResult> {
   try {
     const transporter = getTransporter(cfg);
     await transporter.sendMail({
-      from: cfg.from,
+      from: opts.fromName?.trim()
+        ? `${opts.fromName.trim()} <${cfg.from}>`
+        : cfg.from,
       to: opts.to,
+      ...(opts.cc?.length ? { cc: opts.cc } : {}),
+      ...(opts.replyTo?.trim() ? { replyTo: opts.replyTo.trim() } : {}),
       subject: opts.subject,
+      ...(opts.messageId ? { messageId: opts.messageId } : {}),
       html: opts.html,
       text: opts.text,
+      ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
     });
     return { sent: true };
   } catch (err: any) {
+    const classified = classifySmtpError(err);
     logger.error(
-      { err: err?.message || String(err), to: opts.to, subject: opts.subject },
+      {
+        err: err?.message || String(err),
+        smtpCategory: classified.category,
+        smtpCode: classified.code,
+        smtpResponseCode: classified.responseCode,
+        to: opts.to,
+        subject: opts.subject,
+      },
       "[mail] failed to send"
     );
-    return { sent: false, reason: err?.message || "send_failed" };
+    // Return only stable, client-safe reason strings — never raw provider
+    // text, which can echo credentials or account details. An auth rejection
+    // gets its own reason so callers can tell "credentials are wrong" apart
+    // from a transient outage (and skip pointless retries).
+    return {
+      sent: false,
+      reason:
+        classified.category === "auth"
+          ? "auth_failed"
+          : classified.category === "recipient" && opts.classifyRecipientFailure
+            ? "recipient_rejected"
+            : "send_failed",
+    };
   }
 }
 
@@ -221,6 +263,9 @@ export function formatRoleLabel(role: string): string {
   return ROLE_LABELS[role] ?? role;
 }
 
+/** Stable CID shared by the statement and invite inline-logo templates. */
+export const LAB_LOGO_CID = "lab-logo@labtrax";
+
 export interface InviteEmailParams {
   to: string;
   organizationName: string;
@@ -228,12 +273,8 @@ export interface InviteEmailParams {
   token: string;
   inviterName?: string | null;
   expiresAt?: Date | null;
-  /**
-   * When set, an <img> with the lab logo is shown in the email header.
-   * Should be an absolute URL (e.g. https://…/api/organizations/:id/logo).
-   * Only included when the lab's `welcome_emails` placement is enabled.
-   */
-  labLogoUrl?: string | null;
+  /** Uploaded logo bytes to embed in the email as an inline MIME image. */
+  labLogo?: { content: Buffer; contentType: string } | null;
 }
 
 export async function sendInviteEmail(
@@ -243,7 +284,7 @@ export async function sendInviteEmail(
   const acceptUrl = `${getAppBaseUrl()}/desktop/accept-invite?token=${encodeURIComponent(
     params.token
   )}`;
-  const expires = params.expiresAt ? params.expiresAt.toUTCString() : null;
+  const expires = params.expiresAt ? formatNumericDate(params.expiresAt) : null;
   const inviter = params.inviterName?.trim();
 
   const greetingHtml = inviter
@@ -253,8 +294,8 @@ export async function sendInviteEmail(
     ? `${inviter} has invited you to join`
     : `You have been invited to join`;
 
-  const logoHtml = params.labLogoUrl
-    ? `<div style="margin-bottom: 10px;"><img src="${escapeHtml(params.labLogoUrl)}" alt="Lab logo" style="max-height: 44px; max-width: 140px; object-fit: contain; display: block;" /></div>`
+  const logoHtml = params.labLogo
+    ? `<div style="margin-bottom: 10px;"><img src="cid:${LAB_LOGO_CID}" alt="Lab logo" style="max-height: 44px; max-width: 140px; object-fit: contain; display: block;" /></div>`
     : "";
 
   const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -279,6 +320,19 @@ export async function sendInviteEmail(
     subject: `You're invited to join ${params.organizationName} on LabTrax`,
     html,
     text,
+    ...(params.labLogo
+      ? {
+          attachments: [
+            {
+              filename: "lab-logo",
+              content: params.labLogo.content,
+              contentType: params.labLogo.contentType,
+              cid: LAB_LOGO_CID,
+              contentDisposition: "inline" as const,
+            },
+          ],
+        }
+      : {}),
   });
 }
 
@@ -380,7 +434,7 @@ export async function sendCleanupAlertEmail(
   const hasIssues = isFatal || removedCount > 0 || errorCount > 0;
   if (!hasIssues) return;
 
-  const dateStr = report.ranAt.slice(0, 10);
+  const dateStr = formatNumericDate(report.ranAt);
   const subject = isFatal
     ? `LabTrax Media Cleanup FAILED on ${dateStr}`
     : errorCount > 0
@@ -431,12 +485,12 @@ export async function sendCleanupAlertEmail(
       <p style="margin: 4px 0 0; opacity: 0.85;">Nightly Media Cleanup Report</p>
     </div>
     <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
-      <p style="color: #555; font-size: 13px;">Run at: ${escapeHtml(report.ranAt)}</p>
+      <p style="color: #555; font-size: 13px;">Run at: ${escapeHtml(formatNumericDateTime(report.ranAt))}</p>
       ${fatalBannerHtml}${fatalTriggeredByHtml}${statsHtml}${errorRowsHtml}${maintenanceLinkHtml}
     </div>
   </div>`;
 
-  const text = `LabTrax Nightly Media Cleanup Report\nRun at: ${report.ranAt}\n\n${fatalBannerText}${fatalTriggeredByText}${statsText}${errorRowsText}${maintenanceLinkText}`;
+  const text = `LabTrax Nightly Media Cleanup Report\nRun at: ${formatNumericDateTime(report.ranAt)}\n\n${fatalBannerText}${fatalTriggeredByText}${statsText}${errorRowsText}${maintenanceLinkText}`;
 
   for (const email of params.adminEmails) {
     await sendMail({ to: email, subject, html, text });
@@ -455,7 +509,7 @@ export async function sendCleanupRecoveryAlertEmail(
 
   const { recoveredCount } = params;
   const runWord = recoveredCount === 1 ? "run" : "runs";
-  const dateStr = new Date().toISOString().slice(0, 10);
+  const dateStr = formatNumericDate(new Date());
   const subject = `LabTrax Media Cleanup: ${recoveredCount} interrupted ${runWord} recovered on ${dateStr}`;
 
   const maintenanceUrl = `${getAppBaseUrl()}/desktop/maintenance`;
@@ -516,7 +570,7 @@ export async function sendInstallerPublishFailureAlertEmail(
   if (params.adminEmails.length === 0) return;
 
   const reportedAt = params.reportedAt ?? new Date().toISOString();
-  const dateStr = reportedAt.slice(0, 10);
+  const dateStr = formatNumericDate(reportedAt);
   const versionLabel = params.version?.trim() || "unknown version";
   const workflowLabel = params.workflowName?.trim() || "GitHub Actions";
   const subject = `LabTrax desktop installer auto-publish FAILED (${versionLabel}) on ${dateStr}`;
@@ -551,7 +605,7 @@ export async function sendInstallerPublishFailureAlertEmail(
   if (params.runId) rows.push({ label: "Run ID", value: params.runId });
   if (typeof params.httpStatus === "number")
     rows.push({ label: "HTTP status", value: String(params.httpStatus) });
-  rows.push({ label: "Reported at", value: reportedAt });
+  rows.push({ label: "Reported at", value: formatNumericDateTime(reportedAt) });
 
   const settingsUrl = `${getAppBaseUrl()}/desktop/settings`;
   const runLinkHtml = params.runUrl
@@ -605,6 +659,14 @@ export interface BackupNotificationParams {
     size: number;
     completedAt: string;
     path?: string | null;
+    /**
+     * The run finished but dropped content (media it could not read, for
+     * example). Reported here as partial rather than as a clean success:
+     * "Backup completed successfully" over an archive missing files is how an
+     * incomplete recovery point gets trusted.
+     */
+    partialFailure?: boolean;
+    warnings?: string | null;
   };
 }
 
@@ -649,29 +711,78 @@ function formatTriggeredByBackupLabel(triggeredBy: string): string {
   return triggeredBy;
 }
 
+/**
+ * What actually happened to a backup email, per recipient.
+ *
+ * `sendMail` reports a refused or skipped send by resolving `{ sent: false }`
+ * rather than throwing — unconfigured SMTP, a rejected recipient, a reserved
+ * domain. A caller that only watches for a thrown error therefore records a
+ * delivery that never happened, which is precisely the silence the backup
+ * alarm exists to break. Backup mail hands the outcome back instead.
+ */
+export interface BackupEmailDelivery {
+  attempted: number;
+  sent: number;
+  failures: Array<{ email: string; reason: string }>;
+}
+
+async function deliverBackupMail(
+  adminEmails: string[],
+  message: { subject: string; html: string; text: string },
+): Promise<BackupEmailDelivery> {
+  const failures: Array<{ email: string; reason: string }> = [];
+  let sent = 0;
+  for (const email of adminEmails) {
+    try {
+      const result = await sendMail({ to: email, ...message });
+      if (result.sent) sent += 1;
+      else failures.push({ email, reason: result.reason ?? "not_sent" });
+    } catch (err: unknown) {
+      failures.push({ email, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return { attempted: adminEmails.length, sent, failures };
+}
+
+/** One line naming why backup mail did not go out, for an alert record. */
+export function describeBackupEmailFailures(delivery: BackupEmailDelivery): string {
+  if (delivery.failures.length === 0) return "";
+  const reasons = Array.from(new Set(delivery.failures.map((f) => f.reason)));
+  return `${delivery.failures.length} of ${delivery.attempted} recipient(s) were not reached (${reasons.join("; ")})`;
+}
+
 export async function sendBackupNotificationEmail(
   params: BackupEmailParams,
-): Promise<void> {
-  if (params.adminEmails.length === 0) return;
+): Promise<BackupEmailDelivery> {
+  if (params.adminEmails.length === 0) return { attempted: 0, sent: 0, failures: [] };
 
   const settingsUrl = `${getAppBaseUrl()}/desktop/settings`;
   const triggeredByLabel = formatTriggeredByBackupLabel(params.triggeredBy);
 
   if (params.success) {
     const { result } = params;
-    const dateStr = result.completedAt.slice(0, 10);
+    const partial = result.partialFailure === true;
+    const dateStr = formatNumericDate(result.completedAt);
     const destLabel = formatDestinationLabel(result.destination);
     const sizeLabel = formatBytes(result.size);
-    const subject = `LabTrax backup completed successfully on ${dateStr}`;
+    const subject = partial
+      ? `LabTrax backup completed WITH WARNINGS on ${dateStr}`
+      : `LabTrax backup completed successfully on ${dateStr}`;
 
     const rows: Array<{ label: string; value: string }> = [
       { label: "Triggered by", value: triggeredByLabel },
       { label: "Destination", value: destLabel },
       { label: "File name", value: result.fileName },
       { label: "Size", value: sizeLabel },
-      { label: "Completed at", value: result.completedAt },
+      { label: "Completed at", value: formatNumericDateTime(result.completedAt) },
     ];
     if (result.path) rows.push({ label: "Path", value: result.path });
+    if (partial) {
+      rows.push({
+        label: "Warnings",
+        value: partialBackupMessage(),
+      });
+    }
 
     const rowsHtml = rows
       .map(
@@ -681,32 +792,42 @@ export async function sendBackupNotificationEmail(
       .join("");
     const rowsText = rows.map((r) => `${r.label}: ${r.value}`).join("\n");
 
+    const bannerColor = partial ? "#d68910" : "#27ae60";
+    const bannerTint = partial ? "#fdf6e3" : "#eafaf1";
+    const headline = partial
+      ? "Backup completed with warnings"
+      : "Backup completed successfully";
+    const summary = partial
+      ? `<strong>This archive is incomplete.</strong> ${escapeHtml(partialBackupMessage())}`
+      : "Your LabTrax backup finished without errors.";
+
     const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-    <div style="background: #27ae60; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+    <div style="background: ${bannerColor}; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
       <h2 style="margin: 0;">LabTrax</h2>
-      <p style="margin: 4px 0 0; opacity: 0.85;">Backup completed successfully</p>
+      <p style="margin: 4px 0 0; opacity: 0.85;">${headline}</p>
     </div>
     <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
-      <div style="background:#eafaf1;border-left:4px solid #27ae60;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
-        Your LabTrax backup finished without errors.
+      <div style="background:${bannerTint};border-left:4px solid ${bannerColor};padding:12px 16px;border-radius:4px;margin-bottom:16px;">
+        ${summary}
       </div>
       <table style="border-collapse: collapse; width: 100%; font-size: 14px;">${rowsHtml}</table>
       <p style="margin-top: 20px; font-size: 13px;">Manage your backup settings on the <a href="${settingsUrl}" style="color: #4A6CF7;">Settings page</a>.</p>
     </div>
   </div>`;
 
-    const text = `LabTrax Backup Completed Successfully\n\n${rowsText}\n\nManage backup settings: ${settingsUrl}`;
+    const text = partial
+      ? `LabTrax Backup Completed WITH WARNINGS\n\n${partialBackupMessage()}\n\n${rowsText}\n\nManage backup settings: ${settingsUrl}`
+      : `LabTrax Backup Completed Successfully\n\n${rowsText}\n\nManage backup settings: ${settingsUrl}`;
 
-    for (const email of params.adminEmails) {
-      await sendMail({ to: email, subject, html, text });
-    }
+    return deliverBackupMail(params.adminEmails, { subject, html, text });
   } else {
     const failedAt = params.failedAt ?? new Date().toISOString();
-    const dateStr = failedAt.slice(0, 10);
+    const dateStr = formatNumericDate(failedAt);
     const destLabel = params.destination
       ? formatDestinationLabel(params.destination)
       : "unknown";
     const subject = `LabTrax backup FAILED on ${dateStr}`;
+    const userMessage = backupErrorMessage(params.errorMessage);
 
     const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
     <div style="background: #c0392b; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
@@ -720,19 +841,16 @@ export async function sendBackupNotificationEmail(
       <table style="border-collapse: collapse; width: 100%; font-size: 14px; margin-bottom: 16px;">
         <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Triggered by</td><td style="padding:8px 12px;">${escapeHtml(triggeredByLabel)}</td></tr>
         <tr><td style="padding:8px 12px;font-weight:bold;">Destination</td><td style="padding:8px 12px;">${escapeHtml(destLabel)}</td></tr>
-        <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Failed at</td><td style="padding:8px 12px;">${escapeHtml(failedAt)}</td></tr>
+        <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Failed at</td><td style="padding:8px 12px;">${escapeHtml(formatNumericDateTime(failedAt))}</td></tr>
       </table>
-      <h3 style="color:#c0392b;margin-top:0;">Error</h3>
-      <pre style="background:#1e1e1e;color:#f5f5f5;padding:12px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-word;">${escapeHtml(params.errorMessage)}</pre>
-      <p style="margin-top: 20px; font-size: 13px;">Review your backup configuration on the <a href="${settingsUrl}" style="color: #4A6CF7;">Settings page</a>.</p>
+      <p>${escapeHtml(userMessage)}</p>
+      <p style="margin-top: 20px; font-size: 13px;">Review your backup configuration and failure details on the <a href="${settingsUrl}" style="color: #4A6CF7;">Settings page</a>.</p>
     </div>
   </div>`;
 
-    const text = `LabTrax Backup FAILED\n\nTriggered by: ${triggeredByLabel}\nDestination: ${destLabel}\nFailed at: ${failedAt}\n\nError:\n${params.errorMessage}\n\nReview backup settings: ${settingsUrl}`;
+    const text = `LabTrax Backup FAILED\n\n${userMessage}\n\nTriggered by: ${triggeredByLabel}\nDestination: ${destLabel}\nFailed at: ${formatNumericDateTime(failedAt)}\n\nReview backup settings and failure details: ${settingsUrl}`;
 
-    for (const email of params.adminEmails) {
-      await sendMail({ to: email, subject, html, text });
-    }
+    return deliverBackupMail(params.adminEmails, { subject, html, text });
   }
 }
 
@@ -742,23 +860,48 @@ export interface BackupStaleAlertParams {
   lastSuccessfulAt: string | null;
   /** Number of days since the last successful backup (or Infinity if never run). */
   daysSinceBackup: number;
+  /**
+   * True when the configured backup destination is "local" (desktop-executed).
+   * The email wording is adjusted to explain the desktop app must be open for
+   * backups to run.
+   */
+  isLocalDestination?: boolean;
+  /**
+   * The effective staleness threshold (in days) that triggered this alert.
+   * Used to populate the subject and body so the copy reflects the actual
+   * threshold rather than a hardcoded "7 days".
+   */
+  thresholdDays?: number;
 }
 
 export async function sendBackupStaleAlertEmail(
   params: BackupStaleAlertParams,
-): Promise<void> {
-  if (params.adminEmails.length === 0) return;
+): Promise<BackupEmailDelivery> {
+  if (params.adminEmails.length === 0) return { attempted: 0, sent: 0, failures: [] };
 
   const settingsUrl = `${getAppBaseUrl()}/desktop/settings`;
-  const dateStr = new Date().toISOString().slice(0, 10);
-  const subject = `LabTrax — No successful backup in over 7 days (${dateStr})`;
+  const dateStr = formatNumericDate(new Date());
+  const thresholdDisplay = Math.round(params.thresholdDays ?? 7);
+  const thresholdLabel = thresholdDisplay === 1 ? "1 day" : `${thresholdDisplay} days`;
+  const subject = `LabTrax — No successful backup in over ${thresholdLabel} (${dateStr})`;
 
   const lastRunLine = params.lastSuccessfulAt
-    ? `The last successful backup was on <strong>${escapeHtml(params.lastSuccessfulAt.slice(0, 10))}</strong> — <strong>${Math.floor(params.daysSinceBackup)} days ago</strong>.`
+    ? `The last successful backup was on <strong>${escapeHtml(formatNumericDate(params.lastSuccessfulAt))}</strong> — <strong>${Math.floor(params.daysSinceBackup)} days ago</strong>.`
     : `<strong>No successful backup has ever been recorded</strong> for this LabTrax installation.`;
   const lastRunText = params.lastSuccessfulAt
-    ? `The last successful backup was on ${params.lastSuccessfulAt.slice(0, 10)} — ${Math.floor(params.daysSinceBackup)} days ago.`
+    ? `The last successful backup was on ${formatNumericDate(params.lastSuccessfulAt)} — ${Math.floor(params.daysSinceBackup)} days ago.`
     : `No successful backup has ever been recorded for this LabTrax installation.`;
+
+  const localNote = params.isLocalDestination
+    ? `<div style="background:#fef9e7;border-left:4px solid #f39c12;padding:10px 16px;border-radius:4px;margin-bottom:12px;font-size:13px;">
+        <strong>Local folder backup:</strong> Your schedule is configured to save backups to a local folder on your PC.
+        These backups only run while the <strong>LabTrax Desktop app is open</strong>. If the app has been closed or the
+        PC has been off, no backups will have run. Please open LabTrax Desktop to resume scheduled backups.
+      </div>`
+    : "";
+  const localNoteText = params.isLocalDestination
+    ? `Note: Your backup destination is a local folder on your PC. Local folder backups only run while the LabTrax Desktop app is open. If the app has been closed or the PC has been off, no backups will have run. Please open LabTrax Desktop to resume scheduled backups.\n\n`
+    : "";
 
   const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
     <div style="background: #e67e22; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
@@ -767,9 +910,9 @@ export async function sendBackupStaleAlertEmail(
     </div>
     <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
       <div style="background:#fef3e2;border-left:4px solid #e67e22;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
-        <strong>Warning:</strong> Your LabTrax data has not been backed up in over 7 days.
+        <strong>Warning:</strong> Your LabTrax data has not been backed up in over ${escapeHtml(thresholdLabel)}.
       </div>
-      <p style="font-size: 14px;">${lastRunLine}</p>
+      ${localNote}<p style="font-size: 14px;">${lastRunLine}</p>
       <p style="font-size: 14px;">Regular backups protect your lab data from loss. Please check your backup configuration and ensure a backup destination is configured and reachable.</p>
       <p style="text-align: center; margin: 24px 0;">
         <a href="${settingsUrl}" style="display: inline-block; background: #e67e22; color: white; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: bold;">Review Backup Settings →</a>
@@ -778,11 +921,9 @@ export async function sendBackupStaleAlertEmail(
     </div>
   </div>`;
 
-  const text = `LabTrax — Backup Overdue\n\nWarning: Your LabTrax data has not been backed up in over 7 days.\n\n${lastRunText}\n\nPlease review your backup settings: ${settingsUrl}\n\nThis alert is sent at most once every 3 days until a successful backup runs.\n\n— The LabTrax Team`;
+  const text = `LabTrax — Backup Overdue\n\nWarning: Your LabTrax data has not been backed up in over 7 days.\n\n${localNoteText}${lastRunText}\n\nPlease review your backup settings: ${settingsUrl}\n\nThis alert is sent at most once every 3 days until a successful backup runs.\n\n— The LabTrax Team`;
 
-  for (const email of params.adminEmails) {
-    await sendMail({ to: email, subject, html, text });
-  }
+  return deliverBackupMail(params.adminEmails, { subject, html, text });
 }
 
 export interface DownloadInterruptionAlertParams {
@@ -800,12 +941,9 @@ export async function sendDownloadInterruptionAlertEmail(
   if (params.adminEmails.length === 0) return;
 
   const settingsUrl = `${getAppBaseUrl()}/desktop/settings`;
-  const dateStr = params.lastOccurredAt.slice(0, 10);
+  const dateStr = formatNumericDate(params.lastOccurredAt);
   const subject = `LabTrax — Download interruptions detected (${dateStr})`;
-  const lastLabel = (() => {
-    const ms = new Date(params.lastOccurredAt).getTime();
-    return isNaN(ms) ? params.lastOccurredAt : new Date(ms).toUTCString();
-  })();
+  const lastLabel = formatNumericDateTime(params.lastOccurredAt);
 
   const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
     <div style="background: #b45309; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
@@ -894,10 +1032,7 @@ export async function sendSecurityAlertEmail(
   const passwordResetUrl = `${baseUrl}/desktop/settings/security/password`;
   const sessionsUrl = `${baseUrl}/desktop/settings/security/sessions`;
 
-  const timestampLabel = (() => {
-    const ms = new Date(params.detectedAt).getTime();
-    return isNaN(ms) ? params.detectedAt : new Date(ms).toUTCString();
-  })();
+  const timestampLabel = formatNumericDateTime(params.detectedAt);
 
   const ipLine = params.ipAddress
     ? `<tr><td style="padding:8px 12px;font-weight:bold;">IP address</td><td style="padding:8px 12px;">${escapeHtml(params.ipAddress)}</td></tr>`
@@ -960,4 +1095,137 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+export interface DatabaseIdentityAlertDelivery {
+  /** How many admin addresses were tried. */
+  attempted: number;
+  /** Addresses SMTP actually accepted. */
+  delivered: string[];
+  /** Addresses that were skipped or refused, with the reason. */
+  failures: Array<{ email: string; reason: string }>;
+}
+
+export interface DatabaseIdentityAlertEmailParams {
+  adminEmails: string[];
+  /** When the scheduled comparison ran (ISO). */
+  checkedAt: string;
+  /** The reported facts, as the identity check itself words them. */
+  facts: string[];
+  /** Why the comparison refused production, worst first. */
+  findings: Array<{ level: "failure" | "warning"; message: string }>;
+  /** Repository path holding the expected values. */
+  fingerprintPath: string;
+  /** The only sanctioned way to change those expected values. */
+  recordCommand: string;
+}
+
+/**
+ * Tell lab admins that the production database no longer matches the identity
+ * fingerprint committed in the repository.
+ *
+ * This is not a routine ops digest: it only fires when the counts, the lab's
+ * oldest case timestamp, or the production/development lineage stopped
+ * agreeing with what was recorded — i.e. when production may not be the
+ * lab's own database any more. The email deliberately carries the same four
+ * facts the publish preflight prints, so the alert and the build log can be
+ * compared line for line.
+ *
+ * Each admin is mailed separately and the result of every send is reported
+ * back. `sendMail` resolves `{ sent: false }` for a skipped or refused
+ * recipient instead of throwing, and it treats `to` as a single address — so
+ * a caller that joined the recipients and ignored the result would report a
+ * swapped production database as "admins alerted" while nobody received
+ * anything, which is the one failure this whole path exists to prevent.
+ */
+export async function sendDatabaseIdentityAlertEmail(
+  params: DatabaseIdentityAlertEmailParams,
+): Promise<DatabaseIdentityAlertDelivery> {
+  const delivery: DatabaseIdentityAlertDelivery = {
+    attempted: 0,
+    delivered: [],
+    failures: [],
+  };
+  if (params.adminEmails.length === 0) return delivery;
+
+  const checkedLabel = formatNumericDateTime(params.checkedAt);
+  const subject = `LabTrax ALERT: production database no longer matches its recorded identity (${checkedLabel})`;
+
+  const factRows = params.facts
+    .map(
+      (fact, index) =>
+        `<tr${index % 2 === 0 ? ' style="background:#f5f5f5;"' : ""}><td style="padding:8px 12px;word-break:break-word;">${escapeHtml(fact)}</td></tr>`,
+    )
+    .join("");
+
+  const findingItems = params.findings
+    .map(
+      (finding) =>
+        `<li style="margin-bottom:6px;"><strong>${finding.level === "failure" ? "BLOCKED" : "WARNING"}</strong> — ${escapeHtml(finding.message)}</li>`,
+    )
+    .join("");
+
+  const html = `<div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
+    <div style="background: #c0392b; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+      <h2 style="margin: 0;">LabTrax</h2>
+      <p style="margin: 4px 0 0; opacity: 0.85;">Production database identity alert</p>
+    </div>
+    <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+      <div style="background:#fdf2f2;border-left:4px solid #c0392b;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
+        <strong>The production database stopped matching its recorded identity.</strong>
+        A scheduled read-only check compared production against the fingerprint committed in
+        <code>${escapeHtml(params.fingerprintPath)}</code> on ${escapeHtml(checkedLabel)} and they no longer agree.
+      </div>
+      <p style="font-size:14px;margin-bottom:6px;"><strong>What the check saw in production</strong></p>
+      <table style="border-collapse:collapse;width:100%;font-size:14px;margin-bottom:16px;">${factRows}</table>
+      <p style="font-size:14px;margin-bottom:6px;"><strong>Why this is an alert</strong></p>
+      <ul style="font-size:14px;line-height:1.5;">${findingItems}</ul>
+      <p style="font-size:14px;">If nothing about production was supposed to change, treat this as a possible database swap or data loss: check which database the deployment is bound to before writing anything else to it.</p>
+      <p style="font-size:14px;">If the change was deliberate, re-record the fingerprint with <code>${escapeHtml(params.recordCommand)}</code> and commit the result. Nothing else — including this alert — changes the expected values.</p>
+      <p style="font-size:13px;color:#666;">This check never writes to any database. It will alert again on its next run while production still does not match.</p>
+    </div>
+  </div>`;
+
+  const text = [
+    "LabTrax — Production database identity alert",
+    "",
+    `A scheduled read-only check compared production against the fingerprint committed in ${params.fingerprintPath} on ${checkedLabel}, and they no longer agree.`,
+    "",
+    "What the check saw in production:",
+    ...params.facts.map((fact) => `  - ${fact}`),
+    "",
+    "Why this is an alert:",
+    ...params.findings.map(
+      (finding) =>
+        `  - ${finding.level === "failure" ? "BLOCKED" : "WARNING"} — ${finding.message}`,
+    ),
+    "",
+    "If nothing about production was supposed to change, treat this as a possible database swap or data loss: check which database the deployment is bound to before writing anything else to it.",
+    "",
+    `If the change was deliberate, re-record the fingerprint with \`${params.recordCommand}\` and commit the result. Nothing else — including this alert — changes the expected values.`,
+    "",
+    "This check never writes to any database. It will alert again on its next run while production still does not match.",
+  ].join("\n");
+
+  for (const email of params.adminEmails) {
+    delivery.attempted += 1;
+    try {
+      const result = await sendMail({ to: email, subject, html, text });
+      if (result.sent) {
+        delivery.delivered.push(email);
+      } else {
+        delivery.failures.push({
+          email,
+          reason: result.reason ?? "not_sent",
+        });
+      }
+    } catch (err: any) {
+      delivery.failures.push({
+        email,
+        reason: err?.message ? String(err.message) : "send_threw",
+      });
+    }
+  }
+
+  return delivery;
 }

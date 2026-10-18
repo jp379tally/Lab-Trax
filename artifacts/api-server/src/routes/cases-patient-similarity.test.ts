@@ -91,7 +91,7 @@ maybe("GET /api/cases/patient-similarity (db integration)", () => {
       providerOrganizationId: opts.providerOrgId ?? providerAOrgId,
       patientFirstName: opts.patientFirst,
       patientLastName: opts.patientLast,
-      doctorName: opts.doctorName ?? "Dr. House",
+      doctorName: opts.doctorName ?? "Dr. Synthetic043",
       status: "received",
       createdByUserId: adminUserId,
     });
@@ -402,7 +402,7 @@ maybe("GET /api/cases/patient-similarity (db integration)", () => {
     const canonicalId = await trackInsert({
       patientFirst: "Diana",
       patientLast: "Prince",
-      doctorName: "Dr. Fate",
+      doctorName: "Dr. Synthetic038",
     });
 
     // Insert a legacy lab_cases row that represents the same patient + doctor
@@ -414,7 +414,7 @@ maybe("GET /api/cases/patient-similarity (db integration)", () => {
       organizationId: labOrgId,
       caseData: JSON.stringify({
         patientName: "Diana Prince",
-        doctorName: "Dr. Fate",
+        doctorName: "Dr. Synthetic038",
         status: "completed",
         caseNumber: "LGY-001",
       }),
@@ -427,7 +427,7 @@ maybe("GET /api/cases/patient-similarity (db integration)", () => {
         .query({
           patientFirstName: "Diana",
           patientLastName: "Prince",
-          doctorName: "Dr. Fate",
+          doctorName: "Dr. Synthetic038",
           labOrganizationId: labOrgId,
         });
 

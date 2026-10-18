@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   Platform,
   Pressable,
   StyleSheet,
@@ -12,15 +13,19 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
+import { Camera, useCameraDevice, useCameraPermission, useCodeScanner } from "react-native-vision-camera";
 import * as Haptics from "expo-haptics";
 import * as Print from "expo-print";
-import { buildCaseCardHtml } from "@/lib/case-pdf";
+import { shouldIncludeProviderPreferencesOnLabSlip, type CaseCardRestoration } from "@/lib/case-pdf";
+import { buildSharedCaseSlipHtml } from "@/lib/shared-case-slip";
+import { DismissKeyboardView } from "@/components/ui/DismissKeyboardView";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch } from "@/lib/query-client";
 import { getAiReaderSession, clearAiReaderSession } from "@/lib/ai-reader-store";
-import { pickBestBarcode, guideBoxFromLayout } from "@/lib/barcode-guide-box";
+import { pickBestBarcode, guideBoxFromFractions, type BarcodeCandidate } from "@/lib/barcode-guide-box";
+import { codesToBarcodeCandidates, SCAN_CODE_TYPES } from "@/lib/vision-camera-codes";
+import { TorchToggleButton } from "@/components/ui/TorchToggleButton";
 
 type Step = "scan" | "manual" | "done";
 
@@ -31,12 +36,44 @@ interface OrgPrintTemplate {
   defaultTemplate: Record<string, unknown>;
 }
 
+interface AuthoritativePrintableCase {
+  id?: string;
+  caseNumber?: string | null;
+  patientFirstName?: string | null;
+  patientLastName?: string | null;
+  doctorName?: string | null;
+  dueDate?: string | null;
+  priority?: string | null;
+  status?: string | null;
+  caseNotes?: string | null;
+  casePanBarcode?: string | null;
+  gingivialShade?: string | null;
+  labOrganizationId?: string | null;
+  organizationId?: string | null;
+  providerDoctorPreferences?: Record<string, unknown> | null;
+  printProviderPreferencesOnLabSlips?: boolean | null;
+  step?: string | null;
+  stepShade?: string | null;
+  dueTime?: string | null;
+  doctorPreferences?: string | null;
+  providerOrganizationContact?: Record<string, unknown> | null;
+  restorations?: Array<CaseCardRestoration & {
+    toothNumber?: string | null;
+    restorationType?: string | null;
+    material?: string | null;
+    shade?: string | null;
+    quantity?: number | null;
+  }> | null;
+}
+
 export default function AiReaderBarcodeScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
-  const [permission, requestPermission] = useCameraPermissions();
+  const { hasPermission: permissionGranted, requestPermission } = useCameraPermission();
+  const cameraDevice = useCameraDevice("back");
+  const [torchOn, setTorchOn] = useState(false);
   const [step, setStep] = useState<Step>("scan");
   const [manualInput, setManualInput] = useState("");
   const [scanned, setScanned] = useState(false);
@@ -49,7 +86,7 @@ export default function AiReaderBarcodeScreen() {
   // ~120ms frame window so pickBestBarcode can choose the best in-box candidate.
   const cameraViewSize = useRef<{ width: number; height: number } | null>(null);
   const assigningRef = useRef(false);
-  const barcodeAccumRef = useRef<BarcodeScanningResult[]>([]);
+  const barcodeAccumRef = useRef<BarcodeCandidate[]>([]);
   const barcodeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const session = getAiReaderSession();
@@ -67,12 +104,12 @@ export default function AiReaderBarcodeScreen() {
 
   // ── Barcode scan handler (guide-box filtering) ──
   const handleBarcodeScanned = useCallback(
-    (event: BarcodeScanningResult) => {
-      if (assigningRef.current || !event.data?.trim()) return;
+    (codes: BarcodeCandidate[]) => {
+      if (assigningRef.current || codes.length === 0) return;
 
       // Accumulate barcodes over a ~120ms window so pickBestBarcode can select
       // the in-box candidate closest to center across the full frame.
-      barcodeAccumRef.current.push(event);
+      barcodeAccumRef.current.push(...codes);
       if (barcodeDebounceRef.current) clearTimeout(barcodeDebounceRef.current);
 
       barcodeDebounceRef.current = setTimeout(() => {
@@ -86,11 +123,9 @@ export default function AiReaderBarcodeScreen() {
         if (candidates.length === 0) return;
 
         const viewSize = cameraViewSize.current;
-        if (!viewSize) return;
-
         // Reticle fractions: top 30%, left/right 15%, height 40%
-        const box = guideBoxFromLayout(viewSize.width, viewSize.height, 0.15, 0.30, 0.15, 0.40);
-        const best = pickBestBarcode(candidates, box);
+        const box = guideBoxFromFractions(0.15, 0.30, 0.15, 0.40);
+        const best = pickBestBarcode(candidates, box, viewSize) ?? candidates[0];
         if (!best || !best.data.trim()) return;
 
         assigningRef.current = true;
@@ -101,6 +136,12 @@ export default function AiReaderBarcodeScreen() {
     },
     [],
   );
+
+  const codeScanner = useCodeScanner({
+    codeTypes: SCAN_CODE_TYPES,
+    onCodeScanned: (codes, frame) =>
+      handleBarcodeScanned(codesToBarcodeCandidates(codes, frame)),
+  });
 
   async function assignBarcode(code: string) {
     if (!caseId || !code.trim()) return;
@@ -174,48 +215,67 @@ export default function AiReaderBarcodeScreen() {
   async function printLabel() {
     setPrintLoading(true);
     try {
+      // Always read the case immediately before printing. The AI-reader session
+      // is only a navigation aid and may be stale or omit print-only fields.
+      if (!caseId) throw new Error("This case is no longer available.");
+      const caseRes = await resilientFetch(`/api/cases/${encodeURIComponent(caseId)}`);
+      if (!caseRes.ok) throw new Error(`Could not load the latest case details (${caseRes.status}).`);
+      const caseBody = (await caseRes.json()) as {
+        data?: AuthoritativePrintableCase;
+      } & AuthoritativePrintableCase;
+      const currentCase = caseBody.data ?? caseBody;
+      if (!currentCase || typeof currentCase !== "object") {
+        throw new Error("Could not load the latest case details.");
+      }
+
       // 1. Fetch the lab's org-level print template (may be null = use default)
       let orgTemplate: OrgPrintTemplate | null = null;
-      const labOrgId = session.labOrgId;
+      const labOrgId = currentCase.labOrganizationId ?? currentCase.organizationId ?? session.labOrgId;
       if (labOrgId) {
         try {
           const tmplRes = await resilientFetch(
-            `/api/organizations/${encodeURIComponent(labOrgId)}/case-print-template`,
+            `/api/organizations/${encodeURIComponent(labOrgId)}/case-print-template?caseId=${encodeURIComponent(caseId)}`,
           );
+          if (!tmplRes.ok) throw new Error(`Could not load the shared lab-slip template (${tmplRes.status}).`);
           if (tmplRes.ok) {
             const body = (await tmplRes.json()) as { data?: OrgPrintTemplate };
             orgTemplate = body?.data ?? null;
           }
-        } catch {
-          // Non-fatal — use default template
+        } catch (error) {
+          throw new Error("Could not load the shared lab-slip template. Check your connection and try again.", { cause: error });
         }
       }
 
-      // 2. Build the label HTML using the canonical buildCaseCardHtml template.
-      //    The orgTemplate config is available for future field-mapping extension;
-      //    the underlying renderer already handles all required fields.
-      const restorations = (session.restorations ?? []).map((r) => ({
+      // System printing and PDF sharing honor the same shared desktop template.
+      const restorations = (currentCase.restorations ?? []).map((r) => ({
+        ...r,
         toothNumber: r.toothNumber,
         restorationType: r.restorationType,
         material: r.material,
         shade: r.shade,
       }));
 
-      const html = buildCaseCardHtml({
-        caseNumber: caseNumber ?? undefined,
-        patientName: session.patientName ?? undefined,
-        doctorName: session.doctorName ?? undefined,
-        dueDate: session.dueDate ?? undefined,
-        priority: undefined,
-        status: "received",
-        rxNotes: session.extracted?.notes ?? undefined,
+      const html = await buildSharedCaseSlipHtml({
+        caseNumber: currentCase.caseNumber ?? undefined,
+        patientName: [currentCase.patientFirstName, currentCase.patientLastName].filter(Boolean).join(" ") || undefined,
+        doctorName: currentCase.doctorName ?? undefined,
+        dueDate: currentCase.dueDate ?? undefined,
+        priority: currentCase.priority ?? undefined,
+        status: currentCase.status ?? "received",
+        rxNotes: currentCase.caseNotes ?? undefined,
         restorations,
         labName: orgTemplate?.template
           ? (orgTemplate.template as Record<string, unknown>)?.labName as string | undefined
-              ?? session.labName ?? undefined
-          : session.labName ?? undefined,
-        casePanBarcode: assignedBarcode ?? undefined,
-      });
+               ?? session.labName ?? undefined
+           : session.labName ?? undefined,
+        casePanBarcode: currentCase.casePanBarcode ?? assignedBarcode ?? undefined,
+        gingivialShade: currentCase.gingivialShade ?? null,
+        providerDoctorPreferences: currentCase.providerDoctorPreferences ?? null,
+        printProviderPreferencesOnLabSlips: shouldIncludeProviderPreferencesOnLabSlip(
+          currentCase.printProviderPreferencesOnLabSlips,
+          orgTemplate,
+        ),
+      }, orgTemplate, { caseId: currentCase.id ?? caseId, labOrganizationId: labOrgId, step: currentCase.step, stepShade: currentCase.stepShade, dueTime: currentCase.dueTime, doctorPreferences: currentCase.doctorPreferences, providerOrganizationContact: currentCase.providerOrganizationContact });
 
       // 3. Open the system print dialog — no intermediate PDF share sheet
       await Print.printAsync({ html });
@@ -234,7 +294,10 @@ export default function AiReaderBarcodeScreen() {
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <DismissKeyboardView
+      style={[styles.screen, { paddingTop: insets.top }]}
+      testID="barcode-keyboard-dismiss"
+    >
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerTitle}>
@@ -281,7 +344,7 @@ export default function AiReaderBarcodeScreen() {
           </View>
 
           {step === "scan" ? (
-            !permission?.granted ? (
+            !permissionGranted ? (
               <View style={styles.permView}>
                 <Ionicons name="barcode-outline" size={48} color={colors.textTertiary} />
                 <Text style={styles.permTitle}>Camera needed to scan</Text>
@@ -292,29 +355,30 @@ export default function AiReaderBarcodeScreen() {
             ) : (
               <View
                 style={styles.scannerWrap}
+                testID="ai-reader-scanner-wrap"
                 onLayout={(e) => {
                   const { width, height } = e.nativeEvent.layout;
                   cameraViewSize.current = { width, height };
                 }}
               >
-                {!scanned && (
-                  <CameraView
+                {!scanned && cameraDevice && (
+                  <Camera
                     style={StyleSheet.absoluteFill}
-                    facing="back"
-                    onBarcodeScanned={assigning ? undefined : handleBarcodeScanned}
-                    barcodeScannerSettings={{
-                      barcodeTypes: [
-                        "code128",
-                        "code39",
-                        "qr",
-                        "ean13",
-                        "ean8",
-                        "pdf417",
-                        "code93",
-                      ],
-                    }}
+                    device={cameraDevice}
+                    isActive
+                    codeScanner={assigning ? undefined : codeScanner}
+                    torch={torchOn ? "on" : "off"}
                   />
                 )}
+                {!scanned && cameraDevice?.hasTorch ? (
+                  <View style={styles.torchBtnWrap}>
+                    <TorchToggleButton
+                      torchOn={torchOn}
+                      onToggle={() => setTorchOn((v) => !v)}
+                      testID="ai-reader-torch-toggle"
+                    />
+                  </View>
+                ) : null}
                 {/* Scan reticle */}
                 <View style={styles.reticle} pointerEvents="none">
                   <View style={styles.reticleTL} />
@@ -345,6 +409,8 @@ export default function AiReaderBarcodeScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
                 autoFocus
+                returnKeyType="done"
+                onSubmitEditing={() => Keyboard.dismiss()}
               />
               <Pressable
                 style={[styles.btn, assigning && { opacity: 0.5 }]}
@@ -402,7 +468,7 @@ export default function AiReaderBarcodeScreen() {
           </View>
         </View>
       )}
-    </View>
+    </DismissKeyboardView>
   );
 }
 
@@ -446,6 +512,7 @@ function makeStyles(c: ThemeColors) {
     modeTabTextSelected: { color: "#fff" },
 
     scannerWrap: { flex: 1, position: "relative", backgroundColor: "#000" },
+    torchBtnWrap: { position: "absolute", top: 16, right: 16, zIndex: 10 },
     reticle: {
       position: "absolute",
       top: "30%",

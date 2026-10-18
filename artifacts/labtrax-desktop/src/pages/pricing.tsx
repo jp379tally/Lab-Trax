@@ -147,13 +147,14 @@ interface AuditEntry {
 function formatRelativeDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const timeStr = d.toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
   });
+  return `${mm}/${dd}/${yyyy}, ${timeStr}`;
 }
 
 function actionLabel(action: string): string {
@@ -384,6 +385,14 @@ function ConfirmChangesDialog({
 export default function PricingPage() {
   const [section, setSection] = useState<Section>("tiers");
 
+  // Detect navigation intent from invoices: ?addItem=1&name=<encoded>
+  const searchParams =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search)
+      : new URLSearchParams();
+  const initialAddItem = searchParams.get("addItem") === "1";
+  const initialItemName = searchParams.get("name") ?? "";
+
   return (
     <div className="px-8 py-7">
       <div className="flex items-start justify-between mb-6">
@@ -413,7 +422,12 @@ export default function PricingPage() {
         />
       </div>
 
-      {section === "tiers" && <TiersSection />}
+      {section === "tiers" && (
+        <TiersSection
+          initialAddingItem={initialAddItem}
+          initialItemName={initialItemName}
+        />
+      )}
       {section === "labels" && <ItemLabelsSection />}
     </div>
   );
@@ -542,11 +556,17 @@ function DefaultDoctorTierSetting({ tiers }: { tiers: PricingTier[] }) {
   );
 }
 
-function TiersSection() {
+function TiersSection({
+  initialAddingItem = false,
+  initialItemName = "",
+}: {
+  initialAddingItem?: boolean;
+  initialItemName?: string;
+}) {
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<PricingTier | null>(null);
-  const [addingItem, setAddingItem] = useState(false);
+  const [addingItem, setAddingItem] = useState(initialAddingItem);
 
   const tiersQuery = useQuery({
     queryKey: ["pricing", "tiers"],
@@ -563,6 +583,11 @@ function TiersSection() {
   const tiers = tiersQuery.data?.tiers ?? [];
   const keys = tiersQuery.data?.keys ?? [];
   const itemLabels = labelsQuery.data?.labels ?? {};
+  const discountKeys = new Set(labelsQuery.data?.discountKeys ?? []);
+  const visibleKeys = [
+    ...keys.filter((key) => discountKeys.has(key)),
+    ...keys.filter((key) => !discountKeys.has(key)),
+  ];
   const resolveLabel = (k: string) => itemLabels[k] ?? labelFor(k);
 
   const deleteMutation = useMutation({
@@ -676,12 +701,19 @@ function TiersSection() {
                 </div>
               </div>
               <div className="space-y-1 text-xs">
-                {keys.slice(0, 6).map((k) => (
+                {visibleKeys.slice(0, 6).map((k) => (
                   <div key={k} className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{resolveLabel(k)}</span>
+                    <span className="text-muted-foreground">
+                      {resolveLabel(k)}
+                      {discountKeys.has(k) && (
+                        <span className="ml-1 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                          Discount
+                        </span>
+                      )}
+                    </span>
                     <span className="tabular-nums">
                       {Number(t.prices[k]) > 0
-                        ? formatMoney(Number(t.prices[k]))
+                        ? `${discountKeys.has(k) ? "−" : ""}${formatMoney(Number(t.prices[k]))}`
                         : "—"}
                     </span>
                   </div>
@@ -722,6 +754,7 @@ function TiersSection() {
       {addingItem && (
         <AddBillableItemEditor
           tiers={tiers}
+          initialItemName={initialItemName}
           onClose={() => setAddingItem(false)}
         />
       )}
@@ -735,21 +768,25 @@ interface AddBillableItemResult {
   name: string;
   description: string | null;
   price: number;
+  isDiscount: boolean;
   tierIds: string[];
   updatedTiers: number;
 }
 
 function AddBillableItemEditor({
   tiers,
+  initialItemName = "",
   onClose,
 }: {
   tiers: PricingTier[];
+  initialItemName?: string;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const [name, setName] = useState("");
+  const [name, setName] = useState(initialItemName);
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
+  const [isDiscount, setIsDiscount] = useState(false);
   const [selectedTierIds, setSelectedTierIds] = useState<string[]>(() =>
     tiers.length === 1 ? [tiers[0].id] : [],
   );
@@ -772,7 +809,11 @@ function AddBillableItemEditor({
         throw new Error("Select at least one tier.");
       }
       if (!Number.isFinite(priceValue) || priceValue <= 0) {
-        throw new Error("Enter a price greater than 0.");
+        throw new Error(
+          isDiscount
+            ? "Enter a discount amount greater than 0."
+            : "Enter a price greater than 0.",
+        );
       }
       return apiFetch<AddBillableItemResult>(`/pricing/add-item`, {
         method: "POST",
@@ -780,6 +821,7 @@ function AddBillableItemEditor({
           name: trimmedName,
           description: description.trim() || null,
           price: priceValue,
+          isDiscount,
           tierIds: selectedTierIds,
         }),
       });
@@ -853,9 +895,39 @@ function AddBillableItemEditor({
 
       <div>
         <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-          Price
+          Item type
         </label>
-        <PriceField label="Unit price" value={price} onChange={setPrice} />
+        <div className="flex gap-2">
+          {[
+            { value: false, label: "Charge" },
+            { value: true, label: "Discount" },
+          ].map((option) => (
+            <button
+              key={option.label}
+              type="button"
+              onClick={() => setIsDiscount(option.value)}
+              aria-pressed={isDiscount === option.value}
+              className={`h-9 px-3 rounded-md border text-sm ${
+                isDiscount === option.value
+                  ? "border-primary bg-primary/10 text-foreground"
+                  : "border-input text-muted-foreground hover:bg-secondary"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          {isDiscount ? "Discount amount" : "Price"}
+        </label>
+        <PriceField
+          label={isDiscount ? "Amount to deduct" : "Unit price"}
+          value={price}
+          onChange={setPrice}
+        />
       </div>
 
       <div>
@@ -1461,6 +1533,7 @@ export function BulkPriceTools({
 interface ItemLabelsResponse {
   labOrganizationId: string;
   labels: Record<string, string>;
+  discountKeys: string[];
 }
 
 function ItemLabelsSection() {

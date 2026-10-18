@@ -57,7 +57,6 @@ beforeEach(() => {
 
 function renderSettings() {
   const Wrapper = makeAuthWrapper("/settings", {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     user: LOGO_UPLOAD_USER as any,
     status: "authed",
     restoreStatus: "ok",

@@ -63,6 +63,9 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
     process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"] = "https://example.invalid/v1";
     process.env["JWT_SECRET"] = process.env["JWT_SECRET"] ?? "labtrax-test-secret-analyze-rx";
     appMod = await import("../app.js");
+    await vi.waitFor(async () => {
+      expect((await request(appMod.default).get("/api/__test_missing_route__")).status).toBe(404);
+    }, { timeout: 15_000, interval: 25 });
   });
 
   afterAll(() => {
@@ -74,6 +77,44 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
 
   beforeEach(() => {
     mockCreate.mockReset();
+  });
+
+  it("sends every supplied page through the accurate desktop chain without hidden SDK retries", async () => {
+    mockCreate.mockResolvedValueOnce(aiJson({ patientName: "Fixture", confidence: 0.9 }));
+    const result = await request(appMod.default).post("/api/analyze-prescription").send({
+      imageBase64: VALID_IMAGE, additionalImages: [VALID_IMAGE, VALID_IMAGE, VALID_IMAGE], desktopReader: true,
+    });
+    expect(result.status).toBe(200);
+    const [params, options] = mockCreate.mock.calls[0];
+    expect(params.model).toBe("gpt-5.4");
+    expect(params.messages[1].content.filter((item: any) => item.type === "image_url")).toHaveLength(4);
+    expect(options).toMatchObject({ timeout: 30_000, maxRetries: 0 });
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+    expect(result.headers["server-timing"]).toContain("rxModel1");
+    expect(result.headers["server-timing"]).toContain("rxPreprocess");
+  });
+
+  it("retains native fast mode and explicit fallback rather than SDK retry multiplication", async () => {
+    mockCreate.mockRejectedValueOnce(Object.assign(new Error("timeout"), { name: "APIConnectionTimeoutError" }));
+    mockCreate.mockResolvedValueOnce(aiJson({ patientName: "Fixture", confidence: 0.9 }));
+    const result = await request(appMod.default).post("/api/analyze-prescription").send({ imageBase64: VALID_IMAGE, fast: true });
+    expect(result.status).toBe(200);
+    expect(mockCreate.mock.calls.map(([params]) => params.model)).toEqual(["gpt-5-mini", "gpt-5"]);
+    for (const [, options] of mockCreate.mock.calls) {
+      expect(options.maxRetries).toBe(0);
+      expect(options.timeout).toBeLessThanOrEqual(30_000);
+    }
+  });
+
+  it("stops fallback after the client disconnects even when the model adapter ignores cancellation", async () => {
+    mockCreate.mockImplementation(() => new Promise(() => {}));
+    const pending = request(appMod.default).post("/api/analyze-prescription").send({ imageBase64: VALID_IMAGE, desktopReader: true });
+    pending.end(() => {});
+    await vi.waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
+    const signal = mockCreate.mock.calls[0][1].signal as AbortSignal;
+    pending.abort();
+    await vi.waitFor(() => expect(signal.aborted).toBe(true));
+    expect(mockCreate).toHaveBeenCalledTimes(1);
   });
 
   it("returns 400 when no image is provided", async () => {
@@ -108,6 +149,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
         patientName: "Doe, Jane",
         caseType: "Crown & Bridge",
         shade: "A2",
+        gingivialShade: null,
         isRush: false,
         confidence: 0.92,
       })
@@ -167,6 +209,28 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
     expect(finalParams.temperature).toBeUndefined();
   });
 
+  it("bounds stalled model attempts, preserves accurate fallback order, and returns actionable timeout guidance", async () => {
+    mockCreate.mockRejectedValue(new Error("request timed out"));
+
+    const r = await request(appMod.default)
+      .post("/api/analyze-prescription")
+      .send({ imageBase64: VALID_IMAGE, desktopReader: true });
+
+    expect(r.status).toBe(504);
+    expect(r.body.success).toBe(false);
+    expect(r.body.error).toMatch(/timed out.*Try again/i);
+    expect(mockCreate.mock.calls.map(([params]) => params.model)).toEqual([
+      "gpt-5.4",
+      "gpt-5",
+      "gpt-5-mini",
+    ]);
+    expect(mockCreate.mock.calls.map(([, options]) => options.timeout)).toEqual([
+      30_000,
+      30_000,
+      30_000,
+    ]);
+  });
+
   it("returns 500 when every model in the chain fails", async () => {
     mockCreate.mockRejectedValue(new Error("proxy down"));
 
@@ -200,6 +264,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
       "caseType",
       "toothIndices",
       "shade",
+      "gingivialShade",
       "material",
       "dueDate",
       "notes",
@@ -234,6 +299,105 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
     const isRushTypes = (isRush.anyOf as { type: string }[]).map((x) => x.type);
     expect(isRushTypes).toContain("boolean");
     expect(isRushTypes).toContain("null");
+  });
+
+  it("includes restorationSubtype when caseType and material are both recognised (zirconia crown smoke test)", async () => {
+    // AI returns "Crown & Bridge" + "Zirconia" → server must derive and return
+    // the encoded taxonomy key "restorative/crown_and_bridge/zirconia" so the
+    // mobile client can store it on caseRestorations without re-deriving it.
+    mockCreate.mockResolvedValueOnce(
+      aiJson({
+        doctorName: "Dr. Synthetic063",
+        patientName: "Jane Doe",
+        caseType: "Crown & Bridge",
+        material: "Zirconia",
+        shade: "A2",
+        isRush: false,
+        confidence: 0.95,
+      })
+    );
+
+    const r = await request(appMod.default)
+      .post("/api/analyze-prescription")
+      .send({ imageBase64: VALID_IMAGE });
+
+    expect(r.status).toBe(200);
+    expect(r.body.success).toBe(true);
+    expect(r.body.data.caseType).toBe("Crown & Bridge");
+    expect(r.body.data.material).toBe("Zirconia");
+    // The server must derive and return the encoded taxonomy subtype.
+    expect(r.body.data.restorationSubtype).toBe("restorative/crown_and_bridge/zirconia");
+  });
+
+  it("omits restorationSubtype when the caseType/material pair is unrecognised", async () => {
+    mockCreate.mockResolvedValueOnce(
+      aiJson({
+        patientName: "Pat Roe",
+        caseType: "Other",
+        material: null,
+        confidence: 0.5,
+      })
+    );
+
+    const r = await request(appMod.default)
+      .post("/api/analyze-prescription")
+      .send({ imageBase64: VALID_IMAGE });
+
+    expect(r.status).toBe(200);
+    expect(r.body.success).toBe(true);
+    // "Other" caseType has no taxonomy subtype; restorationSubtype must be absent.
+    expect(r.body.data.restorationSubtype).toBeUndefined();
+  });
+
+  it("omits restorationSubtype when confidence is below 0.7 even if caseType and material are present", async () => {
+    // Low-confidence AI extraction: both fields are present but the model
+    // is not sure enough. We must NOT pre-fill the restoration drawer with a
+    // potentially wrong subtype.
+    mockCreate.mockResolvedValueOnce(
+      aiJson({
+        doctorName: "Dr. Synthetic063",
+        patientName: "Jane Doe",
+        caseType: "Crown & Bridge",
+        material: "Zirconia",
+        shade: "A2",
+        isRush: false,
+        confidence: 0.6,
+      })
+    );
+
+    const r = await request(appMod.default)
+      .post("/api/analyze-prescription")
+      .send({ imageBase64: VALID_IMAGE });
+
+    expect(r.status).toBe(200);
+    expect(r.body.success).toBe(true);
+    expect(r.body.data.caseType).toBe("Crown & Bridge");
+    expect(r.body.data.material).toBe("Zirconia");
+    // Confidence 0.6 < 0.7 threshold → subtype must be suppressed.
+    expect(r.body.data.restorationSubtype).toBeUndefined();
+  });
+
+  it("omits restorationSubtype when material is missing even with high confidence", async () => {
+    // Without a material field, inferring the subtype would force the client
+    // to pick one, hiding the fact that it is unknown.
+    mockCreate.mockResolvedValueOnce(
+      aiJson({
+        patientName: "Jane Doe",
+        caseType: "Crown & Bridge",
+        material: null,
+        confidence: 0.9,
+      })
+    );
+
+    const r = await request(appMod.default)
+      .post("/api/analyze-prescription")
+      .send({ imageBase64: VALID_IMAGE });
+
+    expect(r.status).toBe(200);
+    expect(r.body.success).toBe(true);
+    expect(r.body.data.caseType).toBe("Crown & Bridge");
+    // No material in extraction → subtype must be absent regardless of confidence.
+    expect(r.body.data.restorationSubtype).toBeUndefined();
   });
 
   // Guards the "AI not configured" branch without needing a database, so it

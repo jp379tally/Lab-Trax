@@ -1,0 +1,7 @@
+import * as zod from "zod";
+
+export const GetExampleResponse = zod.object({ ok: zod.boolean() });
+export const getExampleResponseLimitMax = 100;
+
+// Simulates two concurrently merged generated schema blocks.
+export const getExampleResponseLimitMax = 250;

@@ -20,7 +20,7 @@ run = "pnpm --filter @workspace/labtrax run dev"
 
 [services.production]
 build = [ "pnpm", "--filter", "@workspace/labtrax", "run", "build" ]
-run = [ "pnpm", "--filter", "@workspace/labtrax", "run", "serve" ]
+run = [ ".production-runtime/bin/node", "artifacts/labtrax/server/serve.js" ]
 
 [services.env]
 PORT = "19134"

@@ -99,11 +99,14 @@ function installFetch(invoices: Invoice[], onInvoiceUrl?: (url: string) => void)
   );
 }
 
-async function selectStatus(value: string) {
-  const zeroOption = await screen.findByRole("option", { name: "$0 balance" });
-  const statusSelect = zeroOption.closest("select");
-  if (!statusSelect) throw new Error("status dropdown not found");
-  fireEvent.change(statusSelect, { target: { value } });
+/**
+ * The Status filter is a multi-select checkbox dropdown (MultiSelectFilter),
+ * so a "selection" is: open the panel if it is closed, then click the option.
+ */
+async function selectStatus(name: RegExp | string) {
+  const trigger = await screen.findByTestId("invoices-status-filter");
+  if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("menuitemcheckbox", { name }));
 }
 
 describe("Invoices $0 balance filter", () => {
@@ -119,9 +122,7 @@ describe("Invoices $0 balance filter", () => {
 
     await screen.findByText("INV-OPEN-POS");
 
-    // Switch to the All view so the status dropdown is available.
-    fireEvent.click(screen.getByRole("button", { name: /^all$/i }));
-    await selectStatus("zero_balance");
+    await selectStatus(/^\$0 balance$/);
 
     // Zero-balance paid and void invoices appear.
     expect(await screen.findByText("INV-PAID-ZERO")).toBeInTheDocument();
@@ -131,7 +132,7 @@ describe("Invoices $0 balance filter", () => {
     expect(screen.queryByText("INV-PARTIAL-POS")).not.toBeInTheDocument();
   });
 
-  it("is not suppressed by the Open toggle and fetches the full invoice set", async () => {
+  it("replaces Open and fetches the full invoice set", async () => {
     const invoiceUrls: string[] = [];
     installFetch(INVOICES, (url) => invoiceUrls.push(url));
     const Wrapper = makeAuthWrapper("/invoices", { user: BILLING_USER, status: "authed" });
@@ -139,20 +140,12 @@ describe("Invoices $0 balance filter", () => {
 
     await screen.findByText("INV-OPEN-POS");
 
-    fireEvent.click(screen.getByRole("button", { name: /^all$/i }));
-    await selectStatus("zero_balance");
+    await selectStatus(/^\$0 balance$/);
     await screen.findByText("INV-PAID-ZERO");
 
-    // Now toggle Open. Zero-balance non-open rows must still be visible, and
-    // the fetch must not narrow to status=open.
-    fireEvent.click(screen.getByRole("button", { name: /^open$/i }));
-
-    expect(await screen.findByText("INV-VOID-ZERO")).toBeInTheDocument();
-    expect(screen.getByText("INV-PAID-ZERO")).toBeInTheDocument();
-    expect(screen.queryByText("INV-OPEN-POS")).not.toBeInTheDocument();
-
-    // No invoice request should have carried status=open while $0 balance is active.
+    // The consolidated status choice requests the full set for local $0 matching.
     const lastUrl = invoiceUrls[invoiceUrls.length - 1];
     expect(lastUrl).not.toMatch(/status=open/);
+    expect(screen.queryByRole("button", { name: /^open$/i })).not.toBeInTheDocument();
   });
 });

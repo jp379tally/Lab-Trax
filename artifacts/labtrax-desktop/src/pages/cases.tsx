@@ -1,17 +1,30 @@
+import { formatRxNoteScanDate, IMPLANT_FIELDS, isImplantRestoration, sameClinicalHierarchy, type ImplantDetails } from "@workspace/case-taxonomy";
+import { ImplantDetailsControls, SavedImplantDetails } from "@/components/ImplantDetailsControls";
+import { invalidToothAssignmentTokens, expandToothAssignmentIdentifiers } from "@workspace/case-taxonomy";
+import { catalogToothMaterialOptions } from "@workspace/case-taxonomy";
+import { useGetCatalogTree, getGetCatalogTreeQueryKey } from "@workspace/api-client-react";
+import { isValidCalendarDate } from "@workspace/calendar-date";
+import { CaseRangeWindow } from "@/components/CaseRangeWindow";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useAiPanel } from "@/lib/ai-panel-context";
 import { useTableColumns, type ColumnDef } from "@/hooks/useTableColumns";
+import { useDockedDrawerHeight } from "@/hooks/useDockedDrawerHeight";
 import { ColumnSettingsPopover } from "@/components/ColumnSettingsPopover";
+import { FilteredSalesTotal } from "@/components/ColumnTotal";
+import { MultiSelectFilter } from "@/components/MultiSelectFilter";
 import { useLocation, useSearch } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { toast as notifyDoctorChange } from "@/hooks/use-toast";
 import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
   Barcode,
+  Bookmark,
   Box,
   Check,
+  Clock,
   ChevronDown,
   ChevronUp,
   Copy,
@@ -29,6 +42,7 @@ import {
   Mic,
   Paperclip,
   Pencil,
+  Play,
   Plus,
   Printer,
   RefreshCw,
@@ -39,23 +53,56 @@ import {
   Settings2,
   Sparkles,
   Trash2,
+  TriangleAlert,
   Video,
   X,
   Zap,
 } from "lucide-react";
 import QRCodeSVG from "react-qr-code";
 import { apiFetch, ApiError, getAccessToken, getApiOrigin } from "@/lib/api";
+import { refreshCaseFinanceQueries } from "@/lib/refresh-case-finance";
 import { uploadMediaFile } from "@/lib/upload-media-file";
+import { composeNoteDictation } from "@/lib/note-dictation";
 import {
   computeShiftClickRange,
   shiftKeyFromChangeEvent,
   suppressShiftClickTextSelection,
 } from "@/lib/shift-click-range";
 import { DoctorNamePicker } from "@/components/DoctorNamePicker";
+import { CaseEditActionBar } from "@/components/CaseEditActionBar";
 import { FieldCombobox } from "@/components/FieldCombobox";
-import { MergeDialog, type MergeSourceInput } from "./doctors";
-import { undoDoctorMerge } from "@workspace/api-client-react";
-import { setNavBlocker } from "@/lib/nav-guard";
+import {
+  CatalogRestorationPicker,
+  encodeCatalogSelection,
+  getCatalogMaterialsForRestoration,
+  useEffectiveCatalog,
+} from "@/components/CatalogRestorationPicker";
+import { CaseDoctorReassignDialog } from "@/components/CaseDoctorReassignDialog";
+import {
+  REMAKE_REASONS,
+  type RemakeReasonKey,
+  type RemakeQuestionnaireValue,
+  blankQuestionnaire,
+  buildRemakeLinkPayload,
+  remakeQuestionnaireError,
+  isRemakeQuestionnaireComplete,
+  RemakeQuestionnaire,
+  type RemakeDecision,
+  type RemakeCaseHit,
+  RemakeOriginalPicker,
+} from "@/components/remake-questionnaire";
+import { useCasesOverview } from "@workspace/api-client-react";
+import type { CaseSavedView, CaseSavedViewFilters } from "@workspace/api-client-react";
+import { CASE_STATUS_GROUPS } from "@workspace/case-taxonomy";
+import {
+  registerNavBlocker,
+  guardNavigation,
+  hasNavigationBlockers,
+} from "@/lib/nav-guard";
+import {
+  buildRestorationUpdateBody,
+} from "@/lib/restoration-update";
+import { isRemovableRestorationType } from "@/lib/restoration-category";
 import {
   computeCaseDateRange,
   caseWithinDateRange,
@@ -66,15 +113,24 @@ import {
   AuthedVideo,
   MediaLightbox,
   isSameApiOrigin,
+  type Lightbox,
+  type LightboxItem,
 } from "@/components/AuthedMedia";
+import { classifyMediaKind } from "@/lib/media-kind";
+import {
+  CASE_ACTION_BUTTON_CLASS,
+  CaseExceptionAction,
+} from "@/components/CaseExceptionAction";
 import type {
   CaseAttachment,
   CaseEvent,
+  CaseExceptionSummary,
   CaseRestoration,
   CaseStatus,
   DoctorMatchCandidate,
   Invoice,
   LabCase,
+  MeResponse,
   Organization,
   PatientSimilarityHit,
   PricingHistoryEntry,
@@ -82,11 +138,22 @@ import type {
   PricingTier,
   RestorationPriceSource,
 } from "@/lib/types";
-import { formatDate, formatDateTime, formatDueDate, formatShortDueDate, formatMoney, formatPhone, formatShortDate, relativeTime, statusLabel } from "@/lib/format";
+import {
+  attachmentSectionPreferenceKey,
+  buildAttachmentSectionPreference,
+  COLLAPSED_ATTACHMENT_SECTIONS,
+  groupCaseAttachments,
+  parseAttachmentSectionPreference,
+  type AttachmentSectionId,
+  type AttachmentSectionPreference,
+} from "@/lib/attachment-sections";
+import { compareDueDateTime, formatDate, formatDateTime, formatDueDate, formatHistoryDay, formatHistoryTime, formatShortDueDate, formatMoney, formatPhone, formatShortDate, relativeTime, statusLabel } from "@/lib/format";
+import { historyEventCaseId } from "@/lib/history-event-case";
 import {
   printCaseCard,
   printCaseCardAdvanced,
   printCaseHistory,
+  printCaseLabel,
   printCaseOverview,
   printInvoice,
   printTabContent,
@@ -97,17 +164,18 @@ import { printInvoicePdf, type InvoicePdfOptions } from "@/lib/export";
 import {
   ToothChart,
   parseToothField,
-  parseBridgeConnectors,
-  formatBridgeConnectors,
 } from "@/components/ToothChart";
 import {
   buildHighlightedToothValue,
   deriveRxSummary,
   formatRxTeethLabel,
   formatRxTeethWithShades,
+  formatRxToothNumbers,
 } from "@/lib/rx-summary";
+import { resolvePracticeContact } from "@/lib/practice-contact";
 import { StatusBadge } from "@/components/StatusBadge";
-import { InvoiceEditor } from "./invoices";
+import { InvoiceEditor, InlineInvoiceEditor } from "./invoices";
+import { useInvoiceTemplate } from "@/lib/use-invoice-template";
 import {
   ToothActionDialog,
   type ToothActionPayload,
@@ -125,10 +193,628 @@ import {
 } from "@/lib/print-layout";
 import {
   coerceCasePrintTemplate,
+  DEFAULT_CASE_PRINT_TEMPLATE,
   type CasePrintTemplate,
 } from "@/lib/case-print-template";
 import { TrialBanner } from "@/components/TrialBanner";
+import { SelectedCasePrintActions } from "@/components/SelectedCasePrintActions";
+import {
+  deriveCaseHierarchy,
+  hierarchyToCaseCategory,
+  encodeRestorationSubtype,
+  getSubtypeLabel,
+  getMaterialSubtypeLabel,
+  CASE_TAXONOMY,
+  CASE_TYPES,
+  type CaseType,
+  type CaseSubtype,
+  type MaterialSubtype,
+  type CaseHierarchy,
+  parseConnectorState,
+  serializeConnectorState,
+  suggestPonticConnectorPairs,
+  toothAssignmentSummary,
+  copyToothAssignment,
+  withPonticConnectorSuggestions,
+  updateConnectorChoices,
+  validateToothConnectors,
+} from "@workspace/case-taxonomy";
 
+// Canonical representative restorationType for each top-level case type,
+// used when an admin changes the Case Type via the inline dropdown.
+const CASE_TYPE_REPRESENTATIVE: Record<CaseType, string> = {
+  restorative: "Crown",
+  removable: "Full Denture",
+  ortho: "Night Guard",
+};
+
+/**
+ * Cascading Case Type → Sub Type → Material inline dropdowns.
+ * Admins/owners can change all three; patching any level updates every
+ * restoration and re-syncs invoice pricing.
+ */
+export function CaseHierarchySelect({
+  hierarchy,
+  caseId,
+  firstRestorationId,
+  labOrganizationId,
+  archValues,
+  showFieldLabels = false,
+}: {
+  hierarchy: CaseHierarchy;
+  caseId: string;
+  firstRestorationId?: string;
+  labOrganizationId: string | null | undefined;
+  archValues?: Array<"upper" | "lower" | null | undefined>;
+  showFieldLabels?: boolean;
+}) {
+  const qc = useQueryClient();
+  const { data: catalog } = useEffectiveCatalog(labOrganizationId ?? undefined);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingCaseType, setPendingCaseType] = useState<CaseType | null>(null);
+  const [pendingArch, setPendingArch] = useState<BillableArch | "">("");
+  const applicableArch = hierarchy.caseType === "removable" || hierarchy.caseType === "ortho";
+  const currentArch = archValues?.includes("upper") && archValues?.includes("lower")
+    ? "both"
+    : archValues?.includes("upper")
+      ? "upper"
+      : archValues?.includes("lower")
+        ? "lower"
+        : "";
+
+  const caseTypes = catalog?.caseTypes ?? [];
+  const selectedCtKey = hierarchy.caseType ?? "";
+  const selectedCtNode = caseTypes.find((n) => n.key === selectedCtKey);
+  const subtypeKey =
+    hierarchy.subtype ??
+    (hierarchy.customSubtypeId ? `custom:${hierarchy.customSubtypeId}` : "");
+  const subtypes = selectedCtNode?.subtypes ?? [];
+  const selectedStNode = subtypes.find((n) => n.key === subtypeKey);
+  const materials = selectedStNode?.materials ?? [];
+  const materialKey =
+    hierarchy.materialSubtype ??
+    (hierarchy.customMaterialSubtypeId
+      ? `custom:${hierarchy.customMaterialSubtypeId}`
+      : "");
+
+  async function refreshCaseAndInvoiceViews() {
+    await Promise.allSettled([
+      qc.invalidateQueries({ queryKey: ["case", caseId] }),
+      qc.invalidateQueries({ queryKey: ["cases"] }),
+      qc.invalidateQueries({ queryKey: ["invoices"] }),
+      qc.invalidateQueries({ queryKey: ["invoice-for-case", caseId] }),
+      qc.invalidateQueries({ queryKey: ["invoice-detail", caseId] }),
+    ]);
+  }
+
+  async function patchRestoration(body: Record<string, string | null>) {
+    setSaving(true);
+    setError(null);
+    try {
+      await apiFetch(`/cases/${caseId}/restorations/hierarchy`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...body,
+          ...(!firstRestorationId ? { toothNumbers: [] } : {}),
+        }),
+      });
+      await refreshCaseAndInvoiceViews();
+      return true;
+    } catch (err: unknown) {
+      // The server may have committed all restoration rows before a later
+      // invoice synchronization step failed. Reconcile both views on every
+      // error so the user sees the actual persisted state before retrying.
+      await refreshCaseAndInvoiceViews();
+      setError(err instanceof Error ? err.message : "Could not update case.");
+      toast.error(err instanceof Error ? err.message : "Could not update case.");
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function onCaseTypeChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const newCt = e.target.value as CaseType;
+    setError(null);
+    if (!applicableArch && (newCt === "removable" || newCt === "ortho")) {
+      setPendingCaseType(newCt);
+      setPendingArch("");
+      return;
+    }
+
+    setPendingCaseType(null);
+    setPendingArch("");
+    patchRestoration({
+      restorationType: CASE_TYPE_REPRESENTATIVE[newCt] ?? newCt,
+      restorationSubtype: null,
+      material: null,
+    });
+  }
+
+  function onSubtypeChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    if (!selectedCtKey) return;
+    const val = e.target.value;
+    const node = subtypes.find((n) => n.key === val);
+    const encoded = encodeCatalogSelection(selectedCtKey, val, undefined) ?? null;
+    patchRestoration({
+      restorationType: node?.label ?? val,
+      restorationSubtype: encoded,
+      material: null,
+    });
+  }
+
+  function onMaterialChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    if (!selectedCtKey || !selectedStNode) return;
+    const val = e.target.value;
+    const matNode = materials.find((n) => n.key === val);
+    const encoded = val
+      ? (encodeCatalogSelection(selectedCtKey, subtypeKey, val) ?? null)
+      : (encodeCatalogSelection(selectedCtKey, subtypeKey, undefined) ?? null);
+    patchRestoration({
+      restorationType: selectedStNode.label,
+      restorationSubtype: encoded,
+      material: val ? (matNode?.label ?? val) : null,
+    });
+  }
+
+  async function onArchChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const value = e.target.value as BillableArch | "";
+    if (!value) return;
+    const apiArch = value === "both" ? "upper_lower" : value;
+    if (pendingCaseType) {
+      setPendingArch(value);
+      const succeeded = await patchRestoration({
+        restorationType: CASE_TYPE_REPRESENTATIVE[pendingCaseType] ?? pendingCaseType,
+        restorationSubtype: null,
+        material: null,
+        arch: apiArch,
+      });
+      if (succeeded) {
+        setPendingCaseType(null);
+        setPendingArch("");
+      } else {
+        // Restore the confirmed hierarchy and unlock the case type after refusal.
+        setPendingCaseType(null);
+        setPendingArch("");
+      }
+      return;
+    }
+    if (!applicableArch || !firstRestorationId) return;
+
+    setSaving(true);
+    setError(null);
+    try {
+      await apiFetch(`/cases/${caseId}/restorations/${firstRestorationId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ arch: apiArch }),
+      });
+      await refreshCaseAndInvoiceViews();
+    } catch (err: unknown) {
+      await refreshCaseAndInvoiceViews();
+      setError(err instanceof Error ? err.message : "Could not update arch.");
+      toast.error(err instanceof Error ? err.message : "Could not update arch.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const cls =
+    "h-7 px-1.5 rounded bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary disabled:opacity-60 max-w-[160px]";
+  const labeledControl = (
+    label: string,
+    control: React.ReactNode,
+  ): React.ReactNode =>
+    showFieldLabels ? (
+      <div className="flex flex-col items-start gap-1">
+        <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+          {label}
+        </span>
+        {control}
+      </div>
+    ) : (
+      control
+    );
+
+  return (
+    <div className={showFieldLabels ? "grid gap-2" : "flex flex-wrap items-center gap-1.5"}>
+      {labeledControl(
+        "Case Type",
+        <select
+          aria-label="Case Type"
+          value={selectedCtKey}
+          onChange={onCaseTypeChange}
+          disabled={saving || pendingCaseType !== null}
+          className={cls}
+        >
+          {!selectedCtKey && <option value="">—</option>}
+          {CASE_TYPES.map((ct) => (
+            <option key={ct} value={ct}>
+              {CASE_TAXONOMY[ct].label}
+            </option>
+          ))}
+        </select>,
+      )}
+      {selectedCtKey && (
+        labeledControl(
+          "Case Subtype",
+          <select
+            aria-label="Case Subtype"
+            value={subtypeKey}
+            onChange={onSubtypeChange}
+            disabled={saving || pendingCaseType !== null}
+            className={cls}
+          >
+            {!subtypeKey && <option value="">— Sub Type —</option>}
+            {subtypes.map((st) => (
+              <option key={st.key} value={st.key}>
+                {st.label}
+              </option>
+            ))}
+          </select>,
+        )
+      )}
+      {showFieldLabels && !selectedCtKey && labeledControl("Case Subtype", <span>—</span>)}
+      {selectedStNode && materials.length > 0 && (
+        labeledControl(
+          "Case Material",
+          <select
+            aria-label="Case Material"
+            value={materialKey}
+            onChange={onMaterialChange}
+            disabled={saving || pendingCaseType !== null}
+            className={cls}
+          >
+            <option value="">— Material —</option>
+            {materials.map((m) => (
+              <option key={m.key} value={m.key}>
+                {m.label}
+              </option>
+            ))}
+          </select>,
+        )
+      )}
+      {showFieldLabels && (!selectedStNode || materials.length === 0) && labeledControl("Case Material", <span>—</span>)}
+      {(applicableArch || pendingCaseType !== null) && (
+        labeledControl(
+          "Arch",
+          <select
+            aria-label="Arch"
+            value={pendingCaseType !== null ? pendingArch : currentArch}
+            onChange={onArchChange}
+            disabled={saving}
+            className={cls}
+          >
+            <option value="">— Arch —</option>
+            {ARCH_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>,
+        )
+      )}
+      {pendingCaseType !== null && (
+        <>
+          <span className="text-xs text-muted-foreground" aria-live="polite">
+            Choose an arch to switch to {CASE_TAXONOMY[pendingCaseType].label}.
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setPendingCaseType(null);
+              setPendingArch("");
+              setError(null);
+            }}
+            disabled={saving}
+            className="h-7 px-1.5 rounded text-xs text-muted-foreground hover:text-foreground disabled:opacity-60"
+          >
+            Cancel
+          </button>
+        </>
+      )}
+      {saving && (
+        <Loader2 size={13} className="animate-spin text-muted-foreground" />
+      )}
+      {error && <span className="text-xs text-destructive">{error}</span>}
+    </div>
+  );
+}
+
+// ── Step values ───────────────────────────────────────────────────────────────
+export const STEP_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "custom_tray", label: "Custom Tray" },
+  { value: "rims_and_plates", label: "Rims and Plates" },
+  { value: "wax_setup", label: "Wax Setup" },
+  { value: "process", label: "Process" },
+];
+
+export function stepLabel(value: string | null | undefined): string {
+  if (!value) return "—";
+  return STEP_OPTIONS.find((o) => o.value === value)?.label ?? value;
+}
+
+export function StepSelect({
+  value,
+  shade,
+  caseId,
+}: {
+  value: string | null | undefined;
+  shade: string | null | undefined;
+  caseId: string;
+}) {
+  const qc = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const [shadeValue, setShadeValue] = useState(shade ?? "");
+  const [shadeSaving, setShadeSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Keep local shade in sync when server data refreshes
+  const latestShade = shade ?? "";
+  const [prevShade, setPrevShade] = useState(latestShade);
+  if (latestShade !== prevShade) {
+    setPrevShade(latestShade);
+    setShadeValue(latestShade);
+  }
+
+  async function handleStepChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const newStep = e.target.value || null;
+    setSaving(true);
+    setError(null);
+    try {
+      await apiFetch(`/cases/${caseId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ step: newStep }),
+      });
+      // Clear local shade when stepping away from wax_setup
+      if (newStep !== "wax_setup") setShadeValue("");
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["case", caseId] }),
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+      ]);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not update step.");
+      toast.error(err instanceof Error ? err.message : "Could not update step.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function commitShade() {
+    const trimmed = shadeValue.trim();
+    if (trimmed === (shade ?? "").trim()) return;
+    setShadeSaving(true);
+    try {
+      await apiFetch(`/cases/${caseId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ stepShade: trimmed || null }),
+      });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["case", caseId] }),
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+      ]);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Could not update shade.");
+    } finally {
+      setShadeSaving(false);
+    }
+  }
+
+  const effectiveStep = value ?? "";
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex items-center gap-2">
+        <select
+          value={effectiveStep}
+          onChange={handleStepChange}
+          disabled={saving}
+          className="h-7 px-1.5 rounded bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary disabled:opacity-60"
+        >
+          <option value="">—</option>
+          {STEP_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        {saving && <Loader2 size={13} className="animate-spin text-muted-foreground" />}
+      </div>
+      {effectiveStep === "wax_setup" && (
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">Shade</span>
+          <input
+            type="text"
+            value={shadeValue}
+            onChange={(e) => setShadeValue(e.target.value)}
+            onBlur={commitShade}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); commitShade(); }
+            }}
+            placeholder="e.g. A2"
+            className="h-7 w-20 px-2 rounded bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+          />
+          {shadeSaving && <Loader2 size={13} className="animate-spin text-muted-foreground" />}
+        </div>
+      )}
+      {error && <span className="text-xs text-destructive">{error}</span>}
+    </div>
+  );
+}
+
+function CustomShadeSection({
+  caseId,
+  isCustomShade,
+  customShadeTechnician,
+  customShadePicturesAvailable,
+  customShadeVideoAvailable,
+}: {
+  caseId: string;
+  isCustomShade: boolean;
+  customShadeTechnician: string | null;
+  customShadePicturesAvailable: boolean;
+  customShadeVideoAvailable: boolean;
+}) {
+  const qc = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const [techValue, setTechValue] = useState(customShadeTechnician ?? "");
+  const [techSaving, setTechSaving] = useState(false);
+
+  // Keep tech input in sync when server data refreshes.
+  const latestTech = customShadeTechnician ?? "";
+  const [prevTech, setPrevTech] = useState(latestTech);
+  if (latestTech !== prevTech) {
+    setPrevTech(latestTech);
+    setTechValue(latestTech);
+  }
+
+  async function patch(body: Record<string, unknown>) {
+    setSaving(true);
+    try {
+      await apiFetch(`/cases/${caseId}`, { method: "PATCH", body: JSON.stringify(body) });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["case", caseId] }),
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+      ]);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Could not update custom shade.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function commitTech() {
+    const trimmed = techValue.trim();
+    if (trimmed === (customShadeTechnician ?? "").trim()) return;
+    setTechSaving(true);
+    try {
+      await apiFetch(`/cases/${caseId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ customShadeTechnician: trimmed || null }),
+      });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["case", caseId] }),
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+      ]);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Could not save technician name.");
+    } finally {
+      setTechSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* Custom Shade checkbox */}
+      <label className="flex items-center gap-2 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={isCustomShade}
+          disabled={saving}
+          onChange={(e) => {
+            const next = e.target.checked;
+            void patch({
+              isCustomShade: next,
+              ...(next ? {} : { customShadeTechnician: null, customShadePicturesAvailable: false, customShadeVideoAvailable: false }),
+            });
+          }}
+          className="accent-primary h-3.5 w-3.5"
+        />
+        <span className="text-sm font-medium">Custom Shade</span>
+        {saving && <Loader2 size={12} className="animate-spin text-muted-foreground" />}
+      </label>
+
+      {/* Sub-fields — shown only when Custom Shade is checked */}
+      {isCustomShade && (
+        <div className="ml-5 space-y-2 border-l-2 border-border pl-3">
+          <div>
+            <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+              Technician name
+            </label>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <input
+                type="text"
+                value={techValue}
+                onChange={(e) => setTechValue(e.target.value)}
+                onBlur={commitTech}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void commitTech(); } }}
+                placeholder="Enter technician name"
+                className="h-7 flex-1 px-2 rounded bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+              />
+              {techSaving && <Loader2 size={12} className="animate-spin text-muted-foreground" />}
+            </div>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={customShadePicturesAvailable}
+                disabled={saving}
+                onChange={(e) => void patch({ customShadePicturesAvailable: e.target.checked })}
+                className="accent-primary h-3.5 w-3.5"
+              />
+              <span className="text-sm">Pictures available</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={customShadeVideoAvailable}
+                disabled={saving}
+                onChange={(e) => void patch({ customShadeVideoAvailable: e.target.checked })}
+                className="accent-primary h-3.5 w-3.5"
+              />
+              <span className="text-sm">Video available</span>
+            </label>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToothNumbersDisplay({ value }: { value: string }) {
+  return (
+    <div className="space-y-1.5" data-testid="case-tooth-display">
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+        Tooth
+      </div>
+      <div className={`text-sm ${value === "—" ? "text-muted-foreground" : ""}`}>
+        {value}
+      </div>
+    </div>
+  );
+}
+const RETURN_COMPLETE_STATUSES = new Set(["complete", "delivered", "done"]);
+
+type ReturnWizardStage =
+  | "ask"
+  | "date"
+  | "rxAsk"
+  | "rxUpload"
+  | "remakeAsk"
+  | "remake"
+  | "stepAsk"
+  | "step"
+  | "notesAsk"
+  | "notes"
+  | "labSlipAsk"
+  | "labelAsk";
+
+/** Title shown in the returned-case popup header for each wizard stage. */
+const RETURN_WIZARD_TITLES: Record<ReturnWizardStage, string> = {
+  ask: "This case is complete — set a new due date?",
+  date: "Set a new due date",
+  rxAsk: "Scan a new prescription?",
+  rxUpload: "Attach the new prescription",
+  remakeAsk: "Is this case a remake?",
+  remake: "Link this case to the case it remakes",
+  stepAsk: "Is this a removable case?",
+  step: "New removable workflow step",
+  notesAsk: "Would you like to add any notes?",
+  notes: "Add a note",
+  labSlipAsk: "Print a new lab slip?",
+  labelAsk: "Print a new case label?",
+};
 const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "all", label: "All" },
   { value: "received", label: "Received" },
@@ -147,6 +833,45 @@ const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "remake", label: "Remake" },
 ];
 
+// Option lists for the cases-list multi-select toolbar filters. Status reuses
+// STATUS_FILTERS minus its "all" sentinel — with a multi-select, "all" is the
+// empty selection rather than a pickable option.
+const STATUS_FILTER_OPTIONS = STATUS_FILTERS.filter((f) => f.value !== "all");
+const STATUS_QUICK_FILTERS = [
+  { id: "all", label: "All Cases", statuses: [] as readonly string[] },
+  { id: "processing", label: "Processing", statuses: CASE_STATUS_GROUPS.processing },
+  { id: "received", label: "Received", statuses: CASE_STATUS_GROUPS.received },
+  { id: "inDesign", label: "In Design", statuses: CASE_STATUS_GROUPS.inDesign },
+  { id: "modelRoom", label: "Model Room", statuses: CASE_STATUS_GROUPS.modelRoom },
+  { id: "scan", label: "Scan", statuses: CASE_STATUS_GROUPS.scan },
+  { id: "milling", label: "In Milling", statuses: CASE_STATUS_GROUPS.milling },
+  { id: "postMill", label: "Post Mill", statuses: CASE_STATUS_GROUPS.postMill },
+  { id: "sinteringFurnace", label: "Sintering Furnace", statuses: CASE_STATUS_GROUPS.sinteringFurnace },
+  { id: "porcelain", label: "Porcelain", statuses: CASE_STATUS_GROUPS.porcelain },
+  { id: "qualityCheck", label: "Quality Check", statuses: CASE_STATUS_GROUPS.qualityCheck },
+  { id: "onHold", label: "On Hold", statuses: CASE_STATUS_GROUPS.onHold },
+  { id: "remake", label: "Remake", statuses: CASE_STATUS_GROUPS.remake },
+  { id: "shipped", label: "Shipped", statuses: CASE_STATUS_GROUPS.shipped },
+  { id: "overdue", label: "Overdue", statuses: [] as readonly string[] },
+];
+
+function formatLocalCalendarDate(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+const PRIORITY_FILTER_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "normal", label: "Normal" },
+  { value: "rush", label: "Rush" },
+];
+
+const CASE_TYPE_FILTER_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "crown_bridge", label: "Crown & Bridge" },
+  { value: "implants", label: "Implants" },
+  { value: "zirconia", label: "Zirconia" },
+  { value: "removable", label: "Removable" },
+  { value: "other", label: "Other" },
+];
+
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
   card: "Card",
   ach: "ACH",
@@ -161,17 +886,41 @@ type SortKey =
   | "status"
   | "dueDate"
   | "createdAt"
-  | "receivedAt"
   | "totalPrice";
 
 
-interface RestorationDraft {
+interface RestorationDraft extends ImplantDetails {
   id: string;
   toothNumber: string;
   restorationType: string;
   material: string;
+  restorationSubtype?: string | null;
   shade: string;
   quantity: string;
+  arch?: "upper" | "lower" | "both" | "";
+  assignmentRole?: string;
+}
+
+type BillableArch = "upper" | "lower" | "both";
+const ARCH_OPTIONS: Array<{ value: BillableArch; label: string }> = [
+  { value: "upper", label: "Upper" },
+  { value: "lower", label: "Lower" },
+  { value: "both", label: "Upper + Lower" },
+];
+function isArchBasedRestoration(r: { restorationType?: string | null; restorationSubtype?: string | null }) {
+  return /(removable|denture|partial|flipper|valplast|flexible|ortho|night guard|retainer|aligner)/i.test(
+    `${r.restorationType ?? ""} ${r.restorationSubtype ?? ""}`,
+  );
+}
+function archLabel(restorations: Array<{ arch?: string | null }> | undefined): string | null {
+  const arches = new Set((restorations ?? []).map((r) => r.arch).filter((a): a is "upper" | "lower" => a === "upper" || a === "lower"));
+  return arches.has("upper") && arches.has("lower")
+    ? "Upper + Lower"
+    : arches.has("upper")
+      ? "Upper"
+      : arches.has("lower")
+        ? "Lower"
+        : null;
 }
 
 interface NewCaseFormData {
@@ -183,6 +932,9 @@ interface NewCaseFormData {
   patientLastName: string;
   doctorName: string;
   dueDate: string;
+  // Optional "HH:MM" (24-hour) wall-clock time paired with dueDate. Only
+  // meaningful when dueDate is set; left undefined (never sent) when unset.
+  dueTime?: string;
   priority: "normal" | "rush";
   casePanBarcode?: string;
   restorations?: RestorationDraft[];
@@ -470,23 +1222,6 @@ function ProviderPicker({
     </div>
   );
 }
-
-
-interface RemakeDecision {
-  remakeOfCaseId: string;
-  remakeReason: string;
-  remakeCharged: boolean | null;
-}
-
-interface RemakeCaseHit {
-  id: string;
-  caseNumber: string;
-  patientFirstName: string;
-  patientLastName: string;
-  doctorName: string;
-  status: string;
-}
-
 /**
  * Modal that lists existing doctors in the same practice whose name closely
  * matches the typed doctor name, and asks the user which doctor they mean
@@ -611,6 +1346,7 @@ function PossibleDuplicateModal({
   onProceedAsNew,
   onProceedAsRemake,
   isSubmitting,
+  isAdmin = false,
 }: {
   matches: PatientSimilarityHit[];
   patientFirstName: string;
@@ -619,26 +1355,33 @@ function PossibleDuplicateModal({
   onProceedAsNew: () => void;
   onProceedAsRemake: (decision: RemakeDecision) => void;
   isSubmitting: boolean;
+  isAdmin?: boolean;
 }) {
   const [selectedId, setSelectedId] = useState<string>(
     matches[0]?.id ?? "",
   );
-  const [reason, setReason] = useState("");
-  const [charge, setCharge] = useState<"yes" | "no" | "">("");
+  const [questionnaire, setQuestionnaire] = useState<RemakeQuestionnaireValue>(blankQuestionnaire());
   const [err, setErr] = useState<string | null>(null);
 
   function submitRemake() {
     if (!selectedId) return setErr("Select the prior case being remade.");
-    if (!reason.trim()) {
-      return setErr("Reason for remake is required.");
-    }
-    if (charge === "") {
-      return setErr("Choose whether to charge for this remake.");
-    }
+    const questionnaireError = remakeQuestionnaireError(questionnaire);
+    if (questionnaireError) return setErr(questionnaireError);
+    const reasonLabel = REMAKE_REASONS.find((r) => r.key === questionnaire.reasonKey)?.label ?? questionnaire.reasonKey;
+    const customReason = questionnaire.reasonKey === "other" ? (questionnaire.customReason ?? "").trim() : "";
     onProceedAsRemake({
       remakeOfCaseId: selectedId,
-      remakeReason: reason.trim(),
-      remakeCharged: charge === "yes",
+      remakeReason: customReason || reasonLabel,
+      remakeCharged: questionnaire.charge === "yes",
+      remakeReasonKey: questionnaire.reasonKey as RemakeReasonKey,
+      ...(questionnaire.shadeLightness ? { remakeShadeLightness: questionnaire.shadeLightness as "light" | "dark" } : {}),
+      ...(questionnaire.shadePrescribed.trim() ? { remakeShadePrescribed: questionnaire.shadePrescribed.trim() } : {}),
+      ...(questionnaire.shadeProvided.trim() ? { remakeShadeProvided: questionnaire.shadeProvided.trim() } : {}),
+      ...(questionnaire.materialPrescribed.trim() ? { remakeMaterialPrescribed: questionnaire.materialPrescribed.trim() } : {}),
+      ...(questionnaire.materialProvided.trim() ? { remakeMaterialProvided: questionnaire.materialProvided.trim() } : {}),
+      ...(questionnaire.returnedToLab !== null ? { remakeReturnedToLab: questionnaire.returnedToLab } : {}),
+      ...(questionnaire.category ? { remakeCategory: questionnaire.category as "crown_bridge" | "removable" } : {}),
+      ...(questionnaire.notes.trim() ? { remakeNotes: questionnaire.notes.trim() } : {}),
     });
   }
 
@@ -736,48 +1479,7 @@ function PossibleDuplicateModal({
           </div>
 
           {selectedId && (
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">
-                  Remake reason
-                </label>
-                <textarea
-                  rows={2}
-                  className="w-full px-3 py-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value)}
-                  placeholder="e.g. Shade B1 came back too dark; doctor requested A2"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">
-                  Charge for this remake?
-                </label>
-                <div className="flex gap-2">
-                  {(
-                    [
-                      { v: "yes", label: "Yes — invoice as usual" },
-                      { v: "no", label: "No — no-charge remake" },
-                    ] as const
-                  ).map((opt) => (
-                    <button
-                      key={opt.v}
-                      type="button"
-                      onClick={() => setCharge(opt.v)}
-                      className={`flex-1 h-9 rounded-md text-xs font-medium transition-colors ${
-                        charge === opt.v
-                          ? opt.v === "no"
-                            ? "bg-amber-500/15 text-amber-700 border border-amber-500/40"
-                            : "bg-primary/10 text-primary border border-primary/30"
-                          : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <RemakeQuestionnaire value={questionnaire} onChange={setQuestionnaire} isAdmin={isAdmin} />
           )}
 
           {err && (
@@ -821,6 +1523,8 @@ function PossibleDuplicateModal({
 }
 
 export function NewCaseModal({ onClose }: { onClose: () => void }) {
+  const { user } = useAuth();
+  const isPageAdmin = user?.role === "admin" || user?.role === "owner";
   const qc = useQueryClient();
   const orgsQuery = useQuery({
     queryKey: ["organizations", { includeLabPractices: true }],
@@ -871,6 +1575,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     dueDate: "",
     priority: "normal",
   });
+  const [hasDueTime, setHasDueTime] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [duplicateMatches, setDuplicateMatches] = useState<
     PatientSimilarityHit[] | null
@@ -891,57 +1596,98 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   const [newBarcodeChecking, setNewBarcodeChecking] = useState(false);
 
   // ── Remake state ─────────────────────────────────────────────────────────
+  // Search, results, and next-suffix preview are owned internally by
+  // <RemakeOriginalPicker>; only the selection + questionnaire answers need
+  // to live here since the submit handler reads them.
   const [isRemake, setIsRemake] = useState(false);
-  const [remakeSearch, setRemakeSearch] = useState("");
-  const [remakeResults, setRemakeResults] = useState<RemakeCaseHit[]>([]);
-  const [remakeSearching, setRemakeSearching] = useState(false);
   const [remakeSelected, setRemakeSelected] = useState<RemakeCaseHit | null>(null);
-  const [remakeReason, setRemakeReason] = useState("");
-  const [remakeCharged, setRemakeCharged] = useState<"yes" | "no" | "">("");
-  const remakeSearchTimerRef = useRef<number | null>(null);
+  const [remake, setRemake] = useState<RemakeQuestionnaireValue>(blankQuestionnaire());
 
   // ── Restorations ─────────────────────────────────────────────────────────
   const [restorations, setRestorations] = useState<RestorationDraft[]>([]);
+  const [restorationUndo, setRestorationUndo] = useState<RestorationDraft[] | null>(null);
+  const [draftChartRow, setDraftChartRow] = useState<string | null>(null);
+  const [assignmentTooth, setAssignmentTooth] = useState<string | null>(null);
+  const assignmentCatalog = useGetCatalogTree({ labOrganizationId: form.labOrganizationId }, {
+    query: { queryKey: getGetCatalogTreeQueryKey({ labOrganizationId: form.labOrganizationId }), enabled: !!form.labOrganizationId },
+  });
+  const [draftConnectors, setDraftConnectors] = useState("");
+  const [restorationConnectorUndo, setRestorationConnectorUndo] = useState("");
 
   function addRestoration() {
+    setRestorationConnectorUndo(draftConnectors);
+    setRestorationUndo(restorations);
     setRestorations((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), toothNumber: "", restorationType: "", material: "", shade: "", quantity: "1" },
+      { id: crypto.randomUUID(), toothNumber: "", restorationType: "", material: "", restorationSubtype: null, shade: "", quantity: "1", arch: "" },
     ]);
   }
 
   function removeRestoration(id: string) {
+    setRestorationConnectorUndo(draftConnectors);
+    setRestorationUndo(restorations);
     setRestorations((prev) => prev.filter((r) => r.id !== id));
+  }
+  function applyManualAssignment(payload: ToothActionPayload) {
+    if (mutation.isPending) return;
+    setRestorationConnectorUndo(draftConnectors); setRestorationUndo(restorations);
+    let rows = restorations.flatMap((row) => {
+      const teeth = !isArchBasedRestoration(row) ? expandToothAssignmentIdentifiers(row.toothNumber) : [];
+      return teeth.length > 1 ? teeth.map((tooth) => ({ ...row, id: crypto.randomUUID(), toothNumber: tooth, quantity: "1" })) : [row];
+    }).filter((row) => row.restorationType || row.toothNumber || row.material);
+    function assign(tooth: string, role: string, material: string, shade?: string, subtype?: string | null) {
+      if (role !== "Crown" && role !== "Pontic") { setError("Confirm a prepared crown or pontic role before applying it."); return; }
+      const previous = rows.find((row) => !isArchBasedRestoration(row) && row.toothNumber === tooth);
+      const row: RestorationDraft = { ...(previous ?? { id: crypto.randomUUID(), arch: "" }), toothNumber: tooth,
+        restorationType: "Crown", assignmentRole: role, material, shade: shade ?? "", quantity: "1", arch: "",
+        restorationSubtype: subtype ?? previous?.restorationSubtype ?? null };
+      rows = previous ? rows.map((candidate) => candidate.id === previous.id ? row : candidate) : [...rows, row];
+    }
+    const owner = restorations.find((row) => parseToothField(row.toothNumber).has(assignmentTooth ?? ""));
+    if (payload.kind === "add_crown" || payload.kind === "add_pontic") {
+      assign(payload.toothId, payload.kind === "add_pontic" ? "Pontic" : "Crown", payload.material, payload.shade, payload.restorationSubtype);
+    } else if (payload.kind === "change_role" && owner) {
+      assign(payload.toothId, payload.role, owner.material, owner.shade, owner.restorationSubtype);
+    } else if (payload.kind === "copy_assignment" && owner?.assignmentRole) {
+      for (const tooth of payload.toothNumbers) assign(tooth, owner.assignmentRole, owner.material, owner.shade, owner.restorationSubtype);
+    } else if (payload.kind === "replace_tooth" && owner?.assignmentRole) {
+      rows = rows.filter((row) => row.toothNumber !== payload.oldToothId || isArchBasedRestoration(row));
+      assign(payload.newToothNumber, owner.assignmentRole, payload.material ?? owner.material, payload.shade ?? owner.shade, payload.restorationSubtype ?? owner.restorationSubtype);
+    } else if (payload.kind === "remove_restoration" || payload.kind === "mark_missing") {
+      rows = rows.filter((row) => row.toothNumber !== payload.toothId || isArchBasedRestoration(row));
+    }
+    setRestorations(rows); setAssignmentTooth(null);
   }
 
   function updateRestoration(id: string, field: keyof Omit<RestorationDraft, "id">, value: string) {
+    setRestorationConnectorUndo(draftConnectors);
+    setRestorationUndo(restorations);
     setRestorations((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
   }
 
   function clearRemake() {
     setIsRemake(false);
-    setRemakeSearch("");
-    setRemakeResults([]);
-    setRemakeSearching(false);
     setRemakeSelected(null);
-    setRemakeReason("");
-    setRemakeCharged("");
-    if (remakeSearchTimerRef.current !== null) {
-      window.clearTimeout(remakeSearchTimerRef.current);
-      remakeSearchTimerRef.current = null;
-    }
+    setRemake(blankQuestionnaire());
   }
 
   const mutation = useMutation({
+    onMutate: () => setRestorationUndo(null),
     mutationFn: (data: NewCaseFormData & Partial<RemakeDecision>) =>
       apiFetch<LabCase>("/cases", {
         method: "POST",
-        body: JSON.stringify(data),
+        body: JSON.stringify({
+          ...data,
+          bridgeConnectors: serializeConnectorState(withPonticConnectorSuggestions(
+            draftConnectors, (data.restorations ?? []).map((row) => ({ ...row,
+              restorationType: row.assignmentRole ?? row.restorationType, quantity: Number(row.quantity) })),
+          )),
+        }),
       }),
-    onSuccess: (_data, variables) => {
-      qc.invalidateQueries({ queryKey: ["cases"] });
+    onSuccess: async (_data, variables) => {
+      await refreshCaseFinanceQueries(qc);
       if (variables.remakeOfCaseId) {
-        qc.invalidateQueries({ queryKey: ["case-remake-chain", variables.remakeOfCaseId] });
+        await qc.invalidateQueries({ queryKey: ["case-remake-chain", variables.remakeOfCaseId] });
       }
       setDuplicateMatches(null);
       onClose();
@@ -1056,7 +1802,9 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
 
   function handleDueDateChange(raw: string) {
     const lab = labOrgs.find((o) => o.id === form.labOrganizationId);
-    if (raw && lab?.capCaseDueToDefault && lab?.defaultCaseDueDays) {
+    // Mirror the server's resolveCaseDueDate semantics: cap is ON by default
+    // (null/undefined → treat as true); only an explicit false disables it.
+    if (raw && lab?.capCaseDueToDefault !== false && lab?.defaultCaseDueDays) {
       const maxDate = new Date();
       maxDate.setDate(maxDate.getDate() + lab.defaultCaseDueDays);
       const maxStr = maxDate.toISOString().slice(0, 10);
@@ -1068,17 +1816,33 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     }
     setDueDateCapped(false);
     set("dueDate", raw);
+    if (!raw) {
+      set("dueTime", undefined);
+      setHasDueTime(false);
+    }
   }
 
   function buildRestorationPayload() {
     if (restorations.length === 0) return undefined;
-    return restorations.map((r) => ({
-      toothNumber: r.toothNumber.trim(),
-      restorationType: r.restorationType,
-      material: r.material || undefined,
-      shade: r.shade || undefined,
-      quantity: parseInt(r.quantity, 10) || 1,
-    }));
+    return restorations.flatMap((r) => {
+      const base = {
+        toothNumber: r.toothNumber.trim(),
+        restorationType: r.assignmentRole || r.restorationType,
+        material: r.material || undefined,
+        restorationSubtype: r.restorationSubtype || undefined,
+        ...Object.fromEntries(IMPLANT_FIELDS.map((key) => [key, r[key] || null])),
+        shade: r.shade || undefined,
+        quantity: r.assignmentRole ? 1 : parseInt(r.quantity, 10) || 1,
+      };
+      const teeth = r.assignmentRole ? expandToothAssignmentIdentifiers(r.toothNumber) : [r.toothNumber.trim()];
+      return teeth.flatMap((toothNumber) => {
+        const unit = { ...base, toothNumber };
+        if (isArchBasedRestoration(r) && r.arch === "both") {
+          return [{ ...unit, arch: "upper" as const }, { ...unit, arch: "lower" as const }];
+        }
+        return [{ ...unit, ...(isArchBasedRestoration(r) && r.arch ? { arch: r.arch } : {}) }];
+      });
+    });
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -1091,28 +1855,63 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
       return setError("Patient first and last name are required.");
     if (!form.doctorName.trim()) return setError("Doctor name is required.");
 
-    // Validate restoration rows — tooth number and type are required per row
+    // Validate restoration rows — type is always required; tooth number is
+    // only required for non-removable types (crown/bridge, etc.).
     for (const r of restorations) {
-      if (!r.toothNumber.trim()) {
-        return setError("Each restoration must have a tooth number.");
+      if (r.assignmentRole && invalidToothAssignmentTokens(r.toothNumber).length) {
+        return setError("Enter valid tooth numbers or same-arch ranges for each tooth assignment.");
       }
       if (!r.restorationType) {
         return setError("Each restoration must have a type selected.");
       }
+      if (isArchBasedRestoration(r) && !r.arch) {
+        return setError("Select an arch for each Removable or Ortho restoration.");
+      }
+      if (!r.toothNumber.trim() && !isRemovableRestorationType(r.restorationType)) {
+        return setError("Each restoration must have a tooth number.");
+      }
+      if (!isArchBasedRestoration(r) &&
+          /crown|pontic|bridge|veneer|inlay|onlay|restorative/i.test(`${r.restorationType} ${r.restorationSubtype ?? ""}`) &&
+          !r.assignmentRole) {
+        return setError("Choose prepared crown or pontic for each tooth assignment.");
+      }
+      if (r.assignmentRole && !r.material.trim()) {
+        return setError("Choose a catalog material for each tooth assignment.");
+      }
+    }
+    const assignmentRows = buildRestorationPayload() ?? [];
+    const connectorState = withPonticConnectorSuggestions(draftConnectors, assignmentRows);
+    const connectorText = serializeConnectorState(connectorState);
+    const connectorCheck = validateToothConnectors(connectorText, assignmentRows);
+    const assignmentCheck = toothAssignmentSummary(assignmentRows, connectorText);
+    if (!connectorCheck.valid) return setError(connectorCheck.errors.join(" "));
+    if (assignmentCheck.unresolvedPontics.length) {
+      return setError(`Connect or review pontics ${assignmentCheck.unresolvedPontics.map((tooth) => `#${tooth}`).join(", ")}.`);
     }
 
     // If the user marked this as a remake, validate the remake fields and
     // submit directly — skip the auto-duplicate check to avoid double-linking.
     if (isRemake) {
       if (!remakeSelected) return setError("Select the original case being remade.");
-      if (!remakeReason.trim()) return setError("Remake reason is required.");
-      if (remakeCharged === "") return setError("Choose whether to charge for this remake.");
+      const questionnaireError = remakeQuestionnaireError(remake);
+      if (questionnaireError) return setError(questionnaireError);
+      const reasonLabel = REMAKE_REASONS.find((r) => r.key === remake.reasonKey)?.label ?? remake.reasonKey;
+      const customReason = remake.reasonKey === "other" ? (remake.customReason ?? "").trim() : "";
       const { caseNumber: _ignored, ...formWithoutCaseNumber } = form;
       mutation.mutate({
         ...formWithoutCaseNumber,
         remakeOfCaseId: remakeSelected.id,
-        remakeReason: remakeReason.trim(),
-        remakeCharged: remakeCharged === "yes",
+        remakeReason: customReason || reasonLabel,
+        remakeCharged: remake.charge === "yes",
+        remakeReasonKey: remake.reasonKey,
+        ...(remake.shadeLightness ? { remakeShadeLightness: remake.shadeLightness } : {}),
+        ...(remake.shadePrescribed.trim() ? { remakeShadePrescribed: remake.shadePrescribed.trim() } : {}),
+        ...(remake.shadeProvided.trim() ? { remakeShadeProvided: remake.shadeProvided.trim() } : {}),
+        ...(remake.materialPrescribed.trim() ? { remakeMaterialPrescribed: remake.materialPrescribed.trim() } : {}),
+        ...(remake.materialProvided.trim() ? { remakeMaterialProvided: remake.materialProvided.trim() } : {}),
+        ...(remake.returnedToLab !== null ? { remakeReturnedToLab: remake.returnedToLab } : {}),
+        ...(remake.category ? { remakeCategory: remake.category } : {}),
+        ...(remake.notes.trim() ? { remakeNotes: remake.notes.trim() } : {}),
         restorations: buildRestorationPayload(),
       } as Parameters<typeof mutation.mutate>[0]);
       return;
@@ -1308,12 +2107,39 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
               <label className="block text-xs font-medium text-muted-foreground mb-1">
                 Due date
               </label>
-              <input
-                type="date"
-                className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                value={form.dueDate}
-                onChange={(e) => handleDueDateChange(e.target.value)}
-              />
+              <div className="flex gap-1.5">
+                <input
+                  type="date"
+                  className="flex-1 min-w-0 h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                  value={form.dueDate}
+                  onChange={(e) => handleDueDateChange(e.target.value)}
+                />
+              </div>
+              <label className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={hasDueTime}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setHasDueTime(checked);
+                    if (!checked) set("dueTime", undefined);
+                  }}
+                  disabled={!form.dueDate}
+                  className="h-3.5 w-3.5 rounded border-border accent-primary disabled:cursor-not-allowed"
+                  aria-label="Set a specific time the case is due"
+                />
+                <Clock size={13} aria-hidden="true" />
+                Set a specific time the case is due
+              </label>
+              {hasDueTime && form.dueDate && (
+                <input
+                  type="time"
+                  className="mt-2 w-[7.5rem] h-9 px-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                  value={form.dueTime ?? ""}
+                  onChange={(e) => set("dueTime", e.target.value || undefined)}
+                  aria-label="Due time (optional)"
+                />
+              )}
               {dueDateCapped && (
                 <p className="text-[11px] text-amber-600 mt-1">
                   Capped to lab's turnaround ({labOrgs.find((o) => o.id === form.labOrganizationId)?.defaultCaseDueDays}d)
@@ -1398,160 +2224,20 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
             </div>
 
             {isRemake && (
-              <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-2">
-                {!remakeSelected ? (
-                  <>
-                    <p className="text-[11px] font-medium text-foreground">
-                      Find the original case being remade
-                    </p>
-                    {!form.labOrganizationId && (
-                      <p className="text-[11px] text-muted-foreground">
-                        Select a lab organization above to search cases.
-                      </p>
-                    )}
-                    {form.labOrganizationId && (
-                      <>
-                        <div className="relative">
-                          <input
-                            type="search"
-                            placeholder="Search by case #, patient, or doctor…"
-                            value={remakeSearch}
-                            onChange={(e) => {
-                              const q = e.target.value;
-                              setRemakeSearch(q);
-                              if (remakeSearchTimerRef.current !== null) {
-                                window.clearTimeout(remakeSearchTimerRef.current);
-                              }
-                              if (q.length < 2) {
-                                setRemakeResults([]);
-                                setRemakeSearching(false);
-                                return;
-                              }
-                              setRemakeSearching(true);
-                              remakeSearchTimerRef.current = window.setTimeout(async () => {
-                                remakeSearchTimerRef.current = null;
-                                try {
-                                  const result = await apiFetch<{ cases: RemakeCaseHit[] }>(
-                                    `/cases/quick-search?labOrganizationId=${encodeURIComponent(form.labOrganizationId)}&q=${encodeURIComponent(q)}`,
-                                  );
-                                  setRemakeResults(result.cases ?? []);
-                                } catch {
-                                  setRemakeResults([]);
-                                } finally {
-                                  setRemakeSearching(false);
-                                }
-                              }, 280);
-                            }}
-                            className="w-full h-8 px-2.5 pr-7 rounded-md bg-background text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                          />
-                          {remakeSearching && (
-                            <Loader2
-                              size={12}
-                              className="absolute right-2.5 top-2 animate-spin text-muted-foreground"
-                            />
-                          )}
-                        </div>
-                        {remakeResults.length > 0 && (
-                          <div className="rounded-md border border-border bg-card overflow-hidden max-h-40 overflow-y-auto divide-y divide-border">
-                            {remakeResults.map((c) => (
-                              <button
-                                key={c.id}
-                                type="button"
-                                onClick={() => {
-                                  setRemakeSelected(c);
-                                  setRemakeSearch("");
-                                  setRemakeResults([]);
-                                }}
-                                className="w-full px-3 py-2 text-left text-xs hover:bg-secondary/50 transition-colors"
-                              >
-                                <div className="font-medium font-mono">
-                                  {c.caseNumber} · {c.patientFirstName} {c.patientLastName}
-                                </div>
-                                <div className="text-muted-foreground text-[11px]">
-                                  {c.doctorName} · {c.status}
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        {remakeSearch.length >= 2 &&
-                          !remakeSearching &&
-                          remakeResults.length === 0 && (
-                            <p className="text-[11px] text-muted-foreground">
-                              No cases found for "{remakeSearch}".
-                            </p>
-                          )}
-                      </>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-medium text-foreground">
-                          Remaking:{" "}
-                          <span className="font-mono">{remakeSelected.caseNumber}</span>
-                        </p>
-                        <p className="text-[11px] text-muted-foreground truncate">
-                          {remakeSelected.patientFirstName} {remakeSelected.patientLastName} ·{" "}
-                          {remakeSelected.doctorName}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setRemakeSelected(null);
-                          setRemakeReason("");
-                          setRemakeCharged("");
-                        }}
-                        className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
-                        aria-label="Clear remake selection"
-                      >
-                        <X size={13} />
-                      </button>
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-medium text-muted-foreground mb-1">
-                        Remake reason (required)
-                      </label>
-                      <textarea
-                        rows={2}
-                        className="w-full px-2 py-1.5 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary resize-none"
-                        value={remakeReason}
-                        onChange={(e) => setRemakeReason(e.target.value)}
-                        placeholder="e.g. Shade B1 came back too dark; doctor requested A2"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-medium text-muted-foreground mb-1">
-                        Charge for this remake?
-                      </label>
-                      <div className="flex gap-2">
-                        {(
-                          [
-                            { v: "yes" as const, label: "Yes — invoice as usual" },
-                            { v: "no" as const, label: "No — no-charge remake" },
-                          ]
-                        ).map((opt) => (
-                          <button
-                            key={opt.v}
-                            type="button"
-                            onClick={() => setRemakeCharged(opt.v)}
-                            className={`flex-1 h-8 rounded-md text-xs font-medium transition-colors ${
-                              remakeCharged === opt.v
-                                ? opt.v === "no"
-                                  ? "bg-amber-500/15 text-amber-700 border border-amber-500/40"
-                                  : "bg-primary/10 text-primary border border-primary/30"
-                                : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
-                            }`}
-                          >
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
+              <div className="mt-2">
+                <RemakeOriginalPicker
+                  labOrganizationId={form.labOrganizationId}
+                  selected={remakeSelected}
+                  onSelect={setRemakeSelected}
+                  onClear={() => {
+                    setRemakeSelected(null);
+                    setRemake(blankQuestionnaire());
+                  }}
+                  questionnaire={remake}
+                  onQuestionnaireChange={setRemake}
+                  isAdmin={isPageAdmin}
+                  size="sm"
+                />
               </div>
             )}
           </div>
@@ -1571,7 +2257,54 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                 <Plus size={11} />
                 Add row
               </button>
+              <button
+                type="button"
+                disabled={!restorationUndo || mutation.isPending}
+                onClick={() => {
+                  if (!restorationUndo) return;
+                  setRestorations(restorationUndo);
+                  setDraftConnectors(restorationConnectorUndo);
+                  setRestorationUndo(null);
+                }}
+                className="text-xs text-primary disabled:opacity-40"
+              >
+                Undo draft edit
+              </button>
             </div>
+
+            {(() => {
+              const units = buildRestorationPayload() ?? [];
+              const connectorState = withPonticConnectorSuggestions(draftConnectors, units);
+              const encoded = serializeConnectorState(connectorState);
+              const summary = toothAssignmentSummary(units, encoded);
+              const validation = validateToothConnectors(encoded, units);
+              return <ToothChart
+                value={units.map((unit) => unit.toothNumber).join(", ")}
+                onChange={() => {}}
+                onToothClick={(tooth) => {
+                  if (!mutation.isPending) setAssignmentTooth(tooth);
+                }}
+                crownTeeth={new Set(units.filter((unit) => unit.restorationType === "Crown").map((unit) => unit.toothNumber))}
+                ponticTeeth={new Set(units.filter((unit) => unit.restorationType === "Pontic").map((unit) => unit.toothNumber))}
+                connectedPairs={connectorState.active}
+                connectorSuggestions={connectorState.suggested}
+                onConnectedPairsChange={(pairs) => {
+                  setRestorationUndo(restorations);
+                  setRestorationConnectorUndo(draftConnectors);
+                  setDraftConnectors(updateConnectorChoices(connectorState, pairs));
+                }}
+                connectorIssue={!validation.valid ? validation.errors[0] : summary.unresolvedPontics.length ? "Review unconnected pontics before saving." : null}
+                summaryText={`${summary.units} units · ${summary.groups.length} connected groups · Unsaved draft`}
+              />;
+            })()}
+            {assignmentTooth && <ToothActionDialog allowMarkMissing={false} toothId={assignmentTooth} isPending={mutation.isPending}
+              restorations={restorations.filter((row) => row.assignmentRole && parseToothField(row.toothNumber).has(assignmentTooth))
+                .map((row) => ({ ...row, restorationType: row.assignmentRole!, toothNumber: assignmentTooth, caseId: "", unitPrice: 0, quantity: 1 })) as CaseRestoration[]}
+              materialOptions={assignmentCatalog.data?.data
+                ? catalogToothMaterialOptions(assignmentCatalog.data.data).map((option) => ({ key: option.restorationSubtype, label: option.label, parentLabel: option.parentLabel }))
+                : getCatalogMaterialsForRestoration(undefined, { restorationType: "Crown" })}
+              groupTeeth={toothAssignmentSummary(buildRestorationPayload() ?? [], serializeConnectorState(withPonticConnectorSuggestions(draftConnectors, buildRestorationPayload() ?? []))).groups.find((group) => group.includes(assignmentTooth))}
+              onClose={() => setAssignmentTooth(null)} onConfirm={applyManualAssignment} />}
 
             {restorations.length > 0 && (
               <div className="space-y-2">
@@ -1579,6 +2312,19 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                   <div key={r.id} className="rounded-lg border border-border bg-secondary/40 p-2.5 space-y-2">
                     <div className="flex items-center justify-between gap-1">
                       <span className="text-[11px] font-medium text-muted-foreground">Row {idx + 1}</span>
+                      <button
+                        type="button"
+                        className="text-[11px] text-primary ml-auto mr-2"
+                        onClick={() => {
+                          setRestorationUndo(restorations);
+                          setRestorations((previous) => [
+                            ...previous,
+                            { ...r, id: crypto.randomUUID(), toothNumber: "" },
+                          ]);
+                        }}
+                      >
+                        Copy values to new row
+                      </button>
                       <button
                         type="button"
                         onClick={() => removeRestoration(r.id)}
@@ -1589,21 +2335,32 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                       </button>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
-                      <div>
+                      <div className="col-span-2">
                         <label className="block text-[11px] font-medium text-muted-foreground mb-1">
-                          Type <span className="text-destructive">*</span>
+                          Case Type → Subtype → Material <span className="text-destructive">*</span>
                         </label>
-                        <select
-                          value={r.restorationType}
-                          onChange={(e) => updateRestoration(r.id, "restorationType", e.target.value)}
-                          className="w-full h-8 px-2 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                        >
-                          <option value="">Select type…</option>
-                          {RESTORATION_TYPES.map((t) => (
-                            <option key={t} value={t}>{t}</option>
-                          ))}
-                        </select>
+                        <CatalogRestorationPicker
+                          labOrganizationId={form.labOrganizationId}
+                          restorationType={r.restorationType}
+                          material={r.material}
+                          restorationSubtype={r.restorationSubtype}
+                          implantDetails={r}
+                          onImplantChange={(details) => IMPLANT_FIELDS.forEach((key) => updateRestoration(r.id, key, details[key] ?? ""))}
+                          compact
+                          onChange={(next) => {
+                            updateRestoration(r.id, "restorationType", next.restorationType);
+                            updateRestoration(r.id, "material", next.material);
+                            updateRestoration(r.id, "restorationSubtype", next.restorationSubtype ?? "");
+                            if (isRemovableRestorationType(next.restorationType)) {
+                              updateRestoration(r.id, "toothNumber", "");
+                            }
+                            if (!isArchBasedRestoration(next)) {
+                              updateRestoration(r.id, "arch", "");
+                            }
+                          }}
+                        />
                       </div>
+                      {!isRemovableRestorationType(r.restorationType) && (
                       <div>
                         <label className="block text-[11px] font-medium text-muted-foreground mb-1">
                           Tooth # <span className="text-destructive">*</span>
@@ -1616,21 +2373,65 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                           className="w-full h-8 px-2 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary font-mono"
                         />
                       </div>
-                      <div>
-                        <label className="block text-[11px] font-medium text-muted-foreground mb-1">
-                          Material
-                        </label>
-                        <select
-                          value={r.material}
-                          onChange={(e) => updateRestoration(r.id, "material", e.target.value)}
-                          className="w-full h-8 px-2 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                        >
-                          <option value="">—</option>
-                          {MATERIALS.map((m) => (
-                            <option key={m} value={m}>{m}</option>
-                          ))}
-                        </select>
-                      </div>
+                      )}
+                      {!isArchBasedRestoration(r) && (
+                        <div className="col-span-2 space-y-2">
+                          <label className="block text-[11px] font-medium text-muted-foreground">
+                            Tooth role (not inferred from the selected teeth)
+                            <select
+                              aria-label={`Tooth role for row ${idx + 1}`}
+                              value={r.assignmentRole ?? ""}
+                              onChange={(e) => updateRestoration(r.id, "assignmentRole", e.target.value)}
+                              className="ml-2 h-8 px-2 rounded-md bg-background text-xs border border-border"
+                            >
+                              <option value="">Needs review</option>
+                              <option value="Crown">Prepared crown</option>
+                              <option value="Pontic">Pontic</option>
+                            </select>
+                          </label>
+                          <button
+                            type="button"
+                            className="text-xs text-primary"
+                            onClick={() => setDraftChartRow(draftChartRow === r.id ? null : r.id)}
+                          >
+                            {draftChartRow === r.id ? "Hide chart" : "Select multiple teeth on chart"}
+                          </button>
+                          {draftChartRow === r.id && (
+                            <ToothChart
+                              value={r.toothNumber}
+                              onChange={(value) => updateRestoration(r.id, "toothNumber", value)}
+                              crownTeeth={r.assignmentRole === "Crown" ? parseToothField(r.toothNumber) : undefined}
+                              ponticTeeth={r.assignmentRole === "Pontic" ? parseToothField(r.toothNumber) : undefined}
+                            />
+                          )}
+                        </div>
+                      )}
+                      {isArchBasedRestoration(r) && (
+                        <div>
+                          <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                            Arch <span className="text-destructive">*</span>
+                          </label>
+                          <select
+                            aria-label={`Arch for restoration row ${idx + 1}`}
+                            value={r.arch ?? ""}
+                            onChange={(e) =>
+                              updateRestoration(
+                                r.id,
+                                "arch",
+                                e.target.value as string,
+                              )
+                            }
+                            className="w-full h-8 px-2 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                          >
+                            <option value="">Select arch…</option>
+                            {ARCH_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
                       <div>
                         <label className="block text-[11px] font-medium text-muted-foreground mb-1">
                           Shade
@@ -1653,7 +2454,8 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                         <input
                           type="number"
                           min={1}
-                          value={r.quantity}
+                            value={r.assignmentRole ? "1" : r.quantity}
+                            disabled={!!r.assignmentRole}
                           onChange={(e) => updateRestoration(r.id, "quantity", e.target.value)}
                           className="w-full h-8 px-2 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                         />
@@ -1730,6 +2532,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
           patientFirstName={form.patientFirstName}
           patientLastName={form.patientLastName}
           isSubmitting={mutation.isPending}
+          isAdmin={isPageAdmin}
           onCancel={() => setDuplicateMatches(null)}
           onProceedAsNew={() => {
             setDuplicateMatches(null);
@@ -1747,16 +2550,37 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-const CASES_FILTER_STORAGE_KEY = "cases_filters_v2";
+// Bumped to v3 when the type filter switched from caseType (restorative/removable/ortho)
+// to category (crown_bridge/implants/zirconia/removable/other) so stale v2 values
+// (which store caseType keys) don't silently hide all cases on first load after deploy.
+// Bumped to v4 when Status/priority/type became multi-select: those keys now hold
+// string arrays (empty = "all") instead of a single value, so a stale v3 blob must
+// not be rehydrated into the new controls.
+const CASES_FILTER_STORAGE_KEY = "cases_filters_v4";
 const CASES_SCROLL_STORAGE_KEY = "cases_scroll_v1";
 const CASES_ITERO_BATCH_KEY = "cases_itero_batch_v1";
 
 type DateRangeFilter = CaseDateRangeFilter;
 
+/**
+ * Coerce a persisted multi-select filter value into a clean string array.
+ * Tolerates a legacy single value ("received" / "all") so a hand-seeded or
+ * half-migrated blob can't crash rehydration; "all" collapses to the empty
+ * array, which is how every multi-select filter spells "no filtering".
+ */
+function readMultiFilter(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((v): v is string => typeof v === "string" && v !== "all");
+  }
+  if (typeof value === "string" && value !== "" && value !== "all") return [value];
+  return [];
+}
+
 function readCasesFilters(): {
   search: string;
-  statusFilter: string;
-  priorityFilter: string;
+  statusFilters: string[];
+  priorityFilters: string[];
+  caseTypeFilters: string[];
   dateRangeFilter: DateRangeFilter;
   customStartDate: string;
   customEndDate: string;
@@ -1765,12 +2589,26 @@ function readCasesFilters(): {
 } {
   try {
     const raw = sessionStorage.getItem(CASES_FILTER_STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const restored = { ...parsed };
+      // The "Received" column was removed, so a persisted sortKey of
+      // "receivedAt" no longer maps to any header. Fall back to Created
+      // rather than leaving an invisible sort the user can't see or clear.
+      if (restored.sortKey === "receivedAt") restored.sortKey = "createdAt";
+      return {
+        ...restored,
+        statusFilters: readMultiFilter(restored.statusFilters),
+        priorityFilters: readMultiFilter(restored.priorityFilters),
+        caseTypeFilters: readMultiFilter(restored.caseTypeFilters),
+      };
+    }
   } catch {}
   return {
     search: "",
-    statusFilter: "all",
-    priorityFilter: "all",
+    statusFilters: [],
+    priorityFilters: [],
+    caseTypeFilters: [],
     dateRangeFilter: "all",
     customStartDate: "",
     customEndDate: "",
@@ -2088,48 +2926,63 @@ function CaseDeleteModal({
     </div>
   );
 }
-
 export default function CasesPage() {
   const [, setLocation] = useLocation();
   const urlSearch = useSearch();
   const { user } = useAuth();
   const isPageAdmin = user?.role === "admin" || user?.role === "owner";
-
-  const { data, isLoading, error, isFetching, refetch } = useQuery({
-    queryKey: ["cases"],
-    queryFn: () => apiFetch<LabCase[]>("/cases"),
-    refetchInterval: 60_000,
-    refetchOnWindowFocus: true,
-  });
+  const overviewQuery = useCasesOverview();
 
   const initialFilters = useRef(readCasesFilters());
 
   const [search, setSearch] = useState(initialFilters.current.search);
   const [barcodeFilter, setBarcodeFilter] = useState("");
   const [conflictsOnly, setConflictsOnly] = useState(false);
+  const [overdueOnly, setOverdueOnly] = useState(false);
+  const [localDate, setLocalDate] = useState(() => formatLocalCalendarDate(new Date()));
+  useEffect(() => {
+    if (!overdueOnly) return;
+    const updateLocalDate = () => setLocalDate(formatLocalCalendarDate(new Date()));
+    const timer = setInterval(updateLocalDate, 60_000);
+    window.addEventListener("focus", updateLocalDate);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", updateLocalDate);
+    };
+  }, [overdueOnly]);
 
-  // Exact barcode lookup, server-backed so it finds matches even beyond the
-  // 500 most-recent cases the main list is capped at. Only fires when the
-  // barcode field has a value.
+  // Debounced version of the search string — used to key the server-search
+  // query so we don't fire a request on every keystroke. While these differ,
+  // the visible input is newer than the committed worklist query.
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(search.trim()), 200);
+    return () => clearTimeout(id);
+  }, [search]);
+  const trimmedSearch = search.trim();
+  const isSearchDebouncing = trimmedSearch !== debouncedSearch;
+
   const barcodeFilterTrimmed = barcodeFilter.trim();
   const barcodeFilterActive = barcodeFilterTrimmed.length > 0;
-  const barcodeSearch = useQuery({
-    queryKey: ["cases", "barcode", barcodeFilterTrimmed],
-    queryFn: () =>
-      apiFetch<LabCase[]>(`/cases?barcode=${encodeURIComponent(barcodeFilterTrimmed)}`),
-    enabled: barcodeFilterActive,
-  });
 
-  const [statusFilter, setStatusFilter] = useState<string>(initialFilters.current.statusFilter);
-  const [priorityFilter, setPriorityFilter] = useState<string>(initialFilters.current.priorityFilter);
+  // Multi-select toolbar filters. An empty array means "All" (no filtering);
+  // a non-empty array shows the union of the checked values.
+  const [statusFilters, setStatusFilters] = useState<string[]>(initialFilters.current.statusFilters);
+  const [priorityFilters, setPriorityFilters] = useState<string[]>(initialFilters.current.priorityFilters);
+  const [caseTypeFilters, setCaseTypeFilters] = useState<string[]>(initialFilters.current.caseTypeFilters);
   const [dateRangeFilter, setDateRangeFilter] = useState<DateRangeFilter>(initialFilters.current.dateRangeFilter);
   const [customStartDate, setCustomStartDate] = useState<string>(initialFilters.current.customStartDate);
+  const [showRangeWindow, setShowRangeWindow] = useState(false);
+  const [caseExpanded, setCaseExpanded] = useState(false);
   const [customEndDate, setCustomEndDate] = useState<string>(initialFilters.current.customEndDate);
   const [sortKey, setSortKey] = useState<SortKey>(initialFilters.current.sortKey);
   const [sortDir, setSortDir] = useState<"asc" | "desc">(initialFilters.current.sortDir);
   const [selected, setSelected] = useState<LabCase | null>(null);
+  const [keyboardActiveCaseId, setKeyboardActiveCaseId] = useState<string | null>(null);
+  const rowSelectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showNewCase, setShowNewCase] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [printingSelection, setPrintingSelection] = useState(false);
   // Shift-click range selection anchor: the last normally clicked case's ID.
   // Stored by ID (not index) so it survives re-sorts; resolved to an index in
   // the current `filtered` array at click time.
@@ -2147,11 +3000,18 @@ export default function CasesPage() {
   const pageRef = useRef<HTMLDivElement>(null);
   const scrollRestoredRef = useRef(false);
   const lastProcessedCaseIdRef = useRef<string | null>(null);
+  const casesTableRef = useRef<HTMLTableElement>(null);
 
   const qc = useQueryClient();
 
   const handleRefresh = () => {
-    void refetch();
+    void overviewQuery.refetch();
+    if (page === 1) {
+      void listQuery.refetch();
+    } else {
+      setLoadedRows([]);
+      setPagination({ criteria: criteriaQuery, page: 1 });
+    }
     qc.invalidateQueries({ queryKey: ["organizations"] });
     qc.invalidateQueries({ queryKey: ["invoice-for-case"] });
     qc.invalidateQueries({ queryKey: ["invoice-detail"] });
@@ -2163,32 +3023,139 @@ export default function CasesPage() {
   // Whether any record-hiding filter is currently active. Sort order and column
   // settings are display preferences and intentionally excluded.
   const hasActiveFilters =
-    search.trim().length > 0 ||
-    statusFilter !== "all" ||
-    priorityFilter !== "all" ||
-    dateRangeFilter !== "all" ||
-    customStartDate !== "" ||
-    customEndDate !== "" ||
+    trimmedSearch.length > 0 ||
+    statusFilters.length > 0 ||
+    priorityFilters.length > 0 ||
+    caseTypeFilters.length > 0 ||
+    overdueOnly ||
+    (dateRangeFilter !== "all" &&
+      (dateRangeFilter !== "custom" || (!!customStartDate && !!customEndDate))) ||
     barcodeFilter.trim().length > 0 ||
     conflictsOnly ||
     iteroActiveBatch !== null;
+
+  type CaseListPage = { rows: LabCase[]; total: number; salesTotal: string; page: number; pageSize: number; hasMore: boolean };
+  const [pagination, setPagination] = useState({ criteria: "", page: 1 });
+  const [loadedRows, setLoadedRows] = useState<LabCase[]>([]);
+  const criteriaQuery = useMemo(() => {
+    // Stop observing the previous search as soon as the input changes. This
+    // prevents its rows, count, empty state, and late response from being
+    // presented as results for text the user can no longer see.
+    if (isSearchDebouncing) return "";
+    const params = new URLSearchParams();
+    if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+    if (barcodeFilterTrimmed) params.set("barcode", barcodeFilterTrimmed);
+    statusFilters.forEach((value) => params.append("status", value));
+    priorityFilters.forEach((value) => params.append("priority", value));
+    caseTypeFilters.forEach((value) => params.append("caseType", value));
+    if (conflictsOnly) params.set("conflictsOnly", "true");
+    if (overdueOnly) {
+      params.set("overdueOnly", "true");
+      params.set("localDate", localDate);
+    }
+    if (iteroActiveBatch) iteroActiveBatch.caseIds.forEach((id) => params.append("caseId", id));
+    // A custom range is intentionally inert until both calendar bounds exist.
+    // Other active filters may still run while the user is filling the dates,
+    // but must not send a one-sided range that the bounded API rejects.
+    const range = dateRangeFilter === "custom" && (!customStartDate || !customEndDate)
+      ? { startDate: null, endDate: null }
+      : computeCaseDateRange(dateRangeFilter, customStartDate, customEndDate);
+    const calendar = (date: Date | null) => date
+      ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+      : "";
+    if (range.startDate) params.set("receivedStart", calendar(range.startDate));
+    // API takes an inclusive calendar end, while the UI helper returns exclusive.
+    if (range.endDate) {
+      const inclusiveEnd = new Date(range.endDate);
+      inclusiveEnd.setDate(inclusiveEnd.getDate() - 1);
+      params.set("receivedEnd", calendar(inclusiveEnd));
+    }
+    params.set("sortKey", sortKey);
+    params.set("sortDir", sortDir);
+    params.set("pageSize", "10");
+    return params.toString();
+  }, [hasActiveFilters, isSearchDebouncing, debouncedSearch, barcodeFilterTrimmed, statusFilters, priorityFilters, caseTypeFilters, conflictsOnly, overdueOnly, localDate, iteroActiveBatch, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir]);
+  const page = pagination.criteria === criteriaQuery ? pagination.page : 1;
+  useEffect(() => {
+    if (pagination.criteria !== criteriaQuery) {
+      setPagination({ criteria: criteriaQuery, page: 1 });
+    }
+  }, [criteriaQuery, pagination.criteria]);
+  const activeQuery = useMemo(() => {
+    const params = new URLSearchParams(criteriaQuery);
+    params.set("page", String(page));
+    return params.toString();
+  }, [criteriaQuery, page]);
+  const listQuery = useQuery({
+    queryKey: !isSearchDebouncing ? ["cases", activeQuery] : ["cases", "inactive"],
+    // Accepting the legacy array here keeps cached/test fixtures from crashing
+    // during the response-contract rollout; production requests use metadata.
+    queryFn: async ({ signal }) => {
+      const query = activeQuery;
+      const response = await apiFetch<CaseListPage | LabCase[]>(`/cases/worklist?${query}`, { signal });
+      const result = Array.isArray(response)
+        ? { rows: response, total: response.length, salesTotal: "0.00", page, pageSize: response.length, hasMore: false }
+        : response;
+      return { ...result, query };
+    },
+    enabled: !isSearchDebouncing,
+    refetchInterval: !isSearchDebouncing ? 60_000 : false,
+    refetchOnWindowFocus: !isSearchDebouncing,
+  });
+  const { isLoading, error, isFetching } = listQuery;
+  const worklistPending = isSearchDebouncing || isLoading;
+  const data = loadedRows;
+  useEffect(() => {
+    const nextRows = listQuery.data?.rows;
+    if (isSearchDebouncing || !listQuery.data || !Array.isArray(nextRows) || listQuery.data.query !== activeQuery) return;
+    setLoadedRows((previous) => listQuery.data!.page === 1
+      ? nextRows
+      : [...previous.filter((row) => !nextRows.some((next) => next.id === row.id)), ...nextRows]);
+  }, [activeQuery, isSearchDebouncing, listQuery.data, listQuery.dataUpdatedAt]);
+  useEffect(() => {
+    setLoadedRows([]);
+  }, [trimmedSearch, barcodeFilterTrimmed, statusFilters, priorityFilters, caseTypeFilters, conflictsOnly, overdueOnly, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir, iteroActiveBatch]);
 
   // Reset every in-scope Cases filter to its default and drop the persisted
   // entries so the list reloads unfiltered in place. Sort order is left as-is.
   const resetFilters = useCallback(() => {
     setSearch("");
-    setStatusFilter("all");
-    setPriorityFilter("all");
+    setDebouncedSearch("");
+    setStatusFilters([]);
+    setPriorityFilters([]);
+    setCaseTypeFilters([]);
     setDateRangeFilter("all");
     setCustomStartDate("");
     setCustomEndDate("");
     setBarcodeFilter("");
     setConflictsOnly(false);
+    setOverdueOnly(false);
     setIteroActiveBatch(null);
     try {
       sessionStorage.removeItem(CASES_FILTER_STORAGE_KEY);
       sessionStorage.removeItem(CASES_ITERO_BATCH_KEY);
     } catch {}
+  }, []);
+
+  const applySavedCaseView = useCallback((view: CaseSavedView) => {
+    setSearch(view.filters.search);
+    setStatusFilters([...view.filters.statusFilters]);
+    setPriorityFilters([]);
+    setCaseTypeFilters([]);
+    setBarcodeFilter("");
+    setConflictsOnly(false);
+    setOverdueOnly(false);
+    setIteroActiveBatch(null);
+    try { sessionStorage.removeItem(CASES_ITERO_BATCH_KEY); } catch {}
+    setShowRangeWindow(false);
+    setDateRangeFilter((view.filters.desktop?.dateRangeFilter ?? "all") as DateRangeFilter);
+    setCustomStartDate(view.filters.desktop?.customStartDate ?? "");
+    setCustomEndDate(view.filters.desktop?.customEndDate ?? "");
+    setSelectedIds(new Set());
+    setSelectedSavedViewId(view.id);
+    if (!view.filters.desktop && view.filters.mobile) {
+      toast.info("This view was saved on mobile. Search and status were applied; desktop dates were cleared because desktop uses a different date field.");
+    }
   }, []);
 
   // Clear persisted Cases filters when leaving the /cases route entirely
@@ -2197,6 +3164,7 @@ export default function CasesPage() {
   // persist-filters behavior; only navigating to another section clears them.
   useEffect(() => {
     return () => {
+      if (rowSelectionTimerRef.current) clearTimeout(rowSelectionTimerRef.current);
       try {
         sessionStorage.removeItem(CASES_FILTER_STORAGE_KEY);
         sessionStorage.removeItem(CASES_ITERO_BATCH_KEY);
@@ -2218,6 +3186,85 @@ export default function CasesPage() {
     () => (orgsQuery.data ?? []).find((o) => o.type === "lab")?.id ?? null,
     [orgsQuery.data],
   );
+  const [selectedSavedViewId, setSelectedSavedViewId] = useState("");
+  // Electron does not implement window.prompt, so naming uses an in-page dialog.
+  const [savedViewNameDialog, setSavedViewNameDialog] = useState<
+    { mode: "save" } | { mode: "rename"; viewId: string } | null
+  >(null);
+  const [savedViewNameDraft, setSavedViewNameDraft] = useState("");
+  const savedViewsQuery = useQuery({
+    queryKey: ["cases", "saved-views", pageLabOrgId],
+    enabled: !!pageLabOrgId,
+    queryFn: () => apiFetch<CaseSavedView[]>(
+      `/cases/saved-views?labOrganizationId=${encodeURIComponent(pageLabOrgId!)}`,
+    ),
+  });
+  const saveCaseViewMutation = useMutation({
+    mutationFn: (name: string) => {
+      if (!pageLabOrgId) throw new Error("Select a lab before saving a view.");
+      const filters: CaseSavedViewFilters = {
+        search: search.trim(),
+        statusFilters: [...statusFilters],
+        desktop: { dateRangeFilter, customStartDate, customEndDate },
+      };
+      return apiFetch<CaseSavedView>("/cases/saved-views", {
+        method: "POST",
+        body: JSON.stringify({ labOrganizationId: pageLabOrgId, name, filters }),
+      });
+    },
+    onSuccess: (view) => {
+      setSelectedSavedViewId(view.id);
+      setSavedViewNameDialog(null);
+      void qc.invalidateQueries({ queryKey: ["cases", "saved-views", pageLabOrgId] });
+      toast.success(`Saved view “${view.name}”.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Could not save this view."),
+  });
+  const updateCaseViewFiltersMutation = useMutation({
+    mutationFn: ({ id, filters }: { id: string; filters: CaseSavedViewFilters }) => {
+      if (!pageLabOrgId) throw new Error("Select a lab before updating a view.");
+      return apiFetch<CaseSavedView>(`/cases/saved-views/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ labOrganizationId: pageLabOrgId, filters }),
+      });
+    },
+    onSuccess: (view) => {
+      setSelectedSavedViewId(view.id);
+      void qc.invalidateQueries({ queryKey: ["cases", "saved-views", pageLabOrgId] });
+      toast.success(`Updated shared view “${view.name}” for everyone in your lab.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Could not update this view."),
+  });
+  const renameCaseViewMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => {
+      if (!pageLabOrgId) throw new Error("Select a lab before renaming a view.");
+      return apiFetch<CaseSavedView>(`/cases/saved-views/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ labOrganizationId: pageLabOrgId, name }),
+      });
+    },
+    onSuccess: (view) => {
+      setSavedViewNameDialog(null);
+      void qc.invalidateQueries({ queryKey: ["cases", "saved-views", pageLabOrgId] });
+      toast.success(`Renamed view to “${view.name}”.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Could not rename this view."),
+  });
+  const deleteCaseViewMutation = useMutation({
+    mutationFn: (id: string) => {
+      if (!pageLabOrgId) throw new Error("Select a lab before removing a view.");
+      return apiFetch<null>(
+        `/cases/saved-views/${encodeURIComponent(id)}?labOrganizationId=${encodeURIComponent(pageLabOrgId)}`,
+        { method: "DELETE" },
+      );
+    },
+    onSuccess: (_result, id) => {
+      if (selectedSavedViewId === id) setSelectedSavedViewId("");
+      void qc.invalidateQueries({ queryKey: ["cases", "saved-views", pageLabOrgId] });
+      toast.success("Saved view removed.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Could not remove this view."),
+  });
 
   const bulkLocationsQuery = useQuery<Array<{ id: string; value: string; label: string }>>({
     queryKey: ["locations", pageLabOrgId, "active"],
@@ -2265,13 +3312,18 @@ export default function CasesPage() {
   });
 
   const bulkStatusMutation = useMutation({
-    mutationFn: (body: { caseIds: string[]; status: string }) =>
+    mutationFn: (body: { caseIds: string[]; status: string; labLocationId?: string | null }) =>
       apiFetch<{ updatedCount: number; skippedLegacyCount?: number }>("/cases/bulk-status", {
         method: "POST",
         body: JSON.stringify(body),
       }),
-    onSuccess: (result, variables) => {
-      qc.invalidateQueries({ queryKey: ["cases"] });
+    onSuccess: async (result, variables) => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+        ...variables.caseIds.map((caseId) =>
+          qc.invalidateQueries({ queryKey: ["case", caseId] }),
+        ),
+      ]);
       setSelectedIds(new Set());
       setShowBulkStatusModal(false);
       setBulkStatusValue("");
@@ -2282,7 +3334,12 @@ export default function CasesPage() {
         bulkLocationsQuery.data && bulkLocationsQuery.data.length > 0
           ? bulkLocationsQuery.data
           : STATUS_FILTERS.filter((s) => s.value !== "all");
-      const label = locationOptions.find((s) => s.value === variables.status)?.label ?? variables.status;
+      const label =
+        locationOptions.find(
+          (s) =>
+            ("id" in s && s.id === variables.labLocationId) ||
+            s.value === variables.status,
+        )?.label ?? variables.status;
       const base = `${updatedCount} case${updatedCount !== 1 ? "s" : ""} marked as ${label}.`;
       const successMsg = skippedLegacyCount > 0
         ? `${base} (${skippedLegacyCount} legacy case${skippedLegacyCount !== 1 ? "s" : ""} skipped)`
@@ -2329,6 +3386,25 @@ export default function CasesPage() {
     });
   }
 
+  function selectCase(next: LabCase) {
+    if (selected?.id === next.id) return;
+    const proceed = () => { setSelected(next); setCaseExpanded(false); };
+    // The docked table remains clickable; changing rows must honor the same
+    // unsaved-edit confirmation as closing or navigating away from the drawer.
+    if (!guardNavigation(proceed)) proceed();
+  }
+
+  function openCaseFromRow(next: LabCase) {
+    if (selected?.id === next.id) {
+      // Keep the mounted drawer so its active tab and any drafts survive.
+      setCaseExpanded(true);
+      return;
+    }
+
+    const proceed = () => { setSelected(next); setCaseExpanded(true); };
+    if (!guardNavigation(proceed)) proceed();
+  }
+
   async function handleBarcodeLookup(code: string) {
     const trimmed = code.trim();
     if (!trimmed) return;
@@ -2337,7 +3413,7 @@ export default function CasesPage() {
     // Search loaded data first — instant, no extra round-trip needed.
     const local = (data ?? []).find((c) => c.casePanBarcode === trimmed);
     if (local) {
-      setSelected(local);
+      selectCase(local);
       setBarcodeInput("");
       addToScanHistory(local);
       setTimeout(() => scanInputRef.current?.focus(), 50);
@@ -2358,7 +3434,7 @@ export default function CasesPage() {
             `/cases/barcode/${encodeURIComponent(trimmed)}?labOrganizationId=${encodeURIComponent(lab.id)}`,
           );
           if (result.case) {
-            setSelected(result.case);
+            selectCase(result.case);
             setBarcodeInput("");
             addToScanHistory(result.case);
             qc.invalidateQueries({ queryKey: ["cases"] });
@@ -2390,10 +3466,10 @@ export default function CasesPage() {
     lastProcessedCaseIdRef.current = targetId;
     const found = data?.find((c) => c.id === targetId);
     if (found) {
-      setSelected(found);
+      selectCase(found);
     } else {
       apiFetch<LabCase>(`/cases/${targetId}`)
-        .then((fresh) => setSelected(fresh))
+        .then((fresh) => selectCase(fresh))
         .catch(() => {/* case not found or inaccessible */});
     }
   }, [urlSearch, data, isLoading]);
@@ -2424,14 +3500,14 @@ export default function CasesPage() {
     try {
       sessionStorage.setItem(
         CASES_FILTER_STORAGE_KEY,
-        JSON.stringify({ search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir }),
+        JSON.stringify({ search, statusFilters, priorityFilters, caseTypeFilters, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir }),
       );
     } catch {}
-  }, [search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir]);
+  }, [search, statusFilters, priorityFilters, caseTypeFilters, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir]);
 
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [search, barcodeFilter, conflictsOnly, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, iteroActiveBatch]);
+  }, [search, barcodeFilter, conflictsOnly, statusFilters, priorityFilters, caseTypeFilters, dateRangeFilter, customStartDate, customEndDate, iteroActiveBatch]);
 
   useEffect(() => {
     const el = pageRef.current?.closest("main") as HTMLElement | null;
@@ -2473,7 +3549,7 @@ export default function CasesPage() {
   // an admin can spot duplicates before scanning. Keyed by lab + barcode to
   // keep tenant boundaries intact.
   const conflictKeys = useMemo(() => {
-    const src = barcodeFilterActive ? (barcodeSearch.data ?? []) : (data ?? []);
+    const src = data;
     const counts = new Map<string, number>();
     for (const c of src) {
       const bc = String(c.casePanBarcode ?? "").trim();
@@ -2485,7 +3561,7 @@ export default function CasesPage() {
     const set = new Set<string>();
     for (const [key, n] of counts) if (n >= 2) set.add(key);
     return set;
-  }, [data, barcodeFilterActive, barcodeSearch.data]);
+  }, [data]);
 
   const isConflicting = useCallback(
     (c: LabCase) => {
@@ -2498,55 +3574,18 @@ export default function CasesPage() {
   );
 
   const conflictCount = useMemo(() => {
-    const src = barcodeFilterActive ? (barcodeSearch.data ?? []) : (data ?? []);
+    const src = data;
     return src.filter(isConflicting).length;
-  }, [data, barcodeFilterActive, barcodeSearch.data, isConflicting]);
+  }, [data, isConflicting]);
 
   const filtered = useMemo(() => {
-    const rows = barcodeFilterActive ? (barcodeSearch.data ?? []) : (data ?? []);
-    const q = search.trim().toLowerCase();
-
-    const { startDate, endDate } = computeCaseDateRange(
-      dateRangeFilter,
-      customStartDate,
-      customEndDate,
-    );
-
-    const batchCaseIdSet = iteroActiveBatch ? new Set(iteroActiveBatch.caseIds) : null;
-
-    return rows
-      .filter((c) => {
-        if (batchCaseIdSet && !batchCaseIdSet.has(c.id)) return false;
-        if (conflictsOnly && !isConflicting(c)) return false;
-        if (statusFilter !== "all" && c.status !== statusFilter) return false;
-        if (priorityFilter !== "all" && c.priority !== priorityFilter) return false;
-        if (!caseWithinDateRange(c, startDate, endDate)) return false;
-        if (!q) return true;
-        return (
-          c.caseNumber.toLowerCase().includes(q) ||
-          c.doctorName.toLowerCase().includes(q) ||
-          `${c.patientFirstName} ${c.patientLastName}`.toLowerCase().includes(q) ||
-          (c.casePanBarcode ?? "").toLowerCase().includes(q)
-        );
-      })
-      .sort((a, b) => {
-        if (sortKey === "totalPrice") {
-          const va = Number(a.totalPrice ?? 0);
-          const vb = Number(b.totalPrice ?? 0);
-          return sortDir === "asc" ? va - vb : vb - va;
-        }
-        if (sortKey === "receivedAt") {
-          // Mirror the column's fallback so canonical and legacy/mobile cases
-          // without a received timestamp sort by their created date instead.
-          const va = (a.receivedAt ?? a.createdAt ?? "") as string;
-          const vb = (b.receivedAt ?? b.createdAt ?? "") as string;
-          return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
-        }
-        const va = (a[sortKey] || "") as string;
-        const vb = (b[sortKey] || "") as string;
-        return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
-      });
-  }, [data, barcodeFilterActive, barcodeSearch.data, conflictsOnly, isConflicting, search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir, iteroActiveBatch]);
+    return data;
+  }, [data]);
+  const focusableCaseId = filtered.some((c) => c.id === keyboardActiveCaseId)
+    ? keyboardActiveCaseId
+    : selected && filtered.some((c) => c.id === selected.id)
+      ? selected.id
+      : filtered[0]?.id ?? null;
 
   // Row-checkbox selection with shift-click range support. A normal click
   // toggles the single case and moves the anchor; a shift-click with a valid
@@ -2613,39 +3652,54 @@ export default function CasesPage() {
     }
   }
 
+  // Build a status → station-name map for the Location column.
+  // Only include statuses that map to exactly one station so we never show
+  // an ambiguous name when multiple custom stations share the same status.
+  const unambiguousStationName = useMemo<Map<string, string>>(() => {
+    const locations = bulkLocationsQuery.data ?? [];
+    const counts = new Map<string, number>();
+    const names = new Map<string, string>();
+    for (const loc of locations) {
+      counts.set(loc.value, (counts.get(loc.value) ?? 0) + 1);
+      names.set(loc.value, loc.label);
+    }
+    const result = new Map<string, string>();
+    for (const [status, count] of counts) {
+      if (count === 1) result.set(status, names.get(status)!);
+    }
+    return result;
+  }, [bulkLocationsQuery.data]);
+  const stationNameById = useMemo(
+    () => new Map((bulkLocationsQuery.data ?? []).map((location) => [location.id, location.label])),
+    [bulkLocationsQuery.data],
+  );
+
   const caseCols = useTableColumns<LabCase>(
     [
-      { id: "createdAt", label: <SortHeader k="createdAt">Created</SortHeader>, menuLabel: "Created", align: "left", defaultWidth: 100, render: (c) => <span className="text-muted-foreground">{formatShortDate(c.createdAt)}</span> },
-      { id: "receivedAt", label: <SortHeader k="receivedAt">Received</SortHeader>, menuLabel: "Received", align: "left", defaultWidth: 100, render: (c) => <span className="text-muted-foreground">{formatShortDate(c.receivedAt ?? c.createdAt)}</span> },
-      { id: "caseNumber", label: <SortHeader k="caseNumber">Case #</SortHeader>, menuLabel: "Case #", align: "left", defaultWidth: 160, render: (c) => (
-        <div className="flex items-center gap-1.5">
-          {c.needsAiReview && (
-            <span
-              title={`Auto-imported from ${c.aiImportSource ?? "AI"} — needs review`}
-              className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400"
-              aria-label="Needs AI review"
-            >
-              <Sparkles size={11} />
-            </span>
-          )}
-          <span className="font-mono text-xs">{c.caseNumber}</span>
-        </div>
+      { id: "createdAt", label: <SortHeader k="createdAt">Created</SortHeader>, menuLabel: "Created", align: "left", defaultWidth: 100, render: (c) => <span className={c.priority === "rush" ? "text-destructive" : "text-muted-foreground"}>{formatShortDate(c.createdAt)}</span> },
+      { id: "caseNumber", label: <SortHeader k="caseNumber">Case #</SortHeader>, menuLabel: "Case #", align: "left", defaultWidth: 160, titleFor: (c) => c.caseNumber, render: (c) => (
+        <span className="font-mono text-xs">{c.caseNumber}</span>
       ) },
-      { id: "patient", label: "Patient", menuLabel: "Patient", align: "left", defaultWidth: 140, render: (c) => `${c.patientFirstName} ${c.patientLastName}` },
-      { id: "doctor", label: <SortHeader k="doctorName">Doctor</SortHeader>, menuLabel: "Doctor", align: "left", defaultWidth: 140, render: (c) => <span className="text-muted-foreground">{c.doctorName}</span> },
-      { id: "type", label: "Type", menuLabel: "Type", align: "left", defaultWidth: 120, render: (c) => <span className="text-muted-foreground truncate max-w-[140px] block" title={c.restorationTypes ?? ""}>{c.restorationTypes || "—"}</span> },
-      { id: "material", label: "Material", menuLabel: "Material", align: "left", defaultWidth: 100, render: (c) => <span className="text-muted-foreground truncate max-w-[120px] block" title={c.restorationMaterials ?? ""}>{c.restorationMaterials || "—"}</span> },
-      { id: "teeth", label: "Teeth", menuLabel: "Teeth", align: "left", defaultWidth: 90, render: (c) => <span className="text-muted-foreground truncate max-w-[100px] block" title={c.teeth ?? ""}>{c.teeth || "—"}</span> },
+      { id: "patient", label: "Patient", menuLabel: "Patient", align: "left", defaultWidth: 140, titleFor: (c) => `${c.patientFirstName} ${c.patientLastName}`, render: (c) => `${c.patientFirstName} ${c.patientLastName}` },
+      { id: "doctor", label: <SortHeader k="doctorName">Doctor</SortHeader>, menuLabel: "Doctor", align: "left", defaultWidth: 160, titleFor: (c) => [c.doctorName, c.providerAccountNumber ? `#${c.providerAccountNumber}` : ""].filter(Boolean).join(" "), render: (c) => (
+        <span className="text-muted-foreground">
+          {c.doctorName}
+          {c.providerAccountNumber && <span className="ml-1.5 text-[11px] font-mono opacity-60">#{c.providerAccountNumber}</span>}
+        </span>
+      ) },
+      { id: "type", label: "Type", menuLabel: "Type", align: "left", defaultWidth: 120, render: (c) => <span className="text-muted-foreground truncate block w-full" title={c.restorationTypes ?? ""}>{c.restorationTypes || "—"}</span> },
+      { id: "material", label: "Material", menuLabel: "Material", align: "left", defaultWidth: 100, render: (c) => <span className="text-muted-foreground truncate block w-full" title={c.restorationMaterials ?? ""}>{c.restorationMaterials || "—"}</span> },
+      { id: "teeth", label: "Teeth", menuLabel: "Teeth", align: "left", defaultWidth: 90, render: (c) => <span className="text-muted-foreground truncate block w-full" title={c.teeth ?? ""}>{c.teeth || "—"}</span> },
       { id: "priority", label: "Priority", menuLabel: "Priority", align: "left", defaultWidth: 90, render: (c) =>
         c.priority === "rush" ? (
           <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive bg-destructive/10 px-2 py-0.5 rounded-full">Rush</span>
         ) : (
           <span className="text-xs text-muted-foreground">Normal</span>
         ) },
-      { id: "status", label: <SortHeader k="status">Status</SortHeader>, menuLabel: "Status", align: "left", defaultWidth: 130, render: (c) => <StatusBadge status={c.status} /> },
-      { id: "pan", label: "Pan", menuLabel: "Pan", align: "left", defaultWidth: 100, render: (c) => (
+      { id: "status", label: <SortHeader k="status">Location</SortHeader>, menuLabel: "Location", align: "left", defaultWidth: 130, render: (c) => <StatusBadge status={c.status} label={c.labLocationName ?? (c.labLocationId ? stationNameById.get(c.labLocationId) : undefined) ?? unambiguousStationName.get(c.status ?? "") ?? undefined} /> },
+      { id: "pan", label: "Pan", menuLabel: "Pan", align: "left", defaultWidth: 100, titleFor: (c) => c.casePanBarcode || "", render: (c) => (
         <div className="flex items-center gap-1.5 text-muted-foreground font-mono text-xs">
-          <span>{c.casePanBarcode ? (c.casePanBarcode.length > 12 ? c.casePanBarcode.slice(0, 12) + "…" : c.casePanBarcode) : "—"}</span>
+          <span className="truncate">{c.casePanBarcode || "—"}</span>
           {isConflicting(c) && (
             <span
               title="This pan barcode is shared with another active case — possible duplicate."
@@ -2658,9 +3712,9 @@ export default function CasesPage() {
           )}
         </div>
       ) },
-      { id: "due", label: <SortHeader k="dueDate">Due</SortHeader>, menuLabel: "Due", align: "left", defaultWidth: 90, render: (c) => <span className="text-muted-foreground">{formatShortDueDate(c.dueDate)}</span> },
-      { id: "price", label: <SortHeader k="totalPrice">Price</SortHeader>, menuLabel: "Price", align: "right", defaultWidth: 130, render: (c) => <span className="tabular-nums">{Number(c.totalPrice ?? 0) > 0 ? formatMoney(c.totalPrice) : "—"}</span> },
-      { id: "notes", label: "Notes", menuLabel: "Notes", align: "left", defaultWidth: 200, render: (c) => <span className="text-muted-foreground truncate max-w-[200px] text-xs block" title={c.caseNotes ?? ""}>{c.caseNotes || "—"}</span> },
+      { id: "due", label: <SortHeader k="dueDate">Due</SortHeader>, menuLabel: "Due", align: "left", defaultWidth: 110, titleFor: (c) => c.status === "complete" ? `Completed ${c.updatedAt ? formatShortDate(c.updatedAt) : ""}` : formatShortDueDate(c.dueDate, c.dueTime) ?? "", render: (c) => c.status === "complete" ? <span className="text-muted-foreground">Completed {c.updatedAt ? formatShortDate(c.updatedAt) : ""}</span> : <span className={c.priority === "rush" ? "text-destructive" : "text-muted-foreground"}>{formatShortDueDate(c.dueDate, c.dueTime)}</span> },
+      { id: "price", label: <SortHeader k="totalPrice">Price</SortHeader>, menuLabel: "Price", align: "right", defaultWidth: 130, render: (c) => <span className="tabular-nums">{(c.remakeCharged === false && c.remakeOfCaseId) ? "$0.00" : (Number(c.totalPrice ?? 0) > 0 ? formatMoney(c.totalPrice) : "—")}</span> },
+      { id: "notes", label: "Notes", menuLabel: "Notes", align: "left", defaultWidth: 200, render: (c) => <span className="text-muted-foreground truncate text-xs block w-full" title={c.caseNotes ?? ""}>{c.caseNotes || "—"}</span> },
     ],
     "labtrax_cases_columns_v3",
   );
@@ -2685,10 +3739,39 @@ export default function CasesPage() {
     );
   }
 
+  const selectedQuickFilter = overdueOnly
+    ? "overdue"
+    : STATUS_QUICK_FILTERS.find(({ id, statuses }) =>
+        id !== "overdue" &&
+        statuses.length === statusFilters.length &&
+        statuses.every((status) => statusFilters.includes(status)),
+      )?.id ?? "";
+  const applyQuickFilter = (id: string, statuses: readonly string[]) => {
+    if (id === "overdue") {
+      setStatusFilters([]);
+      setOverdueOnly((active) => !active);
+      return;
+    }
+    const selected = statuses.length === statusFilters.length &&
+      statuses.every((status) => statusFilters.includes(status));
+    setStatusFilters(selected ? [] : [...statuses]);
+    setOverdueOnly(false);
+  };
+  const overviewCounts = overviewQuery.isError || overviewQuery.isLoading
+    ? undefined
+    : overviewQuery.data;
+  const summaryCards = [
+    { label: "Total Cases", value: overviewCounts?.totalCases, id: "total" },
+    { label: "Processing", value: overviewCounts?.processingCases, id: "processing" },
+    { label: "In Transit", value: overviewCounts?.inTransitCases, id: "in-transit" },
+    { label: "Completed", value: overviewCounts?.completedCases, id: "completed" },
+    { label: "Overdue", value: overviewCounts?.overdueCases, id: "overdue" },
+  ];
+
   return (
     <div ref={pageRef} className="px-8 py-7">
       <TrialBanner />
-      <div className="flex items-start justify-between mb-6">
+      <div className="flex items-start justify-between mb-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Cases</h1>
           <p className="text-sm text-muted-foreground mt-1">
@@ -2697,7 +3780,9 @@ export default function CasesPage() {
         </div>
         <div className="flex items-center gap-3">
           <div className="text-sm text-muted-foreground">
-            {filtered.length} of {data?.length ?? 0}
+            {worklistPending
+              ? "Loading…"
+              : `${loadedRows.length} of ${listQuery.data?.query === activeQuery ? listQuery.data.total : 0} loaded`}
           </div>
           <button
             type="button"
@@ -2720,12 +3805,75 @@ export default function CasesPage() {
         </div>
       </div>
 
+      <section aria-label="Case totals" className="mb-4" data-testid="cases-summary">
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2.5">
+          {summaryCards.map((card) => (
+            <div
+              key={card.id}
+              data-testid={`cases-summary-${card.id}`}
+              className="min-w-0 rounded-lg border border-border bg-card px-3 py-2.5"
+            >
+              <div className="text-xl leading-6 font-semibold tabular-nums">
+                {card.value === undefined ? "—" : card.value.toLocaleString()}
+              </div>
+              <div className="mt-0.5 truncate text-xs text-muted-foreground">{card.label}</div>
+            </div>
+          ))}
+        </div>
+        {overviewQuery.isError && (
+          <div role="status" className="mt-2 flex items-center gap-2 text-xs text-destructive">
+            <span>Case totals are unavailable.</span>
+            <button type="button" onClick={() => void overviewQuery.refetch()} className="underline underline-offset-2">
+              Retry
+            </button>
+          </div>
+        )}
+      </section>
+
+      <nav aria-label="Quick case status filters" className="mb-4 flex flex-wrap items-center gap-1.5">
+        {STATUS_QUICK_FILTERS.map(({ id, label, statuses }) => {
+          const count = id === "processing" ? overviewCounts?.processingCases
+            : id === "received" ? overviewCounts?.receivedCases
+              : id === "inDesign" ? overviewCounts?.inDesignCases
+                : id === "modelRoom" ? overviewCounts?.modelRoomCases
+                : id === "scan" ? overviewCounts?.scanCases
+                  : id === "milling" ? overviewCounts?.millingCases
+                    : id === "postMill" ? overviewCounts?.postMillCases
+                      : id === "sinteringFurnace" ? overviewCounts?.sinteringFurnaceCases
+                        : id === "porcelain" ? overviewCounts?.porcelainCases
+                          : id === "qualityCheck" ? overviewCounts?.qualityCheckCases
+                            : id === "onHold" ? overviewCounts?.onHoldCases
+                              : id === "remake" ? overviewCounts?.remakeCases
+                  : id === "shipped" ? overviewCounts?.shippedCases
+                    : id === "overdue" ? overviewCounts?.overdueCases
+                      : overviewCounts?.totalCases;
+          const active = selectedQuickFilter === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={active}
+              data-testid={`cases-quick-filter-${id}`}
+              onClick={() => applyQuickFilter(id, statuses)}
+              className={`inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors ${
+                active
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border bg-card text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+              }`}
+            >
+              {label}
+              {count !== undefined && <span className="tabular-nums opacity-75">{count.toLocaleString()}</span>}
+            </button>
+          );
+        })}
+      </nav>
+
       {iteroActiveBatch && (
         <div className="mb-4 flex items-center gap-3 px-4 py-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-sm text-blue-800 dark:text-blue-200">
           <Sparkles size={14} className="shrink-0 text-blue-500" />
           <span className="flex-1">
             Filtered to iTero import session — {iteroActiveBatch.label} on{" "}
-            {new Date(iteroActiveBatch.importedAt).toLocaleString()}.{" "}
+            {(() => { const _d = new Date(iteroActiveBatch.importedAt); const _mm = String(_d.getMonth()+1).padStart(2,"0"); const _dd = String(_d.getDate()).padStart(2,"0"); const _yyyy = _d.getFullYear(); const _t = _d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}); return `${_mm}/${_dd}/${_yyyy}, ${_t}`; })()}.{" "}
             Showing {filtered.length} case{filtered.length !== 1 ? "s" : ""}.
           </span>
           <button
@@ -2739,7 +3887,8 @@ export default function CasesPage() {
         </div>
       )}
 
-      <div className="bg-card border border-border rounded-xl overflow-clip">
+      <div className="flex items-start gap-4">
+      <div className="min-w-0 flex-1 bg-card border border-border rounded-xl overflow-clip">
         <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
           <div className="relative flex-1 min-w-[200px] max-w-md">
             <Search
@@ -2754,33 +3903,130 @@ export default function CasesPage() {
               className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
             />
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Filter size={13} />
-            Status:
+          <div className="flex items-center text-xs text-muted-foreground">
+            <Filter size={13} aria-hidden="true" />
           </div>
+          <div className="flex flex-wrap items-center gap-1.5" data-testid="cases-saved-views-controls">
+            <label className="sr-only" htmlFor="cases-saved-view-select">Saved Cases views</label>
+            <select
+              id="cases-saved-view-select"
+              data-testid="cases-saved-view-select"
+              value={selectedSavedViewId}
+              onChange={(event) => setSelectedSavedViewId(event.target.value)}
+              disabled={savedViewsQuery.isLoading || !savedViewsQuery.data?.length}
+              className="h-9 max-w-40 rounded-md border border-border bg-secondary px-2 text-sm"
+            >
+              <option value="">Saved views…</option>
+              {(savedViewsQuery.data ?? []).map((view) => (
+                <option key={view.id} value={view.id}>{view.name}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              data-testid="cases-saved-view-apply"
+              disabled={!selectedSavedViewId || !savedViewsQuery.data?.some((view) => view.id === selectedSavedViewId)}
+              onClick={() => {
+                const view = savedViewsQuery.data?.find((item) => item.id === selectedSavedViewId);
+                if (view) applySavedCaseView(view);
+              }}
+              className="h-9 rounded-md border border-border bg-card px-2.5 text-sm hover:bg-muted disabled:opacity-50"
+            >
+              Apply view
+            </button>
+            <button
+              type="button"
+              data-testid="cases-saved-view-save"
+              disabled={!pageLabOrgId || saveCaseViewMutation.isPending}
+              onClick={() => {
+                setSavedViewNameDraft("");
+                setSavedViewNameDialog({ mode: "save" });
+              }}
+              className="h-9 rounded-md border border-border bg-card px-2.5 text-sm hover:bg-muted disabled:opacity-50"
+            >
+              Save view
+            </button>
+            <button
+              type="button"
+              data-testid="cases-saved-view-update"
+              disabled={!savedViewsQuery.data?.some((view) => view.id === selectedSavedViewId) || updateCaseViewFiltersMutation.isPending}
+              onClick={() => {
+                const view = savedViewsQuery.data?.find((item) => item.id === selectedSavedViewId);
+                if (!view || !pageLabOrgId) return;
+                if (!window.confirm(`Update the shared view “${view.name}” for everyone in your lab with the current search, status, and desktop date filters?`)) return;
+                const filters: CaseSavedViewFilters = {
+                  search: search.trim(),
+                  statusFilters: [...statusFilters],
+                  desktop: { dateRangeFilter, customStartDate, customEndDate },
+                  ...(view.filters.mobile ? { mobile: view.filters.mobile } : {}),
+                };
+                updateCaseViewFiltersMutation.mutate({ id: view.id, filters });
+              }}
+              className="h-9 rounded-md border border-border bg-card px-2.5 text-sm hover:bg-muted disabled:opacity-50"
+            >
+              Update filters
+            </button>
+            <button
+              type="button"
+              data-testid="cases-saved-view-rename"
+              disabled={!savedViewsQuery.data?.some((view) => view.id === selectedSavedViewId) || renameCaseViewMutation.isPending}
+              onClick={() => {
+                const view = savedViewsQuery.data?.find((item) => item.id === selectedSavedViewId);
+                if (!view) return;
+                setSavedViewNameDraft(view.name);
+                setSavedViewNameDialog({ mode: "rename", viewId: view.id });
+              }}
+              className="h-9 rounded-md border border-border bg-card px-2.5 text-sm hover:bg-muted disabled:opacity-50"
+            >
+              Rename
+            </button>
+            <button
+              type="button"
+              data-testid="cases-saved-view-delete"
+              disabled={!savedViewsQuery.data?.some((view) => view.id === selectedSavedViewId) || deleteCaseViewMutation.isPending}
+              onClick={() => {
+                const view = savedViewsQuery.data?.find((item) => item.id === selectedSavedViewId);
+                if (view && window.confirm(`Remove the shared view “${view.name}”?`)) {
+                  deleteCaseViewMutation.mutate(view.id);
+                }
+              }}
+              className="h-9 rounded-md border border-border bg-card px-2.5 text-sm text-destructive hover:bg-muted disabled:opacity-50"
+            >
+              Remove
+            </button>
+            {savedViewsQuery.isError && (
+              <span role="status" className="text-xs text-destructive">Saved views unavailable</span>
+            )}
+          </div>
+          <MultiSelectFilter
+            label="Location"
+            options={STATUS_FILTER_OPTIONS}
+            selected={statusFilters}
+            onChange={(value) => {
+              setStatusFilters(value);
+              setOverdueOnly(false);
+            }}
+            data-testid="cases-status-filter"
+          />
+          <MultiSelectFilter
+            label="Priority"
+            options={PRIORITY_FILTER_OPTIONS}
+            selected={priorityFilters}
+            onChange={setPriorityFilters}
+            data-testid="cases-priority-filter"
+          />
+          <MultiSelectFilter
+            label="Type"
+            options={CASE_TYPE_FILTER_OPTIONS}
+            selected={caseTypeFilters}
+            onChange={setCaseTypeFilters}
+            data-testid="cases-type-filter"
+          />
+          <label className="flex items-center gap-2 text-sm">Date
           <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
-          >
-            {STATUS_FILTERS.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}
-              </option>
-            ))}
-          </select>
-          <select
-            value={priorityFilter}
-            onChange={(e) => setPriorityFilter(e.target.value)}
-            className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
-          >
-            <option value="all">All priorities</option>
-            <option value="normal">Normal</option>
-            <option value="rush">Rush</option>
-          </select>
-          <select
+            aria-label="Date"
             value={dateRangeFilter}
             onChange={(e) => {
+              if (e.target.value === "custom") { setShowRangeWindow(true); return; }
               setDateRangeFilter(e.target.value as DateRangeFilter);
               if (e.target.value !== "custom") {
                 setCustomStartDate("");
@@ -2791,44 +4037,35 @@ export default function CasesPage() {
           >
             <option value="all">All time</option>
             <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
             <option value="30">Last 30 days</option>
             <option value="60">Last 60 days</option>
             <option value="90">Last 90 days</option>
             <option value="custom">Custom…</option>
           </select>
+          </label>
           {dateRangeFilter === "custom" && (
-            <div className="flex items-center gap-1.5">
-              <input
-                type="date"
-                value={customStartDate}
-                onChange={(e) => setCustomStartDate(e.target.value)}
-                className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
-                aria-label="Start date"
-              />
-              <span className="text-muted-foreground text-xs">–</span>
-              <input
-                type="date"
-                value={customEndDate}
-                min={customStartDate || undefined}
-                onChange={(e) => setCustomEndDate(e.target.value)}
-                className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
-                aria-label="End date"
-              />
-            </div>
+            <button type="button" className="text-sm underline" onClick={() => setShowRangeWindow(true)}>
+              {customStartDate} – {customEndDate} · Edit range
+            </button>
           )}
+          {showRangeWindow && <CaseRangeWindow start={customStartDate} end={customEndDate}
+            onCancel={() => setShowRangeWindow(false)} onApply={(start, end) => {
+              setCustomStartDate(start); setCustomEndDate(end); setDateRangeFilter("custom"); setShowRangeWindow(false);
+            }} />}
 
           <div className="relative w-44">
             <Barcode
               size={14}
               className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
             />
-            {barcodeFilterActive && barcodeSearch.isFetching && (
+            {barcodeFilterActive && isFetching && (
               <Loader2
                 size={12}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 animate-spin text-muted-foreground pointer-events-none"
               />
             )}
-            {barcodeFilterActive && !barcodeSearch.isFetching && (
+            {barcodeFilterActive && !isFetching && (
               <button
                 type="button"
                 onClick={() => setBarcodeFilter("")}
@@ -2852,7 +4089,6 @@ export default function CasesPage() {
           <button
             type="button"
             onClick={() => setConflictsOnly((v) => !v)}
-            disabled={conflictCount === 0 && !conflictsOnly}
             title={
               conflictCount === 0
                 ? "No barcode conflicts detected"
@@ -2970,7 +4206,7 @@ export default function CasesPage() {
               <button
                 key={c.id}
                 type="button"
-                onClick={() => setSelected(c)}
+                onClick={() => selectCase(c)}
                 className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-border bg-background hover:bg-muted/60 transition-colors text-xs"
               >
                 <span className="font-mono font-medium text-foreground">{c.caseNumber}</span>
@@ -2986,8 +4222,8 @@ export default function CasesPage() {
             ))}
           </div>
         )}
-        {selectedIds.size > 0 && (
-          <div className="sticky top-0 z-10 px-4 py-2.5 border-b border-border bg-card/95 backdrop-blur-sm flex items-center gap-3 shadow-sm">
+        {(selectedIds.size > 0 || printingSelection) && (
+          <div className="sticky top-0 z-10 px-4 py-2.5 border-b border-border bg-card/95 backdrop-blur-sm flex flex-wrap items-center gap-3 shadow-sm">
             <span className="text-sm font-medium">
               {selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""} selected
             </span>
@@ -3011,6 +4247,7 @@ export default function CasesPage() {
             >
               Change Location
             </button>
+            <SelectedCasePrintActions selectedIds={selectedIds} isAdmin={isPageAdmin} onBusyChange={setPrintingSelection} />
             {isPageAdmin && (
               <button
                 type="button"
@@ -3036,7 +4273,10 @@ export default function CasesPage() {
           </div>
         )}
         <div className="overflow-x-auto relative">
-          <table className="text-sm" style={{ tableLayout: "fixed", width: 36 + caseCols.visible.reduce((sum, c) => sum + caseCols.getWidth(c.id), 0) }}>
+          <table ref={casesTableRef} className="text-sm" style={{ tableLayout: "fixed", width: 36 + caseCols.visible.reduce((sum, c) => sum + caseCols.getWidth(c.id), 0) }}>
+            <caption className="sr-only">
+              Cases. Use the Up and Down arrow keys to move between cases, Space to select a case, and Enter to open it.
+            </caption>
             <colgroup>
               <col style={{ width: 36 }} />
               {caseCols.visible.map((col) => (
@@ -3077,6 +4317,7 @@ export default function CasesPage() {
                   return (
                   <th
                     key={col.id}
+                    data-col-id={col.id}
                     className={`${col.align === "right" ? "text-right" : "text-left"} py-2.5 relative`}
                     style={{ overflow: "hidden" }}
                     onDragOver={(e) => {
@@ -3119,7 +4360,14 @@ export default function CasesPage() {
                     </span>
                     <div
                       onMouseDown={(e) => caseCols.startResize(col.id, e)}
-                      onDoubleClick={() => caseCols.resetWidth(col.id)}
+                      onDoubleClick={() => {
+                        const table = casesTableRef.current;
+                        if (!table) { caseCols.resetWidth(col.id); return; }
+                        const cells = table.querySelectorAll<HTMLElement>(`[data-col-id="${col.id}"]`);
+                        let max = 0;
+                        cells.forEach((el) => { max = Math.max(max, el.scrollWidth); });
+                        caseCols.fitColumn(col.id, max + 8);
+                      }}
                       className="group/resize"
                       style={{
                         position: "absolute",
@@ -3145,35 +4393,105 @@ export default function CasesPage() {
               </tr>
             </thead>
             <tbody>
-              {isLoading && (
+              {hasActiveFilters && worklistPending && (
                 <tr>
                   <td colSpan={1 + caseCols.visible.length} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
-                    Loading cases…
+                    Searching cases…
                   </td>
                 </tr>
               )}
-              {error && (
+              {hasActiveFilters && !worklistPending && error && (
                 <tr>
                   <td colSpan={1 + caseCols.visible.length} className="px-5 py-12 text-center text-destructive">
                     {(error as Error).message}
                   </td>
                 </tr>
               )}
-              {!isLoading && filtered.length === 0 && (
+              {!worklistPending && !error && filtered.length === 0 && (
                 <tr>
                   <td colSpan={1 + caseCols.visible.length} className="px-5 py-12 text-center text-muted-foreground">
-                    No cases match the current filters.
+                    {hasActiveFilters ? "No cases match the current filters." : "No cases yet."}
                   </td>
                 </tr>
               )}
-              {filtered.map((c) => (
+              {!worklistPending && filtered.map((c) => (
                 <tr
                   key={c.id}
-                  onClick={() => setSelected(c)}
-                  className={`border-t border-border cursor-pointer hover:bg-secondary/40 ${selectedIds.has(c.id) ? "bg-primary/5" : ""}`}
+                  data-case-id={c.id}
+                  tabIndex={focusableCaseId === c.id ? 0 : -1}
+                  aria-keyshortcuts="ArrowUp ArrowDown Space Enter"
+                  onFocus={() => setKeyboardActiveCaseId(c.id)}
+                  onKeyDown={(event) => {
+                    // Let nested controls keep their native keyboard behavior,
+                    // especially the bulk-selection checkbox.
+                    if (event.target !== event.currentTarget) return;
+
+                    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                      const currentIndex = filtered.findIndex((row) => row.id === c.id);
+                      const nextIndex = currentIndex + (event.key === "ArrowDown" ? 1 : -1);
+                      const nextCase = filtered[nextIndex];
+                      if (!nextCase) return;
+                      event.preventDefault();
+                      const rows = event.currentTarget.parentElement?.querySelectorAll<HTMLTableRowElement>(
+                        "tr[data-case-id]",
+                      );
+                      Array.from(rows ?? [])
+                        .find((row) => row.dataset.caseId === nextCase.id)
+                        ?.focus();
+                      return;
+                    }
+
+                    if (event.key === " ") {
+                      event.preventDefault();
+                      selectCase(c);
+                    } else if (event.key === "Enter") {
+                      event.preventDefault();
+                      openCaseFromRow(c);
+                    }
+                  }}
+                  onClick={(event) => {
+                    // The second click of a double-click is followed by the
+                    // guarded row-opening handler. While edits are dirty, wait
+                    // for that event before prompting so the first click does
+                    // not cover the row with a confirmation dialog.
+                    if (event.detail > 1) return;
+                    if (
+                      selected?.id !== c.id &&
+                      hasNavigationBlockers()
+                    ) {
+                      if (rowSelectionTimerRef.current) {
+                        clearTimeout(rowSelectionTimerRef.current);
+                      }
+                      rowSelectionTimerRef.current = setTimeout(() => {
+                        rowSelectionTimerRef.current = null;
+                        selectCase(c);
+                      }, 500);
+                      return;
+                    }
+                    selectCase(c);
+                  }}
+                  onDoubleClick={(event) => {
+                    const target = event.target;
+                    if (
+                      target instanceof Element &&
+                      target.closest(
+                        "input, button, select, textarea, a, [role='button'], [role='checkbox'], [contenteditable='true']",
+                      )
+                    ) {
+                      return;
+                    }
+                    if (rowSelectionTimerRef.current) {
+                      clearTimeout(rowSelectionTimerRef.current);
+                      rowSelectionTimerRef.current = null;
+                    }
+                    openCaseFromRow(c);
+                  }}
+                  data-testid={`case-row-${c.id}`}
+                  aria-selected={selected?.id === c.id}
+                  className={`border-t border-border cursor-pointer hover:bg-secondary/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-[-2px] ${selected?.id === c.id ? "bg-primary/10 shadow-[inset_3px_0_0_hsl(var(--primary))]" : ""} ${c.priority === "rush" ? "bg-destructive/5" : ""} ${selectedIds.has(c.id) ? "bg-primary/5" : ""}`}
                 >
-                  <td className="pl-3 pr-1 py-3" onClick={(e) => e.stopPropagation()}>
+                  <td className="pl-3 pr-1 py-2" onClick={(e) => e.stopPropagation()}>
                     <input
                       type="checkbox"
                       aria-label={`Select case ${c.caseNumber}`}
@@ -3186,22 +4504,57 @@ export default function CasesPage() {
                     />
                   </td>
                   {caseCols.visible.map((col) => (
-                    <td key={col.id} className={`py-3 ${col.align === "right" ? "px-5 text-right" : "px-5 text-left"}`}>
+                    <td key={col.id} data-col-id={col.id} className={`py-2 ${col.align === "right" ? "px-5 text-right" : "px-5 text-left"}${c.priority === "rush" ? " text-destructive [&_*]:text-destructive" : ""}`} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={col.titleFor?.(c)}>
                       {col.render(c)}
                     </td>
                   ))}
                 </tr>
               ))}
             </tbody>
+            {hasActiveFilters && !error && (worklistPending || filtered.length > 0) && (
+              <tfoot>
+                <tr className="border-t border-border bg-secondary/20">
+                  <td colSpan={1 + caseCols.visible.length}>
+                    <FilteredSalesTotal
+                      loading={worklistPending}
+                      amount={
+                        !worklistPending &&
+                        filtered.length > 0 &&
+                        listQuery.data?.query === activeQuery
+                          ? listQuery.data.salesTotal
+                          : undefined
+                      }
+                    />
+                  </td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
+        {!worklistPending && listQuery.data?.query === activeQuery && listQuery.data.hasMore && (
+          <div className="border-t border-border p-3 text-center">
+            <button
+              type="button"
+              onClick={() => setPagination({ criteria: criteriaQuery, page: page + 1 })}
+              disabled={isFetching}
+              className="h-9 px-4 rounded-md border border-border text-sm font-medium hover:bg-secondary disabled:opacity-50"
+            >
+              {isFetching ? "Loading…" : `Load more (${loadedRows.length} of ${listQuery.data.total})`}
+            </button>
+          </div>
+        )}
       </div>
 
-      {selected && (
+      {selected ? (
         <CaseDrawer
+          key={selected.id}
+          initialTab="history"
+          docked={!caseExpanded}
+          onExpand={() => setCaseExpanded(true)}
           labCase={selected}
           onClose={() => {
             setSelected(null);
+            setCaseExpanded(false);
             const params = new URLSearchParams(window.location.search);
             if (params.has("caseId")) {
               params.delete("caseId");
@@ -3218,19 +4571,106 @@ export default function CasesPage() {
           onOpenCaseId={async (id) => {
             const found = data?.find((c) => c.id === id);
             if (found) {
-              setSelected(found);
+              selectCase(found);
               return;
             }
             try {
               const fresh = await apiFetch<LabCase>(`/cases/${id}`);
-              setSelected(fresh);
+              selectCase(fresh);
             } catch {
               /* ignore — case may be soft-deleted or out of scope */
             }
           }}
         />
+      ) : (
+        <aside
+          data-testid="case-detail-empty"
+          className="hidden xl:flex sticky top-4 w-[420px] shrink-0 h-[min(520px,calc(100vh-2rem))] flex-col items-center justify-center text-center rounded-xl border border-dashed border-border text-muted-foreground px-8"
+        >
+          <div className="text-sm font-medium text-foreground">No case selected</div>
+          <p className="text-xs mt-1">Select a row to review the lab slip, notes, files, invoice and history here.</p>
+        </aside>
       )}
+      </div>
       {showNewCase && <NewCaseModal onClose={() => setShowNewCase(false)} />}
+
+      {savedViewNameDialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <form
+            className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-sm mx-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label={savedViewNameDialog.mode === "save" ? "Save Cases view" : "Rename Cases view"}
+            data-testid="cases-saved-view-name-dialog"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setSavedViewNameDialog(null);
+            }}
+            onSubmit={(event) => {
+              event.preventDefault();
+              const name = savedViewNameDraft.trim();
+              if (!name) return;
+              if (savedViewNameDialog.mode === "save") {
+                saveCaseViewMutation.mutate(name);
+              } else {
+                renameCaseViewMutation.mutate({ id: savedViewNameDialog.viewId, name });
+              }
+            }}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h2 className="text-base font-semibold">
+                {savedViewNameDialog.mode === "save" ? "Save Cases view" : "Rename Cases view"}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setSavedViewNameDialog(null)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-2">
+              <label className="block text-xs font-medium text-muted-foreground" htmlFor="cases-saved-view-name">
+                View name
+              </label>
+              <input
+                id="cases-saved-view-name"
+                data-testid="cases-saved-view-name-input"
+                autoFocus
+                maxLength={60}
+                value={savedViewNameDraft}
+                onChange={(event) => setSavedViewNameDraft(event.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+              />
+              {savedViewNameDialog.mode === "save" && (
+                <p className="text-xs text-muted-foreground">
+                  Saves the current search, location, and date filters for everyone in your lab.
+                </p>
+              )}
+            </div>
+            <div className="flex gap-3 px-6 pb-5">
+              <button
+                type="button"
+                onClick={() => setSavedViewNameDialog(null)}
+                className="flex-1 h-9 rounded-lg bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                data-testid="cases-saved-view-name-submit"
+                disabled={!savedViewNameDraft.trim() || saveCaseViewMutation.isPending || renameCaseViewMutation.isPending}
+                className="flex-1 h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+              >
+                {(saveCaseViewMutation.isPending || renameCaseViewMutation.isPending) && (
+                  <Loader2 size={13} className="animate-spin" />
+                )}
+                {savedViewNameDialog.mode === "save" ? "Save view" : "Rename"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {showReassignModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -3382,6 +4822,9 @@ export default function CasesPage() {
                   bulkStatusMutation.mutate({
                     caseIds: Array.from(selectedIds),
                     status,
+                     ...(bulkLocationsQuery.data && bulkLocationsQuery.data.length > 0
+                       ? { labLocationId: bulkStatusValue }
+                       : {}),
                   });
                 }}
                 className="flex-1 h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
@@ -3487,10 +4930,18 @@ function MobileCaseDrawer({ labCase, onClose }: { labCase: LabCase; onClose: () 
               </div>
             </div>
             <Field label="Doctor" value={labCase.doctorName} />
-            <Field label="Status" value={statusLabel(labCase.status)} />
+            <Field label="Location" value={labCase.labLocationName ?? statusLabel(labCase.status)} />
             <Field label="Priority" value={labCase.priority === "rush" ? "Rush" : "Normal"} />
             {labCase.restorationTypes && (
               <Field label="Type" value={labCase.restorationTypes} />
+            )}
+            {((labCase as any).caseType ?? labCase.restorationTypes ?? "").match(
+              /removable|denture|partial|ortho|night guard|retainer|aligner/i,
+            ) && (
+              <Field
+                label="Arch"
+                value={archLabel(labCase.restorations) ?? "Required"}
+              />
             )}
             {labCase.restorationMaterials && (
               <Field label="Material" value={labCase.restorationMaterials} />
@@ -3498,7 +4949,7 @@ function MobileCaseDrawer({ labCase, onClose }: { labCase: LabCase; onClose: () 
             {labCase.teeth && (
               <Field label="Teeth" value={labCase.teeth} />
             )}
-            <Field label="Due date" value={formatDueDate(labCase.dueDate)} />
+            <Field label="Due date" value={formatDueDate(labCase.dueDate, labCase.dueTime)} />
             <Field label="Created" value={formatDate(labCase.createdAt)} />
             {Number(labCase.totalPrice ?? 0) > 0 && (
               <Field label="Price" value={formatMoney(labCase.totalPrice)} />
@@ -3536,16 +4987,20 @@ type DetailedCase = LabCase & {
   attachments: CaseAttachment[];
   viewerIsLabMember?: boolean;
   viewerCanUploadAttachments?: boolean;
+  viewerCanPostNotes?: boolean;
+  viewerQuickReferenceOrganizationId?: string | null;
   viewerCanManageAttachments?: boolean;
+  /** Open exception for this case. Lab-internal — null for provider viewers. */
+  activeException?: CaseExceptionSummary | null;
+  remakeNotes?: string | null;
   /**
    * Distinct restoration material names that couldn't be mapped to a price
-   * key (so they resolve to a $0 invoice line). Surfaced in the AI-review
-   * banner so an admin can fix pricing before billing.
+   * key (so they resolve to a $0 invoice line). Surfaced independently so an
+   * admin can fix pricing before billing.
    */
   unrecognizedMaterials?: string[] | null;
   /** Serialized bridge connector pairs, e.g. "13-14,14-15". Null when none. */
   bridgeConnectors?: string | null;
-  expectedDeliveryDate?: string | null;
   statusHistory?: Array<{ status: string; occurredAt: string }>;
   remakeOriginal?: {
     id: string;
@@ -3565,6 +5020,15 @@ type DetailedCase = LabCase & {
     remakeReason: string | null;
     remakeCharged: boolean | null;
   }>;
+  /** Structured remake questionnaire fields returned by GET /cases/:id */
+  remakeReasonKey?: string | null;
+  remakeShadeLightness?: "light" | "dark" | null;
+  remakeShadePrescribed?: string | null;
+  remakeShadeProvided?: string | null;
+  remakeMaterialPrescribed?: string | null;
+  remakeMaterialProvided?: string | null;
+  remakeReturnedToLab?: boolean | null;
+  remakeCategory?: "crown_bridge" | "removable" | null;
 };
 
 function formatEventType(eventType: string | undefined | null): string {
@@ -3576,6 +5040,17 @@ function formatEventType(eventType: string | undefined | null): string {
   // history feed (and in the printed history below).
   if (eventType === "status_changed") return "Location Changed";
   if (eventType === "case_restoration_price_updated") return "Price Override";
+  if (eventType === "step_changed") return "Step Changed";
+  if (eventType === "step_shade_changed") return "Wax Setup Shade Changed";
+  if (eventType === "internal_exception_opened_note") {
+    return "Internal Exception — Issue";
+  }
+  if (eventType === "internal_exception_note_added") {
+    return "Internal Exception Note";
+  }
+  if (eventType === "internal_exception_resolution_note_added") {
+    return "Internal Exception — Resolution Note";
+  }
   return eventType
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -3592,18 +5067,49 @@ function invoiceEventSummary(
   eventType: string | undefined | null,
   metadata: Record<string, unknown>,
 ): string | null {
-  if (eventType !== "invoice_updated" && eventType !== "invoice_voided") {
+  if (eventType === "invoice_emailed") {
+    const invoiceNumber =
+      typeof metadata.invoiceNumber === "string" && metadata.invoiceNumber
+        ? metadata.invoiceNumber
+        : null;
+    const to =
+      typeof metadata.to === "string" && metadata.to ? metadata.to : null;
+    const subject = invoiceNumber ? `Invoice ${invoiceNumber}` : "Invoice";
+    return to ? `${subject} emailed to ${to}` : `${subject} emailed`;
+  }
+  if (eventType === "statement_emailed") {
+    const invoiceNumber =
+      typeof metadata.invoiceNumber === "string" && metadata.invoiceNumber
+        ? metadata.invoiceNumber
+        : null;
+    const to =
+      typeof metadata.to === "string" && metadata.to ? metadata.to : null;
+    const subject = invoiceNumber ? `Invoice ${invoiceNumber}` : "Statement";
+    return to ? `${subject} emailed to ${to}` : `${subject} emailed`;
+  }
+  if (
+    eventType !== "invoice_updated" &&
+    eventType !== "invoice_voided" &&
+    eventType !== "invoice_payments_deleted"
+  ) {
     return null;
   }
   const invoiceNumber =
     typeof metadata.invoiceNumber === "string" && metadata.invoiceNumber
       ? metadata.invoiceNumber
       : null;
+  const subject = invoiceNumber ? `Invoice ${invoiceNumber}` : "Invoice";
+  if (eventType === "invoice_payments_deleted") {
+    const count =
+      typeof metadata.deletedCount === "number" ? metadata.deletedCount : null;
+    const noun =
+      count === 1 ? "1 payment" : count != null ? `${count} payments` : "payments";
+    return `${subject} — ${noun} cleared`;
+  }
   const newStatus =
     typeof metadata.newStatus === "string" && metadata.newStatus
       ? metadata.newStatus
       : null;
-  const subject = invoiceNumber ? `Invoice ${invoiceNumber}` : "Invoice";
   if (eventType === "invoice_voided" || newStatus === "void") {
     return `${subject} voided`;
   }
@@ -3615,35 +5121,6 @@ function invoiceEventSummary(
   }
   return `${subject} updated`;
 }
-
-const RESTORATION_TYPES = [
-  "Crown",
-  "Bridge",
-  "Veneer",
-  "Implant Crown",
-  "Inlay",
-  "Onlay",
-  "Full Denture",
-  "Partial Denture",
-  "Night Guard",
-  "Retainer",
-  "Sports Guard",
-  "Snore Guard",
-  "Other",
-];
-
-const MATERIALS = [
-  "Zirconia",
-  "PFM",
-  "Lithium Disilicate (Emax)",
-  "Full Cast",
-  "Composite",
-  "Acrylic",
-  "Metal",
-  "PMMA",
-  "Other",
-];
-
 const SHADES = [
   "A1", "A2", "A3", "A3.5", "A4",
   "B1", "B2", "B3", "B4",
@@ -3679,7 +5156,8 @@ function CaseTimelineBar({
 }) {
   function fmtDate(s: string) {
     try {
-      return new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      const d = new Date(s);
+      return `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`;
     } catch {
       return "";
     }
@@ -3726,7 +5204,172 @@ function CaseTimelineBar({
   );
 }
 
+// ── NoteComposer ─────────────────────────────────────────────────────────────
+// Add-Note composer with optional quick-reference note picker. The picker
+// fetches active templates for the case's lab org and appends them on click.
+interface QRNoteDesktop {
+  id: string;
+  body: string;
+  label: string | null;
+  isActive: boolean;
+  displayOrder: number;
+}
+
+function NoteComposer({
+  noteText,
+  setNoteText,
+  setNoteError,
+  noteError,
+  shareWithProvider,
+  setShareWithProvider,
+  isListeningNote,
+  startNoteListening,
+  stopNoteListening,
+  isPending,
+  onSubmit,
+  orgId,
+}: {
+  noteText: string;
+  setNoteText: (v: string) => void;
+  setNoteError: (v: string | null) => void;
+  noteError: string | null;
+  shareWithProvider: boolean;
+  setShareWithProvider: (v: boolean) => void;
+  isListeningNote: boolean;
+  startNoteListening: () => void;
+  stopNoteListening: () => void;
+  isPending: boolean;
+  onSubmit: () => void;
+  orgId: string | null;
+}) {
+  const [qrnOpen, setQrnOpen] = useState(false);
+  const qrnQuery = useQuery<QRNoteDesktop[]>({
+    queryKey: ["quick-reference-notes", orgId],
+    enabled: !!orgId,
+    staleTime: 5 * 60 * 1000,
+    queryFn: async () => {
+      const r = await apiFetch<{ notes: QRNoteDesktop[] }>(`/organizations/${orgId}/quick-reference-notes`);
+      return (r?.notes ?? []).filter((n: QRNoteDesktop) => n.isActive);
+    },
+  });
+  const activeTemplates = qrnQuery.data ?? [];
+
+  const handleInsert = (body: string) => {
+    setNoteText(noteText.trim() ? `${noteText}\n${body}` : body);
+    setNoteError(null);
+    setQrnOpen(false);
+  };
+
+  return (
+    <div className="border border-border rounded-md p-3 space-y-2">
+      <textarea
+        value={noteText}
+        onChange={(e) => { setNoteText(e.target.value); setNoteError(null); }}
+        placeholder="Add a note…"
+        rows={3}
+        className="w-full text-sm bg-transparent resize-none focus:outline-none placeholder:text-muted-foreground"
+      />
+      <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
+        <input
+          type="checkbox"
+          checked={shareWithProvider}
+          onChange={(e) => setShareWithProvider(e.target.checked)}
+          className="h-3.5 w-3.5 rounded border-border accent-primary"
+        />
+        <span className="text-xs text-muted-foreground">Share note with provider</span>
+      </label>
+
+      {/* Quick Reference Picker */}
+      {qrnQuery.isError ? (
+        <p className="text-xs text-destructive">
+          Couldn't load quick reference notes{qrnQuery.error instanceof Error ? `: ${qrnQuery.error.message}` : "."}
+        </p>
+      ) : (
+        activeTemplates.length > 0 && (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setQrnOpen((v) => !v)}
+              className="text-xs text-muted-foreground hover:text-foreground border border-border rounded px-2 py-1 transition-colors inline-flex items-center gap-1"
+            >
+              <Bookmark size={11} />
+              Add quick reference note
+            </button>
+            {qrnOpen && (
+              <div className="absolute z-30 left-0 bottom-full mb-1 w-72 max-h-60 overflow-y-auto rounded-lg border border-border bg-popover shadow-lg py-1">
+                {activeTemplates.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="w-full text-left px-3 py-2 hover:bg-accent transition-colors"
+                    onClick={() => handleInsert(t.body)}
+                  >
+                    {t.label && <div className="text-[11px] font-medium text-primary mb-0.5">{t.label}</div>}
+                    <div className="text-xs text-foreground line-clamp-2">{t.body}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      )}
+
+      <div className="flex items-center justify-between pt-1.5 border-t border-border">
+        <button
+          type="button"
+          title={isListeningNote ? "Stop dictation" : "Dictate note"}
+          onClick={isListeningNote ? stopNoteListening : startNoteListening}
+          className={`h-7 w-7 rounded inline-flex items-center justify-center transition-colors ${isListeningNote ? "bg-destructive text-destructive-foreground animate-pulse" : "bg-secondary text-muted-foreground hover:text-foreground hover:bg-secondary/80"}`}
+        >
+          <Mic size={13} />
+        </button>
+        <button
+          type="button"
+          disabled={!noteText.trim() || isPending}
+          onClick={onSubmit}
+          className="h-7 px-3 rounded bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+        >
+          {isPending ? <Loader2 size={12} className="animate-spin" /> : "Add note"}
+        </button>
+      </div>
+      {noteError && <p className="text-xs text-destructive">{noteError}</p>}
+    </div>
+  );
+}
+
 type CaseTab = "lab-slip" | "restorations" | "notes" | "files" | "invoice" | "history";
+
+function buildCaseMediaGallery(
+  caseId: string,
+  attachments: CaseAttachment[] | undefined,
+): LightboxItem[] {
+  return (attachments ?? []).flatMap((attachment) => {
+    const kind = classifyMediaKind(attachment.fileType, attachment.fileName);
+    if (!kind) return [];
+    return [
+      {
+        attachmentId: attachment.id,
+        url: `${getApiOrigin()}/api/cases/${caseId}/attachments/${attachment.id}/file`,
+        kind,
+        mimeType: attachment.fileType || undefined,
+        fileName: attachment.fileName,
+      },
+    ];
+  });
+}
+
+export function remakeChainLocationLabel(
+  entry: { status: string | null; labLocationId?: string | null; labLocationName?: string | null },
+  locations: Array<{ id: string; label: string }> = [],
+): string {
+  return (
+    entry.labLocationName ||
+    (entry.labLocationId
+      ? locations.find((location) => location.id === entry.labLocationId)?.label
+      : null) ||
+    statusLabel(entry.status)
+  );
+}
 
 export function CaseDrawer({
   labCase,
@@ -3736,7 +5379,13 @@ export function CaseDrawer({
   patientFirstNames = [],
   onOpenCaseId,
   onCaseLocated,
+  docked = false,
+  onExpand,
+  initialTab = "lab-slip",
 }: {
+  initialTab?: CaseTab;
+  docked?: boolean;
+  onExpand?: () => void;
   labCase: LabCase;
   onClose: () => void;
   doctorNames?: string[];
@@ -3745,26 +5394,174 @@ export function CaseDrawer({
   onOpenCaseId?: (id: string) => void;
   onCaseLocated?: (newStatus: CaseStatus) => void;
 }) {
+  const drawerLayoutRef = useDockedDrawerHeight(docked);
   const qc = useQueryClient();
   const { user } = useAuth();
+  const attachmentPreferenceKey = attachmentSectionPreferenceKey(user?.id);
+  const initialAttachmentPreference = useMemo(() => {
+    try {
+      return parseAttachmentSectionPreference(localStorage.getItem(attachmentPreferenceKey));
+    } catch {
+      return null;
+    }
+  }, [attachmentPreferenceKey]);
+  const [attachmentSectionsExpanded, setAttachmentSectionsExpanded] =
+    useState(() => initialAttachmentPreference?.expanded ?? COLLAPSED_ATTACHMENT_SECTIONS);
+  const [attachmentSectionSave, setAttachmentSectionSave] = useState(
+    () =>
+      initialAttachmentPreference?.save ?? {
+        ...COLLAPSED_ATTACHMENT_SECTIONS,
+        all: false,
+      },
+  );
   const { openPanel: openAiPanel } = useAiPanel();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileDragOver, setFileDragOver] = useState(false);
   const fileDragCounterRef = useRef(0);
 
-  const [activeTab, setActiveTab] = useState<CaseTab>("lab-slip");
+  const [activeTab, setActiveTab] = useState<CaseTab>(initialTab);
   const [historySortOrder, setHistorySortOrder] = useState<"asc" | "desc">("desc");
   const [remakeChainExpanded, setRemakeChainExpanded] = useState(true);
   const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
   const [lightbox, setLightbox] = useState<
-    { url: string; kind: "image" | "video"; mimeType?: string } | null
+    Lightbox
   >(null);
-  const setLightboxUrl = (url: string | null) => setLightbox(url ? { url, kind: "image" } : null);
+  const [activeLightboxIdentity, setActiveLightboxIdentity] = useState<string | null>(
+    null,
+  );
+  const openLightbox = useCallback((next: Lightbox) => {
+    setLightbox(next);
+    setActiveLightboxIdentity(next?.attachmentId ?? next?.url ?? null);
+  }, []);
   const [confirmDeleteCase, setConfirmDeleteCase] = useState(false);
   const [reassignDoctorOpen, setReassignDoctorOpen] = useState(false);
+  const [remakeFromDetailOpen, setRemakeFromDetailOpen] = useState(false);
+  const [remakeFromDetailQ, setRemakeFromDetailQ] = useState<RemakeQuestionnaireValue>(blankQuestionnaire);
+  const [remakeFromDetailDueDate, setRemakeFromDetailDueDate] = useState<string>(
+    () => labCase.dueDate ? new Date(labCase.dueDate).toISOString().split("T")[0] : ""
+  );
+  const [remakeFromDetailDueTime, setRemakeFromDetailDueTime] = useState<string>("");
+  const [remakeFromDetailHasDueTime, setRemakeFromDetailHasDueTime] = useState(false);
+  const [remakeFromDetailLoading, setRemakeFromDetailLoading] = useState(false);
+  const [remakeFromDetailError, setRemakeFromDetailError] = useState<string | null>(null);
+
+  const [editRemakeOpen, setEditRemakeOpen] = useState(false);
+  const [editRemakeQ, setEditRemakeQ] = useState<RemakeQuestionnaireValue>(blankQuestionnaire);
+  const [editRemakeLoading, setEditRemakeLoading] = useState(false);
+  const [editRemakeError, setEditRemakeError] = useState<string | null>(null);
+
+  async function handleRemakeFromDetail() {
+    const q = remakeFromDetailQ;
+    if (!isRemakeQuestionnaireComplete(q)) {
+      setRemakeFromDetailError(remakeQuestionnaireError(q));
+      return;
+    }
+    const found = REMAKE_REASONS.find((r) => r.key === q.reasonKey);
+    const reasonLabel = found?.label ?? q.reasonKey;
+    setRemakeFromDetailLoading(true);
+    setRemakeFromDetailError(null);
+    try {
+      const result = await apiFetch<{ id: string; caseNumber: string }>(
+        `/cases/${labCase.id}/remake`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            remakeReasonKey: q.reasonKey,
+            remakeReason: q.reasonKey === "other" ? (q.customReason ?? "").trim() : reasonLabel,
+            remakeCharged: q.charge === "yes" ? true : q.charge === "no" ? false : null,
+            remakeShadeLightness: q.shadeLightness || undefined,
+            remakeShadePrescribed: q.shadePrescribed || undefined,
+            remakeShadeProvided: q.shadeProvided || undefined,
+            remakeMaterialPrescribed: q.materialPrescribed || undefined,
+            remakeMaterialProvided: q.materialProvided || undefined,
+            remakeReturnedToLab: q.returnedToLab ?? undefined,
+            remakeCategory: q.category || undefined,
+            remakeNotes: q.notes.trim() || undefined,
+            ...(remakeFromDetailDueDate ? { dueDate: remakeFromDetailDueDate } : {}),
+            ...(remakeFromDetailDueDate && remakeFromDetailHasDueTime && remakeFromDetailDueTime
+              ? { dueTime: remakeFromDetailDueTime }
+              : {}),
+          }),
+        },
+      );
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      setRemakeFromDetailOpen(false);
+      toast.success(`Remake case #${result.caseNumber} created.`);
+      if (onOpenCaseId) onOpenCaseId(result.id);
+    } catch (e: unknown) {
+      setRemakeFromDetailError(e instanceof Error ? e.message : "Failed to create remake.");
+    } finally {
+      setRemakeFromDetailLoading(false);
+    }
+  }
+  function openEditRemake() {
+    const d = data;
+    setEditRemakeQ({
+      reasonKey: (d?.remakeReasonKey ?? "") as RemakeReasonKey | "",
+      customReason: d?.remakeReasonKey === "other" ? (d?.remakeReason ?? "") : "",
+      shadeLightness: (d?.remakeShadeLightness ?? "") as "light" | "dark" | "",
+      shadePrescribed: d?.remakeShadePrescribed ?? "",
+      shadeProvided: d?.remakeShadeProvided ?? "",
+      materialPrescribed: d?.remakeMaterialPrescribed ?? "",
+      materialProvided: d?.remakeMaterialProvided ?? "",
+      returnedToLab: d?.remakeReturnedToLab ?? null,
+      category: (d?.remakeCategory ?? "") as "crown_bridge" | "removable" | "",
+      charge: d?.remakeCharged === true ? "yes" : d?.remakeCharged === false ? "no" : "",
+      notes: d?.remakeNotes ?? "",
+    });
+    setEditRemakeError(null);
+    setEditRemakeOpen(true);
+  }
+
+  async function handleEditRemakeSave() {
+    const q = editRemakeQ;
+    if (!isRemakeQuestionnaireComplete(q)) {
+      setEditRemakeError(remakeQuestionnaireError(q));
+      return;
+    }
+    const found = REMAKE_REASONS.find((r) => r.key === q.reasonKey);
+    const reasonLabel = found?.label ?? q.reasonKey;
+    setEditRemakeLoading(true);
+    setEditRemakeError(null);
+    try {
+      await apiFetch(`/cases/${labCase.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+            remakeReasonKey: q.reasonKey,
+            remakeReason: q.reasonKey === "other" ? (q.customReason ?? "").trim() : reasonLabel,
+          remakeCharged: q.charge === "yes" ? true : q.charge === "no" ? false : null,
+          remakeShadeLightness: q.shadeLightness || undefined,
+          remakeShadePrescribed: q.shadePrescribed || undefined,
+          remakeShadeProvided: q.shadeProvided || undefined,
+          remakeMaterialPrescribed: q.materialPrescribed || undefined,
+          remakeMaterialProvided: q.materialProvided || undefined,
+          remakeReturnedToLab: q.returnedToLab ?? undefined,
+          remakeCategory: q.category || undefined,
+          remakeNotes: q.notes.trim() || null,
+        }),
+      });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["case", labCase.id] }),
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+        qc.invalidateQueries({ queryKey: ["case-remake-chain", labCase.id] }),
+      ]);
+      setEditRemakeOpen(false);
+      toast.success("Remake reason updated.");
+    } catch (e: unknown) {
+      setEditRemakeError(e instanceof Error ? e.message : "Failed to update remake reason.");
+    } finally {
+      setEditRemakeLoading(false);
+    }
+  }
+
   const [showPrintLayoutEditor, setShowPrintLayoutEditor] = useState(false);
   const [showCaseAdvancedEditor, setShowCaseAdvancedEditor] = useState(false);
   const [rxPreviewOpen, setRxPreviewOpen] = useState(false);
+  // Which case the prescription preview should show. Null = the case this
+  // drawer is open on. The History tab's "View Rx" buttons set this so a
+  // merged remake-chain entry previews the case that entry belongs to.
+  const [rxPreviewCaseId, setRxPreviewCaseId] = useState<string | null>(null);
   const [printLayout, setPrintLayout] = useState<PrintLayoutConfig>(() => loadPrintLayoutConfig());
 
   // Per-lab advanced (drag/scale) print template. Null = no custom layout
@@ -3778,7 +5575,7 @@ export function CaseDrawer({
     queryFn: async () => {
       const res = await apiFetch<
         { data: { template: unknown; isCustom: boolean } } | { template: unknown; isCustom: boolean }
-      >(`/organizations/${labCase.labOrganizationId}/case-print-template`);
+      >(`/organizations/${labCase.labOrganizationId}/case-print-template?caseId=${encodeURIComponent(labCase.id)}`);
       const inner = (res as { data?: { template: unknown; isCustom: boolean } }).data ?? (res as { template: unknown; isCustom: boolean });
       return {
         template: coerceCasePrintTemplate(inner.template),
@@ -3812,6 +5609,11 @@ export function CaseDrawer({
 
   const [editMode, setEditMode] = useState(false);
   const barcodeScanInputRef = useRef<HTMLInputElement>(null);
+  const [caseNumberEditMode, setCaseNumberEditMode] = useState(false);
+  const [caseNumberEditValue, setCaseNumberEditValue] = useState("");
+  const [caseNumberSaving, setCaseNumberSaving] = useState(false);
+  const [caseNumberError, setCaseNumberError] = useState<string | null>(null);
+  const caseNumberInputRef = useRef<HTMLInputElement>(null);
   const [barcodeEditMode, setBarcodeEditMode] = useState(false);
   const [barcodeEditValue, setBarcodeEditValue] = useState("");
   const [optimisticBarcode, setOptimisticBarcode] = useState<string | null>(null);
@@ -3828,13 +5630,20 @@ export function CaseDrawer({
     patientLastName: labCase.patientLastName || "",
     doctorName: labCase.doctorName || "",
     providerOrganizationId: labCase.providerOrganizationId || "",
+    receivedAt:
+      labCase.receivedAt && isValidCalendarDate(labCase.receivedAt)
+        ? labCase.receivedAt
+        : "",
     dueDate: labCase.dueDate
       ? new Date(labCase.dueDate).toISOString().split("T")[0]
       : "",
+    dueTime: labCase.dueTime || "",
     priority: (labCase.priority || "normal") as "normal" | "rush",
     casePanBarcode: labCase.casePanBarcode || "",
-    rxNotes: (labCase.caseNotes ?? "").trim(),
+    rxNotes: labCase.caseNotes ?? "",
+    gingivialShade: (labCase.gingivialShade ?? "").trim(),
   });
+  const [editHasDueTime, setEditHasDueTime] = useState(Boolean(labCase.dueTime));
   const [editError, setEditError] = useState<string | null>(null);
 
   // ── Edit-form barcode conflict check ─────────────────────────────────────
@@ -3905,6 +5714,40 @@ export function CaseDrawer({
   const [routeStatus, setRouteStatus] = useState("");
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routeSuccessMsg, setRouteSuccessMsg] = useState<string | null>(null);
+  const routeSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (routeSuccessTimerRef.current !== null) clearTimeout(routeSuccessTimerRef.current);
+  }, []);
+  // Re-receive wizard: shown when routing a complete case to an intake station.
+  // Walks the user through the questions that matter when a case comes back —
+  // due date, new prescription, remake linking, removable step, notes, and the
+  // two reprints. Every answer applies immediately and closing the panel just
+  // skips the remaining questions.
+  const [returnPromptStep, setReturnPromptStep] = useState<ReturnWizardStage | null>(null);
+  const [returnPromptStatus, setReturnPromptStatus] = useState<string | null>(null);
+  const [returnPromptLabLocationId, setReturnPromptLabLocationId] = useState<string | null>(null);
+  const [returnDueDate, setReturnDueDate] = useState("");
+  const [returnDueTime, setReturnDueTime] = useState("");
+  const [returnStep, setReturnStep] = useState("");
+  const [returnDueDateDeclined, setReturnDueDateDeclined] = useState(false);
+  const [returnRemakeSelected, setReturnRemakeSelected] = useState<RemakeCaseHit | null>(null);
+  const [returnRemakeQ, setReturnRemakeQ] = useState<RemakeQuestionnaireValue>(blankQuestionnaire);
+  const [returnRemakeError, setReturnRemakeError] = useState<string | null>(null);
+  const [returnRxDragOver, setReturnRxDragOver] = useState(false);
+  const returnRxInputRef = useRef<HTMLInputElement>(null);
+  // Escape behaves exactly like the popup's Close button: skip the remaining
+  // questions and leave the case routed to its new station.
+  useEffect(() => {
+    if (!returnPromptStep) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      resetReturnWizard();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [returnPromptStep]);
   const [qrLinkCopied, setQrLinkCopied] = useState(false);
 
   const [noteText, setNoteText] = useState("");
@@ -3912,29 +5755,44 @@ export function CaseDrawer({
   const [noteError, setNoteError] = useState<string | null>(null);
   const [isListeningNote, setIsListeningNote] = useState(false);
   const noteRecognitionRef = useRef<any>(null);
+  // Captures the textarea content at the moment dictation starts so that
+  // every onresult event computes the new value against this fixed baseline
+  // rather than the already-updated state (which caused the duplication bug).
+  const noteDictationBaseRef = useRef<string>("");
+  // Accumulates finalized transcript segments across events within one session.
+  const noteFinalTranscriptRef = useRef<string>("");
 
   const startNoteListening = useCallback(() => {
     const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
     if (!SR) return;
+
+    // Abort any in-progress session cleanly before starting a new one.
+    noteRecognitionRef.current?.abort?.();
+    noteRecognitionRef.current = null;
+
+    // Snapshot pre-dictation text once — never read from state inside onresult.
+    noteDictationBaseRef.current = noteText.trimEnd();
+    noteFinalTranscriptRef.current = "";
+
     const r = new SR();
     r.continuous = true;
     r.interimResults = true;
     r.lang = "en-US";
-    let finalSoFar = "";
     r.onresult = (e: any) => {
-      let interim = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) {
-          finalSoFar += e.results[i][0].transcript;
-        } else {
-          interim = e.results[i][0].transcript;
-        }
-      }
-      setNoteText((prev) => {
-        const base = prev.trimEnd();
-        const combined = finalSoFar + interim;
-        return base ? base + " " + combined : combined;
-      });
+      const newResults = Array.from(
+        { length: e.results.length - e.resultIndex },
+        (_, i) => ({
+          isFinal: e.results[e.resultIndex + i].isFinal as boolean,
+          transcript: e.results[e.resultIndex + i][0].transcript as string,
+        }),
+      );
+      const { noteText: next, newFinal } = composeNoteDictation(
+        newResults,
+        noteFinalTranscriptRef.current,
+        noteDictationBaseRef.current,
+      );
+      noteFinalTranscriptRef.current = newFinal;
+      setNoteText(next);
       setNoteError(null);
     };
     r.onerror = () => { setIsListeningNote(false); };
@@ -3942,17 +5800,26 @@ export function CaseDrawer({
     noteRecognitionRef.current = r;
     r.start();
     setIsListeningNote(true);
-  }, []);
+  }, [noteText]);
 
   const stopNoteListening = useCallback(() => {
     noteRecognitionRef.current?.stop();
     noteRecognitionRef.current = null;
     setIsListeningNote(false);
   }, []);
+
+  // Stop recognition when the drawer moves to a different case or unmounts so
+  // no stale session bleeds into the next case's note field.
+  useEffect(() => {
+    return () => {
+      noteRecognitionRef.current?.abort?.();
+      noteRecognitionRef.current = null;
+    };
+  }, [labCase.id]);
   const [notifyModal, setNotifyModal] = useState<{
     open: boolean;
     noteId: string;
-    method: "email" | "sms" | null;
+    method: "email" | "sms" | "labtrax_only" | null;
     step: "choose" | "confirm_save" | "success";
     sending: boolean;
     error: string | null;
@@ -3976,7 +5843,7 @@ export function CaseDrawer({
   const generatePresetsQuery = useQuery({
     queryKey: ["invoice-template-presets", labCase.labOrganizationId],
     queryFn: () =>
-      apiFetch<{ presets: Array<{ id: string; name: string }> }>(
+      apiFetch<{ presets: Array<{ id: string; name: string; template?: unknown }> }>(
         `/organizations/${labCase.labOrganizationId}/invoice-template/presets`,
       ),
     staleTime: 60_000,
@@ -4065,10 +5932,14 @@ export function CaseDrawer({
 
   const [showAddRest, setShowAddRest] = useState(false);
   const [restForm, setRestForm] = useState({
+    implantRetention: null as string | null,
+    implantManufacturer: null as string | null,
+    implantPlatformNotes: null as string | null,
     toothNumber: "",
     restorationType: "",
     customType: "",
     material: "",
+    restorationSubtype: null as string | null,
     shade: "",
     quantity: 1,
     unitPrice: "",
@@ -4078,13 +5949,16 @@ export function CaseDrawer({
   // Interactive tooth chart dialog state
   const [toothDialogId, setToothDialogId] = useState<string | null>(null);
   const [toothDialogError, setToothDialogError] = useState<string | null>(null);
+  const [connectorSaveError, setConnectorSaveError] = useState<string | null>(null);
+  const [connectorDraft, setConnectorDraft] = useState<string | null>(null);
 
   // --- Draft / pending changes state ---
-  type PendingCreate = {
+  type PendingCreate = ImplantDetails & {
     localId: string;
     toothNumber: string;
     restorationType: string;
     material: string;
+    restorationSubtype?: string | null;
     shade: string;
     quantity: number;
     unitPrice: string;
@@ -4093,36 +5967,74 @@ export function CaseDrawer({
     restorationId: string;
     newToothNumber: string;
     material?: string;
+    restorationSubtype?: string;
     shade?: string;
+    restorationType?: "Crown" | "Pontic";
   };
   type PendingCaseEdit = {
     patientFirstName: string;
     patientLastName: string;
     doctorName: string;
     providerOrganizationId: string;
+    receivedAt: string;
     dueDate: string;
+    dueTime: string;
     priority: "normal" | "rush";
     casePanBarcode: string;
     rxNotes: string;
+    gingivialShade: string;
   };
 
   const [pendingCreates, setPendingCreates] = useState<PendingCreate[]>([]);
   const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
   const [pendingUpdates, setPendingUpdates] = useState<PendingUpdate[]>([]);
+  const [toothUndo, setToothUndo] = useState<{
+    creates: PendingCreate[]; deletes: Set<string>; updates: PendingUpdate[]; connectors: string | null;
+  } | null>(null);
+  function captureToothUndo() {
+    setToothUndo({
+      creates: [...pendingCreates], deletes: new Set(pendingDeletes),
+      updates: [...pendingUpdates], connectors: connectorDraft,
+    });
+  }
   const [pendingCaseEdit, setPendingCaseEdit] = useState<PendingCaseEdit | null>(null);
   const [pendingRxSummaryEdit, setPendingRxSummaryEdit] = useState<{
-    type: string; material: string; shade: string; teeth: string;
+    type: string;
+    material: string;
+    restorationSubtype?: string | null;
+    shade: string;
+    teeth: string;
+    arch: "" | "upper" | "lower" | "both";
+    step: string;
+    stepShade: string;
+    changed: {
+      shade: boolean;
+      arch: boolean;
+      step: boolean;
+      stepShade: boolean;
+    };
   } | null>(null);
   const [editRxType, setEditRxType] = useState("Other");
   const [editRxMaterial, setEditRxMaterial] = useState("");
+  const [editRxSubtype, setEditRxSubtype] = useState<string | null>(null);
+  const [editImplants, setEditImplants] = useState<Record<string, ImplantDetails>>({});
+  const savedImplantDrafts = useRef<Record<string, ImplantDetails>>({});
+  const originalEditForm = useRef<PendingCaseEdit | null>(null);
   const [editRxShade, setEditRxShade] = useState("");
   const [editRxTeeth, setEditRxTeeth] = useState("");
+  const [editRxArch, setEditRxArch] = useState<"" | "upper" | "lower" | "both">("");
+  const [editRxStep, setEditRxStep] = useState("");
+  const [editRxStepShade, setEditRxStepShade] = useState("");
   // Optimistic state for missing-tooth auto-saves (applied immediately, cleared
   // after the server round-trip + cache refetch complete so there's no flicker).
   const [optimisticMissingAdds, setOptimisticMissingAdds] = useState<Set<string>>(new Set());
   const [optimisticMissingDeletes, setOptimisticMissingDeletes] = useState<Set<string>>(new Set());
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // A partial save may commit the hierarchy before a later row write fails.
+  // Retrying the unchanged editor must not reconcile it again and undo rows
+  // already committed by that attempt.
+  const savedRxDraft = useRef<string | null>(null);
   // When unsaved edits would be lost (close, in-app route navigation, etc.) we
   // stash the action to run if the user confirms; a non-null value shows the
   // "Unsaved changes" discard confirmation.
@@ -4130,24 +6042,111 @@ export function CaseDrawer({
     null,
   );
 
-  // Bridge connector state — initialised from case data once loaded
-  const [connectedPairs, setConnectedPairs] = useState<Set<string>>(() =>
-    parseBridgeConnectors((labCase as any).bridgeConnectors ?? null),
-  );
+  const catalogQuery = useEffectiveCatalog(labCase.labOrganizationId);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, refetch: refetchCaseDetail } = useQuery({
     queryKey: ["case", labCase.id],
     queryFn: () => apiFetch<DetailedCase>(`/cases/${labCase.id}`),
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
   });
+  const reassignMe = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+    enabled: !!user,
+  });
+  const canReassignDoctor = !!data && (reassignMe.data?.memberships ?? []).some((membership) =>
+    membership.organizationId === data.labOrganizationId && membership.status === "active" &&
+    (membership.role === "admin" || membership.role === "owner"),
+  );
+  // An open/staged edit also contains its old doctor/practice values. Finish
+  // it first so a later full-form save cannot accidentally reverse this action.
+  const hasUnsavedDoctorAssignment = editMode || !!pendingCaseEdit;
+  useEffect(() => { setReassignDoctorOpen(false); }, [labCase.id, data?.providerOrganizationId]);
+  // Keep all gallery derivation below the detail query declaration. CaseDrawer
+  // renders before the request resolves, so reading a `data` binding above
+  // this point would trigger a temporal-dead-zone ReferenceError.
+  const currentCaseAttachments = data?.attachments;
+  const groupedCaseAttachments = useMemo(
+    () => groupCaseAttachments(currentCaseAttachments ?? []),
+    [currentCaseAttachments],
+  );
+  const caseMediaGallery = useMemo(
+    () => buildCaseMediaGallery(labCase.id, currentCaseAttachments),
+    [labCase.id, currentCaseAttachments],
+  );
+  const openCaseAttachment = useCallback(
+    (attachment: CaseAttachment) => {
+      const item = caseMediaGallery.find(
+        (candidate) => candidate.attachmentId === attachment.id,
+      );
+      if (item) openLightbox({ ...item, gallery: caseMediaGallery });
+    },
+    [caseMediaGallery, openLightbox],
+  );
+  useEffect(() => {
+    setLightbox((current) => {
+      if (!current?.gallery) return current;
+      const selectedIdentity =
+        activeLightboxIdentity ?? current.attachmentId ?? current.url;
+      const currentItem = caseMediaGallery.find(
+        (item) =>
+          (item.attachmentId ?? item.url) === selectedIdentity,
+      );
+      return currentItem
+        ? { ...currentItem, gallery: caseMediaGallery }
+        : null;
+    });
+    if (
+      activeLightboxIdentity &&
+      !caseMediaGallery.some(
+        (item) =>
+          (item.attachmentId ?? item.url) === activeLightboxIdentity,
+      )
+    ) {
+      setActiveLightboxIdentity(null);
+    }
+  }, [activeLightboxIdentity, caseMediaGallery]);
+  const canEditReturnStep = user?.role === "admin" || user?.role === "owner";
+  // The returned-case wizard asks the notes question only when the viewer can
+  // actually post one; the server flag is optional, so absence means "allowed".
+  const canPostReturnNote = data?.viewerCanPostNotes !== false;
+  // Mobile-created cases keep their files in the mobile app, so the desktop
+  // attachment pipeline cannot accept a prescription for them.
+  const returnRxBlockedReason =
+    labCase._source === "mobile"
+      ? "This case was created in the mobile app — new prescription files can only be attached there."
+      : data?.viewerCanUploadAttachments === false
+        ? "You don't have permission to attach files to this case."
+        : null;
+  // The drawer detail fetch may still be loading when the user prints. Keep
+  // its Lab Slip and both print renderers on the same restoration source.
+  const caseRestorations = data?.restorations ?? labCase.restorations ?? [];
+  const toothDialogRestoration = toothDialogId
+    ? (data?.restorations ?? []).find((restoration) =>
+        parseToothField(restoration.toothNumber).has(toothDialogId),
+      )
+    : undefined;
+  const toothDialogMaterialOptions = getCatalogMaterialsForRestoration(
+    catalogQuery.data,
+    toothDialogRestoration,
+  );
 
   type RemakeChainEntry = {
     id: string;
     caseNumber: string;
     status: string | null;
+    labLocationId?: string | null;
+    labLocationName?: string | null;
     remakeReason: string | null;
     remakeCharged: boolean | null;
+    remakeNotes?: string | null;
+    remakeShadeLightness?: "light" | "dark" | null;
+    remakeShadePrescribed?: string | null;
+    remakeShadeProvided?: string | null;
+    remakeMaterialPrescribed?: string | null;
+    remakeMaterialProvided?: string | null;
+    remakeReturnedToLab?: boolean | null;
     createdAt: string | null;
   };
   const inRemakeChain =
@@ -4180,11 +6179,6 @@ export function CaseDrawer({
     () => (drawerOrgsQuery.data ?? []).filter((o) => o.type !== "lab"),
     [drawerOrgsQuery.data],
   );
-  const currentProviderOrg = useMemo(() => {
-    const pid = data?.providerOrganizationId ?? labCase.providerOrganizationId;
-    if (!pid) return null;
-    return drawerProviderOrgs.find((o) => o.id === pid) ?? null;
-  }, [drawerProviderOrgs, data?.providerOrganizationId, labCase.providerOrganizationId]);
 
   // Dedicated lightweight endpoint for doctor-name suggestions. Always runs so
   // the picker is populated even when opened from the dashboard (before the
@@ -4200,22 +6194,6 @@ export function CaseDrawer({
     const merged = new Set([...doctorNames, ...fromQuery]);
     return Array.from(merged).sort((a, b) => a.localeCompare(b));
   }, [doctorNames, doctorNamesQuery.data]);
-  const [aiPracticePickerOpen, setAiPracticePickerOpen] = useState(false);
-  const [aiPracticeError, setAiPracticeError] = useState<string | null>(null);
-  const changeAiPracticeMutation = useMutation({
-    mutationFn: (providerOrganizationId: string) =>
-      apiFetch(`/cases/${labCase.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ providerOrganizationId }),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["cases"] });
-      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
-      setAiPracticePickerOpen(false);
-      setAiPracticeError(null);
-    },
-    onError: (e: Error) => setAiPracticeError(e.message),
-  });
 
   const invoiceQuery = useQuery({
     queryKey: ["invoice-for-case", labCase.id],
@@ -4223,6 +6201,10 @@ export function CaseDrawer({
       apiFetch<Invoice[]>(`/invoices?caseId=${encodeURIComponent(labCase.id)}`),
   });
   const caseInvoice = invoiceQuery.data?.[0] ?? null;
+  const canEditCaseInvoice =
+    ["owner", "admin", "billing"].includes(user?.role ?? "") &&
+    user?.userType !== "provider" &&
+    data?.viewerIsLabMember !== false;
 
   // Pull the full invoice payload (with line items) when one exists so the
   // Print Invoice button has data to render. Cheap query — only runs while
@@ -4231,17 +6213,19 @@ export function CaseDrawer({
     queryKey: ["invoice-detail", caseInvoice?.id],
     enabled: !!caseInvoice?.id,
     queryFn: () =>
-      apiFetch<
-        Invoice & {
-          items: Array<{
-            description: string;
-            quantity: number | string;
-            unitPrice: number | string;
-            lineTotal: number | string;
-          }>;
-        }
-      >(`/invoices/${caseInvoice!.id}`),
+      apiFetch<Invoice>(`/invoices/${caseInvoice!.id}`),
   });
+  const confirmedPresetId = invoiceDetailQuery.data?.layoutPresetId ?? caseInvoice?.layoutPresetId;
+  const { template: confirmedInvoiceTemplate, extraImageDataUrls: confirmedInvoiceImages } = useInvoiceTemplate(
+    generatePresets.find((preset) => preset.id === confirmedPresetId)?.template ?? user?.practiceInvoiceTemplate,
+  );
+
+  /** True when any invoice sub-item still carries priced===false (alloy not yet quoted). */
+  const hasUnpricedAlloyLines = (invoiceDetailQuery.data?.items ?? []).some((it) =>
+    (it.subItems ?? []).some(
+      (sub) => sub.priced === false && sub.description.startsWith("Alloy"),
+    ),
+  );
 
   // Pre-fetch lab logo as a data URL for invoice PDF printing (mirrors
   // the same logic in InvoiceEditor so the output is identical).
@@ -4283,16 +6267,6 @@ export function CaseDrawer({
     return () => { cancelled = true; };
   }, [caseInvoice?.id, labCase.caseNumber]);
 
-  // Sync connectedPairs from server data when the detail query resolves
-  // (bridgeConnectors is not included in the list-level LabCase, only in
-  // the detail response).
-  useEffect(() => {
-    if (data && data.bridgeConnectors !== undefined) {
-      setConnectedPairs(
-        parseBridgeConnectors(data.bridgeConnectors ?? null),
-      );
-    }
-  }, [data?.bridgeConnectors]);
 
   // Teeth that already have a restoration line on this case. The tooth
   // chart highlights these so the user can avoid double-billing.
@@ -4359,46 +6333,54 @@ export function CaseDrawer({
     const set = new Set<string>();
     for (const r of data?.restorations ?? []) {
       if (pendingDeletes.has(r.id)) continue;
-      if (r.restorationType === "missing") continue;
-      if (/pontic/i.test(r.restorationType)) continue;
-      for (const id of parseToothField(r.toothNumber)) set.add(id);
+      const role = pendingUpdates.find((update) => update.restorationId === r.id)?.restorationType ?? r.restorationType;
+      if (!/^crown$/i.test(role)) continue;
+      const ids = parseToothField(pendingUpdates.find((update) => update.restorationId === r.id)?.newToothNumber ?? r.toothNumber);
+      if (ids.size === 1) set.add([...ids][0]);
     }
     for (const c of pendingCreates) {
-      if (c.restorationType === "missing") continue;
-      if (/pontic/i.test(c.restorationType)) continue;
+      if (!/^crown$/i.test(c.restorationType)) continue;
       for (const id of parseToothField(c.toothNumber)) set.add(id);
     }
     return set;
-  }, [data?.restorations, pendingDeletes, pendingCreates]);
+  }, [data?.restorations, pendingDeletes, pendingCreates, pendingUpdates]);
 
   const ponticTeeth = useMemo(() => {
     const set = new Set<string>();
     for (const r of data?.restorations ?? []) {
       if (pendingDeletes.has(r.id)) continue;
-      if (!/pontic/i.test(r.restorationType)) continue;
-      for (const id of parseToothField(r.toothNumber)) set.add(id);
+      const role = pendingUpdates.find((update) => update.restorationId === r.id)?.restorationType ?? r.restorationType;
+      if (!/^pontic$/i.test(role)) continue;
+      const ids = parseToothField(pendingUpdates.find((update) => update.restorationId === r.id)?.newToothNumber ?? r.toothNumber);
+      if (ids.size === 1) set.add([...ids][0]);
     }
     for (const c of pendingCreates) {
       if (!/pontic/i.test(c.restorationType)) continue;
       for (const id of parseToothField(c.toothNumber)) set.add(id);
     }
     return set;
-  }, [data?.restorations, pendingDeletes, pendingCreates]);
+  }, [data?.restorations, pendingDeletes, pendingCreates, pendingUpdates]);
+
 
   const editMutation = useMutation({
-    mutationFn: (updates: typeof editForm) =>
-      apiFetch(`/cases/${labCase.id}`, {
+    mutationFn: (updates: typeof editForm) => {
+      const src = data ?? labCase;
+      return apiFetch(`/cases/${labCase.id}`, {
         method: "PATCH",
         body: JSON.stringify({
           patientFirstName: updates.patientFirstName,
           patientLastName: updates.patientLastName,
           doctorName: updates.doctorName,
           priority: updates.priority,
-          ...(updates.dueDate ? { dueDate: updates.dueDate } : {}),
+          ...(updates.dueDate
+            ? { dueDate: updates.dueDate, dueTime: updates.dueTime || null }
+            : {}),
           casePanBarcode: updates.casePanBarcode || null,
-          rxNotes: updates.rxNotes.trim() || null,
+          rxNotes: updates.rxNotes.trim() ? updates.rxNotes : null,
+          gingivialShade: updates.gingivialShade.trim() || null,
         }),
-      }),
+      });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
@@ -4473,15 +6455,27 @@ export function CaseDrawer({
   }
 
   const routeMutation = useMutation({
-    mutationFn: (status: CaseStatus) =>
+    mutationFn: ({ status, labLocationId, dueDate, dueTime }: {
+      status: CaseStatus;
+      labLocationId?: string | null;
+      dueDate?: string;
+      dueTime?: string;
+    }) =>
       apiFetch(`/cases/${labCase.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({
+          status,
+          ...(labLocationId ? { labLocationId } : {}),
+          ...(dueDate ? { dueDate, ...(dueTime ? { dueTime } : {}) } : {}),
+        }),
       }),
-    onSuccess: (_result, status) => {
+    onSuccess: async (_result, { status }) => {
       const prevBarcode = data?.casePanBarcode ?? labCase.casePanBarcode;
-      qc.invalidateQueries({ queryKey: ["cases"] });
-      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+        qc.invalidateQueries({ queryKey: ["case", labCase.id] }),
+        qc.invalidateQueries({ queryKey: ["case-remake-chain", labCase.id] }),
+      ]);
       onCaseLocated?.(status);
       setRouteStatus("");
       setRouteError(null);
@@ -4490,39 +6484,181 @@ export function CaseDrawer({
           ? "Case located successfully. Barcode released."
           : "Case located successfully.";
       setRouteSuccessMsg(msg);
-      setTimeout(() => setRouteSuccessMsg(null), 3000);
+      if (routeSuccessTimerRef.current !== null) clearTimeout(routeSuccessTimerRef.current);
+      routeSuccessTimerRef.current = setTimeout(() => {
+        routeSuccessTimerRef.current = null;
+        setRouteSuccessMsg(null);
+      }, 3000);
     },
     onError: (e: Error) => setRouteError(e.message),
   });
 
-  const ackAiReviewMutation = useMutation({
-    mutationFn: (
-      payload?: {
-        remake?: {
-          remakeOfCaseId: string;
-          remakeReason: string;
-          remakeCharged: boolean;
-        };
-      },
-    ) =>
-      apiFetch(`/cases/${labCase.id}/ai-review`, {
+  const returnStepMutation = useMutation({
+    mutationFn: (step: string) =>
+      apiFetch(`/cases/${labCase.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ acknowledged: true, ...(payload ?? {}) }),
+        body: JSON.stringify({ step }),
       }),
-    onSuccess: (_data, payload) => {
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      setReturnStep("");
+      goToNextReturnStage("step");
+    },
+    onError: (e: Error) => setRouteError(e.message || "Could not update step."),
+  });
+
+  // Links this case to the original it remakes, using the same questionnaire +
+  // picker + endpoint as the Invoice Editor's "Mark as remake" action.
+  const returnRemakeMutation = useMutation({
+    mutationFn: () => {
+      if (!returnRemakeSelected) {
+        return Promise.reject(new Error("Select the original case being remade."));
+      }
+      return apiFetch<{ caseId: string; caseNumber: string }>(
+        `/cases/${labCase.id}/mark-as-remake`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(buildRemakeLinkPayload(returnRemakeSelected, returnRemakeQ)),
+        },
+      );
+    },
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
       qc.invalidateQueries({ queryKey: ["case-remake-chain", labCase.id] });
-      if (payload?.remake?.remakeOfCaseId) {
-        qc.invalidateQueries({ queryKey: ["case-remake-chain", payload.remake.remakeOfCaseId] });
-      }
-      setAiDupes(null);
-      setAiDupeSelectedId("");
-      setAiDupeReason("");
-      setAiDupeCharge("");
-      setAiDupeError(null);
+      setReturnRemakeSelected(null);
+      setReturnRemakeQ(blankQuestionnaire());
+      setReturnRemakeError(null);
+      goToNextReturnStage("remake");
     },
+    onError: (e: Error) =>
+      setReturnRemakeError(e.message || "Could not link this case as a remake."),
   });
+
+  function resetReturnWizard() {
+    setReturnPromptStep(null);
+    setReturnPromptStatus(null);
+    setReturnPromptLabLocationId(null);
+    setReturnDueDateDeclined(false);
+    setReturnStep("");
+    setReturnRemakeSelected(null);
+    setReturnRemakeQ(blankQuestionnaire());
+    setReturnRemakeError(null);
+    setReturnRxDragOver(false);
+  }
+
+  /** Advance past `from` to the next question, or close the wizard if none is left. */
+  function goToNextReturnStage(from: ReturnWizardStage) {
+    const next = nextReturnWizardStage(from, {
+      canEditStep: canEditReturnStep,
+      canPostNotes: canPostReturnNote,
+    });
+    if (!next) {
+      resetReturnWizard();
+      return;
+    }
+    if (next === "stepAsk") setReturnStep((data ?? labCase).step ?? "");
+    setReturnPromptStep(next);
+  }
+
+  function finishReturnAfterDueDateDecision(dueDateDeclined: boolean) {
+    setReturnDueDateDeclined(dueDateDeclined);
+    goToNextReturnStage("ask");
+  }
+
+  /** Upload the prescription picked/dropped in the wizard through the drawer's
+   *  existing attachment pipeline, then move on when it lands cleanly. */
+  async function uploadReturnPrescription(files: File[]) {
+    if (files.length === 0) return;
+    const errors = await uploadFiles(
+      files.map((file) => ({ file, category: "prescription" as const })),
+    );
+    if (errors.length === 0) goToNextReturnStage("rxUpload");
+  }
+
+  /** Print the lab slip, honouring this lab's customized advanced layout when
+   *  it has one. Shared by the Case Details Print button and the wizard. */
+  async function printLabSlip() {
+    let currentCase: DetailedCase;
+    try {
+      const result = await refetchCaseDetail({ throwOnError: true });
+      if (!result.data) throw new Error("Could not load current case details.");
+      currentCase = result.data;
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : "Could not refresh case before printing.",
+      );
+      return;
+    }
+
+    const currentRestorations = currentCase.restorations ?? [];
+    const advTemplate = advancedTemplateQuery.data;
+    if (advTemplate?.isCustom) {
+      await printCaseCardAdvanced(
+        currentCase,
+        {
+          restorations: currentRestorations,
+          bridgeConnectors: currentCase.bridgeConnectors,
+          attachments: currentCase.attachments ?? [],
+          invoice: invoiceDetailQuery.data ?? caseInvoice,
+        },
+        // coerceCasePrintTemplate calls ensureBuiltinElements, which backfills
+        // any built-in kind (e.g. gingivialShade) that was added after this
+        // lab's template was last saved.
+        coerceCasePrintTemplate(advTemplate.template),
+      );
+    } else {
+      printCaseOverview(
+        currentCase,
+        {
+          restorations: currentRestorations,
+          attachments: currentCase.attachments ?? [],
+          notes: currentCase.notes ?? [],
+          isAdmin,
+        },
+        printLayout,
+      );
+    }
+  }
+
+  async function printLabel() {
+    let currentCase: DetailedCase;
+    try {
+      const result = await refetchCaseDetail({ throwOnError: true });
+      if (!result.data) throw new Error("Could not load current case details.");
+      currentCase = result.data;
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : "Could not refresh case before printing.",
+      );
+      return;
+    }
+
+    const summary = deriveRxSummary(currentCase.restorations ?? []);
+    printCaseLabel(currentCase, {
+      material: summary.materials.join(", ") || undefined,
+      teeth: summary.teeth.join(", ") || undefined,
+    });
+  }
+
+  function routeReturnedCase(
+    payload: {
+      status: CaseStatus;
+      labLocationId?: string | null;
+      dueDate?: string;
+      dueTime?: string;
+    },
+    dueDateDeclined: boolean,
+  ) {
+    routeMutation.mutate(payload, {
+      onSuccess: () => finishReturnAfterDueDateDecision(dueDateDeclined),
+    });
+  }
 
   const acceptSuggestionMutation = useMutation({
     mutationFn: () =>
@@ -4556,58 +6692,6 @@ export function CaseDrawer({
       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
     },
   });
-
-  const [aiDupes, setAiDupes] = useState<PatientSimilarityHit[] | null>(null);
-  const [aiDupesLoading, setAiDupesLoading] = useState(false);
-  const [aiDupeSelectedId, setAiDupeSelectedId] = useState<string>("");
-  const [aiDupeReason, setAiDupeReason] = useState("");
-  const [aiDupeCharge, setAiDupeCharge] = useState<"yes" | "no" | "">("");
-  const [aiDupeError, setAiDupeError] = useState<string | null>(null);
-
-  // Auto-surface possible duplicates the moment a needs-AI-review case is
-  // opened, instead of requiring the reviewer to click a separate "Check
-  // duplicates" button. Re-runs whenever the case changes or the patient
-  // identity in `data` updates from a refetch.
-  useEffect(() => {
-    if (data?.needsAiReview && aiDupes === null && !aiDupesLoading) {
-      void loadAiDuplicateCandidates();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.needsAiReview, data?.id, data?.patientFirstName, data?.patientLastName]);
-
-  async function loadAiDuplicateCandidates() {
-    setAiDupesLoading(true);
-    setAiDupeError(null);
-    try {
-      const first = (data?.patientFirstName ?? labCase.patientFirstName ?? "").trim();
-      const last = (data?.patientLastName ?? labCase.patientLastName ?? "").trim();
-      const labOrgId = data?.labOrganizationId ?? labCase.labOrganizationId;
-      const provOrgId = data?.providerOrganizationId ?? labCase.providerOrganizationId;
-      if (!first || !last || !labOrgId) {
-        setAiDupes([]);
-        return;
-      }
-      const params = new URLSearchParams({
-        patientFirstName: first,
-        patientLastName: last,
-        labOrganizationId: labOrgId,
-        ...(provOrgId ? { providerOrganizationId: provOrgId } : {}),
-        doctorName: (data?.doctorName ?? labCase.doctorName ?? "").trim(),
-      });
-      const res = await apiFetch<{ matches: PatientSimilarityHit[] }>(
-        `/cases/patient-similarity?${params.toString()}`,
-      );
-      const filtered = (res.matches ?? []).filter((m) => m.id !== labCase.id);
-      setAiDupes(filtered);
-      const firstCanonical = filtered.find((m) => m.source === "canonical");
-      setAiDupeSelectedId(firstCanonical?.id ?? "");
-    } catch (err: any) {
-      setAiDupeError(err?.message ?? "Could not load duplicate candidates.");
-      setAiDupes([]);
-    } finally {
-      setAiDupesLoading(false);
-    }
-  }
 
   const COMM_PREF_KEY = "labtrax_note_comm_pref_v1";
 
@@ -4746,29 +6830,21 @@ export function CaseDrawer({
       setNoteText("");
       setShareWithProvider(false);
       setNoteError(null);
-      if (variables.shared && result?.id) {
-        const savedPref = localStorage.getItem(COMM_PREF_KEY) as "email" | "sms" | null;
-        setNotifyModal({
-          open: true,
-          noteId: result.id,
-          method: savedPref ?? null,
-          step: "choose",
-          sending: false,
-          error: null,
-        });
-      }
+      // Auto-notification (email + in-app) is now fired server-side on creation
+      // for shared notes, so we no longer auto-open the notify modal here.
+      // The existing /notify endpoint remains available for SMS re-notification.
     },
     onError: (e: Error) => setNoteError(e.message),
   });
 
-  async function sendNoteNotification(noteId: string, method: "email" | "sms") {
+  async function sendNoteNotification(noteId: string, method: "email" | "sms" | "labtrax_only") {
     setNotifyModal((m) => ({ ...m, sending: true, error: null }));
     try {
       await apiFetch(`/cases/${labCase.id}/notes/${noteId}/notify`, {
         method: "POST",
         body: JSON.stringify({ method }),
       });
-      const savedPref = localStorage.getItem(COMM_PREF_KEY) as "email" | "sms" | null;
+      const savedPref = localStorage.getItem(COMM_PREF_KEY) as "email" | "sms" | "labtrax_only" | null;
       if (!savedPref) {
         setNotifyModal((m) => ({ ...m, sending: false, method, step: "confirm_save" }));
       } else {
@@ -4789,9 +6865,13 @@ export function CaseDrawer({
       return apiFetch(`/cases/${labCase.id}/restorations`, {
         method: "POST",
         body: JSON.stringify({
-          toothNumber: restForm.toothNumber || "N/A",
+          toothNumber: restForm.toothNumber || "",
           restorationType: typeValue,
+          ...Object.fromEntries(IMPLANT_FIELDS.map((key) => [key, restForm[key] || null])),
           ...(restForm.material ? { material: restForm.material } : {}),
+          ...(restForm.restorationSubtype
+            ? { restorationSubtype: restForm.restorationSubtype }
+            : {}),
           ...(restForm.shade ? { shade: restForm.shade } : {}),
           quantity: restForm.quantity,
           ...(restForm.unitPrice ? { unitPrice: Number(restForm.unitPrice) } : {}),
@@ -4808,10 +6888,14 @@ export function CaseDrawer({
       qc.invalidateQueries({ queryKey: ["invoice-detail"] });
       qc.invalidateQueries({ queryKey: ["invoices"] });
       setRestForm({
+        implantRetention: null,
+        implantManufacturer: null,
+        implantPlatformNotes: null,
         toothNumber: "",
         restorationType: "",
         customType: "",
         material: "",
+        restorationSubtype: null,
         shade: "",
         quantity: 1,
         unitPrice: "",
@@ -4895,27 +6979,103 @@ export function CaseDrawer({
     },
   });
 
-  const saveConnectorsMutation = useMutation({
-    mutationFn: (pairs: Set<string>) =>
-      apiFetch(`/cases/${labCase.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          bridgeConnectors: formatBridgeConnectors(pairs),
-        }),
-      }),
-    onSuccess: () => {
-      invalidateAfterRestorationChange();
-    },
-  });
+  const connectorUnits = useMemo(() => [
+    ...(data?.restorations ?? [])
+      .filter((restoration) => !pendingDeletes.has(restoration.id))
+      .filter((restoration) => restoration.restorationType !== "missing")
+      .map((restoration) => ({
+        toothNumber: pendingUpdates.find((update) => update.restorationId === restoration.id)?.newToothNumber ?? restoration.toothNumber,
+        restorationType: pendingUpdates.find((update) => update.restorationId === restoration.id)?.restorationType ?? restoration.restorationType,
+        material: pendingUpdates.find((update) => update.restorationId === restoration.id)?.material ?? restoration.material,
+        restorationSubtype: pendingUpdates.find((update) => update.restorationId === restoration.id)?.restorationSubtype ?? restoration.restorationSubtype,
+        shade: pendingUpdates.find((update) => update.restorationId === restoration.id)?.shade ?? restoration.shade,
+        arch: restoration.arch,
+        quantity: pendingUpdates.some((update) => update.restorationId === restoration.id && update.restorationType) ? 1 : restoration.quantity,
+      })),
+    ...pendingCreates.map((restoration) => ({
+      toothNumber: restoration.toothNumber,
+      restorationType: restoration.restorationType,
+      material: restoration.material,
+      restorationSubtype: restoration.restorationSubtype,
+      shade: restoration.shade,
+    })),
+  ], [data?.restorations, pendingDeletes, pendingCreates, pendingUpdates]);
+  const suggestedConnectorPairs = useMemo(
+    () => suggestPonticConnectorPairs(connectorUnits),
+    [connectorUnits],
+  );
+  const persistedConnectorState = useMemo(
+    () => parseConnectorState(connectorDraft ?? data?.bridgeConnectors ?? (labCase as any).bridgeConnectors ?? null),
+    [connectorDraft, data?.bridgeConnectors, labCase],
+  );
+  const stagedConnectorState = useMemo(() => {
+    const state = parseConnectorState(serializeConnectorState(persistedConnectorState));
+    const addedTeeth = new Set(pendingCreates.flatMap((row) => [...parseToothField(row.toothNumber)]));
+    const removedTeeth = new Set((data?.restorations ?? [])
+      .filter((row) => pendingDeletes.has(row.id))
+      .flatMap((row) => [...parseToothField(row.toothNumber)]));
+    for (const pair of state.active) {
+      if (pair.split("-").some((tooth) => removedTeeth.has(tooth))) {
+        state.active.delete(pair);
+        state.explicitOn.delete(pair);
+        state.suggested.delete(pair);
+      }
+    }
+    for (const pair of suggestedConnectorPairs) {
+      if (!pair.split("-").some((tooth) => addedTeeth.has(tooth)) ||
+          state.explicitOff.has(pair) || state.explicitOn.has(pair)) continue;
+      state.suggested.add(pair);
+      state.active.add(pair);
+    }
+    return state;
+  }, [persistedConnectorState, suggestedConnectorPairs, pendingCreates, pendingDeletes, data?.restorations]);
+  const stagedConnectorString = serializeConnectorState(stagedConnectorState);
+  const effectiveConnectedPairs = stagedConnectorState.active;
+  const hasConnectorChanges = (connectorDraft !== null && stagedConnectorString !== (data?.bridgeConnectors ?? "")) || stagedConnectorString !== serializeConnectorState(
+    parseConnectorState(data?.bridgeConnectors ?? (labCase as any).bridgeConnectors ?? null),
+  );
+  const connectorValidation = validateToothConnectors(connectorDraft === null && !pendingCreates.length && !pendingDeletes.size
+    ? data?.bridgeConnectors : stagedConnectorString, connectorUnits);
+  const assignmentSummary = toothAssignmentSummary(connectorUnits, stagedConnectorString);
 
   function handleConnectedPairsChange(pairs: Set<string>) {
-    setConnectedPairs(pairs);
-    saveConnectorsMutation.mutate(pairs);
+    if (isSaving) return;
+    const state = {
+      active: new Set(pairs),
+      explicitOn: new Set(stagedConnectorState.explicitOn),
+      explicitOff: new Set(stagedConnectorState.explicitOff),
+      suggested: new Set(stagedConnectorState.suggested),
+    };
+    const touched = new Set([...effectiveConnectedPairs, ...pairs]);
+    for (const pair of touched) {
+      if (effectiveConnectedPairs.has(pair) === pairs.has(pair)) continue;
+      if (pairs.has(pair)) {
+        state.explicitOn.add(pair);
+        state.explicitOff.delete(pair);
+        state.suggested.delete(pair);
+      } else {
+        state.explicitOn.delete(pair);
+        state.suggested.delete(pair);
+        state.explicitOff.add(pair);
+      }
+    }
+    const serialized = serializeConnectorState(state);
+    const validation = validateToothConnectors(serialized, connectorUnits);
+    const previousErrors = new Set(connectorValidation.errors);
+    const newErrors = validation.errors.filter((error) => !previousErrors.has(error));
+    if (newErrors.length) {
+      setConnectorSaveError(newErrors.join(" "));
+      return;
+    }
+    setConnectorSaveError(null);
+    captureToothUndo();
+    setConnectorDraft(serialized);
   }
 
   // --- Pending changes computed value and handlers ---
 
   const hasPendingChanges =
+    hasConnectorChanges ||
     pendingCreates.length > 0 ||
     pendingDeletes.size > 0 ||
     pendingUpdates.length > 0 ||
@@ -4923,6 +7083,9 @@ export function CaseDrawer({
     pendingRxSummaryEdit !== null;
 
   function handleDiscardChanges() {
+    setToothUndo(null);
+    setConnectorDraft(null);
+    setConnectorSaveError(null);
     setPendingCreates([]);
     setPendingDeletes(new Set());
     setPendingUpdates([]);
@@ -4933,22 +7096,16 @@ export function CaseDrawer({
   }
 
   function handleCloseWithGuard() {
-    if (hasPendingChanges) {
-      setPendingDiscard(() => onClose);
-    } else {
-      onClose();
-    }
+    if (isSaving) return;
+    if (!guardNavigation(onClose)) onClose();
   }
 
   // While the case has unsaved edits, intercept in-app route navigations (the
   // sidebar links, programmatic redirects, etc.) so the user can confirm before
   // losing work, and warn on a native window close/reload via beforeunload.
   useEffect(() => {
-    if (!hasPendingChanges) {
-      setNavBlocker(null);
-      return;
-    }
-    setNavBlocker((proceed) => {
+    if (!hasPendingChanges) return;
+    const unregister = registerNavBlocker((proceed) => {
       setPendingDiscard(() => proceed);
     });
     function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -4957,12 +7114,35 @@ export function CaseDrawer({
     }
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
-      setNavBlocker(null);
+      unregister();
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
   }, [hasPendingChanges]);
 
-  async function handleSaveChanges() {
+  async function handleSaveChanges(
+    editorDraft?: {
+      caseEdit: PendingCaseEdit | null;
+      rxEdit: typeof pendingRxSummaryEdit;
+      implantEdits?: Record<string, ImplantDetails>;
+    },
+  ) {
+    if (isSaving) return false;
+    const assignmentChanged = pendingCreates.length || pendingUpdates.length || pendingDeletes.size || hasConnectorChanges;
+    const previousErrors = new Set(validateToothConnectors(data?.bridgeConnectors, data?.restorations ?? []).errors);
+    const newErrors = connectorValidation.errors.filter((error) => !previousErrors.has(error));
+    if (assignmentChanged && newErrors.length) {
+      setSaveError(newErrors.join(" "));
+      return false;
+    }
+    if ((pendingCreates.length || pendingUpdates.length) &&
+        assignmentSummary.unresolvedPontics.length) {
+      setSaveError(`Review unconnected pontics: ${assignmentSummary.unresolvedPontics.map((tooth) => `#${tooth}`).join(", ")}.`);
+      return false;
+    }
+    setToothUndo(null);
+    const snapshotConnectorString = stagedConnectorString;
+    let snapshotConnectorChanges = hasConnectorChanges;
+    if (hasConnectorChanges) setConnectorDraft(snapshotConnectorString);
     setIsSaving(true);
     setSaveError(null);
 
@@ -4970,11 +7150,12 @@ export function CaseDrawer({
     // as we remove successful items from pending state one-by-one.  This
     // makes retries safe: only items that haven't been saved yet remain in
     // pending state after a partial failure.
-    const snapshotCaseEdit = pendingCaseEdit;
-    const snapshotRxSummaryEdit = pendingRxSummaryEdit;
+    const snapshotCaseEdit = editorDraft ? editorDraft.caseEdit : pendingCaseEdit;
+    const snapshotRxSummaryEdit = editorDraft ? editorDraft.rxEdit : pendingRxSummaryEdit;
     const snapshotDeletes = Array.from(pendingDeletes);
     const snapshotUpdates = [...pendingUpdates];
     const snapshotCreates = [...pendingCreates];
+    let hierarchyTeeth: Set<string> | null = null;
 
     // Awaitable: resolves once the affected queries have refetched. We block on
     // this before clearing the staged case edit so the displayed value never
@@ -4983,7 +7164,7 @@ export function CaseDrawer({
     const invalidateAll = () =>
       Promise.all([
         qc.invalidateQueries({ queryKey: ["cases"] }),
-        qc.invalidateQueries({ queryKey: ["case", labCase.id] }),
+        qc.invalidateQueries({ queryKey: ["case", labCase.id] }, { throwOnError: true }),
         qc.invalidateQueries({ queryKey: ["invoice-for-case", labCase.id] }),
         qc.invalidateQueries({ queryKey: ["invoice-detail"] }),
         qc.invalidateQueries({ queryKey: ["invoices"] }),
@@ -4991,15 +7172,37 @@ export function CaseDrawer({
 
     try {
       // 1. Case detail patch (single atomic call)
+      for (const row of data?.restorations ?? []) {
+        const draft = editorDraft?.implantEdits?.[row.id];
+        const confirmed = savedImplantDrafts.current[row.id] ?? row;
+        if (!draft || IMPLANT_FIELDS.every((key) => (draft[key] || null) === (confirmed[key] || null))) continue;
+        try {
+          await apiFetch(`/cases/${labCase.id}/restorations/${row.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ ...Object.fromEntries(IMPLANT_FIELDS.map((key) => [key, draft[key] || null])), syncLinkedArch: false }),
+          });
+          savedImplantDrafts.current[row.id] = { ...draft };
+        } catch (error) {
+          setEditImplants((current) => ({ ...current, [row.id]: confirmed }));
+          throw error;
+        }
+      }
       if (snapshotCaseEdit) {
+        const src = data ?? labCase;
         const patchBody: Record<string, unknown> = {
           patientFirstName: snapshotCaseEdit.patientFirstName,
           patientLastName: snapshotCaseEdit.patientLastName,
           doctorName: snapshotCaseEdit.doctorName,
           priority: snapshotCaseEdit.priority,
-          ...(snapshotCaseEdit.dueDate ? { dueDate: snapshotCaseEdit.dueDate } : {}),
+          ...(snapshotCaseEdit.receivedAt
+            ? { receivedAt: snapshotCaseEdit.receivedAt }
+            : {}),
+          ...(snapshotCaseEdit.dueDate
+            ? { dueDate: snapshotCaseEdit.dueDate, dueTime: snapshotCaseEdit.dueTime || null }
+            : {}),
           casePanBarcode: snapshotCaseEdit.casePanBarcode || null,
-          rxNotes: snapshotCaseEdit.rxNotes.trim() || null,
+          rxNotes: snapshotCaseEdit.rxNotes.trim() ? snapshotCaseEdit.rxNotes : null,
+          gingivialShade: snapshotCaseEdit.gingivialShade.trim() || null,
         };
         if (snapshotCaseEdit.providerOrganizationId) {
           patchBody.providerOrganizationId = snapshotCaseEdit.providerOrganizationId;
@@ -5015,48 +7218,120 @@ export function CaseDrawer({
         // (labCase.dueDate).
       }
 
-      // 2. Rx Summary restoration replacement (Lab Slip bulk edit). Deletes all
-      //    existing restorations and recreates them from the edited fields so the
-      //    summary accurately reflects what the lab was asked to make. Per-
-      //    restoration edits from the Restorations tab are skipped when this path
-      //    is taken — they would operate on now-deleted IDs.
+      // 2. The Lab Slip's clinical details are saved with one atomic
+      //    whole-case request. The server reconciles teeth and preserves all
+      //    fields on surviving rows.
       if (snapshotRxSummaryEdit) {
-        const currentRestorations = data?.restorations ?? [];
-        for (const r of currentRestorations) {
-          await apiFetch(`/cases/${labCase.id}/restorations/${r.id}`, { method: "DELETE" });
-        }
         const teethTokens = snapshotRxSummaryEdit.teeth
           .split(/[\s,;]+/)
           .map((t) => t.trim())
           .filter(Boolean);
-        const rxType = snapshotRxSummaryEdit.type.trim() || "Other";
-        const rxMaterial = snapshotRxSummaryEdit.material.trim() || undefined;
-        const rxShade = snapshotRxSummaryEdit.shade.trim() || undefined;
-        const teethToCreate = teethTokens.length > 0 ? teethTokens : [""];
-        for (const tooth of teethToCreate) {
-          await apiFetch(`/cases/${labCase.id}/restorations`, {
-            method: "POST",
-            body: JSON.stringify({
-              toothNumber: tooth,
-              restorationType: rxType,
-              ...(rxMaterial ? { material: rxMaterial } : {}),
-              ...(rxShade ? { shade: rxShade } : {}),
-              quantity: 1,
-            }),
-          });
+        // Preserve the source rows of explicit chart replacements until their
+        // row-level PATCH below moves them. Otherwise reconciliation could
+        // delete their IDs before those already-staged edits are committed.
+        const replacementIds = new Set(snapshotUpdates.map((update) => update.restorationId));
+        for (const row of data?.restorations ?? []) {
+          if (replacementIds.has(row.id)) {
+            for (const tooth of parseToothField(row.toothNumber)) {
+              if (!teethTokens.includes(tooth)) teethTokens.push(tooth);
+            }
+          }
         }
+        const result = await apiFetch<{
+          updatedCount: number;
+          createdCount: number;
+          deletedCount: number;
+          repricedCount: number;
+          manualPriceCount: number;
+          unpricedCount: number;
+          invoiceAction: "updated" | "created" | "skipped" | "needs_review";
+        }>(`/cases/${labCase.id}/restorations/hierarchy`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            restorationType: snapshotRxSummaryEdit.type.trim() || "Other",
+            restorationSubtype: snapshotRxSummaryEdit.restorationSubtype || null,
+            material: snapshotRxSummaryEdit.material.trim() || null,
+            toothNumbers: teethTokens,
+            ...(snapshotRxSummaryEdit.changed.shade
+              ? { shade: snapshotRxSummaryEdit.shade.trim() || null }
+              : {}),
+            ...(snapshotRxSummaryEdit.changed.arch && snapshotRxSummaryEdit.arch
+              ? {
+                  arch:
+                    snapshotRxSummaryEdit.arch === "both"
+                      ? "upper_lower"
+                      : snapshotRxSummaryEdit.arch,
+                }
+              : {}),
+            ...(snapshotRxSummaryEdit.changed.step
+              ? { step: snapshotRxSummaryEdit.step || null }
+              : {}),
+            ...(snapshotRxSummaryEdit.changed.stepShade
+              ? {
+                  stepShade:
+                    snapshotRxSummaryEdit.step === "wax_setup"
+                      ? snapshotRxSummaryEdit.stepShade.trim() || null
+                      : null,
+                }
+              : {}),
+          }),
+        });
+        const invoiceMessage = {
+          updated: "Invoice updated.",
+          created: "Invoice created.",
+          skipped: "Invoice left unchanged.",
+          needs_review: "The reviewed invoice was flagged for review and left unchanged.",
+        }[result.invoiceAction];
+        const quoteMessage = [
+          result.repricedCount > 0
+            ? `${result.repricedCount} row${result.repricedCount === 1 ? "" : "s"} repriced`
+            : null,
+          result.manualPriceCount > 0
+            ? `${result.manualPriceCount} manual price${result.manualPriceCount === 1 ? "" : "s"} kept`
+            : null,
+          result.unpricedCount > 0
+            ? `${result.unpricedCount} row${result.unpricedCount === 1 ? "" : "s"} left unpriced`
+            : null,
+        ].filter(Boolean).join("; ");
+        const saveMessage = [
+          "Clinical details saved.",
+          quoteMessage || null,
+          invoiceMessage,
+        ].filter(Boolean).join(" ");
+        savedRxDraft.current = JSON.stringify({ ...snapshotRxSummaryEdit, changed: undefined });
+        hierarchyTeeth = new Set(teethTokens.flatMap((token) => [...parseToothField(token)]));
         setPendingRxSummaryEdit(null);
-        setPendingDeletes(new Set());
-        setPendingUpdates([]);
-        setPendingCreates([]);
-        await invalidateAll();
-        setPendingCaseEdit(null);
-        return;
+        if (result.invoiceAction === "needs_review") {
+          toast.warning(saveMessage);
+        } else {
+          toast.success(saveMessage);
+        }
       }
 
       // 3. Deletes — remove from pending state immediately after each success
+      const touchedTeeth = new Set<string>();
+      for (const row of data?.restorations ?? []) {
+        if (snapshotDeletes.includes(row.id) || snapshotUpdates.some((update) => update.restorationId === row.id)) {
+          for (const tooth of parseToothField(row.toothNumber)) touchedTeeth.add(tooth);
+        }
+      }
+      const committedState = parseConnectorState(data?.bridgeConnectors);
+      const safePairs = new Set([...committedState.active].filter((pair) => !pair.split("-").some((tooth) => touchedTeeth.has(tooth))));
+      if (safePairs.size !== committedState.active.size) {
+        snapshotConnectorChanges = true;
+        setConnectorDraft(snapshotConnectorString);
+        await apiFetch(`/cases/${labCase.id}`, { method: "PATCH",
+          body: JSON.stringify({ bridgeConnectors: updateConnectorChoices(committedState, safePairs) }) });
+      }
       for (const id of snapshotDeletes) {
-        await apiFetch(`/cases/${labCase.id}/restorations/${id}`, { method: "DELETE" });
+        const row = data?.restorations?.find((restoration) => restoration.id === id);
+        const rowTeeth = row ? [...parseToothField(row.toothNumber)] : [];
+        const reconciledTeeth = hierarchyTeeth;
+        const alreadyReconciled = reconciledTeeth && rowTeeth.length > 0 &&
+          rowTeeth.every((tooth) => !reconciledTeeth.has(tooth));
+        if (!alreadyReconciled) {
+          await apiFetch(`/cases/${labCase.id}/restorations/${id}`, { method: "DELETE" });
+        }
         setPendingDeletes((prev) => {
           const next = new Set(prev);
           next.delete(id);
@@ -5068,11 +7343,7 @@ export function CaseDrawer({
       for (const upd of snapshotUpdates) {
         await apiFetch(`/cases/${labCase.id}/restorations/${upd.restorationId}`, {
           method: "PATCH",
-          body: JSON.stringify({
-            toothNumber: upd.newToothNumber,
-            ...(upd.material ? { material: upd.material } : {}),
-            ...(upd.shade ? { shade: upd.shade } : {}),
-          }),
+          body: JSON.stringify(buildRestorationUpdateBody(upd)),
         });
         setPendingUpdates((prev) =>
           prev.filter((u) => u.restorationId !== upd.restorationId),
@@ -5087,7 +7358,11 @@ export function CaseDrawer({
           body: JSON.stringify({
             toothNumber: c.toothNumber,
             restorationType: c.restorationType,
+            ...Object.fromEntries(IMPLANT_FIELDS.map((key) => [key, c[key] || null])),
             ...(c.material ? { material: c.material } : {}),
+            ...(c.restorationSubtype
+              ? { restorationSubtype: c.restorationSubtype }
+              : {}),
             ...(c.shade ? { shade: c.shade } : {}),
             quantity: c.quantity,
             ...(c.unitPrice ? { unitPrice: Number(c.unitPrice) } : {}),
@@ -5096,68 +7371,124 @@ export function CaseDrawer({
         setPendingCreates((prev) => prev.filter((p) => p.localId !== c.localId));
       }
 
+      if (snapshotConnectorChanges) {
+        await apiFetch(`/cases/${labCase.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ bridgeConnectors: snapshotConnectorString }),
+        });
+        setConnectorDraft(null);
+        setConnectorSaveError(null);
+      }
+
       // Wait for the refetched case + list data to land before clearing the
       // staged edit so the displayed value transitions straight from the
       // pending value to the fresh server value with no revert in between.
       await invalidateAll();
       setPendingCaseEdit(null);
+      return true;
     } catch (e: any) {
       setSaveError(e?.message ?? "Failed to save changes. Please try again.");
       // Refetch server state so the list reflects what was already saved
       // before the failure.  Remaining pending items (incl. the staged case
       // edit) are intentionally left in place so they can be retried.
-      await invalidateAll();
+      await invalidateAll().catch(() => {
+        // Preserve the write failure's reason and draft even if its best-effort
+        // refresh also fails. A subsequent Save press can still retry.
+      });
+      return false;
     } finally {
       setIsSaving(false);
     }
   }
 
   function handleToothDialogStage(payload: ToothActionPayload) {
-    if (payload.kind === "add_crown") {
+    if (isSaving) return;
+    if (payload.kind === "mark_missing") setToothUndo(null);
+    else captureToothUndo();
+    const draftSource = "restorationId" in payload ? pendingCreates.find((row) => row.localId === payload.restorationId) : undefined;
+    if (draftSource && payload.kind !== "copy_assignment") {
+      if (payload.kind === "remove_restoration" || (payload.kind === "replace_tooth" && payload.newToothNumber !== draftSource.toothNumber)) {
+        setConnectorDraft(updateConnectorChoices(stagedConnectorState, new Set([...stagedConnectorState.active].filter((pair) => !pair.split("-").includes(draftSource.toothNumber)))));
+      }
+      if (payload.kind === "remove_restoration") {
+        setPendingCreates((rows) => rows.filter((row) => row.localId !== draftSource.localId));
+      } else if (payload.kind === "change_role") {
+        setPendingCreates((rows) => rows.map((row) => row.localId === draftSource.localId ? { ...row, restorationType: payload.role } : row));
+      } else if (payload.kind === "replace_tooth") {
+        if (payload.newToothNumber !== draftSource.toothNumber && billedTeeth.has(payload.newToothNumber)) {
+          setToothDialogError("That tooth already has an assignment."); return;
+        }
+        setPendingCreates((rows) => rows.map((row) => row.localId === draftSource.localId ? { ...row, toothNumber: payload.newToothNumber,
+          ...(payload.material !== undefined ? { material: payload.material } : {}),
+          ...(payload.shade !== undefined ? { shade: payload.shade } : {}),
+          ...(payload.restorationSubtype !== undefined ? { restorationSubtype: payload.restorationSubtype } : {}) } : row));
+      }
+      setToothDialogId(null); setToothDialogError(null); return;
+    }
+    if (payload.kind === "change_role") {
+      const source = data?.restorations?.find((row) => row.id === payload.restorationId);
+      if (!source?.material?.trim() || parseToothField(source.toothNumber).size !== 1) {
+        setToothDialogError("Review the material and individual teeth of this legacy record before assigning a role.");
+        return;
+      }
+      setPendingUpdates((previous) => {
+        const existing = previous.find((update) => update.restorationId === source.id);
+        return [
+          ...previous.filter((update) => update.restorationId !== source.id),
+          { ...existing, restorationId: source.id, newToothNumber: existing?.newToothNumber ?? source.toothNumber, restorationType: payload.role },
+        ];
+      });
+      setToothDialogId(null);
+      setToothDialogError(null);
+    } else if (payload.kind === "copy_assignment") {
+      const stored = data?.restorations?.find((row) => row.id === payload.restorationId);
+      const edit = pendingUpdates.find((row) => row.restorationId === payload.restorationId);
+      const source = draftSource ?? (stored ? { ...stored,
+        restorationType: edit?.restorationType ?? stored.restorationType,
+        material: edit?.material ?? stored.material, shade: edit?.shade ?? stored.shade,
+        restorationSubtype: edit?.restorationSubtype ?? stored.restorationSubtype } : undefined);
+      if (!source || !/^(crown|pontic)$/i.test(source.restorationType) || !source.material?.trim()) {
+        setToothDialogError("Confirm an explicit crown or pontic and a catalog material before copying.");
+        return;
+      }
+      const existingTargets = (data?.restorations ?? []).filter((row) => !pendingDeletes.has(row.id) &&
+        /^(Crown|Pontic)$/i.test(row.restorationType) && payload.toothNumbers.includes(row.toothNumber));
+      setPendingUpdates((previous) => [...previous.filter((row) => !existingTargets.some((target) => target.id === row.restorationId)),
+        ...existingTargets.map((target) => ({ restorationId: target.id, newToothNumber: target.toothNumber,
+          restorationType: source.restorationType as "Crown" | "Pontic", material: source.material!, shade: source.shade ?? "",
+          restorationSubtype: source.restorationSubtype ?? undefined }))]);
+      const newTargets = payload.toothNumbers.filter((tooth) => !existingTargets.some((target) => target.toothNumber === tooth));
+      setPendingCreates((previous) => [
+        ...previous.filter((row) => !newTargets.includes(row.toothNumber)),
+        ...newTargets.map((toothNumber) => {
+          const copied = copyToothAssignment(source, toothNumber);
+          return {
+            localId: crypto.randomUUID(), toothNumber, restorationType: copied.restorationType,
+            material: copied.material!, restorationSubtype: copied.restorationSubtype,
+            shade: copied.shade ?? "", quantity: 1, unitPrice: "",
+          };
+        }),
+      ]);
+      setToothDialogId(null);
+      setToothDialogError(null);
+    } else if (payload.kind === "add_crown") {
       const localId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       setPendingCreates((prev) => [
         ...prev,
         {
           localId,
           toothNumber: payload.toothId,
-          restorationType: payload.restorationType,
+          restorationType: "Crown",
           material: payload.material,
+          restorationSubtype: payload.restorationSubtype,
           shade: payload.shade ?? "",
           quantity: 1,
-          unitPrice: lookupBillablePrice(payload.restorationType),
+          unitPrice: "",
         },
       ]);
       setToothDialogId(null);
       setToothDialogError(null);
     } else if (payload.kind === "add_pontic") {
-      let inferredMaterial = "";
-      const ponticTooth = Number(payload.toothId);
-      if (
-        Number.isInteger(ponticTooth) &&
-        ponticTooth >= 1 &&
-        ponticTooth <= 32 &&
-        connectedPairs.size > 0
-      ) {
-        const span = new Set<number>();
-        const toVisit: number[] = [ponticTooth];
-        while (toVisit.length > 0) {
-          const curr = toVisit.pop()!;
-          if (span.has(curr)) continue;
-          span.add(curr);
-          for (const pair of connectedPairs) {
-            const [as, bs] = pair.split("-");
-            const a = Number(as);
-            const b = Number(bs);
-            if (a === curr && !span.has(b)) toVisit.push(b);
-            if (b === curr && !span.has(a)) toVisit.push(a);
-          }
-        }
-        const abutment = (data?.restorations ?? []).find((r) => {
-          const rTooth = Number((r.toothNumber ?? "").trim());
-          return span.has(rTooth) && !/pontic/i.test(r.restorationType) && r.material;
-        });
-        inferredMaterial = abutment?.material ?? "";
-      }
       const localId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       setPendingCreates((prev) => [
         ...prev,
@@ -5165,10 +7496,11 @@ export function CaseDrawer({
           localId,
           toothNumber: payload.toothId,
           restorationType: "Pontic",
-          material: inferredMaterial,
-          shade: "",
+          material: payload.material,
+          restorationSubtype: payload.restorationSubtype ?? null,
+          shade: payload.shade ?? "",
           quantity: 1,
-          unitPrice: lookupBillablePrice("Pontic"),
+          unitPrice: "",
         },
       ]);
       setToothDialogId(null);
@@ -5194,6 +7526,7 @@ export function CaseDrawer({
             parseToothField(r.toothNumber).has(payload.toothId),
         );
         if (serverMissingRow) {
+          setToothUndo(null);
           setOptimisticMissingDeletes((prev) => new Set([...prev, payload.toothId]));
           setToothDialogId(null);
           setToothDialogError(null);
@@ -5231,6 +7564,7 @@ export function CaseDrawer({
           restorationId: payload.restorationId,
           newToothNumber: payload.newToothNumber,
           material: payload.material,
+          restorationSubtype: payload.restorationSubtype,
           shade: payload.shade,
         },
       ]);
@@ -5241,12 +7575,21 @@ export function CaseDrawer({
 
   // Each entry carries its own optional note (already trimmed) so a note is
   // always bound to the exact file the user typed it for.
-  async function uploadFiles(items: { file: File; note?: string }[]) {
-    if (items.length === 0) return;
+  /** Uploads each file and attaches it to the case. Returns the per-file error
+   *  messages (empty when everything landed) so callers such as the
+   *  returned-case wizard can decide whether to advance. */
+  async function uploadFiles(
+    items: {
+      file: File;
+      note?: string;
+      category?: "outgoing" | "prescription";
+    }[],
+  ): Promise<string[]> {
+    if (items.length === 0) return [];
     setUploadingFile(true);
     setUploadError(null);
     const errors: string[] = [];
-    for (const { file, note } of items) {
+    for (const { file, note, category } of items) {
       try {
         // Files >~20 MB are routed through the resumable chunked pipeline so
         // the Replit reverse proxy never silently drops them.
@@ -5259,6 +7602,7 @@ export function CaseDrawer({
             fileName: file.name,
             fileType: file.type || "application/octet-stream",
             ...(trimmedNote ? { note: trimmedNote } : {}),
+            ...(category ? { category } : {}),
           }),
         });
       } catch (err: any) {
@@ -5268,6 +7612,7 @@ export function CaseDrawer({
     qc.invalidateQueries({ queryKey: ["case", labCase.id] });
     if (errors.length > 0) setUploadError(errors.join(" · "));
     setUploadingFile(false);
+    return errors;
   }
 
   // Open the optional per-file note prompt for the given files. The user can
@@ -5288,6 +7633,71 @@ export function CaseDrawer({
     const files = Array.from(e.target.files ?? []);
     e.target.value = "";
     promptFileNotes(files);
+  }
+
+  function saveAttachmentSectionPreference(
+    expanded: typeof attachmentSectionsExpanded,
+    save: typeof attachmentSectionSave,
+  ) {
+    const preference: AttachmentSectionPreference =
+      buildAttachmentSectionPreference(expanded, save);
+    try {
+      localStorage.setItem(attachmentPreferenceKey, JSON.stringify(preference));
+    } catch {
+      // Browser privacy/storage failures must not prevent section toggling.
+    }
+  }
+
+  function toggleAttachmentSection(section: AttachmentSectionId) {
+    setAttachmentSectionsExpanded((current) => {
+      const next = { ...current, [section]: !current[section] };
+      if (attachmentSectionSave.all || attachmentSectionSave[section]) {
+        saveAttachmentSectionPreference(next, attachmentSectionSave);
+      }
+      return next;
+    });
+  }
+
+  function toggleAllAttachmentSections() {
+    setAttachmentSectionsExpanded((current) => {
+      const shouldExpand = !Object.values(current).every(Boolean);
+      const next = {
+        media: shouldExpand,
+        documents: shouldExpand,
+        files: shouldExpand,
+      };
+      if (
+        attachmentSectionSave.all ||
+        attachmentSectionSave.media ||
+        attachmentSectionSave.documents ||
+        attachmentSectionSave.files
+      ) {
+        saveAttachmentSectionPreference(next, attachmentSectionSave);
+      }
+      return next;
+    });
+  }
+
+  function setAttachmentSavePreference(
+    control: AttachmentSectionId | "all",
+    checked: boolean,
+  ) {
+    setAttachmentSectionSave((current) => {
+      const next = { ...current, [control]: checked };
+      if (checked) saveAttachmentSectionPreference(attachmentSectionsExpanded, next);
+      else {
+        try {
+          if (!next.all && !next.media && !next.documents && !next.files) {
+            localStorage.removeItem(attachmentPreferenceKey);
+          } else {
+            saveAttachmentSectionPreference(attachmentSectionsExpanded, next);
+          }
+        } catch {
+          // Keep the in-memory control usable if storage is unavailable.
+        }
+      }
+      return next;
+    });
   }
 
   function handleFileDragEnter(e: React.DragEvent) {
@@ -5340,30 +7750,208 @@ export function CaseDrawer({
   }
 
   function startEdit() {
+    savedRxDraft.current = null;
+    savedImplantDrafts.current = {};
+    setEditImplants(Object.fromEntries((data?.restorations ?? []).map((row) => [row.id, row])));
+    setSaveError(null);
     const src = data ?? labCase;
-    setEditForm({
+    const nextForm: PendingCaseEdit = {
       patientFirstName: src.patientFirstName || "",
       patientLastName: src.patientLastName || "",
       doctorName: src.doctorName || "",
       providerOrganizationId: src.providerOrganizationId || "",
+      receivedAt:
+        src.receivedAt && isValidCalendarDate(src.receivedAt)
+          ? src.receivedAt
+          : "",
       dueDate: src.dueDate
         ? new Date(src.dueDate).toISOString().split("T")[0]
         : "",
+      dueTime: src.dueTime || "",
       priority: (src.priority || "normal") as "normal" | "rush",
       casePanBarcode: src.casePanBarcode || "",
-      rxNotes: ((src as any).caseNotes ?? "").trim(),
-    });
-    const curSummary = deriveRxSummary(data?.restorations);
-    const firstRestoration = data?.restorations?.[0];
+      rxNotes: (src as any).caseNotes ?? "",
+      gingivialShade: (src.gingivialShade ?? "").trim(),
+    };
+    setEditForm(nextForm);
+    originalEditForm.current = nextForm;
+    setEditHasDueTime(Boolean(src.dueTime));
+    const sourceDetail = (data ?? labCase) as NonNullable<typeof data>;
+    const clinicalRestorations = (sourceDetail.restorations ?? []).filter(
+      (restoration) => restoration.restorationType !== "missing",
+    );
+    const curSummary = deriveRxSummary(clinicalRestorations);
+    const firstRestoration = clinicalRestorations[0];
     setEditRxType(firstRestoration?.restorationType ?? curSummary.restorativeType ?? "Other");
     setEditRxMaterial(curSummary.materials.join(", "));
+    setEditRxSubtype(firstRestoration?.restorationSubtype ?? null);
     setEditRxShade(curSummary.shades.join(", "));
     setEditRxTeeth(curSummary.teeth.join(", "));
+    const arches = new Set(
+      (sourceDetail.restorations ?? [])
+        .map((restoration) => restoration.arch)
+        .filter((arch): arch is "upper" | "lower" => arch === "upper" || arch === "lower"),
+    );
+    setEditRxArch(
+      arches.size > 1 ? "both" : arches.has("upper") ? "upper" : arches.has("lower") ? "lower" : "",
+    );
+    setEditRxStep(sourceDetail.step ?? "");
+    setEditRxStepShade(sourceDetail.stepShade ?? "");
     setEditError(null);
     setEditMode(true);
   }
 
+  function cancelCaseEdit() {
+    setEditMode(false);
+    setEditError(null);
+  }
+
+  async function saveCaseEdit() {
+    const clinicalRestorations = (data?.restorations ?? []).filter(
+      (restoration) => restoration.restorationType !== "missing",
+    );
+    const snappedSummary = deriveRxSummary(clinicalRestorations);
+    const origType =
+      clinicalRestorations[0]?.restorationType ?? snappedSummary.restorativeType ?? "Other";
+    const origMaterial = snappedSummary.materials.join(", ");
+    const origSubtype = clinicalRestorations[0]?.restorationSubtype ?? null;
+    const origShade = snappedSummary.shades.join(", ");
+    const origTeeth = snappedSummary.teeth.join(", ");
+    const oldArches = new Set(
+      clinicalRestorations
+        .map((restoration) => restoration.arch)
+        .filter((arch) => arch === "upper" || arch === "lower"),
+    );
+    const origArch =
+      oldArches.size > 1
+        ? "both"
+        : oldArches.has("upper")
+          ? "upper"
+          : oldArches.has("lower")
+            ? "lower"
+            : "";
+    const origStep = data?.step ?? labCase.step ?? "";
+    const origStepShade = data?.stepShade ?? labCase.stepShade ?? "";
+    const changed = {
+      shade: editRxShade.trim() !== origShade.trim(),
+      arch: editRxArch !== origArch,
+      step: editRxStep !== origStep,
+      stepShade: editRxStepShade.trim() !== origStepShade.trim(),
+    };
+
+    if (
+      (editRxHierarchy.caseType === "removable" ||
+        editRxHierarchy.caseType === "ortho") &&
+      !editRxArch
+    ) {
+      setEditError("Choose an arch for Removable and Ortho cases.");
+      return;
+    }
+
+    setEditError(null);
+    const caseEdit = { ...editForm };
+    let rxEdit: typeof pendingRxSummaryEdit = null;
+    if (
+      !sameClinicalHierarchy(
+        { restorationType: origType, restorationSubtype: origSubtype, material: origMaterial },
+        { restorationType: editRxType, restorationSubtype: editRxSubtype, material: editRxMaterial },
+      ) ||
+      changed.shade ||
+      editRxTeeth.trim() !== origTeeth.trim() ||
+      changed.arch ||
+      changed.step ||
+      changed.stepShade
+    ) {
+      rxEdit = {
+        type: editRxType,
+        material: editRxMaterial,
+        restorationSubtype: editRxSubtype,
+        shade: editRxShade,
+        teeth: editRxTeeth,
+        arch: editRxArch,
+        step: editRxStep,
+        stepShade: editRxStepShade,
+        changed: {
+          ...changed,
+          step: canEditStep && changed.step,
+          stepShade: canEditStep && changed.stepShade,
+        },
+      };
+      if (JSON.stringify({ ...rxEdit, changed: undefined }) === savedRxDraft.current) rxEdit = null;
+    }
+    // Pass the new values directly; React state setters do not synchronously
+    // update the snapshot used by the save path.
+    const changedCaseEdit = JSON.stringify(originalEditForm.current) === JSON.stringify(caseEdit) ? null : caseEdit;
+    setPendingCaseEdit(changedCaseEdit);
+    setPendingRxSummaryEdit(rxEdit);
+    if (await handleSaveChanges({ caseEdit: changedCaseEdit, rxEdit, implantEdits: editImplants })) cancelCaseEdit();
+  }
+
+  function addPendingRestoration() {
+    const typeValue = restForm.restorationType === "Other"
+      ? restForm.customType.trim()
+      : restForm.restorationType;
+    if (!typeValue) {
+      setRestError("Restoration type is required.");
+      return;
+    }
+    const localId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setPendingCreates((prev) => [
+      ...prev,
+      {
+        localId,
+        toothNumber: restForm.toothNumber || "",
+        ...Object.fromEntries(IMPLANT_FIELDS.map((key) => [key, restForm[key] || null])),
+        restorationType: typeValue,
+        material: restForm.material,
+        restorationSubtype: restForm.restorationSubtype,
+        shade: restForm.shade,
+        quantity: restForm.quantity,
+        unitPrice: restForm.unitPrice,
+      },
+    ]);
+    setRestForm({
+      implantRetention: null,
+      implantManufacturer: null,
+      implantPlatformNotes: null,
+      toothNumber: "",
+      restorationType: "",
+      customType: "",
+      material: "",
+      restorationSubtype: null,
+      shade: "",
+      quantity: 1,
+      unitPrice: "",
+    });
+    setShowAddRest(false);
+    setRestError(null);
+  }
+
   const isAdmin = !!data?.viewerCanManageAttachments;
+  const canEditClinicalHierarchy =
+    user?.role === "admin" || user?.role === "owner";
+  const canEditStep = canEditClinicalHierarchy;
+  const editRxHierarchy = deriveCaseHierarchy(
+    editRxType,
+    editRxSubtype,
+    editRxMaterial,
+  );
+  const implantEditors = editRxHierarchy.subtype === "implant" ? (data?.restorations ?? []).filter((row) => row.restorationType !== "missing").map((row, index) => (
+    <div key={row.id} className="mt-3 space-y-1">
+      <div className="text-xs font-medium">Line {index + 1} · Tooth {row.toothNumber || "—"} · Implant</div>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(150px,100%),1fr))] gap-2">
+        <ImplantDetailsControls value={editImplants[row.id] ?? row} onChange={(details) => setEditImplants((current) => ({ ...current, [row.id]: details }))} disabled={isSaving || data?.viewerIsLabMember === false} />
+      </div>
+    </div>
+  )) : null;
+  const showArchEditor =
+    editRxHierarchy.caseType === "removable" ||
+    editRxHierarchy.caseType === "ortho" ||
+    editRxArch !== "";
+  const showStepEditor =
+    editRxHierarchy.caseType === "removable" ||
+    editRxHierarchy.caseType === "ortho" ||
+    !!(data?.step ?? labCase.step);
   const currentStatus = (data?.status ?? labCase.status) as string;
   const hasRestorations = (data?.restorations?.length ?? 0) > 0;
   const restorationCount = data?.restorations?.length ?? 0;
@@ -5375,6 +7963,26 @@ export function CaseDrawer({
       ? apiLocations
       : STATUS_FILTERS.filter((s) => s.value !== "all").map((s) => ({ id: s.value, value: s.value, label: s.label }));
 
+  // Resolve the station display name. When the case has an authoritative
+  // labLocationId, use it directly — no heuristic needed. Fall back to the
+  // single-station heuristic (only when exactly one station maps to the
+  // current status) so labs without custom stations still see a name.
+  const resolvedStationLabel = (() => {
+    const savedLocationName =
+      (data as any)?.labLocationName ?? (labCase as any)?.labLocationName;
+    if (savedLocationName) return savedLocationName;
+    if (!apiLocations || apiLocations.length === 0) return null;
+    const caseLabLocationId = (data as any)?.labLocationId ?? (labCase as any)?.labLocationId;
+    if (caseLabLocationId) {
+      const byId = apiLocations.find((s) => s.id === caseLabLocationId);
+      if (byId) return byId.label;
+    }
+    // Heuristic fallback: authoritative only when exactly one station maps
+    // to the current status (ambiguous otherwise).
+    const matching = apiLocations.filter((s) => s.value === currentStatus);
+    return matching.length === 1 ? matching[0].label : null;
+  })();
+
   const tabs: Array<{ id: CaseTab; label: string; count?: number }> = [
     { id: "lab-slip", label: "Lab Slip" },
     { id: "restorations", label: "Restorations", count: restorationCount },
@@ -5385,38 +7993,66 @@ export function CaseDrawer({
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex">
-      <div className="flex-1 bg-foreground/30" onClick={handleCloseWithGuard} />
-      <aside className="w-full max-w-[700px] bg-card border-l border-border h-full flex flex-col shadow-2xl">
+    <div ref={drawerLayoutRef} className={docked ? "fixed inset-0 z-50 flex lg:sticky lg:inset-auto lg:z-auto lg:top-4 lg:w-[460px] lg:max-w-[46vw] lg:shrink-0 lg:h-[var(--case-drawer-height,calc(100dvh-2rem))]" : "fixed inset-0 z-50 flex"}>
+      <div className={`flex-1 bg-foreground/30 ${docked ? "lg:hidden" : ""}`} onClick={handleCloseWithGuard} />
+      <aside data-testid="case-drawer" className={`@container/drawer w-full ${docked ? "max-w-[700px] lg:max-w-none border border-border lg:rounded-xl overflow-hidden" : "max-w-[700px] border-l border-border shadow-2xl"} bg-card h-full flex flex-col${(data?.priority ?? labCase.priority) === "rush" ? " text-destructive [&_*]:text-destructive" : ""}`}>
         {/* Header */}
-        <header className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-          <div className="min-w-0">
+        <header className="relative flex flex-wrap items-start justify-between gap-3 px-5 py-3 border-b border-border shrink-0">
+          {docked && onExpand && <div className="w-full flex justify-end"><button type="button" onClick={onExpand} className="inline-flex items-center gap-1.5 text-sm font-medium rounded border px-2 py-1"><ExternalLink size={14} />Open Case</button></div>}
+          <div className="min-w-[min(100%,20rem)] flex-1">
             {(() => {
               const firstName = data?.patientFirstName ?? labCase.patientFirstName;
               const lastName = data?.patientLastName ?? labCase.patientLastName;
               const patientName =
                 [firstName, lastName].filter(Boolean).join(" ") ||
                 (data?.patientInitials ?? labCase.patientInitials ?? "");
-              return patientName ? (
-                <div className="text-xl font-bold leading-tight truncate max-w-[420px]">
-                  {patientName}
+              return (
+                <div data-testid="case-header-patient" className="flex flex-wrap items-center gap-2">
+                  {patientName && (
+                    <span className="min-w-0 max-w-full text-xl font-bold leading-tight break-words">
+                      {patientName}
+                    </span>
+                  )}
+                  <div data-testid="case-header-actions" className="flex max-w-full items-center gap-2 shrink-0 @max-[360px]/drawer:[&>button]:min-w-0 @max-[360px]/drawer:[&>button]:shrink">
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      data-testid="case-remake-create"
+                      onClick={() => {
+                        setRemakeFromDetailQ(blankQuestionnaire());
+                        setRemakeFromDetailError(null);
+                        setRemakeFromDetailOpen(true);
+                      }}
+                      className={CASE_ACTION_BUTTON_CLASS}
+                      title="Create a remake of this case"
+                    >
+                      <GitBranch size={14} />
+                      Remake
+                    </button>
+                  )}
+                  {(data?.viewerIsLabMember ?? false) && (
+                    <CaseExceptionAction
+                      caseId={labCase.id}
+                      labOrganizationId={
+                        data?.labOrganizationId ?? labCase.labOrganizationId
+                      }
+                      activeException={data?.activeException ?? null}
+                    />
+                  )}
+                  </div>
                 </div>
-              ) : null;
+              );
             })()}
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-xs text-muted-foreground">Case</span>
-              <span className="font-mono text-xs font-semibold text-muted-foreground">
-                {labCase.caseNumber}
-              </span>
-              <StatusBadge status={currentStatus} />
-              {(data?.priority ?? labCase.priority) === "rush" && (
+            {/* The case number stays on the Lab Slip. */}
+            {(data?.priority ?? labCase.priority) === "rush" && (
+              <div className="flex items-center gap-2 mt-1">
                 <span className="text-[10px] font-bold uppercase tracking-wide text-destructive bg-destructive/10 px-1.5 py-0.5 rounded-full">
                   Rush
                 </span>
-              )}
-            </div>
+              </div>
+            )}
           </div>
-          <div className="flex items-center gap-1">
+          <div data-testid="case-header-utilities" className="flex items-center gap-1 shrink-0">
             <button
               type="button"
               onClick={() =>
@@ -5445,45 +8081,82 @@ export function CaseDrawer({
             <button
               type="button"
               onClick={handleCloseWithGuard}
+              disabled={isSaving}
+              aria-label="Close case drawer"
               className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
             >
               <X size={16} />
             </button>
           </div>
-        </header>
-
-        {/* Save / Discard bar — appears whenever there are staged but unsaved changes */}
-        {hasPendingChanges && (
-          <div className="px-5 py-2.5 bg-amber-500/10 border-b border-amber-500/20 flex items-center gap-3 shrink-0">
-            <div className="flex-1 min-w-0">
-              <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
-                Unsaved changes
-              </span>
-              {saveError && (
-                <span className="ml-2 text-xs text-destructive">{saveError}</span>
-              )}
+          <div data-testid="case-header-location" className="w-full min-w-0">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+              Location
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 mt-1">
+              <StatusBadge status={currentStatus} label={resolvedStationLabel ?? undefined} />
+              {user?.userType !== "provider" && data?.viewerIsLabMember !== false && <>
+              <select
+                value={routeStatus}
+                onChange={(e) => { setRouteStatus(e.target.value); setRouteError(null); }}
+                aria-label="Move case to station"
+                className="flex-1 min-w-0 basis-36 h-8 px-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                data-testid="locate-case-select"
+              >
+                <option value="">Select station…</option>
+                {(() => {
+                  // Only the exact saved station is current; same-status
+                  // custom stations must remain independently selectable.
+                  const caseLabLocationId = data?.labLocationId ?? labCase.labLocationId ?? null;
+                  const usingRealLocations = apiLocations && apiLocations.length > 0;
+                  return ROUTE_STATUSES.map((s) => {
+                    const current = caseLabLocationId && usingRealLocations
+                      ? s.id === caseLabLocationId
+                      : s.value === currentStatus;
+                    return (
+                      <option key={s.id} value={s.id} disabled={current}>
+                        {s.label}{current ? " (current)" : ""}
+                      </option>
+                    );
+                  });
+                })()}
+              </select>
               <button
                 type="button"
-                onClick={handleDiscardChanges}
-                disabled={isSaving}
-                className="h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
+                disabled={!routeStatus || routeMutation.isPending}
+                data-testid="locate-case-submit"
+                onClick={() => {
+                  const station = ROUTE_STATUSES.find((s) => s.id === routeStatus);
+                  const status = station?.value;
+                  if (status) {
+                    const labLocationId =
+                      apiLocations && apiLocations.length > 0 ? (station?.id ?? null) : null;
+                    const caseIsComplete = RETURN_COMPLETE_STATUSES.has(currentStatus.toLowerCase());
+                    const targetIsIntake = RETURN_INTAKE_STATUSES.has(status.toLowerCase());
+                    if (caseIsComplete && targetIsIntake) {
+                      setReturnPromptStatus(status);
+                      setReturnPromptLabLocationId(labLocationId);
+                      setReturnDueDate("");
+                      setReturnDueTime("");
+                      setReturnPromptStep("ask");
+                    } else {
+                      routeMutation.mutate({ status: status as CaseStatus, labLocationId });
+                    }
+                  } else {
+                    setRouteError("Please select a valid station.");
+                  }
+                }}
+                className="h-8 px-3.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5 shrink-0"
               >
-                Discard
+                {routeMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : "Locate"}
               </button>
-              <button
-                type="button"
-                onClick={() => void handleSaveChanges()}
-                disabled={isSaving}
-                className="h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5 transition-colors"
-              >
-                {isSaving && <Loader2 size={11} className="animate-spin" />}
-                {isSaving ? "Saving…" : "Save Changes"}
-              </button>
+              </>}
             </div>
+            {routeError && <p className="mt-1.5 text-xs text-destructive break-words">{routeError}</p>}
+            {routeSuccessMsg && (
+              <p className="mt-1.5 text-xs text-green-600 break-words">{routeSuccessMsg}</p>
+            )}
           </div>
-        )}
+        </header>
 
         {/* Remake link banner: shown both ways — when this case IS a remake of
             an earlier one, and when this case HAS been remade later. */}
@@ -5492,28 +8165,48 @@ export function CaseDrawer({
             <AlertTriangle size={16} className="text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
             <div className="flex-1 min-w-0 space-y-1">
               {data?.remakeOriginal && (
-                <div className="text-xs text-blue-700 dark:text-blue-200">
-                  <span className="font-semibold">Remake of </span>
-                  <button
-                    type="button"
-                    onClick={() => onOpenCaseId?.(data.remakeOriginal!.id)}
-                    className="font-mono underline hover:text-blue-900 dark:hover:text-white"
-                  >
-                    {data.remakeOriginal.caseNumber}
-                  </button>
-                  {data.remakeReason && (
-                    <span className="text-blue-700/80 dark:text-blue-200/80">
-                      {" "}— {data.remakeReason}
-                    </span>
+                <>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="text-xs text-blue-700 dark:text-blue-200 min-w-0">
+                      <span className="font-semibold">Remake of </span>
+                      <button
+                        type="button"
+                        onClick={() => onOpenCaseId?.(data.remakeOriginal!.id)}
+                        className="font-mono underline hover:text-blue-900 dark:hover:text-white"
+                      >
+                        {data.remakeOriginal.caseNumber}
+                      </button>
+                      {data.remakeReason && (
+                        <span className="text-blue-700/80 dark:text-blue-200/80">
+                          {" "}— {data.remakeReason}
+                        </span>
+                      )}
+                      <span className="ml-2 inline-block text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-blue-500/20">
+                        {data.remakeCharged === false
+                          ? "no charge"
+                          : data.remakeCharged === true
+                          ? "charged"
+                          : "charge unspecified"}
+                      </span>
+                    </div>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={openEditRemake}
+                        title="Edit remake reason"
+                        className="shrink-0 h-6 w-6 rounded flex items-center justify-center text-blue-600/70 dark:text-blue-300/70 hover:text-blue-800 dark:hover:text-blue-100 hover:bg-blue-500/20 transition-colors"
+                      >
+                        <Pencil size={12} />
+                      </button>
+                    )}
+                  </div>
+                  {data.remakeNotes && data.remakeNotes.trim() && (
+                    <div className="mt-1.5">
+                      <span className="text-[10px] uppercase tracking-wide font-semibold text-blue-700/60 dark:text-blue-300/60">Remake notes</span>
+                      <p className="text-xs text-blue-800/80 dark:text-blue-200/80 mt-0.5 whitespace-pre-wrap">{data.remakeNotes.trim()}</p>
+                    </div>
                   )}
-                  <span className="ml-2 inline-block text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-blue-500/20">
-                    {data.remakeCharged === false
-                      ? "no charge"
-                      : data.remakeCharged === true
-                      ? "charged"
-                      : "charge unspecified"}
-                  </span>
-                </div>
+                </>
               )}
               {(data?.remakeChildren?.length ?? 0) > 0 && (
                 <div className="text-xs text-blue-700 dark:text-blue-200">
@@ -5605,7 +8298,7 @@ export function CaseDrawer({
                           </span>
                           {entry.status && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground capitalize">
-                              {statusLabel(entry.status)}
+                              {remakeChainLocationLabel(entry, apiLocations ?? [])}
                             </span>
                           )}
                           {isCurrent && (
@@ -5632,6 +8325,54 @@ export function CaseDrawer({
                             )}
                           </div>
                         )}
+                        {/* Structured questionnaire detail lines */}
+                        {idx > 0 && (entry.remakeShadePrescribed || entry.remakeShadeProvided || entry.remakeShadeLightness) && (
+                          <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                            <span className="text-[10px] text-muted-foreground font-medium">Shade:</span>
+                            {entry.remakeShadePrescribed && (
+                              <span className="text-[10px] text-muted-foreground">
+                                prescribed <span className="font-mono">{entry.remakeShadePrescribed}</span>
+                              </span>
+                            )}
+                            {entry.remakeShadeProvided && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {entry.remakeShadePrescribed ? "→" : "provided"} <span className="font-mono">{entry.remakeShadeProvided}</span>
+                              </span>
+                            )}
+                            {entry.remakeShadeLightness && (
+                              <span className="text-[10px] px-1 py-0.5 rounded bg-muted text-muted-foreground capitalize">
+                                {entry.remakeShadeLightness}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {idx > 0 && (entry.remakeMaterialPrescribed || entry.remakeMaterialProvided) && (
+                          <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                            <span className="text-[10px] text-muted-foreground font-medium">Material:</span>
+                            {entry.remakeMaterialPrescribed && (
+                              <span className="text-[10px] text-muted-foreground">
+                                prescribed <span className="font-mono">{entry.remakeMaterialPrescribed}</span>
+                              </span>
+                            )}
+                            {entry.remakeMaterialProvided && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {entry.remakeMaterialPrescribed ? "→" : "provided"} <span className="font-mono">{entry.remakeMaterialProvided}</span>
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {idx > 0 && entry.remakeReturnedToLab != null && (
+                          <div className="mt-0.5">
+                            <span className="text-[10px] text-muted-foreground">
+                              {entry.remakeReturnedToLab ? "Returned to lab" : "Not returned to lab"}
+                            </span>
+                          </div>
+                        )}
+                        {entry.remakeNotes && entry.remakeNotes.trim() && (
+                          <p className="text-[10px] text-muted-foreground mt-0.5 whitespace-pre-wrap">
+                            {entry.remakeNotes.trim()}
+                          </p>
+                        )}
                       </div>
                     </div>
                   );
@@ -5641,96 +8382,16 @@ export function CaseDrawer({
           </div>
         )}
 
-        {/* AI-import review banner */}
-        {data?.needsAiReview && (
-          <div className="px-5 py-3 border-b border-border bg-amber-500/10 shrink-0">
-            <div className="flex items-start gap-3">
-              <Sparkles size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-semibold text-amber-700 dark:text-amber-300">
-                  AI-imported — needs review
-                </div>
-                <div className="text-xs text-amber-700/80 dark:text-amber-200/80 mt-0.5">
-                  This case was auto-created from {data.aiImportSource ?? "an external source"}. Please verify patient, doctor, restorations, and the attached Rx before routing.
-                </div>
-                <div className="text-xs text-amber-700/90 dark:text-amber-200/90 mt-1.5 flex items-center gap-2 flex-wrap">
-                  <span>
-                    Practice:{" "}
-                    <span className="font-medium">
-                      {currentProviderOrg
-                        ? currentProviderOrg.displayName || currentProviderOrg.name
-                        : "No practice"}
-                    </span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAiPracticePickerOpen((v) => !v);
-                      setAiPracticeError(null);
-                    }}
-                    className="underline hover:text-amber-900 dark:hover:text-amber-100"
-                  >
-                    {aiPracticePickerOpen ? "Cancel" : "Change practice"}
-                  </button>
-                </div>
-                {aiPracticePickerOpen && (
-                  <div className="mt-2 max-w-xs">
-                    <ProviderPicker
-                      value={
-                        data.providerOrganizationId ??
-                        labCase.providerOrganizationId ??
-                        ""
-                      }
-                      providers={drawerProviderOrgs}
-                      onChange={(id) => {
-                        if (id) changeAiPracticeMutation.mutate(id);
-                      }}
-                      disabled={changeAiPracticeMutation.isPending}
-                      parentLabOrganizationId={
-                        data?.labOrganizationId ??
-                        labCase.labOrganizationId ??
-                        undefined
-                      }
-                    />
-                    {aiPracticeError && (
-                      <div className="text-xs text-red-600 dark:text-red-400 mt-1">
-                        {aiPracticeError}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={loadAiDuplicateCandidates}
-                disabled={aiDupesLoading || ackAiReviewMutation.isPending}
-                className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-800 dark:text-amber-200 text-xs font-medium disabled:opacity-60"
-              >
-                {aiDupesLoading ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
-                Check duplicates
-              </button>
-              <button
-                type="button"
-                onClick={() => ackAiReviewMutation.mutate(undefined)}
-                disabled={ackAiReviewMutation.isPending}
-                className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium disabled:opacity-60"
-              >
-                {ackAiReviewMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-                Mark as reviewed
-              </button>
-            </div>
-
-            {/* Unrecognized-material warning: these restorations couldn't be
-                priced and silently became $0 lines on the draft invoice. */}
-            {data.unrecognizedMaterials && data.unrecognizedMaterials.length > 0 && (
-              <div className="mt-3 ml-7 rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2.5 flex items-start gap-2.5">
+        {((data?.unrecognizedMaterials?.length ?? 0) > 0 ||
+          !!data?.suggestedDoctorName) && (
+          <div className="px-5 py-3 border-b border-border shrink-0 space-y-3">
+            {data?.unrecognizedMaterials && data.unrecognizedMaterials.length > 0 && (
+              <div className="rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2.5 flex items-start gap-2.5">
                 <AlertTriangle size={14} className="text-red-600 dark:text-red-400 mt-0.5 shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-semibold text-red-700 dark:text-red-300">
                     Unrecognized {data.unrecognizedMaterials.length === 1 ? "material" : "materials"}:{" "}
-                    <span className="font-bold">
-                      {data.unrecognizedMaterials.join(", ")}
-                    </span>
+                    <span className="font-bold">{data.unrecognizedMaterials.join(", ")}</span>
                   </div>
                   <div className="text-[11px] text-red-700/70 dark:text-red-200/60 mt-0.5">
                     {data.unrecognizedMaterials.length === 1 ? "This material" : "These materials"}{" "}
@@ -5742,9 +8403,8 @@ export function CaseDrawer({
               </div>
             )}
 
-            {/* "Did you mean?" doctor suggestion banner */}
-            {data.suggestedDoctorName && (
-              <div className="mt-3 ml-7 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2.5 flex items-start gap-2.5">
+            {data?.suggestedDoctorName && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2.5 flex items-start gap-2.5">
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-semibold text-amber-700 dark:text-amber-300">
                     Did you mean{" "}
@@ -5779,210 +8439,66 @@ export function CaseDrawer({
                 </div>
               </div>
             )}
-
-            {aiDupes && (
-              <div className="mt-3 ml-7 rounded-md border border-amber-500/30 bg-card p-3 space-y-3">
-                {aiDupes.length === 0 ? (
-                  <div className="text-xs text-muted-foreground">
-                    No prior cases found for this patient — safe to mark as reviewed.
-                  </div>
-                ) : (
-                  <>
-                    <div className="text-xs font-semibold text-foreground">
-                      Found {aiDupes.length} possible duplicate{aiDupes.length === 1 ? "" : "s"}. If this is a remake, link it to the original below before marking reviewed.
-                    </div>
-                    <div className="border border-border rounded overflow-hidden">
-                      <table className="w-full text-xs">
-                        <thead className="bg-secondary/50">
-                          <tr>
-                            <th className="text-left px-2 py-1 w-8"></th>
-                            <th className="text-left px-2 py-1">Case #</th>
-                            <th className="text-left px-2 py-1">Patient</th>
-                            <th className="text-left px-2 py-1">Created</th>
-                            <th className="text-left px-2 py-1">Teeth</th>
-                            <th className="text-left px-2 py-1">Type</th>
-                            <th className="text-left px-2 py-1">Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {aiDupes.map((m) => {
-                            const isLegacy = m.source === "legacy";
-                            return (
-                              <tr
-                                key={`${m.source}:${m.id}`}
-                                onClick={() => {
-                                  setAiDupeSelectedId(m.id);
-                                  setAiDupeError(null);
-                                }}
-                                className={`border-t border-border cursor-pointer hover:bg-secondary/40 ${
-                                  aiDupeSelectedId === m.id ? "bg-primary/10" : ""
-                                }`}
-                              >
-                                <td className="px-2 py-1">
-                                  <input
-                                    type="radio"
-                                    name="ai-dup"
-                                    checked={aiDupeSelectedId === m.id}
-                                    onChange={() => setAiDupeSelectedId(m.id)}
-                                  />
-                                </td>
-                                <td className="px-2 py-1 font-mono">{m.caseNumber}</td>
-                                <td className="px-2 py-1">
-                                  {m.patientFirstName} {m.patientLastName}
-                                  {m.matchKind !== "exact" && (
-                                    <span className="ml-1 text-[10px] uppercase text-muted-foreground">
-                                      ({m.matchKind})
-                                    </span>
-                                  )}
-                                </td>
-                                <td className="px-2 py-1 text-muted-foreground">
-                                  {m.createdAt ? formatDate(m.createdAt) : "—"}
-                                </td>
-                                <td className="px-2 py-1">{m.toothNumbers || "—"}</td>
-                                <td className="px-2 py-1">{m.restorationTypes || "—"}</td>
-                                <td className="px-2 py-1">
-                                  <StatusBadge status={m.status as any} />
-                                  {isLegacy && (
-                                    <span className="ml-1 text-[10px] text-muted-foreground">mobile</span>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-medium text-muted-foreground mb-1">
-                        Remake reason (required to link)
-                      </label>
-                      <textarea
-                        rows={2}
-                        className="w-full px-2 py-1.5 rounded bg-secondary text-xs border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
-                        value={aiDupeReason}
-                        onChange={(e) => { setAiDupeReason(e.target.value); setAiDupeError(null); }}
-                        placeholder="e.g. Doctor flagged shade as too dark; remake at A2."
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-medium text-muted-foreground mb-1">
-                        Charge for this remake?
-                      </label>
-                      <div className="flex gap-2">
-                        {(
-                          [
-                            { v: "yes" as const, label: "Yes — invoice as usual" },
-                            { v: "no" as const, label: "No — no-charge remake" },
-                          ]
-                        ).map((opt) => (
-                          <button
-                            key={opt.v}
-                            type="button"
-                            onClick={() => { setAiDupeCharge(opt.v); setAiDupeError(null); }}
-                            className={`flex-1 h-8 rounded text-xs font-medium transition-colors ${
-                              aiDupeCharge === opt.v
-                                ? opt.v === "no"
-                                  ? "bg-amber-500/15 text-amber-700 border border-amber-500/40"
-                                  : "bg-primary/10 text-primary border border-primary/30"
-                                : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
-                            }`}
-                          >
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    {aiDupeError && (
-                      <p className="text-xs text-destructive bg-destructive/10 px-2 py-1.5 rounded">
-                        {aiDupeError}
-                      </p>
-                    )}
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setAiDupes(null)}
-                        className="h-7 px-2.5 rounded bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground"
-                      >
-                        Close
-                      </button>
-                      <button
-                        type="button"
-                        disabled={ackAiReviewMutation.isPending}
-                        onClick={() => {
-                          if (!aiDupeSelectedId) {
-                            setAiDupeError("Pick the prior case being remade.");
-                            return;
-                          }
-                          if (!aiDupeReason.trim()) {
-                            setAiDupeError("Reason is required to link as remake.");
-                            return;
-                          }
-                          if (aiDupeCharge === "") {
-                            setAiDupeError("Choose whether to charge for this remake.");
-                            return;
-                          }
-                          ackAiReviewMutation.mutate({
-                            remake: {
-                              remakeOfCaseId: aiDupeSelectedId,
-                              remakeReason: aiDupeReason.trim(),
-                              remakeCharged: aiDupeCharge === "yes",
-                            },
-                          });
-                        }}
-                        className="h-7 px-2.5 rounded bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
-                      >
-                        {ackAiReviewMutation.isPending && <Loader2 size={11} className="animate-spin" />}
-                        Link as remake & mark reviewed
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
           </div>
         )}
 
         {/* Tab navigation */}
-        <nav className="flex border-b border-border px-2 shrink-0 overflow-x-auto">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-3.5 py-2.5 text-xs font-medium whitespace-nowrap border-b-2 transition-colors flex items-center gap-1.5 ${
-                activeTab === tab.id
-                  ? "border-primary text-primary"
-                  : "border-transparent text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {tab.label}
-              {tab.count != null && tab.count > 0 && (
+        <nav className="flex items-center border-b border-border px-2 shrink-0 overflow-x-auto">
+          {tabs.map((tab, index) => (
+            <div key={tab.id} className="flex items-center">
+              {index > 0 && (
                 <span
-                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none ${
-                    activeTab === tab.id
-                      ? "bg-primary/15 text-primary"
-                      : "bg-secondary text-muted-foreground"
-                  }`}
-                >
-                  {tab.count}
-                </span>
+                  aria-hidden="true"
+                  className="w-px h-4 bg-border shrink-0"
+                />
               )}
-            </button>
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={() => {
+                  if (tab.id === activeTab) return;
+                  const proceed = () => {
+                    if (tab.id !== "lab-slip") cancelCaseEdit();
+                    setActiveTab(tab.id);
+                  };
+                  if (activeTab !== "invoice" || !guardNavigation(proceed)) proceed();
+                }}
+                className={`px-3.5 py-2.5 text-xs font-medium whitespace-nowrap border-b-2 transition-colors flex items-center gap-1.5 ${
+                  activeTab === tab.id
+                    ? "border-primary text-primary"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {tab.label}
+                {tab.count != null && tab.count > 0 && (
+                  <span
+                    className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none ${
+                      activeTab === tab.id
+                        ? "bg-primary/15 text-primary"
+                        : "bg-secondary text-muted-foreground"
+                    }`}
+                  >
+                    {tab.count}
+                  </span>
+                )}
+              </button>
+            </div>
           ))}
         </nav>
 
         {/* Tab content */}
-        <div className="flex-1 overflow-y-auto">
+        <div data-testid="case-detail-body" inert={isSaving} className="flex-1 min-h-0 min-w-0 overflow-y-auto">
 
           {/* ── OVERVIEW ── */}
           {activeTab === "lab-slip" && (() => {
-            const summary = deriveRxSummary(data?.restorations);
-            const hasPfmRestoration = (data?.restorations ?? []).some(
+            const restorations = caseRestorations;
+            const summary = deriveRxSummary(restorations);
+            const hasPfmRestoration = restorations.some(
               (r) =>
                 (r as { priceKey?: string | null }).priceKey === "pfm_crown" ||
                 /pfm/i.test(r.material ?? ""),
             );
-            const alloyLine = (data?.restorations ?? []).find(
+            const alloyLine = restorations.find(
               (r) =>
                 (r as { priceKey?: string | null }).priceKey === "alloy" ||
                 (r.restorationType ?? "").trim().toLowerCase() === "alloy",
@@ -5994,18 +8510,41 @@ export function CaseDrawer({
                 (alloyLine as { unitPrice?: string | number | null })
                   .unitPrice ?? 0,
               ) <= 0;
-            const overviewNotes = data?.notes ?? [];
-            const latestNote = [...overviewNotes].sort((a, b) => {
-              const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-              const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-              return tb - ta;
-            })[0];
-            const latestNoteText = latestNote?.noteText ?? "";
-            const notesPreview = latestNoteText
-              ? (latestNoteText.length > 120 ? latestNoteText.slice(0, 120) + "…" : latestNoteText)
-              : "No notes";
-            const toothLabel = formatRxTeethLabel(summary) || "—";
-            const shadeLabel = summary.shades.length > 0 ? summary.shades.join(", ") : "—";
+            // Practice the case currently points at — the staged edit wins so
+            // the drawer never shows the previous practice's address while a
+            // change is pending.
+            const casePracticeId =
+              data?.providerOrganizationId ?? labCase.providerOrganizationId ?? null;
+            const selectedPracticeId =
+              pendingCaseEdit?.providerOrganizationId ?? casePracticeId;
+            const practice = resolvePracticeContact({
+              selectedPracticeId,
+              casePracticeId,
+              caseContact: data?.providerOrganizationContact ?? null,
+              listOrganization: selectedPracticeId
+                ? drawerProviderOrgs.find((o) => o.id === selectedPracticeId) ?? null
+                : null,
+            });
+            // Step belongs to removable work only; the effective hierarchy of
+            // the case decides, with the per-restoration category as a
+            // fallback for rows the taxonomy cannot place.
+            const hierarchyForStep = restorations[0]
+              ? deriveCaseHierarchy(
+                  restorations[0].restorationType,
+                  (restorations[0] as any).restorationSubtype ?? null,
+                  restorations[0].material,
+                )
+              : null;
+            const isRemovableCase =
+              hierarchyForStep?.caseType === "removable" ||
+              (restorations.length > 0 &&
+                restorations.every((r) =>
+                  isRemovableRestorationType(r.restorationType),
+                ));
+            const toothNumbers = formatRxToothNumbers(
+              restorations,
+              data?.teeth ?? labCase.teeth,
+            );
             return (
             <div className="px-5 py-5 space-y-6">
               {hasPfmRestoration && !hasAlloyCharge && !pfmReminderDismissed && (() => {
@@ -6146,12 +8685,12 @@ export function CaseDrawer({
                   />
                 </section>
               )}
-              <section>
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                    {editMode ? "Edit Case Details" : "Case Details"}
+              <section data-testid="case-slip-details-panel" className="rounded-xl border border-border bg-card p-4">
+                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 mb-2">
+                  <h3 className="text-lg font-bold">
+                    Case Details
                   </h3>
-                  <div className="flex items-center gap-2">
+                  <div data-testid="case-details-actions" className="flex items-center gap-2 shrink-0">
                     {pendingCaseEdit !== null && !editMode && (
                       <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded">
                         <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
@@ -6165,6 +8704,7 @@ export function CaseDrawer({
                     )}
                     <button
                       type="button"
+                      data-testid="case-details-layout"
                       onClick={() => setShowPrintLayoutEditor(true)}
                       className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
                       title="Customize print layout"
@@ -6174,28 +8714,8 @@ export function CaseDrawer({
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        const advTemplate = advancedTemplateQuery.data;
-                        if (advTemplate?.isCustom) {
-                          printCaseCardAdvanced(
-                            data ?? labCase,
-                            {
-                              restorations: data?.restorations ?? [],
-                              invoice: invoiceDetailQuery.data ?? caseInvoice,
-                            },
-                            advTemplate.template,
-                          );
-                        } else {
-                          printCaseOverview(
-                            data ?? labCase,
-                            {
-                              restorations: data?.restorations ?? [],
-                              notes: data?.notes ?? [],
-                            },
-                            printLayout,
-                          );
-                        }
-                      }}
+                      data-testid="case-details-print"
+                      onClick={() => void printLabSlip()}
                       className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
                       title={hasAdvancedTemplate ? "Print using advanced layout" : "Print lab slip"}
                     >
@@ -6205,6 +8725,7 @@ export function CaseDrawer({
                     {!editMode && (
                       <button
                         type="button"
+                        data-testid="case-details-edit"
                         onClick={startEdit}
                         className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
                       >
@@ -6213,104 +8734,381 @@ export function CaseDrawer({
                     )}
                   </div>
                 </div>
-                {!editMode ? (
-                  <div className="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Patient</div>
-                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                        <span className="text-sm break-words">
-                          {`${pendingCaseEdit?.patientFirstName ?? data?.patientFirstName ?? labCase.patientFirstName} ${pendingCaseEdit?.patientLastName ?? data?.patientLastName ?? labCase.patientLastName}`.trim() || "—"}
+                <div data-testid="case-details-metadata" className="@container text-xs mb-3 rounded-lg border border-border bg-secondary/30 p-2.5">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2 @[640px]:flex-nowrap @[640px]:gap-x-2">
+                  <span data-testid="case-details-date-created" className="font-bold min-w-[9rem] flex-1">
+                    Date Created:{" "}
+                    <span>{formatDate(data?.createdAt ?? labCase.createdAt)}</span>
+                  </span>
+                  <span data-testid="case-details-metadata-divider" aria-hidden="true" className="hidden @[640px]:block w-px h-4 bg-border shrink-0" />
+                  <span data-testid="case-details-due-date" className="font-bold min-w-[9rem] flex-1">
+                    Due Date:{" "}
+                    <span>
+                      {formatDueDate(
+                        pendingCaseEdit?.dueDate ?? (data?.dueDate ?? labCase.dueDate),
+                        pendingCaseEdit?.dueTime ?? (data?.dueTime ?? labCase.dueTime),
+                      )}
+                    </span>
+                  </span>
+                  <span data-testid="case-details-metadata-divider" aria-hidden="true" className="hidden @[640px]:block w-px h-4 bg-border shrink-0" />
+                  {(() => {
+                    const effRush =
+                      (pendingCaseEdit?.priority ?? data?.priority ?? labCase.priority) === "rush";
+                    return (
+                      <span data-testid="case-details-priority" className="inline-flex min-w-[9rem] flex-1 flex-wrap items-center gap-1.5">
+                        <span className="font-bold">
+                          Priority: <span>{effRush ? "Rush" : "Standard"}</span>
                         </span>
                         <button
                           type="button"
-                          onClick={() => setRxPreviewOpen(true)}
-                          className="inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-medium text-primary/80 hover:text-primary hover:bg-primary/10 transition-colors shrink-0"
-                          title="Preview prescription"
+                          data-testid="case-details-rush-toggle"
+                          onClick={() => rushMutation.mutate(effRush ? "normal" : "rush")}
+                          disabled={rushMutation.isPending}
+                          title={effRush ? "Clear rush on this case" : "Mark this case as rush"}
+                          className={`inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${
+                            effRush
+                              ? "text-destructive hover:bg-destructive/10"
+                              : "text-primary/80 hover:text-primary hover:bg-primary/10"
+                          }`}
                         >
-                          <ScrollText size={10} />
-                          Preview Rx
+                          <Zap size={10} />
+                          {rushMutation.isPending
+                            ? "Saving…"
+                            : effRush
+                              ? "Clear rush"
+                              : "Mark rush"}
                         </button>
-                      </div>
+                      </span>
+                    );
+                  })()}
+                  </div>
+                </div>
+                <div className="border-t border-border" />
+                <div className="mt-3 mb-4">
+                  <div className="min-w-0">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                      Case #
                     </div>
-                    <div>
-                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Doctor</div>
-                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                        <span className="text-sm break-words">
-                          {(pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName) || "—"}
+                    {isAdmin && caseNumberEditMode ? (
+                      <form
+                        className="flex items-center gap-1 mt-1"
+                        onSubmit={async (e) => {
+                          e.preventDefault();
+                          const trimmed = caseNumberEditValue.trim();
+                          if (!trimmed) { setCaseNumberError("Case number cannot be blank."); return; }
+                          setCaseNumberSaving(true);
+                          setCaseNumberError(null);
+                          try {
+                            await apiFetch(`/cases/${labCase.id}`, {
+                              method: "PATCH",
+                              body: JSON.stringify({ caseNumber: trimmed }),
+                            });
+                            await Promise.all([
+                              qc.invalidateQueries({ queryKey: ["cases"] }),
+                              qc.invalidateQueries({ queryKey: ["case", labCase.id] }),
+                              qc.invalidateQueries({ queryKey: ["invoices"] }),
+                              qc.invalidateQueries({ queryKey: ["invoice-for-case", labCase.id] }),
+                            ]);
+                            toast.success("Case number updated.");
+                            setCaseNumberEditMode(false);
+                          } catch (err: unknown) {
+                            setCaseNumberError(err instanceof Error ? err.message : "Could not save case number.");
+                          } finally {
+                            setCaseNumberSaving(false);
+                          }
+                        }}
+                      >
+                        <input
+                          ref={caseNumberInputRef}
+                          type="text"
+                          value={caseNumberEditValue}
+                          onChange={(e) => { setCaseNumberEditValue(e.target.value); setCaseNumberError(null); }}
+                          className="h-7 px-1.5 rounded bg-secondary text-xs font-mono font-semibold border border-input focus:outline-none focus:ring-1 focus:ring-primary w-24"
+                          disabled={caseNumberSaving}
+                          onKeyDown={(e) => { if (e.key === "Escape") { setCaseNumberEditMode(false); setCaseNumberError(null); } }}
+                          aria-label="Case number"
+                        />
+                        <button
+                          type="submit"
+                          disabled={caseNumberSaving}
+                          className="h-6 w-6 rounded flex items-center justify-center hover:bg-primary/10 text-primary disabled:opacity-50"
+                          title="Save case number"
+                        >
+                          {caseNumberSaving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setCaseNumberEditMode(false); setCaseNumberError(null); }}
+                          disabled={caseNumberSaving}
+                          className="h-6 w-6 rounded flex items-center justify-center hover:bg-secondary text-muted-foreground disabled:opacity-50"
+                          title="Cancel"
+                        >
+                          <X size={11} />
+                        </button>
+                        {caseNumberError && (
+                          <span className="text-xs text-destructive">{caseNumberError}</span>
+                        )}
+                      </form>
+                    ) : (
+                      <div className="flex items-center gap-1 mt-1">
+                        <span className="font-mono text-sm font-semibold">
+                          {data?.caseNumber ?? labCase.caseNumber}
                         </span>
-                        {(() => {
-                          const curDoctor = pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName;
-                          const curPracticeId = pendingCaseEdit?.providerOrganizationId ?? data?.providerOrganizationId ?? labCase.providerOrganizationId;
-                          const labOrgId = data?.labOrganizationId ?? labCase.labOrganizationId;
-                          const canReassign =
-                            (user?.role === "admin" || user?.role === "owner") &&
-                            !!curDoctor &&
-                            !!curPracticeId &&
-                            !!labOrgId;
-                          if (!canReassign) return null;
-                          return (
-                            <button
-                              type="button"
-                              onClick={() => setReassignDoctorOpen(true)}
-                              className="inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-medium text-primary/80 hover:text-primary hover:bg-primary/10 transition-colors shrink-0"
-                              title="Reassign this case to a different doctor in the same practice"
-                            >
-                              <GitBranch size={10} />
-                              Reassign
-                            </button>
-                          );
-                        })()}
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCaseNumberEditValue(data?.caseNumber ?? labCase.caseNumber ?? "");
+                              setCaseNumberError(null);
+                              setCaseNumberEditMode(true);
+                              setTimeout(() => caseNumberInputRef.current?.focus(), 50);
+                            }}
+                            className="h-5 w-5 rounded flex items-center justify-center hover:bg-secondary text-muted-foreground/50 hover:text-muted-foreground"
+                            title="Edit case number"
+                          >
+                            <Pencil size={10} />
+                          </button>
+                        )}
                       </div>
-                    </div>
-                    <Field label="Practice" value={(() => {
-                      const pid = pendingCaseEdit?.providerOrganizationId ?? data?.providerOrganizationId ?? labCase.providerOrganizationId;
-                      if (!pid) return "—";
-                      const org = drawerProviderOrgs.find((o) => o.id === pid);
-                      return org?.displayName ?? org?.name ?? "—";
-                    })()} />
-                    <Field label="Status" value={statusLabel(currentStatus)} />
-                    <div>
-                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
-                        Priority
+                    )}
+                  </div>
+                </div>
+                {!editMode && (
+                  <section
+                    aria-label="Patient & Provider"
+                    data-testid="case-slip-patient-provider"
+                    className="mb-4 rounded-lg border border-border bg-secondary/20 p-3"
+                  >
+                    <h4 className="mb-3 text-sm font-semibold">Patient &amp; Provider</h4>
+                    <div className="grid grid-cols-1 gap-3 @[420px]/drawer:grid-cols-2 @[620px]/drawer:grid-cols-3">
+                      <div data-testid="case-details-patient" className="min-w-0">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Patient</div>
+                        <div className="flex min-w-0 flex-wrap items-center gap-2 mt-1">
+                          <span className="min-w-0 max-w-full text-sm break-words">
+                            {`${pendingCaseEdit?.patientFirstName ?? data?.patientFirstName ?? labCase.patientFirstName} ${pendingCaseEdit?.patientLastName ?? data?.patientLastName ?? labCase.patientLastName}`.trim() || "—"}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRxPreviewCaseId(null);
+                              setRxPreviewOpen(true);
+                            }}
+                            className="inline-flex items-center gap-1 min-h-6 px-1.5 rounded text-[10px] font-medium text-primary/80 hover:text-primary hover:bg-primary/10 transition-colors"
+                            title="Preview prescription"
+                          >
+                            <ScrollText size={10} />
+                            Preview Rx
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        {(() => {
-                          const effRush =
-                            (pendingCaseEdit?.priority ?? data?.priority ?? labCase.priority) === "rush";
-                          return (
-                            <>
-                              <span className="text-sm">{effRush ? "Rush" : "Normal"}</span>
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Doctor</div>
+                        <div className="flex min-w-0 flex-wrap items-center gap-2 mt-1">
+                          <span className="min-w-0 text-sm break-words">
+                            {(pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName) || "—"}
+                          </span>
+                          {(() => {
+                            const curDoctor = data?.doctorName;
+                            const curPracticeId = data?.providerOrganizationId;
+                            const labOrgId = data?.labOrganizationId ?? labCase.labOrganizationId;
+                            const canReassign =
+                              canReassignDoctor &&
+                              !!curDoctor &&
+                              !!curPracticeId &&
+                              !!labOrgId;
+                            if (!canReassign) return null;
+                            return (
                               <button
                                 type="button"
-                                onClick={() => rushMutation.mutate(effRush ? "normal" : "rush")}
-                                disabled={rushMutation.isPending}
-                                title={effRush ? "Clear rush on this case" : "Mark this case as rush"}
-                                className={`inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${
-                                  effRush
-                                    ? "text-destructive hover:bg-destructive/10"
-                                    : "text-primary/80 hover:text-primary hover:bg-primary/10"
-                                }`}
+                                onClick={() => {
+                                  if (hasUnsavedDoctorAssignment) {
+                                    notifyDoctorChange({ variant: "destructive", title: "Save or cancel edits first", description: "Save or cancel your doctor/practice edits before reassigning." });
+                                    return;
+                                  }
+                                  setReassignDoctorOpen(true);
+                                }}
+                                className="inline-flex items-center gap-1 min-h-6 px-1.5 rounded text-[10px] font-medium text-primary/80 hover:text-primary hover:bg-primary/10 transition-colors"
+                                title="Reassign this case to a different doctor in the same practice"
                               >
-                                <Zap size={10} />
-                                {rushMutation.isPending
-                                  ? "Saving…"
-                                  : effRush
-                                    ? "Clear rush"
-                                    : "Mark rush"}
+                                <GitBranch size={10} />
+                                Reassign
                               </button>
-                            </>
-                          );
-                        })()}
+                            );
+                          })()}
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Practice</div>
+                        <div className="mt-1 min-w-0" data-testid="practice-details">
+                          <div className="text-sm break-words">{practice.name ?? "—"}</div>
+                          {practice.addressLines.map((line) => (
+                            <div key={line} className="text-sm text-muted-foreground break-words">
+                              {line}
+                            </div>
+                          ))}
+                          {practice.phone && (
+                            <div className="text-sm text-muted-foreground">
+                              {formatPhone(practice.phone)}
+                            </div>
+                          )}
+                          {practice.name &&
+                            practice.addressLines.length === 0 &&
+                            !practice.phone && (
+                              <div className="text-xs text-muted-foreground">
+                                No address or phone on file.
+                              </div>
+                            )}
+                        </div>
                       </div>
                     </div>
-                    <Field label="Due date" value={formatDueDate(pendingCaseEdit?.dueDate ?? data?.dueDate ?? labCase.dueDate)} />
-                    <Field label="Created" value={formatDate(data?.createdAt ?? labCase.createdAt)} />
-                    <Field label="Tooth #" value={toothLabel} />
-                    <Field label="Shade" value={shadeLabel} />
-                    <div className="col-span-2">
-                      <Field label="Notes" value={notesPreview} />
+                  </section>
+                )}
+                {!editMode ? (
+                  <div className="space-y-4 text-sm">
+                    <section
+                      aria-label="Restoration Details"
+                      data-testid="case-slip-restoration-details"
+                      className="rounded-lg border border-border bg-secondary/20 p-3"
+                    >
+                    <h4 className="mb-3 text-sm font-semibold">Restoration Details</h4>
+                    {/* Tooth numbers are read-only here; the Case Details editor
+                        remains the single place to enter or correct them. */}
+                    <div
+                      className="flex flex-wrap items-start gap-x-8 gap-y-3"
+                      data-testid="tooth-custom-shade"
+                    >
+                      <div className="min-w-[13rem]">
+                        <ToothNumbersDisplay value={toothNumbers} />
+                      </div>
+                      <CustomShadeSection
+                        caseId={labCase.id}
+                        isCustomShade={!!((data as any)?.isCustomShade)}
+                        customShadeTechnician={
+                          (data as any)?.customShadeTechnician ?? null
+                        }
+                        customShadePicturesAvailable={
+                          !!((data as any)?.customShadePicturesAvailable)
+                        }
+                        customShadeVideoAvailable={
+                          !!((data as any)?.customShadeVideoAvailable)
+                        }
+                      />
                     </div>
-                    <div className="col-span-2">
+                    <div className="grid grid-cols-1 gap-4 @[440px]/drawer:grid-cols-2">
+                      <div className="space-y-3">
+                      {(() => {
+                        const restorations = data?.restorations ?? [];
+                        const firstRestoration = restorations[0];
+                        const hierarchy = firstRestoration
+                          ? deriveCaseHierarchy(
+                              firstRestoration.restorationType,
+                              (firstRestoration as any).restorationSubtype ?? null,
+                              firstRestoration.material,
+                            )
+                          : ({ caseType: null, subtype: null, materialSubtype: null } as CaseHierarchy);
+                        const hierarchyIsMixed =
+                          restorations.length > 1 &&
+                          restorations.slice(1).some((restoration) => {
+                            const restorationHierarchy = deriveCaseHierarchy(
+                              restoration.restorationType,
+                              (restoration as any).restorationSubtype ?? null,
+                              restoration.material,
+                            );
+                            return JSON.stringify(restorationHierarchy) !== JSON.stringify(hierarchy);
+                          });
+                        const canEdit = user?.role === "admin" || user?.role === "owner";
+                        const labOrgId = (data as any)?.labOrganizationId ?? (labCase as any).labOrganizationId;
+                        const ctLabel = hierarchy.caseType ? CASE_TAXONOMY[hierarchy.caseType].label : null;
+                        const stLabel = hierarchy.caseType && hierarchy.subtype
+                          ? getSubtypeLabel(hierarchy.caseType, hierarchy.subtype as CaseSubtype)
+                          : null;
+                        const matLabel = hierarchy.caseType && hierarchy.subtype && hierarchy.materialSubtype
+                          ? getMaterialSubtypeLabel(
+                              hierarchy.caseType,
+                              hierarchy.subtype as CaseSubtype,
+                              hierarchy.materialSubtype as MaterialSubtype,
+                            )
+                          : null;
+                        const applicableArch =
+                          hierarchy.caseType === "removable" ||
+                          hierarchy.caseType === "ortho";
+                        return canEdit ? (
+                          <CaseHierarchySelect
+                            hierarchy={hierarchy}
+                            caseId={labCase.id}
+                            firstRestorationId={firstRestoration?.id}
+                            labOrganizationId={labOrgId}
+                            archValues={restorations.map((restoration) => restoration.arch)}
+                            showFieldLabels
+                          />
+                        ) : (
+                          <>
+                            <Field label="Case Type" value={hierarchyIsMixed ? "Multiple" : ctLabel ?? "—"} />
+                            <Field label="Case Subtype" value={hierarchyIsMixed ? "Multiple" : stLabel ?? "—"} />
+                            <Field
+                              label="Case Material"
+                              value={hierarchyIsMixed
+                                ? "Multiple"
+                                : matLabel ?? (summary.materials.length > 0 ? summary.materials.join(", ") : "—")}
+                            />
+                            {applicableArch && (
+                              <Field
+                                label="Arch"
+                                value={archLabel(restorations) ?? "Required"}
+                              />
+                            )}
+                          </>
+                        );
+                      })()}
+                      </div>
+                      {/* Step is a removable-only production stage, so it sits
+                          beside Case Type for those cases and is absent
+                          everywhere else. */}
+                      {(data?.restorations ?? []).filter(isImplantRestoration).map((row) => <SavedImplantDetails key={row.id} row={row} caseId={labCase.id} canEdit={user?.userType !== "provider" && data?.viewerIsLabMember !== false} />)}
+                      {isRemovableCase && (() => {
+                        const canEditStep = user?.role === "admin" || user?.role === "owner";
+                        const caseData = data ?? labCase as any;
+                        return (
+                          <div>
+                            <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                              Step
+                            </div>
+                            <div className="mt-0.5">
+                              {canEditStep ? (
+                                <StepSelect
+                                  value={caseData.step ?? null}
+                                  shade={caseData.stepShade ?? null}
+                                  caseId={labCase.id}
+                                />
+                              ) : (
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="text-sm">{stepLabel(caseData.step)}</span>
+                                  {caseData.step === "wax_setup" && caseData.stepShade && (
+                                    <span className="text-xs text-muted-foreground">
+                                      Shade: {caseData.stepShade}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    <div className="grid grid-cols-1 gap-4 @[440px]/drawer:grid-cols-2">
+                      <Field
+                        label="Received Date"
+                        value={formatDate(
+                          pendingCaseEdit?.receivedAt ??
+                            data?.receivedAt ??
+                            labCase.receivedAt,
+                        )}
+                      />
+                      {(data?.gingivialShade ?? labCase.gingivialShade) ? (
+                        <Field label="Gingival shade" value={data?.gingivialShade ?? labCase.gingivialShade} />
+                      ) : null}
+                    </div>
+                    <div>
                       <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-0.5">
                         Case pan barcode
                       </div>
@@ -6430,10 +9228,12 @@ export function CaseDrawer({
                         </div>
                       )}
                     </div>
+                    </section>
                   </div>
                 ) : (
                   <div
                     className="space-y-3"
+                    data-testid="case-details-edit-form"
                     onPointerDownCapture={(e) => {
                       const tag = (e.target as HTMLElement).tagName;
                       if (!["INPUT", "SELECT", "TEXTAREA", "BUTTON", "A"].includes(tag)) {
@@ -6441,7 +9241,13 @@ export function CaseDrawer({
                       }
                     }}
                   >
-                    <div className="grid grid-cols-2 gap-3">
+                    <section
+                      aria-label="Patient & Provider"
+                      data-testid="case-edit-patient-provider"
+                      className="rounded-lg border border-border bg-secondary/20 p-3 space-y-3"
+                    >
+                    <h4 className="text-sm font-semibold">Patient &amp; Provider</h4>
+                    <div className="grid grid-cols-1 gap-3 @[420px]/drawer:grid-cols-2">
                       <div>
                         <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                           First Name
@@ -6505,7 +9311,7 @@ export function CaseDrawer({
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                         Doctor name
                       </label>
-                      <div className="mt-1">
+                      <div className="mt-1 w-96 max-w-full">
                         <DoctorNamePicker
                           value={editForm.doctorName}
                           onChange={(name) => {
@@ -6517,19 +9323,84 @@ export function CaseDrawer({
                         />
                       </div>
                     </div>
+                    </section>
+                    <section
+                      aria-label="Schedule & Priority"
+                      data-testid="case-edit-schedule-priority"
+                      className="rounded-lg border border-border bg-secondary/20 p-3 space-y-3"
+                    >
+                    <h4 className="text-sm font-semibold">Schedule &amp; Priority</h4>
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Date Received
+                      </label>
+                      <div className="mt-1 flex gap-1.5">
+                        <input
+                          type="date"
+                          value={editForm.receivedAt}
+                          onChange={(e) => {
+                            setEditForm((f) => ({
+                              ...f,
+                              receivedAt: e.target.value,
+                            }));
+                            setEditError(null);
+                          }}
+                          className="w-36 max-w-full min-w-0 h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        />
+                      </div>
+                    </div>
                     <div>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                         Due Date
                       </label>
-                      <input
-                        type="date"
-                        value={editForm.dueDate}
-                        onChange={(e) => {
-                          setEditForm((f) => ({ ...f, dueDate: e.target.value }));
-                          setEditError(null);
-                        }}
-                        className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                      />
+                      <div className="mt-1 flex gap-1.5">
+                        <input
+                          type="date"
+                          value={editForm.dueDate}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            setEditForm((f) => ({
+                              ...f,
+                              dueDate: raw,
+                              ...(raw ? {} : { dueTime: "" }),
+                            }));
+                            if (!raw) setEditHasDueTime(false);
+                            setEditError(null);
+                          }}
+                          className="w-36 max-w-full min-w-0 h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        />
+                      </div>
+                      <label className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          checked={editHasDueTime}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setEditHasDueTime(checked);
+                            if (!checked) {
+                              setEditForm((f) => ({ ...f, dueTime: "" }));
+                            }
+                            setEditError(null);
+                          }}
+                          disabled={!editForm.dueDate}
+                          className="h-3.5 w-3.5 rounded border-border accent-primary disabled:cursor-not-allowed"
+                          aria-label="Set a specific time the case is due"
+                        />
+                        <Clock size={13} aria-hidden="true" />
+                        Set a specific time the case is due
+                      </label>
+                      {editHasDueTime && editForm.dueDate && (
+                        <input
+                          type="time"
+                          value={editForm.dueTime}
+                          onChange={(e) => {
+                            setEditForm((f) => ({ ...f, dueTime: e.target.value }));
+                            setEditError(null);
+                          }}
+                          aria-label="Due time (optional)"
+                          className="mt-2 w-[7.5rem] h-9 px-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        />
+                      )}
                     </div>
                     <div>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
@@ -6549,7 +9420,14 @@ export function CaseDrawer({
                         <option value="rush">Rush</option>
                       </select>
                     </div>
-                    <div className="col-span-2">
+                    </section>
+                    <section
+                      aria-label="Restoration Details"
+                      data-testid="case-edit-restoration-details"
+                      className="rounded-lg border border-border bg-secondary/20 p-3 space-y-3"
+                    >
+                    <h4 className="text-sm font-semibold">Restoration Details</h4>
+                    <div>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                         Case Pan Barcode
                       </label>
@@ -6581,51 +9459,274 @@ export function CaseDrawer({
                         </p>
                       )}
                     </div>
-                    {editError && <p className="text-xs text-destructive">{editError}</p>}
-                    <div className="flex gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => { setEditMode(false); setEditError(null); }}
-                        className="flex-1 h-9 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPendingCaseEdit({ ...editForm });
-                          // Stage Rx Summary restoration replacement only when
-                          // the user actually changed type, material, shade, or teeth.
-                          const snappedSummary = deriveRxSummary(data?.restorations);
-                          const origType = data?.restorations?.[0]?.restorationType ?? snappedSummary.restorativeType ?? "Other";
-                          const origMaterial = snappedSummary.materials.join(", ");
-                          const origShade = snappedSummary.shades.join(", ");
-                          const origTeeth = snappedSummary.teeth.join(", ");
-                          if (
-                            editRxType !== origType ||
-                            editRxMaterial.trim() !== origMaterial.trim() ||
-                            editRxShade.trim() !== origShade.trim() ||
-                            editRxTeeth.trim() !== origTeeth.trim()
-                          ) {
-                            setPendingRxSummaryEdit({ type: editRxType, material: editRxMaterial, shade: editRxShade, teeth: editRxTeeth });
-                          }
-                          setEditMode(false);
-                          setEditError(null);
-                        }}
-                        className="flex-1 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 inline-flex items-center justify-center gap-1.5"
-                      >
-                        Save changes
-                      </button>
+                    <div className="border-t border-border pt-3">
+                      <h4 className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">
+                        Clinical Details
+                      </h4>
+                      <div className="grid grid-cols-1 gap-3 @[420px]/drawer:grid-cols-2">
+                        <div className="@[420px]/drawer:col-span-2">
+                          <div className="mt-1">
+                            {canEditClinicalHierarchy ? (
+                              <CatalogRestorationPicker
+                                labOrganizationId={labCase.labOrganizationId}
+                                restorationType={editRxType}
+                                material={editRxMaterial}
+                                restorationSubtype={editRxSubtype}
+                                fallbackMaterialSuggestions={materialSuggestions}
+                                showFieldLabels
+                                subtypeDetails={implantEditors}
+                                onChange={(next) => {
+                                  const representative =
+                                    next.caseTypeKey
+                                      ? CASE_TYPE_REPRESENTATIVE[next.caseTypeKey as CaseType]
+                                      : editRxType;
+                                  setEditRxType(next.restorationType || representative || "Other");
+                                  setEditRxMaterial(next.material);
+                                  setEditRxSubtype(next.restorationSubtype ?? null);
+                                }}
+                                inputClassName="h-9 focus:ring-primary focus:border-primary"
+                              />
+                            ) : (
+                              <div className="grid grid-cols-1 gap-2 text-sm @[560px]/drawer:grid-cols-3">
+                                <Field
+                                  label="Case Type"
+                                  value={
+                                    editRxHierarchy.caseType
+                                      ? CASE_TAXONOMY[editRxHierarchy.caseType].label
+                                      : "—"
+                                  }
+                                />
+                                <Field
+                                  label="Subtype"
+                                  value={
+                                    editRxHierarchy.caseType && editRxHierarchy.subtype
+                                      ? getSubtypeLabel(
+                                          editRxHierarchy.caseType,
+                                          editRxHierarchy.subtype,
+                                        )
+                                      : "—"
+                                  }
+                                />
+                                <Field label="Case Material" value={editRxMaterial || "—"} />
+                              </div>
+                            )}
+                            {!canEditClinicalHierarchy && implantEditors}
+                          </div>
+                        </div>
+                        {showArchEditor && (
+                          <div>
+                            <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                              Arch
+                            </label>
+                            {canEditClinicalHierarchy ? (
+                              <select
+                                aria-label="Arch"
+                                value={editRxArch}
+                                onChange={(e) =>
+                                  setEditRxArch(
+                                    e.target.value as "" | "upper" | "lower" | "both",
+                                  )
+                                }
+                                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                              >
+                                <option value="">Select arch…</option>
+                                <option value="upper">Upper</option>
+                                <option value="lower">Lower</option>
+                                <option value="both">Upper + Lower</option>
+                              </select>
+                            ) : (
+                              <p className="mt-1 text-sm">
+                                {editRxArch === "both"
+                                  ? "Upper + Lower"
+                                  : editRxArch
+                                    ? editRxArch === "upper" ? "Upper" : "Lower"
+                                    : "—"}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {showStepEditor && (
+                          <div>
+                            <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                              Step
+                            </label>
+                            {canEditStep ? (
+                              <select
+                                aria-label="Step"
+                                value={editRxStep}
+                                onChange={(e) => setEditRxStep(e.target.value)}
+                                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                              >
+                                <option value="">No step</option>
+                                {STEP_OPTIONS.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <p className="mt-1 text-sm">
+                                {STEP_OPTIONS.find((option) => option.value === editRxStep)?.label || "—"}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {editRxStep === "wax_setup" && (
+                          <div>
+                            <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                              Wax Setup Shade
+                            </label>
+                            {canEditStep ? (
+                              <FieldCombobox
+                                value={editRxStepShade}
+                                suggestions={shadeSuggestions}
+                                onChange={setEditRxStepShade}
+                                onCreate={(value) => createVocabItem("shade", value)}
+                                placeholder="e.g. A2"
+                                inputClassName="mt-1 h-9 focus:ring-primary focus:border-primary"
+                              />
+                            ) : (
+                              <p className="mt-1 text-sm">{editRxStepShade || "—"}</p>
+                            )}
+                          </div>
+                        )}
+                        <div>
+                          <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                            Shade
+                          </label>
+                          {data?.viewerIsLabMember !== false ? (
+                            <FieldCombobox
+                              value={editRxShade}
+                              suggestions={shadeSuggestions}
+                              onChange={setEditRxShade}
+                              onCreate={(value) => createVocabItem("shade", value)}
+                              placeholder="e.g. A2"
+                              addNewLabel="Add shade"
+                              inputClassName="mt-1 h-9 focus:ring-primary focus:border-primary"
+                            />
+                          ) : (
+                            <p className="mt-1 text-sm">{editRxShade || "—"}</p>
+                          )}
+                        </div>
+                        <div>
+                          <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                            Tooth Numbers
+                          </label>
+                          {data?.viewerIsLabMember !== false ? (
+                            <input
+                              aria-label="Tooth Numbers"
+                              value={editRxTeeth}
+                              onChange={(e) => setEditRxTeeth(e.target.value)}
+                              placeholder="e.g. 2, 4, 12"
+                              className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                            />
+                          ) : (
+                            <p className="mt-1 text-sm">{editRxTeeth || "—"}</p>
+                          )}
+                        </div>
+                        <div>
+                          <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                            Gingival Shade
+                          </label>
+                          <input
+                            aria-label="Gingival Shade"
+                            value={editForm.gingivialShade}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, gingivialShade: e.target.value }))
+                            }
+                            placeholder="e.g. Light Pink"
+                            className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                          />
+                        </div>
+                      </div>
                     </div>
+                    </section>
                   </div>
                 )}
               </section>
 
+              {/* The Lab Slip carries one prescription section. Authored case
+                  notes keep their own tab, history and visibility rules. */}
+              <section aria-label="Rx Notes" className="mt-4 rounded-lg border border-border bg-secondary/20 p-3">
+                <h4 className="text-sm font-semibold mb-2">Rx Notes</h4>
+                {(() => {
+                  const currentText =
+                    pendingCaseEdit?.rxNotes ??
+                    data?.caseNotes ??
+                    labCase.caseNotes ??
+                    "";
+                  const savedEntries = data?.rxNoteEntries ?? labCase.rxNoteEntries ?? [];
+                  const currentEntries = savedEntries.filter(
+                    (entry) => entry.caseId === labCase.id,
+                  );
+                  const needsCurrentEntry =
+                    currentEntries.length === 0 && (currentText.trim() || editMode);
+                  const currentEntryId =
+                    currentEntries.at(-1)?.id ??
+                    (needsCurrentEntry ? `legacy-${labCase.id}` : null);
+                  const entries = needsCurrentEntry
+                    ? [
+                        ...savedEntries,
+                        {
+                          id: `legacy-${labCase.id}`,
+                          caseId: labCase.id,
+                          noteText: currentText,
+                          scannedAt: null,
+                          provenance: "legacy" as const,
+                        },
+                      ]
+                    : savedEntries;
+                  if (entries.length === 0) return <p className="text-sm">—</p>;
+                  return (
+                    <div className="space-y-2">
+                      {entries.map((entry) => {
+                        const active = entry.id === currentEntryId;
+                        const text = editMode && active
+                          ? editForm.rxNotes
+                          : !editMode && active
+                            ? (pendingCaseEdit?.rxNotes ?? entry.noteText)
+                            : entry.noteText;
+                        return (
+                          <div
+                            key={entry.id}
+                            className="grid grid-cols-[76px_minmax(0,1fr)] gap-2 items-start text-sm"
+                          >
+                            <span className="text-[11px] leading-5 text-muted-foreground whitespace-nowrap">
+                              {formatRxNoteScanDate(entry.scannedAt)}
+                            </span>
+                            {editMode && active ? (
+                              <textarea
+                                aria-label="Prescription notes"
+                                value={text}
+                                onChange={(e) =>
+                                  setEditForm((f) => ({ ...f, rxNotes: e.target.value }))
+                                }
+                                rows={3}
+                                placeholder="Prescription notes…"
+                                className="w-full min-w-0 px-2.5 py-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-y"
+                              />
+                            ) : (
+                              <p className="min-w-0 whitespace-pre-wrap break-words">
+                                {text || "—"}
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </section>
+
               {/* Rx summary — at-a-glance view of what the lab is being asked
-                  to make, derived from the case's restorations. Fields are
-                  editable inline when the Lab Slip is in edit mode. */}
+                  to make, derived from the case's restorations. */}
               {(() => {
                 const highlightValue = buildHighlightedToothValue(summary);
+                const caseIsRemovable =
+                  (data?.restorations ?? []).length > 0 &&
+                  (data?.restorations ?? []).every((r) =>
+                    isRemovableRestorationType(r.restorationType),
+                  );
                 return (
                   <section>
                     <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-3">
@@ -6633,210 +9734,25 @@ export function CaseDrawer({
                     </h3>
                     {(
                       <div className="space-y-3">
-                        {editMode ? (
-                          <div className="grid grid-cols-2 gap-3">
-                            <div>
-                              <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Material</label>
-                              <div className="mt-1">
-                                <FieldCombobox
-                                  value={editRxMaterial}
-                                  suggestions={materialSuggestions}
-                                  onChange={setEditRxMaterial}
-                                  onCreate={(v) => createVocabItem("material", v)}
-                                  placeholder="e.g. Zirconia"
-                                  addNewLabel="Add material"
-                                  inputClassName="h-9 focus:ring-primary focus:border-primary"
-                                />
-                              </div>
-                            </div>
-                            <div>
-                              <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Shade</label>
-                              <div className="mt-1">
-                                <FieldCombobox
-                                  value={editRxShade}
-                                  suggestions={shadeSuggestions}
-                                  onChange={setEditRxShade}
-                                  onCreate={(v) => createVocabItem("shade", v)}
-                                  placeholder="e.g. A2"
-                                  addNewLabel="Add shade"
-                                  inputClassName="h-9 focus:ring-primary focus:border-primary"
-                                />
-                              </div>
-                            </div>
-                            <div>
-                              <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Tooth Number(s)</label>
-                              <input
-                                value={editRxTeeth}
-                                onChange={(e) => setEditRxTeeth(e.target.value)}
-                                placeholder="e.g. 2, 4, 12"
-                                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                              />
-                            </div>
-                            <div className="col-span-2">
-                              <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Rx Notes</label>
-                              <textarea
-                                value={editForm.rxNotes}
-                                onChange={(e) => setEditForm((f) => ({ ...f, rxNotes: e.target.value }))}
-                                rows={3}
-                                placeholder="Prescription notes…"
-                                className="mt-1 w-full px-2.5 py-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-none"
-                              />
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="grid grid-cols-2 gap-4 text-sm">
-                            <Field
-                              label={
-                                summary.materials.length > 1
-                                  ? "Materials"
-                                  : "Material"
-                              }
-                              value={(() => {
-                                const mat =
-                                  summary.materials.length > 0
-                                    ? summary.materials.join(", ")
-                                    : "—";
-                                const shade =
-                                  summary.shades.length > 0
-                                    ? summary.shades.join(", ")
-                                    : "";
-                                return shade ? `${mat} · ${shade}` : mat;
-                              })()}
-                            />
-
-                            <div className="col-span-2">
-                              <Field
-                                label={
-                                  summary.isFullArch
-                                    ? "Tooth coverage"
-                                    : "Tooth number(s)"
-                                }
-                                value={formatRxTeethWithShades(
-                                  data?.restorations,
-                                  formatRxTeethLabel(summary),
-                                )}
-                              />
-                            </div>
-                            <div className="col-span-2">
-                              <Field
-                                label="Rx notes"
-                                value={(pendingCaseEdit?.rxNotes?.trim() ?? data?.caseNotes ?? labCase.caseNotes ?? "").trim() || "—"}
-                              />
-                            </div>
-                          </div>
+                        {!caseIsRemovable && (
+                          <ToothChart
+                            value={[highlightValue, ...Array.from(missingTeethIds)]
+                              .filter(Boolean)
+                              .join(",")}
+                            onChange={() => {}}
+                            readOnly
+                            showPrimary={false}
+                            crownTeeth={crownTeeth}
+                            ponticTeeth={ponticTeeth}
+                            missingTeeth={missingTeethIds}
+                            connectedPairs={parseConnectorState(data?.bridgeConnectors ?? (labCase as any).bridgeConnectors).active}
+                          />
                         )}
-                        <div>
-                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                            Notes
-                          </div>
-                          {(data?.notes?.length ?? 0) === 0 ? (
-                            <div className="text-sm text-muted-foreground border border-dashed border-border rounded-md px-3 py-2">
-                              No notes yet.
-                            </div>
-                          ) : (
-                            <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                              {[...(data?.notes ?? [])]
-                                .sort((a, b) => {
-                                  const ta = a.createdAt
-                                    ? new Date(a.createdAt).getTime()
-                                    : 0;
-                                  const tb = b.createdAt
-                                    ? new Date(b.createdAt).getTime()
-                                    : 0;
-                                  return tb - ta;
-                                })
-                                .map((n) => (
-                                  <div
-                                    key={n.id}
-                                    className="border border-border rounded-md px-3 py-2 text-sm"
-                                  >
-                                    <p className="leading-relaxed whitespace-pre-wrap">
-                                      {n.noteText || "—"}
-                                    </p>
-                                    <div className="flex items-center flex-wrap gap-2 mt-1">
-                                      {n.visibility === "internal_lab_only" ? (
-                                        <span className="inline-flex items-center gap-1 text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
-                                          <Lock size={9} /> Lab only
-                                        </span>
-                                      ) : (
-                                        <span className="inline-flex items-center gap-1 text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-secondary text-muted-foreground border border-border">
-                                          Shared
-                                        </span>
-                                      )}
-                                      {n.authorName && (
-                                        <span className="text-[11px] font-medium text-foreground">
-                                          {n.authorName}
-                                        </span>
-                                      )}
-                                      {n.createdAt && (
-                                        <span className="text-[11px] text-muted-foreground">
-                                          · {relativeTime(n.createdAt)}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-                                ))}
-                            </div>
-                          )}
-                        </div>
-                        <ToothChart
-                          value={[highlightValue, ...Array.from(missingTeethIds)]
-                            .filter(Boolean)
-                            .join(",")}
-                          onChange={() => {}}
-                          readOnly
-                          showPrimary={false}
-                          crownTeeth={crownTeeth}
-                          ponticTeeth={ponticTeeth}
-                          missingTeeth={missingTeethIds}
-                        />
                       </div>
                     )}
                   </section>
                 );
               })()}
-
-              {/* Locate Case */}
-              <section>
-                <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
-                  Locate Case
-                </h3>
-                <div className="flex gap-2">
-                  <select
-                    value={routeStatus}
-                    onChange={(e) => { setRouteStatus(e.target.value); setRouteError(null); }}
-                    className="flex-1 h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                  >
-                    <option value="">Select station…</option>
-                    {ROUTE_STATUSES.map((s) => (
-                      <option key={s.id} value={s.id} disabled={s.value === currentStatus}>
-                        {s.label}{s.value === currentStatus ? " (current)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    disabled={!routeStatus || routeMutation.isPending}
-                    onClick={() => {
-                      // routeStatus holds the station `id`; resolve to its mapped
-                      // workflow stage before sending.
-                      const status = ROUTE_STATUSES.find((s) => s.id === routeStatus)?.value;
-                      if (status) {
-                        routeMutation.mutate(status as CaseStatus);
-                      } else {
-                        setRouteError("Please select a valid station.");
-                      }
-                    }}
-                    className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
-                  >
-                    {routeMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : "Locate"}
-                  </button>
-                </div>
-                {routeError && <p className="mt-1.5 text-xs text-destructive">{routeError}</p>}
-                {routeSuccessMsg && (
-                  <p className="mt-1.5 text-xs text-green-600">{routeSuccessMsg}</p>
-                )}
-              </section>
 
               {/* ── QR code ── */}
               {(() => {
@@ -6918,17 +9834,41 @@ export function CaseDrawer({
                 </div>
               </div>
 
-              {/* Interactive chart — primary entry point for the click-driven workflow */}
+              {/* Interactive chart — primary entry point for the click-driven workflow. */}
+              <button type="button" className="text-xs text-primary mb-2 disabled:opacity-40"
+                disabled={!toothUndo || isSaving}
+                onClick={() => {
+                  if (!toothUndo) return;
+                  setPendingCreates(toothUndo.creates);
+                  setPendingDeletes(toothUndo.deletes);
+                  setPendingUpdates(toothUndo.updates);
+                  setConnectorDraft(toothUndo.connectors);
+                  setToothUndo(null);
+                  setConnectorSaveError(null);
+                }}>
+                Undo unsaved tooth edit
+              </button>
               <ToothChart
                 value={[...Array.from(billedTeeth), ...Array.from(missingTeethIds)].join(", ")}
                 onChange={() => {}}
                 billedTeeth={billedTeeth}
                 billedTeethTypes={billedTeethTypes}
                 onToothClick={(toothId) => {
+                  if (isSaving) return;
                   setToothDialogId(toothId);
                   setToothDialogError(null);
                 }}
-                connectedPairs={connectedPairs}
+                connectedPairs={effectiveConnectedPairs}
+                connectorSuggestions={stagedConnectorState.suggested}
+                connectorIssue={
+                  connectorSaveError ??
+                  (connectorValidation.valid
+                    ? assignmentSummary.unresolvedPontics.length
+                      ? `Review unconnected pontics: ${assignmentSummary.unresolvedPontics.map((tooth) => `#${tooth}`).join(", ")}.`
+                      : null
+                    : connectorValidation.errors[0])
+                }
+                summaryText={`${assignmentSummary.units} units · ${assignmentSummary.groups.length} connected groups · ${assignmentSummary.materials.map(({ material, count }) => `${material}: ${count}`).join(", ")} · ${hasPendingChanges ? "Unsaved changes" : "Saved"}`}
                 onConnectedPairsChange={handleConnectedPairsChange}
                 crownTeeth={crownTeeth}
                 ponticTeeth={ponticTeeth}
@@ -6941,28 +9881,30 @@ export function CaseDrawer({
                     New restoration (manual entry)
                   </p>
                   <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
-                        Tooth # / Range
-                      </label>
-                      <input
-                        placeholder="e.g. 14 or 14-16"
-                        value={restForm.toothNumber}
-                        onChange={(e) => setRestForm((f) => ({ ...f, toothNumber: e.target.value }))}
-                        className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
-                      />
-                      <div className="mt-2">
-                        <ToothChart
+                    {!isRemovableRestorationType(restForm.restorationType) && (
+                      <div>
+                        <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                          Tooth # / Range
+                        </label>
+                        <input
+                          placeholder="e.g. 14 or 14-16"
                           value={restForm.toothNumber}
-                          onChange={(next) =>
-                            setRestForm((f) => ({ ...f, toothNumber: next }))
-                          }
-                          billedTeeth={billedTeeth}
-                          billedTeethTypes={billedTeethTypes}
+                          onChange={(e) => setRestForm((f) => ({ ...f, toothNumber: e.target.value }))}
+                          className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
                         />
+                        <div className="mt-2">
+                          <ToothChart
+                            value={restForm.toothNumber}
+                            onChange={(next) =>
+                              setRestForm((f) => ({ ...f, toothNumber: next }))
+                            }
+                            billedTeeth={billedTeeth}
+                            billedTeethTypes={billedTeethTypes}
+                          />
+                        </div>
                       </div>
-                    </div>
-                    <div>
+                    )}
+                    <div className={isRemovableRestorationType(restForm.restorationType) ? "col-span-2" : ""}>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                         Quantity
                       </label>
@@ -6982,42 +9924,33 @@ export function CaseDrawer({
                   </div>
                   <div>
                     <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
-                      Restoration Type *
+                      Case Type → Subtype → Material *
                     </label>
                     <div className="mt-1">
-                      <FieldCombobox
-                        value={restForm.restorationType}
-                        suggestions={restorationTypeSuggestions}
-                        onChange={(type) => {
-                          const price = lookupBillablePrice(type);
+                      <CatalogRestorationPicker
+                        labOrganizationId={labCase.labOrganizationId}
+                        restorationType={restForm.restorationType}
+                        material={restForm.material}
+                        restorationSubtype={restForm.restorationSubtype}
+                        implantDetails={restForm}
+                        onImplantChange={(details) => setRestForm((f) => ({ ...f, implantRetention: details.implantRetention ?? null, implantManufacturer: details.implantManufacturer ?? null, implantPlatformNotes: details.implantPlatformNotes ?? null }))}
+                        onChange={(next) => {
+                          const price = lookupBillablePrice(next.restorationType);
                           setRestForm((f) => ({
                             ...f,
-                            restorationType: type,
+                            restorationType: next.restorationType,
+                            material: next.material,
+                            restorationSubtype: next.restorationSubtype ?? null,
                             unitPrice: price || f.unitPrice,
+                            ...(isRemovableRestorationType(next.restorationType)
+                              ? { toothNumber: "" }
+                              : {}),
                           }));
                         }}
-                        onCreate={(v) => createVocabItem("restoration_type", v)}
-                        placeholder="Select type…"
-                        addNewLabel="Add restoration type"
                       />
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
-                        Material
-                      </label>
-                      <div className="mt-1">
-                        <FieldCombobox
-                          value={restForm.material}
-                          suggestions={materialSuggestions}
-                          onChange={(m) => setRestForm((f) => ({ ...f, material: m }))}
-                          onCreate={(v) => createVocabItem("material", v)}
-                          placeholder="Select material…"
-                          addNewLabel="Add material"
-                        />
-                      </div>
-                    </div>
                     <div>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                         Shade
@@ -7048,56 +9981,6 @@ export function CaseDrawer({
                       className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
                     />
                   </div>
-                  {restError && <p className="text-xs text-destructive">{restError}</p>}
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => { setShowAddRest(false); setRestError(null); }}
-                      className="flex-1 h-8 rounded-md bg-secondary text-xs text-muted-foreground hover:text-foreground font-medium"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const typeValue =
-                          restForm.restorationType === "Other"
-                            ? restForm.customType.trim()
-                            : restForm.restorationType;
-                        if (!typeValue) {
-                          setRestError("Restoration type is required.");
-                          return;
-                        }
-                        const localId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                        setPendingCreates((prev) => [
-                          ...prev,
-                          {
-                            localId,
-                            toothNumber: restForm.toothNumber || "N/A",
-                            restorationType: typeValue,
-                            material: restForm.material,
-                            shade: restForm.shade,
-                            quantity: restForm.quantity,
-                            unitPrice: restForm.unitPrice,
-                          },
-                        ]);
-                        setRestForm({
-                          toothNumber: "",
-                          restorationType: "",
-                          customType: "",
-                          material: "",
-                          shade: "",
-                          quantity: 1,
-                          unitPrice: "",
-                        });
-                        setShowAddRest(false);
-                        setRestError(null);
-                      }}
-                      className="flex-1 h-8 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 inline-flex items-center justify-center gap-1.5"
-                    >
-                      Add restoration
-                    </button>
-                  </div>
                 </div>
               )}
 
@@ -7108,6 +9991,7 @@ export function CaseDrawer({
                 </div>
               )}
               <div className="space-y-2">
+                {data?.restorations?.filter(isImplantRestoration).map((r) => <SavedImplantDetails key={`implant-${r.id}`} row={r} caseId={labCase.id} canEdit={user?.userType !== "provider" && data?.viewerIsLabMember !== false} />)}
                 {data?.restorations?.map((r) => (
                   <RestorationRow
                     key={r.id}
@@ -7205,44 +10089,25 @@ export function CaseDrawer({
                   </div>
                 ))}
               </div>
-              {data?.viewerCanUploadAttachments && (
-                <div className="border border-border rounded-md p-3 space-y-2">
-                  <textarea
-                    value={noteText}
-                    onChange={(e) => { setNoteText(e.target.value); setNoteError(null); }}
-                    placeholder="Add a note…"
-                    rows={3}
-                    className="w-full text-sm bg-transparent resize-none focus:outline-none placeholder:text-muted-foreground"
-                  />
-                <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
-                  <input
-                    type="checkbox"
-                    checked={shareWithProvider}
-                    onChange={(e) => setShareWithProvider(e.target.checked)}
-                    className="h-3.5 w-3.5 rounded border-border accent-primary"
-                  />
-                  <span className="text-xs text-muted-foreground">Share note with provider</span>
-                </label>
-                <div className="flex items-center justify-between pt-1.5 border-t border-border">
-                  <button
-                    type="button"
-                    title={isListeningNote ? "Stop dictation" : "Dictate note"}
-                    onClick={isListeningNote ? stopNoteListening : startNoteListening}
-                    className={`h-7 w-7 rounded inline-flex items-center justify-center transition-colors ${isListeningNote ? "bg-destructive text-destructive-foreground animate-pulse" : "bg-secondary text-muted-foreground hover:text-foreground hover:bg-secondary/80"}`}
-                  >
-                    <Mic size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!noteText.trim() || addNoteMutation.isPending}
-                    onClick={() => addNoteMutation.mutate({ text: noteText, shared: shareWithProvider })}
-                    className="h-7 px-3 rounded bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
-                  >
-                    {addNoteMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : "Add note"}
-                  </button>
-                </div>
-                {noteError && <p className="text-xs text-destructive">{noteError}</p>}
-              </div>
+              {data?.viewerCanPostNotes && (
+                <NoteComposer
+                  noteText={noteText}
+                  setNoteText={setNoteText}
+                  setNoteError={setNoteError}
+                  noteError={noteError ?? null}
+                  shareWithProvider={shareWithProvider}
+                  setShareWithProvider={setShareWithProvider}
+                  isListeningNote={isListeningNote}
+                  startNoteListening={startNoteListening}
+                  stopNoteListening={stopNoteListening}
+                  isPending={addNoteMutation.isPending}
+                  onSubmit={() => addNoteMutation.mutate({ text: noteText, shared: shareWithProvider })}
+                  orgId={
+                    data?.viewerQuickReferenceOrganizationId ??
+                    data?.labOrganizationId ??
+                    null
+                  }
+                />
               )}
 
               {/* ── NOTIFY MODAL ── */}
@@ -7259,12 +10124,12 @@ export function CaseDrawer({
                     {notifyModal.step === "choose" && notifyModal.method === null && (
                       <div className="space-y-3">
                         <p className="text-xs text-muted-foreground">The note was shared with the provider. How would you like to notify them?</p>
-                        <div className="flex gap-2">
+                        <div className="flex flex-col gap-2">
                           <button
                             type="button"
                             disabled={notifyModal.sending}
                             onClick={() => void sendNoteNotification(notifyModal.noteId, "email")}
-                            className="flex-1 h-9 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-sm font-medium transition-colors disabled:opacity-50"
+                            className="w-full h-9 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-sm font-medium transition-colors disabled:opacity-50"
                           >
                             {notifyModal.sending ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Email"}
                           </button>
@@ -7272,9 +10137,17 @@ export function CaseDrawer({
                             type="button"
                             disabled={notifyModal.sending}
                             onClick={() => void sendNoteNotification(notifyModal.noteId, "sms")}
-                            className="flex-1 h-9 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-sm font-medium transition-colors disabled:opacity-50"
+                            className="w-full h-9 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-sm font-medium transition-colors disabled:opacity-50"
                           >
                             {notifyModal.sending ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Text message"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={notifyModal.sending}
+                            onClick={() => void sendNoteNotification(notifyModal.noteId, "labtrax_only")}
+                            className="w-full h-9 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-sm font-medium transition-colors disabled:opacity-50"
+                          >
+                            {notifyModal.sending ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Share through LabTrax only"}
                           </button>
                         </div>
                         {notifyModal.error && <p className="text-xs text-destructive">{notifyModal.error}</p>}
@@ -7291,18 +10164,15 @@ export function CaseDrawer({
                           onClick={() => void sendNoteNotification(notifyModal.noteId, notifyModal.method!)}
                           className="w-full h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2"
                         >
-                          {notifyModal.sending ? <Loader2 size={13} className="animate-spin" /> : `Send ${notifyModal.method === "email" ? "email" : "text message"}`}
+                          {notifyModal.sending ? <Loader2 size={13} className="animate-spin" /> : notifyModal.method === "email" ? "Send email" : notifyModal.method === "sms" ? "Send text message" : "Share through LabTrax"}
                         </button>
                         {notifyModal.error && <p className="text-xs text-destructive">{notifyModal.error}</p>}
                         <button
                           type="button"
-                          onClick={() => {
-                            const other: "email" | "sms" = notifyModal.method === "email" ? "sms" : "email";
-                            setNotifyModal((m) => ({ ...m, method: other, error: null }));
-                          }}
+                          onClick={() => setNotifyModal((m) => ({ ...m, method: null, error: null }))}
                           className="text-xs text-primary hover:underline w-full text-center"
                         >
-                          Communication option: switch to {notifyModal.method === "email" ? "text message" : "email"}
+                          Change notification method
                         </button>
                         <button type="button" onClick={() => setNotifyModal((m) => ({ ...m, open: false }))} className="text-xs text-muted-foreground hover:text-foreground transition-colors w-full text-center">Skip for now</button>
                       </div>
@@ -7312,7 +10182,7 @@ export function CaseDrawer({
                       <div className="space-y-3">
                         <p className="text-xs text-muted-foreground">
                           <Check size={12} className="inline text-green-600 mr-1" />
-                          {notifyModal.method === "email" ? "Email sent." : "Text message sent."} Save this as your default notification method?
+                          {notifyModal.method === "email" ? "Email sent." : notifyModal.method === "sms" ? "Text message sent." : "In-app notification sent."} Save this as your default notification method?
                         </p>
                         <div className="flex gap-2">
                           <button
@@ -7340,17 +10210,14 @@ export function CaseDrawer({
                       <div className="space-y-3">
                         <p className="text-xs text-muted-foreground">
                           <Check size={12} className="inline text-green-600 mr-1" />
-                          {notifyModal.method === "email" ? "Email sent." : "Text message sent."}
+                          {notifyModal.method === "email" ? "Email sent." : notifyModal.method === "sms" ? "Text message sent." : "In-app notification sent."}
                         </p>
                         <button
                           type="button"
-                          onClick={() => {
-                            const other: "email" | "sms" = notifyModal.method === "email" ? "sms" : "email";
-                            setNotifyModal((m) => ({ ...m, method: other, step: "choose", error: null }));
-                          }}
+                          onClick={() => setNotifyModal((m) => ({ ...m, method: null, step: "choose", error: null }))}
                           className="text-xs text-primary hover:underline w-full text-center"
                         >
-                          Communication option: switch to {notifyModal.method === "email" ? "text message" : "email"}
+                          Change notification method
                         </button>
                         <button type="button" onClick={() => setNotifyModal((m) => ({ ...m, open: false }))} className="w-full h-8 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-sm transition-colors">Close</button>
                       </div>
@@ -7430,67 +10297,103 @@ export function CaseDrawer({
                   <p className="text-xs text-muted-foreground/60">Any file type supported</p>
                 </button>
               )}
-              {(() => {
-                const images = data?.attachments?.filter((a) => (a.fileType || "").startsWith("image/")) ?? [];
-                const videos = data?.attachments?.filter((a) => (a.fileType || "").startsWith("video/")) ?? [];
-                const others = data?.attachments?.filter((a) => {
-                  const t = a.fileType || "";
-                  return !t.startsWith("image/") && !t.startsWith("video/");
-                }) ?? [];
-                return (
-                  <>
-                    {images.length > 0 && (
-                      <div className="space-y-2">
-                        <p className="text-[11px] text-muted-foreground font-medium">
-                          Photos & Images ({images.length})
-                        </p>
-                        {images.map((a) => (
-                          <AttachmentRow
-                            key={a.id}
-                            caseId={labCase.id}
-                            attachment={a}
-                            canManage={!!data?.viewerCanManageAttachments}
-                            onImageClick={(url) => setLightboxUrl(url)}
-                          />
-                        ))}
-                      </div>
-                    )}
-                    {others.length > 0 && (
-                      <div className="space-y-2">
-                        {images.length > 0 && (
-                          <p className="text-[11px] text-muted-foreground font-medium">
-                            Documents & Files ({others.length})
-                          </p>
+              {!isLoading && (
+                <div className="space-y-2" data-testid="attachment-sections">
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-secondary/20 px-3 py-2">
+                    <button
+                      type="button"
+                      onClick={toggleAllAttachmentSections}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium hover:text-primary"
+                    >
+                      <ChevronDown
+                        size={14}
+                        className={`transition-transform ${
+                          Object.values(attachmentSectionsExpanded).every(Boolean)
+                            ? "rotate-180"
+                            : ""
+                        }`}
+                      />
+                      {Object.values(attachmentSectionsExpanded).every(Boolean)
+                        ? "Collapse all"
+                        : "Expand all"}
+                    </button>
+                    <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        aria-label="Save all section preferences"
+                        checked={attachmentSectionSave.all}
+                        onChange={(event) =>
+                          setAttachmentSavePreference("all", event.target.checked)
+                        }
+                      />
+                      Save preference
+                    </label>
+                  </div>
+                  {([
+                    ["media", "Images/videos"],
+                    ["documents", "Documents"],
+                    ["files", "Files"],
+                  ] as const).map(([section, label]) => {
+                    const attachments = groupedCaseAttachments[section];
+                    const expanded = attachmentSectionsExpanded[section];
+                    const contentId = `case-${labCase.id}-attachments-${section}`;
+                    return (
+                      <section
+                        key={section}
+                        className="rounded-md border border-border"
+                        data-testid={`attachment-section-${section}`}
+                      >
+                        <div className="flex items-center justify-between gap-3 px-3 py-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleAttachmentSection(section)}
+                            aria-expanded={expanded}
+                            aria-controls={contentId}
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-medium hover:text-primary"
+                          >
+                            <ChevronDown
+                              size={14}
+                              className={`shrink-0 transition-transform ${
+                                expanded ? "rotate-180" : ""
+                              }`}
+                            />
+                            <span>{label}</span>
+                            <span className="text-xs font-normal text-muted-foreground">
+                              ({attachments.length})
+                            </span>
+                          </button>
+                          <label className="inline-flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                            <input
+                              type="checkbox"
+                              aria-label={`Save ${label} preference`}
+                              checked={attachmentSectionSave[section]}
+                              onChange={(event) =>
+                                setAttachmentSavePreference(section, event.target.checked)
+                              }
+                            />
+                            Save preference
+                          </label>
+                        </div>
+                        {expanded && (
+                          <div id={contentId} className="space-y-2 border-t border-border p-2">
+                            {attachments.map((attachment) => (
+                              <AttachmentRow
+                                key={attachment.id}
+                                caseId={labCase.id}
+                                attachment={attachment}
+                                canManage={!!data?.viewerCanManageAttachments}
+                                onAttachmentClick={(selected) =>
+                                  openCaseAttachment(selected)
+                                }
+                              />
+                            ))}
+                          </div>
                         )}
-                        {others.map((a) => (
-                          <AttachmentRow
-                            key={a.id}
-                            caseId={labCase.id}
-                            attachment={a}
-                            canManage={!!data?.viewerCanManageAttachments}
-                          />
-                        ))}
-                      </div>
-                    )}
-                    {videos.length > 0 && (
-                      <div className="space-y-2">
-                        <p className="text-[11px] text-muted-foreground font-medium">
-                          Videos ({videos.length})
-                        </p>
-                        {videos.map((a) => (
-                          <AttachmentRow
-                            key={a.id}
-                            caseId={labCase.id}
-                            attachment={a}
-                            canManage={!!data?.viewerCanManageAttachments}
-                            onVideoClick={(url, mimeType) => setLightbox({ url, kind: "video", mimeType })}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
+                      </section>
+                    );
+                  })}
+                </div>
+              )}
               {!isLoading && !!data?.viewerCanUploadAttachments && fileCount > 0 && (
                 <button
                   type="button"
@@ -7519,9 +10422,10 @@ export function CaseDrawer({
                 <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
                   Invoice
                 </h3>
-                {caseInvoice && (
+                {caseInvoice && !canEditCaseInvoice && (
                   <button
                     type="button"
+                    disabled={invoiceDetailQuery.isLoading || invoiceDetailQuery.isError}
                     onClick={() => {
                       const lc = data ?? labCase;
                       const inv = invoiceDetailQuery.data ?? caseInvoice;
@@ -7534,17 +10438,35 @@ export function CaseDrawer({
                         billTo: dm?.billTo ?? inv.providerOrganization?.name ?? null,
                         teeth: dm?.teeth ?? lc.teeth ?? null,
                         shade: dm?.shade ?? null,
+                        material: dm?.material ?? null,
                         caseNotes: dm?.caseNotes ?? lc.caseNotes ?? null,
                         issuedAt: inv.issuedAt ?? null,
-                        dueAt: inv.dueDate ?? inv.dueAt ?? null,
+                        dueAt: inv.dueAt ?? inv.dueDate ?? null,
                         status: inv.status,
-                        items: (invoiceDetailQuery.data?.items ?? []).map((it) => ({
+                        items: (invoiceDetailQuery.data?.items ?? []).map((it, index) => ({
+                          item: dm?.lineItems?.[index]?.item,
+                          toothNumber: it.toothNumber,
+                          toothLabel: it.toothLabel,
+                          isDiscount: it.isDiscount,
                           description: it.description,
                           quantity: it.quantity,
                           unitPrice: it.unitPrice,
                           lineTotal: it.lineTotal,
+                          subItems: (it.subItems ?? []).map((sub, subIndex) => ({
+                            item: dm?.lineItems?.[index]?.subItems?.[subIndex]?.item,
+                            toothNumber: sub.toothNumber,
+                            toothLabel: sub.toothLabel,
+                            isDiscount: sub.isDiscount,
+                            description: sub.description,
+                            quantity: sub.quantity,
+                            unitPrice: sub.unitPrice,
+                            lineTotal: sub.lineTotal,
+                          })),
                         })),
                         subtotal: inv.subtotal ?? 0,
+                        tax: inv.tax,
+                        discount: inv.discount,
+                        credits: dm?.credits,
                         total: inv.total ?? 0,
                         balanceDue: inv.balanceDue ?? null,
                         notes: inv.notes ?? null,
@@ -7553,6 +10475,8 @@ export function CaseDrawer({
                         logoPdfSize: (user?.practiceLogoSize as "small" | "medium" | "large" | null) ?? null,
                         caseNumber: lc.caseNumber ?? null,
                         qrCodeDataUrl: invoicePrintQrDataUrl,
+                        template: confirmedInvoiceTemplate,
+                        extraImageDataUrls: confirmedInvoiceImages,
                       };
                       printInvoicePdf(opts);
                     }}
@@ -7569,6 +10493,16 @@ export function CaseDrawer({
                   <Loader2 size={13} className="animate-spin" />
                   Loading…
                 </div>
+              ) : invoiceQuery.isError ? (
+                <div role="alert" className="text-sm text-destructive">Could not load the case invoice. <button type="button" onClick={() => void invoiceQuery.refetch()}>Retry</button></div>
+              ) : caseInvoice && canEditCaseInvoice && !viewingInvoice ? (
+                <InlineInvoiceEditor
+                  key={caseInvoice.id}
+                  invoice={caseInvoice}
+                  doctorNames={doctorNames}
+                  onClose={handleCloseWithGuard}
+                  onOpenEditor={() => setViewingInvoice(caseInvoice)}
+                />
               ) : caseInvoice ? (
                 <div className="border border-border rounded-lg p-4 space-y-4">
                   <div className="flex items-center justify-between gap-3">
@@ -7585,11 +10519,22 @@ export function CaseDrawer({
                       Open in editor
                     </button>
                   </div>
+                  {hasUnpricedAlloyLines && (
+                    <div className="flex items-start gap-2 px-3 py-2.5 rounded-md bg-amber-50 dark:bg-amber-950/40 border border-amber-300/60 dark:border-amber-700/40 text-amber-700 dark:text-amber-400 text-xs">
+                      <TriangleAlert size={13} className="mt-0.5 shrink-0" />
+                      <span>
+                        <span className="font-semibold">Alloy line unpriced</span>
+                        {" — open in editor to set the alloy unit price before sending this invoice."}
+                      </span>
+                    </div>
+                  )}
                   {invoiceDetailQuery.isLoading ? (
                     <div className="text-sm text-muted-foreground flex items-center gap-1.5">
                       <Loader2 size={13} className="animate-spin" />
                       Loading line items…
                     </div>
+                  ) : invoiceDetailQuery.isError ? (
+                    <div role="alert" className="text-sm text-destructive">Could not load invoice line items. <button type="button" onClick={() => void invoiceDetailQuery.refetch()}>Retry</button></div>
                   ) : (invoiceDetailQuery.data?.items?.length ?? 0) > 0 ? (
                     <div className="border border-border rounded-md overflow-hidden">
                       <table className="w-full text-sm">
@@ -7602,14 +10547,22 @@ export function CaseDrawer({
                           </tr>
                         </thead>
                         <tbody>
-                          {invoiceDetailQuery.data!.items.map((it, idx) => (
+                          {(invoiceDetailQuery.data?.items ?? []).flatMap((it, idx) => [
                             <tr key={idx} className="border-t border-border">
                               <td className="px-3 py-1.5">{it.description || "—"}</td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{Number(it.quantity)}</td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{formatMoney(it.unitPrice)}</td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{formatMoney(it.lineTotal)}</td>
-                            </tr>
-                          ))}
+                            </tr>,
+                            ...((it as any).subItems ?? []).map((sub: any, sidx: number) => (
+                              <tr key={`${idx}-sub-${sidx}`} className="border-t border-border bg-muted/10">
+                                <td className="pl-7 pr-3 py-1 text-sm text-muted-foreground">{sub.description || "—"}</td>
+                                <td className="px-3 py-1 text-right tabular-nums text-sm text-muted-foreground">{Number(sub.quantity)}</td>
+                                <td className="px-3 py-1 text-right tabular-nums text-sm text-muted-foreground">{formatMoney(sub.unitPrice)}</td>
+                                <td className="px-3 py-1 text-right tabular-nums text-sm text-muted-foreground">{formatMoney(sub.lineTotal)}</td>
+                              </tr>
+                            )),
+                          ])}
                         </tbody>
                       </table>
                     </div>
@@ -7717,7 +10670,7 @@ export function CaseDrawer({
                 const histMaterial = histSummary.materials.length > 0 ? histSummary.materials.join(", ") : "—";
                 const histShade = histSummary.shades.length > 0 ? histSummary.shades.join(", ") : "—";
                 const histTeeth = formatRxTeethWithShades(data?.restorations, formatRxTeethLabel(histSummary)) || "—";
-                const histRxNotes = (data?.caseNotes ?? labCase.caseNotes ?? "").trim() || "—";
+                const histRxNotes = (data?.caseNotes ?? labCase.caseNotes ?? "") || "—";
                 return (
                   <section className="mb-5 rounded-lg border border-border bg-secondary/20 px-4 py-3">
                     <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
@@ -7785,16 +10738,21 @@ export function CaseDrawer({
               {(() => {
                 const hasOriginalEvents = (data?.originalCaseEvents?.length ?? 0) > 0;
 
-                type TaggedEvent = CaseEvent & { _source: "original" | "remake" | "child"; _sourceCaseNumber?: string };
+                type TaggedEvent = CaseEvent & {
+                  _source: "original" | "remake" | "child";
+                  _sourceCaseNumber?: string;
+                  /** The case this event belongs to, used by "View Rx". */
+                  _sourceCaseId?: string;
+                };
 
                 const taggedOriginal: TaggedEvent[] = (data?.originalCaseEvents ?? []).map(
-                  (e) => ({ ...e, _source: "original" as const }),
+                  (e) => ({ ...e, _source: "original" as const, _sourceCaseId: data?.remakeOriginal?.id }),
                 );
                 const taggedRemake: TaggedEvent[] = (data?.events ?? []).map(
-                  (e) => ({ ...e, _source: "remake" as const }),
+                  (e) => ({ ...e, _source: "remake" as const, _sourceCaseId: data?.id ?? labCase.id }),
                 );
                 const childEvents: TaggedEvent[] = (data?.remakeChildrenEvents ?? []).flatMap((rc) =>
-                  rc.events.map((e) => ({ ...e, _source: "child" as const, _sourceCaseNumber: rc.caseNumber }))
+                  rc.events.map((e) => ({ ...e, _source: "child" as const, _sourceCaseNumber: rc.caseNumber, _sourceCaseId: rc.caseId }))
                 );
 
                 const allEvents: TaggedEvent[] = [...taggedOriginal, ...taggedRemake, ...childEvents].sort(
@@ -7805,6 +10763,8 @@ export function CaseDrawer({
                   },
                 );
 
+                const returnDividerIds = detectCaseReturnDividerEventIds(allEvents);
+
                 return (
                   <div>
                     {allEvents.map((e, idx) => {
@@ -7812,9 +10772,14 @@ export function CaseDrawer({
                       const eventType = e.eventType || "";
                       const isStatus = eventType === "status_changed";
                       const isNote = eventType === "note_added";
+                      const isInternalExceptionNote = [
+                        "internal_exception_opened_note",
+                        "internal_exception_note_added",
+                        "internal_exception_resolution_note_added",
+                      ].includes(eventType);
                       const isAttachment = eventType.includes("attachment");
                       const isInboxAssign = eventType === "file_assigned_from_inbox";
-                      const isInvoice = eventType.includes("invoice");
+                      const isInvoice = eventType.includes("invoice") || eventType === "statement_emailed";
                       const isRestoration = eventType.includes("restoration");
                       const metadata: Record<string, unknown> =
                         e.metadataJson && typeof e.metadataJson === "object"
@@ -7839,13 +10804,53 @@ export function CaseDrawer({
                         (e._source === "remake" || e._source === "child") &&
                         (idx === 0 || allEvents[idx - 1]?._source === "original");
 
+                      // Show a "Case returned" divider when a completion-family event
+                      // is directly followed by an intake-family event (in chronological
+                      // order), unless the isFirstRemake divider already renders here.
+                      const isCaseReturn = !isFirstRemake && !!e.id && returnDividerIds.has(e.id);
+
+                      const prevEvent = idx > 0 ? allEvents[idx - 1] : undefined;
+                      const isDayGroupStart =
+                        idx === 0 || historyEventDayKey(prevEvent ?? {}) !== historyEventDayKey(e);
+                      const eventTimestamp = e.occurredAt || e.createdAt;
+                      const actor =
+                        (typeof metadata.authorName === "string" && metadata.authorName) ||
+                        e.actorInitials ||
+                        (typeof metadata.user === "string" && metadata.user) ||
+                        null;
+
                       return (
                         <div key={e.id || idx}>
+                          {isDayGroupStart && (
+                            <>
+                              {idx > 0 && (
+                                <div
+                                  data-testid="history-date-separator"
+                                  className="border-t-2 border-foreground/35 mt-4"
+                                />
+                              )}
+                              <div
+                                data-testid="history-day-header"
+                                className="text-base font-semibold text-foreground pt-4 pb-2"
+                              >
+                                {formatHistoryDay(eventTimestamp)}
+                              </div>
+                            </>
+                          )}
                           {isFirstRemake && (
                             <div className="flex items-center gap-2 my-3">
                               <div className="flex-1 h-px bg-border" />
                               <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground px-1 whitespace-nowrap">
                                 Case {data?.caseNumber}
+                              </span>
+                              <div className="flex-1 h-px bg-border" />
+                            </div>
+                          )}
+                          {isCaseReturn && (
+                            <div className="flex items-center gap-2 my-3">
+                              <div className="flex-1 h-px bg-border" />
+                              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground px-1 whitespace-nowrap">
+                                Case returned
                               </span>
                               <div className="flex-1 h-px bg-border" />
                             </div>
@@ -7892,20 +10897,52 @@ export function CaseDrawer({
                                     </span>
                                   )}
                                 </div>
-                                <span className="text-[11px] text-muted-foreground whitespace-nowrap shrink-0">
-                                  {formatDateTime(e.occurredAt || e.createdAt)}
+                                 <span
+                                   data-testid={`history-event-meta-${e.id}`}
+                                   className="text-[11px] text-muted-foreground whitespace-nowrap shrink-0"
+                                 >
+                                   {actor ? `${actor} · ` : ""}
+                                   {formatHistoryTime(eventTimestamp)}
                                 </span>
                               </div>
-                              {(e.actorInitials || (metadata.user as string | undefined)) && (
-                                <div className="text-xs text-muted-foreground mt-0.5">
-                                  {e.actorInitials || String(metadata.user)}
-                                </div>
-                              )}
                               {isStatus && (e.metadataJson as any)?.fromStatus && (e.metadataJson as any)?.toStatus && (
                                 <div className="flex items-center gap-1.5 mt-1">
                                   <StatusBadge status={String((e.metadataJson as any).fromStatus)} />
                                   <span className="text-xs text-muted-foreground">→</span>
                                   <StatusBadge status={String((e.metadataJson as any).toStatus)} />
+                                </div>
+                              )}
+                              {/* A case that came back into the lab: offer the Rx
+                                  right here so staff don't have to leave History. */}
+                              {isCaseReturn && (
+                                <div className="mt-1.5">
+                                  <button
+                                    type="button"
+                                    data-testid={`history-view-rx-${e.id}`}
+                                    aria-label="View Rx"
+                                    title="View the prescription for this case"
+                                    onClick={(ev) => {
+                                      ev.stopPropagation();
+                                      setRxPreviewCaseId(historyEventCaseId(e, labCase.id));
+                                      setRxPreviewOpen(true);
+                                    }}
+                                    className="inline-flex items-center gap-1 h-6 px-2 rounded text-[11px] font-medium text-primary/80 hover:text-primary hover:bg-primary/10 transition-colors"
+                                  >
+                                    <ScrollText size={11} />
+                                    View Rx
+                                  </button>
+                                </div>
+                              )}
+                              {eventType === "step_changed" && (
+                                <div className="text-xs text-muted-foreground mt-0.5">
+                                  {stepLabel(String((e.metadataJson as any)?.fromStep ?? ""))} → {stepLabel(String((e.metadataJson as any)?.toStep ?? ""))}
+                                </div>
+                              )}
+                              {eventType === "step_shade_changed" && (
+                                <div className="text-xs text-muted-foreground mt-0.5">
+                                  {(e.metadataJson as any)?.toShade
+                                    ? `Shade set to ${String((e.metadataJson as any).toShade)}`
+                                    : "Shade cleared"}
                                 </div>
                               )}
                               {isNote && (e.metadataJson as any)?.visibility && (
@@ -7915,8 +10952,9 @@ export function CaseDrawer({
                                     : "Shared with provider"}
                                 </div>
                               )}
-                              {isNote && (metadata.noteText || metadata.description) && (
-                                <div className="mt-1.5 text-sm bg-secondary/50 border border-border rounded-md px-3 py-2 whitespace-pre-wrap break-words">
+                              {(isNote || isInternalExceptionNote) &&
+                                (metadata.noteText || metadata.description) && (
+                                <div className="mt-1.5 text-sm bg-amber-50 border border-amber-200 dark:bg-amber-950/30 dark:border-amber-800/50 rounded-md px-3 py-2 whitespace-pre-wrap break-words">
                                   {String(metadata.noteText ?? metadata.description)}
                                 </div>
                               )}
@@ -7925,17 +10963,38 @@ export function CaseDrawer({
                                   {String(metadata.description)}
                                 </div>
                               )}
+                              {isInboxAssign && typeof metadata.providerNote === "string" && metadata.providerNote.trim() && (
+                                <div className="mt-1.5 text-sm bg-violet-50 border border-violet-200 dark:bg-violet-950/30 dark:border-violet-800/50 rounded-md px-3 py-2">
+                                  <div className="text-[10px] font-medium uppercase tracking-wide text-violet-600 dark:text-violet-400 mb-0.5">
+                                    Provider note
+                                  </div>
+                                  <div className="whitespace-pre-wrap break-words">
+                                    {metadata.providerNote}
+                                  </div>
+                                </div>
+                              )}
                               {isAttachment && (() => {
                                 const fileType = String(metadata.fileType ?? "");
                                 const mediaKind = String(metadata.mediaKind ?? "");
-                                const isImg = fileType.startsWith("image/") || mediaKind === "photo";
-                                const isVid = fileType.startsWith("video/") || mediaKind === "video";
+                                 const classifiedKind = classifyMediaKind(
+                                   fileType,
+                                   String(metadata.fileName ?? ""),
+                                   mediaKind,
+                                 );
+                                 const isImg = classifiedKind === "image";
+                                 const isVid = classifiedKind === "video";
                                 // Prefer the legacy/mobile imageUri (works without auth headers,
                                 // including data: URIs) when present. Fall back to the canonical
                                 // /file route for desktop-created attachments.
                                 const directSrc = metadata.imageUri ? String(metadata.imageUri) : null;
+                                // Merged timelines carry entries from the linked original
+                                // case and from remake children. The /file route is scoped
+                                // to the case in its URL, so the attachment must be fetched
+                                // under the case that OWNS the event — using the viewed
+                                // case 404s and renders the "Unavailable" placeholder.
+                                const eventCaseId = historyEventCaseId(e, labCase.id);
                                 const apiSrc = metadata.attachmentId
-                                  ? `${getApiOrigin()}/api/cases/${labCase.id}/attachments/${String(metadata.attachmentId)}/file`
+                                  ? `${getApiOrigin()}/api/cases/${eventCaseId}/attachments/${String(metadata.attachmentId)}/file`
                                   : null;
                                 const src = directSrc || apiSrc;
                                 if (!src) {
@@ -7946,12 +11005,50 @@ export function CaseDrawer({
                                   ) : null;
                                 }
                                 const mime = fileType || (isVid ? "video/mp4" : isImg ? "image/jpeg" : undefined);
+                                 // Only events owned by this case and pointing at
+                                 // one of its current attachments may enter the
+                                 // case gallery. Linked original/remake events
+                                 // remain standalone previews and cannot leak
+                                 // their media into this case's sequence.
+                                 const galleryItem =
+                                   e._sourceCaseId === labCase.id && metadata.attachmentId
+                                     ? caseMediaGallery.find(
+                                         (item) =>
+                                           item.attachmentId ===
+                                           String(metadata.attachmentId),
+                                       )
+                                     : undefined;
+                                  const openImage = () =>
+                                    openLightbox(
+                                     galleryItem
+                                       ? { ...galleryItem, gallery: caseMediaGallery }
+                                       : {
+                                           url: src,
+                                           kind: "image",
+                                           fileName: metadata.fileName
+                                             ? String(metadata.fileName)
+                                             : undefined,
+                                         },
+                                   );
+                                  const openVideo = () =>
+                                    openLightbox(
+                                     galleryItem
+                                       ? { ...galleryItem, gallery: caseMediaGallery }
+                                       : {
+                                           url: src,
+                                           kind: "video",
+                                           mimeType: mime,
+                                           fileName: metadata.fileName
+                                             ? String(metadata.fileName)
+                                             : undefined,
+                                         },
+                                   );
                                 return (
                                   <div className="mt-1.5">
                                     {isImg ? (
                                       <button
                                         type="button"
-                                        onClick={() => setLightbox({ url: src, kind: "image" })}
+                                         onClick={openImage}
                                         className="block group"
                                         title={`View ${metadata.fileName ?? "image"}`}
                                       >
@@ -7970,7 +11067,7 @@ export function CaseDrawer({
                                     ) : isVid ? (
                                       <button
                                         type="button"
-                                        onClick={() => setLightbox({ url: src, kind: "video", mimeType: mime })}
+                                         onClick={openVideo}
                                         className="block group relative"
                                         title={`Play ${metadata.fileName ?? "video"}`}
                                       >
@@ -8052,6 +11149,25 @@ export function CaseDrawer({
                                   )}
                                 </div>
                               )}
+                              {eventType === "invoice_payments_deleted" && (
+                                <div className="mt-1 text-xs space-y-0.5">
+                                  {metadata.deletedCount != null && (
+                                    <div className="text-muted-foreground">
+                                      {Number(metadata.deletedCount) === 1
+                                        ? "1 payment removed"
+                                        : `${metadata.deletedCount} payments removed`}
+                                    </div>
+                                  )}
+                                  {metadata.previousStatus != null && (
+                                    <div className="text-muted-foreground">
+                                      Previous status:{" "}
+                                      <span className="capitalize">
+                                        {String(metadata.previousStatus).replace(/_/g, " ")}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                               {eventType === "case_restoration_price_updated" && (
                                 <div className="mt-1.5 text-xs space-y-0.5">
                                   {!!(metadata.restorationType || metadata.toothNumber) && (
@@ -8080,6 +11196,14 @@ export function CaseDrawer({
                                   )}
                                 </div>
                               )}
+                              {(eventType === "invoice_emailed" ||
+                                eventType === "statement_emailed") &&
+                                typeof metadata.subject === "string" &&
+                                metadata.subject.trim() && (
+                                <div className="mt-1 text-xs text-muted-foreground truncate">
+                                  Subject: {metadata.subject.trim()}
+                                </div>
+                              )}
                               {eventType === "remade_by" && metadata.remakeCaseId && (
                                 <div className="mt-1">
                                   <button
@@ -8102,12 +11226,37 @@ export function CaseDrawer({
             </div>
           )}
         </div>
+        <CaseEditActionBar
+          editor={activeTab === "lab-slip" && editMode ? {
+            onCancel: cancelCaseEdit,
+            onSave: () => void saveCaseEdit(),
+            disabled: isSaving,
+            error: editError ?? saveError,
+          } : undefined}
+          restorationEditor={activeTab === "restorations" && showAddRest ? {
+            onCancel: () => { setShowAddRest(false); setRestError(null); },
+            onAdd: addPendingRestoration,
+            error: restError,
+            disabled: isSaving,
+          } : undefined}
+          pending={hasPendingChanges && !editMode ? {
+            onDiscard: handleDiscardChanges,
+            onSave: () => void handleSaveChanges(),
+            isSaving,
+            error: saveError,
+          } : undefined}
+        />
       </aside>
 
       {/* Image / Video lightbox */}
       <MediaLightbox
         lightbox={lightbox}
-        onClose={() => setLightbox(null)}
+        onClose={() => {
+          setLightbox(null);
+          setActiveLightboxIdentity(null);
+        }}
+        activeItemIdentity={activeLightboxIdentity}
+        onActiveItemChange={setActiveLightboxIdentity}
         overlayClassName="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center"
       />
 
@@ -8215,74 +11364,193 @@ export function CaseDrawer({
       {showCaseAdvancedEditor && (
         <CasePrintLayoutEditor
           onClose={() => setShowCaseAdvancedEditor(false)}
+          onTemplateSaved={(saved) => {
+            qc.setQueryData(
+              ["casePrintTemplate", labCase.labOrganizationId],
+              {
+                template: coerceCasePrintTemplate(
+                  saved.template ?? DEFAULT_CASE_PRINT_TEMPLATE,
+                ),
+                isCustom: saved.isCustom,
+              },
+            );
+          }}
         />
       )}
 
       {/* Prescription preview */}
       {rxPreviewOpen && (
         <PrescriptionPreview
-          caseId={labCase.id}
+          caseId={rxPreviewCaseId ?? labCase.id}
           invoiceCaseId={labCase.id}
-          onClose={() => setRxPreviewOpen(false)}
+          onClose={() => {
+            setRxPreviewOpen(false);
+            setRxPreviewCaseId(null);
+          }}
         />
       )}
 
-      {/* Reassign doctor — reuses the duplicate-doctor merge flow with a single
-          locked source (this case's current doctor) and the practice pinned. */}
-      {reassignDoctorOpen && (() => {
-        const curDoctor = pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName;
-        const curPracticeId = pendingCaseEdit?.providerOrganizationId ?? data?.providerOrganizationId ?? labCase.providerOrganizationId;
-        const labOrgId = data?.labOrganizationId ?? labCase.labOrganizationId;
-        if (!curDoctor || !curPracticeId || !labOrgId) return null;
-        const curOrg = drawerProviderOrgs.find((o) => o.id === curPracticeId);
-        const initialSources: MergeSourceInput[] = [
-          {
-            doctorName: curDoctor,
-            providerOrganizationId: curPracticeId,
-            practiceName: curOrg?.displayName ?? curOrg?.name ?? "",
-          },
-        ];
-        return (
-          <MergeDialog
-            singleReassign
-            labOrganizationId={labOrgId}
-            initialSources={initialSources}
-            onClose={() => setReassignDoctorOpen(false)}
-            onMerged={(result) => {
-              qc.invalidateQueries({ queryKey: ["cases"] });
-              qc.invalidateQueries({ queryKey: ["case", labCase.id] });
-              qc.invalidateQueries({ queryKey: ["invoices"] });
-              qc.invalidateQueries({ queryKey: ["organizations"] });
-              setReassignDoctorOpen(false);
-              toast.success(result.message, {
-                duration: result.undoWindowMs,
-                action: {
-                  label: "Undo",
-                  onClick: () => {
-                    (async () => {
-                      try {
-                        for (const id of result.auditLogIds) {
-                          await undoDoctorMerge(id);
-                        }
-                        qc.invalidateQueries({ queryKey: ["cases"] });
-                        qc.invalidateQueries({ queryKey: ["case", labCase.id] });
-                        qc.invalidateQueries({ queryKey: ["invoices"] });
-                        qc.invalidateQueries({ queryKey: ["organizations"] });
-                        toast.success("Reassignment undone.");
-                      } catch (err) {
-                        toast.error(
-                          (err as { message?: string })?.message ??
-                            "Couldn't undo — the window may have passed.",
-                        );
-                      }
-                    })();
-                  },
-                },
-              });
-            }}
+      {reassignDoctorOpen && canReassignDoctor && data && !hasUnsavedDoctorAssignment && (
+        <CaseDoctorReassignDialog
+          caseId={data.id}
+          caseNumber={data.caseNumber}
+          currentDoctorName={data.doctorName}
+          currentPracticeId={data.providerOrganizationId}
+          onClose={() => setReassignDoctorOpen(false)}
+        />
+      )}
+
+      {/* Remake from detail — admin/owner only */}
+      {remakeFromDetailOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={() => !remakeFromDetailLoading && setRemakeFromDetailOpen(false)}
           />
-        );
-      })()}
+          <div className="relative z-10 w-full max-w-md rounded-xl bg-card border border-border shadow-2xl p-6 mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <GitBranch size={15} className="text-muted-foreground" />
+                Create Remake — #{labCase.caseNumber}
+              </h2>
+              <button
+                type="button"
+                onClick={() => !remakeFromDetailLoading && setRemakeFromDetailOpen(false)}
+                className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                disabled={remakeFromDetailLoading}
+              >
+                <X size={15} />
+              </button>
+            </div>
+            <div className="mb-4">
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Due date
+              </label>
+              <div className="flex gap-1.5">
+                <input
+                  type="date"
+                  className="flex-1 min-w-0 h-8 px-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                  value={remakeFromDetailDueDate}
+                  onChange={(e) => {
+                    setRemakeFromDetailDueDate(e.target.value);
+                    if (!e.target.value) {
+                      setRemakeFromDetailHasDueTime(false);
+                      setRemakeFromDetailDueTime("");
+                    }
+                  }}
+                />
+              </div>
+              <label className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={remakeFromDetailHasDueTime}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setRemakeFromDetailHasDueTime(checked);
+                    if (!checked) setRemakeFromDetailDueTime("");
+                  }}
+                  disabled={!remakeFromDetailDueDate}
+                  className="h-3.5 w-3.5 rounded border-border accent-primary disabled:cursor-not-allowed"
+                  aria-label="Set a specific time the case is due"
+                />
+                <Clock size={13} aria-hidden="true" />
+                Set a specific time the case is due
+              </label>
+              {remakeFromDetailHasDueTime && remakeFromDetailDueDate && (
+                <input
+                  type="time"
+                  className="mt-2 w-[7.5rem] h-8 px-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                  value={remakeFromDetailDueTime}
+                  onChange={(e) => setRemakeFromDetailDueTime(e.target.value)}
+                  aria-label="Due time (optional)"
+                />
+              )}
+            </div>
+            <RemakeQuestionnaire value={remakeFromDetailQ} onChange={setRemakeFromDetailQ} isAdmin={isAdmin} />
+            {remakeFromDetailError && (
+              <p className="mt-3 text-sm text-destructive">{remakeFromDetailError}</p>
+            )}
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRemakeFromDetailOpen(false)}
+                disabled={remakeFromDetailLoading}
+                className="h-8 px-4 rounded-md text-sm bg-secondary hover:bg-secondary/80 text-muted-foreground disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleRemakeFromDetail()}
+                disabled={
+                  remakeFromDetailLoading ||
+                  !isRemakeQuestionnaireComplete(remakeFromDetailQ)
+                }
+                className="h-8 px-4 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {remakeFromDetailLoading && (
+                  <Loader2 size={12} className="animate-spin" />
+                )}
+                {remakeFromDetailLoading ? "Creating…" : "Create Remake"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit remake reason — available to anyone who can edit the case */}
+      {editRemakeOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={() => !editRemakeLoading && setEditRemakeOpen(false)}
+          />
+          <div className="relative z-10 w-full max-w-md rounded-xl bg-card border border-border shadow-2xl p-6 mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <Pencil size={14} className="text-muted-foreground" />
+                Edit Remake Reason — #{labCase.caseNumber}
+              </h2>
+              <button
+                type="button"
+                onClick={() => !editRemakeLoading && setEditRemakeOpen(false)}
+                className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                disabled={editRemakeLoading}
+              >
+                <X size={15} />
+              </button>
+            </div>
+            <RemakeQuestionnaire value={editRemakeQ} onChange={setEditRemakeQ} isAdmin={isAdmin} />
+            {editRemakeError && (
+              <p className="mt-3 text-sm text-destructive">{editRemakeError}</p>
+            )}
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEditRemakeOpen(false)}
+                disabled={editRemakeLoading}
+                className="h-8 px-4 rounded-md text-sm bg-secondary hover:bg-secondary/80 text-muted-foreground disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleEditRemakeSave()}
+                disabled={
+                  editRemakeLoading ||
+                  !isRemakeQuestionnaireComplete(editRemakeQ)
+                }
+                className="h-8 px-4 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {editRemakeLoading && (
+                  <Loader2 size={12} className="animate-spin" />
+                )}
+                {editRemakeLoading ? "Saving…" : "Save Changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Delete case — 3-step security flow */}
       {confirmDeleteCase && (
@@ -8316,6 +11584,8 @@ export function CaseDrawer({
             setToothDialogError(null);
           }}
           onConfirm={(payload) => handleToothDialogStage(payload)}
+          materialOptions={toothDialogMaterialOptions}
+          groupTeeth={assignmentSummary.groups.find((group) => group.includes(toothDialogId))}
           locallySelectedType={
             missingTeethIds.has(toothDialogId)
               ? "missing"
@@ -8378,6 +11648,612 @@ export function CaseDrawer({
                 Discard changes
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Returned-case wizard ──
+          A fixed 4in × 4in (384 × 384 px) popup centred over the whole screen,
+          above the case drawer, so the questions asked when a completed case
+          comes back in are impossible to miss. The question title stays in the
+          header and each stage's buttons stay pinned, so the taller stages
+          (remake questionnaire, notes, prescription upload) scroll inside the
+          box instead of resizing or clipping it. */}
+      {returnPromptStep && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-foreground/40 backdrop-blur-sm"
+          data-testid="return-wizard-overlay"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Returned case questions"
+            data-testid="return-wizard-dialog"
+            className="w-96 h-96 max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] bg-card border border-border rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+          >
+            <div className="shrink-0 flex items-start justify-between gap-3 px-4 py-3 border-b border-border">
+              <h2
+                className="text-sm font-semibold text-foreground"
+                data-testid="return-wizard-title"
+              >
+                {RETURN_WIZARD_TITLES[returnPromptStep]}
+              </h2>
+              <button
+                type="button"
+                onClick={resetReturnWizard}
+                className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Close returned case questions"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            {returnPromptStep === "ask" && (
+              <div
+                className="flex-1 min-h-0 overflow-y-auto px-4 py-4 flex flex-col items-center justify-center gap-3"
+                data-testid="return-wizard-due-ask"
+              >
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setReturnPromptStep("date")}
+                    className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    disabled={routeMutation.isPending}
+                    onClick={() => {
+                      routeReturnedCase(
+                        {
+                          status: returnPromptStatus as CaseStatus,
+                          labLocationId: returnPromptLabLocationId,
+                        },
+                        true,
+                      );
+                    }}
+                    className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm disabled:opacity-50 transition-colors"
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetReturnWizard}
+                    className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+            {returnPromptStep === "date" && (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium block mb-1">
+                        Due date
+                      </label>
+                      <input
+                        type="date"
+                        value={returnDueDate}
+                        onChange={(e) => setReturnDueDate(e.target.value)}
+                        className="h-8 px-2 rounded-md bg-background text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium block mb-1">
+                        Due time <span className="font-normal normal-case">(optional)</span>
+                      </label>
+                      <input
+                        type="time"
+                        value={returnDueTime}
+                        onChange={(e) => setReturnDueTime(e.target.value)}
+                        className="h-8 px-2 rounded-md bg-background text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="shrink-0 border-t border-border px-4 py-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={!returnDueDate || routeMutation.isPending}
+                    onClick={() => {
+                      routeReturnedCase(
+                        {
+                          status: returnPromptStatus as CaseStatus,
+                          labLocationId: returnPromptLabLocationId,
+                          dueDate: returnDueDate,
+                          ...(returnDueTime ? { dueTime: returnDueTime } : {}),
+                        },
+                        false,
+                      );
+                      setReturnDueDate("");
+                      setReturnDueTime("");
+                    }}
+                    className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                  >
+                    {routeMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+                    Locate &amp; Update Due Date
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReturnPromptStep("ask")}
+                    className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm transition-colors"
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetReturnWizard}
+                    className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+            {returnPromptStep === "rxAsk" && (
+              <div
+                className="flex-1 min-h-0 overflow-y-auto px-4 py-4 flex flex-col items-center justify-center gap-3"
+                data-testid="return-wizard-rx-ask"
+              >
+                {returnRxBlockedReason ? (
+                  <>
+                    <p className="text-xs text-muted-foreground text-center">
+                      {returnRxBlockedReason}
+                    </p>
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => goToNextReturnStage("rxAsk")}
+                        className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+                      >
+                        Continue
+                      </button>
+                      <button
+                        type="button"
+                        onClick={resetReturnWizard}
+                        className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm transition-colors"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-wrap justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUploadError(null);
+                        setReturnPromptStep("rxUpload");
+                      }}
+                      className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+                    >
+                      Yes
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => goToNextReturnStage("rxAsk")}
+                      className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm transition-colors"
+                    >
+                      No
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetReturnWizard}
+                      className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm transition-colors"
+                    >
+                      Close
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            {returnPromptStep === "rxUpload" && (
+              <div
+                className="flex-1 min-h-0 flex flex-col"
+                data-testid="return-wizard-rx-upload"
+              >
+                <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+                  <div
+                    data-testid="return-rx-dropzone"
+                    onDragEnter={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setReturnRxDragOver(true);
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setReturnRxDragOver(false);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setReturnRxDragOver(false);
+                      const files = Array.from(e.dataTransfer?.files ?? []);
+                      if (files.length > 0) void uploadReturnPrescription(files);
+                    }}
+                    className={`flex flex-col items-center justify-center gap-1.5 py-5 rounded-lg border-2 border-dashed text-center transition-colors ${
+                      returnRxDragOver
+                        ? "border-primary bg-primary/8 text-primary"
+                        : "border-muted-foreground/30 text-muted-foreground"
+                    }`}
+                  >
+                    <FileUp size={16} className={returnRxDragOver ? "text-primary" : "text-muted-foreground/60"} />
+                    <span className="text-xs font-medium">
+                      Drop the prescription here
+                    </span>
+                  </div>
+                  <input
+                    ref={returnRxInputRef}
+                    type="file"
+                    className="hidden"
+                    data-testid="return-rx-file-input"
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files ?? []);
+                      e.target.value = "";
+                      if (files.length > 0) void uploadReturnPrescription(files);
+                    }}
+                  />
+                  {uploadingFile && (
+                    <p className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
+                      <Loader2 size={12} className="animate-spin" />
+                      Uploading prescription…
+                    </p>
+                  )}
+                  {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
+                </div>
+                <div className="shrink-0 border-t border-border px-4 py-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={uploadingFile}
+                    onClick={() => returnRxInputRef.current?.click()}
+                    className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                  >
+                    Choose file from computer
+                  </button>
+                  <button
+                    type="button"
+                    disabled={uploadingFile}
+                    onClick={() => goToNextReturnStage("rxUpload")}
+                    className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm disabled:opacity-50 transition-colors"
+                  >
+                    Skip
+                  </button>
+                  <button
+                    type="button"
+                    disabled={uploadingFile}
+                    onClick={resetReturnWizard}
+                    className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm disabled:opacity-50 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+            {returnPromptStep === "remakeAsk" && (
+              <div
+                className="flex-1 min-h-0 overflow-y-auto px-4 py-4 flex flex-col items-center justify-center gap-3"
+                data-testid="return-wizard-remake-ask"
+              >
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReturnRemakeError(null);
+                      setReturnPromptStep("remake");
+                    }}
+                    className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => goToNextReturnStage("remakeAsk")}
+                    className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm transition-colors"
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetReturnWizard}
+                    className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+            {returnPromptStep === "remake" && (
+              <div className="flex-1 min-h-0 flex flex-col" data-testid="return-wizard-remake">
+                <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+                  <RemakeOriginalPicker
+                    labOrganizationId={
+                      data?.labOrganizationId ?? labCase.labOrganizationId ?? ""
+                    }
+                    selected={returnRemakeSelected}
+                    onSelect={(hit) => {
+                      setReturnRemakeSelected(hit);
+                      setReturnRemakeError(null);
+                    }}
+                    onClear={() => setReturnRemakeSelected(null)}
+                    questionnaire={returnRemakeQ}
+                    onQuestionnaireChange={setReturnRemakeQ}
+                    isAdmin={isAdmin}
+                    excludeCaseId={labCase.id}
+                  />
+                  {returnRemakeError && (
+                    <p className="text-xs text-destructive">{returnRemakeError}</p>
+                  )}
+                </div>
+                <div className="shrink-0 border-t border-border px-4 py-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={
+                      !returnRemakeSelected ||
+                      !isRemakeQuestionnaireComplete(returnRemakeQ) ||
+                      returnRemakeMutation.isPending
+                    }
+                    onClick={() => returnRemakeMutation.mutate()}
+                    className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                  >
+                    {returnRemakeMutation.isPending ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : null}
+                    Link Remake
+                  </button>
+                  <button
+                    type="button"
+                    disabled={returnRemakeMutation.isPending}
+                    onClick={() => goToNextReturnStage("remake")}
+                    className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm disabled:opacity-50 transition-colors"
+                  >
+                    Skip
+                  </button>
+                  <button
+                    type="button"
+                    disabled={returnRemakeMutation.isPending}
+                    onClick={resetReturnWizard}
+                    className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm disabled:opacity-50 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+            {returnPromptStep === "stepAsk" && (
+              <div
+                className="flex-1 min-h-0 overflow-y-auto px-4 py-4 flex flex-col items-center justify-center gap-3"
+                data-testid="return-wizard-step-ask"
+              >
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setReturnPromptStep("step")}
+                    className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => goToNextReturnStage("stepAsk")}
+                    className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm transition-colors"
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetReturnWizard}
+                    className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+            {returnPromptStep === "step" && (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+                  <select
+                    value={returnStep}
+                    onChange={(e) => setReturnStep(e.target.value)}
+                    aria-label="New removable workflow step"
+                    className="block w-full h-8 px-2 rounded-md bg-background text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                    data-testid="return-step-select"
+                  >
+                    <option value="" disabled>
+                      Select a step…
+                    </option>
+                    {STEP_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="shrink-0 border-t border-border px-4 py-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={!returnStep || returnStepMutation.isPending}
+                    onClick={() => {
+                      const currentStep = (data ?? labCase).step ?? "";
+                      if (returnStep === currentStep) {
+                        goToNextReturnStage("step");
+                        return;
+                      }
+                      returnStepMutation.mutate(returnStep);
+                    }}
+                    className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                  >
+                    {returnStepMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+                    Update Step
+                  </button>
+                  <button
+                    type="button"
+                    disabled={returnStepMutation.isPending}
+                    onClick={() => goToNextReturnStage("step")}
+                    className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm disabled:opacity-50 transition-colors"
+                  >
+                    Skip
+                  </button>
+                  <button
+                    type="button"
+                    disabled={returnStepMutation.isPending}
+                    onClick={resetReturnWizard}
+                    className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm disabled:opacity-50 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+            {returnPromptStep === "notesAsk" && (
+              <div
+                className="flex-1 min-h-0 overflow-y-auto px-4 py-4 flex flex-col items-center justify-center gap-3"
+                data-testid="return-wizard-notes-ask"
+              >
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNoteError(null);
+                      setReturnPromptStep("notes");
+                    }}
+                    className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => goToNextReturnStage("notesAsk")}
+                    className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm transition-colors"
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetReturnWizard}
+                    className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+            {returnPromptStep === "notes" && (
+              <div className="flex-1 min-h-0 flex flex-col" data-testid="return-wizard-notes">
+                <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+                  <NoteComposer
+                    noteText={noteText}
+                    setNoteText={setNoteText}
+                    setNoteError={setNoteError}
+                    noteError={noteError ?? null}
+                    shareWithProvider={shareWithProvider}
+                    setShareWithProvider={setShareWithProvider}
+                    isListeningNote={isListeningNote}
+                    startNoteListening={startNoteListening}
+                    stopNoteListening={stopNoteListening}
+                    isPending={addNoteMutation.isPending}
+                    onSubmit={() =>
+                      addNoteMutation.mutate(
+                        { text: noteText, shared: shareWithProvider },
+                        { onSuccess: () => goToNextReturnStage("notes") },
+                      )
+                    }
+                    orgId={
+                      data?.viewerQuickReferenceOrganizationId ??
+                      data?.labOrganizationId ??
+                      null
+                    }
+                  />
+                </div>
+                <div className="shrink-0 border-t border-border px-4 py-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={addNoteMutation.isPending}
+                    onClick={() => goToNextReturnStage("notes")}
+                    className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm disabled:opacity-50 transition-colors"
+                  >
+                    Skip
+                  </button>
+                  <button
+                    type="button"
+                    disabled={addNoteMutation.isPending}
+                    onClick={resetReturnWizard}
+                    className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm disabled:opacity-50 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+            {returnPromptStep === "labSlipAsk" && (
+              <div
+                className="flex-1 min-h-0 overflow-y-auto px-4 py-4 flex flex-col items-center justify-center gap-3"
+                data-testid="return-wizard-lab-slip-ask"
+              >
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void printLabSlip();
+                      goToNextReturnStage("labSlipAsk");
+                    }}
+                    className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors inline-flex items-center gap-1.5"
+                  >
+                    <Printer size={13} />
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => goToNextReturnStage("labSlipAsk")}
+                    className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm transition-colors"
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetReturnWizard}
+                    className="h-8 px-3 rounded-md text-muted-foreground hover:text-foreground text-sm transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+            {returnPromptStep === "labelAsk" && (
+              <div
+                className="flex-1 min-h-0 overflow-y-auto px-4 py-4 flex flex-col items-center justify-center gap-3"
+                data-testid="return-wizard-label-ask"
+              >
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void printLabel();
+                      goToNextReturnStage("labelAsk");
+                    }}
+                    className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors inline-flex items-center gap-1.5"
+                  >
+                    <Printer size={13} />
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => goToNextReturnStage("labelAsk")}
+                    className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm transition-colors"
+                  >
+                    No
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -8993,12 +12869,15 @@ export function AttachmentRow({
   canManage,
   onImageClick,
   onVideoClick,
+  onAttachmentClick,
 }: {
   caseId: string;
   attachment: CaseAttachment;
   canManage: boolean;
   onImageClick?: (url: string) => void;
-  onVideoClick?: (url: string, mimeType?: string) => void;
+  onVideoClick?: (url: string, mimeType?: string, fileName?: string) => void;
+  /** Opens the item in the current-case gallery while retaining attachment identity. */
+  onAttachmentClick?: (attachment: CaseAttachment, url: string) => void;
 }) {
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [scanViewerOpen, setScanViewerOpen] = useState(false);
@@ -9073,7 +12952,10 @@ export function AttachmentRow({
   }
 
   const isImage = (attachment.fileType || "").startsWith("image/");
-  const isVideo = (attachment.fileType || "").startsWith("video/");
+  const videoExtension = attachment.fileName?.match(/\.(mov|mp4|m4v|webm|ogv|ogg)$/i);
+  const isVideo =
+    (attachment.fileType || "").toLowerCase().startsWith("video/") ||
+    !!videoExtension;
 
   const SCAN_MIME_TYPES = new Set(["model/stl", "model/obj", "model/ply", "application/sla"]);
   const SCAN_EXTENSIONS = new Set([".stl", ".obj", ".ply", ".dcm", ".3ds", ".dae"]);
@@ -9086,6 +12968,14 @@ export function AttachmentRow({
     return false;
   }
   const isScan = is3dScan(attachment.fileType || "", attachment.fileName);
+  const scanAccuracy = attachment.scanAccuracy;
+  const conditionLabel = scanAccuracy?.objectCondition === "simple-matte"
+    ? "Matte / non-reflective"
+    : scanAccuracy?.objectCondition === "dental-complex"
+      ? "Complex dental surface"
+      : scanAccuracy?.objectCondition === "reflective-or-translucent"
+        ? "Reflective / translucent"
+        : "Not verified";
   // The desktop has an in-app three.js viewer for STL/OBJ/PLY; other 3D
   // formats (.dcm, .3ds, .dae) fall through to the existing preview/open
   // behaviour.
@@ -9102,6 +12992,15 @@ export function AttachmentRow({
   const href = attachment.id
     ? `${getApiOrigin()}/api/cases/${caseId}/attachments/${attachment.id}/file`
     : attachment.storageKey;
+  // Only the backend-declared attachment id is used for textures. Never
+  // interpret PLY comments or storage metadata as a URL.
+  const textureHref =
+    inAppFormat === "ply" &&
+    (attachment.textureAttachmentId || attachment.scan?.textureAttachmentId)
+      ? `${getApiOrigin()}/api/cases/${caseId}/attachments/${
+          attachment.textureAttachmentId || attachment.scan?.textureAttachmentId
+        }/file`
+      : undefined;
 
   function onDelete() {
     if (deleteMutation.isPending) return;
@@ -9122,12 +13021,17 @@ export function AttachmentRow({
       setScanViewerOpen(true);
       return;
     }
-    if (isImage && onImageClick && href) {
-      onImageClick(href);
+    if (isImage && href && (onAttachmentClick || onImageClick)) {
+      if (onAttachmentClick) onAttachmentClick(attachment, href);
+      else onImageClick!(href);
       return;
     }
-    if (isVideo && onVideoClick && href) {
-      onVideoClick(href, attachment.fileType || "video/mp4");
+    if (isVideo && href && (onAttachmentClick || onVideoClick)) {
+      if (onAttachmentClick) {
+        onAttachmentClick(attachment, href);
+      } else {
+        onVideoClick!(href, attachment.fileType || undefined, attachment.fileName);
+      }
       return;
     }
     if (isPreviewing) return;
@@ -9164,6 +13068,7 @@ export function AttachmentRow({
           cacheKey={`att:${attachment.id}`}
           fileUrl={href}
           format={inAppFormat}
+          textureUrl={textureHref}
           authToken={getAccessToken()}
           size={44}
         />
@@ -9179,6 +13084,36 @@ export function AttachmentRow({
               </div>
             }
           />
+        </div>
+      ) : isVideo && href ? (
+        <div className="relative mt-0.5 h-11 w-11 shrink-0 overflow-hidden rounded bg-black">
+          <AuthedVideo
+            url={href}
+            mimeType={attachment.fileType || undefined}
+            muted
+            playsInline
+            preload="metadata"
+            className="h-full w-full object-cover"
+            loadingFallback={
+              <div
+                className="h-full w-full animate-pulse bg-secondary"
+                aria-label="Loading video thumbnail"
+              />
+            }
+            errorFallback={
+              <div className="flex h-full w-full items-center justify-center text-white/70">
+                <Video size={16} />
+              </div>
+            }
+          />
+          <span
+            aria-label="Play video"
+            className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/25 text-white"
+          >
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-black/65">
+              <Play size={13} fill="currentColor" />
+            </span>
+          </span>
         </div>
       ) : (
         <div className="mt-0.5 text-muted-foreground">
@@ -9215,10 +13150,17 @@ export function AttachmentRow({
           )}
         </div>
         <div className="text-xs text-muted-foreground mt-0.5">
-          {isScan ? "3D Scan" : isImage ? "Image" : attachment.fileType || "File"}
+          {isScan ? "3D Scan" : isImage ? "Image" : isVideo ? "Video" : attachment.fileType || "File"}
           {attachment.uploaderName ? ` · ${attachment.uploaderName}` : ""}
-          {attachment.createdAt ? ` · ${relativeTime(attachment.createdAt)}` : ""}
+          {attachment.createdAt ? ` · ${formatDate(attachment.createdAt)}` : ""}
         </div>
+        {isScan && scanAccuracy ? (
+          <div className="mt-1 text-[11px] text-muted-foreground" data-testid={`scan-accuracy-${attachment.id}`}>
+            Condition: {conditionLabel} · {scanAccuracy.estimatedErrorRangeMm
+              ? `Measured range up to ${scanAccuracy.estimatedErrorRangeMm.max} mm`
+              : "No measured range for this condition"}
+          </div>
+        ) : null}
       </div>
     </>
   );
@@ -9320,19 +13262,27 @@ export function AttachmentRow({
           >
             {rowBody}
           </button>
-        ) : isImage && onImageClick ? (
+        ) : isImage && (onAttachmentClick || onImageClick) ? (
           <button
             type="button"
-            onClick={() => onImageClick(href)}
+            onClick={() =>
+              onAttachmentClick
+                ? onAttachmentClick(attachment, href)
+                : onImageClick!(href)
+            }
             className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer text-left"
             title={`View "${attachment.fileName}"`}
           >
             {rowBody}
           </button>
-        ) : isVideo && onVideoClick ? (
+        ) : isVideo && (onAttachmentClick || onVideoClick) ? (
           <button
             type="button"
-            onClick={() => onVideoClick(href, attachment.fileType || "video/mp4")}
+            onClick={() =>
+              onAttachmentClick
+                ? onAttachmentClick(attachment, href)
+                : onVideoClick!(href, attachment.fileType || undefined, attachment.fileName)
+            }
             className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer text-left"
             title={`Play "${attachment.fileName}"`}
           >
@@ -9382,6 +13332,19 @@ export function AttachmentRow({
               title="Open in 3D viewer"
             >
               <ExternalLink size={13} />
+            </button>
+          ) : isVideo && (onAttachmentClick || onVideoClick) ? (
+            <button
+              type="button"
+              onClick={() =>
+                onAttachmentClick
+                  ? onAttachmentClick(attachment, href)
+                  : onVideoClick!(href, attachment.fileType || undefined, attachment.fileName)
+              }
+              className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
+              title="Play video"
+            >
+              <Play size={13} />
             </button>
           ) : canElectronPreview ? (
             <button
@@ -9434,6 +13397,7 @@ export function AttachmentRow({
           authToken={getAccessToken()}
           onClose={() => setScanViewerOpen(false)}
           onFallback={handleScanFallback}
+          textureUrl={textureHref}
         />
       )}
     </div>
@@ -9449,4 +13413,118 @@ function Field({ label, value }: { label: string; value: string | null | undefin
       <div className="text-sm mt-0.5">{value || "—"}</div>
     </div>
   );
+}
+
+const RETURN_INTAKE_STATUSES = new Set(["received", "intake", "new", "pending"]);
+
+/** Extract the `toStatus` value from a `status_changed` event's metadata. */
+function getEventToStatus(ev: { eventType?: string | null; metadataJson?: unknown }): string | null {
+  if (ev.eventType !== "status_changed") return null;
+  let meta: Record<string, unknown> | null = null;
+  if (ev.metadataJson && typeof ev.metadataJson === "object") {
+    meta = ev.metadataJson as Record<string, unknown>;
+  } else if (typeof ev.metadataJson === "string" && (ev.metadataJson as string).trim()) {
+    try { meta = JSON.parse(ev.metadataJson as string); } catch { return null; }
+  }
+  if (!meta) return null;
+  const to = meta.toStatus ?? meta.to ?? meta.newStatus ?? meta.status;
+  return typeof to === "string" ? to.toLowerCase() : null;
+}
+
+/**
+ * The calendar day a Case History row displays.
+ *
+ * Derived from the exact same formatter the row's timestamp uses
+ * ({@link formatDateTime}), so the date grouping can never disagree with the
+ * date the user reads on the row — a row labelled `08/12/2026` always lands in
+ * the `08/12/2026` group, whatever the viewer's timezone.
+ */
+export function historyEventDayKey(ev: {
+  occurredAt?: string | null;
+  createdAt?: string | null;
+}): string {
+  const value = ev.occurredAt || ev.createdAt;
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}/${dd}/${d.getFullYear()}`;
+}
+
+/**
+ * Returns the set of event IDs that should be preceded by a "Case returned"
+ * divider. Detection always runs on the chronologically-sorted sequence
+ * (oldest first) so the result is the same regardless of the current display
+ * sort order — callers match by event ID, not array index.
+ */
+function detectCaseReturnDividerEventIds(
+  events: Array<{
+    id?: string | null;
+    occurredAt?: string | null;
+    createdAt?: string | null;
+    eventType?: string | null;
+    metadataJson?: unknown;
+  }>,
+): Set<string> {
+  // Always sort oldest-first for detection.
+  const sorted = [...events].sort((a, b) => {
+    const ta = new Date((a.occurredAt || a.createdAt || 0) as string).getTime();
+    const tb = new Date((b.occurredAt || b.createdAt || 0) as string).getTime();
+    return ta - tb;
+  });
+  const result = new Set<string>();
+  for (let i = 1; i < sorted.length; i++) {
+    const prevTo = getEventToStatus(sorted[i - 1]);
+    const currTo = getEventToStatus(sorted[i]);
+    if (
+      prevTo && currTo &&
+      RETURN_COMPLETE_STATUSES.has(prevTo) &&
+      RETURN_INTAKE_STATUSES.has(currTo)
+    ) {
+      const id = sorted[i].id;
+      if (id) result.add(id);
+    }
+  }
+  return result;
+}
+
+/** Maps a wizard stage back to the question it belongs to, so both the Yes
+ *  panel and its question advance to the same next question. */
+const RETURN_WIZARD_QUESTION_OF: Partial<Record<ReturnWizardStage, ReturnWizardStage>> = {
+  rxUpload: "rxAsk",
+  remake: "remakeAsk",
+  step: "stepAsk",
+  notes: "notesAsk",
+};
+
+const RETURN_WIZARD_QUESTIONS = [
+  "rxAsk",
+  "remakeAsk",
+  "stepAsk",
+  "notesAsk",
+  "labSlipAsk",
+  "labelAsk",
+] as const satisfies ReadonlyArray<ReturnWizardStage>;
+
+/**
+ * Next question after `from`, skipping questions the viewer may not answer.
+ * Returns null when the wizard is finished.
+ */
+export function nextReturnWizardStage(
+  from: ReturnWizardStage,
+  allowed: { canEditStep: boolean; canPostNotes: boolean },
+): ReturnWizardStage | null {
+  const question = RETURN_WIZARD_QUESTION_OF[from] ?? from;
+  const startIndex =
+    question === "ask" || question === "date"
+      ? 0
+      : RETURN_WIZARD_QUESTIONS.indexOf(question as (typeof RETURN_WIZARD_QUESTIONS)[number]) + 1;
+  for (let i = Math.max(startIndex, 0); i < RETURN_WIZARD_QUESTIONS.length; i++) {
+    const stage = RETURN_WIZARD_QUESTIONS[i]!;
+    if (stage === "stepAsk" && !allowed.canEditStep) continue;
+    if (stage === "notesAsk" && !allowed.canPostNotes) continue;
+    return stage;
+  }
+  return null;
 }

@@ -3,6 +3,8 @@ import { statusLabel, statusTone } from "@/lib/format";
 interface Props {
   status?: string | null;
   size?: "sm" | "md";
+  /** Override the displayed text. When omitted, falls back to `statusLabel(status)`. */
+  label?: string;
 }
 
 const TONE_CLASS: Record<ReturnType<typeof statusTone>, string> = {
@@ -13,7 +15,7 @@ const TONE_CLASS: Record<ReturnType<typeof statusTone>, string> = {
   danger: "bg-destructive/10 text-destructive",
 };
 
-export function StatusBadge({ status, size = "sm" }: Props) {
+export function StatusBadge({ status, size = "sm", label }: Props) {
   const tone = statusTone(status);
   const sizing =
     size === "sm" ? "px-2 py-0.5 text-[11px]" : "px-2.5 py-1 text-xs";
@@ -21,7 +23,7 @@ export function StatusBadge({ status, size = "sm" }: Props) {
     <span
       className={`inline-flex items-center font-medium rounded-full uppercase tracking-wide ${sizing} ${TONE_CLASS[tone]}`}
     >
-      {statusLabel(status)}
+      {label ?? statusLabel(status)}
     </span>
   );
 }

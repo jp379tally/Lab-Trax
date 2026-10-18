@@ -11,9 +11,10 @@ import {
   resolveServerPriceWithSource,
   type AlloyPriceTarget,
 } from "./pricing";
-import { materialToPriceKey } from "./material-mapping.js";
+import { resolveRestorationPriceKey } from "./restoration-pricing.js";
 import { HttpError } from "./http.js";
 import { syncInvoiceFromRestorations } from "./invoice-sync";
+import { isPfmOrFcmMaterial } from "./material-mapping.js";
 
 /**
  * Alloy surcharge support for PFM cases (Task #2067).
@@ -104,34 +105,138 @@ export async function resolveAlloyPricePreview(
 
 /**
  * Add an alloy surcharge line to a case's restorations (and re-sync its
- * invoice). Idempotent: if the case already carries an alloy line, this is
+ * invoice). Idempotent: if the case already carries alloy line(s), this is
  * a no-op and returns `{ added: false, alreadyPresent: true }`.
  *
- * The unit price is resolved through {@link resolveServerPriceWithSource}
- * using the `alloy` price key.
+ * **Per-tooth path (preferred):** when the case has PFM or full-contour-metal
+ * (FCM) restorations, one alloy row is inserted **per tooth** at $0 with no
+ * price source. The invoice sync then renders each row as a child sub-item
+ * beneath its matching PFM/FCM parent line, clearly showing which teeth need
+ * alloy pricing. Per-tooth rows always start unpriced; `requirePriced` is
+ * ignored for this path.
  *
- * When the lab hasn't configured an alloy price in any tier/override:
- * - with `requirePriced: true` (the manual reminder add) the line is NOT
- *   created — the call returns `{ added: false, skippedUnpriced: true }` so
- *   the caller can steer the user to the fee schedule instead of silently
- *   creating a $0 line.
- * - otherwise (e.g. the `autoAddAlloyOnPfm` path) the line is still added at
- *   $0 with `priced: false` so the reminder is satisfied and the lab can
- *   fill in the price later.
+ * **Legacy path (fallback):** when no PFM/FCM restorations exist (e.g. the
+ * manual one-click add on a case whose material wasn't detected as PFM), a
+ * single alloy row with `toothNumber: "N/A"` is inserted at the price resolved
+ * from the tier/override cascade. `requirePriced: true` refuses a $0 insert on
+ * this path (manual reminder add backstop).
  */
 export async function addAlloyChargeToCase(args: {
   caseRow: AlloyCaseRow;
   actorUserId: string | null;
   actorInitials?: string | null;
-  /** Refuse to add a $0 line when no alloy price is configured. */
+  /** Refuse to add a $0 line when no alloy price is configured (legacy path only). */
   requirePriced?: boolean;
+  /**
+   * When true, only run the per-tooth PFM/FCM path and return a no-op when
+   * there are no PFM/FCM restorations. Prevents the legacy single-N/A-row path
+   * from firing when called automatically from case-creation routes.
+   */
+  pfmOnly?: boolean;
 }): Promise<AddAlloyChargeResult> {
   const { caseRow, actorUserId, requirePriced = false } = args;
 
   const existing = await db.query.caseRestorations.findMany({
     where: eq(caseRestorations.caseId, caseRow.id),
   });
-  if (existing.some((r) => isAlloyRestoration(r))) {
+
+  const existingAlloy = existing.filter((r) => isAlloyRestoration(r));
+
+  // ── Per-tooth path ───────────────────────────────────────────────────────
+  // Find PFM/FCM restorations: these need one alloy row per tooth.
+  const pfmFcmRestorations = existing.filter(
+    (r) => !isAlloyRestoration(r) && isPfmOrFcmMaterial(r.material),
+  );
+
+  if (pfmFcmRestorations.length > 0) {
+    // Find which PFM/FCM teeth already have a per-tooth alloy row.
+    const existingAlloyTeeth = new Set(
+      existingAlloy
+        .map((r) => (r.toothNumber ?? "").trim())
+        .filter((t) => t && t !== "N/A" && /^\d+$/.test(t)),
+    );
+    const teethNeedingAlloy = pfmFcmRestorations
+      .map((r) => (r.toothNumber ?? "").trim())
+      .filter((t) => t && /^\d+$/.test(t) && !existingAlloyTeeth.has(t));
+
+    if (teethNeedingAlloy.length === 0) {
+      // All PFM/FCM teeth are already covered.
+      return {
+        added: false,
+        alreadyPresent: true,
+        priced: false,
+        skippedUnpriced: false,
+        restorationId: existingAlloy[0]?.id ?? null,
+      };
+    }
+
+    // Insert one alloy restoration per uncovered PFM/FCM tooth, always at $0.
+    // The lab prices these from the case detail after case creation.
+    const insertedIds: string[] = [];
+    for (const tooth of teethNeedingAlloy) {
+      const [restoration] = await db
+        .insert(caseRestorations)
+        .values({
+          caseId: caseRow.id,
+          toothNumber: tooth,
+          restorationType: ALLOY_RESTORATION_TYPE,
+          material: null,
+          shade: null,
+          notes: null,
+          quantity: 1,
+          unitPrice: "0.00",
+          priceSource: null,
+          priceSourceId: null,
+          priceSourceName: null,
+          priceKey: ALLOY_PRICE_KEY,
+        })
+        .returning();
+      insertedIds.push(restoration.id);
+
+      await db.insert(caseEvents).values({
+        caseId: caseRow.id,
+        eventType: "restoration_added",
+        actorUserId,
+        actorOrganizationId: caseRow.labOrganizationId,
+        actorInitials: args.actorInitials || "SYS",
+        metadataJson: {
+          restorationId: restoration.id,
+          restorationType: ALLOY_RESTORATION_TYPE,
+          toothNumber: tooth,
+          material: null,
+          quantity: 1,
+          unitPrice: "0.00",
+          alloySurcharge: true,
+          perToothAlloy: true,
+        },
+      });
+    }
+
+    await syncInvoiceFromRestorations({ caseId: caseRow.id, actorUserId });
+
+    return {
+      added: true,
+      alreadyPresent: false,
+      priced: false,
+      skippedUnpriced: false,
+      restorationId: insertedIds[0] ?? null,
+    };
+  }
+
+  // ── Legacy path: no PFM/FCM restorations — single N/A alloy row ──────────
+  // When pfmOnly is set (called from case-creation routes), skip this path
+  // entirely so we don't auto-insert a N/A alloy row for non-PFM cases.
+  if (args.pfmOnly) {
+    return {
+      added: false,
+      alreadyPresent: false,
+      priced: false,
+      skippedUnpriced: false,
+      restorationId: null,
+    };
+  }
+
+  if (existingAlloy.length > 0) {
     return {
       added: false,
       alreadyPresent: true,
@@ -549,7 +654,12 @@ export async function setRestorationPriceForCase(args: {
   const priceKey =
     restoration.priceKey && restoration.priceKey.trim()
       ? restoration.priceKey.trim()
-      : materialToPriceKey(restoration.material, restoration.restorationType);
+      : await resolveRestorationPriceKey({
+          labOrganizationId: caseRow.labOrganizationId,
+          material: restoration.material,
+          restorationType: restoration.restorationType,
+          restorationSubtype: restoration.restorationSubtype,
+        });
   if (!priceKey) {
     throw new HttpError(
       400,
@@ -577,6 +687,7 @@ export async function setRestorationPriceForCase(args: {
     ctx,
     restoration.material,
     restoration.restorationType,
+    restoration.restorationSubtype,
   );
   const unit = resolved?.amount ?? price;
 

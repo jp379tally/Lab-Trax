@@ -14,8 +14,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
+import { formatAccountNumberForDisplay } from "@workspace/account-number";
 import {
   useDuplicateDoctorClusters,
+  useConsolidateDoctorAccounts,
   type DoctorDuplicateCluster,
 } from "@/lib/duplicate-doctors";
 import { DoctorMergeSheet } from "@/components/DoctorMergeSheet";
@@ -26,6 +28,7 @@ export default function DuplicateDoctorsScreen() {
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const { query, clusters, totalGroups } = useDuplicateDoctorClusters();
+  const consolidateAccounts = useConsolidateDoctorAccounts();
   const isRefreshing = query.isFetching && !query.isLoading;
   const [activeCluster, setActiveCluster] = useState<DoctorDuplicateCluster | null>(
     null,
@@ -87,11 +90,36 @@ export default function DuplicateDoctorsScreen() {
               typeof cluster.topScore === "number"
                 ? `${Math.round(cluster.topScore * 100)}% similar`
                 : null;
+            // Account clusters are duplicate provider *accounts* for one
+            // person (Task #4373) — the name-merge sheet cannot fix those, so
+            // they consolidate onto the oldest account number instead.
+            const isAccountCluster = cluster.kind === "account";
+            // The one account number consolidation keeps for the whole
+            // cluster. Null on name clusters (a name merge retires nothing)
+            // and when no member has a number to rank.
+            const survivingAccount =
+              isAccountCluster && cluster.survivingAccountNumber
+                ? formatAccountNumberForDisplay(cluster.survivingAccountNumber)
+                : null;
             return (
               <Card
                 key={`${cluster.labOrganizationId}-${ci}`}
                 style={styles.clusterCard}
-                onPress={() => setActiveCluster(cluster)}
+                onPress={() =>
+                  isAccountCluster
+                    ? consolidateAccounts.mutate({
+                        data: {
+                          labOrganizationId: cluster.labOrganizationId ?? "",
+                          doctors: doctors.map((d) => ({
+                            doctorName: d.doctorName ?? "",
+                            providerOrganizationId:
+                              d.providerOrganizationId ?? null,
+                          })),
+                          force: Boolean(cluster.conflictReason),
+                        },
+                      })
+                    : setActiveCluster(cluster)
+                }
               >
                 <View style={styles.clusterHeader}>
                   <View style={styles.clusterHeaderMain}>
@@ -103,22 +131,72 @@ export default function DuplicateDoctorsScreen() {
                   {score ? <Text style={styles.score}>{score}</Text> : null}
                 </View>
                 <View style={styles.doctorList}>
-                  {doctors.map((d, di) => (
-                    <View key={di} style={styles.doctorRow}>
-                      <Ionicons name="person-outline" size={15} color={colors.textSecondary} />
-                      <View style={styles.doctorMain}>
-                        <Text style={styles.doctorName}>{d.doctorName}</Text>
-                        <Text style={styles.doctorMeta} numberOfLines={1}>
-                          {(d.practiceName || "No practice") +
-                            ` · ${d.totalCases ?? 0} ${(d.totalCases ?? 0) === 1 ? "case" : "cases"}`}
-                        </Text>
+                  {doctors.map((d, di) => {
+                    // The account this row already has. Consolidating keeps
+                    // ONE account for the whole cluster — the oldest, named by
+                    // the server — and retires the rest onto it, so only that
+                    // one may be called kept. A name merge retires nothing,
+                    // and the sheet decides who is kept, so those rows stay
+                    // neutral. Its own wrapping line: the summary above is
+                    // clipped to one line and could hide the number.
+                    const accountNumber = d.platformAccountNumber
+                      ? formatAccountNumberForDisplay(d.platformAccountNumber)
+                      : null;
+                    const survives =
+                      isAccountCluster &&
+                      !!survivingAccount &&
+                      d.platformAccountNumber === cluster.survivingAccountNumber;
+                    const retires =
+                      isAccountCluster && !!survivingAccount && !survives;
+                    return (
+                      <View key={di} style={styles.doctorRow}>
+                        <Ionicons name="person-outline" size={15} color={colors.textSecondary} />
+                        <View style={styles.doctorMain}>
+                          <Text style={styles.doctorName}>{d.doctorName}</Text>
+                          <Text style={styles.doctorMeta} numberOfLines={1}>
+                            {(d.practiceName || "No practice") +
+                              ` · ${d.totalCases ?? 0} ${(d.totalCases ?? 0) === 1 ? "case" : "cases"}` +
+                              ((d.accountCount ?? 0) > 1
+                                ? ` · ${d.accountCount} accounts`
+                                : "")}
+                          </Text>
+                          {accountNumber ? (
+                            <Text
+                              style={[
+                                styles.doctorAccount,
+                                survives && styles.doctorAccountKept,
+                                retires && styles.doctorAccountRetired,
+                              ]}
+                            >
+                              {survives
+                                ? `Keeps account #${accountNumber}`
+                                : retires
+                                  ? `Account #${accountNumber} retires onto #${survivingAccount}`
+                                  : `Account #${accountNumber}`}
+                            </Text>
+                          ) : null}
+                        </View>
                       </View>
-                    </View>
-                  ))}
+                    );
+                  })}
                 </View>
+                {isAccountCluster && survivingAccount ? (
+                  <Text style={styles.survivorNote}>
+                    {`Consolidating keeps account #${survivingAccount} — the other accounts are retired onto it. No new account number is created.`}
+                  </Text>
+                ) : null}
+                {cluster.conflictReason ? (
+                  <Text style={styles.conflictText}>{cluster.conflictReason}</Text>
+                ) : null}
                 <View style={styles.mergeHint}>
                   <Ionicons name="git-merge-outline" size={14} color={colors.tint} />
-                  <Text style={styles.mergeHintText}>Tap to merge</Text>
+                  <Text style={styles.mergeHintText}>
+                    {isAccountCluster
+                      ? consolidateAccounts.isPending
+                        ? "Consolidating…"
+                        : "Tap to consolidate accounts"
+                      : "Tap to merge"}
+                  </Text>
                   <Ionicons name="chevron-forward" size={14} color={colors.textTertiary} />
                 </View>
               </Card>
@@ -138,6 +216,11 @@ export default function DuplicateDoctorsScreen() {
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: c.backgroundSolid },
+    conflictText: {
+      ...Typography.caption,
+      color: c.warningStrong,
+      marginTop: Spacing.xs,
+    },
     header: {
       flexDirection: "row",
       alignItems: "center",
@@ -174,6 +257,10 @@ function makeStyles(c: ThemeColors) {
     doctorMain: { flex: 1 },
     doctorName: { ...Typography.bodyMedium, color: c.text },
     doctorMeta: { ...Typography.caption, color: c.textSecondary },
+    doctorAccount: { ...Typography.caption, color: c.textSecondary },
+    doctorAccountKept: { ...Typography.captionSemibold, color: c.tint },
+    doctorAccountRetired: { ...Typography.caption, color: c.textTertiary },
+    survivorNote: { ...Typography.caption, color: c.textSecondary },
     mergeHint: {
       flexDirection: "row",
       alignItems: "center",

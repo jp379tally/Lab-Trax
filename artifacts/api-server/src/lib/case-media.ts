@@ -1,10 +1,11 @@
 import * as fs from "node:fs";
 import { promises as fsp } from "node:fs";
 import * as path from "node:path";
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { db, caseAttachments, mediaCleanupRuns, systemSettings, users, legacyCaseMedia, labCases } from "@workspace/db";
 import { isNull } from "drizzle-orm";
 import { logger } from "./logger";
+import { historicalStartupMaintenanceEnabled } from "./startup-maintenance";
 import { sendCleanupAlertEmail, sendCleanupRecoveryAlertEmail } from "./mail";
 import { filterEmailsByPref } from "./email-prefs";
 
@@ -313,9 +314,83 @@ export async function ensureLegacyCaseMediaTable(): Promise<void> {
 }
 
 /**
+ * Strict counterpart to `bindLegacyCaseMedia`, for the one situation the
+ * best-effort version cannot serve: the caller is about to REPLACE durable
+ * data (a base64 photo inside `lab_cases.case_data`) with a reference to one
+ * of these files. If the binding is missing the serving route rejects the
+ * file, so the photo would be gone — a swallowed insert error is silent data
+ * loss, not a tolerable degradation.
+ *
+ * Throws unless, on return, every filename is bound to THIS case. Pass the
+ * surrounding transaction so the binding and the blob rewrite commit or roll
+ * back together, and read the case's owner/organization from the same locked
+ * row — binding on unlocked metadata can leave a row authorizing the file to
+ * a tenant the case no longer belongs to.
+ *
+ * A row already bound to this case but carrying stale owner/organization
+ * metadata (the case moved labs since) is re-pointed at the current values:
+ * the file belongs to the case, and the case's tenant is authoritative.
+ */
+export async function bindLegacyCaseMediaStrict(args: {
+  tx?: { insert: typeof db.insert; select: typeof db.select; update: typeof db.update };
+  labCaseId: string;
+  organizationId: string | null;
+  ownerId: string;
+  fileNames: string[];
+}): Promise<void> {
+  const exec = (args.tx ?? db) as typeof db;
+  const unique = Array.from(new Set(args.fileNames)).filter(Boolean);
+  if (unique.length === 0) return;
+
+  for (const fileName of unique) {
+    await exec
+      .insert(legacyCaseMedia)
+      .values({
+        fileName,
+        labCaseId: args.labCaseId,
+        organizationId: args.organizationId,
+        ownerId: args.ownerId,
+      })
+      .onConflictDoNothing({ target: legacyCaseMedia.fileName });
+  }
+
+  const bound = await exec
+    .select({
+      fileName: legacyCaseMedia.fileName,
+      labCaseId: legacyCaseMedia.labCaseId,
+      organizationId: legacyCaseMedia.organizationId,
+      ownerId: legacyCaseMedia.ownerId,
+    })
+    .from(legacyCaseMedia)
+    .where(inArray(legacyCaseMedia.fileName, unique));
+  const byName = new Map(bound.map((row) => [row.fileName, row]));
+
+  for (const fileName of unique) {
+    const row = byName.get(fileName);
+    if (!row) {
+      throw new Error(`media binding missing for ${fileName} — refusing to reference it`);
+    }
+    if (row.labCaseId !== args.labCaseId) {
+      throw new Error(
+        `media file ${fileName} is already bound to case ${row.labCaseId} — refusing to reference it from ${args.labCaseId}`,
+      );
+    }
+    if (row.organizationId !== args.organizationId || row.ownerId !== args.ownerId) {
+      await exec
+        .update(legacyCaseMedia)
+        .set({ organizationId: args.organizationId, ownerId: args.ownerId })
+        .where(eq(legacyCaseMedia.fileName, fileName));
+    }
+  }
+}
+
+/**
  * Bind every media filename referenced by a legacy case to that case
  * (first-writer-wins). Best-effort: never throws — a binding failure must not
  * block the case write. Returns the number of new bindings inserted.
+ *
+ * Use `bindLegacyCaseMediaStrict` instead when the blob is about to stop
+ * holding the data itself and start pointing at these files.
  */
 export async function bindLegacyCaseMedia(args: {
   labCaseId: string;
@@ -405,6 +480,12 @@ export async function backfillLegacyCaseMedia(): Promise<{
   restoredFromTrash: number;
 }> {
   const result = { scannedCases: 0, boundFiles: 0, restoredFromTrash: 0 };
+  if (!historicalStartupMaintenanceEnabled()) {
+    logger.warn(
+      "backfillLegacyCaseMedia: deferred outside explicit development maintenance; existing media references and files were not changed",
+    );
+    return result;
+  }
   let rows: Array<{
     id: string;
     ownerId: string;
@@ -991,39 +1072,6 @@ export function startDailyOrphanedMediaCleanup() {
       setTimeout(tick, msUntilNext(nextHour));
     }
   };
-
-  // On startup, recover any stuck "running" row left over from a server crash.
-  // This runs once immediately so that manual runs triggered shortly after
-  // restart are not blocked by a stale sentinel.
-  recoverStuckCleanupRuns().then(async (recovered) => {
-    if (recovered > 0) {
-      logger.warn(
-        { recovered },
-        "startDailyOrphanedMediaCleanup: recovered stuck cleanup run(s) from a previous server crash",
-      );
-      try {
-        const admins = await db
-          .select({ email: users.email })
-          .from(users)
-          .where(eq(users.role, "admin"));
-        const adminEmails = await filterEmailsByPref(
-          admins.map((u) => u.email).filter((e): e is string => Boolean(e)),
-          "cleanupAlerts",
-        );
-        await sendCleanupRecoveryAlertEmail({ adminEmails, recoveredCount: recovered });
-      } catch (mailErr: unknown) {
-        logger.error(
-          { err: mailErr instanceof Error ? mailErr.message : String(mailErr) },
-          "startDailyOrphanedMediaCleanup: recovery alert email failed",
-        );
-      }
-    }
-  }).catch((err: unknown) => {
-    logger.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "startDailyOrphanedMediaCleanup: startup stuck-run recovery failed",
-    );
-  });
 
   // Read initial hour from DB (with env fallback) so the first delay is
   // consistent with any previously saved admin setting.

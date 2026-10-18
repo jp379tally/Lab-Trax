@@ -15,7 +15,7 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_SRC = resolve(__dirname, "..");
 const UPLOAD_INSTALLER_SCRIPT = resolve(SCRIPTS_SRC, "upload-desktop-installer.ts");
-const TSX = resolve(__dirname, "../../../node_modules/.bin/tsx");
+const TSX_LOADER = import.meta.resolve("tsx");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -309,7 +309,7 @@ describe("applyLatestYmlGate — safety-check: stale ZIP latest.yml during EXE p
 // ---------------------------------------------------------------------------
 
 describe("spawn: upload-desktop-installer exits 1 on stale ZIP latest.yml", () => {
-  // Spawning tsx compiles the whole script from scratch — normally a couple of
+  // The child loads tsx and compiles the script from scratch — usually a few
   // seconds, but when the Run-button aggregate fires every rel-* workflow at
   // once, CPU contention can push it well past the 5 s default test timeout
   // (a false positive: the test passes cleanly when run alone). Give both the
@@ -340,8 +340,8 @@ describe("spawn: upload-desktop-installer exits 1 on stale ZIP latest.yml", () =
     await writeFile(fakeExe, "MZ fake exe", "utf8");
 
     const result = spawnSync(
-      TSX,
-      [UPLOAD_INSTALLER_SCRIPT, fakeExe],
+      process.execPath,
+      ["--import", TSX_LOADER, UPLOAD_INSTALLER_SCRIPT, fakeExe],
       {
         env: {
           ...process.env,
@@ -356,6 +356,7 @@ describe("spawn: upload-desktop-installer exits 1 on stale ZIP latest.yml", () =
       },
     );
 
+    expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
     // stderr must mention the ZIP so operators know what went wrong
     const combined = (result.stdout ?? "") + (result.stderr ?? "");

@@ -1,4 +1,8 @@
-import express, { Router, type IRouter } from "express";
+import express, {
+  Router,
+  type IRouter,
+  type RequestHandler,
+} from "express";
 import {
   SETTING_ADMIN_PIN,
   loadAdminPinCache,
@@ -7,9 +11,17 @@ import {
   isAdminPinConfiguredAsync,
   setDbAdminPin,
 } from "../lib/admin-pin";
+import {
+  DEFAULT_DEMO_USERS,
+  resolveDemoSeedPassword,
+} from "../lib/demo-seed-config";
 import { normalizePhoneE164 } from "../lib/account-link-sms";
-import { normalizeMaterialName } from "../lib/material-mapping";
+import { allocatePlatformAccountNumber } from "../lib/platform-account-number";
+import { normalizeRxPracticeName, normalizeRxDoctorName } from "../lib/rx-practice-normalize";
+import { normalizeMaterialName, cleanStepValue } from "../lib/material-mapping";
+import { normalizeCaseHierarchy } from "../lib/case-category";
 import { createHash, randomBytes } from "node:crypto";
+import PDFDocument from "pdfkit";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -26,24 +38,40 @@ import {
   type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
 import { dispatchInstallerAlert } from "../lib/desktop-installer-alerts";
+import {
+  dispatchDatabaseIdentityAlert,
+  parseDatabaseIdentityAlertRequest,
+  selectLabAdminRecipients,
+} from "../lib/database-identity-alerts";
 import { runDesktopInstallerHealthCheck } from "../lib/desktop-installer-health";
 import { getDownloadInterruptionStats } from "../lib/download-interruptions";
-import { runBackup, generateBackupForDownload, streamBackupDownload, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, runScheduledBackupNow, executeRestore, getRestoreState, parseAndValidateBackupManifest, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail, sendMail, getAppBaseUrl } from "../lib/mail";
-import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES, bindLegacyCaseMedia, extractMediaFilenamesFromText } from "../lib/case-media";
-import { writeCaseMediaToObjectStorage, caseMediaObjectStorageAvailable } from "../lib/case-media-object-storage";
+import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES, bindLegacyCaseMedia, bindLegacyCaseMediaStrict, extractMediaFileName, extractMediaFilenamesFromText } from "../lib/case-media";
+import { writeCaseMediaToObjectStorage, openCaseMediaObjectStream, deleteCaseMediaFromObjectStorage, caseMediaObjectStorageAvailable } from "../lib/case-media-object-storage";
+import {
+  externalizeInlineMediaForWrite,
+  getLegacyCaseMediaMigrationStatus,
+  replaceStringsDeep,
+  restoreLegacyCaseDataFromBackup,
+  runLegacyCaseMediaMigration,
+} from "../lib/legacy-case-media-externalize";
 import { convertPdfBufferToImageDataUrls } from "../lib/pdf-to-images";
+import { PdfConversionError, MAX_RX_PDF_PAGES } from "../lib/prescription-limits";
+import { boundedOperation } from "../lib/bounded-operation";
+import { timeRequestStage } from "../middlewares/request-performance";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import { getMailerConfig } from "../lib/mailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, caseRestorations, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases, bankTransactions, invoices } from "@workspace/db";
 import { notDeleted, softDeleteById } from "../lib/soft-delete";
-import { eq, and, inArray, or, isNull, sql, desc, count, type SQL } from "drizzle-orm";
-import { hashPassword } from "../lib/crypto";
+import { hashPassword, verifyPassword } from "../lib/crypto";
 import { HttpError, wrapDbError } from "../lib/http";
+import { extractBearerToken } from "../lib/auth";
+import { getAccessCookie } from "../lib/cookies";
+import { createLabLookupToken, labLookupSelectionKey } from "../lib/lab-lookup-token";
 import { requireAuth, optionalAuth } from "../middlewares/auth";
+import { createAdminProviderSubscriptionRouter } from "./admin-provider-subscriptions";
 import { writeAuditLog } from "../lib/audit";
 import { softDeleteLegacyCases } from "../lib/legacy-case-delete.js";
 import {
@@ -53,14 +81,59 @@ import {
   namesMatch,
 } from "../lib/sdr1-legacy-cleanup";
 import {
+  RECOVERY_DATA_UNAVAILABLE_MESSAGE,
+  recoveryDataAvailable,
+} from "../lib/recovery-billing-scope";
+import {
   createVerificationCode,
   verifyCode,
   normalizeEmailTarget,
   normalizePhoneTarget,
 } from "../lib/verification";
-import { createRateLimit, createSendCodeThrottle, checkSendCodeAllowed, recordSendCodeSuccess, getClientIp } from "../lib/rate-limit";
+import {
+  createRateLimit,
+  createUserRateLimit,
+  createUserAndDestinationRateLimit,
+  createSendCodeThrottle,
+  checkSendCodeAllowed,
+  recordSendCodeSuccess,
+  getClientIp,
+} from "../lib/rate-limit";
 import { parseOrganizationIdFromAffiliationKey } from "../lib/case-visibility";
 import { getUncachableStripeClient, isStripeConfigured } from "../lib/stripeClient";
+import { deliverInAppNotification } from "../lib/in-app-notifications";
+import { ADMIN_ROLES, BILLING_ROLES } from "../lib/rbac";
+import {
+  assertDefaultBillingMutationAllowed,
+  assertOrganizationMutationAllowed,
+} from "../lib/entitlement-write-guard";
+import { eq, and, inArray, or, isNull, isNotNull, sql, desc, count, type SQL } from "drizzle-orm";
+import { users, userSessions, labCases, labLocations, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, caseRestorations, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases, rxDoctorPracticeMemory, bankTransactions, invoices, notifications, labAuthorizationTemplates, practiceAuthorizationDocuments, scanJobs, scanOutputs } from "@workspace/db";
+import { getOneDriveStatus, downloadFileFromOneDrive, oneDriveItemIdFromPath } from "../lib/onedrive";
+import { streamLabScopedBackupDownload } from "../lib/lab-scoped-backup";
+import { runBackup, generateBackupForDownload, recordDesktopReportedBackupRun, streamBackupDownload, getBackupHourUtc, getBackupScheduleConfig, getBackupScheduleState, getFullArchiveIntervalMinutes, getOffsiteProtectionStatus, getOffsiteFreshness, getUndeliveredBackupAlert, getBackupAlertDeliveryLog, findUndeliveredBackupAlert, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, runScheduledBackupNow, executeRestore, getRestoreState, parseAndValidateBackupManifest, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_SCHEDULE_NEXT_DUE_AT, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
+import {
+  finishBackupLiveRun,
+  getBackupLiveStatus,
+  withBackupRun,
+} from "../lib/backup-phase";
+import {
+  backupErrorMessage,
+  backupDownloadErrorMessage,
+  backupSettingsErrorMessage,
+  backupStatusErrorMessage,
+  partialBackupMessage,
+} from "../lib/backup-error-copy";
+import { getGoogleDriveStatus } from "../lib/google-drive";
+
+const asyncHandler = (handler: any) => (req: any, res: any, next: any) =>
+  Promise.resolve(handler(req, res, next)).catch(next);
+const ok = (res: any, data: unknown) => res.json({ ok: true, data });
+
+/** Live-run confirmation token for the legacy inline-media externalization. */
+const LEGACY_CASE_MEDIA_CONFIRM = "EXTERNALIZE_LEGACY_CASE_MEDIA";
+/** Live-run confirmation token for putting an original case blob back. */
+const LEGACY_CASE_DATA_RESTORE_CONFIRM = "RESTORE_LEGACY_CASE_DATA";
 
 // ── Append-only union helpers for the legacy mobile case blob ──────────
 // The mobile app rebuilds its in-memory case list from the LIST endpoint
@@ -76,6 +149,11 @@ import { getUncachableStripeClient, isStripeConfigured } from "../lib/stripeClie
 // only ever added, never dropped. No mobile surface deletes individual
 // photos or activity entries, so union semantics cannot resurrect an
 // intentional deletion.
+import { canonicalStatusToLegacy } from "../lib/case-status";
+import {
+  acquireCaseLocationStatusLock,
+  resolveLocatedCaseStatus,
+} from "../lib/case-location-status";
 function activityEntryKey(entry: any): string {
   if (entry && typeof entry === "object") {
     if (entry.id != null && entry.id !== "") return `id:${String(entry.id)}`;
@@ -129,6 +207,28 @@ function unionMediaList(existing: unknown, incoming: unknown): any[] {
   return out;
 }
 
+function unionLocationHistory(existing: unknown, incoming: unknown): any[] {
+  const ex = Array.isArray(existing) ? existing : [];
+  const inc = Array.isArray(incoming) ? incoming : [];
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const entry of [...ex, ...inc]) {
+    const key =
+      entry && typeof entry === "object" && entry.id
+        ? `id:${String(entry.id)}`
+        : `raw:${JSON.stringify(entry)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  out.sort((a, b) => {
+    const ta = Date.parse(String(a?.movedAt ?? ""));
+    const tb = Date.parse(String(b?.movedAt ?? ""));
+    return (Number.isFinite(ta) ? ta : 0) - (Number.isFinite(tb) ? tb : 0);
+  });
+  return out;
+}
+
 // Look up the set of lab organization ids the given user is an active member
 // of. This is the SINGLE source of truth used to decide which lab cases the
 // user can see or write — clients never get to influence this set.
@@ -154,31 +254,49 @@ async function fetchUserActiveLabIds(userId: string): Promise<string[]> {
 
 import authRoutes from "./auth";
 import organizationRoutes, { publicInviteRouter } from "./organizations";
+import permissionsRouter from "./permissions";
 import caseRoutes, { freezeInvoicesForDeletedCases } from "./cases";
 import doctorRoutes from "./doctors";
 import practiceRoutes from "./practices";
 import invoiceRoutes from "./invoices";
-import accountLinksRoutes, { smsInboundRouter } from "./account-links";
+import accountLinksRoutes, { getLinkedLabsForUser } from "./account-links";
 import financeRoutes, { generateForOrganization, runVendorLinkBackfill } from "./finance";
+import accountsPayableRoutes from "./accounts-payable";
 import listsRoutes from "./lists";
 import locationsRoutes from "./locations";
+import caseExceptionRoutes from "./case-exceptions";
 import vocabularyRoutes from "./vocabulary";
 import aiMemoryRoutes from "./ai-memory";
 import pricingRoutes from "./pricing";
+import catalogRoutes from "./catalog";
 import statementRoutes from "./statements";
 import statsRoutes from "./stats";
+import savedCardAnalyticsRoutes from "./saved-card-analytics";
 import billingRoutes from "./billing";
+import paymentSessionRoutes from "./payment-sessions";
+import ownerRoutes from "./owner";
+import { auditedOrganizationRecoveryRouter, requireRecoveryAutomation } from "./audited-organization-recovery";
+import creatorRoutes from "./creator";
+import { requireCreator } from "../lib/creator-auth";
 import notificationsRoutes from "./notifications";
+import vacationRoutes from "./vacation";
 import usersRoutes from "./users";
-import messengerRoutes from "./messenger";
 import { registerAiChatRoutes } from "./ai-chat";
 import { registerAiAgentRoutes } from "./ai-agent";
 import { registerAiTtsRoutes } from "./ai-tts";
 import { registerAiSttRoutes } from "./ai-stt";
 import labInboxRoutes from "./lab-inbox";
+import providerRoutes from "./provider";
+import providerMessengerRoutes from "./provider-messenger";
+import supportReportsRouter from "./support-reports";
 
 const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
-const DEMO_SEED_USERS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
+// Username-recovery tokens: single-use, time-limited links that require the
+// account password before the username is revealed (never emailed in plain
+// text). `attempts` counts wrong-password tries; the token is invalidated
+// after USERNAME_RECOVERY_MAX_ATTEMPTS failures.
+const usernameRecoveryTokens = new Map<string, { userId: string; expiresAt: number; attempts: number }>();
+const USERNAME_RECOVERY_MAX_ATTEMPTS = 5;
 let cachedOpenAIClient: OpenAI | undefined;
 
 function getOpenAIClient(): OpenAI | null {
@@ -247,13 +365,9 @@ function maskEmailAddress(email: string): string {
 }
 
 function isPlatformAdmin(req: any): boolean {
-  // Path 1: platform-admin session resolved by platformAdminUserOrSecret middleware.
-  // The middleware validates X-Platform-Admin-Session against the DB and sets this flag.
-  // Re-check admin role here — role may have changed since the session was created.
   if (req._platformAdminSessionVerified) return req.user?.role === "admin";
   const reqUser = req.user;
   if (!reqUser || reqUser.role !== "admin") return false;
-  // Path 2: credential headers — long secret (CI) or short PIN (human admin).
   const secret = process.env.PLATFORM_ADMIN_SECRET;
   if (secret && req.headers["x-platform-admin-secret"] === secret) return true;
   const effectivePin = getEffectiveAdminPin();
@@ -261,23 +375,9 @@ function isPlatformAdmin(req: any): boolean {
   return false;
 }
 
-// Service-to-service auth for a tiny, explicit set of admin endpoints that are
-// safe to drive from CI/automation (e.g. the GitHub Actions "publish desktop
-// installer" step). When the X-Platform-Admin-Secret header matches the env
-// secret, attach a synthetic admin user and skip the JWT/session check.
-// Otherwise fall through to the normal user requireAuth flow. The downstream
-// isPlatformAdmin() call then succeeds for both paths because (a) the
-// synthetic user has role:"admin" and (b) the header still matches.
-//
-// Disabling the CI path: unset PLATFORM_ADMIN_SECRET in the environment.
-// Note: the existing isPlatformAdmin() check also requires PLATFORM_ADMIN_SECRET
-// to be set, so unsetting it locks out CI **and** human admins; a deployment
-// that wants only human admins on these endpoints should leave the secret set
-// and simply not configure it on the GitHub Actions side.
 function platformAdminUserOrSecret(req: any, res: any, next: any) {
   const secret = process.env.PLATFORM_ADMIN_SECRET;
   const header = req.headers["x-platform-admin-secret"];
-  // CI path: secret header without a user session → synthetic admin user.
   if (secret && header === secret && !req.user) {
     req.user = {
       id: null,
@@ -287,8 +387,6 @@ function platformAdminUserOrSecret(req: any, res: any, next: any) {
     };
     return next();
   }
-  // Human path: require JWT auth first, then optionally validate a platform-admin
-  // session stored in system_settings via X-Platform-Admin-Session header.
   requireAuth(req, res, async (err?: unknown) => {
     if (err) return next(err);
     const sessionHeader = req.headers["x-platform-admin-session"] as string | undefined;
@@ -297,8 +395,6 @@ function platformAdminUserOrSecret(req: any, res: any, next: any) {
       if (colonIdx > 0) {
         const hUserId = sessionHeader.slice(0, colonIdx);
         const hSessionId = sessionHeader.slice(colonIdx + 1);
-        // Bind the session to the authenticated user — prevents session token reuse
-        // across accounts.
         if (req.user?.id === hUserId && hSessionId) {
           const key = `padmin_sess:${hUserId}:${hSessionId}`;
           try {
@@ -306,17 +402,34 @@ function platformAdminUserOrSecret(req: any, res: any, next: any) {
             if (row) {
               const data = JSON.parse(row.value ?? "{}");
               const exp = data?.expiresAt ? new Date(data.expiresAt) : null;
-              if (exp && exp > new Date()) {
-                req._platformAdminSessionVerified = true;
-              }
+              if (exp && exp > new Date()) req._platformAdminSessionVerified = true;
             }
           } catch {
-            // Session lookup failure — fall through to header-based checks below.
+            // Session lookup failure falls through to the header checks.
           }
         }
       }
     }
     next();
+  });
+}
+
+export function requireAuthenticatedPlatformAdmin(req: any, res: any, next: any) {
+  requireAuth(req, res, (err?: unknown) => {
+    if (err) return next(err);
+    if (req.user?.role !== "admin") {
+      return res.status(403).json({ error: "Platform creator/admin access required." });
+    }
+    platformAdminUserOrSecret(req, res, (sessionErr?: unknown) => {
+      if (sessionErr) return next(sessionErr);
+      if (
+        req._platformAdminSessionVerified ||
+        req.headers["x-platform-admin-pin"] === getEffectiveAdminPin()
+      ) {
+        return next();
+      }
+      return res.status(403).json({ error: "Platform admin unlock required." });
+    });
   });
 }
 
@@ -431,28 +544,28 @@ async function writeLegacyChatStore(store: LegacyChatStore) {
   await writeFile(legacyChatStorePath, JSON.stringify(store, null, 2), "utf8");
 }
 
-const DEFAULT_USERS = [
-  { username: "labadmin_demo", password: "LabTraxDemo#2026", userType: "lab", role: "admin", email: "labadmin_demo@labtrax.local", accountNumber: "LAB-001" },
-  { username: "labtech_demo", password: "LabTraxDemo#2026", userType: "lab", role: "user", email: "labtech_demo@labtrax.local", accountNumber: "LAB-002" },
-  { username: "master_demo", password: "LabTraxDemo#2026", userType: "master_admin", role: "admin", email: "master_demo@labtrax.local", accountNumber: "MA-001" },
-  { username: "drcraig", password: "LabTraxDemo#2026", userType: "provider", role: "user", email: "drcraig@labtrax.local" },
-];
-
 async function seedDefaultUsers() {
-  if (!DEMO_SEED_USERS_ENABLED) {
+  const demoSeedPassword = resolveDemoSeedPassword(process.env);
+  if (demoSeedPassword === null) {
     return;
   }
 
-  const existingUsers = await db.select().from(users);
+  // Only fetch the field this seed check actually needs. Selecting the full
+  // users row makes startup depend on every optional profile column already
+  // existing in production, so an additive schema rollout can crash the API
+  // before routes mount.
+  const existingUsers = await db
+    .select({ username: users.username })
+    .from(users);
   const existingUsernames = new Set(existingUsers.map((user) => user.username.toLowerCase()));
 
-  for (const def of DEFAULT_USERS) {
+  for (const def of DEFAULT_DEMO_USERS) {
     if (existingUsernames.has(def.username.toLowerCase())) {
       continue;
     }
 
-    const hashed = await hashPassword(def.password);
-    await db.insert(users).values({
+    const hashed = await hashPassword(demoSeedPassword);
+    await db.insert(users).values({ // provider-account-lint:allow — intentional demo seed
       username: def.username,
       password: hashed,
       email: (def as any).email || null,
@@ -470,7 +583,7 @@ async function seedDefaultUsers() {
     console.log(`[SEED] Created demo user: ${def.username}`);
   }
 
-  const demoUsernames = DEFAULT_USERS.map((u) => u.username.toLowerCase());
+  const demoUsernames = DEFAULT_DEMO_USERS.map((u) => u.username.toLowerCase());
   await db
     .update(users)
     .set({ emailVerifiedAt: new Date() })
@@ -614,12 +727,58 @@ const passwordResetRateLimit = createRateLimit({
   max: 5,
   message: "Too many password reset requests. Please wait 15 minutes and try again.",
 });
+const publicLabLookupRateLimit = createRateLimit({
+  windowMs: 60_000,
+  max: 10,
+  message: "Too many lab searches. Please try again later.",
+});
+const requireLookupAuthWhenProvided: RequestHandler = (req, res, next) => {
+  const token = extractBearerToken(req) ?? getAccessCookie(req);
+  if (!token) {
+    next();
+    return;
+  }
+  void requireAuth(req, res, next);
+};
+const throttleAnonymousLabLookup: RequestHandler = (req, res, next) => {
+  if ((req as any).auth?.userId) {
+    next();
+    return;
+  }
+  publicLabLookupRateLimit(req, res, next);
+};
+const checkUsernameRateLimit = createRateLimit({
+  windowMs: 60_000,
+  max: 5,
+  message: "Too many username availability checks. Please try again later.",
+});
+const platformAdminUnlockRateLimit = createUserRateLimit({
+  windowMs: 15 * 60_000,
+  max: 5,
+  message: "Too many platform admin unlock attempts. Please wait 15 minutes and try again.",
+});
+
+const adminPinSetRateLimit = createUserRateLimit({
+  windowMs: 15 * 60_000,
+  max: 5,
+  message: "Too many admin PIN change attempts. Please wait 15 minutes and try again.",
+});
+const sendCaseUpdateTextRateLimit = createUserAndDestinationRateLimit({
+  windowMs: 10 * 60_000,
+  maxPerUser: 5,
+  maxPerDestination: 10,
+});
 
 export async function registerRoutes(): Promise<IRouter> {
   const router: IRouter = Router();
   await seedDefaultUsers();
   // Warm the PIN cache so isPlatformAdmin() has a value on first request.
   loadAdminPinCache().catch(() => {});
+  router.use("/creator", creatorRoutes);
+  router.use("/admin/backup/audited-organization-recovery", platformAdminUserOrSecret,
+    requireRecoveryAutomation, auditedOrganizationRecoveryRouter());
+  router.use("/admin/provider-subscriptions", requireCreator, createAdminProviderSubscriptionRouter((_req, _res, next) => next()));
+  router.use("/admin/subscriptions", requireCreator, createAdminProviderSubscriptionRouter((_req, _res, next) => next()));
 
   // ── Admin PIN management (requires signed-in admin user, NOT isPlatformAdmin)
   router.get("/admin/pin/status", requireAuth, async (req, res) => {
@@ -629,7 +788,7 @@ export async function registerRoutes(): Promise<IRouter> {
     return res.json({ isDefault: isAdminPinDefault() });
   });
 
-  router.post("/admin/pin/set", requireAuth, async (req, res) => {
+  router.post("/admin/pin/set", requireAuth, adminPinSetRateLimit, async (req, res) => {
     const reqUser = (req as any).user;
     if (!reqUser || reqUser.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     const { currentPin, newPin } = req.body as Record<string, unknown>;
@@ -1094,18 +1253,25 @@ export async function registerRoutes(): Promise<IRouter> {
         );
 
       if (!organization) {
-        const [createdOrganization] = await db
-          .insert(organizations)
-          .values({
-            type: "lab",
-            name: adminUser.practiceName!.trim(),
-            displayName: adminUser.practiceName!.trim(),
-            billingEmail: adminUser.email || null,
-            phone: adminUser.practicePhone || adminUser.phone || null,
-            addressLine1: adminUser.practiceAddress || null,
-            createdByUserId: adminUser.id,
-          })
-          .returning();
+        const createdOrganization = await db.transaction(async (tx) => {
+          const platformAccountNumber = await allocatePlatformAccountNumber({
+            tx,
+          });
+          const [created] = await tx
+            .insert(organizations)
+            .values({
+              type: "lab",
+              name: adminUser.practiceName!.trim(),
+              displayName: adminUser.practiceName!.trim(),
+              billingEmail: adminUser.email || null,
+              phone: adminUser.practicePhone || adminUser.phone || null,
+              addressLine1: adminUser.practiceAddress || null,
+              createdByUserId: adminUser.id,
+              platformAccountNumber,
+            })
+            .returning();
+          return created;
+        });
 
         organization = createdOrganization;
         labOrganizations.push(createdOrganization);
@@ -1204,48 +1370,134 @@ export async function registerRoutes(): Promise<IRouter> {
     }
   });
 
-  // Public lab lookup used by the signup flow when a provider needs to find
-  // their lab by name to enter an account number against. Returns a small
-  // shape — id + name + display name + city/state — so the client can let
-  // the user confirm they picked the right lab. Limited to 20 matches to
-  // bound abuse.
-  router.get("/labs/lookup", async (req, res) => {
+  // Public signup searches are throttled and receive a short-lived encrypted
+  // reference instead of the database ID. Signed-in join flows still receive
+  // the organization ID required by their follow-up join request.
+  router.get(
+    "/labs/lookup",
+    requireLookupAuthWhenProvided,
+    throttleAnonymousLabLookup,
+    async (req, res) => {
+      try {
+        const q = String(req.query.q || "").trim();
+        if (q.length < 2) {
+          return res.json({ labs: [] });
+        }
+        const authenticated = Boolean((req as any).auth?.userId);
+        const allLabs = await db
+          .select()
+          .from(organizations)
+          .where(
+            and(
+              eq(organizations.type, "lab"),
+              eq(organizations.isActive, true),
+            ),
+          );
+        const needle = q.toLowerCase();
+        const matches = allLabs
+          .filter((lab) => {
+            const haystack =
+              `${lab.name} ${lab.displayName ?? ""} ${lab.addressLine1 ?? ""} ${lab.city ?? ""} ${lab.state ?? ""} ${lab.zip ?? ""}`.toLowerCase();
+            return haystack.includes(needle);
+          })
+          .slice(0, authenticated ? 20 : 5)
+          .map((lab) =>
+            authenticated
+              ? {
+                  id: lab.id,
+                  name: lab.name,
+                  displayName: lab.displayName || lab.name,
+                  addressLine1: lab.addressLine1 || null,
+                  city: lab.city || null,
+                  state: lab.state || null,
+                  zip: lab.zip || null,
+                  phone: lab.phone || null,
+                }
+              : {
+                  id: createLabLookupToken(lab.id),
+                  selectionKey: labLookupSelectionKey(lab.id),
+                  displayName: lab.displayName || lab.name,
+                  city: lab.city || null,
+                  state: lab.state || null,
+                },
+          );
+        return res.json({ labs: matches });
+      } catch (error: any) {
+        console.error("Lab lookup error:", error?.message || error);
+        return res.status(500).json({ error: "Lab lookup failed" });
+      }
+    },
+  );
+
+  // Public practice lookup used by the signup flow when a provider wants to
+  // join an existing practice (mirrors /labs/lookup for the lab-join flow).
+  // Returns a small shape — id + name + city/state + parent lab name — so the
+  // user can confirm they picked the right practice. Limited to 20 matches to
+  // bound abuse. Must be registered BEFORE the auth-gated /practices router.
+  router.get("/practices/lookup", async (req, res) => {
     try {
       const q = String(req.query.q || "").trim();
       if (q.length < 2) {
-        return res.json({ labs: [] });
+        return res.json({ practices: [] });
       }
-      const allLabs = await db
+      const allPractices = await db
         .select()
         .from(organizations)
         .where(
           and(
-            eq(organizations.type, "lab"),
-            eq(organizations.isActive, true)
+            eq(organizations.type, "provider"),
+            eq(organizations.isActive, true),
+            notDeleted(organizations)
           )
         );
       const needle = q.toLowerCase();
-      const matches = allLabs
-        .filter((lab) => {
+      const matches = allPractices
+        .filter((practice) => {
           const haystack =
-            `${lab.name} ${lab.displayName ?? ""} ${lab.addressLine1 ?? ""} ${lab.city ?? ""} ${lab.state ?? ""} ${lab.zip ?? ""}`.toLowerCase();
+            `${practice.name} ${practice.displayName ?? ""} ${practice.addressLine1 ?? ""} ${practice.city ?? ""} ${practice.state ?? ""} ${practice.zip ?? ""}`.toLowerCase();
           return haystack.includes(needle);
         })
-        .slice(0, 20)
-        .map((lab) => ({
-          id: lab.id,
-          name: lab.name,
-          displayName: lab.displayName || lab.name,
-          addressLine1: lab.addressLine1 || null,
-          city: lab.city || null,
-          state: lab.state || null,
-          zip: lab.zip || null,
-          phone: lab.phone || null,
-        }));
-      return res.json({ labs: matches });
+        .slice(0, 20);
+
+      // Resolve parent lab names so the user can disambiguate practices with
+      // similar names ("Smile Dental — via Custom Dental Lab").
+      const parentLabIds = [
+        ...new Set(
+          matches
+            .map((p) => p.parentLabOrganizationId)
+            .filter((id): id is string => !!id)
+        ),
+      ];
+      const parentLabs = parentLabIds.length
+        ? await db
+            .select()
+            .from(organizations)
+            .where(inArray(organizations.id, parentLabIds))
+        : [];
+      const parentLabById = new Map(parentLabs.map((lab) => [lab.id, lab]));
+
+      const result = matches.map((practice) => {
+        const parentLab = practice.parentLabOrganizationId
+          ? parentLabById.get(practice.parentLabOrganizationId)
+          : undefined;
+        return {
+          id: practice.id,
+          name: practice.name,
+          displayName: practice.displayName || practice.name,
+          addressLine1: practice.addressLine1 || null,
+          city: practice.city || null,
+          state: practice.state || null,
+          zip: practice.zip || null,
+          phone: practice.phone || null,
+          parentLabName: parentLab
+            ? parentLab.displayName || parentLab.name
+            : null,
+        };
+      });
+      return res.json({ practices: result });
     } catch (error: any) {
-      console.error("Lab lookup error:", error?.message || error);
-      return res.status(500).json({ error: "Lab lookup failed" });
+      console.error("Practice lookup error:", error?.message || error);
+      return res.status(500).json({ error: "Practice lookup failed" });
     }
   });
 
@@ -1255,14 +1507,43 @@ export async function registerRoutes(): Promise<IRouter> {
   // router so an unauthenticated invitee can render the accept/deny page.
   router.use("/organizations", publicInviteRouter);
   router.use("/organizations", organizationRoutes);
+  router.use("/organizations", permissionsRouter);
   router.use("/cases", caseRoutes);
   router.use("/doctors", doctorRoutes);
   router.use("/practices", practiceRoutes);
   router.use("/invoices", invoiceRoutes);
+  router.use("/billing-recovery", (await import("./recovery-billing")).default);
   router.use("/account-links", accountLinksRoutes);
-  // Inbound SMS webhook — must be reachable without auth/CSRF since
-  // the provider cannot send our session cookies. Verified by phone match.
-  router.use("/sms", smsInboundRouter);
+  // Public secure statement link (from SMS). Authorization is the unguessable,
+  // time-limited token, scoped to exactly one recipient — no session needed.
+  router.get("/statement-links/:token", async (req, res) => {
+    try {
+      const token = String(req.params.token ?? "");
+      if (!token || token.length > 512) {
+        return res.status(404).send("Statement link not found or expired.");
+      }
+      const { getStatementLinkPdf } = await import("../lib/statements.js");
+      const result = await getStatementLinkPdf(token);
+      if (!result) {
+        return res
+          .status(404)
+          .send("This statement link is invalid or has expired.");
+      }
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="${result.filename}"`
+      );
+      res.setHeader("Content-Length", String(result.pdfBuffer.length));
+      return res.end(result.pdfBuffer);
+    } catch (error: any) {
+      req.log?.error?.(
+        { err: error },
+        "Failed to serve statement link"
+      );
+      return res.status(500).send("Failed to load statement.");
+    }
+  });
   // Internal cron endpoint: token-protected; iterates active lab orgs and
   // generates due projected entries from each org's recurring rules. Mounted
   // BEFORE the auth-wrapped finance router so it does not require a user JWT.
@@ -1317,25 +1598,14 @@ export async function registerRoutes(): Promise<IRouter> {
   });
 
   // ── Admin: vendor-link backfill preview (dry-run, no writes) ──────────────
-  // Mounted BEFORE the auth-wrapped finance router so the X-Platform-Admin-Secret
-  // service path can bypass the JWT requirement.
-  //
-  // Access rule: X-Platform-Admin-Secret header matches env var (CI/automation),
-  // OR the signed-in user carries role:"admin".  This is intentionally looser
-  // than isPlatformAdmin(), which also requires the secret/PIN even for human
-  // admins.
-  function isBackfillAdmin(r: any): boolean {
-    const secret = process.env.PLATFORM_ADMIN_SECRET;
-    if (secret && r.headers["x-platform-admin-secret"] === secret) return true;
-    return r.user?.role === "admin";
-  }
-
+  // These system-wide bookkeeping tools require the explicit platform-admin
+  // unlock; a tenant admin role alone is not sufficient.
   router.get(
     "/admin/finance/vendor-link-backfill/preview",
     platformAdminUserOrSecret,
     async (req, res) => {
-      if (!isBackfillAdmin(req)) {
-        return res.status(403).json({ error: "Admin access required." });
+      if (!isPlatformAdmin(req)) {
+        return res.status(403).json({ error: "Platform admin unlock required." });
       }
       try {
         const labFilter = req.query.labId as string | undefined;
@@ -1362,8 +1632,8 @@ export async function registerRoutes(): Promise<IRouter> {
     "/admin/finance/vendor-link-backfill/run",
     platformAdminUserOrSecret,
     async (req, res) => {
-      if (!isBackfillAdmin(req)) {
-        return res.status(403).json({ error: "Admin access required." });
+      if (!isPlatformAdmin(req)) {
+        return res.status(403).json({ error: "Platform admin unlock required." });
       }
       try {
         const labFilter = (req.body as any)?.labId as string | undefined;
@@ -1386,17 +1656,29 @@ export async function registerRoutes(): Promise<IRouter> {
   );
 
   router.use("/finance", financeRoutes);
+  // Accounts Payable (Enter Bills / Pay Bills) and the AP/AR aging reports
+  // share the /finance prefix. Express falls through to this router for any
+  // path the register routes above do not handle.
+  router.use("/finance", accountsPayableRoutes);
   router.use("/lists", listsRoutes);
   router.use("/stats", statsRoutes);
+  router.use("/analytics", savedCardAnalyticsRoutes);
   router.use("/locations", locationsRoutes);
+  router.use("/case-exceptions", caseExceptionRoutes);
   router.use("/vocabulary", vocabularyRoutes);
   router.use("/ai-memory", aiMemoryRoutes);
   router.use("/lab-inbox", labInboxRoutes);
+  router.use("/provider", providerRoutes);
+  router.use("/provider-messenger", providerMessengerRoutes);
+  router.use("/support-reports", supportReportsRouter());
   router.use("/pricing", pricingRoutes);
+  router.use("/catalog", catalogRoutes);
   router.use("/lab-orgs", statementRoutes);
   router.use("/billing", billingRoutes);
+  router.use("/billing", paymentSessionRoutes);
+  router.use("/owner", ownerRoutes);
   router.use("/notifications", notificationsRoutes);
-  router.use("/messenger", messengerRoutes);
+  router.use("/vacation", vacationRoutes);
   registerAiChatRoutes(router);
   registerAiAgentRoutes(router);
   registerAiTtsRoutes(router);
@@ -1456,7 +1738,7 @@ export async function registerRoutes(): Promise<IRouter> {
     res.status(204).end();
   });
 
-  router.post("/check-username", async (req, res) => {
+  router.post("/check-username", checkUsernameRateLimit, async (req, res) => {
     const { username } = req.body;
     if (!username || typeof username !== "string") {
       return res.status(400).json({ error: "Username required" });
@@ -1500,6 +1782,60 @@ export async function registerRoutes(): Promise<IRouter> {
       const callerLabIdsList = await fetchUserActiveLabIds(callerUserId);
       const callerLabIds = new Set(callerLabIdsList);
 
+      // ── Keep base64 photos OUT of the blob ────────────────────────────────
+      // Older mobile builds embed a captured photo directly in caseData as a
+      // `data:image/...;base64,...` string (in `photos[]` and in the matching
+      // `activityLog[].imageUri`). One such photo can make a case row 10 MB,
+      // and that row is read and copied in full by case detail, mobile sync,
+      // the nightly backup ZIP, and every restore.
+      //
+      // Store each payload as a normal case-media file and substitute a
+      // reference before the blob is merged and persisted. Done here, OUTSIDE
+      // the transaction, so the (network) storage writes never run while the
+      // case row is locked. The existing row is pre-read unlocked purely to
+      // catch payloads already sitting in the stored blob; the locked re-read
+      // inside the transaction stays authoritative, and any data URI that
+      // appeared in between is simply left inline for the migration to sweep.
+      //
+      // Substitution is content-addressed, so the same photo arriving again
+      // from a stale offline client maps to the same reference string and
+      // `unionMediaList` dedupes it instead of appending a second copy.
+      let inlineMediaReplacements = new Map<string, string>();
+      try {
+        const [preRead] = await db
+          .select({ caseData: labCases.caseData })
+          .from(labCases)
+          .where(eq(labCases.id, id))
+          .limit(1);
+        let preReadParsed: unknown = null;
+        if (preRead?.caseData) {
+          try {
+            preReadParsed = JSON.parse(preRead.caseData);
+          } catch {
+            preReadParsed = null;
+          }
+        }
+        let incomingParsed: unknown = caseData;
+        if (typeof caseData === "string") {
+          try {
+            incomingParsed = JSON.parse(caseData);
+          } catch {
+            incomingParsed = null;
+          }
+        }
+        inlineMediaReplacements = await externalizeInlineMediaForWrite({
+          labCaseId: id,
+          payloads: [incomingParsed, preReadParsed],
+        });
+      } catch (mediaErr: any) {
+        // Never fail a whole-blob offline sync over media externalization —
+        // the payload stays inline and the migration picks it up later.
+        req.log?.warn?.(
+          { err: mediaErr?.message || String(mediaErr) },
+          "legacy_case_inline_media_externalize_failed",
+        );
+      }
+
       // Wrap the auth check + write in a single transaction with a row lock
       // (SELECT ... FOR UPDATE) so a concurrent writer cannot slip in between
       // the authorization decision and the upsert. This closes the
@@ -1507,6 +1843,7 @@ export async function registerRoutes(): Promise<IRouter> {
       let result: { authError?: { status: number; message: string }; restoredFromTrash?: boolean } = {};
       try {
         result = await db.transaction(async (tx) => {
+          await acquireCaseLocationStatusLock(tx);
           const lockedRows = await tx.execute<{
             id: string;
             owner_id: string;
@@ -1533,6 +1870,7 @@ export async function registerRoutes(): Promise<IRouter> {
           //     data, and only members may modify it.
           //   UPDATE of a PRIVATE case: caller must be the owner.
           if (!lockedRow) {
+            await assertDefaultBillingMutationAllowed(callerUserId);
             if (ownerId !== callerUserId) {
               return {
                 authError: {
@@ -1545,6 +1883,7 @@ export async function registerRoutes(): Promise<IRouter> {
             const existingOwner = lockedRow.owner_id;
             const existingOrg = lockedRow.organization_id;
             if (existingOrg) {
+              await assertOrganizationMutationAllowed(existingOrg);
               const isLabMember = callerLabIds.has(existingOrg);
               if (!isLabMember) {
                 return {
@@ -1580,12 +1919,42 @@ export async function registerRoutes(): Promise<IRouter> {
           if (!normalizedCaseData || typeof normalizedCaseData !== "object") {
             normalizedCaseData = { id, ownerId };
           }
+          // Swap every inline photo we managed to store above for its
+          // case-media reference. Unmapped payloads (a storage failure, or a
+          // data URI that arrived after the pre-read) pass through untouched
+          // rather than being dropped. The swap is provisional until the
+          // ledger binding below commits — see there for how it is undone.
+          if (inlineMediaReplacements.size > 0) {
+            normalizedCaseData = replaceStringsDeep(
+              normalizedCaseData,
+              inlineMediaReplacements,
+            );
+          }
           if (!normalizedCaseData.id) normalizedCaseData.id = id;
           if (!normalizedCaseData.ownerId) normalizedCaseData.ownerId = ownerId;
+          const requestedInitialLabLocationId =
+            typeof normalizedCaseData.labLocationId === "string" &&
+            normalizedCaseData.labLocationId
+              ? normalizedCaseData.labLocationId
+              : null;
+          // Physical move history is server-authored. Never accept it from a
+          // whole-blob mobile upload, including the first insert.
+          normalizedCaseData.locationHistory = [];
+          delete normalizedCaseData.labLocationId;
 
           if (lockedRow?.case_data) {
             try {
-              const existingCaseData = JSON.parse(lockedRow.case_data);
+              let existingCaseData = JSON.parse(lockedRow.case_data);
+              // Apply the same substitution to the stored side before the
+              // union merge, so a photo that was embedded in the stored blob
+              // and re-sent inline by the client collapses to one reference
+              // instead of appearing twice.
+              if (inlineMediaReplacements.size > 0) {
+                existingCaseData = replaceStringsDeep(
+                  existingCaseData,
+                  inlineMediaReplacements,
+                );
+              }
               if (
                 !normalizedCaseData.affiliationKey &&
                 existingCaseData?.affiliationKey
@@ -1620,6 +1989,16 @@ export async function registerRoutes(): Promise<IRouter> {
                 existingCaseData?.videos,
                 normalizedCaseData?.videos,
               );
+              normalizedCaseData.locationHistory = unionLocationHistory(
+                existingCaseData?.locationHistory,
+                [],
+              );
+              // The authoritative station changes only through validated case
+              // locate routes, which append history atomically. A stale mobile
+              // whole-blob sync must not clear or rewind it.
+              if (existingCaseData?.labLocationId !== undefined) {
+                normalizedCaseData.labLocationId = existingCaseData.labLocationId;
+              }
             } catch {
               // Ignore malformed legacy payloads.
             }
@@ -1667,6 +2046,52 @@ export async function registerRoutes(): Promise<IRouter> {
             if (rawKey.startsWith("org:")) {
               normalizedCaseData.affiliationKey = null;
               normalizedCaseData.affiliationName = null;
+            }
+          }
+          if (!lockedRow && organizationIdFromKey && requestedInitialLabLocationId) {
+            const [initialLocation] = await tx
+              .select({ id: labLocations.id })
+              .from(labLocations)
+              .where(
+                and(
+                  eq(labLocations.id, requestedInitialLabLocationId),
+                  eq(labLocations.labOrganizationId, organizationIdFromKey),
+                ),
+              )
+              .limit(1);
+            if (initialLocation) {
+              normalizedCaseData.labLocationId = initialLocation.id;
+            }
+          }
+
+          const selectedLocationId =
+            typeof normalizedCaseData.labLocationId === "string" &&
+            normalizedCaseData.labLocationId
+              ? normalizedCaseData.labLocationId
+              : null;
+          if (selectedLocationId && organizationIdFromKey) {
+            const location = await tx.query.labLocations.findFirst({
+              where: and(
+                eq(labLocations.id, selectedLocationId),
+                eq(labLocations.labOrganizationId, organizationIdFromKey),
+              ),
+            });
+            if (location) {
+              const authoritativeStatus = resolveLocatedCaseStatus({
+                labOrganizationId: organizationIdFromKey,
+                labLocationId: selectedLocationId,
+                location,
+              });
+              normalizedCaseData.status =
+                canonicalStatusToLegacy(authoritativeStatus);
+              if (authoritativeStatus === "complete") {
+                normalizedCaseData.assignedBarcode = null;
+              }
+            } else {
+              // Preserve the legacy endpoint's established behavior: foreign
+              // or deleted station ids are sanitized rather than making the
+              // whole offline case sync fail.
+              normalizedCaseData.labLocationId = null;
             }
           }
 
@@ -1717,6 +2142,48 @@ export async function registerRoutes(): Promise<IRouter> {
             normalizedCaseData.activityLog.push(entry);
           }
 
+          // ── Authorize the externalized photos before pointing at them ──
+          // The blob is about to stop carrying these photos and start
+          // referencing files, and the serving route authorizes those files
+          // from the legacy media ledger and nothing else. So the ledger rows
+          // must commit WITH this write, under the same row lock, against the
+          // tenant this write is actually establishing (`organizationIdFromKey`
+          // / `safeOwnerId`) — a binding written against stale metadata can
+          // authorize a file to a lab the case no longer belongs to.
+          //
+          // The savepoint matters: a binding failure must not fail a
+          // whole-blob offline sync (that would block every other edit the
+          // client is carrying), so it falls back to leaving the photos
+          // inline. Reverting is exact — the substitution was a pure string
+          // swap, so applying its inverse over the merged result restores
+          // every data URI, and the migration sweeps the case up later.
+          if (inlineMediaReplacements.size > 0) {
+            const newFileNames = Array.from(inlineMediaReplacements.values())
+              .map((url) => extractMediaFileName(url))
+              .filter((name): name is string => !!name);
+            try {
+              await tx.transaction(async (inner) => {
+                await bindLegacyCaseMediaStrict({
+                  tx: inner as any,
+                  labCaseId: id,
+                  organizationId: organizationIdFromKey,
+                  ownerId: safeOwnerId,
+                  fileNames: newFileNames,
+                });
+              });
+            } catch (bindErr: any) {
+              req.log?.warn?.(
+                { err: bindErr?.message || String(bindErr), caseId: id },
+                "legacy_case_media_strict_bind_failed_keeping_inline",
+              );
+              const reverse = new Map<string, string>();
+              for (const [dataUri, url] of inlineMediaReplacements) {
+                reverse.set(url, dataUri);
+              }
+              normalizedCaseData = replaceStringsDeep(normalizedCaseData, reverse);
+            }
+          }
+
           const serializedCaseData = JSON.stringify(normalizedCaseData);
           await tx
             .insert(labCases)
@@ -1751,6 +2218,34 @@ export async function registerRoutes(): Promise<IRouter> {
       } catch (txErr: any) {
         console.error("Legacy upsert case tx error:", txErr?.message || txErr);
         return res.status(500).json({ error: "Failed to save case" });
+      }
+
+      const legacyResult = result as {
+        isNewInsert?: boolean;
+        organizationIdFromKey?: string | null;
+        normalizedCaseData?: any;
+      };
+      const createdLegacyCase = legacyResult.isNewInsert && legacyResult.organizationIdFromKey
+        ? legacyResult.normalizedCaseData
+        : null;
+      if (createdLegacyCase) {
+        const isRush =
+          createdLegacyCase.priority === "rush" ||
+          createdLegacyCase.isRush === true;
+        await deliverInAppNotification({
+          labOrganizationId: legacyResult.organizationIdFromKey!,
+          category: isRush ? "rush_case" : "new_case",
+          type: isRush ? "rush_case_created" : "case_created",
+          title: isRush
+            ? `Rush case: ${createdLegacyCase.caseNumber ?? id}`
+            : `New case: ${createdLegacyCase.caseNumber ?? id}`,
+          body: `Mobile case ${createdLegacyCase.caseNumber ?? id} was created.`,
+          dataJson: {
+            caseId: id,
+            caseNumber: createdLegacyCase.caseNumber ?? null,
+            legacyCaseId: id,
+          },
+        });
       }
 
       // Cross-link a remake created from the legacy mobile app to its
@@ -1814,38 +2309,48 @@ export async function registerRoutes(): Promise<IRouter> {
                 ),
               );
             if (originalLegacy && originalLegacy.organizationId === orgId) {
-              // labCases stores the case as a JSON string in caseData;
-              // activityLog lives inside that JSON.
-              let parsed: any = {};
-              try {
-                parsed = JSON.parse(originalLegacy.caseData);
-              } catch {
-                parsed = {};
-              }
-              const prevLog = Array.isArray(parsed.activityLog)
-                ? parsed.activityLog
-                : [];
-              const entry = {
-                type: "remade_by",
-                timestamp: Date.now(),
-                user: "SYS",
-                description: `Legacy mobile case ${data.caseNumber ?? id} created as a remake of this case${reason ? ` — reason: ${reason}` : ""} (charged: ${charged ? "yes" : "no"})`,
-                metadata: {
-                  source: "legacy",
-                  legacyCaseId: id,
-                  legacyCaseNumber: data.caseNumber ?? null,
-                  remakeReason: reason,
-                  remakeCharged: charged,
-                },
-              };
-              parsed.activityLog = [...prevLog, entry];
-              await db
-                .update(labCases)
-                .set({
-                  caseData: JSON.stringify(parsed),
-                  updatedAt: new Date(),
-                })
-                .where(eq(labCases.id, originalLegacy.id));
+              // Re-read inside a transaction-scoped row lock. A stale
+              // whole-blob write must not replace an internal exception entry
+              // that another server operation just appended.
+              await db.transaction(async (tx) => {
+                const [lockedLegacy] = await tx
+                  .select({ caseData: labCases.caseData })
+                  .from(labCases)
+                  .where(eq(labCases.id, originalLegacy.id))
+                  .for("update");
+                let parsed: any = {};
+                try {
+                  parsed = JSON.parse(lockedLegacy?.caseData ?? "{}");
+                } catch {
+                  parsed = {};
+                }
+                const prevLog = Array.isArray(parsed.activityLog)
+                  ? parsed.activityLog
+                  : [];
+                parsed.activityLog = [
+                  ...prevLog,
+                  {
+                    type: "remade_by",
+                    timestamp: Date.now(),
+                    user: "SYS",
+                    description: `Legacy mobile case ${data.caseNumber ?? id} created as a remake of this case${reason ? ` — reason: ${reason}` : ""} (charged: ${charged ? "yes" : "no"})`,
+                    metadata: {
+                      source: "legacy",
+                      legacyCaseId: id,
+                      legacyCaseNumber: data.caseNumber ?? null,
+                      remakeReason: reason,
+                      remakeCharged: charged,
+                    },
+                  },
+                ];
+                await tx
+                  .update(labCases)
+                  .set({
+                    caseData: JSON.stringify(parsed),
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(labCases.id, originalLegacy.id));
+              });
             }
           }
         }
@@ -2308,6 +2813,11 @@ export async function registerRoutes(): Promise<IRouter> {
       if (!existing) {
         return res.status(404).json({ error: "Pending file not found" });
       }
+      if (existing.organizationId) {
+        await assertOrganizationMutationAllowed(existing.organizationId);
+      } else {
+        await assertDefaultBillingMutationAllowed(reqUser.id);
+      }
 
       const callerOrgIds = await getCallerLabOrganizationIds(reqUser);
       const isMasterAdmin = reqUser.userType === "master_admin";
@@ -2500,13 +3010,30 @@ export async function registerRoutes(): Promise<IRouter> {
       // Insert the attachment and remove the pending file in a single
       // transaction so a mid-flight failure can't leave the file in both
       // the inbox and the case attachments list.
+      let attachmentStorageKey = pending.fileUrl;
+      const scanMatch = pending.fileUrl.match(/^\/api\/labtrax\/scans\/([^/]+)\/outputs\/(ply|stl)$/);
+      if (scanMatch) {
+        const [generated] = await db.select({ storageKey: scanOutputs.storageKey })
+          .from(scanOutputs)
+          .innerJoin(scanJobs, eq(scanJobs.id, scanOutputs.jobId))
+          .where(and(
+            eq(scanJobs.id, scanMatch[1]!),
+            eq(scanJobs.labOrganizationId, pending.organizationId),
+            eq(scanJobs.status, "completed"),
+            eq(scanOutputs.format, scanMatch[2]!),
+            isNotNull(scanOutputs.readyAt),
+          ))
+          .limit(1);
+        if (!generated) return res.status(409).json({ error: "Generated scan output is not ready." });
+        attachmentStorageKey = generated.storageKey;
+      }
       await db.transaction(async (tx) => {
         await tx.insert(caseAttachments).values({
           caseId: targetCase.id,
           uploadedByUserId: reqUser.id,
           uploadedByOrganizationId: pending.organizationId,
           fileName: pending.fileName,
-          storageKey: pending.fileUrl,
+          storageKey: attachmentStorageKey,
           fileType: pending.mimeType,
         });
         await tx.delete(labPendingFiles).where(eq(labPendingFiles.id, id));
@@ -2874,22 +3401,22 @@ export async function registerRoutes(): Promise<IRouter> {
         // don't fail the client.
         return res.json({ success: true, alreadyMissing: true });
       }
-
-      // Authorization: only the owner, an admin/owner of an org the case
-      // owner belongs to, or a master_admin may delete a case. This prevents
-      // a buggy or compromised client from wiping data that doesn't belong
-      // to its user.
+      // Authorization: only the owner, a master_admin, or an admin/owner of
+      // the case's own organization (where the owner is also a member) may
+      // delete a case. Membership in another shared organization is not enough.
       const isMasterAdmin = reqUser.userType === "master_admin";
       const isOwner = existing.ownerId === reqUser.id;
       let isOrgAdminForOwner = false;
-      if (!isMasterAdmin && !isOwner) {
+      if (!isMasterAdmin && !isOwner && existing.organizationId) {
         const callerMemberships = await db
           .select()
           .from(organizationMemberships)
           .where(
             and(
               eq(organizationMemberships.userId, reqUser.id),
-              eq(organizationMemberships.status, "active")
+              eq(organizationMemberships.labId, existing.organizationId),
+              eq(organizationMemberships.status, "active"),
+              isNull(organizationMemberships.deletedAt)
             )
           );
         const callerAdminLabIds = callerMemberships
@@ -2903,7 +3430,8 @@ export async function registerRoutes(): Promise<IRouter> {
               and(
                 eq(organizationMemberships.userId, existing.ownerId),
                 eq(organizationMemberships.status, "active"),
-                inArray(organizationMemberships.labId, callerAdminLabIds)
+                eq(organizationMemberships.labId, existing.organizationId),
+                isNull(organizationMemberships.deletedAt)
               )
             );
           isOrgAdminForOwner = ownerMemberships.length > 0;
@@ -2914,6 +3442,12 @@ export async function registerRoutes(): Promise<IRouter> {
         return res
           .status(403)
           .json({ error: "Not authorized to delete this case." });
+      }
+
+      if (existing.organizationId) {
+        await assertOrganizationMutationAllowed(existing.organizationId);
+      } else {
+        await assertDefaultBillingMutationAllowed(reqUser.id);
       }
 
       // SAFEGUARD: do NOT physically delete. Soft-delete through the shared
@@ -3193,6 +3727,7 @@ export async function registerRoutes(): Promise<IRouter> {
 
       if (labChannelId && labChannelId.startsWith("lab:")) {
         const orgId = labChannelId.replace(/^lab:/, "");
+        await assertOrganizationMutationAllowed(orgId);
         const membership = currentUserId
           ? await db.query.organizationMemberships.findFirst({
               where: and(
@@ -3243,6 +3778,7 @@ export async function registerRoutes(): Promise<IRouter> {
       if (!targetUsername) {
         return res.status(400).json({ error: "A target user or lab channel is required." });
       }
+      await assertDefaultBillingMutationAllowed(currentUserId);
       if (normalizeUsernameKey(targetUsername) === normalizedCurrentUsername) {
         return res.status(400).json({ error: "You cannot message yourself." });
       }
@@ -3307,6 +3843,15 @@ export async function registerRoutes(): Promise<IRouter> {
       }
 
       const store = await readLegacyChatStore();
+      if (conversationId.startsWith("lab:")) {
+        await assertOrganizationMutationAllowed(
+          conversationId.replace(/^lab:/, ""),
+        );
+      } else {
+        await assertDefaultBillingMutationAllowed(
+          (req as any).auth.userId as string,
+        );
+      }
       const thread = store.threads.find((entry) => entry.id === conversationId);
       const isParticipant = thread?.participants.some(
         (participant) => normalizeUsernameKey(participant) === normalizedCurrentUsername
@@ -3517,9 +4062,7 @@ export async function registerRoutes(): Promise<IRouter> {
       const token = generateResetToken();
       passwordResetTokens.set(token, { userId: user.id, expiresAt: Date.now() + 30 * 60 * 1000 });
 
-      const domain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_INTERNAL_APP_DOMAIN || "localhost:5000";
-      const protocol = domain.includes("localhost") ? "http" : "https";
-      const resetLink = `${protocol}://${domain}/reset-password?token=${token}`;
+      const resetLink = `${getAppBaseUrl()}/desktop/reset-password?token=${token}`;
 
       await sendMail({
         to: user.email!,
@@ -3543,12 +4086,21 @@ export async function registerRoutes(): Promise<IRouter> {
   });
 
   router.post("/forgot-username", passwordResetRateLimit, async (req, res) => {
+    const NEUTRAL_MESSAGE = "If an account with that email exists, a link has been sent.";
     try {
       const { email } = req.body;
       if (!email || typeof email !== "string") return res.status(400).json({ error: "Email address is required." });
       const allUsers = await db.select().from(users);
       const user = allUsers.find(u => u.email?.toLowerCase() === email.trim().toLowerCase());
-      if (!user) return res.json({ success: true, message: "If an account with that email exists, your username has been sent." });
+      if (!user) return res.json({ success: true, message: NEUTRAL_MESSAGE });
+
+      const token = generateResetToken();
+      usernameRecoveryTokens.set(token, { userId: user.id, expiresAt: Date.now() + 30 * 60 * 1000, attempts: 0 });
+
+      // The link opens the desktop web view-username page, which asks for the
+      // account password before revealing the username. The username itself is
+      // deliberately NOT included anywhere in this email.
+      const recoveryLink = `${getAppBaseUrl()}/desktop/view-username?username_token=${token}`;
 
       await sendMail({
         to: user.email!,
@@ -3556,11 +4108,68 @@ export async function registerRoutes(): Promise<IRouter> {
         html: `<div style="font-family: Arial; max-width: 600px; margin: 0 auto;">
             <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;"><h2 style="margin:0;">LabTrax</h2><p style="margin:4px 0 0; opacity:0.85;">Username Recovery</p></div>
             <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
-              <p>Your username is: <strong>${user.username}</strong></p>
+              <p>We received a request to recover the username for this email address.</p>
+              <p>Click below and enter your LabTrax password to view your username:</p>
+              <p style="text-align: center; margin: 24px 0;"><a href="${recoveryLink}" style="display: inline-block; background: #4A6CF7; color: white; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: bold;">View my username</a></p>
+              <p style="color: #666; font-size: 13px;">This link expires in 30 minutes and can only be used once. If you did not request this, you can ignore this email.</p>
             </div></div>`,
+        text: `We received a request to recover the username for this email address.\n\nOpen this link and enter your LabTrax password to view your username:\n${recoveryLink}\n\nThis link expires in 30 minutes and can only be used once. If you did not request this, you can ignore this email.`,
       });
-      return res.json({ success: true, message: "If an account with that email exists, your username has been sent." });
+
+      const smtpConfigured = !!getMailerConfig();
+      const isDev = process.env.NODE_ENV === "development";
+      return res.json({ success: true, message: NEUTRAL_MESSAGE, ...(isDev && !smtpConfigured ? { demoRecoveryLink: recoveryLink } : {}) });
     } catch (error: any) {
+      console.error("Forgot username error:", error?.message || error);
+      return res.status(500).json({ error: "Failed to process request." });
+    }
+  });
+
+  // Second factor of the username-recovery flow: the emailed token proves
+  // control of the inbox; the password proves knowledge of the account
+  // credentials. Only when both check out is the username revealed (on
+  // screen — never emailed).
+  router.post("/view-username", passwordResetRateLimit, async (req, res) => {
+    const EXPIRED_ERROR = "This link is invalid or has expired. Please request a new one.";
+    try {
+      const { token, password } = req.body;
+      if (!token || typeof token !== "string" || !password || typeof password !== "string") {
+        return res.status(400).json({ error: "Token and password are required." });
+      }
+      const recovery = usernameRecoveryTokens.get(token);
+      if (!recovery) return res.status(400).json({ error: EXPIRED_ERROR, code: "TOKEN_INVALID" });
+      if (Date.now() > recovery.expiresAt) {
+        usernameRecoveryTokens.delete(token);
+        return res.status(400).json({ error: EXPIRED_ERROR, code: "TOKEN_INVALID" });
+      }
+
+      const [user] = await db.select().from(users).where(eq(users.id, recovery.userId));
+      if (!user || !user.password) {
+        usernameRecoveryTokens.delete(token);
+        return res.status(400).json({ error: EXPIRED_ERROR, code: "TOKEN_INVALID" });
+      }
+
+      // Match the login handler's comparison: bcrypt hashes are compared with
+      // bcrypt; legacy plain-text passwords (pre-upgrade accounts) compare
+      // directly. No hash upgrade here — that stays a login-flow concern.
+      const valid = user.password.startsWith("$2")
+        ? await verifyPassword(password, user.password)
+        : user.password === password;
+
+      if (!valid) {
+        recovery.attempts += 1;
+        if (recovery.attempts >= USERNAME_RECOVERY_MAX_ATTEMPTS) {
+          usernameRecoveryTokens.delete(token);
+          return res.status(400).json({ error: "Too many incorrect attempts. Please request a new link.", code: "TOKEN_INVALID" });
+        }
+        return res.status(401).json({ error: "Incorrect password. Please try again." });
+      }
+
+      // Single-use: a successful reveal consumes the token.
+      usernameRecoveryTokens.delete(token);
+      return res.json({ success: true, username: user.username });
+    } catch (error: any) {
+      console.error("View username error:", error?.message || error);
       return res.status(500).json({ error: "Failed to process request." });
     }
   });
@@ -3574,7 +4183,22 @@ export async function registerRoutes(): Promise<IRouter> {
       if (Date.now() > resetData.expiresAt) { passwordResetTokens.delete(token); return res.status(400).json({ error: "Reset token has expired." }); }
 
       const hashed = await hashPassword(newPassword);
-      await db.update(users).set({ password: hashed }).where(eq(users.id, resetData.userId));
+      const revokedAt = new Date();
+      await db.transaction(async (tx) => {
+        await tx
+          .update(users)
+          .set({ password: hashed })
+          .where(eq(users.id, resetData.userId));
+        await tx
+          .update(userSessions)
+          .set({ revokedAt })
+          .where(
+            and(
+              eq(userSessions.userId, resetData.userId),
+              isNull(userSessions.revokedAt),
+            ),
+          );
+      });
       passwordResetTokens.delete(token);
       return res.json({ success: true, message: "Password has been reset successfully." });
     } catch (error: any) {
@@ -3583,37 +4207,138 @@ export async function registerRoutes(): Promise<IRouter> {
   });
 
   router.post("/send-case-update-text", requireAuth, async (req, res) => {
-    const { providerPhone, caseNumber, patientName, status, message } = req.body;
-    if (!providerPhone || !caseNumber) return res.status(400).json({ error: "Provider phone and case number required" });
+    const body =
+      req.body && typeof req.body === "object"
+        ? (req.body as Record<string, unknown>)
+        : {};
+    const caseNumber =
+      typeof body.caseNumber === "string" ? body.caseNumber.trim() : "";
+    const message = typeof body.message === "string" ? body.message.trim() : "";
+    if (!caseNumber || !message) {
+      return res.status(400).json({ error: "Case number and message are required." });
+    }
+    if (caseNumber.length > 100 || message.length > 1600) {
+      return res.status(400).json({ error: "Case number or message is too long." });
+    }
+
+    const userId = (req as any).auth.userId as string;
+    const labMemberships = await db
+      .select({ labId: organizationMemberships.labId })
+      .from(organizationMemberships)
+      .innerJoin(
+        organizations,
+        eq(organizations.id, organizationMemberships.labId),
+      )
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.status, "active"),
+          isNull(organizationMemberships.deletedAt),
+          eq(organizations.type, "lab"),
+          eq(organizations.isActive, true),
+          isNull(organizations.deletedAt),
+        ),
+      );
+    const labIds = labMemberships.map((membership) => membership.labId);
+    if (labIds.length === 0) {
+      return res.status(404).json({ error: "Case not found." });
+    }
+
+    // Scope the case-number lookup to the caller's active lab memberships.
+    // Require a unique match because case numbers can repeat across labs.
+    const matchingCases = await db
+      .select({
+        id: casesTable.id,
+        providerOrganizationId: casesTable.providerOrganizationId,
+      })
+      .from(casesTable)
+      .where(
+        and(
+          eq(casesTable.caseNumber, caseNumber),
+          inArray(casesTable.labOrganizationId, labIds),
+          isNull(casesTable.deletedAt),
+        ),
+      )
+      .limit(2);
+    if (matchingCases.length !== 1) {
+      return res.status(404).json({ error: "Case not found." });
+    }
+
+    const providerOrganization = await db.query.organizations.findFirst({
+      where: and(
+        eq(organizations.id, matchingCases[0]!.providerOrganizationId),
+        eq(organizations.type, "provider"),
+        eq(organizations.isActive, true),
+        isNull(organizations.deletedAt),
+      ),
+      columns: { phone: true },
+    });
+    const destination = normalizePhoneE164(providerOrganization?.phone);
+    if (!destination) {
+      return res.status(409).json({
+        error: "The case provider does not have a valid phone number on file.",
+      });
+    }
+
+    // Keep accepting the legacy field, but only as a consistency check. The
+    // actual destination always comes from the provider organization on the
+    // authorized case, never from the request.
+    if (body.providerPhone !== undefined) {
+      if (
+        typeof body.providerPhone !== "string" ||
+        normalizePhoneE164(body.providerPhone) !== destination
+      ) {
+        return res.status(400).json({
+          error: "The phone number does not match the case provider.",
+        });
+      }
+    }
+
+    const limited = sendCaseUpdateTextRateLimit(userId, destination);
+    if (limited) {
+      res.setHeader("Retry-After", String(limited.retryAfter));
+      return res.status(429).json({
+        error: "Too many case-update texts. Please try again later.",
+      });
+    }
 
     const { sendSms } = await import("../lib/sms.js");
     const result = await sendSms({
-      to: providerPhone,
+      to: destination,
       body: message,
       log: req.log,
     });
     if (!result.ok && !result.skipped) {
       return res.status(500).json({ error: result.errorMessage ?? "Failed to send text" });
     }
-    return res.json({ success: true, message: `Text sent to ${providerPhone}` });
+    return res.json({ success: true, message: "Text sent to the case provider." });
   });
 
-  async function convertPdfToImageBase64s(rawPdfBase64: string): Promise<string[]> {
-    return convertPdfBufferToImageDataUrls(Buffer.from(rawPdfBase64, "base64"));
+  async function convertPdfToImageBase64s(rawPdfBase64: string, signal?: AbortSignal): Promise<string[]> {
+    return convertPdfBufferToImageDataUrls(Buffer.from(rawPdfBase64, "base64"), MAX_RX_PDF_PAGES, 30_000, signal);
   }
 
   router.post(["/analyze-prescription", "/cases/analyze-rx"], optionalAuth, async (req, res) => {
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const budgetMs = req.body?.desktopReader === true ? 105_000 : 65_000;
+    const deadline = setTimeout(() => controller.abort(new Error("Analysis deadline expired")), budgetMs);
+    const disconnect = () => {
+      if (!res.writableEnded) controller.abort(new Error("Client disconnected"));
+    };
+    res.once("close", disconnect);
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ success: false, error: "AI integrations are not configured." });
 
+      const requestStartedAt = Date.now();
       const { imageBase64, additionalImages, fast } = req.body;
-      if (!imageBase64) return res.status(400).json({ success: false, error: "No image provided" });
+      if (!imageBase64 || typeof imageBase64 !== "string") return res.status(400).json({ success: false, error: "No image provided" });
 
       // Strip the data URI prefix to measure the raw base64 payload.
       const commaIdx = (imageBase64 as string).indexOf(",");
       const rawB64 = commaIdx >= 0 ? (imageBase64 as string).substring(commaIdx + 1) : (imageBase64 as string);
-      console.log("AI analyze-prescription: received, primary image length:", imageBase64.length, "raw b64 length:", rawB64.length, "additional pages:", Array.isArray(additionalImages) ? additionalImages.length : 0);
+      req.log.info({ payloadBytes: Number(req.headers["content-length"]) || 0, pageCount: 1 + (Array.isArray(additionalImages) ? additionalImages.length : 0) }, "AI analyze-prescription: received");
 
       // A real prescription photo JPEG is always well above 3 KB. Fewer than
       // 5 000 raw-base64 chars (~3.75 KB) indicates a corrupted / partial read
@@ -3638,15 +4363,20 @@ export async function registerRoutes(): Promise<IRouter> {
       // content via the magic-byte signature and render each page via pdftoppm.
       const isPdf = rawB64.startsWith("JVBERi");
       if (isPdf) {
-        console.log("AI analyze-prescription: PDF detected, converting pages via pdftoppm");
+        const pdfConversionStartedAt = Date.now();
+        req.log.info("AI analyze-prescription: PDF detected, converting pages");
         let pdfImages: string[];
         try {
-          pdfImages = await convertPdfToImageBase64s(rawB64);
+          pdfImages = await convertPdfToImageBase64s(rawB64, controller.signal);
         } catch (pdfErr: any) {
-          console.log("AI analyze-prescription: PDF conversion failed:", pdfErr?.message);
+          if (controller.signal.aborted) throw controller.signal.reason;
+          req.log.warn(
+            { durationMs: Date.now() - pdfConversionStartedAt, reason: pdfErr instanceof PdfConversionError ? pdfErr.reason : "unreadable" },
+            "AI analyze-prescription: PDF conversion failed"
+          );
           return res.status(400).json({
             success: false,
-            error: "PDF prescriptions could not be processed. Please photograph the printed prescription instead.",
+            error: pdfErr instanceof PdfConversionError && pdfErr.reason === "oversized" ? pdfErr.message : "PDF prescriptions could not be processed. Please photograph the printed prescription instead.",
           });
         }
         if (pdfImages.length === 0) {
@@ -3655,7 +4385,13 @@ export async function registerRoutes(): Promise<IRouter> {
             error: "PDF could not be rendered. Please photograph the prescription instead.",
           });
         }
-        console.log("AI analyze-prescription: PDF converted to", pdfImages.length, "page(s)");
+        req.log.info(
+          {
+            pageCount: pdfImages.length,
+            durationMs: Date.now() - pdfConversionStartedAt,
+          },
+          "AI analyze-prescription: PDF converted"
+        );
         for (const img of pdfImages) {
           imageContents.push({ type: "image_url", image_url: { url: img, detail: "high" } });
         }
@@ -3679,6 +4415,10 @@ export async function registerRoutes(): Promise<IRouter> {
         }
       }
 
+      if (imageContents.length > MAX_RX_PDF_PAGES || imageContents.reduce((sum, image) => sum + image.image_url.url.length, 0) > 11.5 * 1024 * 1024) {
+        return res.status(413).json({ success: false, error: "This prescription is too large for AI analysis. Split it into smaller files or enter details manually; keep the original as an attachment." });
+      }
+      if (res.locals.performanceStages) res.locals.performanceStages.rxPreprocess = Date.now() - requestStartedAt;
       const systemPrompt = `You are a dental laboratory prescription reader with expertise in reading BOTH printed and handwritten prescriptions. Analyze the dental prescription image(s) carefully — the prescription may be entirely handwritten, a mix of handwritten and printed fields, or a pre-printed form. Extract all available information. Return ONLY valid JSON with these fields (use null for any field you cannot determine):
 
 {
@@ -3687,8 +4427,11 @@ export async function registerRoutes(): Promise<IRouter> {
   "patientInitials": "PI",
   "caseType": "one of: Crown & Bridge, Removable, Implant, Orthodontic, Other",
   "toothIndices": "comma-separated tooth numbers like 3,5,14",
+  "toothAssignments": [{"toothNumber":"single Universal number", "role":"prepared_crown, pontic, or unknown", "material":null, "shade":null, "roleEvidence":null, "requiresReview":true}],
   "shade": "shade value like A2, B1, etc.",
-  "material": "one of: Zirconia, Lithium Disilicate, PFM, Gold, Composite, Acrylic, Flexible, PMMA, Metal Framework, Titanium, Other",
+  "gingivialShade": "for Removable cases: the gingival/tissue shade (e.g. 'Light Pink', 'Medium Pink', 'Dark Pink'). Use null for non-Removable cases and when not present.",
+  "material": "one of: Zirconia, Porcelain Fused to Zirconia, Lithium Disilicate, PFM, Gold, Composite, Acrylic, Flexible, PMMA, Metal Framework, Titanium, Wax, Other",
+  "step": "one of: custom_tray, rims_and_plates, wax_setup, process, or null if no step can be inferred",
   "dueDate": "MM/DD/YYYY format",
   "isRush": false,
   "notes": "any additional notes or special instructions",
@@ -3699,6 +4442,7 @@ export async function registerRoutes(): Promise<IRouter> {
 }
 
 Important rules:
+- List per-tooth assignments only for teeth explicitly prescribed. Mark a role prepared_crown or pontic only when the prescription explicitly identifies that tooth's role. In roleEvidence quote the specific tooth/range and its role phrase, not a full sentence combining different roles. A range alone, bridge, missing tooth, tooth position, or connector is not role evidence. Use unknown and requiresReview=true for uncertain roles. Never guess a material or shade from nearby teeth. Copy material and shade only where the prescription explicitly applies them to that tooth.
 - HANDWRITING: Many dental prescriptions are fully or partially handwritten. Examine every area of the image carefully, including margins, boxes, check marks, and stamps. Do not skip fields just because they are handwritten or hard to read — make your best effort to decipher handwritten text.
 - Read ALL pages if multiple images are provided
 - TOOTH CHART: For tooth numbers, use Universal Numbering System (1-32). When a tooth chart or tooth diagram is present, look for circled, marked, checked, or highlighted tooth positions and map them to Universal numbers — give the chart higher weight than any adjacent freehand number if there is a conflict. Also accept handwritten tooth numbers written outside any chart.
@@ -3706,7 +4450,7 @@ Important rules:
 - Only set isRush to true if explicitly marked as rush/urgent/STAT — including handwritten "rush" notes or red stamps
 - For caseType, match to the closest category listed above. Accept handwritten abbreviations (e.g. "PFM", "Zirc", "E.max", "BU", "CB", "FPD", "RPD")
 - Extract the shade exactly as written on the prescription, including handwritten shade values
-- MATERIAL: output the canonical material name. Mapping rules — "PFM" or "porcelain fused to metal" = PFM; "Zirc", "Zr", "Brux", "BruxZ", "Bruxzir", "BZR", or "bruxism" = Zirconia (full-contour strong zirconia for bruxism patients); "GC" or "Gold" = Gold; "Emax", "E.max", "lithium disilicate", or "lithium silicate" = Lithium Disilicate (NEVER output "E.max" or "E max" — always use "Lithium Disilicate")
+- MATERIAL: output the canonical material name. Mapping rules — "PFM" or "porcelain fused to metal" = PFM; "PFZ" or "porcelain fused to zirconia" = Porcelain Fused to Zirconia (IMPORTANT: this is DISTINCT from plain "Zirconia" — always emit "Porcelain Fused to Zirconia" for PFZ so the lab can charge the layered-porcelain surcharge); "Zirc", "Zr", "Brux", "BruxZ", "Bruxzir", "BZR", or "bruxism" = Zirconia (full-contour strong zirconia for bruxism patients); "GC" or "Gold" = Gold; "Emax", "E.max", "lithium disilicate", or "lithium silicate" = Lithium Disilicate (NEVER output "E.max" or "E max" — always use "Lithium Disilicate")
 - SHADE FALLBACK: If the shade field is blank or not clearly marked, scan the handwritten notes/comments area for common shade values (A1–D4, BL1–BL4, OM1–OM4, T, NW, etc.) and record the first recognisable shade found there.
 - NAME FORMAT: If a patient name or doctor name contains a comma (e.g. "Kidder, Daniel"), it is Last, First format. Swap to First Last and remove the comma.
 - CONFIDENCE: set "confidence" to a number from 0 to 1 reflecting your overall certainty that the extracted fields are correct (1 = fully legible and certain; below 0.5 = blurry, partial, or mostly illegible). Be honest — the app uses this to decide whether a live-camera read is good enough to keep.
@@ -3743,8 +4487,26 @@ Important rules:
             patientInitials: nullableString,
             caseType: nullableString,
             toothIndices: nullableString,
+            toothAssignments: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  toothNumber: { type: "string" },
+                  role: { type: "string", enum: ["prepared_crown", "pontic", "unknown"] },
+                  material: nullableString,
+                  shade: nullableString,
+                  roleEvidence: nullableString,
+                  requiresReview: { type: "boolean" },
+                },
+                required: ["toothNumber", "role", "material", "shade", "roleEvidence", "requiresReview"],
+              },
+            },
             shade: nullableString,
+            gingivialShade: nullableString,
             material: nullableString,
+            step: { anyOf: [{ type: "string" as const, enum: ["custom_tray", "rims_and_plates", "wax_setup", "process"] }, { type: "null" as const }] },
             dueDate: nullableString,
             isRush: nullableBoolean,
             notes: nullableString,
@@ -3759,8 +4521,11 @@ Important rules:
             "patientInitials",
             "caseType",
             "toothIndices",
+            "toothAssignments",
             "shade",
+            "gingivialShade",
             "material",
+            "step",
             "dueDate",
             "isRush",
             "notes",
@@ -3788,30 +4553,83 @@ Important rules:
       const MODEL_CHAIN_ACCURATE = ["gpt-5.4", "gpt-5", "gpt-5-mini"];
       const MODEL_CHAIN_FAST = ["gpt-5-mini", "gpt-5"];
       const MODEL_CHAIN = fast ? MODEL_CHAIN_FAST : MODEL_CHAIN_ACCURATE;
+      // The SDK's per-attempt timeout prevents a stalled provider request from
+      // holding the reader indefinitely. The shared deadline also bounds the
+      // total fallback chain while preserving the accurate desktop model order.
+      const MODEL_ATTEMPT_TIMEOUT_MS = 30_000;
+      const MODEL_CHAIN_TIMEOUT_MS = 75_000;
+      const modelChainDeadline = Math.min(Date.now() + MODEL_CHAIN_TIMEOUT_MS, startedAt + budgetMs);
       let response: any;
       let lastModelErr: any;
+      let modelTimedOut = false;
       for (const model of MODEL_CHAIN) {
+        if (controller.signal.aborted) throw controller.signal.reason;
+        const remainingMs = modelChainDeadline - Date.now();
+        if (remainingMs <= 0) {
+          modelTimedOut = true;
+          break;
+        }
+        const modelStartedAt = Date.now();
         try {
-          response = await openai.chat.completions.create({
+          const attemptTimeoutMs = Math.min(MODEL_ATTEMPT_TIMEOUT_MS, remainingMs);
+          const attemptSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(attemptTimeoutMs)]);
+          response = await timeRequestStage(res, `rxModel${MODEL_CHAIN.indexOf(model) + 1}`, () => boundedOperation(openai.chat.completions.create({
             model,
             messages: baseMessages,
             max_completion_tokens: 8192,
             response_format: { type: "json_schema", json_schema: PRESCRIPTION_SCHEMA },
-          });
-          req.log.info({ model, fast }, "AI analyze-prescription: model succeeded");
+          }, {
+            timeout: attemptTimeoutMs,
+            // The explicit model chain already provides fallback. SDK retries
+            // otherwise multiply each timeout and obscure the actual attempts.
+            maxRetries: 0,
+            signal: attemptSignal,
+          }), attemptSignal));
+          req.log.info(
+            { model, fast, durationMs: Date.now() - modelStartedAt },
+            "AI analyze-prescription: model succeeded"
+          );
           break;
         } catch (modelErr: any) {
+          if (controller.signal.aborted) throw controller.signal.reason;
           lastModelErr = modelErr;
+          modelTimedOut =
+            modelTimedOut ||
+            modelErr?.name === "APIConnectionTimeoutError" ||
+            /timed?\s*out|timeout|aborted/i.test(String(modelErr?.message ?? ""));
           req.log.warn(
-            { model, fast, err: modelErr?.message },
+            { model, fast, durationMs: Date.now() - modelStartedAt, errorType: modelErr?.name ?? "Error" },
             "AI analyze-prescription: model failed, trying next"
           );
         }
       }
       if (!response) {
         const triedModels = MODEL_CHAIN.join(", ");
+        if (
+          (modelTimedOut || Date.now() >= modelChainDeadline)
+        ) {
+          req.log.warn(
+            {
+              modelsTriedCount: MODEL_CHAIN.length,
+              modelsTried: triedModels,
+              durationMs: Date.now() - requestStartedAt,
+              fast,
+            },
+            "AI analyze-prescription: model chain timed out"
+          );
+          return res.status(504).json({
+            success: false,
+            error:
+              "AI analysis timed out before the reader could finish. Try again; if it happens again, upload a clearer image or split a long prescription into fewer pages.",
+          });
+        }
         req.log.error(
-          { modelsTriedCount: MODEL_CHAIN.length, modelsTried: triedModels, fast },
+          {
+            modelsTriedCount: MODEL_CHAIN.length,
+            modelsTried: triedModels,
+            durationMs: Date.now() - requestStartedAt,
+            fast,
+          },
           "AI analyze-prescription: all models failed"
         );
         throw lastModelErr ?? new Error(`All prescription models failed (tried: ${triedModels})`);
@@ -3819,7 +4637,7 @@ Important rules:
 
       const message = response.choices?.[0]?.message;
       if (message?.refusal) {
-        console.log("AI analyze-prescription: model refused:", message.refusal);
+        req.log.warn({ refusal: message.refusal }, "AI analyze-prescription: model refused");
         return res.json({ success: false, error: "AI could not read the prescription. Please retake the photo." });
       }
       const text = message?.content || "";
@@ -3831,7 +4649,7 @@ Important rules:
         // salvage the first JSON object embedded in the text.
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) {
-          console.log("AI analyze-prescription: No JSON found in response:", text.substring(0, 200));
+          req.log.warn("AI analyze-prescription: No JSON found in model response");
           return res.json({ success: false, error: "AI could not parse the prescription" });
         }
         data = JSON.parse(jsonMatch[0]);
@@ -3857,21 +4675,62 @@ Important rules:
             cleanedData[key] = fixNameOrder(value) ?? value;
           } else if (key === "material" && typeof value === "string") {
             // Canonicalize material naming (zirconia / Emax→Lithium Disilicate /
-            // PFM rules) before the client stores it on the new case, so the
+            // PFM / Wax rules) before the client stores it on the new case, so the
             // material and its resolved price stay consistent.
             cleanedData[key] = normalizeMaterialName(value) ?? value;
+          } else if (key === "step") {
+            // Only forward step values that belong to the allowed enum; discard
+            // anything unrecognized silently so it never reaches the client.
+            const cleaned = cleanStepValue(value);
+            if (cleaned !== undefined) {
+              cleanedData[key] = cleaned;
+            }
           } else {
             cleanedData[key] = value;
           }
         }
       }
 
-      console.log("AI analyze-prescription: Success, fields:", Object.keys(cleanedData).join(", "));
+      // Derive restorationSubtype from the extracted caseType + material using
+      // the shared taxonomy aliases so mobile clients can store it directly on
+      // case_restorations without needing to re-derive it from free-text fields.
+      //
+      // Guard: only encode the subtype when confidence is high enough (≥ 0.7)
+      // AND both caseType and material are present. Encoding from a partial or
+      // low-confidence extraction would silently pre-fill the restoration drawer
+      // with a misleading material that the lab tech would have to correct.
+      const rxConfidence = typeof cleanedData.confidence === "number" ? cleanedData.confidence : null;
+      const rxCaseType = typeof cleanedData.caseType === "string" ? cleanedData.caseType : null;
+      const rxMaterial = typeof cleanedData.material === "string" ? cleanedData.material : null;
+      const subtypeConfidenceOk = rxConfidence !== null && rxConfidence >= 0.7;
+      if (subtypeConfidenceOk && rxCaseType !== null && rxMaterial !== null) {
+        const { restorationSubtype: derivedSubtype } = normalizeCaseHierarchy({
+          caseType: rxCaseType,
+          material: rxMaterial,
+        });
+        if (derivedSubtype) {
+          cleanedData.restorationSubtype = derivedSubtype;
+        }
+      }
+
+      req.log.info(
+        {
+          durationMs: Date.now() - requestStartedAt,
+          fields: Object.keys(cleanedData),
+        },
+        "AI analyze-prescription: completed"
+      );
       return res.json({ success: true, data: cleanedData });
     } catch (err: any) {
-      const errMsg = err?.message || String(err);
-      console.error("AI analyze-prescription error:", errMsg);
-      return res.status(500).json({ success: false, error: "AI analysis failed. Please try again.", detail: errMsg });
+      if (res.destroyed) return;
+      if (controller.signal.aborted) {
+        return res.status(504).json({ success: false, error: "AI analysis timed out. Try again or enter the details manually. No case was created by this analysis." });
+      }
+      req.log.error({ errorType: err?.name ?? "Error" }, "AI analyze-prescription error");
+      return res.status(500).json({ success: false, error: "AI analysis failed. Please try again." });
+    } finally {
+      clearTimeout(deadline);
+      res.off("close", disconnect);
     }
   });
 
@@ -4561,8 +5420,10 @@ Important rules:
         lastSuccessfulBackupAt,
         staleAfterDays,
       });
-    } catch (e: any) {
-      return res.status(500).json({ error: e?.message || "Failed to fetch backup schedule settings." });
+    } catch (e: unknown) {
+      const diagnostic = e instanceof Error ? e.message : "Failed to fetch backup schedule settings.";
+      req.log?.error({ err: diagnostic }, "[backup] Could not load legacy schedule settings");
+      return res.status(500).json({ error: backupSettingsErrorMessage("load"), diagnostic });
     }
   });
 
@@ -4593,8 +5454,10 @@ Important rules:
           set: { value: String(hourUtc), updatedAt: new Date() },
         });
       return res.json({ success: true, hourUtc });
-    } catch (e: any) {
-      return res.status(500).json({ error: e?.message || "Failed to save backup schedule settings." });
+    } catch (e: unknown) {
+      const diagnostic = e instanceof Error ? e.message : "Failed to save backup schedule settings.";
+      req.log?.error({ err: diagnostic }, "[backup] Could not save legacy schedule settings");
+      return res.status(500).json({ error: backupSettingsErrorMessage("save"), diagnostic });
     }
   });
 
@@ -4610,8 +5473,10 @@ Important rules:
     try {
       await db.delete(systemSettings).where(eq(systemSettings.key, SETTING_BACKUP_HOUR_UTC));
       return res.json({ success: true, reset: field ?? "all" });
-    } catch (e: any) {
-      return res.status(500).json({ error: e?.message || "Failed to reset backup schedule settings." });
+    } catch (e: unknown) {
+      const diagnostic = e instanceof Error ? e.message : "Failed to reset backup schedule settings.";
+      req.log?.error({ err: diagnostic }, "[backup] Could not reset legacy schedule settings");
+      return res.status(500).json({ error: backupSettingsErrorMessage("disable"), diagnostic });
     }
   });
 
@@ -5218,6 +6083,61 @@ Important rules:
     }
   }
 
+  // The database identity alert goes to the admins of the lab the committed
+  // fingerprint protects, so it cannot reuse the helper above: that one
+  // returns every `role = 'admin'` account — master admins, deactivated
+  // accounts, and the admins of every other lab in the database. Production
+  // holds more than one lab (the authorized recovery merge put several
+  // lineages in it), so an unscoped list would both leave the protected lab
+  // uninformed and send its incident to a lab it has nothing to do with.
+  // See selectLabAdminRecipients for the rule itself.
+  async function loadLabAdminAlertRecipients(
+    protectedLabOrganizationId: string | null,
+    reqLog?: { error?: (obj: unknown, msg?: string) => void },
+  ): Promise<string[]> {
+    try {
+      if (protectedLabOrganizationId) {
+        const scoped = await db
+          .select({
+            email: users.email,
+            role: users.role,
+            userType: users.userType,
+            isActive: users.isActive,
+            membershipLabId: organizationMemberships.labId,
+            membershipRole: organizationMemberships.role,
+            membershipStatus: organizationMemberships.status,
+          })
+          .from(organizationMemberships)
+          .innerJoin(users, eq(users.id, organizationMemberships.userId))
+          .where(
+            and(
+              eq(organizationMemberships.labId, protectedLabOrganizationId),
+              isNull(organizationMemberships.deletedAt),
+            ),
+          );
+        return selectLabAdminRecipients(scoped, {
+          protectedLabOrganizationId,
+        });
+      }
+
+      // No protected lab in the fingerprint means the whole database is what
+      // it protects, so every active lab admin in it is an intended recipient.
+      const candidates = await db
+        .select({
+          email: users.email,
+          role: users.role,
+          userType: users.userType,
+          isActive: users.isActive,
+        })
+        .from(users)
+        .where(eq(users.role, "admin"));
+      return selectLabAdminRecipients(candidates);
+    } catch (e: any) {
+      reqLog?.error?.({ err: e }, "loadLabAdminAlertRecipients: query failed");
+      return [];
+    }
+  }
+
   // CI calls this when the auto-publish step in build-windows.yml / release.yml
   // fails (upload or settings PUT returned non-2xx). We email the platform
   // admin recipient list (same recipients as the cleanup alert) with the
@@ -5340,6 +6260,64 @@ Important rules:
         recipients: adminEmails.length,
         alertSent: outcome.sent,
         alertSuppressed: outcome.suppressed,
+      });
+    },
+  );
+
+  // The scheduled database identity monitor
+  // (scripts/src/monitor-production-data-fingerprint.ts) calls this when
+  // production stops matching the fingerprint committed in
+  // scripts/database-fingerprint.json. The monitor runs the same read-only
+  // comparison the publish preflight runs, holds no mail credentials and no
+  // recipient list, and never writes to any database — so it reports what it
+  // found here and this route turns it into the admin alert email.
+  //
+  // Gated by the standard X-Platform-Admin-Secret header, like the other
+  // script-driven admin endpoints.
+  router.post(
+    "/admin/database-identity/alert",
+    platformAdminUserOrSecret,
+    async (req, res) => {
+      if (!isPlatformAdmin(req)) {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+
+      const parsed = parseDatabaseIdentityAlertRequest(req.body);
+      if (!parsed.ok) {
+        return res.status(400).json({ error: parsed.error });
+      }
+
+      const adminEmails = await loadLabAdminAlertRecipients(
+        parsed.value.protectedLabOrganizationId,
+        req.log,
+      );
+
+      let outcome: Awaited<ReturnType<typeof dispatchDatabaseIdentityAlert>>;
+      try {
+        outcome = await dispatchDatabaseIdentityAlert(
+          { adminEmails, request: parsed.value },
+          req.log ?? undefined,
+        );
+      } catch (e: any) {
+        req.log?.error?.(
+          { err: e },
+          "database-identity alert: dispatch failed",
+        );
+        return res
+          .status(500)
+          .json({ error: e?.message || "Failed to send alert email." });
+      }
+
+      // `recipients` counts admins the mail server actually accepted, not
+      // admins we found: the monitor treats a zero here as an undelivered
+      // alert, which is the honest outcome when SMTP is unconfigured or
+      // refused every address.
+      return res.json({
+        success: true,
+        recipients: outcome.recipients,
+        attempted: outcome.attempted,
+        alertSent: outcome.sent,
+        failureReasons: [...new Set(outcome.failures.map((f) => f.reason))],
       });
     },
   );
@@ -6039,9 +7017,7 @@ Important rules:
       const token = generateResetToken();
       passwordResetTokens.set(token, { userId: user.id, expiresAt: Date.now() + 30 * 60 * 1000 });
 
-      const domain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_INTERNAL_APP_DOMAIN || "localhost:5000";
-      const protocol = domain.includes("localhost") ? "http" : "https";
-      const resetLink = `${protocol}://${domain}/reset-password?token=${token}`;
+      const resetLink = `${getAppBaseUrl()}/desktop/reset-password?token=${token}`;
 
       await sendMail({
         to: user.email,
@@ -6187,13 +7163,31 @@ Important rules:
     }
   });
 
-  // ── Admin: Subscriptions list ─────────────────────────────────────────────
-  // Returns a paginated list of all subscription rows with provider, status,
-  // currentPeriodEnd, and masked IDs. Platform-admin-secret gated.
-  router.get("/admin/subscriptions", platformAdminUserOrSecret, async (req, res) => {
+  // Cross-lab doctor-identity links for a specific user (Task #2457).
+  // Powers the "Linked labs" section of the Accounts directory's user
+  // detail drawer. Admin-secret gated.
+  router.get("/admin/users/:id/linked-labs", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
+    try {
+      const userId = String(req.params.id);
+      const [user] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.id, userId), isNull(users.deletedAt)));
+      if (!user) return res.status(404).json({ error: "User not found." });
+      const linkedLabs = await getLinkedLabsForUser(userId);
+      return res.json({ ok: true, linkedLabs });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to load linked labs." });
+    }
+  });
+
+  // ── Admin: Subscriptions list ─────────────────────────────────────────────
+  // Returns a paginated list of all subscription rows with provider, status,
+  // currentPeriodEnd, and masked IDs. Platform-admin-secret gated.
+  router.get("/admin/subscriptions", requireCreator, async (req: any, res: any) => {
 
     const rawLimit = parseInt(req.query.limit as string, 10);
     const rawOffset = parseInt(req.query.offset as string, 10);
@@ -6310,10 +7304,7 @@ Important rules:
   });
 
   // ── Admin Subscriptions: Stripe billing portal ────────────────────────────
-  router.post("/admin/subscriptions/:id/portal", platformAdminUserOrSecret, async (req, res) => {
-    if (!isPlatformAdmin(req)) {
-      return res.status(403).json({ error: "Admin access required." });
-    }
+  router.post("/admin/subscriptions/:id/portal", requireCreator, async (req: any, res: any) => {
     try {
       const configured = await isStripeConfigured();
       if (!configured) {
@@ -6331,7 +7322,7 @@ Important rules:
       if (!stripe) return res.status(503).json({ error: "Stripe unavailable." });
       const domains = (process.env.REPLIT_DOMAINS ?? "").split(",").map((d) => d.trim()).filter(Boolean);
       const origin = domains[0] ? `https://${domains[0]}` : `${req.protocol}://${req.get("host")}`;
-      const returnUrl = `${origin}/settings/subscriptions`;
+      const returnUrl = `${origin}/desktop/creator`;
       const session = await stripe.billingPortal.sessions.create({
         customer: sub.stripeCustomerId!,
         return_url: returnUrl,
@@ -6380,7 +7371,7 @@ Important rules:
     }
   });
 
-  router.post("/admin/platform-admin/unlock", requireAuth, async (req, res) => {
+  router.post("/admin/platform-admin/unlock", requireAuth, platformAdminUnlockRateLimit, async (req, res) => {
     try {
       const userId = (req as any).auth?.userId as string | undefined;
       const sessionId = (req as any).auth?.sessionId as string | undefined;
@@ -6436,7 +7427,10 @@ Important rules:
   // Invoice settings overlay is stored per-org in system_settings.
   // Statement and correspondence settings are stored in the organizations table.
 
-  async function getAdminLabOrg(userId: string): Promise<{ id: string } | null> {
+  async function getLabOrgForRoles(
+    userId: string,
+    roles: string[],
+  ): Promise<{ id: string } | null> {
     const [membership] = await db
       .select({ labId: organizationMemberships.labId })
       .from(organizationMemberships)
@@ -6444,7 +7438,8 @@ Important rules:
       .where(
         and(
           eq(organizationMemberships.userId, userId),
-          eq(organizationMemberships.role, "admin"),
+          inArray(organizationMemberships.role, roles),
+           eq(organizationMemberships.status, "active"),
           isNull(organizationMemberships.deletedAt),
           eq(organizations.type, "lab"),
           isNull(organizations.deletedAt)
@@ -6453,6 +7448,203 @@ Important rules:
       .limit(1);
     return membership ? { id: membership.labId } : null;
   }
+
+  function getAdminLabOrg(userId: string): Promise<{ id: string } | null> {
+    return getLabOrgForRoles(userId, ADMIN_ROLES);
+  }
+
+  function getBillingLabOrg(userId: string): Promise<{ id: string } | null> {
+    return getLabOrgForRoles(userId, BILLING_ROLES);
+  }
+
+  // ── Completed practice authorization documents and lab templates ──────────
+  const AUTH_TEMPLATE_DEFAULTS = {
+    card_on_file: "Card on File Authorization\nI authorize {{labName}} to securely retain and charge the payment card on file for services and invoices issued to {{practiceName}}.",
+    autopay: "Auto-Pay Authorization\nI authorize {{labName}} to automatically charge the payment method on file for invoices issued to {{practiceName}} on the agreed payment schedule.",
+  } as const;
+  const authorizationPdfUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  });
+  const parseAuthorizationType = (value: unknown): "card_on_file" | "autopay" => {
+    if (value !== "card_on_file" && value !== "autopay") throw new HttpError(400, "authorizationType must be card_on_file or autopay.");
+    return value;
+  };
+  const templatePublic = (row: any) => ({
+    id: row.id, labOrganizationId: row.labOrganizationId, templateType: row.templateType,
+    content: row.content, version: row.version, updatedByUserId: row.updatedByUserId,
+    createdAt: row.createdAt, updatedAt: row.updatedAt,
+  });
+  const documentPublic = (row: any, status: "current" | "superseded" = "current") => ({
+    id: row.id, labOrganizationId: row.labOrganizationId, practiceOrganizationId: row.practiceOrganizationId,
+    supersedesDocumentId: row.supersedesDocumentId ?? null,
+    authorizationType: row.authorizationType, originalFilename: row.originalFilename,
+    byteSize: row.byteSize, checksum: row.checksum, uploaderUserId: row.uploaderUserId, status, createdAt: row.createdAt,
+  });
+  async function selectedLabForRole(userId: string, roles: string[], requested?: string) {
+    const predicates = [
+      eq(organizationMemberships.userId, userId),
+      inArray(organizationMemberships.role, roles),
+      eq(organizationMemberships.status, "active"),
+      isNull(organizationMemberships.deletedAt),
+      eq(organizations.type, "lab"),
+      isNull(organizations.deletedAt),
+    ];
+    if (requested) predicates.push(eq(organizationMemberships.labId, requested));
+    const [lab] = await db.select({ id: organizationMemberships.labId })
+      .from(organizationMemberships).innerJoin(organizations, eq(organizations.id, organizationMemberships.labId))
+      .where(and(...predicates)).limit(1);
+    if (!lab) throw new HttpError(403, "Lab access is not permitted.");
+    return lab.id;
+  }
+  async function completedDocumentScope(userId: string, practiceId: string, requestedLab?: string) {
+    const labId = await selectedLabForRole(userId, BILLING_ROLES, requestedLab);
+    const [practice] = await db.select({ id: organizations.id }).from(organizations).where(and(
+      eq(organizations.id, practiceId), eq(organizations.parentLabOrganizationId, labId),
+      eq(organizations.type, "provider"), isNull(organizations.deletedAt),
+    )).limit(1);
+    if (!practice) throw new HttpError(403, "Practice is outside this lab.");
+    return labId;
+  }
+  async function storedDocumentScope(userId: string, labId: string, practiceId: string) {
+    const selected = await selectedLabForRole(userId, BILLING_ROLES, labId);
+    if (selected !== labId || !practiceId) throw new HttpError(403, "Authorization document is outside this lab.");
+    return selected;
+  }
+  const pdfUpload = (req: any, res: any, next: any) => authorizationPdfUpload.single("file")(req, res, (error: any) => {
+    if (!error) return next();
+    if (error.code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: "PDF exceeds the 10 MiB limit." });
+    return res.status(400).json({ error: "A single PDF file is required." });
+  });
+  router.get("/admin/authorization-templates", requireAuth, asyncHandler(async (req: any, res: any) => {
+    const labId = await selectedLabForRole(req.auth.userId, ADMIN_ROLES, typeof req.query.labOrganizationId === "string" ? req.query.labOrganizationId : undefined);
+    const rows = await db.select().from(labAuthorizationTemplates).where(eq(labAuthorizationTemplates.labOrganizationId, labId));
+    const byType = new Map(rows.map((row) => [row.templateType, row]));
+    const result = (["card_on_file", "autopay"] as const).map((templateType) => byType.get(templateType) ?? {
+      id: null, labOrganizationId: labId, templateType, content: AUTH_TEMPLATE_DEFAULTS[templateType],
+      version: 1, updatedByUserId: null, createdAt: null, updatedAt: null,
+    });
+    return ok(res, result.map(templatePublic));
+  }));
+  router.put("/admin/authorization-templates/:templateType", requireAuth, asyncHandler(async (req: any, res: any) => {
+    const labId = await selectedLabForRole(req.auth.userId, ADMIN_ROLES, typeof req.body?.labOrganizationId === "string" ? req.body.labOrganizationId : undefined);
+    const templateType = parseAuthorizationType(req.params.templateType);
+    const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+    if (!content || content.length > 20_000) throw new HttpError(400, "Template content is required and must be at most 20,000 characters.");
+    const [row] = await db.insert(labAuthorizationTemplates).values({
+      labOrganizationId: labId, templateType, content, updatedByUserId: req.auth.userId,
+    }).onConflictDoUpdate({
+      target: [labAuthorizationTemplates.labOrganizationId, labAuthorizationTemplates.templateType],
+      set: { content, version: sql`${labAuthorizationTemplates.version} + 1`, updatedByUserId: req.auth.userId, updatedAt: new Date() },
+    }).returning();
+    return ok(res, templatePublic(row));
+  }));
+  router.get("/admin/authorization-templates/:templateType/pdf", requireAuth, asyncHandler(async (req: any, res: any) => {
+    const labId = await selectedLabForRole(req.auth.userId, ADMIN_ROLES, typeof req.query.labOrganizationId === "string" ? req.query.labOrganizationId : undefined);
+    const templateType = parseAuthorizationType(req.params.templateType);
+    const [row] = await db.select({ content: labAuthorizationTemplates.content })
+      .from(labAuthorizationTemplates)
+      .where(and(eq(labAuthorizationTemplates.labOrganizationId, labId), eq(labAuthorizationTemplates.templateType, templateType)))
+      .limit(1);
+    const [lab] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, labId)).limit(1);
+    const content = (row?.content ?? AUTH_TEMPLATE_DEFAULTS[templateType])
+      .replace(/\{\{\s*labName\s*\}\}/gi, lab?.name ?? "Laboratory")
+      .replace(/\{\{\s*(practiceName|signerName|signer|date)\s*\}\}/gi, "____________________________")
+      .replace(/\{\{[^}]+\}\}/g, "____________________________");
+    const pdf = await new Promise<Buffer>((resolve, reject) => {
+      const doc = new PDFDocument({ margin: 54 });
+      const chunks: Buffer[] = [];
+      doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+      doc.fontSize(18).text(templateType === "autopay" ? "Auto-Pay Authorization" : "Card on File Authorization").moveDown();
+      doc.fontSize(11).text(content).moveDown(2);
+      doc.text("Name: ______________________________________________");
+      doc.moveDown().text("Signature: ___________________________________________");
+      doc.moveDown().text("Date: ___________________");
+      doc.end();
+    });
+    const filename = `${templateType === "autopay" ? "auto-pay" : "card-on-file"}-authorization-template.pdf`;
+    res.type("application/pdf").set("Content-Disposition", `attachment; filename="${filename}"`).end(pdf);
+  }));
+  router.post("/admin/practices/:practiceId/authorization-documents", requireAuth, pdfUpload, asyncHandler(async (req: any, res: any) => {
+    const supersedesDocumentId = typeof req.body?.supersedesDocumentId === "string" && req.body.supersedesDocumentId.trim()
+      ? req.body.supersedesDocumentId.trim()
+      : null;
+    const requestedLab = typeof req.body?.labOrganizationId === "string" ? req.body.labOrganizationId : undefined;
+    let labId: string;
+    if (supersedesDocumentId) {
+      const [prior] = await db.select().from(practiceAuthorizationDocuments)
+        .where(eq(practiceAuthorizationDocuments.id, supersedesDocumentId)).limit(1);
+      if (!prior) throw new HttpError(404, "Authorization document to supersede was not found.");
+      if (prior.practiceOrganizationId !== req.params.practiceId || (requestedLab && requestedLab !== prior.labOrganizationId)) {
+        throw new HttpError(403, "Authorization document is outside this practice.");
+      }
+      labId = await storedDocumentScope(req.auth.userId, prior.labOrganizationId, prior.practiceOrganizationId);
+      const [replacement] = await db.select({ id: practiceAuthorizationDocuments.id })
+        .from(practiceAuthorizationDocuments)
+        .where(eq(practiceAuthorizationDocuments.supersedesDocumentId, prior.id)).limit(1);
+      if (replacement) throw new HttpError(409, "This authorization has already been superseded.");
+    } else {
+      labId = await completedDocumentScope(req.auth.userId, req.params.practiceId, requestedLab);
+    }
+    const file = req.file as Express.Multer.File | undefined;
+    const authorizationType = parseAuthorizationType(req.body?.authorizationType);
+    if (!file) throw new HttpError(400, "A completed PDF file is required.");
+    if (!/\.pdf$/i.test(file.originalname || "") || file.mimetype.toLowerCase().split(";")[0] !== "application/pdf") {
+      throw new HttpError(415, "Only PDF files are accepted.");
+    }
+    if (file.size < 5 || file.buffer.subarray(0, 5).toString("ascii") !== "%PDF-") throw new HttpError(415, "File is not a valid PDF.");
+    const id = randomBytes(16).toString("hex");
+    const objectKey = `practice-authorizations/${labId}/${req.params.practiceId}/${id}.pdf`;
+    const checksum = createHash("sha256").update(file.buffer).digest("hex");
+    if (!await writeCaseMediaToObjectStorage(objectKey, file.buffer, "application/pdf")) throw new HttpError(503, "Private authorization storage is not configured.");
+    try {
+      const [row] = await db.insert(practiceAuthorizationDocuments).values({
+        id, labOrganizationId: labId, practiceOrganizationId: req.params.practiceId, authorizationType,
+        supersedesDocumentId,
+        originalFilename: path.basename(file.originalname).slice(0, 255), byteSize: file.size, checksum,
+        uploaderUserId: req.auth.userId, objectKey,
+      }).onConflictDoNothing({
+        target: practiceAuthorizationDocuments.supersedesDocumentId,
+      }).returning();
+      if (!row) {
+        throw new HttpError(409, "This authorization has already been superseded.");
+      }
+      return res.status(201).json({ ok: true, data: documentPublic(row) });
+    } catch (error) {
+      await deleteCaseMediaFromObjectStorage(objectKey);
+      throw error;
+    }
+  }));
+  router.get("/admin/practices/:practiceId/authorization-documents", requireAuth, asyncHandler(async (req: any, res: any) => {
+    const labId = await selectedLabForRole(req.auth.userId, BILLING_ROLES, typeof req.query.labOrganizationId === "string" ? req.query.labOrganizationId : undefined);
+    const rows = await db.select().from(practiceAuthorizationDocuments).where(and(
+      eq(practiceAuthorizationDocuments.labOrganizationId, labId), eq(practiceAuthorizationDocuments.practiceOrganizationId, req.params.practiceId),
+    )).orderBy(desc(practiceAuthorizationDocuments.createdAt));
+    if (!rows.length) {
+      const [practice] = await db.select({ parentLabOrganizationId: organizations.parentLabOrganizationId })
+        .from(organizations).where(and(eq(organizations.id, req.params.practiceId), isNull(organizations.deletedAt))).limit(1);
+      if (!practice || practice.parentLabOrganizationId !== labId) throw new HttpError(403, "Practice is outside this lab.");
+    }
+    const supersededIds = new Set(rows.flatMap((row) => row.supersedesDocumentId ? [row.supersedesDocumentId] : []));
+    return ok(res, rows.map((row) => documentPublic(row, supersededIds.has(row.id) ? "superseded" : "current")));
+  }));
+  const serveAuthorizationDocument = (disposition: "inline" | "attachment") => asyncHandler(async (req: any, res: any) => {
+    const [row] = await db.select().from(practiceAuthorizationDocuments).where(eq(practiceAuthorizationDocuments.id, req.params.documentId)).limit(1);
+    if (!row) throw new HttpError(404, "Authorization document not found.");
+    const requestedLab = typeof req.query.labOrganizationId === "string" ? req.query.labOrganizationId : row.labOrganizationId;
+    if (requestedLab !== row.labOrganizationId) throw new HttpError(403, "Authorization document is outside this lab.");
+    await storedDocumentScope(req.auth.userId, row.labOrganizationId, row.practiceOrganizationId);
+    const object = await openCaseMediaObjectStream(row.objectKey, "application/pdf");
+    if (!object) throw new HttpError(404, "Authorization document not found.");
+    const chunks: Buffer[] = []; for await (const chunk of object.stream as any) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const data = Buffer.concat(chunks);
+    if (createHash("sha256").update(data).digest("hex") !== row.checksum) throw new HttpError(422, "Authorization document integrity check failed.");
+    res.type("application/pdf").set("Content-Disposition", `${disposition}; filename="${row.originalFilename.replace(/["\r\n]/g, "_")}"`).end(data);
+  });
+  router.get("/admin/authorization-documents/:documentId/preview", requireAuth, serveAuthorizationDocument("inline"));
+  router.get("/admin/authorization-documents/:documentId/download", requireAuth, serveAuthorizationDocument("attachment"));
 
   const DEFAULT_INVOICE_TEMPLATE = {
     showLogo: true,
@@ -6592,6 +7784,8 @@ Important rules:
   const DEFAULT_STATEMENT_EMAIL_TEMPLATE = {
     emailSubject: null as string | null,
     emailBody: null as string | null,
+    emailHeader: null as string | null,
+    emailReplyTo: null as string | null,
   };
 
   router.get("/admin/templates/statement-email", requireAuth, async (req, res) => {
@@ -6603,7 +7797,14 @@ Important rules:
       const [row] = await db.select().from(systemSettings).where(eq(systemSettings.key, key));
       const stored = row ? (() => { try { return JSON.parse(row.value ?? "{}"); } catch { return {}; } })() : {};
       const template = { ...DEFAULT_STATEMENT_EMAIL_TEMPLATE, ...stored };
-      return res.json({ ok: true, emailSubject: template.emailSubject, emailBody: template.emailBody, orgId: org.id });
+      return res.json({
+        ok: true,
+        emailSubject: template.emailSubject,
+        emailBody: template.emailBody,
+        emailHeader: template.emailHeader,
+        emailReplyTo: template.emailReplyTo,
+        orgId: org.id,
+      });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to get statement email template." });
     }
@@ -6623,6 +7824,8 @@ Important rules:
         ...current,
         ...(typeof body.emailSubject !== "undefined" ? { emailSubject: body.emailSubject || null } : {}),
         ...(typeof body.emailBody !== "undefined" ? { emailBody: body.emailBody || null } : {}),
+        ...(typeof body.emailHeader !== "undefined" ? { emailHeader: body.emailHeader || null } : {}),
+        ...(typeof body.emailReplyTo !== "undefined" ? { emailReplyTo: body.emailReplyTo || null } : {}),
       };
       await db
         .insert(systemSettings)
@@ -6631,18 +7834,24 @@ Important rules:
           target: systemSettings.key,
           set: { value: JSON.stringify(updated), updatedAt: new Date() },
         });
-      return res.json({ ok: true, emailSubject: updated.emailSubject, emailBody: updated.emailBody });
+      return res.json({
+        ok: true,
+        emailSubject: updated.emailSubject,
+        emailBody: updated.emailBody,
+        emailHeader: updated.emailHeader,
+        emailReplyTo: updated.emailReplyTo,
+      });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to update statement email template." });
     }
   });
 
-  // ── Admin: send authorization form by email ───────────────────────────────
+  // ── Billing: send authorization form by email ─────────────────────────────
   router.post("/admin/auth-form-email", requireAuth, async (req, res) => {
     try {
       const userId = (req as any).auth?.userId as string;
-      const org = await getAdminLabOrg(userId);
-      if (!org) return res.status(403).json({ error: "Admin access required." });
+      const org = await getBillingLabOrg(userId);
+      if (!org) return res.status(403).json({ error: "Billing access required." });
       const body = (req.body ?? {}) as Record<string, unknown>;
       const to = typeof body.to === "string" ? body.to.trim() : "";
       const subject = typeof body.subject === "string" ? body.subject.trim() : "";
@@ -6678,7 +7887,8 @@ Important rules:
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
-    const CUTOFF = new Date("2026-06-01T04:00:00.000Z"); // 2026-06-01 00:00 America/New_York (EDT)
+      const CUTOFF = new Date("2026-06-01T04:00:00.000Z"); // 2026-06-01 00:00 America/New_York (EDT)
+      const CASE_CUTOFF = "2026-06-01";
     const CONFIRM_PHRASE = "DELETE_PRE_JUNE_2026";
 
     const parseLegacyCreatedAtMs = (raw: unknown): number | null => {
@@ -6731,7 +7941,7 @@ Important rules:
         .where(
           and(
             notDeleted(casesTable),
-            sql`${casesTable.receivedAt} < ${CUTOFF}`,
+            sql`${casesTable.receivedAt} < ${CASE_CUTOFF}`,
             ...(scopeOrgId ? [eq(casesTable.labOrganizationId, scopeOrgId)] : []),
           ),
         );
@@ -6790,8 +8000,8 @@ Important rules:
         unparseableLegacySkipped: unparseableLegacy,
         caseReceivedRange: preCases.length
           ? {
-              oldest: new Date(Math.min(...preCases.map((c) => +new Date(c.receivedAt as any)))).toISOString(),
-              newest: new Date(Math.max(...preCases.map((c) => +new Date(c.receivedAt as any)))).toISOString(),
+              oldest: preCases.map((c) => c.receivedAt).sort()[0],
+              newest: preCases.map((c) => c.receivedAt).sort().at(-1),
             }
           : null,
         legacyCreatedRange: preLegacy.length
@@ -6812,27 +8022,7 @@ Important rules:
       }
 
       // ── Live run ──────────────────────────────────────────────────────────
-      // Soft-delete canonical cases (one audit entry per case).
-      for (const c of preCases) {
-        await softDeleteById({
-          table: casesTable,
-          id: c.id,
-          actorUserId,
-          req,
-          organizationId: c.labOrganizationId,
-          entityType: "case",
-          beforeJson: c,
-          metadataJson: {
-            caseNumber: c.caseNumber,
-            patientName: [c.patientFirstName, c.patientLastName].filter(Boolean).join(" "),
-            cleanup: "pre_cutoff_2026_06_01",
-          },
-        });
-      }
-
-      // Freeze any invoice still linked to a deleted case (kept, not deleted —
-      // same guarantee as the normal delete flows). Grouped per lab because the
-      // shared helper is tenant-scoped.
+      // Group canonical cases per lab because invoice freezing is tenant-scoped.
       const caseIdsByLab = new Map<string, { ids: string[]; numbers: Map<string, string | null | undefined> }>();
       for (const c of preCases) {
         const bucket =
@@ -6843,15 +8033,38 @@ Important rules:
         caseIdsByLab.set(c.labOrganizationId, bucket);
       }
       let invoicesFrozen = 0;
-      for (const [labOrganizationId, bucket] of caseIdsByLab) {
-        invoicesFrozen += await freezeInvoicesForDeletedCases({
-          req,
-          caseIds: bucket.ids,
-          labOrganizationId,
-          deletingUserId: actorUserId,
-          caseNumberById: bucket.numbers,
-        });
-      }
+      await db.transaction(async (tx) => {
+        // A canonical case and every active invoice linked to it must change
+        // together, including their audit records.
+        for (const c of preCases) {
+          await softDeleteById({
+            table: casesTable,
+            id: c.id,
+            actorUserId,
+            req,
+            organizationId: c.labOrganizationId,
+            entityType: "case",
+            beforeJson: c,
+            metadataJson: {
+              caseNumber: c.caseNumber,
+              patientName: [c.patientFirstName, c.patientLastName].filter(Boolean).join(" "),
+              cleanup: "pre_cutoff_2026_06_01",
+            },
+            tx,
+          });
+        }
+
+        for (const [labOrganizationId, bucket] of caseIdsByLab) {
+          invoicesFrozen += await freezeInvoicesForDeletedCases({
+            req,
+            caseIds: bucket.ids,
+            labOrganizationId,
+            deletingUserId: actorUserId,
+            caseNumberById: bucket.numbers,
+            tx,
+          });
+        }
+      });
 
       // Soft-delete pre-cutoff invoices (one audit entry per invoice).
       for (const inv of preInvoices) {
@@ -6909,17 +8122,169 @@ Important rules:
     }
   });
 
-  // ── Admin: SDR1 legacy open-invoice cleanup (one-shot, platform-admin gated) ──
-  // Removes the ~66 bad "open invoices" (INV-26-1…51 era, Apr–Jun 2026) that
-  // the SDR1 lab still sees. Those records are synthesized at read time from
-  // still-active legacy `lab_cases` blobs carrying an embedded invoiceId; the
-  // canonical INV-26-1…51 invoices were already voided + soft-deleted, and the
-  // lab's legitimate invoices are INV-26-101+ (July 2026 onward).
+  // ── Admin: externalize base64 photos embedded in legacy case blobs ───────
+  // Legacy mobile cases store one JSON blob per case in `lab_cases.case_data`,
+  // and early mobile builds embedded each photo in it as base64. A single
+  // photo can make a row 10 MB, and that row is read and copied whole by case
+  // detail, mobile sync, the nightly backup ZIP, and every restore.
   //
-  // Matching (see ../lib/sdr1-legacy-cleanup.ts) is by patient name from the
-  // structured target list + the legacy era date window — NEVER by invoice or
-  // case number alone, because the legacy numbers (26-1…26-51) were re-used by
-  // legitimate canonical cases with different patients.
+  // This sweep moves each payload to a normal case-media file (disk + App
+  // Storage) with its `legacy_case_media` ledger row, and leaves a reference
+  // in the blob. See ../lib/legacy-case-media-externalize.ts for the per-case
+  // ordering and the parity check.
+  //
+  // Safety model:
+  //   - Gated by platformAdminUserOrSecret + isPlatformAdmin.
+  //   - Defaults to dryRun:true — files are written and verified and the
+  //     rewrite is parity-checked, but no blob is changed.
+  //   - A live run additionally requires
+  //     confirm:"EXTERNALIZE_LEGACY_CASE_MEDIA".
+  //   - Batched and resumable: candidates are "blobs that still contain
+  //     base64", so a migrated case drops out and an interrupted run is
+  //     continued simply by calling again. `limit` bounds one invocation.
+  //   - Every original blob is backed up to App Storage and read back before
+  //     its row is rewritten; a backup that could only reach ephemeral local
+  //     disk aborts that case unless allowLocalBackup:true.
+  router.get(
+    "/admin/maintenance/legacy-case-media",
+    platformAdminUserOrSecret,
+    async (req, res) => {
+      if (!isPlatformAdmin(req)) {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      try {
+        return res.json({ ok: true, ...(await getLegacyCaseMediaMigrationStatus()) });
+      } catch (e: any) {
+        req.log?.error?.({ err: e }, "legacy case media status failed");
+        return res.status(500).json({ error: e?.message || "Status failed." });
+      }
+    },
+  );
+
+  router.post(
+    "/admin/maintenance/legacy-case-media",
+    platformAdminUserOrSecret,
+    async (req, res) => {
+      if (!isPlatformAdmin(req)) {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const dryRun = body.dryRun !== false; // default: dry run
+      if (!dryRun && body.confirm !== LEGACY_CASE_MEDIA_CONFIRM) {
+        return res.status(400).json({
+          error: `Live run requires body { dryRun: false, confirm: "${LEGACY_CASE_MEDIA_CONFIRM}" }.`,
+        });
+      }
+      try {
+        const actorName =
+          ((req as any).user?.username as string) || "platform-admin";
+        // `caseIds` narrows the sweep to specific cases — how an operator
+        // retries one case that failed or was skipped, without touching the
+        // rest. Omitted, the run sweeps every case still holding base64.
+        const caseIds = Array.isArray(body.caseIds)
+          ? body.caseIds.filter((id): id is string => typeof id === "string" && !!id)
+          : undefined;
+        const report = await runLegacyCaseMediaMigration({
+          dryRun,
+          caseIds,
+          limit: typeof body.limit === "number" ? body.limit : undefined,
+          batchSize: typeof body.batchSize === "number" ? body.batchSize : undefined,
+          runId: typeof body.runId === "string" && body.runId ? body.runId : undefined,
+          requireDurableBackup: body.allowLocalBackup !== true,
+        });
+        if (!dryRun) {
+          await writeAuditLog({
+            req,
+            userId: ((req as any).user?.id as string | null) ?? null,
+            organizationId: null,
+            action: "legacy_case_media_externalized",
+            entityType: "system",
+            entityId: report.runId,
+            metadataJson: {
+              actor: actorName,
+              runId: report.runId,
+              scannedCases: report.scannedCases,
+              migratedCases: report.migratedCases,
+              skippedCases: report.skippedCases,
+              failedCases: report.failedCases,
+              filesWritten: report.filesWritten,
+              bytesRemovedFromBlobs: report.bytesRemovedFromBlobs,
+              remainingCases: report.remainingCases,
+            },
+          });
+        }
+        return res.json({ ok: report.failedCases === 0, ...report });
+      } catch (e: any) {
+        req.log?.error?.({ err: e }, "legacy case media externalization failed");
+        return res.status(500).json({ error: e?.message || "Migration failed." });
+      }
+    },
+  );
+
+  // Undo for the sweep above: put a case's original pre-migration blob back
+  // from the backup that run took. The stored object is an envelope, so this
+  // has to be code rather than a "write the JSON back" instruction — the
+  // original is the `caseData` string inside it.
+  router.post(
+    "/admin/maintenance/legacy-case-media/restore",
+    platformAdminUserOrSecret,
+    async (req, res) => {
+      if (!isPlatformAdmin(req)) {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const runId = typeof body.runId === "string" ? body.runId.trim() : "";
+      const caseIds = Array.isArray(body.caseIds)
+        ? body.caseIds.filter((id): id is string => typeof id === "string" && !!id)
+        : [];
+      if (!runId || caseIds.length === 0) {
+        return res
+          .status(400)
+          .json({ error: "Body must include { runId, caseIds: [...] }." });
+      }
+      const dryRun = body.dryRun !== false; // default: dry run
+      if (!dryRun && body.confirm !== LEGACY_CASE_DATA_RESTORE_CONFIRM) {
+        return res.status(400).json({
+          error: `Live restore requires body { dryRun: false, confirm: "${LEGACY_CASE_DATA_RESTORE_CONFIRM}" }.`,
+        });
+      }
+      try {
+        const report = await restoreLegacyCaseDataFromBackup({
+          runId,
+          caseIds,
+          dryRun,
+        });
+        if (!dryRun) {
+          await writeAuditLog({
+            req,
+            userId: ((req as any).user?.id as string | null) ?? null,
+            organizationId: null,
+            action: "legacy_case_data_restored",
+            entityType: "system",
+            entityId: runId,
+            metadataJson: {
+              actor: ((req as any).user?.username as string) || "platform-admin",
+              runId,
+              requestedCases: caseIds.length,
+              restoredCases: report.restoredCases,
+              cases: report.cases,
+            },
+          });
+        }
+        return res.json({
+          ok: report.cases.every((c) => c.status !== "failed"),
+          ...report,
+        });
+      } catch (e: any) {
+        req.log?.error?.({ err: e }, "legacy case data restore failed");
+        return res.status(500).json({ error: e?.message || "Restore failed." });
+      }
+    },
+  );
+
+  // ── Admin: targeted legacy invoice cleanup (one-shot, platform-admin gated) ──
+  // The target identity list and date window are validated private configuration.
+  // Matching is by patient identity and date window, never by reused case number.
   //
   // Safety model:
   //   - Gated by platformAdminUserOrSecret + isPlatformAdmin (secret header).
@@ -6927,7 +8292,7 @@ Important rules:
   //     needs allowNonSdr1OrgForTesting:true, which is rejected in production.
   //   - Defaults to dryRun:true — full matched/ambiguous/nonTarget report,
   //     changes nothing.
-  //   - A live run additionally requires confirm:"DELETE_SDR1_LEGACY_OPEN_INVOICES".
+  //   - A live run additionally requires the configured exact confirmation phrase.
   //   - Linked canonical cases/invoices are only soft-deleted when BOTH the
   //     number AND the patient name match a matched legacy row; a number match
   //     with a different patient is reported and skipped (fail-closed).
@@ -6936,6 +8301,9 @@ Important rules:
   router.post("/admin/cleanup/sdr1-legacy-open-invoices", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
+    }
+    if (!recoveryDataAvailable) {
+      return res.status(503).json({ error: RECOVERY_DATA_UNAVAILABLE_MESSAGE });
     }
     try {
       const body = (req.body ?? {}) as Record<string, unknown>;
@@ -7161,67 +8529,71 @@ Important rules:
       }
 
       // ── Live run ──────────────────────────────────────────────────────────
-      // Soft-delete matched legacy rows (per-row audit via the shared helper).
       let legacyDeleted = 0;
-      if (matchedLegacyIds.length > 0) {
-        const { deletedIds } = await softDeleteLegacyCases({
-          ids: matchedLegacyIds,
-          deletedBy: `cleanup:sdr1-legacy:${actorName}`,
-          actorUserId,
-          organizationId: orgId,
-          req,
-        });
-        legacyDeleted = deletedIds.length;
-      }
-
-      // Soft-delete linked canonical cases (number + name matched).
-      for (const c of linkedCanonicalCases) {
-        await softDeleteById({
-          table: casesTable,
-          id: c.id,
-          actorUserId,
-          req,
-          organizationId: orgId,
-          entityType: "case",
-          beforeJson: c,
-          metadataJson: {
-            caseNumber: c.caseNumber,
-            patientName: c.patientName,
-            cleanup: "sdr1_legacy_open_invoices",
-          },
-        });
-      }
-      // Freeze (never delete) any OTHER still-active invoice linked to a
-      // canonical case we just deleted — same guarantee as normal delete flows.
       let invoicesFrozen = 0;
-      if (linkedCanonicalCases.length > 0) {
-        invoicesFrozen = await freezeInvoicesForDeletedCases({
-          req,
-          caseIds: linkedCanonicalCases.map((c) => c.id),
-          labOrganizationId: orgId,
-          deletingUserId: actorUserId,
-          caseNumberById: new Map(linkedCanonicalCases.map((c) => [c.id, c.caseNumber])),
-        });
-      }
+      await db.transaction(async (tx) => {
+        // Legacy rows determine the canonical match set, so all cleanup writes
+        // must roll back together to keep a failed run safely retryable.
+        if (matchedLegacyIds.length > 0) {
+          const { deletedIds } = await softDeleteLegacyCases({
+            ids: matchedLegacyIds,
+            deletedBy: `cleanup:sdr1-legacy:${actorName}`,
+            actorUserId,
+            organizationId: orgId,
+            req,
+            tx,
+          });
+          legacyDeleted = deletedIds.length;
+        }
 
-      // Soft-delete linked canonical invoices (part of the target set).
-      for (const inv of linkedCanonicalInvoices) {
-        await softDeleteById({
-          table: invoices,
-          id: inv.id,
-          actorUserId,
-          req,
-          organizationId: orgId,
-          entityType: "invoice",
-          beforeJson: inv,
-          metadataJson: {
-            invoiceNumber: inv.invoiceNumber,
-            patientName: inv.patientName,
-            linkVia: inv.linkVia,
-            cleanup: "sdr1_legacy_open_invoices",
-          },
-        });
-      }
+        for (const c of linkedCanonicalCases) {
+          await softDeleteById({
+            table: casesTable,
+            id: c.id,
+            actorUserId,
+            req,
+            organizationId: orgId,
+            entityType: "case",
+            beforeJson: c,
+            metadataJson: {
+              caseNumber: c.caseNumber,
+              patientName: c.patientName,
+              cleanup: "sdr1_legacy_open_invoices",
+            },
+            tx,
+          });
+        }
+        if (linkedCanonicalCases.length > 0) {
+          invoicesFrozen = await freezeInvoicesForDeletedCases({
+            req,
+            caseIds: linkedCanonicalCases.map((c) => c.id),
+            labOrganizationId: orgId,
+            deletingUserId: actorUserId,
+            caseNumberById: new Map(linkedCanonicalCases.map((c) => [c.id, c.caseNumber])),
+            tx,
+          });
+        }
+
+        // Soft-delete linked canonical invoices (part of the target set).
+        for (const inv of linkedCanonicalInvoices) {
+          await softDeleteById({
+            table: invoices,
+            id: inv.id,
+            actorUserId,
+            req,
+            organizationId: orgId,
+            entityType: "invoice",
+            beforeJson: inv,
+            metadataJson: {
+              invoiceNumber: inv.invoiceNumber,
+              patientName: inv.patientName,
+              linkVia: inv.linkVia,
+              cleanup: "sdr1_legacy_open_invoices",
+            },
+            tx,
+          });
+        }
+      });
 
       const result = {
         ...summary,
@@ -7250,6 +8622,81 @@ Important rules:
     }
   });
 
+  // ── Lab-scoped backup download ────────────────────────────────────────────
+  // This route intentionally has no platform-admin middleware. The requested
+  // organization is only a selector: every request is resolved against the
+  // caller's current, active owner/admin membership before any data is read.
+  router.get("/lab/backup/generate", requireAuth, async (req, res) => {
+    const userId = (req as any).auth?.userId ?? (req as any).user?.id;
+    if (typeof userId !== "string" || !userId) {
+      return res.status(401).json({ error: "Sign in again to download a lab backup." });
+    }
+
+    const requestedLabId = typeof req.query.labOrganizationId === "string"
+      ? req.query.labOrganizationId.trim()
+      : "";
+
+    try {
+      const memberships = await db
+        .select({
+          organizationId: organizations.id,
+          organizationName: organizations.name,
+        })
+        .from(organizationMemberships)
+        .innerJoin(organizations, eq(organizations.id, organizationMemberships.labId))
+        .where(and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.status, "active"),
+          isNull(organizationMemberships.deletedAt),
+          inArray(organizationMemberships.role, ADMIN_ROLES),
+          eq(organizations.type, "lab"),
+          eq(organizations.isActive, true),
+          isNull(organizations.deletedAt),
+        ));
+
+      if (memberships.length === 0) {
+        return res.status(403).json({
+          error: "An active lab owner or admin membership is required to download a lab backup.",
+        });
+      }
+
+      let selected = undefined as typeof memberships[number] | undefined;
+      if (requestedLabId) {
+        selected = memberships.find((membership) => membership.organizationId === requestedLabId);
+        if (!selected) {
+          return res.status(403).json({
+            error: "You do not have active owner or admin access to the selected lab.",
+          });
+        }
+      } else if (memberships.length === 1) {
+        selected = memberships[0];
+      } else {
+        return res.status(400).json({
+          error: "Choose one of your actively administered labs before downloading its backup.",
+        });
+      }
+
+      await streamLabScopedBackupDownload({
+        labId: selected.organizationId,
+        labName: selected.organizationName,
+        userId,
+        response: res,
+      });
+      return;
+    } catch (error: unknown) {
+      const diagnostic = error instanceof Error ? error.message : "Lab backup generation failed.";
+      if (!res.headersSent) {
+        return res.status(500).json({
+          error: backupErrorMessage(diagnostic),
+          diagnostic,
+        });
+      }
+      req.log?.error?.({ err: error }, "Lab-scoped backup stream failed");
+      if (!res.writableEnded) res.destroy();
+      return;
+    }
+  });
+
   // ── Admin Backup: run now ─────────────────────────────────────────────────
   router.post("/admin/backup/run", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {
@@ -7257,9 +8704,24 @@ Important rules:
     }
     const reqUser = (req as any).user;
     const body = (req.body ?? {}) as Record<string, unknown>;
+    const requestedRunId = typeof body.runId === "string" ? body.runId : undefined;
+    if (body.runId !== undefined &&
+      (!requestedRunId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestedRunId))) {
+      return res.status(400).json({ error: "runId must be a valid backup run UUID." });
+    }
+    if (requestedRunId && await getBackupLiveStatus(requestedRunId)) {
+      return res.status(409).json({ error: "This backup run ID has already been used." });
+    }
     const destination = body.destination as BackupDestination | undefined;
-    if (destination !== "local" && destination !== "network") {
-      return res.status(400).json({ error: "destination must be one of: local, network." });
+    if (
+      destination !== "local" &&
+      destination !== "network" &&
+      destination !== "onedrive" &&
+      destination !== "google-drive"
+    ) {
+      return res.status(400).json({
+        error: "destination must be one of: local, network, onedrive, google-drive.",
+      });
     }
     const destPath = typeof body.path === "string" ? body.path.trim() : undefined;
     if ((destination === "local" || destination === "network") && !destPath) {
@@ -7267,15 +8729,34 @@ Important rules:
     }
     try {
       const triggeredBy = `manual:${(reqUser as any)?.username || "admin"}`;
-      const result = await runBackup(triggeredBy, destination, destPath);
-      return res.json({ ok: true, size: result.size, completedAt: result.completedAt, fileName: result.fileName });
+      const result = await withBackupRun(() => runBackup(triggeredBy, destination, destPath), requestedRunId);
+      // A run that dropped content is not a clean success. The history list
+      // already shows it amber; saying "Backup complete" here (and nowhere
+      // else) is how a partial archive gets mistaken for a recovery point.
+      return res.json({
+        ok: true,
+        size: result.size,
+        completedAt: result.completedAt,
+        fileName: result.fileName,
+        archiveKind: result.archiveKind ?? null,
+        mediaFileCount: result.mediaFileCount ?? null,
+        attachmentRowCount: result.attachmentRowCount ?? null,
+        partialFailure: result.partialFailure ?? false,
+        warnings: result.warnings ?? null,
+        warningMessage: result.partialFailure ? partialBackupMessage() : null,
+        ...(requestedRunId ? { runId: requestedRunId } : {}),
+      });
     } catch (e: any) {
-      return res.status(500).json({ error: e?.message || "Backup failed." });
+      const diagnostic = e?.message || "Backup failed.";
+      return res.status(500).json({
+        error: backupErrorMessage(diagnostic),
+        diagnostic,
+      });
     }
   });
 
   // ── Admin Backup: generate (stream to client) ─────────────────────────────
-  // Builds the backup in memory and sends the raw bytes back so the client
+    // Streams the encrypted archive back so the client
   // (Electron or browser) can save the file locally. This is the correct path
   // for "Back up now → Local folder / USB" because the user's drive is on
   // their machine, not on the Linux server.
@@ -7285,17 +8766,30 @@ Important rules:
       return;
     }
     const reqUser = (req as any).user;
-    const triggeredBy = `manual:${(reqUser as any)?.username || "admin"}`;
+    // deferRecord=1 is the desktop-scheduler path: the download alone doesn't
+    // prove the file reached the local folder, so history/staleness recording
+    // is deferred to POST /admin/backup/desktop-run-report (the scheduler
+    // reports success or failure after the folder write). Without the flag
+    // (manual "Back up now") a successful stream is recorded immediately.
+    const deferRecord = req.query.deferRecord === "1" || req.query.deferRecord === "true";
+    const triggeredBy = deferRecord && req.query.source !== "manual"
+      ? `scheduler:desktop:${(reqUser as any)?.username || "admin"}`
+      : `manual:${(reqUser as any)?.username || "admin"}`;
     try {
       // Streams the encrypted ZIP straight to the client (chunked transfer) so
       // large labs don't hit the proxy's single-shot transfer cap that caused
       // "Failed to fetch". Pre-flight failures throw before any byte is written
       // and are reported as a JSON 500 below; once streaming begins the headers
       // are already sent, so we just log and let the aborted connection surface.
-      await streamBackupDownload(triggeredBy, res);
+      const requestedRunId = typeof req.query.runId === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.query.runId)
+        ? req.query.runId
+        : undefined;
+      await streamBackupDownload(triggeredBy, res, { recordHistory: !deferRecord, runId: requestedRunId });
     } catch (e: any) {
       if (!res.headersSent) {
-        res.status(500).json({ error: e?.message || "Backup failed." });
+        const diagnostic = e?.message || "Backup failed.";
+        res.status(500).json({ error: backupErrorMessage(diagnostic), diagnostic });
         return;
       }
       req.log.error({ err: e }, "Backup stream aborted after headers were sent");
@@ -7312,10 +8806,18 @@ Important rules:
       return res.status(403).json({ error: "Lab admin access required." });
     }
     try {
-      const [lastSuccessfulBackupAt, staleDaysRow] = await Promise.all([
-        getLastSuccessfulBackupAt(),
-        db.select().from(systemSettings).where(eq(systemSettings.key, SETTING_BACKUP_STALE_DAYS)).limit(1),
-      ]);
+      // Freshness comes from the archive confirmed present off-site, not from
+      // the database watermark: the watermark is advanced by runs that
+      // believed they worked, and it is what read "healthy" for eighteen days
+      // with nothing in OneDrive. The watermark is still reported, as the
+      // second-hand figure it is.
+      const [lastSuccessfulBackupAt, staleDaysRow, freshness, undeliveredAlert] =
+        await Promise.all([
+          getLastSuccessfulBackupAt(),
+          db.select().from(systemSettings).where(eq(systemSettings.key, SETTING_BACKUP_STALE_DAYS)).limit(1),
+          getOffsiteFreshness(),
+          getUndeliveredBackupAlert(),
+        ]);
       const staleDaysRaw = staleDaysRow[0]?.value ?? null;
       const staleAfterDays =
         staleDaysRaw !== null ? parseInt(staleDaysRaw, 10) : DEFAULT_BACKUP_STALE_DAYS;
@@ -7323,10 +8825,25 @@ Important rules:
         ok: true,
         lastSuccessfulBackupAt,
         staleAfterDays: Number.isFinite(staleAfterDays) ? staleAfterDays : DEFAULT_BACKUP_STALE_DAYS,
+        offsite: {
+          enabled: freshness.enabled,
+          stale: freshness.enabled && freshness.stale,
+          ageMinutes: freshness.ageMinutes,
+          windowMinutes: freshness.windowMinutes,
+          intervalMinutes: freshness.intervalMinutes,
+          source: freshness.source,
+          reason: freshness.reason,
+          destinationUnreadable: freshness.destinationUnreadable,
+          newestArchive: freshness.newestArchive,
+        },
+        undeliveredAlert,
       });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to fetch backup overdue status.";
-      return res.status(500).json({ error: msg });
+      const diagnostic = e instanceof Error ? e.message : "Failed to fetch backup overdue status.";
+      return res.status(500).json({
+        error: backupErrorMessage(diagnostic, "status"),
+        diagnostic,
+      });
     }
   });
 
@@ -7349,15 +8866,49 @@ Important rules:
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
-      const [config, lastSuccessfulBackupAt, staleAlertSettings, staleDaysRow] = await Promise.all([
-        getBackupScheduleConfig(),
-        getLastSuccessfulBackupAt(),
-        getBackupStaleAlertSettings(),
-        db.select().from(systemSettings).where(eq(systemSettings.key, SETTING_BACKUP_STALE_DAYS)).limit(1),
-      ]);
+      const [config, lastSuccessfulBackupAt, staleAlertSettings, staleDaysRow, scheduleState, fullArchiveIntervalMinutes, offsite, freshness, alertLog] =
+        await Promise.all([
+          getBackupScheduleConfig(),
+          getLastSuccessfulBackupAt(),
+          getBackupStaleAlertSettings(),
+          db.select().from(systemSettings).where(eq(systemSettings.key, SETTING_BACKUP_STALE_DAYS)).limit(1),
+          getBackupScheduleState(),
+          Promise.resolve(15),
+          getOffsiteProtectionStatus(),
+          getOffsiteFreshness(),
+          getBackupAlertDeliveryLog(),
+        ]);
       const { interval, unit } = fromIntervalMinutes(config.intervalMinutes);
       const staleDaysRaw = staleDaysRow[0]?.value ?? null;
       const staleAfterDays = staleDaysRaw !== null ? parseInt(staleDaysRaw, 10) : DEFAULT_BACKUP_STALE_DAYS;
+
+      // Report the newest archive that is actually present at the destination,
+      // not just the newest run we believe succeeded. A run row says we tried;
+      // only the destination listing says a recovery point exists.
+      // Off-site protection runs its own timer on the deployed server, at its
+      // own cadence, whatever the editable schedule row says. Reporting that
+      // row as "the server's cadence" would claim hourly (or paused) while
+      // archives are really appearing every fifteen minutes, so the cadence
+      // reported here is the one belonging to the job that is running.
+      const offsiteActive = offsite.enabled && offsite.running;
+      const effectiveIntervalMinutes = offsiteActive
+        ? offsite.intervalMinutes
+        : config.enabled
+          ? config.intervalMinutes
+          : null;
+      const effectiveDestination = offsiteActive
+        ? "onedrive"
+        : config.enabled
+          ? config.destination
+          : null;
+
+      // Read back from the destination's own listing (the same evidence the
+      // out-of-process freshness check uses), so this card and the watchdog
+      // can never disagree about whether a recovery point exists.
+      const newestArchive = freshness.newestArchive;
+      const newestArchiveError = freshness.listingError;
+      const archiveCount = freshness.archiveCount;
+
       return res.json({
         ok: true,
         interval,
@@ -7369,10 +8920,44 @@ Important rules:
         staleAlertThresholdDays: staleAlertSettings.thresholdDays,
         staleAlertRateLimitDays: staleAlertSettings.rateLimitDays,
         staleAfterDays: Number.isFinite(staleAfterDays) ? staleAfterDays : DEFAULT_BACKUP_STALE_DAYS,
+        // What the server is actually running, read back from its own state.
+        effectiveIntervalMinutes,
+        effectiveDestination,
+        scheduleIntervalMinutes: config.intervalMinutes,
+        offsite: {
+          enabled: offsite.enabled,
+          running: offsite.running,
+          intervalMinutes: offsite.intervalMinutes,
+          lastVerifiedAt: offsite.lastVerifiedAt,
+          // Judged from the confirmed archive, not the database watermark.
+          stale: offsite.enabled && freshness.stale,
+          ageMinutes: freshness.ageMinutes,
+          windowMinutes: freshness.windowMinutes,
+          source: freshness.source,
+          reason: freshness.reason,
+          destinationUnreadable: freshness.destinationUnreadable,
+        },
+        // Every alert attempt and its outcome, so an alert nobody could
+        // receive is visible here instead of only in the server log.
+        alertDelivery: {
+          undelivered: findUndeliveredBackupAlert(alertLog),
+          recent: alertLog.slice(0, 5),
+        },
+        fullArchiveIntervalMinutes,
+        nextDueAt: scheduleState.nextDueAt?.toISOString() ?? null,
+        lastAttemptAt: scheduleState.lastAttemptAt?.toISOString() ?? null,
+        newestArchive,
+        newestArchiveError,
+        newestArchiveErrorMessage: newestArchiveError ? backupStatusErrorMessage() : null,
+        newestArchiveErrorDiagnostic: newestArchiveError,
+        archiveCount,
       });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to fetch backup schedule.";
-      return res.status(500).json({ error: msg });
+      const diagnostic = e instanceof Error ? e.message : "Failed to fetch backup schedule.";
+      return res.status(500).json({
+        error: backupErrorMessage(diagnostic, "status"),
+        diagnostic,
+      });
     }
   });
 
@@ -7414,32 +8999,42 @@ Important rules:
       return res.status(400).json({ error: "staleAfterDays must be an integer between 1 and 365." });
     }
     const intervalMinutes = toIntervalMinutes(intervalRaw, unit);
-    const VALID_INTERVALS = [15, 30, 60, 120, 240, 480, 1440];
+    // The current desktop/browser menu offers 5, 10, 15 minutes and 1 hour.
+    // Keep older saved intervals writable so an unrelated edit can preserve a
+    // legacy schedule until the admin explicitly selects a new cadence.
+    const VALID_INTERVALS = [5, 10, 15, 30, 60, 120, 240, 480, 1440];
     if (!VALID_INTERVALS.includes(intervalMinutes)) {
       return res.status(400).json({
-        error: `Computed intervalMinutes (${intervalMinutes}) is not a supported value. Valid combinations: 15 min, 30 min, 1 h, 2 h, 4 h, 8 h, 24 h.`,
+        error: `Computed intervalMinutes (${intervalMinutes}) is not a supported value. Valid combinations: 5, 10, 15, 30 min, 1 h, 2 h, 4 h, 8 h, 24 h.`,
       });
     }
-    if (destination !== "local" && destination !== "network") {
-      return res.status(400).json({ error: "destination must be one of: local, network." });
+    if (
+      destination !== "local" &&
+      destination !== "network" &&
+      destination !== "onedrive" &&
+      destination !== "google-drive"
+    ) {
+      return res.status(400).json({
+        error: "destination must be one of: local, network, onedrive, google-drive.",
+      });
     }
     if ((destination === "local" || destination === "network") && !destPath) {
       return res.status(400).json({ error: "path is required for local and network destinations." });
     }
-    // Block local folder and UNC/SMB network destinations for scheduled backups.
-    // Scheduled runs execute on the server (Linux); paths like C:\Backups or \\server\share
-    // exist on the admin's Windows machine, not the server. Writing to those paths would
-    // silently produce a file that never reaches the user. Only SFTP is server-reachable.
-    if (
-      destination === "local" ||
-      (destination === "network" && destPath && !destPath.startsWith("sftp://"))
-    ) {
+    // Local-folder schedules are allowed: they are executed by the LabTrax
+    // Desktop app while it is open (the server silently skips them). OneDrive
+    // and Google Drive schedules run fully server-side. UNC/SMB network paths remain blocked —
+    // they exist on the admin's Windows machine, not the server, so a scheduled
+    // (server-side) write would silently produce a file that never reaches the
+    // user. Only SFTP network destinations are server-reachable.
+    if (destination === "network" && destPath && !destPath.startsWith("sftp://")) {
       return res.status(400).json({
         error:
-          "Scheduled backups can only use SFTP destinations. " +
-          "Local folder and UNC/SMB network paths exist on your Windows machine, not on the server " +
+          "Scheduled network backups can only use SFTP destinations. " +
+          "UNC/SMB network paths exist on your Windows machine, not on the server " +
           "where scheduled backups run (Linux). The file would never reach you. " +
-          "Use an SFTP URL (sftp://user@host/path) for scheduled backups, or use \u201cBack up now\u201d for local folder / USB backups.",
+          "Use an SFTP URL (sftp://user@host/path), OneDrive, Google Drive, or a local folder " +
+          "(written by the LabTrax Desktop app while it is open).",
       });
     }
     // Reject SFTP URLs with embedded passwords — credentials must not be stored
@@ -7481,6 +9076,10 @@ Important rules:
       await upsert(SETTING_BACKUP_SCHEDULE_DESTINATION, destination);
       await upsert(SETTING_BACKUP_SCHEDULE_PATH, destPath);
       await upsert(SETTING_BACKUP_SCHEDULE_ENABLED, enabled ? "true" : "false");
+      // Drop the persisted due time: it was computed from the previous
+      // cadence, and honouring it would delay the new interval by up to a
+      // full old interval. restartScheduledBackupJob re-anchors from now.
+      await upsert(SETTING_BACKUP_SCHEDULE_NEXT_DUE_AT, null);
       if (staleThresholdRaw !== null) {
         await upsert(SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, String(staleThresholdRaw));
       }
@@ -7496,8 +9095,12 @@ Important rules:
 
       return res.json({ ok: true, interval: intervalRaw, unit, destination, path: destPath, enabled, staleAfterDays: staleAfterDaysRaw ?? DEFAULT_BACKUP_STALE_DAYS });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to save backup schedule.";
-      return res.status(500).json({ error: msg });
+      const diagnostic = e instanceof Error ? e.message : "Failed to save backup schedule.";
+      req.log?.error({ err: diagnostic }, "[backup] Could not save backup schedule");
+      return res.status(500).json({
+        error: backupSettingsErrorMessage("save"),
+        diagnostic,
+      });
     }
   });
 
@@ -7517,32 +9120,203 @@ Important rules:
       void restartScheduledBackupJob();
       return res.json({ ok: true, enabled: false });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to disable backup schedule.";
-      return res.status(500).json({ error: msg });
+      const diagnostic = e instanceof Error ? e.message : "Failed to disable backup schedule.";
+      req.log?.error({ err: diagnostic }, "[backup] Could not disable backup schedule");
+      return res.status(500).json({
+        error: backupSettingsErrorMessage("disable"),
+        diagnostic,
+      });
     }
   });
 
   // ── Admin Backup: schedule run-now ───────────────────────────────────────
   // Immediately fires one backup using the saved scheduled destination so
-  // admins can verify their SFTP config without waiting for the interval.
+  // admins can verify their SFTP or OneDrive config without waiting for the
+  // interval. Local-folder schedules run from the desktop app and return a
+  // clear error here.
   router.post("/admin/backup/schedule/run-now", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
       const result = await runScheduledBackupNow();
-      return res.json({ ok: true, size: result.size, completedAt: result.completedAt, fileName: result.fileName, destination: result.destination, path: result.path });
+      return res.json({
+        ok: true,
+        size: result.size,
+        completedAt: result.completedAt,
+        fileName: result.fileName,
+        destination: result.destination,
+        path: result.path,
+        // Carried through so a run that dropped content reads as partial here
+        // too, not only in the history list.
+        partialFailure: result.partialFailure ?? false,
+        warnings: result.warnings ?? null,
+        warningMessage: result.partialFailure ? partialBackupMessage() : null,
+      });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Backup failed.";
+      const diagnostic = e instanceof Error ? e.message : "Backup failed.";
+      return res.status(500).json({
+        error: backupErrorMessage(diagnostic),
+        diagnostic,
+      });
+    }
+  });
+
+  // ── Admin Backup: OneDrive connection status ─────────────────────────────
+  router.get("/admin/backup/onedrive-status", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const status = await getOneDriveStatus();
+      return res.json({
+        ok: true,
+        ...status,
+        userMessage: status.connected
+          ? null
+          : "OneDrive is not connected. Connect the Microsoft integration or reconnect the account, then check again.",
+        diagnostic: status.connected ? null : status.error,
+      });
+    } catch (e: unknown) {
+      const diagnostic = e instanceof Error ? e.message : "Failed to check OneDrive status.";
+      req.log?.error({ err: diagnostic }, "[backup] Could not check OneDrive connection");
+      return res.status(500).json({
+        error: backupErrorMessage(diagnostic, "status"),
+        diagnostic,
+      });
+    }
+  });
+
+  // ── Admin Backup: Google Drive connection status ──────────────────────────
+  router.get("/admin/backup/google-drive-status", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const status = await getGoogleDriveStatus();
+      return res.json({ ok: true, ...status });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to check Google Drive status.";
       return res.status(500).json({ error: msg });
     }
   });
 
-  // ── Admin Backup: history ─────────────────────────────────────────────────
-  router.get("/admin/backup/history", requireAuth, async (req, res) => {
+  // ── Admin Backup: desktop-executed run report ─────────────────────────────
+  // The LabTrax Desktop app executes local-folder schedules (it downloads the
+  // backup and writes it to the chosen folder while the app is open), then
+  // reports the outcome here so the run lands in backup_runs and a success
+  // feeds the staleness watermark/alerts.
+  router.post("/admin/backup/desktop-run-report", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin" || reqUser.userType !== "lab") {
-      return res.status(403).json({ error: "Lab admin access required." });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const status = body.status;
+    if (status !== "success" && status !== "error") {
+      return res.status(400).json({ error: "status must be 'success' or 'error'." });
+    }
+    const fileName = typeof body.fileName === "string" ? body.fileName.trim() || null : null;
+    const destPath = typeof body.path === "string" ? body.path.trim() || null : null;
+    const sizeBytesRaw = body.sizeBytes;
+    const sizeBytes =
+      typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw >= 0
+        ? Math.floor(sizeBytesRaw)
+        : null;
+    const errorText = typeof body.error === "string" ? body.error.trim().slice(0, 2000) || null : null;
+    const downloadRunId = typeof body.downloadRunId === "string" ? body.downloadRunId : undefined;
+    if (body.downloadRunId !== undefined && (!downloadRunId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(downloadRunId))) {
+      return res.status(400).json({ error: "downloadRunId must be the UUID returned by backup generation." });
+    }
+    if (status === "success" && !fileName) {
+      return res.status(400).json({ error: "fileName is required for a successful run report." });
+    }
+    try {
+      const triggeredBy = body.source === "manual"
+        ? `manual:desktop:${(reqUser as any)?.username || "admin"}`
+        : `scheduler:desktop:${(reqUser as any)?.username || "admin"}`;
+      const result = await recordDesktopReportedBackupRun({
+        triggeredBy,
+        status,
+        fileName,
+        path: destPath,
+        sizeBytes,
+        error: errorText,
+        downloadRunId,
+        archiveEvidence: downloadRunId
+          ? (await getBackupLiveStatus(downloadRunId))?.archiveEvidence
+          : undefined,
+      });
+      await finishBackupLiveRun(downloadRunId, status === "success" && !result.rejected ? "completed" : "failed");
+
+      // When the desktop scheduler reports a failure — or claims a success the
+      // server can tell is not a real backup (a placeholder-sized file) —
+      // create an in-app notification for the requesting admin so they are
+      // alerted without having to open Settings → Backup.
+      if ((status === "error" || result.rejected) && reqUser?.id) {
+        const pathNote = destPath ? ` (${destPath})` : "";
+      const failureDetail = result.rejectionReason ?? result.errorReason ?? errorText;
+      const bodyText = `${backupErrorMessage(failureDetail)}${pathNote}`;
+        try {
+          await db.insert(notifications).values({
+            userId: reqUser.id as string,
+            type: "backup_local_error",
+            title: result.rejected
+              ? "Local folder backup produced an unusable file"
+              : "Local folder backup failed",
+            body: bodyText,
+            dataJson: {
+              path: destPath,
+              error: failureDetail,
+              sizeBytes,
+            },
+          });
+        } catch {
+          // Best-effort — do not fail the response if notification insert fails.
+        }
+      }
+
+      return res.json({
+        ok: true,
+        completedAt: result.completedAt,
+        ...(result.rejected ? {
+          rejected: true,
+          warning: backupErrorMessage(result.rejectionReason),
+          diagnostic: result.rejectionReason,
+        } : {}),
+        ...(result.errorReason ? {
+          errorReason: backupErrorMessage(result.errorReason),
+          diagnostic: result.errorReason,
+        } : {}),
+      });
+    } catch (e: unknown) {
+      const diagnostic = e instanceof Error ? e.message : "Failed to record backup run.";
+      return res.status(500).json({
+        error: backupSettingsErrorMessage("save"),
+        diagnostic,
+      });
+    }
+  });
+
+  // Live phase/progress is deliberately transient and keyed by the opaque run
+  // UUID returned in X-Backup-Run-Id. It contains no archive names or paths.
+  router.get("/admin/backup/status/:runId", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const runId = String(req.params.runId ?? "");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) {
+      return res.status(400).json({ error: "A valid backup run ID is required." });
+    }
+    const status = await getBackupLiveStatus(runId);
+    if (!status) return res.status(404).json({ error: "Backup progress is no longer available." });
+    return res.json(status);
+  });
+
+  // ── Admin Backup: history ─────────────────────────────────────────────────
+  router.get("/admin/backup/history", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
     }
     try {
       const rows = await db
@@ -7550,10 +9324,88 @@ Important rules:
         .from(backupRuns)
         .orderBy(sql`${backupRuns.completedAt} DESC`)
         .limit(20);
-      return res.json({ ok: true, runs: rows });
+      return res.json({
+        ok: true,
+        runs: rows.map((run) => ({
+          ...run,
+          userMessage: run.status === "error" && run.error
+            ? backupErrorMessage(run.error)
+            : null,
+        })),
+      });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to fetch backup history.";
-      return res.status(500).json({ error: msg });
+      const diagnostic = e instanceof Error ? e.message : "Failed to fetch backup history.";
+      req.log?.error({ err: diagnostic }, "[backup] Could not load backup history");
+      return res.status(500).json({
+        error: backupSettingsErrorMessage("history"),
+        diagnostic,
+      });
+    }
+  });
+
+  // ── Admin Backup: download a history run from OneDrive ───────────────────
+  // GET /admin/backup/history/:id/download
+  // Protected by the same lab-admin gate as the history list.  Looks up the
+  // run by id, then proxies the OneDrive file back as application/octet-stream
+  // so the desktop client can feed it directly into the restore pipeline.
+  // Returns 400 for non-OneDrive (or SFTP) runs; 404 if the id is unknown.
+  router.get("/admin/backup/history/:id/download", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const id = parseInt((req.params as any).id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid backup run ID." });
+    }
+    try {
+      const rows = await db
+        .select()
+        .from(backupRuns)
+        .where(eq(backupRuns.id, id))
+        .limit(1);
+      if (rows.length === 0) {
+        return res.status(404).json({ error: "Backup run not found." });
+      }
+      const run = rows[0];
+      if (run.destination === "sftp") {
+        return res.status(400).json({
+          error: "SFTP backups must be downloaded manually and restored via the file picker.",
+        });
+      }
+      if (run.destination !== "onedrive") {
+        return res.status(400).json({
+          error: "Only OneDrive backup runs can be downloaded via this endpoint.",
+        });
+      }
+      if (!run.fileName && !run.remoteItemId) {
+        return res.status(400).json({
+          error: "This backup run has no file name recorded — it cannot be downloaded.",
+        });
+      }
+      // Prefer the Graph item id confirmed for the run: OneDrive renames on
+      // conflict, so the name is not guaranteed to address the file this run
+      // actually produced. Rows written before the id was recorded fall back
+      // to the recorded name.
+      // The guard above refuses a row with neither, so an empty name here is
+      // only ever paired with an id and never reaches a name-based lookup.
+      const buffer = await downloadFileFromOneDrive(
+        run.fileName ?? "",
+        undefined,
+        run.remoteItemId ?? oneDriveItemIdFromPath(run.path),
+      );
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${(run.fileName ?? "labtrax-backup.zip.enc").replace(/"/g, "")}"`,
+      );
+      res.setHeader("Content-Length", String(buffer.length));
+      return res.send(buffer);
+    } catch (e: unknown) {
+      const diagnostic = e instanceof Error ? e.message : "Failed to download backup from OneDrive.";
+      return res.status(500).json({
+        error: backupDownloadErrorMessage(),
+        diagnostic,
+      });
     }
   });
 
@@ -7566,8 +9418,12 @@ Important rules:
       const retention = await getBackupHistoryRetentionDays();
       return res.json({ ok: true, ...retention });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to fetch backup history retention settings.";
-      return res.status(500).json({ error: msg });
+      const diagnostic = e instanceof Error ? e.message : "Failed to fetch backup history retention settings.";
+      req.log?.error({ err: diagnostic }, "[backup] Could not load history retention settings");
+      return res.status(500).json({
+        error: backupSettingsErrorMessage("load"),
+        diagnostic,
+      });
     }
   });
 
@@ -7604,17 +9460,29 @@ Important rules:
       return res.status(403).json({ error: "Not a member of this lab" });
     }
 
-    const normalizedRxName = rxName.trim().toLowerCase();
-    const row = await db
-      .select({ providerOrganizationId: rxPracticeNameAliases.providerOrganizationId })
-      .from(rxPracticeNameAliases)
-      .where(
-        and(
-          eq(rxPracticeNameAliases.labOrganizationId, labOrganizationId.trim()),
-          eq(rxPracticeNameAliases.rxName, normalizedRxName)
+    const normalizedRxName = normalizeRxPracticeName(rxName);
+    let row: Array<{ providerOrganizationId: string }>;
+    try {
+      row = await db
+        .select({ providerOrganizationId: rxPracticeNameAliases.providerOrganizationId })
+        .from(rxPracticeNameAliases)
+        .where(
+          and(
+            eq(rxPracticeNameAliases.labOrganizationId, labOrganizationId.trim()),
+            eq(rxPracticeNameAliases.rxName, normalizedRxName)
+          )
         )
-      )
-      .limit(1);
+        .limit(1);
+    } catch (err) {
+      // A missing table must be a LOUD failure, not a silent "no alias found" —
+      // otherwise the intake quietly re-prompts forever on a deployment where
+      // the migration never landed.
+      req.log.error({ err }, "rx-practice-aliases: lookup failed");
+      return res.status(500).json({
+        error:
+          "Failed to look up alias. Ensure the rx_practice_name_aliases table exists (run: pnpm --filter @workspace/db run push).",
+      });
+    }
 
     if (row.length === 0) {
       return res.json({ ok: true, data: { found: false, providerOrganizationId: null } });
@@ -7658,21 +9526,379 @@ Important rules:
       return res.status(403).json({ error: "Not a member of this lab" });
     }
 
-    const normalizedRxName = rxName.trim().toLowerCase();
-    await db
-      .insert(rxPracticeNameAliases)
-      .values({
-        labOrganizationId: labOrganizationId.trim(),
-        rxName: normalizedRxName,
-        providerOrganizationId: providerOrganizationId.trim(),
-        createdByUserId: reqUser.id,
-      })
-      .onConflictDoUpdate({
-        target: [rxPracticeNameAliases.labOrganizationId, rxPracticeNameAliases.rxName],
-        set: { providerOrganizationId: providerOrganizationId.trim() },
+    const normalizedRxName = normalizeRxPracticeName(rxName);
+    try {
+      await db
+        .insert(rxPracticeNameAliases)
+        .values({
+          labOrganizationId: labOrganizationId.trim(),
+          rxName: normalizedRxName,
+          providerOrganizationId: providerOrganizationId.trim(),
+          createdByUserId: reqUser.id,
+        })
+        .onConflictDoUpdate({
+          target: [rxPracticeNameAliases.labOrganizationId, rxPracticeNameAliases.rxName],
+          set: { providerOrganizationId: providerOrganizationId.trim() },
+        });
+    } catch (err) {
+      req.log.error({ err }, "rx-practice-aliases: failed to upsert alias");
+      return res.status(500).json({
+        error: "Failed to save alias. Ensure the rx_practice_name_aliases table exists (run: pnpm --filter @workspace/db run push).",
       });
+    }
 
     return res.json({ ok: true, data: { found: true, providerOrganizationId: providerOrganizationId.trim() } });
+  });
+
+  // ── Rx Doctor → Practice Memory ──────────────────────────────────────────
+  // The DOCTOR-keyed counterpart to the Rx-practice-name aliases above. A
+  // doctor's practice is stable, while the practice text on a prescription is
+  // not (missing, abbreviated, OCR'd differently), so once a user confirms
+  // "this doctor works at this practice" the intake can auto-select the
+  // practice with no further prompting — even for an Rx with no readable
+  // practice name at all. This memory takes priority over the Rx-name alias.
+  //
+  // Route conventions deliberately mirror /rx-practice-aliases: active
+  // lab-membership check, shared normalization, idempotent upsert, and a loud
+  // 500 (never a silent no-op) when the backing table is missing.
+
+  /** Shared active-lab-membership check for the Rx-memory routes. */
+  async function callerIsActiveLabMember(userId: string, labId: string) {
+    const membership = await db
+      .select({ id: organizationMemberships.id })
+      .from(organizationMemberships)
+      .innerJoin(organizations, eq(organizations.id, organizationMemberships.labId))
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.labId, labId),
+          eq(organizationMemberships.status, "active"),
+          eq(organizations.type, "lab")
+        )
+      )
+      .limit(1);
+    return membership.length > 0;
+  }
+
+  async function callerIsActiveLabAdmin(userId: string, labId: string) {
+    const membership = await db
+      .select({ role: organizationMemberships.role })
+      .from(organizationMemberships)
+      .innerJoin(organizations, eq(organizations.id, organizationMemberships.labId))
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.labId, labId),
+          eq(organizationMemberships.status, "active"),
+          eq(organizations.type, "lab")
+        )
+      )
+      .limit(1);
+    return (
+      membership.length > 0 &&
+      ADMIN_ROLES.includes(membership[0].role as (typeof ADMIN_ROLES)[number])
+    );
+  }
+
+  const DOCTOR_MEMORY_TABLE_HINT =
+    "Ensure the rx_doctor_practice_memory table exists (run: pnpm --filter @workspace/db run push).";
+
+  /**
+   * Is `providerOrganizationId` a practice this lab actually owns?
+   *
+   * Lab membership alone is NOT enough to authorize the write: the id lands in
+   * a row the lab reads back and auto-selects later, so accepting an arbitrary
+   * organization id would let a member point their own lab's memory at another
+   * tenant's provider organization. Mirrors how practices are scoped
+   * everywhere else — type "provider", owned by this lab, active, not deleted.
+   */
+  async function providerOrgBelongsToLab(
+    providerOrganizationId: string,
+    labOrganizationId: string
+  ): Promise<boolean> {
+    const rows = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(
+        and(
+          eq(organizations.id, providerOrganizationId),
+          eq(organizations.type, "provider"),
+          eq(organizations.parentLabOrganizationId, labOrganizationId),
+          eq(organizations.isActive, true),
+          notDeleted(organizations)
+        )
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  // GET /rx-doctor-practice-memory?labOrganizationId=&doctorName=
+  // Without doctorName this returns the admin-only list used to manage the
+  // remembered mappings. Keeping the lookup and list on one resource preserves
+  // the existing intake contract while giving the settings screen a
+  // lab-scoped management view.
+  router.get("/rx-doctor-practice-memory", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser?.id) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const { labOrganizationId, doctorName } = req.query as Record<string, unknown>;
+    if (typeof labOrganizationId !== "string" || !labOrganizationId.trim()) {
+      return res.status(400).json({ error: "labOrganizationId is required" });
+    }
+    if (doctorName === undefined) {
+      if (!(await callerIsActiveLabAdmin(reqUser.id, labOrganizationId.trim()))) {
+        res.status(403).json({ error: "Lab admin access required" });
+        return;
+      }
+
+      try {
+        const mappings = await db
+          .select({
+            id: rxDoctorPracticeMemory.id,
+            doctorName: rxDoctorPracticeMemory.doctorName,
+            providerOrganizationId:
+              rxDoctorPracticeMemory.providerOrganizationId,
+            practiceName: sql<string>`
+              case
+                when ${organizations.type} = 'provider'
+                  and ${organizations.parentLabOrganizationId} = ${labOrganizationId.trim()}
+                  and ${organizations.isActive} = true
+                  and ${organizations.deletedAt} is null
+                then coalesce(${organizations.displayName}, ${organizations.name})
+                else 'Unavailable practice'
+              end
+            `,
+            practiceAvailable: sql<boolean>`
+              ${organizations.type} = 'provider'
+              and ${organizations.parentLabOrganizationId} = ${labOrganizationId.trim()}
+              and ${organizations.isActive} = true
+              and ${organizations.deletedAt} is null
+            `,
+            updatedAt: rxDoctorPracticeMemory.updatedAt,
+          })
+          .from(rxDoctorPracticeMemory)
+          .leftJoin(
+            organizations,
+            eq(organizations.id, rxDoctorPracticeMemory.providerOrganizationId)
+          )
+          .where(eq(rxDoctorPracticeMemory.labOrganizationId, labOrganizationId.trim()))
+          .orderBy(
+            desc(rxDoctorPracticeMemory.updatedAt),
+            rxDoctorPracticeMemory.doctorName
+          );
+        res.json({ ok: true, data: { mappings } });
+        return;
+      } catch (err) {
+        req.log.error({ err }, "rx-doctor-practice-memory: list failed");
+        res.status(500).json({
+          error: `Failed to list remembered doctor practices. ${DOCTOR_MEMORY_TABLE_HINT}`,
+        });
+        return;
+      }
+    }
+
+    if (typeof doctorName !== "string" || !doctorName.trim()) {
+      return res.status(400).json({ error: "doctorName is required" });
+    }
+
+    if (!(await callerIsActiveLabMember(reqUser.id, labOrganizationId.trim()))) {
+      return res.status(403).json({ error: "Not a member of this lab" });
+    }
+
+    const normalizedDoctorName = normalizeRxDoctorName(doctorName);
+    if (!normalizedDoctorName) {
+      // Nothing meaningful left after stripping the title/punctuation.
+      return res.json({ ok: true, data: { found: false, providerOrganizationId: null } });
+    }
+
+    let row: Array<{ providerOrganizationId: string }>;
+    try {
+      row = await db
+        .select({
+          providerOrganizationId: rxDoctorPracticeMemory.providerOrganizationId,
+        })
+        .from(rxDoctorPracticeMemory)
+        .innerJoin(
+          organizations,
+          and(
+            eq(
+              organizations.id,
+              rxDoctorPracticeMemory.providerOrganizationId
+            ),
+            eq(organizations.type, "provider"),
+            eq(
+              organizations.parentLabOrganizationId,
+              labOrganizationId.trim()
+            ),
+            eq(organizations.isActive, true),
+            notDeleted(organizations)
+          )
+        )
+        .where(
+          and(
+            eq(rxDoctorPracticeMemory.labOrganizationId, labOrganizationId.trim()),
+            eq(rxDoctorPracticeMemory.doctorName, normalizedDoctorName)
+          )
+        )
+        .limit(1);
+    } catch (err) {
+      req.log.error({ err }, "rx-doctor-practice-memory: lookup failed");
+      return res.status(500).json({
+        error: `Failed to look up the remembered practice for this doctor. ${DOCTOR_MEMORY_TABLE_HINT}`,
+      });
+    }
+
+    if (row.length === 0) {
+      return res.json({ ok: true, data: { found: false, providerOrganizationId: null } });
+    }
+    return res.json({
+      ok: true,
+      data: { found: true, providerOrganizationId: row[0].providerOrganizationId },
+    });
+  });
+
+  // DELETE /rx-doctor-practice-memory/:id — remove one remembered mapping.
+  // The row's own lab is used for authorization, so a caller cannot delete a
+  // mapping from another lab by supplying a lab id of their choosing.
+  router.delete("/rx-doctor-practice-memory/:id", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser?.id) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const mappingId = Array.isArray(req.params.id)
+      ? req.params.id[0]
+      : req.params.id;
+    if (!mappingId?.trim()) {
+      res.status(400).json({ error: "Mapping id is required" });
+      return;
+    }
+
+    let mapping: { labOrganizationId: string } | undefined;
+    try {
+      const rows = await db
+        .select({ labOrganizationId: rxDoctorPracticeMemory.labOrganizationId })
+        .from(rxDoctorPracticeMemory)
+        .where(eq(rxDoctorPracticeMemory.id, mappingId.trim()))
+        .limit(1);
+      mapping = rows[0];
+    } catch (err) {
+      req.log.error({ err }, "rx-doctor-practice-memory: delete lookup failed");
+      res.status(500).json({
+        error: `Failed to remove remembered doctor practice. ${DOCTOR_MEMORY_TABLE_HINT}`,
+      });
+      return;
+    }
+
+    if (!mapping) {
+      res.status(404).json({ error: "Remembered doctor practice not found" });
+      return;
+    }
+    if (
+      !(await callerIsActiveLabAdmin(
+        reqUser.id,
+        mapping.labOrganizationId
+      ))
+    ) {
+      res.status(403).json({ error: "Lab admin access required" });
+      return;
+    }
+
+    try {
+      await db
+        .delete(rxDoctorPracticeMemory)
+        .where(
+          and(
+            eq(rxDoctorPracticeMemory.id, mappingId.trim()),
+            eq(
+              rxDoctorPracticeMemory.labOrganizationId,
+              mapping.labOrganizationId
+            )
+          )
+        );
+      res.json({ ok: true, data: { deleted: true } });
+    } catch (err) {
+      req.log.error({ err }, "rx-doctor-practice-memory: delete failed");
+      res.status(500).json({
+        error: `Failed to remove remembered doctor practice. ${DOCTOR_MEMORY_TABLE_HINT}`,
+      });
+    }
+  });
+
+  // POST /rx-doctor-practice-memory — upsert a doctor → practice mapping
+  router.post("/rx-doctor-practice-memory", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser?.id) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const { labOrganizationId, doctorName, providerOrganizationId } = body;
+    if (typeof labOrganizationId !== "string" || !labOrganizationId.trim()) {
+      return res.status(400).json({ error: "labOrganizationId is required" });
+    }
+    if (typeof doctorName !== "string" || !doctorName.trim()) {
+      return res.status(400).json({ error: "doctorName is required" });
+    }
+    if (typeof providerOrganizationId !== "string" || !providerOrganizationId.trim()) {
+      return res.status(400).json({ error: "providerOrganizationId is required" });
+    }
+
+    if (!(await callerIsActiveLabMember(reqUser.id, labOrganizationId.trim()))) {
+      return res.status(403).json({ error: "Not a member of this lab" });
+    }
+
+    const normalizedDoctorName = normalizeRxDoctorName(doctorName);
+    if (!normalizedDoctorName) {
+      return res
+        .status(400)
+        .json({ error: "doctorName must contain a usable name" });
+    }
+
+    if (
+      !(await providerOrgBelongsToLab(
+        providerOrganizationId.trim(),
+        labOrganizationId.trim()
+      ))
+    ) {
+      return res
+        .status(403)
+        .json({ error: "That practice does not belong to this lab" });
+    }
+
+    try {
+      await db
+        .insert(rxDoctorPracticeMemory)
+        .values({
+          labOrganizationId: labOrganizationId.trim(),
+          doctorName: normalizedDoctorName,
+          providerOrganizationId: providerOrganizationId.trim(),
+          createdByUserId: reqUser.id,
+        })
+        .onConflictDoUpdate({
+          target: [
+            rxDoctorPracticeMemory.labOrganizationId,
+            rxDoctorPracticeMemory.doctorName,
+          ],
+          set: {
+            providerOrganizationId: providerOrganizationId.trim(),
+            updatedAt: new Date(),
+          },
+        });
+    } catch (err) {
+      req.log.error({ err }, "rx-doctor-practice-memory: failed to upsert mapping");
+      return res.status(500).json({
+        error: `Failed to remember this doctor's practice. ${DOCTOR_MEMORY_TABLE_HINT}`,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      data: {
+        found: true,
+        providerOrganizationId: providerOrganizationId.trim(),
+      },
+    });
   });
 
   // ── Admin Backup: restore — status poll ──────────────────────────────────
@@ -7680,7 +9906,15 @@ Important rules:
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
-    return res.json({ ok: true, ...getRestoreState() });
+    const state = getRestoreState();
+    return res.json({
+      ok: true,
+      ...state,
+      ...(state.phase === "error" && state.message ? {
+        message: backupErrorMessage(state.message, "restore"),
+        diagnosticMessage: state.message,
+      } : {}),
+    });
   });
 
   // ── Admin Backup: restore — upload file ──────────────────────────────────
@@ -7737,13 +9971,20 @@ Important rules:
         encryptedBuffer = fs.readFileSync(uploadedFile.path);
         try { fs.unlinkSync(uploadedFile.path); } catch { /* ignore */ }
       } catch (readErr: unknown) {
-        return res.status(500).json({ error: "Failed to read uploaded file." });
+        const diagnostic = readErr instanceof Error ? readErr.message : "Failed to read uploaded file.";
+        return res.status(500).json({
+          error: backupErrorMessage(diagnostic, "restore"),
+          diagnostic,
+        });
       }
       try {
         parseAndValidateBackupManifest(encryptedBuffer);
       } catch (manifestErr: unknown) {
-        const msg = manifestErr instanceof Error ? manifestErr.message : String(manifestErr);
-        return res.status(409).json({ error: msg });
+        const diagnostic = manifestErr instanceof Error ? manifestErr.message : String(manifestErr);
+        return res.status(409).json({
+          error: backupErrorMessage(diagnostic, "restore"),
+          diagnostic,
+        });
       }
       // Respond with 202, restore runs async.
       res.status(202).json({ ok: true, phase: "decrypting", message: "Restore started." });
@@ -7918,7 +10159,8 @@ Important rules:
       if (res.headersSent) return;
       req.log?.error({ err: err?.message }, "[restore-session] Chunk write error");
       res.status(500).json({
-        error: "Failed to persist chunk",
+        error: "LabTrax could not save part of the uploaded backup. Check your connection and choose the file again.",
+        diagnostic: err?.message ?? "Failed to persist restore upload chunk.",
         uploadedBytes: getRestoreSessionOffset(sessionId),
       });
     };
@@ -7931,7 +10173,8 @@ Important rules:
         if (aborted) {
           if (!res.headersSent) {
             res.status(400).json({
-              error: "Chunk would exceed declared file size",
+              error: "The uploaded file did not match its expected size. Choose the backup file again and restart the restore.",
+              diagnostic: "Received data exceeded the declared restore file size.",
               uploadedBytes: getRestoreSessionOffset(sessionId),
             });
           }
@@ -7951,11 +10194,15 @@ Important rules:
           let encryptedBuffer: Buffer;
           try {
             encryptedBuffer = fs.readFileSync(partPath);
-          } catch (err: any) {
-            req.log?.error({ err: err?.message }, "[restore-session] Failed to read assembled file");
+          } catch (err: unknown) {
+            const diagnostic = err instanceof Error ? err.message : "Failed to read assembled backup file.";
+            req.log?.error({ err: diagnostic }, "[restore-session] Failed to read assembled file");
             destroyRestoreSession(sessionId);
             if (!res.headersSent) {
-              res.status(500).json({ error: "Failed to read assembled backup file" });
+              res.status(500).json({
+                error: backupErrorMessage(diagnostic, "restore"),
+                diagnostic,
+              });
             }
             return;
           }
@@ -7967,9 +10214,12 @@ Important rules:
           try {
             parseAndValidateBackupManifest(encryptedBuffer);
           } catch (manifestErr: unknown) {
-            const msg = manifestErr instanceof Error ? manifestErr.message : String(manifestErr);
+            const diagnostic = manifestErr instanceof Error ? manifestErr.message : String(manifestErr);
             if (!res.headersSent) {
-              res.status(409).json({ error: msg });
+              res.status(409).json({
+                error: backupErrorMessage(diagnostic, "restore"),
+                diagnostic,
+              });
             }
             return;
           }
@@ -8047,8 +10297,12 @@ Important rules:
       const retention = await getBackupHistoryRetentionDays();
       return res.json({ ok: true, ...retention });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to save backup history retention settings.";
-      return res.status(500).json({ error: msg });
+      const diagnostic = e instanceof Error ? e.message : "Failed to save backup history retention settings.";
+      req.log?.error({ err: diagnostic }, "[backup] Could not save history retention settings");
+      return res.status(500).json({
+        error: backupSettingsErrorMessage("save"),
+        diagnostic,
+      });
     }
   });
 

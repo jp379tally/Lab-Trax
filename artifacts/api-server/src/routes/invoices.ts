@@ -1,12 +1,15 @@
 import { Router } from "express";
+import { salesInvoiceScope, salesIssuedDate } from "../lib/sales-invoice-scope";
 import multer from "multer";
 import { normalizePhoneE164 } from "../lib/account-link-sms";
+import { archiveReversedSettlements } from "../lib/settlement-history";
 import fs from "fs";
 import path from "path";
 import { randomBytes } from "crypto";
 import { and, asc, desc, eq, gte, lte, ne, or, sql, sum } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
+import { normalizeInvoiceFilterPrecedence } from "@workspace/api-client-react";
 import {
   auditLogs,
   bankAccounts,
@@ -21,42 +24,294 @@ import {
   invoiceLineItems,
   invoices,
   labCases,
+  organizationAdditionalEmails,
   practiceStatements,
   practiceStatementSends,
+  statementPaymentSessions,
+  statementSchedules,
+  systemSettings,
   organizationMemberships,
   organizations,
+  doctorProfiles,
   payments,
   users,
+  transactionCategories,
 } from "@workspace/db";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
+import { ensureDefaultCategories } from "../lib/default-categories";
 import { inArray, isNotNull, isNull } from "drizzle-orm";
 import { ensureInvoiceDeposit } from "../lib/invoice-deposits";
-import { writeAuditLog } from "../lib/audit";
+import { releaseBatchesForChildren, releaseBatchForChild } from "../lib/deposit-batches";
+import { writeAuditLog, writeAuditLogTx } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { HttpError, ok, wrapDbError } from "../lib/http";
 import { createTransport, getMailerConfig } from "../lib/mailer";
 import { classifySmtpError } from "../lib/smtp-error";
 import {
   generateStatementPdfBuffer,
+  buildPracticeStatementsForScope,
+  attachStatementContacts,
+  readLogoBuffer,
+  periodMonthFor,
+  persistStatementPdf,
+  coerceStatementBundleManifest,
   type PracticeStatementData,
 } from "../lib/statements";
-import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
+import { coerceStatementTemplate } from "../lib/statement-template";
+import {
+  deriveLiveStatementFigures,
+  type StatementInvoiceState,
+} from "../lib/statement-figures";
+import { ADMIN_ROLES, BILLING_ROLES, hasCapability, requireAnyRole, requireMembership, type MembershipRole } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth, requireVerifiedAccount } from "../middlewares/auth";
 import {
   buildLineItemDescription,
-  materialToPriceKey,
   resolveAllPricesForContext,
   resolveItemLabel,
   resolveServerPriceWithSource,
   type ResolvedItemRow,
 } from "../lib/pricing";
+import { resolveRestorationPriceKey } from "../lib/restoration-pricing";
 import { buildBridgeAwareLineItems } from "../lib/invoice-line-grouping";
+import { isPfmOrFcmMaterial } from "../lib/material-mapping";
 import { invoiceDueDate } from "../lib/invoice-due-date";
+import { calendarDateToUtcNoon } from "@workspace/calendar-date";
+import { deliverPaymentNotifications } from "../lib/payment-notifications";
+import {
+  assertProviderOrganizationCapability,
+  assertLinkedProviderCapability,
+  requireProviderCapability,
+} from "../lib/provider-capabilities";
+import { assertNoActiveCardReversalForInvoices } from "../lib/payment-reversal-guards";
+import { ensureDoctorProfileIdentity } from "../lib/doctor-profile-identity";
+import { assertRecoveryReleased, finalizedInvoiceSql, RECOVERY_DRAFT_STATUS } from "../lib/recovery-billing-hold";
+import {
+  pageRowsKeyset,
+  parsePagination,
+  sortTime,
+  type Keyset,
+  type SortDirection,
+} from "../lib/pagination";
 
 const router = Router();
+const INVOICE_DATE_DRIFT_FIX_AT = new Date("2026-09-11T14:41:49.000Z");
+const INVOICE_STATUS_FILTER_VALUES = new Set([
+  "draft",
+  RECOVERY_DRAFT_STATUS,
+  "open",
+  "partially_paid",
+  "paid",
+  "void",
+  "frozen",
+  "zero_balance",
+]);
+const INVOICE_LEGACY_STATUS_VALUES = new Set([
+  ...INVOICE_STATUS_FILTER_VALUES,
+  "all",
+  "closed",
+  "overdue",
+]);
+
+function isInvoiceDraftStatus(status: unknown): boolean {
+  return status === "draft" || status === RECOVERY_DRAFT_STATUS;
+}
+const INVOICE_VIEW_VALUES = new Set(["open", "outstanding"]);
+const INVOICE_AGING_VALUES = new Set([
+  "all",
+  "0_30",
+  "31_60",
+  "61_90",
+  "90_plus",
+  "custom",
+]);
+const INVOICE_SORT_VALUES = new Set(["issued", "due", "practice"]);
+const INVOICE_SORT_DIRECTION_VALUES = new Set(["asc", "desc"]);
+
+type InvoiceReadScope = {
+  orgIds: string[];
+  memberships: Array<{
+    labId: string;
+    status?: string | null;
+  }>;
+};
+
+/**
+ * Resolve the organizations an invoice reader may see.
+ *
+ * Lab memberships remain limited to their own lab. Provider users expand to
+ * linked provider organizations whose billing capability is available, while
+ * mixed identities keep their lab access and use the same per-organization
+ * capability filtering.
+ */
+async function getInvoiceReadScope(callerId: string): Promise<InvoiceReadScope> {
+  const memberships = await db.query.organizationMemberships.findMany({
+    where: and(
+      eq(organizationMemberships.userId, callerId),
+      isNull(organizationMemberships.deletedAt),
+    ),
+  });
+  const baseOrgIds = memberships
+    .filter((membership: any) => membership.status === "active")
+    .map((membership: any) => membership.labId);
+  const memberOrgs = baseOrgIds.length
+    ? await db
+        .select({ id: organizations.id, type: organizations.type })
+        .from(organizations)
+        .where(inArray(organizations.id, baseOrgIds))
+    : [];
+  const labSideOrgIds = memberOrgs
+    .filter((organization) => organization.type === "lab")
+    .map((organization) => organization.id);
+
+  let orgIds = labSideOrgIds;
+  const { providerOrgIds } = await getProviderOrgIdsForUserAndLinks(callerId);
+  if (providerOrgIds.length) {
+    const allowed = await Promise.all(
+      providerOrgIds.map((id) =>
+        assertProviderOrganizationCapability(id, "billing")
+          .then(() => true)
+          .catch((error) => {
+            if (error instanceof HttpError && error.statusCode === 403) return false;
+            throw error;
+          }),
+      ),
+    );
+    orgIds = Array.from(new Set([
+      ...labSideOrgIds,
+      ...providerOrgIds.filter((_, index) => allowed[index]),
+    ]));
+  }
+
+  return { orgIds, memberships };
+}
+
+function invoiceIsInReadScope(
+  invoice: {
+    labOrganizationId: string;
+    providerOrganizationId: string | null;
+  },
+  scope: InvoiceReadScope,
+): boolean {
+  return practiceIsInInvoiceReadScope(
+    invoice.labOrganizationId,
+    invoice.providerOrganizationId,
+    scope,
+  );
+}
+
+function practiceIsInInvoiceReadScope(
+  labOrganizationId: string,
+  providerOrganizationId: string | null,
+  scope: InvoiceReadScope,
+): boolean {
+  return (
+    scope.orgIds.includes(labOrganizationId) ||
+    (providerOrganizationId != null &&
+      scope.orgIds.includes(providerOrganizationId))
+  );
+}
+
+function hasDirectLabMembership(
+  labOrganizationId: string,
+  scope: InvoiceReadScope,
+): boolean {
+  return scope.memberships.some(
+    (membership) =>
+      membership.labId === labOrganizationId &&
+      membership.status === "active",
+  );
+}
+
+async function requireInvoicePaymentAccess(
+  callerId: string,
+  invoice: {
+    labOrganizationId: string;
+    providerOrganizationId: string | null;
+  },
+): Promise<void> {
+  const readScope = await getInvoiceReadScope(callerId);
+  if (!invoiceIsInReadScope(invoice, readScope)) {
+    throw new HttpError(403, "You do not have access to this invoice.");
+  }
+
+  // Lab billing members can manage their lab's invoices. Direct provider
+  // billing members can manage invoices for their provider organization. The
+  // read-scope check above keeps either role from reaching an invoice that the
+  // canonical invoice routes exclude.
+  const billingOrganizationIds = Array.from(
+    new Set([
+      invoice.labOrganizationId,
+      invoice.providerOrganizationId,
+    ].filter((organizationId): organizationId is string => organizationId != null)),
+  );
+  for (const organizationId of billingOrganizationIds) {
+    try {
+      await requireAnyRole(callerId, organizationId, BILLING_ROLES);
+      return;
+    } catch (error) {
+      if (error instanceof HttpError && error.statusCode === 403) continue;
+      throw error;
+    }
+  }
+
+  throw new HttpError(403, "You do not have permission for this action.");
+}
+
+function isLikelyLegacyShiftedInvoiceDate(
+  value: Date | null,
+  invoiceCreatedAt: Date,
+): boolean {
+  return (
+    invoiceCreatedAt < INVOICE_DATE_DRIFT_FIX_AT &&
+    value != null &&
+    (value.getUTCHours() !== 0 ||
+      value.getUTCMinutes() !== 0 ||
+      value.getUTCSeconds() !== 0 ||
+      value.getUTCMilliseconds() !== 0)
+  );
+}
+
 router.use(requireAuth);
 router.use(requireVerifiedAccount);
+// Provider members can reach selected invoice reads through this router.
+// Basic plans cannot bypass the provider billing portal through those paths.
+router.use(requireProviderCapability("billing"));
+router.use(asyncHandler(async (req, _res, next) => {
+  if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+    const body = req.body;
+    const supplied = Array.isArray(body?.invoiceIds) ? body.invoiceIds
+      : Array.isArray(body?.ids) ? body.ids : [];
+    const ids = supplied.filter((id: unknown): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id));
+    if (ids.length) {
+      const rows = await db.query.invoices.findMany({ where: inArray(invoices.id, ids) });
+      const scope = await getInvoiceReadScope((req as any).auth.userId);
+      for (const row of rows) {
+        if (invoiceIsInReadScope(row, scope)) assertRecoveryReleased(row);
+      }
+    }
+  }
+  next();
+}));
+
+// All ordinary invoice mutations/distribution are forbidden for a recovery
+// hold, including legacy unfreeze and status endpoints. The dedicated recovery
+// router performs the explicit admin charge + settlement review instead.
+router.use("/:invoiceId", asyncHandler(async (req, _res, next) => {
+  if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+    const id = z.string().parse(req.params.invoiceId);
+    if (/^[0-9a-f-]{36}$/i.test(id)) {
+      const invoice = await db.query.invoices.findFirst({ where: eq(invoices.id, id) });
+      if (invoice) {
+        const scope = await getInvoiceReadScope((req as any).auth.userId);
+        if (!invoiceIsInReadScope(invoice, scope)) throw new HttpError(403, "You do not have access to this invoice.");
+        assertRecoveryReleased(invoice);
+      }
+    }
+  }
+  next();
+}));
+
 
 const emailStatementSchema = z.object({
   labOrganizationId: z.string().min(1),
@@ -67,7 +322,8 @@ const emailStatementSchema = z.object({
   subject: z.string().min(1).max(500),
   message: z.string().min(1).max(20000),
   filename: z.string().min(1).max(200),
-  pdfBase64: z.string().min(1).max(8 * 1024 * 1024),
+  /** Deprecated client field. The server always regenerates the attachment. */
+  pdfBase64: z.string().min(1).max(8 * 1024 * 1024).optional(),
 });
 
 router.post(
@@ -93,6 +349,19 @@ router.post(
       );
     }
 
+    // Collect billing-type additional emails from the practice to add as CC.
+    const practiceAdditionalBillingEmails = await db
+      .select({ email: organizationAdditionalEmails.email })
+      .from(organizationAdditionalEmails)
+      .where(
+        and(
+          eq(organizationAdditionalEmails.organizationId, input.practiceOrganizationId),
+          eq(organizationAdditionalEmails.type, "billing"),
+        ),
+      );
+    const additionalCc = practiceAdditionalBillingEmails.map((r) => r.email);
+    const effectiveCc = [...(input.cc ?? []), ...additionalCc].filter(Boolean);
+
     const invoiceRows = await db.query.invoices.findMany({
       where: and(
         inArray(invoices.id, input.invoiceIds),
@@ -115,22 +384,91 @@ router.post(
       );
     }
 
-    let pdfBuffer: Buffer;
-    try {
-      pdfBuffer = Buffer.from(input.pdfBase64, "base64");
-    } catch {
-      throw new HttpError(400, "Invalid PDF payload.");
+    const statement = (
+      await buildPracticeStatementsForScope(input.labOrganizationId, {
+        scope: "all",
+        recipientType: "practice",
+        practiceIds: [input.practiceOrganizationId],
+        from: null,
+        to: null,
+      })
+    )[0];
+    if (!statement) {
+      throw new HttpError(404, "No statement data found for this practice.");
     }
-    if (pdfBuffer.length === 0) {
-      throw new HttpError(400, "Invalid PDF payload.");
+    const selected = new Set(input.invoiceIds);
+    const selectedInvoices = statement.invoices.filter((invoice) => selected.has(invoice.id));
+    if (!selectedInvoices.length) {
+      throw new HttpError(404, "None of the selected invoices belong to this practice.");
     }
+    const selectedData: PracticeStatementData = {
+      ...statement,
+      invoiceCount: selectedInvoices.length,
+      totalBilled: selectedInvoices.reduce((sum, invoice) => sum + Number(invoice.total), 0),
+      totalPaid: selectedInvoices.reduce(
+        (sum, invoice) => sum + Math.max(0, Number(invoice.total) - Number(invoice.balanceDue)),
+        0,
+      ),
+      openBalance: selectedInvoices.reduce((sum, invoice) => sum + Number(invoice.balanceDue), 0),
+      invoices: selectedInvoices,
+    };
+    const labOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, input.labOrganizationId),
+    });
+    const schedule = await db.query.statementSchedules.findFirst({
+      where: eq(
+        statementSchedules.labOrganizationId,
+        input.labOrganizationId,
+      ),
+      columns: { emailReplyTo: true },
+    });
+    const [savedTemplateRow] = await db
+      .select({ value: systemSettings.value })
+      .from(systemSettings)
+      .where(
+        eq(
+          systemSettings.key,
+          `tmpl_statement_email:${input.labOrganizationId}`,
+        ),
+      );
+    let savedTemplateReplyTo: string | undefined;
+    if (savedTemplateRow?.value) {
+      try {
+        const savedTemplate = JSON.parse(savedTemplateRow.value) as {
+          emailReplyTo?: unknown;
+        };
+        if (typeof savedTemplate.emailReplyTo === "string") {
+          savedTemplateReplyTo =
+            savedTemplate.emailReplyTo.trim() || undefined;
+        }
+      } catch {
+        // Ignore malformed legacy settings and use the schedule/default behavior.
+      }
+    }
+    const pdfBuffer = await generateStatementPdfBuffer(
+      labOrg?.displayName || labOrg?.name || "LabTrax",
+      selectedData,
+      `Statement as of ${new Date().toLocaleDateString("en-US")}`,
+      await readLogoBuffer(input.labOrganizationId),
+      (labOrg as any)?.logoPdfSize,
+      "all",
+      labOrg?.invoiceDueDayOfMonth ?? null,
+      null,
+      coerceStatementTemplate((labOrg as any)?.statementTemplate).defaultTextBlocks,
+      input.labOrganizationId,
+      coerceStatementTemplate((labOrg as any)?.statementTemplate),
+    );
 
     const transporter = createTransport(cfg);
     try {
       await transporter.sendMail({
         from: cfg.from,
         to: recipient,
-        cc: input.cc?.length ? input.cc : undefined,
+        cc: effectiveCc.length ? effectiveCc : undefined,
+        replyTo:
+          schedule?.emailReplyTo?.trim() ||
+          savedTemplateReplyTo ||
+          undefined,
         subject: input.subject,
         text: input.message,
         attachments: [
@@ -331,6 +669,19 @@ router.post(
       );
     }
 
+    // Collect billing-type additional emails to include as CC.
+    const invoiceAdditionalBillingEmails = await db
+      .select({ email: organizationAdditionalEmails.email })
+      .from(organizationAdditionalEmails)
+      .where(
+        and(
+          eq(organizationAdditionalEmails.organizationId, invoice.providerOrganizationId),
+          eq(organizationAdditionalEmails.type, "billing"),
+        ),
+      );
+    const invoiceAdditionalCc = invoiceAdditionalBillingEmails.map((r) => r.email);
+    const invoiceEffectiveCc = [...(input.cc ?? []), ...invoiceAdditionalCc].filter(Boolean);
+
     const cfg = getMailerConfig();
     if (!cfg) {
       throw new HttpError(
@@ -387,7 +738,7 @@ router.post(
       await transporter.sendMail({
         from: cfg.from,
         to: recipient,
-        cc: input.cc?.length ? input.cc : undefined,
+        cc: invoiceEffectiveCc.length ? invoiceEffectiveCc : undefined,
         subject: input.subject,
         text: input.message,
         attachments: [
@@ -583,17 +934,22 @@ router.post(
       BILLING_ROLES
     );
 
+    const invoiceLabOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, input.labOrganizationId),
+      columns: { invoiceDueDayOfMonth: true },
+    });
+
     const [invoice] = await db
       .insert(invoices)
       .values({
         invoiceNumber: input.invoiceNumber,
         labOrganizationId: input.labOrganizationId,
         providerOrganizationId: input.providerOrganizationId,
-        status: "draft",
+        status: "open",
         issuedAt: input.issuedAt ? new Date(input.issuedAt) : new Date(),
         dueAt: input.dueAt
           ? new Date(input.dueAt)
-          : invoiceDueDate(input.issuedAt ? new Date(input.issuedAt) : new Date()),
+          : invoiceDueDate(input.issuedAt ? new Date(input.issuedAt) : new Date(), invoiceLabOrg?.invoiceDueDayOfMonth),
         createdByUserId: (req as any).auth.userId,
         updatedByUserId: (req as any).auth.userId,
       })
@@ -634,6 +990,8 @@ function buildInvoiceDisplayMetadataFromCase(
     toothNumber: string | null;
     shade: string | null;
     material?: string | null;
+    restorationType?: string | null;
+    restorationSubtype?: string | null;
   }>,
   noteRows: Array<{ noteText: string | null }>,
 ) {
@@ -680,6 +1038,28 @@ function buildInvoiceDisplayMetadataFromCase(
   }
   const material = materialsOrdered.join(", ");
 
+  const seenCaseTypes = new Set<string>();
+  const caseTypesOrdered: string[] = [];
+  for (const r of restorationRows) {
+    const ct = (r.restorationType ?? "").trim();
+    if (ct && !seenCaseTypes.has(ct)) {
+      seenCaseTypes.add(ct);
+      caseTypesOrdered.push(ct);
+    }
+  }
+  const caseType = caseTypesOrdered.join(", ");
+
+  const seenCaseSubtypes = new Set<string>();
+  const caseSubtypesOrdered: string[] = [];
+  for (const r of restorationRows) {
+    const cs = (r.restorationSubtype ?? "").trim();
+    if (cs && !seenCaseSubtypes.has(cs)) {
+      seenCaseSubtypes.add(cs);
+      caseSubtypesOrdered.push(cs);
+    }
+  }
+  const caseSubtype = caseSubtypesOrdered.join(", ");
+
   const caseNotesText = noteRows
     .map((n) => (n.noteText ?? "").trim())
     .filter(Boolean)
@@ -691,6 +1071,8 @@ function buildInvoiceDisplayMetadataFromCase(
     teeth,
     shade,
     material,
+    caseType,
+    caseSubtype,
     caseNotes: caseNotesText,
   };
 }
@@ -803,6 +1185,11 @@ router.post(
         restorations,
         noteRows,
       );
+      const doctorIdentity = await ensureDoctorProfileIdentity(db, {
+        labOrganizationId: found.labOrganizationId,
+        providerOrganizationId: found.providerOrganizationId ?? null,
+        doctorName: found.doctorName,
+      });
       const [invoice] = await db
         .insert(invoices)
         .values({
@@ -810,8 +1197,10 @@ router.post(
           caseId: found.id,
           labOrganizationId: found.labOrganizationId,
           providerOrganizationId: found.providerOrganizationId,
-          status: "draft",
+          doctorIdentity,
+          status: "open",
           displayMetadataJson,
+          issuedAt: calendarDateToUtcNoon(found.receivedAt),
           dueAt: invoiceDueDate(new Date()),
           createdByUserId: (req as any).auth.userId,
           updatedByUserId: (req as any).auth.userId,
@@ -831,18 +1220,33 @@ router.post(
 
       const backfillLabelCache: Record<string, string> = {};
       for (const r of restorations) {
-        const pk = materialToPriceKey(r.material, r.restorationType) ?? r.restorationType;
+        const pk =
+          (await resolveRestorationPriceKey({
+            labOrganizationId: found.labOrganizationId,
+            material: r.material,
+            restorationType: r.restorationType,
+            restorationSubtype: r.restorationSubtype,
+          })) ?? r.restorationType;
         if (!(pk in backfillLabelCache)) {
           backfillLabelCache[pk] = await resolveItemLabel(found.labOrganizationId, pk);
         }
       }
-      const itemsToInsert = restorations.map((restoration, index) => {
-        const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
+      const itemsToInsert = await Promise.all(restorations.map(async (restoration, index) => {
+        const pk =
+          (await resolveRestorationPriceKey({
+            labOrganizationId: found.labOrganizationId,
+            material: restoration.material,
+            restorationType: restoration.restorationType,
+            restorationSubtype: restoration.restorationSubtype,
+          })) ?? restoration.restorationType;
         const label = backfillLabelCache[pk] ?? restoration.restorationType;
         const toothInt = parseInt(restoration.toothNumber, 10);
         return {
           invoiceId: invoice.id,
           caseRestorationId: restoration.id,
+          sourceType: "restoration",
+          sourceKey: `restoration:${restoration.id}`,
+          sourceRestorationIdsJson: [restoration.id],
           toothNumber: Number.isInteger(toothInt) && toothInt >= 1 && toothInt <= 32 ? toothInt : null,
           description: buildLineItemDescription(restoration.toothNumber, label),
           quantity: restoration.quantity,
@@ -853,7 +1257,7 @@ router.post(
           ),
           sortOrder: index,
         };
-      });
+      }));
       await db.insert(invoiceLineItems).values(itemsToInsert).catch((err: unknown): never => wrapDbError(err, {
         fallback: "Failed to insert invoice line items during backfill.",
       }));
@@ -866,7 +1270,7 @@ router.post(
           total: subtotal,
           balanceDue: subtotal,
           updatedByUserId: (req as any).auth.userId,
-          issuedAt: new Date(),
+          issuedAt: calendarDateToUtcNoon(found.receivedAt),
           status: "open",
         })
         .where(eq(invoices.id, invoice.id));
@@ -917,6 +1321,150 @@ router.post(
   })
 );
 
+// Admin-only one-time job: patch displayMetadataJson on every invoice that is
+// linked to a case (caseId is set) but is missing at least one of the newer
+// metadata keys (caseType, caseSubtype, material). Re-runs
+// buildInvoiceDisplayMetadataFromCase so the values come from the live
+// case_restorations rows, exactly the same as when the invoice was first
+// generated. Idempotent: invoices that already have all three keys are
+// skipped. Tenant-scoped: only touches invoices belonging to the supplied lab.
+router.post(
+  "/lab-orgs/:labOrganizationId/backfill-display-metadata",
+  asyncHandler(async (req, res) => {
+    const labOrganizationId = req.params.labOrganizationId;
+    await requireAnyRole(
+      (req as any).auth.userId,
+      labOrganizationId,
+      ADMIN_ROLES,
+    );
+
+    // Fetch all case-linked invoices for this lab that are missing at least
+    // one of caseType / caseSubtype / material in their displayMetadataJson.
+    // We use a Postgres JSON operator to test for key presence.
+    const staleInvoices = await db
+      .select({
+        id: invoices.id,
+        caseId: invoices.caseId,
+        displayMetadataJson: invoices.displayMetadataJson,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.labOrganizationId, labOrganizationId),
+          isNotNull(invoices.caseId),
+          or(
+            sql`(${invoices.displayMetadataJson}->>'caseType') IS NULL`,
+            sql`(${invoices.displayMetadataJson}->>'caseSubtype') IS NULL`,
+            sql`(${invoices.displayMetadataJson}->>'material') IS NULL`,
+          ),
+        ),
+      );
+
+    let updated = 0;
+    let skippedNoCase = 0;
+    let skippedNoRestorations = 0;
+    const updatedInvoiceIds: string[] = [];
+
+    for (const inv of staleInvoices) {
+      // caseId is guaranteed non-null by the WHERE clause, but TypeScript
+      // doesn't know that — narrow it explicitly.
+      if (!inv.caseId) {
+        skippedNoCase++;
+        continue;
+      }
+
+      const caseRow = await db.query.cases.findFirst({
+        where: eq(cases.id, inv.caseId),
+      });
+      if (!caseRow) {
+        skippedNoCase++;
+        continue;
+      }
+
+      const restorations = await db.query.caseRestorations.findMany({
+        where: eq(caseRestorations.caseId, inv.caseId),
+      });
+      if (!restorations.length) {
+        skippedNoRestorations++;
+        continue;
+      }
+
+      const noteRows = await db.query.caseNotes.findMany({
+        where: and(
+          eq(caseNotes.caseId, inv.caseId),
+          eq(caseNotes.visibility, "shared_with_provider"),
+        ),
+        orderBy: [caseNotes.createdAt],
+      });
+
+      // Build a fresh metadata blob from the live restorations. This will
+      // populate caseType, caseSubtype, and material (even if they turn out
+      // to be empty strings for old cases with no restoration type data).
+      const freshMeta = buildInvoiceDisplayMetadataFromCase(
+        caseRow,
+        restorations,
+        noteRows,
+      );
+
+      // Merge into the existing blob so we never clobber keys that were
+      // manually edited (e.g. a custom patientName or billTo override).
+      const existingMeta =
+        inv.displayMetadataJson &&
+        typeof inv.displayMetadataJson === "object"
+          ? (inv.displayMetadataJson as Record<string, unknown>)
+          : {};
+
+      const patchedMeta = {
+        ...freshMeta,
+        // Preserve any manually-edited free-text fields over the rebuilt values.
+        ...(existingMeta["patientName"] !== undefined
+          ? { patientName: existingMeta["patientName"] }
+          : {}),
+        ...(existingMeta["billTo"] !== undefined
+          ? { billTo: existingMeta["billTo"] }
+          : {}),
+        ...(existingMeta["caseNotes"] !== undefined
+          ? { caseNotes: existingMeta["caseNotes"] }
+          : {}),
+      };
+
+      await db
+        .update(invoices)
+        .set({
+          displayMetadataJson: patchedMeta,
+          updatedByUserId: (req as any).auth.userId,
+        })
+        .where(eq(invoices.id, inv.id))
+        .catch((err: unknown): never => wrapDbError(err));
+
+      updated++;
+      updatedInvoiceIds.push(inv.id);
+    }
+
+    const summary = {
+      labOrganizationId,
+      invoicesScanned: staleInvoices.length,
+      updated,
+      skippedNoCase,
+      skippedNoRestorations,
+      updatedInvoiceIds,
+    };
+
+    req.log?.info?.({ summary }, "[INVOICE DISPLAY-METADATA BACKFILL] completed");
+
+    await writeAuditLog({
+      req,
+      organizationId: labOrganizationId,
+      action: "invoices_display_metadata_backfilled",
+      entityType: "organization",
+      entityId: labOrganizationId,
+      metadataJson: summary,
+    });
+
+    return ok(res, summary);
+  }),
+);
+
 // Distinct, order-preserving, trimmed join of a column across rows.
 function distinctJoinValues(values: Array<string | null>): string {
   const seen = new Set<string>();
@@ -931,37 +1479,249 @@ function distinctJoinValues(values: Array<string | null>): string {
   return ordered.join(", ");
 }
 
-// Report: count of case-linked invoices whose display_metadata_json has an
-// empty shade or material field. Admins use this to decide whether to re-run
-// the shade/material backfill script.
+// Maximum number of detail rows returned to the client for the shade/material
+// gap report and backfill result. gapCount / remainingGapCount are always the
+// true total (never capped) — only the `rows` list is truncated for very
+// large labs, and `rowsTruncated` says so.
+const SHADE_MATERIAL_GAP_ROW_CAP = 200;
+
+type ShadeMaterialGapStatus = "fully_fixable" | "partially_fixable" | "not_fixable";
+
+const SHADE_MATERIAL_GAP_STATUS_ORDER: Record<ShadeMaterialGapStatus, number> = {
+  // Rows needing a human are surfaced first, then partial fixes (still need a
+  // look after the run), then rows the tool will fully resolve on its own.
+  not_fixable: 0,
+  partially_fixable: 1,
+  fully_fixable: 2,
+};
+
+interface ShadeMaterialGapRow {
+  invoiceId: string;
+  invoiceNumber: string;
+  caseId: string | null;
+  caseNumber: string | null;
+  practiceName: string | null;
+  patientName: string;
+  currentShade: string;
+  currentMaterial: string;
+  shadeMissing: boolean;
+  materialMissing: boolean;
+  derivedShade: string | null;
+  derivedMaterial: string | null;
+  status: ShadeMaterialGapStatus;
+}
+
+// Internal-only row shape that carries the raw display-metadata object so the
+// backfill can merge its writes without a second per-invoice fetch. Never
+// sent to clients directly — see projectGapRowsForResponse.
+type InternalShadeMaterialGapRow = ShadeMaterialGapRow & {
+  rawMeta: Record<string, unknown>;
+};
+
+// Shared, lab-scoped shade/material gap detector used by BOTH the read-only
+// report (GET /admin/shade-material-gaps) and the backfill mutation
+// (POST /admin/shade-material-backfill), so the two endpoints can never
+// disagree about what counts as a gap or what the tool would derive for it.
+// Rules (unchanged from the original per-endpoint implementations):
+//  - only case-linked, non-deleted invoices for this lab are considered
+//  - restorations of type "missing" are ignored (nothing usable to derive)
+//  - derived values are trimmed, de-duplicated, order-preserving joins
+//  - a non-empty snapshot value is NEVER treated as fillable/overwritable
+// Case and restoration data for every candidate invoice is fetched in one
+// batch (not per-invoice) to keep this cheap for large labs.
+async function computeShadeMaterialGaps(
+  labOrganizationId: string,
+): Promise<{ totalCaseLinked: number; gapCount: number; rows: InternalShadeMaterialGapRow[] }> {
+  const invoiceRows = await db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      caseId: invoices.caseId,
+      providerOrganizationId: invoices.providerOrganizationId,
+      displayMetadataJson: invoices.displayMetadataJson,
+    })
+    .from(invoices)
+    .where(
+      and(
+        isNotNull(invoices.caseId),
+        eq(invoices.labOrganizationId, labOrganizationId),
+        isNull(invoices.deletedAt),
+      ),
+    )
+    .orderBy(asc(invoices.invoiceNumber));
+
+  const totalCaseLinked = invoiceRows.length;
+
+  const withMeta = invoiceRows.map((inv) => {
+    const rawMeta = (
+      inv.displayMetadataJson && typeof inv.displayMetadataJson === "object"
+        ? (inv.displayMetadataJson as Record<string, unknown>)
+        : {}
+    );
+    const currentShade = typeof rawMeta.shade === "string" ? rawMeta.shade.trim() : "";
+    const currentMaterial =
+      typeof rawMeta.material === "string" ? rawMeta.material.trim() : "";
+    return {
+      ...inv,
+      rawMeta,
+      currentShade,
+      currentMaterial,
+      shadeMissing: currentShade === "",
+      materialMissing: currentMaterial === "",
+    };
+  });
+
+  const gapInvoices = withMeta.filter((inv) => inv.shadeMissing || inv.materialMissing);
+  const gapCount = gapInvoices.length;
+
+  // Batch-fetch everything the detail rows need across every gap invoice's
+  // case, rather than querying per invoice.
+  const caseIds = Array.from(
+    new Set(gapInvoices.map((inv) => inv.caseId).filter((id): id is string => !!id)),
+  );
+  const practiceIds = Array.from(
+    new Set(
+      gapInvoices
+        .map((inv) => inv.providerOrganizationId)
+        .filter((id): id is string => !!id),
+    ),
+  );
+
+  const [caseRows, restorationRows, orgRows] = await Promise.all([
+    caseIds.length
+      ? db
+          .select({
+            id: cases.id,
+            caseNumber: cases.caseNumber,
+            patientFirstName: cases.patientFirstName,
+            patientLastName: cases.patientLastName,
+          })
+          .from(cases)
+          .where(inArray(cases.id, caseIds))
+      : Promise.resolve([]),
+    caseIds.length
+      ? db
+          .select({
+            caseId: caseRestorations.caseId,
+            shade: caseRestorations.shade,
+            material: caseRestorations.material,
+            restorationType: caseRestorations.restorationType,
+          })
+          .from(caseRestorations)
+          .where(inArray(caseRestorations.caseId, caseIds))
+      : Promise.resolve([]),
+    practiceIds.length
+      ? db
+          .select({ id: organizations.id, name: organizations.name })
+          .from(organizations)
+          .where(inArray(organizations.id, practiceIds))
+      : Promise.resolve([]),
+  ]);
+
+  const caseById = new Map(caseRows.map((c) => [c.id, c]));
+  const orgNameById = new Map(orgRows.map((o) => [o.id, o.name]));
+  const restorationsByCase = new Map<string, typeof restorationRows>();
+  for (const r of restorationRows) {
+    const arr = restorationsByCase.get(r.caseId) ?? [];
+    arr.push(r);
+    restorationsByCase.set(r.caseId, arr);
+  }
+
+  const rows: InternalShadeMaterialGapRow[] = gapInvoices.map((inv) => {
+    const caseRow = inv.caseId ? (caseById.get(inv.caseId) ?? null) : null;
+    const billable =
+      (inv.caseId ? restorationsByCase.get(inv.caseId) : undefined)?.filter(
+        (r) => !/^missing$/i.test(r.restorationType ?? ""),
+      ) ?? [];
+
+    const derivedShadeJoin = distinctJoinValues(billable.map((r) => r.shade));
+    const derivedMaterialJoin = distinctJoinValues(billable.map((r) => r.material));
+    // Only ever fill in a value for a field that is actually missing —
+    // non-empty snapshot values are never treated as fillable.
+    const derivedShade = inv.shadeMissing && derivedShadeJoin ? derivedShadeJoin : null;
+    const derivedMaterial =
+      inv.materialMissing && derivedMaterialJoin ? derivedMaterialJoin : null;
+
+    const shadeWillBeFixed = !inv.shadeMissing || !!derivedShade;
+    const materialWillBeFixed = !inv.materialMissing || !!derivedMaterial;
+    const status: ShadeMaterialGapStatus =
+      shadeWillBeFixed && materialWillBeFixed
+        ? "fully_fixable"
+        : derivedShade || derivedMaterial
+          ? "partially_fixable"
+          : "not_fixable";
+
+    const metaPatientName =
+      typeof inv.rawMeta.patientName === "string" ? inv.rawMeta.patientName.trim() : "";
+    const fallbackPatientName = caseRow
+      ? `${caseRow.patientFirstName ?? ""} ${caseRow.patientLastName ?? ""}`
+          .replace(/\s+/g, " ")
+          .trim()
+      : "";
+
+    return {
+      invoiceId: inv.id,
+      invoiceNumber: inv.invoiceNumber,
+      caseId: inv.caseId,
+      caseNumber: caseRow?.caseNumber ?? null,
+      practiceName: inv.providerOrganizationId
+        ? (orgNameById.get(inv.providerOrganizationId) ?? null)
+        : null,
+      patientName: metaPatientName || fallbackPatientName,
+      currentShade: inv.currentShade,
+      currentMaterial: inv.currentMaterial,
+      shadeMissing: inv.shadeMissing,
+      materialMissing: inv.materialMissing,
+      derivedShade,
+      derivedMaterial,
+      status,
+      rawMeta: inv.rawMeta,
+    };
+  });
+
+  rows.sort(
+    (a, b) =>
+      SHADE_MATERIAL_GAP_STATUS_ORDER[a.status] - SHADE_MATERIAL_GAP_STATUS_ORDER[b.status],
+  );
+
+  return { totalCaseLinked, gapCount, rows };
+}
+
+// Caps the detail rows for an API response and strips the internal-only
+// rawMeta field. gapCount (computed separately) always reflects the true
+// total; this only controls how many rows are echoed back to the client.
+function projectGapRowsForResponse(rows: InternalShadeMaterialGapRow[]): {
+  rows: ShadeMaterialGapRow[];
+  rowsTruncated: boolean;
+} {
+  const rowsTruncated = rows.length > SHADE_MATERIAL_GAP_ROW_CAP;
+  const capped = rowsTruncated ? rows.slice(0, SHADE_MATERIAL_GAP_ROW_CAP) : rows;
+  return {
+    rows: capped.map(({ rawMeta: _rawMeta, ...rest }) => rest),
+    rowsTruncated,
+  };
+}
+
+// Report: which case-linked invoices have an empty shade or material field,
+// what the backfill tool would fill in for each, and whether it can resolve
+// them fully, partially, or not at all. Admins use this to decide whether to
+// re-run the shade/material backfill and to find invoices that need manual
+// entry.
 router.get(
   "/admin/shade-material-gaps",
   asyncHandler(async (req, res) => {
     const labOrganizationId = z.string().min(1).parse(req.query.labOrganizationId);
     await requireAnyRole((req as any).auth.userId, labOrganizationId, ADMIN_ROLES);
 
-    const [row] = await db
-      .select({
-        gapCount: sql<number>`count(*) filter (where
-          (display_metadata_json->>'shade' is null or trim(display_metadata_json->>'shade') = '')
-          or
-          (display_metadata_json->>'material' is null or trim(display_metadata_json->>'material') = '')
-        )::int`,
-        totalCaseLinked: sql<number>`count(*)::int`,
-      })
-      .from(invoices)
-      .where(
-        and(
-          isNotNull(invoices.caseId),
-          eq(invoices.labOrganizationId, labOrganizationId),
-          isNull(invoices.deletedAt),
-        ),
-      );
+    const { totalCaseLinked, gapCount, rows } = await computeShadeMaterialGaps(labOrganizationId);
+    const { rows: responseRows, rowsTruncated } = projectGapRowsForResponse(rows);
 
     return ok(res, {
       labOrganizationId,
-      totalCaseLinked: row?.totalCaseLinked ?? 0,
-      gapCount: row?.gapCount ?? 0,
+      totalCaseLinked,
+      gapCount,
+      rows: responseRows,
+      rowsTruncated,
     });
   }),
 );
@@ -969,7 +1729,9 @@ router.get(
 // Backfill shade/material snapshot for case-linked invoices that are missing
 // them. Mirrors the logic in scripts/src/backfill-invoice-display-shade-material.ts
 // but scoped to a single lab org. Never overwrites a non-empty snapshot value.
-// Returns counts of updated vs skipped invoices.
+// Returns counts of updated vs skipped invoices, plus the invoices that are
+// still incomplete after the run (some "updated" invoices only had ONE of
+// shade/material derivable and remain in this remaining list).
 router.post(
   "/admin/shade-material-backfill",
   asyncHandler(async (req, res) => {
@@ -979,92 +1741,54 @@ router.post(
 
     await requireAnyRole((req as any).auth.userId, labOrganizationId, ADMIN_ROLES);
 
-    // Fetch only case-linked invoices with at least one empty field.
-    const gapRows = await db
-      .select({
-        id: invoices.id,
-        caseId: invoices.caseId,
-        displayMetadataJson: invoices.displayMetadataJson,
-      })
-      .from(invoices)
-      .where(
-        and(
-          isNotNull(invoices.caseId),
-          eq(invoices.labOrganizationId, labOrganizationId),
-          isNull(invoices.deletedAt),
-          sql`(
-            (display_metadata_json->>'shade' is null or trim(display_metadata_json->>'shade') = '')
-            or
-            (display_metadata_json->>'material' is null or trim(display_metadata_json->>'material') = '')
-          )`,
-        ),
-      );
+    const before = await computeShadeMaterialGaps(labOrganizationId);
 
     let updated = 0;
     let skippedNoDerivable = 0;
 
-    for (const inv of gapRows) {
-      if (!inv.caseId) continue;
-      const meta = (
-        inv.displayMetadataJson && typeof inv.displayMetadataJson === "object"
-          ? inv.displayMetadataJson
-          : {}
-      ) as Record<string, unknown>;
-
-      const shadeEmpty =
-        !meta.shade ||
-        (typeof meta.shade === "string" && meta.shade.trim() === "");
-      const materialEmpty =
-        !meta.material ||
-        (typeof meta.material === "string" && meta.material.trim() === "");
-
-      const restorationRows = await db
-        .select({
-          shade: caseRestorations.shade,
-          material: caseRestorations.material,
-          restorationType: caseRestorations.restorationType,
-        })
-        .from(caseRestorations)
-        .where(eq(caseRestorations.caseId, inv.caseId));
-
-      const billable = restorationRows.filter(
-        (r) => !/^missing$/i.test(r.restorationType ?? ""),
-      );
-
-      const derivedShade = distinctJoinValues(billable.map((r) => r.shade));
-      const derivedMaterial = distinctJoinValues(billable.map((r) => r.material));
-
-      const setShade = shadeEmpty && derivedShade ? derivedShade : null;
-      const setMaterial =
-        materialEmpty && derivedMaterial ? derivedMaterial : null;
-
-      if (!setShade && !setMaterial) {
+    for (const row of before.rows) {
+      if (!row.derivedShade && !row.derivedMaterial) {
         skippedNoDerivable++;
         continue;
       }
 
-      const nextMeta: Record<string, unknown> = { ...meta };
-      if (setShade) nextMeta.shade = setShade;
-      if (setMaterial) nextMeta.material = setMaterial;
+      const nextMeta: Record<string, unknown> = { ...row.rawMeta };
+      if (row.derivedShade) nextMeta.shade = row.derivedShade;
+      if (row.derivedMaterial) nextMeta.material = row.derivedMaterial;
 
       await db
         .update(invoices)
         .set({ displayMetadataJson: nextMeta })
-        .where(eq(invoices.id, inv.id));
+        .where(eq(invoices.id, row.invoiceId));
 
       updated++;
     }
 
+    // Recompute with the same helper so "what's left" can never drift from
+    // what the pre-run report would show on a fresh load.
+    const after = await computeShadeMaterialGaps(labOrganizationId);
+    const { rows: remainingRows, rowsTruncated: remainingRowsTruncated } =
+      projectGapRowsForResponse(after.rows);
+
     req.log?.info?.(
-      { labOrganizationId, gapInvoicesFound: gapRows.length, updated, skippedNoDerivable },
+      {
+        labOrganizationId,
+        gapInvoicesFound: before.gapCount,
+        updated,
+        skippedNoDerivable,
+        remainingGapCount: after.gapCount,
+      },
       "[SHADE-MATERIAL BACKFILL] completed",
     );
 
     return ok(res, {
       labOrganizationId,
-      gapInvoicesFound: gapRows.length,
+      gapInvoicesFound: before.gapCount,
       updated,
       skippedNoDerivable,
+      remainingGapCount: after.gapCount,
+      remainingRows,
+      remainingRowsTruncated,
     });
   }),
 );
@@ -1139,6 +1863,7 @@ router.post(
         eq(invoices.labOrganizationId, input.labOrganizationId),
         eq(invoices.providerOrganizationId, input.fromProviderOrganizationId),
         ne(invoices.status, "void"),
+        finalizedInvoiceSql(),
         isNull(invoices.deletedAt),
       ),
     });
@@ -1157,6 +1882,13 @@ router.post(
 
     // Perform update + audit inserts atomically in one transaction
     await db.transaction(async (tx) => {
+      for (const invoice of [...toMove].sort((a, b) =>
+        (a.providerOrganizationId ?? "").localeCompare(b.providerOrganizationId ?? ""))) {
+        if (invoice.providerOrganizationId) {
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.labOrganizationId}), hashtext(${invoice.providerOrganizationId}))`);
+        }
+      }
+      await assertNoActiveCardReversalForInvoices(tx, movedIds);
       await tx
         .update(invoices)
         .set({
@@ -1360,6 +2092,7 @@ async function resolveLegacyMobileInvoiceTargets(
     where: eq(users.id, actorUserId),
   });
   if (callerUser?.userType === "provider") {
+    await assertLinkedProviderCapability(actorUserId, "billing");
     const { providerOrgIds } =
       await getProviderOrgIdsForUserAndLinks(actorUserId);
     orgIds = Array.from(new Set([...orgIds, ...providerOrgIds]));
@@ -1508,10 +2241,18 @@ router.delete(
 
     await db.transaction(async (tx) => {
       if (toDelete.length > 0) {
-        // 1. Mark invoices as void first
+        for (const invoice of [...toDelete].sort((a, b) =>
+          (a.providerOrganizationId ?? "").localeCompare(b.providerOrganizationId ?? ""))) {
+          if (invoice.providerOrganizationId) {
+            await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.labOrganizationId}), hashtext(${invoice.providerOrganizationId}))`);
+          }
+        }
+        await assertNoActiveCardReversalForInvoices(tx, ids);
+        // 1. Mark invoices as void first, clearing balanceDue atomically so the
+        //    lab-side balance display never shows a stale amount on a voided row.
         await tx
           .update(invoices)
-          .set({ status: "void", voidedAt: now, voidedByUserId: actorUserId, voidReason: "bulk_delete", updatedByUserId: actorUserId })
+          .set({ status: "void", balanceDue: "0.00", voidedAt: now, voidedByUserId: actorUserId, voidReason: "bulk_delete", updatedByUserId: actorUserId })
           .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
 
         // 2. Soft-delete the invoice rows
@@ -1549,8 +2290,22 @@ router.delete(
         // keeping the underlying case intact. The prior invoiceId is preserved
         // as `deletedInvoiceId` for auditability / potential restore.
         for (const t of legacyTargets) {
+          const [lockedCase] = await tx
+            .select({ caseData: labCases.caseData })
+            .from(labCases)
+            .where(eq(labCases.id, t.labCaseId))
+            .for("update");
+          let currentBlob: Record<string, unknown> = {};
+          try {
+            const parsed = JSON.parse(lockedCase?.caseData ?? "{}");
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              currentBlob = parsed;
+            }
+          } catch {
+            // Preserve existing behavior for malformed historical blobs.
+          }
           const nextBlob = {
-            ...t.parsedBlob,
+            ...currentBlob,
             invoiceId: null,
             deletedInvoiceId: t.localInvoiceId,
             invoiceDeletedAt: now.toISOString(),
@@ -1594,7 +2349,7 @@ router.delete(
 );
 
 // ── Bulk invoice reset to $0 ───────────────────────────────────────────────
-// Zeros all money fields, sets status→draft, hard-deletes line items.
+// Zeros all money fields, sets status→open, hard-deletes line items.
 // Invoice rows are NOT soft-deleted — they stay visible with $0 balance.
 router.post(
   "/bulk-reset",
@@ -1627,9 +2382,21 @@ router.post(
 
     // Authorize + resolve BOTH sets before any mutation so the request fails
     // closed (403) without partially resetting.
-    const toReset = hasRealSelection
+    const resetCandidates = hasRealSelection
       ? await resolveBulkInvoiceTargets(realInput, actorUserId)
       : [];
+    // Bulk reset must not bypass a draft's original issuance/review workflow,
+    // including the lab-wide "all" path that never passes through row selection.
+    const protectedDrafts = resetCandidates.length ? await db
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(and(
+        inArray(invoices.id, resetCandidates.map((inv) => inv.id)),
+        inArray(invoices.status, ["draft", RECOVERY_DRAFT_STATUS]),
+      )) : [];
+    const protectedDraftIds = new Set(protectedDrafts.map((inv) => inv.id));
+    const toReset = resetCandidates.filter((inv) => !protectedDraftIds.has(inv.id));
+    const skippedDraftCount = protectedDraftIds.size;
 
     // Legacy targets come from the explicit id selection, or — on the
     // `all: true` path — every legacy invoice in the lab org, matching how
@@ -1666,7 +2433,7 @@ router.post(
       : 0;
 
     if (toReset.length === 0 && legacyTargets.length === 0) {
-      return ok(res, { resetCount: 0, legacyResetCount: 0, skippedCount });
+      return ok(res, { resetCount: 0, legacyResetCount: 0, skippedCount, skippedDraftCount });
     }
 
     const ids = toReset.map((inv) => inv.id);
@@ -1677,7 +2444,19 @@ router.post(
 
     await db.transaction(async (tx) => {
       if (toReset.length > 0) {
-        // 1. Zero all money fields, set status → draft
+        for (const invoice of [...toReset].sort((a, b) =>
+          (a.providerOrganizationId ?? "").localeCompare(b.providerOrganizationId ?? ""))) {
+          if (invoice.providerOrganizationId) {
+            await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.labOrganizationId}), hashtext(${invoice.providerOrganizationId}))`);
+          }
+        }
+        const lockedRows = await tx.select({ id: invoices.id, status: invoices.status })
+          .from(invoices).where(inArray(invoices.id, ids)).orderBy(asc(invoices.id)).for("update");
+        if (lockedRows.some((inv) => isInvoiceDraftStatus(inv.status))) {
+          throw new HttpError(409, "A selected invoice is now a Draft. Refresh before resetting invoices.");
+        }
+        await assertNoActiveCardReversalForInvoices(tx, ids);
+        // 1. Zero all money fields, set status → open
         await tx
           .update(invoices)
           .set({
@@ -1686,7 +2465,7 @@ router.post(
             discount: "0",
             total: "0",
             balanceDue: "0",
-            status: "draft",
+            status: "open",
             updatedByUserId: actorUserId,
           })
           .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
@@ -1716,19 +2495,33 @@ router.post(
 
       if (legacyTargets.length > 0) {
         // Zero the invoice amounts inside each legacy case blob so the
-        // synthesized invoice (see toMobileInvoice) reads $0.00 draft. The
+        // synthesized invoice (see toMobileInvoice) reads $0.00 open. The
         // invoiceId reference is kept — the invoice stays visible at $0 —
         // and the pre-reset price is preserved once for auditability.
         for (const t of legacyTargets) {
-          const priorPrice = Number((t.parsedBlob as any).price ?? 0);
+          const [lockedCase] = await tx
+            .select({ caseData: labCases.caseData })
+            .from(labCases)
+            .where(eq(labCases.id, t.labCaseId))
+            .for("update");
+          let currentBlob: Record<string, unknown> = {};
+          try {
+            const parsed = JSON.parse(lockedCase?.caseData ?? "{}");
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              currentBlob = parsed;
+            }
+          } catch {
+            // Preserve existing behavior for malformed historical blobs.
+          }
+          const priorPrice = Number((currentBlob as any).price ?? 0);
           const nextBlob = {
-            ...t.parsedBlob,
+            ...currentBlob,
             price: 0,
-            invoiceStatus: "draft",
+            invoiceStatus: "open",
             invoiceResetAt: now.toISOString(),
             invoiceResetByUserId: actorUserId,
             invoiceResetPriorPrice:
-              (t.parsedBlob as any).invoiceResetPriorPrice ?? priorPrice,
+              (currentBlob as any).invoiceResetPriorPrice ?? priorPrice,
           };
           await tx
             .update(labCases)
@@ -1768,6 +2561,7 @@ router.post(
       resetCount: totalAffected,
       legacyResetCount: legacyTargets.length,
       skippedCount,
+      skippedDraftCount,
     });
   }),
 );
@@ -1807,20 +2601,32 @@ router.post(
       },
     });
 
-    // Authorize the caller for every distinct lab org the selection touches.
+    // approve_invoices capability: billing-role members pass via their existing
+    // role; non-billing members may also change invoice status with an explicit
+    // capability grant (owners and admins always pass via hasCapability).
     const orgIds = [...new Set(targets.map((inv) => inv.labOrganizationId))];
     for (const orgId of orgIds) {
-      await requireAnyRole(actorUserId, orgId, BILLING_ROLES);
+      const _invMembership = await requireMembership(actorUserId, orgId);
+      if (!BILLING_ROLES.includes(_invMembership.role as MembershipRole)) {
+        const _allowed = await hasCapability(actorUserId, orgId, "approve_invoices");
+        if (!_allowed) {
+          throw new HttpError(403, "You do not have permission to approve invoices.");
+        }
+      }
     }
 
     // Frozen invoices (linked case deleted) cannot be changed — skip them.
-    const updatable = targets.filter((inv) => !inv.frozen);
-    const skippedFrozenCount = targets.length - updatable.length;
+    const updatable = targets.filter((inv) => !inv.frozen && !isInvoiceDraftStatus(inv.status));
+    const skippedFrozenCount = targets.filter((inv) => inv.frozen).length;
+    const skippedDraftCount = targets.filter((inv) => isInvoiceDraftStatus(inv.status)).length;
+    const skippedReadOnlyCount = targets.length - updatable.length;
 
     if (updatable.length === 0) {
       return ok(res, {
         updatedCount: 0,
         skippedFrozenCount,
+        skippedDraftCount,
+        skippedReadOnlyCount,
         status: targetStatus,
       });
     }
@@ -1832,11 +2638,78 @@ router.post(
     const actorInitials: string = (req as any).user?.initials || "SYS";
 
     await db.transaction(async (tx) => {
-      // 1. Apply the new status (money fields untouched — status-only change).
-      await tx
-        .update(invoices)
-        .set({ status: targetStatus, updatedByUserId: actorUserId })
-        .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
+      for (const invoice of [...updatable].sort((a, b) =>
+        (a.providerOrganizationId ?? "").localeCompare(b.providerOrganizationId ?? ""))) {
+        if (invoice.providerOrganizationId) {
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.labOrganizationId}), hashtext(${invoice.providerOrganizationId}))`);
+        }
+      }
+      const lockedRows = await tx.select({ id: invoices.id, status: invoices.status, frozen: invoices.frozen })
+        .from(invoices).where(inArray(invoices.id, ids)).orderBy(asc(invoices.id)).for("update");
+      if (lockedRows.some((inv) => isInvoiceDraftStatus(inv.status) || inv.frozen)) {
+        throw new HttpError(409, "A selected invoice is now read-only. Refresh before changing invoice status.");
+      }
+      await assertNoActiveCardReversalForInvoices(tx, ids);
+      // 1. Apply the new status.
+      //    • void  → zero balanceDue atomically (a voided invoice must never
+      //              carry an outstanding balance).
+      //    • paid  → zero balanceDue (the invoice is fully settled by
+      //              definition; a payment row may or may not exist).
+      //    • other → recalculate balanceDue as (total − recorded payments) per
+      //              invoice so that reversing a paid transition (paid → open)
+      //              correctly restores the outstanding amount rather than
+      //              leaving a stale $0.00 on an open invoice.
+      if (targetStatus === "void") {
+        await tx
+          .update(invoices)
+          .set({
+            status: targetStatus,
+            balanceDue: "0.00",
+            voidedAt: now,
+            voidedByUserId: actorUserId,
+            voidReason: "Bulk status change",
+            voidKind: "void",
+            updatedByUserId: actorUserId,
+          })
+          .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
+      } else if (targetStatus === "paid") {
+        await tx
+          .update(invoices)
+          .set({ status: targetStatus, balanceDue: "0.00", updatedByUserId: actorUserId })
+          .where(and(inArray(invoices.id, ids), isNull(invoices.deletedAt)));
+      } else {
+        // Recalculate per-invoice balance so reversals (e.g. paid → open)
+        // restore the correct outstanding amount: total − payments − unreversed credits.
+        // Both payment rows and active invoice-credit rows reduce the outstanding
+        // balance; omitting either produces an overstated receivable.
+        const [paymentSums, creditSums] = await Promise.all([
+          tx
+            .select({ invoiceId: payments.invoiceId, total: sum(payments.amount) })
+            .from(payments)
+            .where(inArray(payments.invoiceId, ids))
+            .groupBy(payments.invoiceId),
+          tx
+            .select({ invoiceId: invoiceCredits.invoiceId, total: sum(invoiceCredits.amount) })
+            .from(invoiceCredits)
+            .where(and(inArray(invoiceCredits.invoiceId, ids), isNull(invoiceCredits.reversedAt)))
+            .groupBy(invoiceCredits.invoiceId),
+        ]);
+        const paidByInvoiceId = new Map(
+          paymentSums.map((p) => [p.invoiceId, Number(p.total ?? 0)]),
+        );
+        const creditByInvoiceId = new Map(
+          creditSums.map((c) => [c.invoiceId, Number(c.total ?? 0)]),
+        );
+        for (const inv of updatable) {
+          const paid = paidByInvoiceId.get(inv.id) ?? 0;
+          const credited = creditByInvoiceId.get(inv.id) ?? 0;
+          const balanceDue = Math.max(0, Number(inv.total ?? 0) - paid - credited).toFixed(2);
+          await tx
+            .update(invoices)
+            .set({ status: targetStatus, balanceDue, updatedByUserId: actorUserId })
+            .where(and(eq(invoices.id, inv.id), isNull(invoices.deletedAt)));
+        }
+      }
 
       // 2. Audit log — one row per invoice, scoped to its OWN lab org.
       await tx.insert(auditLogs).values(
@@ -1894,7 +2767,11 @@ router.post(
           actorUserId,
         );
       } else if (inv.status === "paid" && targetStatus !== "paid") {
-        await reverseInvoiceDepositIfAny(inv.id, actorUserId);
+        await reverseInvoiceDepositIfAny(
+          inv.id,
+          inv.labOrganizationId,
+          actorUserId,
+        );
       }
     }
 
@@ -1906,6 +2783,8 @@ router.post(
     return ok(res, {
       updatedCount: updatable.length,
       skippedFrozenCount,
+      skippedDraftCount,
+      skippedReadOnlyCount,
       status: targetStatus,
     });
   }),
@@ -1951,6 +2830,11 @@ router.post(
         restorations,
         noteRows,
       );
+      const doctorIdentity = await ensureDoctorProfileIdentity(db, {
+        labOrganizationId: found.labOrganizationId,
+        providerOrganizationId: found.providerOrganizationId ?? null,
+        doctorName: found.doctorName,
+      });
 
       const bodyLayoutPresetId =
         typeof req.body?.layoutPresetId === "string" && req.body.layoutPresetId.trim()
@@ -1964,9 +2848,11 @@ router.post(
           caseId: found.id,
           labOrganizationId: found.labOrganizationId,
           providerOrganizationId: found.providerOrganizationId,
-          status: "draft",
+          doctorIdentity,
+          status: "open",
           displayMetadataJson,
           ...(bodyLayoutPresetId ? { layoutPresetId: bodyLayoutPresetId } : {}),
+          issuedAt: calendarDateToUtcNoon(found.receivedAt),
           dueAt: invoiceDueDate(new Date()),
           createdByUserId: userId,
           updatedByUserId: userId,
@@ -2022,15 +2908,19 @@ router.post(
           stalePatient.toLowerCase() === currentPatient.toLowerCase();
 
         if (targetInvoice.caseId === null && sameOrBlankPatient) {
-          await db
-            .update(invoices)
-            .set({
+          await db.transaction(async (tx) => {
+            if (targetInvoice.providerOrganizationId) {
+              await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${targetInvoice.labOrganizationId}), hashtext(${targetInvoice.providerOrganizationId}))`);
+            }
+            await assertNoActiveCardReversalForInvoices(tx, [targetInvoice.id]);
+            await tx.select().from(invoices).where(eq(invoices.id, targetInvoice.id)).for("update");
+            await tx.update(invoices).set({
               caseId: found.id,
               providerOrganizationId: found.providerOrganizationId,
               displayMetadataJson,
               updatedByUserId: userId,
-            })
-            .where(eq(invoices.id, targetInvoice.id));
+            }).where(eq(invoices.id, targetInvoice.id));
+          });
           (targetInvoice as any).caseId = found.id;
           (targetInvoice as any).providerOrganizationId =
             found.providerOrganizationId;
@@ -2062,18 +2952,33 @@ router.post(
       if (invoice && hasRestorations) {
         const genLabelCache: Record<string, string> = {};
         for (const r of restorations) {
-          const pk = materialToPriceKey(r.material, r.restorationType) ?? r.restorationType;
+          const pk =
+            (await resolveRestorationPriceKey({
+              labOrganizationId: found.labOrganizationId,
+              material: r.material,
+              restorationType: r.restorationType,
+              restorationSubtype: r.restorationSubtype,
+            })) ?? r.restorationType;
           if (!(pk in genLabelCache)) {
             genLabelCache[pk] = await resolveItemLabel(found.labOrganizationId, pk);
           }
         }
-        const itemsToInsert = restorations.map((restoration, index) => {
-          const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
+        const itemsToInsert = await Promise.all(restorations.map(async (restoration, index) => {
+          const pk =
+            (await resolveRestorationPriceKey({
+              labOrganizationId: found.labOrganizationId,
+              material: restoration.material,
+              restorationType: restoration.restorationType,
+              restorationSubtype: restoration.restorationSubtype,
+            })) ?? restoration.restorationType;
           const label = genLabelCache[pk] ?? restoration.restorationType;
           const toothInt = parseInt(restoration.toothNumber, 10);
           return {
             invoiceId: targetInvoice.id,
             caseRestorationId: restoration.id,
+            sourceType: "restoration",
+            sourceKey: `restoration:${restoration.id}`,
+            sourceRestorationIdsJson: [restoration.id],
             toothNumber: Number.isInteger(toothInt) && toothInt >= 1 && toothInt <= 32 ? toothInt : null,
             description: buildLineItemDescription(restoration.toothNumber, label),
             quantity: restoration.quantity,
@@ -2081,54 +2986,53 @@ router.post(
             lineTotal: calculateLineTotal(restoration.quantity, restoration.unitPrice),
             sortOrder: index,
           };
-        });
-        await db.insert(invoiceLineItems).values(itemsToInsert).catch((err: unknown): never => wrapDbError(err, {
-          fallback: "Failed to insert invoice line items during generation.",
         }));
+        (targetInvoice as any).__generatedItems = itemsToInsert;
       }
 
-      const items = await db.query.invoiceLineItems.findMany({
-        where: eq(invoiceLineItems.invoiceId, targetInvoice.id),
-        orderBy: [invoiceLineItems.sortOrder],
-      });
-      const subtotal = sumMoney(items.map((item) => item.lineTotal));
-
-      const [updatedInvoice] = await db
-        .update(invoices)
-        .set({
+      const updatedInvoice = await db.transaction(async (tx) => {
+        if (targetInvoice.providerOrganizationId) {
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${targetInvoice.labOrganizationId}), hashtext(${targetInvoice.providerOrganizationId}))`);
+        }
+        if (!invoice) await assertNoActiveCardReversalForInvoices(tx, [targetInvoice.id]);
+        const [authoritative] = await tx.select().from(invoices)
+          .where(eq(invoices.id, targetInvoice.id)).for("update");
+        if (!authoritative) throw new HttpError(404, "Invoice not found.");
+        const generatedItems = (targetInvoice as any).__generatedItems as any[] | undefined;
+        if (generatedItems?.length) await tx.insert(invoiceLineItems).values(generatedItems);
+        const items = await tx.query.invoiceLineItems.findMany({
+          where: eq(invoiceLineItems.invoiceId, authoritative.id),
+          orderBy: [invoiceLineItems.sortOrder],
+        });
+        const subtotal = sumMoney(items.map((item) => item.lineTotal));
+        const paidRows = await tx.select({ value: sum(payments.amount) }).from(payments)
+          .where(eq(payments.invoiceId, authoritative.id));
+        const paid = Number(paidRows[0]?.value ?? 0);
+        const [updated] = await tx.update(invoices).set({
           subtotal,
           total: subtotal,
-          balanceDue: subtotal,
+          balanceDue: Math.max(0, Number(subtotal) - paid).toFixed(2),
           updatedByUserId: userId,
-          // Empty drafts stay in "draft" with no issuedAt; only invoices
-          // with at least one line item are auto-issued to "open".
           // Preserve an existing dueAt when re-generating; only default to
           // 10th-of-next-month when dueAt is not already set.
-          ...(hasRestorations
-            ? {
-                issuedAt: new Date(),
-                status: "open" as const,
-                dueAt: targetInvoice.dueAt ?? invoiceDueDate(new Date()),
-              }
-            : {}),
-        })
-        .where(eq(invoices.id, targetInvoice.id))
-        .returning();
-
-      const user = (req as any).user;
-      await db.insert(caseEvents).values({
+          issuedAt: calendarDateToUtcNoon(found.receivedAt),
+          status: "open" as const,
+          dueAt: authoritative.dueAt ?? invoiceDueDate(new Date()),
+        }).where(eq(invoices.id, authoritative.id)).returning();
+        const user = (req as any).user;
+        await tx.insert(caseEvents).values({
         caseId: found.id,
         eventType: "invoice_generated",
         actorUserId: userId,
         actorOrganizationId: found.labOrganizationId,
         actorInitials: user?.initials || "SYS",
         metadataJson: {
-          invoiceId: updatedInvoice.id,
-          invoiceNumber: updatedInvoice.invoiceNumber,
+          invoiceId: updated.id,
+          invoiceNumber: updated.invoiceNumber,
         },
-      }).catch((err: unknown): never => wrapDbError(err, {
-        fallback: "Failed to record invoice_generated timeline event.",
-      }));
+        });
+        return updated;
+      });
 
       return ok(res, updatedInvoice, invoice ? 201 : 200);
     }
@@ -2167,6 +3071,11 @@ router.post(
       shade: String(parsedBlob.shade ?? ""),
       caseNotes: "",
     };
+    const doctorIdentity = await ensureDoctorProfileIdentity(db, {
+      labOrganizationId: legacyRow.organizationId,
+      providerOrganizationId: null,
+      doctorName: String(parsedBlob.doctorName ?? ""),
+    });
 
     const bodyLayoutPresetId =
       typeof req.body?.layoutPresetId === "string" && req.body.layoutPresetId.trim()
@@ -2180,9 +3089,11 @@ router.post(
         caseId: null,
         labOrganizationId: legacyRow.organizationId,
         providerOrganizationId: null,
-        status: "draft",
+        doctorIdentity,
+        status: "open",
         displayMetadataJson,
         ...(bodyLayoutPresetId ? { layoutPresetId: bodyLayoutPresetId } : {}),
+        issuedAt: new Date(),
         dueAt: invoiceDueDate(new Date()),
         createdByUserId: userId,
         updatedByUserId: userId,
@@ -2255,30 +3166,281 @@ router.post(
 );
 
 router.get(
-  "/",
+  "/filter-facets",
   asyncHandler(async (req, res) => {
     const callerId = (req as any).auth.userId as string;
-    const memberships =
-      await db.query.organizationMemberships.findMany({
-        where: eq(organizationMemberships.userId, callerId),
-      });
-    const baseOrgIds = memberships
-      .filter((m: any) => m.status === "active")
-      .map((m: any) => m.labId);
+    const labOrganizationId =
+      typeof req.query.labOrganizationId === "string" && req.query.labOrganizationId
+        ? req.query.labOrganizationId
+        : null;
+    const practiceId =
+      typeof req.query.practiceId === "string" && req.query.practiceId
+        ? req.query.practiceId
+        : null;
 
-    // Cross-lab doctor expansion (Task #320). Provider users see invoices
-    // for every linked-doctor copy of themselves; lab users see only
-    // their own lab.
-    let orgIds = baseOrgIds;
-    const callerUser = await db.query.users.findFirst({
-      where: eq(users.id, callerId),
-    });
-    if (callerUser?.userType === "provider") {
-      const { providerOrgIds } = await getProviderOrgIdsForUserAndLinks(
-        callerId
-      );
-      orgIds = Array.from(new Set([...baseOrgIds, ...providerOrgIds]));
+    const { orgIds } = await getInvoiceReadScope(callerId);
+
+    if (orgIds.length === 0) {
+      return ok(res, { practices: [], doctors: [] });
     }
+
+    const invoiceScope = and(
+      isNull(invoices.deletedAt),
+      or(
+        ...orgIds.flatMap((organizationId) => [
+          eq(invoices.labOrganizationId, organizationId),
+          eq(invoices.providerOrganizationId, organizationId),
+        ]),
+      ),
+      labOrganizationId ? eq(invoices.labOrganizationId, labOrganizationId) : undefined,
+      practiceId ? eq(invoices.providerOrganizationId, practiceId) : undefined,
+    );
+    const canonicalDoctorNameSql = sql<string>`trim(coalesce(
+      ${invoices.displayMetadataJson}->>'billTo',
+      ${invoices.displayMetadataJson}->>'doctorName',
+      ''
+    ))`;
+    const [practiceRows, canonicalDoctorRows, mobileFacetRows] = await Promise.all([
+      db
+        .selectDistinct({
+          id: organizations.id,
+          name: sql<string>`coalesce(
+            nullif(trim(${organizations.displayName}), ''),
+            ${organizations.name}
+          )`,
+        })
+        .from(invoices)
+        .innerJoin(organizations, eq(organizations.id, invoices.providerOrganizationId))
+        .where(invoiceScope),
+      db
+        .selectDistinct({ name: canonicalDoctorNameSql })
+        .from(invoices)
+        .where(and(invoiceScope, sql`${canonicalDoctorNameSql} <> ''`)),
+      practiceId
+        ? Promise.resolve([] as Array<{ caseData: string }>)
+        : db
+            .select({ caseData: labCases.caseData })
+            .from(labCases)
+            .where(
+              and(
+                isNull(labCases.deletedAt),
+                inArray(labCases.organizationId, orgIds),
+                labOrganizationId
+                  ? eq(labCases.organizationId, labOrganizationId)
+                  : undefined,
+                sql`${labCases.caseData} like '%"invoiceId"%'`,
+              ),
+            ),
+    ]);
+    const mobileDoctorNames = mobileFacetRows.flatMap(({ caseData }) => {
+      try {
+        const parsed = JSON.parse(caseData);
+        if (!parsed || typeof parsed !== "object") return [];
+        const invoiceId = String(parsed.invoiceId ?? "").trim();
+        const doctorName = String(parsed.doctorName ?? "").trim();
+        return invoiceId && doctorName ? [doctorName] : [];
+      } catch {
+        return [];
+      }
+    });
+
+    const practices = practiceRows
+      .filter((practice) => practice.id && practice.name?.trim())
+      .map((practice) => ({ id: practice.id, name: practice.name.trim() }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const doctors = Array.from(
+      new Set(
+        [...canonicalDoctorRows.map((doctor) => doctor.name), ...mobileDoctorNames]
+          .map((doctorName) => doctorName?.trim())
+          .filter((name): name is string => Boolean(name)),
+      ),
+    ).sort((a, b) => a.localeCompare(b));
+
+    return ok(res, { practices, doctors });
+  }),
+);
+
+router.get(
+  "/",
+  asyncHandler(async (req, res) => {
+    const pagination = parsePagination(req.query);
+    const queryString = (name: string): string | null =>
+      typeof req.query[name] === "string" && req.query[name]
+        ? req.query[name] as string
+        : null;
+    const queryValues = (name: string): string[] =>
+      queryString(name)
+        ?.split(",")
+        .map((value) => value.trim())
+        .filter(Boolean) ?? [];
+    const invalidValues = (values: string[], allowed: Set<string>): string[] =>
+      Array.from(new Set(values.filter((value) => !allowed.has(value))));
+    const requestedViewValue = queryString("view");
+    const requestedLegacyStatuses = queryValues("status");
+    const requestedStatusValues = queryValues("statuses");
+    const requestedAging = queryString("overdueBucket");
+    const sortQueryValue = (name: string): string | null => {
+      const value = req.query[name];
+      if (Array.isArray(value)) {
+        throw new HttpError(
+          400,
+          `Invalid invoice ${name} value(s): ${value.join(", ")}. Provide exactly one value.`,
+        );
+      }
+      return typeof value === "string" ? value : null;
+    };
+    const requestedSort = sortQueryValue("sort");
+    const requestedSortDir = sortQueryValue("sortDir");
+    const requestedSortBy = sortQueryValue("sortBy");
+    const requestedSortDirection = sortQueryValue("sortDirection");
+
+    const invalidView = requestedViewValue && !INVOICE_VIEW_VALUES.has(requestedViewValue)
+      ? [requestedViewValue]
+      : [];
+    const invalidLegacyStatuses = invalidValues(
+      requestedLegacyStatuses,
+      INVOICE_LEGACY_STATUS_VALUES,
+    );
+    const invalidStatuses = invalidValues(requestedStatusValues, INVOICE_STATUS_FILTER_VALUES);
+    const invalidAging = requestedAging && !INVOICE_AGING_VALUES.has(requestedAging)
+      ? [requestedAging]
+      : [];
+    const invalidSort = requestedSort !== null && !INVOICE_SORT_VALUES.has(requestedSort)
+      ? [requestedSort]
+      : [];
+    const invalidSortDir =
+      requestedSortDir !== null && !INVOICE_SORT_DIRECTION_VALUES.has(requestedSortDir)
+        ? [requestedSortDir]
+        : [];
+    const invalidSortBy = requestedSortBy !== null && !INVOICE_SORT_VALUES.has(requestedSortBy)
+      ? [requestedSortBy]
+      : [];
+    const invalidSortDirection =
+      requestedSortDirection !== null &&
+      !INVOICE_SORT_DIRECTION_VALUES.has(requestedSortDirection)
+        ? [requestedSortDirection]
+        : [];
+    if (invalidView.length > 0) {
+      throw new HttpError(
+        400,
+        `Invalid invoice view value(s): ${invalidView.join(", ")}. Supported values are: open, outstanding.`,
+      );
+    }
+    if (invalidLegacyStatuses.length > 0) {
+      throw new HttpError(
+        400,
+        `Invalid invoice status value(s): ${invalidLegacyStatuses.join(", ")}. Supported values are: open, partially_paid, paid, void, frozen, zero_balance, all, closed, overdue.`,
+      );
+    }
+    if (invalidStatuses.length > 0) {
+      throw new HttpError(
+        400,
+        `Invalid invoice statuses value(s): ${invalidStatuses.join(", ")}. Supported values are: open, partially_paid, paid, void, frozen, zero_balance.`,
+      );
+    }
+    if (invalidAging.length > 0) {
+      throw new HttpError(
+        400,
+        `Invalid invoice aging value(s): ${invalidAging.join(", ")}. Supported values are: all, 0_30, 31_60, 61_90, 90_plus, custom.`,
+      );
+    }
+    if (invalidSort.length > 0) {
+      throw new HttpError(
+        400,
+        `Invalid invoice sort value(s): ${invalidSort.join(", ")}. Supported values are: issued, due, practice.`,
+      );
+    }
+    if (invalidSortDir.length > 0) {
+      throw new HttpError(
+        400,
+        `Invalid invoice sortDir value(s): ${invalidSortDir.join(", ")}. Supported values are: asc, desc.`,
+      );
+    }
+    if (invalidSortBy.length > 0) {
+      throw new HttpError(
+        400,
+        `Invalid invoice sortBy value(s): ${invalidSortBy.join(", ")}. Supported values are: issued, due, practice.`,
+      );
+    }
+    if (invalidSortDirection.length > 0) {
+      throw new HttpError(
+        400,
+        `Invalid invoice sortDirection value(s): ${invalidSortDirection.join(", ")}. Supported values are: asc, desc.`,
+      );
+    }
+
+    const parseDateFilter = (name: string): Date | null => {
+      const value = req.query[name];
+      if (value === undefined) return null;
+      if (typeof value !== "string" || value.trim() === "") {
+        throw new HttpError(400, `Invalid invoice date filter: ${name} must be a valid date.`);
+      }
+
+      const parsed = new Date(value);
+      if (!Number.isFinite(parsed.getTime())) {
+        throw new HttpError(400, `Invalid invoice date filter: ${name} must be a valid date.`);
+      }
+
+      // Date parses some impossible ISO calendar days by rolling them into the
+      // following month. Reject those values while keeping the other formats
+      // supported by the existing date parser.
+      const isoDate = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/.exec(value);
+      if (isoDate) {
+        const year = Number(isoDate[1]);
+        const month = Number(isoDate[2]);
+        const day = Number(isoDate[3]);
+        const isLeapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+        const daysInMonth = [
+          31,
+          isLeapYear ? 29 : 28,
+          31,
+          30,
+          31,
+          30,
+          31,
+          31,
+          30,
+          31,
+          30,
+          31,
+        ][month - 1];
+        if (!daysInMonth || day < 1 || day > daysInMonth) {
+          throw new HttpError(400, `Invalid invoice date filter: ${name} must be a valid date.`);
+        }
+      }
+
+      return parsed;
+    };
+    const assertDateRangeOrder = (
+      fromName: string,
+      toName: string,
+      from: Date | null,
+      to: Date | null,
+    ) => {
+      if (from && to && from.getTime() > to.getTime()) {
+        throw new HttpError(
+          400,
+          `Invalid invoice date range: ${fromName} must be on or before ${toName}.`,
+        );
+      }
+    };
+
+    const dateFromFilter = parseDateFilter("dateFrom");
+    const dateToFilter = parseDateFilter("dateTo");
+    const issuedFrom = parseDateFilter("issuedFrom");
+    const issuedTo = parseDateFilter("issuedTo");
+    const dueDateFrom = parseDateFilter("dueDateFrom");
+    const dueDateToInput = parseDateFilter("dueDateTo");
+    assertDateRangeOrder("dateFrom", "dateTo", dateFromFilter, dateToFilter);
+    assertDateRangeOrder("issuedFrom", "issuedTo", issuedFrom, issuedTo);
+    assertDateRangeOrder("dueDateFrom", "dueDateTo", dueDateFrom, dueDateToInput);
+    const dueDateTo = dueDateToInput
+      ? new Date(dueDateToInput)
+      : null;
+    dueDateTo?.setHours(23, 59, 59, 999);
+
+    const callerId = (req as any).auth.userId as string;
+    const { orgIds, memberships } = await getInvoiceReadScope(callerId);
 
     // Diagnostic guardrail: if the user has zero active memberships, the
     // invoices list will be empty regardless of how much data exists in the
@@ -2320,24 +3482,20 @@ router.get(
       req.query.labOrganizationId
         ? req.query.labOrganizationId
         : null;
-    const statusFilter =
-      typeof req.query.status === "string" && req.query.status
-        ? req.query.status
-        : null; // values: "open" | "all" | specific status
-    const statusList =
-      statusFilter === "open"
-        ? ["open", "partially_paid"]
-        : statusFilter && statusFilter !== "all"
-          ? statusFilter.split(",").map((s) => s.trim()).filter(Boolean)
-          : null;
-    const dateFromFilter =
-      typeof req.query.dateFrom === "string" && req.query.dateFrom
-        ? new Date(req.query.dateFrom)
-        : null;
-    const dateToFilter =
-      typeof req.query.dateTo === "string" && req.query.dateTo
-        ? new Date(req.query.dateTo)
-        : null;
+    const normalizedFilters = normalizeInvoiceFilterPrecedence({
+      view: req.query.view,
+      statuses: req.query.statuses,
+      legacyStatus: req.query.status,
+      aging: req.query.overdueBucket,
+    });
+    const requestedView = normalizedFilters.view === "all" ? null : normalizedFilters.view;
+    const requestedStatuses = normalizedFilters.statuses;
+    const statusFilter = normalizedFilters.legacyStatus;
+    const statusList: string[] | null =
+      normalizedFilters.selection.kind === "statuses" ? requestedStatuses : null;
+    const searchFilter =
+      typeof req.query.search === "string" ? req.query.search.trim().toLocaleLowerCase() : "";
+    const overdueStatusFilter = statusFilter === "overdue" || statusFilter === "pastdue";
     const minAmount =
       typeof req.query.minAmount === "string" && req.query.minAmount
         ? Number(req.query.minAmount)
@@ -2347,35 +3505,50 @@ router.get(
         ? Number(req.query.maxAmount)
         : null;
     const aiOnly = req.query.aiOnly === "true";
-    const overdueBucket =
-      typeof req.query.overdueBucket === "string" && req.query.overdueBucket
-        ? req.query.overdueBucket // "0_30" | "31_60" | "61_90" | "90_plus"
+    const overdueBucket = normalizedFilters.aging && normalizedFilters.aging !== "all"
+      ? normalizedFilters.aging
+      : null;
+    const doctorNameFilter =
+      typeof req.query.doctorName === "string" && req.query.doctorName
+        ? req.query.doctorName
         : null;
+    const statusesFilter: string[] = normalizedFilters.selection.kind === "statuses"
+      ? requestedStatuses
+      : [];
+    const sortFilter =
+      req.query.sort === "practice" || req.query.sort === "issued" || req.query.sort === "due"
+        ? req.query.sort
+        : null;
+    const desktopSortDirection = req.query.sortDir === "desc" ? -1 : 1;
+    const sortBy =
+      req.query.sortBy === "issued" || req.query.sortBy === "due" || req.query.sortBy === "practice"
+        ? req.query.sortBy
+        : null;
+    const mobileSortDirection = req.query.sortDirection === "asc" ? 1 : -1;
+    const viewFilter = requestedView;
+    const includeFacets = req.query.includeFacets === "true";
 
     const [rows, mobileCaseRows] = await Promise.all([
       orgIds.length
         ? db.query.invoices.findMany({
             where: and(
-              caseIdFilter ? eq(invoices.caseId, caseIdFilter) : undefined,
-              practiceIdFilter
+              !pagination.active && caseIdFilter ? eq(invoices.caseId, caseIdFilter) : undefined,
+              !pagination.active && practiceIdFilter
                 ? eq(invoices.providerOrganizationId, practiceIdFilter)
                 : undefined,
-              practiceIdsFilter && practiceIdsFilter.length
+              !pagination.active && practiceIdsFilter && practiceIdsFilter.length
                 ? inArray(invoices.providerOrganizationId, practiceIdsFilter)
                 : undefined,
-              labIdFilter
+              !pagination.active && labIdFilter
                 ? eq(invoices.labOrganizationId, labIdFilter)
                 : undefined,
-              statusList && statusList.length
-                ? inArray(invoices.status, statusList)
+              !pagination.active && aiOnly ? eq(invoices.aiGenerated, true) : undefined,
+              !pagination.active && doctorNameFilter
+                ? sql`coalesce(
+                    ${invoices.displayMetadataJson}->>'billTo',
+                    ${invoices.displayMetadataJson}->>'doctorName'
+                  ) = ${doctorNameFilter}`
                 : undefined,
-              dateFromFilter && !Number.isNaN(dateFromFilter.getTime())
-                ? gte(invoices.createdAt, dateFromFilter)
-                : undefined,
-              dateToFilter && !Number.isNaN(dateToFilter.getTime())
-                ? lte(invoices.createdAt, dateToFilter)
-                : undefined,
-              aiOnly ? eq(invoices.aiGenerated, true) : undefined,
               isNull(invoices.deletedAt),
               or(
                 ...orgIds.flatMap((orgId: string) => [
@@ -2441,7 +3614,32 @@ router.get(
         if (!localInvoiceId) continue;
         if (!lc.organizationId) continue;
         if (!orgIds.includes(lc.organizationId)) continue;
-        mobileInvoices.push(toMobileInvoice(lc, parsed, localInvoiceId));
+        if (
+          !pagination.active &&
+          doctorNameFilter &&
+          parsed.doctorName !== doctorNameFilter
+        ) continue;
+        const mobileInvoice = toMobileInvoice(lc, parsed, localInvoiceId);
+        // Legacy mobile invoices have no provider organization or AI marker.
+        // Preserve the historical unpaged bridge, but paged responses must
+        // apply every list filter before calculating totals and slicing.
+        if (pagination.active) {
+          if (labIdFilter && mobileInvoice.labOrganizationId !== labIdFilter) continue;
+          if (practiceIdFilter || (practiceIdsFilter && practiceIdsFilter.length)) continue;
+          const filterDate = new Date(mobileInvoice.issuedAt ?? mobileInvoice.createdAt);
+          if (
+            dateFromFilter &&
+            !Number.isNaN(dateFromFilter.getTime()) &&
+            filterDate < dateFromFilter
+          ) continue;
+          if (
+            dateToFilter &&
+            !Number.isNaN(dateToFilter.getTime()) &&
+            filterDate > dateToFilter
+          ) continue;
+          if (aiOnly) continue;
+        }
+        mobileInvoices.push(mobileInvoice);
       } catch {
         // skip malformed rows
       }
@@ -2461,6 +3659,127 @@ router.get(
         },
         "GET /api/invoices returning [] despite active memberships: no rows in invoices table and no mobile-origin invoiceIds in lab_cases"
       );
+    }
+
+    // Lazy enrichment: for canonical invoice rows whose displayMetadataJson is
+    // missing any of caseType, caseSubtype, or material, recompute from the
+    // live cases + caseRestorations + caseNotes rows and write back so the
+    // data is durable on subsequent fetches. Mirrors the semantics of the
+    // admin POST /backfill-display-metadata route.
+    const staleRows = rows.filter((r: any) => {
+      if (!r.caseId) return false;
+      const meta = r.displayMetadataJson;
+      if (!meta || typeof meta !== "object") return true; // null/missing metadata
+      const m = meta as Record<string, unknown>;
+      // Stale if ANY of the three derived fields is absent or empty
+      return (
+        !m.caseType || m.caseType === "" ||
+        !m.caseSubtype || m.caseSubtype === "" ||
+        !m.material || m.material === ""
+      );
+    });
+
+    if (staleRows.length > 0) {
+      const staleCaseIds = Array.from(
+        new Set(staleRows.map((r: any) => r.caseId as string))
+      );
+
+      // Batch-fetch case rows, restorations, and provider-shared notes in
+      // parallel. Notes are scoped to shared_with_provider only — the same
+      // visibility gate used in the admin backfill route — so internal-only
+      // notes are never written into invoice metadata or returned to providers.
+      const [staleCaseRows, staleRestorationRows, staleNoteRows] = await Promise.all([
+        db
+          .select({
+            id: cases.id,
+            patientFirstName: cases.patientFirstName,
+            patientLastName: cases.patientLastName,
+            doctorName: cases.doctorName,
+          })
+          .from(cases)
+          .where(inArray(cases.id, staleCaseIds)),
+        db
+          .select({
+            caseId: caseRestorations.caseId,
+            toothNumber: caseRestorations.toothNumber,
+            shade: caseRestorations.shade,
+            material: caseRestorations.material,
+            restorationType: caseRestorations.restorationType,
+            restorationSubtype: caseRestorations.restorationSubtype,
+          })
+          .from(caseRestorations)
+          .where(inArray(caseRestorations.caseId, staleCaseIds)),
+        db
+          .select({
+            caseId: caseNotes.caseId,
+            noteText: caseNotes.noteText,
+          })
+          .from(caseNotes)
+          .where(
+            and(
+              inArray(caseNotes.caseId, staleCaseIds),
+              eq(caseNotes.visibility, "shared_with_provider"),
+            )
+          )
+          .orderBy(asc(caseNotes.createdAt)),
+      ]);
+
+      const caseRowsById = new Map(staleCaseRows.map((c) => [c.id, c]));
+      const restsByCase = new Map<string, typeof staleRestorationRows>();
+      const notesByCase = new Map<string, typeof staleNoteRows>();
+      for (const r of staleRestorationRows) {
+        const arr = restsByCase.get(r.caseId) ?? [];
+        arr.push(r);
+        restsByCase.set(r.caseId, arr);
+      }
+      for (const n of staleNoteRows) {
+        const arr = notesByCase.get(n.caseId) ?? [];
+        arr.push(n);
+        notesByCase.set(n.caseId, arr);
+      }
+
+      // Compute fresh metadata and patch rows in-memory; fire write-backs non-blocking.
+      // Merge order mirrors the admin backfill: freshMeta is the base, then
+      // manually-edited free-text fields (patientName, billTo, caseNotes) from
+      // any existing metadata are layered on top so hand-edits are preserved.
+      const writebacks: Array<Promise<unknown>> = [];
+      for (const row of staleRows as any[]) {
+        const caseRow = caseRowsById.get(row.caseId);
+        if (!caseRow) continue;
+        const restorations = restsByCase.get(row.caseId) ?? [];
+        const notes = notesByCase.get(row.caseId) ?? [];
+        const freshMeta = buildInvoiceDisplayMetadataFromCase(caseRow, restorations, notes);
+        const existingMeta =
+          row.displayMetadataJson && typeof row.displayMetadataJson === "object"
+            ? (row.displayMetadataJson as Record<string, unknown>)
+            : {};
+        // Preserve any manually-edited free-text fields over the rebuilt values.
+        const patchedMeta = {
+          ...freshMeta,
+          ...(existingMeta["patientName"] !== undefined
+            ? { patientName: existingMeta["patientName"] }
+            : {}),
+          ...(existingMeta["billTo"] !== undefined
+            ? { billTo: existingMeta["billTo"] }
+            : {}),
+          ...(existingMeta["caseNotes"] !== undefined
+            ? { caseNotes: existingMeta["caseNotes"] }
+            : {}),
+        };
+        // Update in-memory so the response is correct immediately
+        row.displayMetadataJson = patchedMeta;
+        // Fire non-blocking write-back to make the fix durable
+        writebacks.push(
+          db
+            .update(invoices)
+            .set({ displayMetadataJson: patchedMeta })
+            .where(eq(invoices.id, row.id))
+        );
+      }
+      // Settle all write-backs; a write failure must never break the GET response
+      if (writebacks.length > 0) {
+        Promise.allSettled(writebacks).catch(() => {/* intentionally ignored */});
+      }
     }
 
     const caseCompletedAtMap = new Map<string, string | null>();
@@ -2494,8 +3813,57 @@ router.get(
       ? await db.select().from(organizations).where(inArray(organizations.id, orgIdsToFetch))
       : [];
     const orgsById = new Map(orgRows.map((o: any) => [o.id, o]));
+
+    // Build a set of invoice IDs that have at least one linked bank transaction.
+    // Only real (non-synthesized) invoice IDs are queried; mobile-synthesized rows
+    // have no bank_transaction_invoices entries and default to hasDeposit: false.
+    const realInvoiceIds = rows
+      .map((r: any) => r.id)
+      .filter((id: any): id is string => !!id);
+    const depositedInvoiceIds = new Set<string>();
+    // Invoice IDs that have at least one unpriced alloy sub-item. Mirrors the
+    // `withPriced` logic in GET /:invoiceId: a child line (parentLineItemId !=
+    // null) whose description starts with "Alloy" and whose unitPrice is 0.
+    const unpricedAlloyInvoiceIds = new Set<string>();
+    if (realInvoiceIds.length > 0) {
+      const [depositRows, alloySubItems] = await Promise.all([
+        db
+          .select({ invoiceId: bankTransactionInvoices.invoiceId })
+          .from(bankTransactionInvoices)
+          .where(inArray(bankTransactionInvoices.invoiceId, realInvoiceIds)),
+        db
+          .select({
+            invoiceId: invoiceLineItems.invoiceId,
+            description: invoiceLineItems.description,
+            unitPrice: invoiceLineItems.unitPrice,
+          })
+          .from(invoiceLineItems)
+          .where(
+            and(
+              inArray(invoiceLineItems.invoiceId, realInvoiceIds),
+              isNotNull(invoiceLineItems.parentLineItemId),
+            )
+          ),
+      ]);
+      for (const d of depositRows) {
+        depositedInvoiceIds.add(d.invoiceId);
+      }
+      for (const sub of alloySubItems) {
+        if (
+          sub.description?.startsWith("Alloy") &&
+          Number(sub.unitPrice ?? 0) === 0
+        ) {
+          unpricedAlloyInvoiceIds.add(sub.invoiceId);
+        }
+      }
+    }
+
     const enrich = (r: any) => ({
       ...r,
+      // Void invoices are treated as deposited so they don't block a practice
+      // from reaching the "all paid + all deposited" green state.
+      hasDeposit: r.status === "void" || depositedInvoiceIds.has(r.id),
+      hasUnpricedAlloy: unpricedAlloyInvoiceIds.has(r.id),
       caseCompletedAt: r.caseId ? (caseCompletedAtMap.get(r.caseId) ?? null) : null,
       providerOrganization: r.providerOrganizationId && orgsById.get(r.providerOrganizationId)
         ? {
@@ -2516,8 +3884,93 @@ router.get(
     });
     let enriched = [...rows.map(enrich), ...mobileInvoices.map(enrich)].sort(
       (a: any, b: any) =>
-        String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? ""))
+        String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")) ||
+        String(b.id ?? "").localeCompare(String(a.id ?? ""))
     );
+    const facets = includeFacets
+      ? {
+          practices: Array.from(
+            new Map(
+              enriched.flatMap((invoice: any) => {
+                const id = String(invoice.providerOrganizationId ?? "");
+                const name = String(invoice.providerOrganization?.name ?? "").trim();
+                return id && name ? [[id, { id, name }] as const] : [];
+              }),
+            ).values(),
+          ).sort((a, b) => a.name.localeCompare(b.name)),
+          doctors: Array.from(
+            new Set(
+              enriched
+                .map((invoice: any) => {
+                  const metadata =
+                    invoice.displayMetadataJson && typeof invoice.displayMetadataJson === "object"
+                      ? invoice.displayMetadataJson
+                      : invoice.displayMetadata && typeof invoice.displayMetadata === "object"
+                        ? invoice.displayMetadata
+                        : {};
+                  return String(metadata.billTo ?? metadata.doctorName ?? "").trim();
+                })
+                .filter(Boolean),
+            ),
+          ).sort((a, b) => a.localeCompare(b)),
+        }
+      : undefined;
+    const callerScoped = enriched;
+
+    if (searchFilter) {
+      enriched = enriched.filter((r: any) => {
+        const metadata =
+          r.displayMetadataJson && typeof r.displayMetadataJson === "object"
+            ? r.displayMetadataJson
+            : r.displayMetadata && typeof r.displayMetadata === "object"
+              ? r.displayMetadata
+              : {};
+        return [
+          r.invoiceNumber,
+          r.providerOrganization?.name,
+          metadata.patientName,
+          metadata.billTo,
+        ].some((value) => String(value ?? "").toLocaleLowerCase().includes(searchFilter));
+      });
+    }
+
+    enriched = enriched.filter((r: any) => {
+      const filterDateSource = r.issuedAt ?? r.createdAt;
+      const filterDate = filterDateSource ? new Date(filterDateSource) : null;
+      if (
+        dateFromFilter &&
+        !Number.isNaN(dateFromFilter.getTime()) &&
+        (!filterDate || Number.isNaN(filterDate.getTime()) || filterDate < dateFromFilter)
+      ) return false;
+      if (
+        dateToFilter &&
+        !Number.isNaN(dateToFilter.getTime()) &&
+        (!filterDate || Number.isNaN(filterDate.getTime()) || filterDate > dateToFilter)
+      ) return false;
+      if (issuedFrom || issuedTo) {
+        if (!filterDate || Number.isNaN(filterDate.getTime())) return false;
+        if (issuedFrom && filterDate < issuedFrom) return false;
+        if (issuedTo && filterDate >= issuedTo) return false;
+      }
+      if (!pagination.active) return true;
+
+      if (caseIdFilter && r.caseId !== caseIdFilter) return false;
+      if (practiceIdFilter && r.providerOrganizationId !== practiceIdFilter) return false;
+      if (practiceIdsFilter?.length && !practiceIdsFilter.includes(r.providerOrganizationId)) return false;
+      if (labIdFilter && r.labOrganizationId !== labIdFilter) return false;
+      if (aiOnly && !r.aiGenerated) return false;
+      if (doctorNameFilter) {
+        const metadata =
+          r.displayMetadataJson && typeof r.displayMetadataJson === "object"
+            ? r.displayMetadataJson
+            : r.displayMetadata && typeof r.displayMetadata === "object"
+              ? r.displayMetadata
+              : {};
+        const doctorName = String(metadata.billTo ?? metadata.doctorName ?? "").trim();
+        if (doctorName !== doctorNameFilter) return false;
+      }
+      return true;
+    });
 
     if (minAmount != null && Number.isFinite(minAmount)) {
       enriched = enriched.filter(
@@ -2530,33 +3983,252 @@ router.get(
       );
     }
     if (overdueBucket) {
-      const now = Date.now();
-      const bucketDays = (b: string): [number, number] => {
-        switch (b) {
-          case "0_30":
-            return [0, 30];
-          case "31_60":
-            return [31, 60];
-          case "61_90":
-            return [61, 90];
-          case "90_plus":
-            return [91, Number.POSITIVE_INFINITY];
-          default:
-            return [0, Number.POSITIVE_INFINITY];
+      if (overdueBucket === "custom") {
+        const callerIsAdminOrOwner = memberships.some(
+          (m: any) => m.status === "active" && (m.role === "admin" || m.role === "owner")
+        );
+        if (callerIsAdminOrOwner && (dueDateFrom || dueDateTo)) {
+          enriched = enriched.filter((r: any) => {
+            const issued = r.issuedAt ?? r.createdAt;
+            if (!issued) return false;
+            const issuedTime = new Date(issued).getTime();
+            if (Number.isNaN(issuedTime)) return false;
+            if (dueDateFrom && issuedTime < dueDateFrom.getTime()) return false;
+            if (dueDateTo && issuedTime > dueDateTo.getTime()) return false;
+            return true;
+          });
         }
-      };
-      const [minD, maxD] = bucketDays(overdueBucket);
+      } else {
+        const now = Date.now();
+        const bucketDays = (b: string): [number, number] => {
+          switch (b) {
+            case "0_30":
+              return [0, 30];
+            case "31_60":
+              return [31, 60];
+            case "61_90":
+              return [61, 90];
+            case "90_plus":
+              return [91, Number.POSITIVE_INFINITY];
+            default:
+              return [0, Number.POSITIVE_INFINITY];
+          }
+        };
+        const [minD, maxD] = bucketDays(overdueBucket);
+        enriched = enriched.filter((r: any) => {
+          if (r.frozen) return false;
+          if (Number(r.balanceDue ?? 0) <= 0) return false;
+          const due = r.dueAt ? new Date(r.dueAt).getTime() : null;
+          if (!due || Number.isNaN(due)) return false;
+          const ageDays = Math.floor((now - due) / (24 * 60 * 60 * 1000));
+          return ageDays >= minD && ageDays <= maxD;
+        });
+      }
+    }
+    // Count tabs after every non-status filter, but before the selected status.
+    // The Overdue tab is the established outstanding view (not a new status).
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const isOpen = (r: any) => r.status === "open" || r.status === "partially_paid";
+    const isOutstanding = (r: any) => {
+      const due = r.dueAt ? new Date(r.dueAt) : null;
+      return Boolean(isOpen(r) && due && !Number.isNaN(due.getTime()) && due < today);
+    };
+    const statusCounts = {
+      all: enriched.length,
+      open: enriched.filter(isOpen).length,
+      overdue: enriched.filter(isOutstanding).length,
+      paid: enriched.filter((r: any) => r.status === "paid").length,
+      draft: enriched.filter((r: any) => r.status === "draft" || r.status === RECOVERY_DRAFT_STATUS).length,
+      void: enriched.filter((r: any) => r.status === "void").length,
+    };
+    // All-time means no search/date/status restrictions, but still the exact
+    // authorized tenant and explicitly selected practice/lab scope.
+    const totalInvoices = callerScoped.filter((r: any) =>
+      (!labIdFilter || r.labOrganizationId === labIdFilter) &&
+      (!practiceIdFilter || r.providerOrganizationId === practiceIdFilter) &&
+      (!practiceIdsFilter?.length || practiceIdsFilter.includes(r.providerOrganizationId)),
+    ).length;
+
+    if (viewFilter === "open") enriched = enriched.filter(isOpen);
+    else if (viewFilter === "outstanding") enriched = enriched.filter(isOutstanding);
+    if (statusList?.length) {
+      enriched = enriched.filter((r: any) =>
+        statusList.some((status) => {
+          if (status === "zero_balance") return Number(r.balanceDue ?? r.total ?? 0) === 0;
+          if (status === "frozen") return Boolean(r.frozen);
+          if (status === "draft") return r.status === "draft" || r.status === RECOVERY_DRAFT_STATUS;
+          return status === r.status || (status === "open" && r.status === "partially_paid");
+        }),
+      );
+    }
+    if (statusFilter === "closed") {
+      enriched = enriched.filter((r: any) => r.status === "paid" || r.status === "void");
+    }
+    if (overdueStatusFilter) {
+      const now = Date.now();
       enriched = enriched.filter((r: any) => {
-        if (r.frozen) return false;
-        if (Number(r.balanceDue ?? 0) <= 0) return false;
-        const due = r.dueAt ? new Date(r.dueAt).getTime() : null;
-        if (!due || Number.isNaN(due)) return false;
-        const ageDays = Math.floor((now - due) / (24 * 60 * 60 * 1000));
-        return ageDays >= minD && ageDays <= maxD;
+        if (r.frozen || Number(r.balanceDue ?? 0) <= 0) return false;
+        if (r.status !== "open" && r.status !== "partially_paid" && r.status !== "overdue") {
+          return false;
+        }
+        const due = r.dueAt ?? r.dueDate;
+        if (!due) return false;
+        const dueTime = new Date(due).getTime();
+        return Number.isFinite(dueTime) && now > dueTime;
       });
     }
 
-    return ok(res, enriched);
+    if (!pagination.active) return ok(res, enriched);
+
+    const sortableDate = (value: unknown): string =>
+      value instanceof Date ? value.toISOString() : String(value ?? "");
+    enriched = enriched.filter((r: any) => {
+      if (
+        viewFilter !== "outstanding" &&
+        statusesFilter.length &&
+        !statusesFilter.some((status) => {
+          if (status === "zero_balance") {
+            return Number(r.balanceDue ?? r.total ?? 0) === 0;
+          }
+          if (status === "frozen") return Boolean(r.frozen);
+          if (status === "draft") return r.status === "draft" || r.status === RECOVERY_DRAFT_STATUS;
+          return r.status === status;
+        })
+      ) return false;
+
+      return true;
+    });
+
+    // Every branch ends in an id comparison: a total order is what lets a
+    // cursor anchor a batch on the last row the client received, so rows
+    // sharing a sort value cannot drift between requests.
+    const byId = (a: any, b: any) =>
+      String(a.id ?? "").localeCompare(String(b.id ?? ""));
+    enriched.sort((a: any, b: any) => {
+      if (sortFilter === "practice") {
+        return desktopSortDirection * String(a.providerOrganization?.name ?? "")
+          .localeCompare(String(b.providerOrganization?.name ?? "")) || byId(a, b);
+      }
+      if (sortFilter === "issued") {
+        return desktopSortDirection *
+          sortableDate(a.issuedAt).localeCompare(sortableDate(b.issuedAt)) || byId(a, b);
+      }
+      if (sortFilter === "due") {
+        return desktopSortDirection * sortableDate(a.dueAt ?? a.dueDate)
+          .localeCompare(sortableDate(b.dueAt ?? b.dueDate)) || byId(a, b);
+      }
+      if (sortBy) {
+        const aValue = sortBy === "practice"
+          ? String(a.providerOrganization?.name ?? "")
+          : sortableDate(sortBy === "issued" ? (a.issuedAt ?? a.createdAt) : a.dueAt);
+        const bValue = sortBy === "practice"
+          ? String(b.providerOrganization?.name ?? "")
+          : sortableDate(sortBy === "issued" ? (b.issuedAt ?? b.createdAt) : b.dueAt);
+        return mobileSortDirection * (
+          aValue.localeCompare(bValue, undefined, { sensitivity: "base" }) ||
+          String(a.id ?? "").localeCompare(String(b.id ?? ""))
+        );
+      }
+      return sortableDate(b.createdAt ?? b.issuedAt)
+        .localeCompare(sortableDate(a.createdAt ?? a.issuedAt)) || byId(a, b);
+    });
+
+    // Cursor anchor for whichever ordering the request selected.
+    const invoiceKeyset: Keyset<any> = (() => {
+      const desktopDir: SortDirection = desktopSortDirection === -1 ? "desc" : "asc";
+      if (sortFilter === "practice") {
+        return {
+          sortValues: (row) => [String(row.providerOrganization?.name ?? "")],
+          id: (row) => String(row.id ?? ""),
+          directions: [desktopDir],
+        };
+      }
+      if (sortFilter === "issued") {
+        return {
+          sortValues: (row) => [sortableDate(row.issuedAt)],
+          id: (row) => String(row.id ?? ""),
+          directions: [desktopDir],
+        };
+      }
+      if (sortFilter === "due") {
+        return {
+          sortValues: (row) => [sortableDate(row.dueAt ?? row.dueDate)],
+          id: (row) => String(row.id ?? ""),
+          directions: [desktopDir],
+        };
+      }
+      if (sortBy) {
+        // The mobile sort applies its direction to the id tiebreaker too.
+        const mobileDir: SortDirection = mobileSortDirection === -1 ? "desc" : "asc";
+        return {
+          sortValues: (row) => [
+            sortBy === "practice"
+              ? String(row.providerOrganization?.name ?? "")
+              : sortableDate(sortBy === "issued" ? (row.issuedAt ?? row.createdAt) : row.dueAt),
+          ],
+          id: (row) => String(row.id ?? ""),
+          directions: [mobileDir],
+          idDirection: mobileDir,
+        };
+      }
+      return {
+        sortValues: (row) => [sortTime(row.createdAt ?? row.issuedAt)],
+        id: (row) => String(row.id ?? ""),
+        directions: ["desc"],
+      };
+    })();
+
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    let openBalance = 0;
+    let openCount = 0;
+    let overdueBalance = 0;
+    let overdueCount = 0;
+    let sumTotal = 0;
+    let sumBalance = 0;
+    for (const invoice of enriched) {
+      const total = Number(invoice.total ?? 0);
+      const balance = Number(invoice.balanceDue ?? invoice.total ?? 0);
+      sumTotal += total;
+      sumBalance += balance;
+      if (invoice.frozen) continue;
+      openBalance += balance;
+      if (balance !== 0) {
+        openCount++;
+        const due = invoice.dueAt ?? invoice.dueDate;
+        if (due && new Date(due) < now) {
+          overdueBalance += balance;
+          overdueCount++;
+        }
+      }
+    }
+    let paidThisMonth = 0;
+    let paidCount = 0;
+    for (const invoice of callerScoped) {
+      if (invoice.status !== "paid") continue;
+      const timestamp = invoice.updatedAt || invoice.issuedAt || invoice.createdAt;
+      if (timestamp && new Date(timestamp) >= monthStart) {
+        paidThisMonth += Number(invoice.total ?? 0);
+        paidCount++;
+      }
+    }
+    return ok(res, {
+      ...pageRowsKeyset(enriched, pagination, invoiceKeyset),
+      ...(includeFacets ? { facets } : {}),
+      summary: {
+        openBalance,
+        openCount,
+        overdueBalance,
+        overdueCount,
+        sumTotal,
+        sumBalance,
+        paidThisMonth,
+        paidCount,
+        totalInvoices,
+        statusCounts,
+      },
+    });
   })
 );
 
@@ -2574,15 +4246,17 @@ router.get(
       throw new HttpError(400, "providerOrganizationId is required.");
     }
 
-    // Caller must be a member of either side.
-    const labMember = labOrganizationId
-      ? await requireMembership(callerId, labOrganizationId).catch(() => null)
-      : null;
-    const providerMember = await requireMembership(
-      callerId,
-      providerOrganizationId,
-    ).catch(() => null);
-    if (!labMember && !providerMember) {
+    // Caller must be inside the canonical invoice read scope. A lab member
+    // may filter to a practice within that lab; provider users may read their
+    // own linked-provider practice scope.
+    const readScope = await getInvoiceReadScope(callerId);
+    if (
+      !practiceIsInInvoiceReadScope(
+        labOrganizationId ?? "",
+        providerOrganizationId,
+        readScope,
+      )
+    ) {
       throw new HttpError(403, "You do not have access to this practice.");
     }
 
@@ -2593,6 +4267,7 @@ router.get(
           ? eq(invoices.labOrganizationId, labOrganizationId)
           : undefined,
         isNull(invoices.deletedAt),
+        finalizedInvoiceSql(),
       ),
     });
 
@@ -2707,9 +4382,8 @@ function toMobileInvoice(lc: any, parsed: any, localInvoiceId: string) {
     ? `INV-${caseNumber}`
     : `INV-${localInvoiceId.slice(-8)}`;
   // A bulk "Reset to $0" writes `invoiceStatus` into the blob so the
-  // synthesized invoice reads as a $0 draft instead of the default "open".
+  // synthesized invoice reads as $0 open instead of the default "open".
   const VALID_STATUSES = [
-    "draft",
     "open",
     "partially_paid",
     "paid",
@@ -2778,12 +4452,21 @@ router.get(
     // member of the target lab. Provider users and viewers cannot list a
     // lab's open invoices through this endpoint.
     await requireAnyRole(callerId, query.labOrganizationId, BILLING_ROLES);
+    const { orgIds } = await getInvoiceReadScope(callerId);
 
     const rows = await db.query.invoices.findMany({
       where: and(
         isNull(invoices.deletedAt),
         eq(invoices.providerOrganizationId, query.providerOrganizationId),
         eq(invoices.labOrganizationId, query.labOrganizationId),
+        orgIds.length
+          ? or(
+              ...orgIds.flatMap((organizationId) => [
+                eq(invoices.labOrganizationId, organizationId),
+                eq(invoices.providerOrganizationId, organizationId),
+              ]),
+            )
+          : sql`false`,
         inArray(invoices.status, ["open", "partially_paid", "overdue"])
       ),
       orderBy: [asc(invoices.issuedAt), asc(invoices.createdAt)],
@@ -2820,6 +4503,7 @@ router.get(
 const receivePaymentsSchema = z.object({
   labOrganizationId: z.string().min(1),
   providerOrganizationId: z.string().min(1),
+  doctorName: z.string().trim().min(1).optional().nullable(),
   paymentDate: z.string().optional(),
   paymentMethod: z.enum(["card", "ach", "check", "cash", "other"]),
   referenceNumber: z.string().optional().nullable(),
@@ -2837,6 +4521,15 @@ const receivePaymentsSchema = z.object({
     .min(1)
     .max(500),
 });
+
+// Keep the identity used by the duplicate-payment lookup stable while retaining
+// the original input as the immutable display snapshot on the payment session.
+function doctorIdentityFromReceiveName(name: string | null | undefined): string | null {
+  const normalized = typeof name === "string"
+    ? name.trim().replace(/\s+/g, " ").toLowerCase()
+    : "";
+  return normalized || null;
+}
 
 // Apply a single batch of payments across multiple open invoices for one
 // provider, then post a single combined deposit to the chosen bank account
@@ -2895,8 +4588,28 @@ router.post(
       }
     }
 
+    // Resolve the AR category ID outside the transaction so a failure here
+    // never poisons the Postgres tx context (try-catch inside a tx leaves the
+    // session in an aborted state where every subsequent tx.* call fails).
+    let arCategoryId: string | null = null;
+    try {
+      const { accountsReceivable } = await ensureDefaultCategories(
+        input.labOrganizationId,
+      );
+      arCategoryId = accountsReceivable.id;
+    } catch {
+      // Non-fatal: payment still posts without a category.
+    }
+
+
     const result = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext(${input.labOrganizationId}), hashtext(${input.providerOrganizationId}))`,
+      );
       const invoiceIds = input.applications.map((a) => a.invoiceId);
+      for (const invoiceId of [...new Set(invoiceIds)].sort()) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoiceId}))`);
+      }
       const invRows = await tx
         .select()
         .from(invoices)
@@ -2927,6 +4640,21 @@ router.post(
             400,
             `Invoice ${inv.invoiceNumber} does not belong to this provider.`
           );
+        }
+        if (input.doctorName) {
+          const metadata =
+            inv.displayMetadataJson && typeof inv.displayMetadataJson === "object"
+              ? inv.displayMetadataJson as Record<string, unknown>
+              : null;
+          const invoiceDoctor = metadata?.billTo ?? metadata?.doctorName;
+          const normalizeDoctor = (value: unknown) =>
+            typeof value === "string" ? value.trim().replace(/\s+/g, " ").toLowerCase() : "";
+          if (normalizeDoctor(invoiceDoctor) !== normalizeDoctor(input.doctorName)) {
+            throw new HttpError(
+              400,
+              `Invoice ${inv.invoiceNumber} does not belong to the selected doctor.`,
+            );
+          }
         }
         if (!ALLOWED_RECEIVE_STATUSES.has(inv.status)) {
           throw new HttpError(
@@ -2975,9 +4703,37 @@ router.post(
         updatedInvoices.push(updated);
       }
 
+      // Resolve the provider org name for a meaningful payee label.
+      let providerOrgName: string | null = null;
+      if (input.providerOrganizationId) {
+        const provOrg = await tx.query.organizations.findFirst({
+          where: eq(organizations.id, input.providerOrganizationId),
+          columns: { name: true, displayName: true },
+        });
+        providerOrgName = provOrg?.displayName || provOrg?.name || null;
+      }
+      // Fallback: derive practice name from the invoices being paid when no
+      // providerOrganizationId was supplied on the input.
+      if (!providerOrgName) {
+        const fallbackOrgId = invRows.find(
+          (inv: any) => inv.providerOrganizationId
+        )?.providerOrganizationId;
+        if (fallbackOrgId) {
+          const fallbackOrg = await tx.query.organizations.findFirst({
+            where: eq(organizations.id, fallbackOrgId),
+            columns: { name: true, displayName: true },
+          });
+          providerOrgName =
+            fallbackOrg?.displayName || fallbackOrg?.name || null;
+        }
+      }
+
       const refLabel = input.referenceNumber
         ? ` (#${input.referenceNumber})`
         : "";
+      const payeeLabel = providerOrgName
+        ? `${providerOrgName}${refLabel}`
+        : `Customer payment${refLabel}`;
       const [deposit] = await tx
         .insert(bankTransactions)
         .values({
@@ -2985,18 +4741,15 @@ router.post(
           bankAccountId: depositAccount.id,
           txnDate,
           type: "deposit",
-          payee: `Customer payment${refLabel}`,
-          memo:
-            input.memo ||
-            `Payment applied to ${updatedInvoices.length} invoice${
-              updatedInvoices.length === 1 ? "" : "s"
-            }`,
+          payee: payeeLabel,
+          memo: input.memo || null,
           debitAmount: "0.00",
           creditAmount: totalToApply.toFixed(2),
           netAmount: totalToApply.toFixed(2),
           cleared: false,
           status: "posted",
           source: "invoice",
+          categoryId: arCategoryId,
           createdByUserId: callerId,
         })
         .returning();
@@ -3006,6 +4759,57 @@ router.post(
           invoiceId: inv.id,
         });
       }
+
+      // Backfill bankTransactionId on every payment row we just created so
+      // the DELETE /finance/payments/:bankTransactionId endpoint can later
+      // reverse the whole batch by looking up payments by this FK.
+      if (insertedPayments.length > 0) {
+        await tx
+          .update(payments)
+          .set({ bankTransactionId: deposit.id })
+          .where(
+            inArray(
+              payments.id,
+              insertedPayments.map((p: any) => p.id)
+            )
+          );
+        for (const p of insertedPayments) {
+          p.bankTransactionId = deposit.id;
+        }
+      }
+
+      // Receive Payments predates the hosted statement-payment flow, but its
+      // bank transaction must still have a durable session so Finance can
+      // display the doctor and the duplicate warning can distinguish doctors
+      // within one practice.  A null identity intentionally means the whole
+      // practice (and is not an inferred doctor).
+      const labOrg = await tx.query.organizations.findFirst({
+        where: eq(organizations.id, input.labOrganizationId),
+        columns: { name: true, displayName: true },
+      });
+      await tx.insert(statementPaymentSessions).values({
+        labOrganizationId: input.labOrganizationId,
+        providerOrganizationId: input.providerOrganizationId,
+        doctorIdentity: doctorIdentityFromReceiveName(input.doctorName),
+        doctorDisplayName: input.doctorName?.trim() || null,
+        bankTransactionId: deposit.id,
+        requestFingerprint: `receive-payment:${deposit.id}`,
+        receiptNumber: `RP-${deposit.id}`,
+        receivedAmount: totalToApply.toFixed(2),
+        appliedAmount: totalToApply.toFixed(2),
+        customerCreditAmount: "0.00",
+        accountBalanceAfter: "0.00",
+        paymentMethod: input.paymentMethod,
+        checkNumber: input.referenceNumber?.trim() || null,
+        memo: input.memo || null,
+        paymentDate: txnDate,
+        customerName: providerOrgName,
+        labName: labOrg?.displayName || labOrg?.name || input.labOrganizationId,
+        status: depositAccount.accountType === "undeposited_funds"
+          ? "undeposited"
+          : "deposited",
+        createdByUserId: callerId,
+      });
 
       return {
         payments: insertedPayments,
@@ -3043,8 +4847,110 @@ router.post(
       }
     }
 
+    await deliverPaymentNotifications({
+      origin: "lab",
+      sourceType: "receive_payment",
+      sourceId: result.depositTransactionId,
+      labOrganizationId: input.labOrganizationId,
+      providerOrganizationId: input.providerOrganizationId,
+      amount: result.totalApplied,
+      invoiceIds: result.invoices.map((invoice) => invoice.id),
+      paymentMethod: input.paymentMethod,
+    });
+
     return ok(res, result, 201);
   })
+);
+
+// Recent receive-payment sessions for a single provider, used by the desktop
+// "Receive Payment" modal to warn about potential duplicate payments.
+// Returns one entry per bank-transaction deposit (one batch = one deposit),
+// sorted newest-first. paymentMethod / referenceNumber are pulled from any
+// payments row linked to that deposit.
+router.get(
+  "/payments/recent",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const query = z
+      .object({
+        providerOrganizationId: z.string().min(1),
+        labOrganizationId: z.string().min(1),
+        doctorName: z.string().trim().min(1).optional(),
+        withinDays: z.coerce.number().int().min(1).max(365).optional(),
+      })
+      .parse(req.query);
+
+    await requireAnyRole(callerId, query.labOrganizationId, BILLING_ROLES);
+    const { orgIds } = await getInvoiceReadScope(callerId);
+
+    const withinDays = query.withinDays ?? 90;
+    const cutoff = new Date(Date.now() - withinDays * 24 * 60 * 60 * 1000);
+
+    // Join bankTransactions → bankTransactionInvoices → invoices (to filter by
+    // provider) → payments (to get paymentMethod / referenceNumber).
+    // Multiple rows per bank transaction can appear when a batch covers several
+    // invoices, so deduplicate in JS after the query.
+    const rows = await db
+      .select({
+        id: bankTransactions.id,
+        totalAmount: bankTransactions.creditAmount,
+        paidAt: bankTransactions.txnDate,
+        paymentMethod: payments.paymentMethod,
+        referenceNumber: payments.referenceNumber,
+      })
+      .from(bankTransactions)
+      .innerJoin(
+        bankTransactionInvoices,
+        eq(bankTransactionInvoices.bankTransactionId, bankTransactions.id),
+      )
+      .innerJoin(invoices, eq(invoices.id, bankTransactionInvoices.invoiceId))
+      .leftJoin(payments, eq(payments.invoiceId, bankTransactionInvoices.invoiceId))
+      .leftJoin(
+        statementPaymentSessions,
+        eq(statementPaymentSessions.bankTransactionId, bankTransactions.id),
+      )
+      .where(
+        and(
+          eq(bankTransactions.labOrganizationId, query.labOrganizationId),
+          eq(bankTransactions.source, "invoice"),
+          isNull(bankTransactions.deletedAt),
+          eq(invoices.providerOrganizationId, query.providerOrganizationId),
+          orgIds.length
+            ? or(
+                ...orgIds.flatMap((organizationId) => [
+                  eq(invoices.labOrganizationId, organizationId),
+                  eq(invoices.providerOrganizationId, organizationId),
+                ]),
+              )
+            : sql`false`,
+          query.doctorName
+            ? eq(
+                statementPaymentSessions.doctorIdentity,
+                query.doctorName.trim().replace(/\s+/g, " ").toLowerCase(),
+              )
+            : undefined,
+          gte(bankTransactions.txnDate, cutoff),
+        ),
+      )
+      .orderBy(desc(bankTransactions.txnDate))
+      .limit(200);
+
+    // Deduplicate: keep the first row seen per bank-transaction id (it already
+    // carries paymentMethod / referenceNumber from one of the linked payments).
+    const seen = new Map<string, (typeof rows)[number]>();
+    for (const row of rows) {
+      if (!seen.has(row.id)) seen.set(row.id, row);
+    }
+    const recent = Array.from(seen.values()).slice(0, 50).map((r) => ({
+      id: r.id,
+      totalAmount: r.totalAmount,
+      paidAt: r.paidAt,
+      paymentMethod: r.paymentMethod ?? null,
+      referenceNumber: r.referenceNumber ?? null,
+    }));
+
+    return ok(res, recent);
+  }),
 );
 
 // Legacy mobile-created invoices surface in the list with a synthetic
@@ -3063,29 +4969,50 @@ async function resolveMobileInvoiceId(
   const localInvoiceId = mobileId.slice(MOBILE_INVOICE_ID_PREFIX.length).trim();
   if (!localInvoiceId) throw new HttpError(404, "Invoice not found.");
 
-  // Scope the case scan to the caller's own labs (mirrors GET /api/invoices).
-  const memberships = await db.query.organizationMemberships.findMany({
-    where: eq(organizationMemberships.userId, callerId),
-  });
-  let orgIds = memberships
-    .filter((m: any) => m.status === "active")
-    .map((m: any) => m.labId)
-    .filter((id: any): id is string => !!id);
-  const callerUser = await db.query.users.findFirst({
-    where: eq(users.id, callerId),
-  });
-  if (callerUser?.userType === "provider") {
-    const { providerOrgIds } = await getProviderOrgIdsForUserAndLinks(callerId);
-    orgIds = Array.from(new Set([...orgIds, ...providerOrgIds]));
-  }
+  // Start with the same organization/capability scope as GET /api/invoices.
+  // The canonical invoice check below remains the access gate; the broader
+  // candidate scan is needed to turn a known, but unauthorized, linked alias
+  // into the same 403 as its canonical invoice instead of an early 404.
+  const { orgIds } = await getInvoiceReadScope(callerId);
   if (orgIds.length === 0)
     throw new HttpError(404, "Invoice not found.");
+
+  // Mobile cases are stored under their lab organization, while linked
+  // provider access is represented by the provider organization on the
+  // canonical invoice. Include the parent lab for each linked provider
+  // organization so an alias can resolve before the canonical invoice's final
+  // read-scope check applies the billing capability gate.
+  const { providerOrgIds: linkedProviderOrgIds } =
+    await getProviderOrgIdsForUserAndLinks(callerId);
+  const candidateOrganizationIds = Array.from(
+    new Set([...orgIds, ...linkedProviderOrgIds]),
+  );
+  const scopedOrganizations = await db
+    .select({
+      id: organizations.id,
+      type: organizations.type,
+      parentLabOrganizationId: organizations.parentLabOrganizationId,
+    })
+    .from(organizations)
+    .where(inArray(organizations.id, candidateOrganizationIds));
+  const caseOrganizationIds = new Set(candidateOrganizationIds);
+  for (const organization of scopedOrganizations) {
+    if (
+      organization.type === "provider" &&
+      organization.parentLabOrganizationId
+    ) {
+      caseOrganizationIds.add(organization.parentLabOrganizationId);
+    }
+  }
 
   const caseRows = await db
     .select()
     .from(labCases)
     .where(
-      and(isNull(labCases.deletedAt), inArray(labCases.organizationId, orgIds))
+      and(
+        isNull(labCases.deletedAt),
+        inArray(labCases.organizationId, Array.from(caseOrganizationIds)),
+      )
     );
 
   let matched:
@@ -3169,6 +5096,11 @@ async function resolveMobileInvoiceId(
     shade: String(parsedBlob.shade ?? ""),
     caseNotes: "",
   };
+  const doctorIdentity = await ensureDoctorProfileIdentity(db, {
+    labOrganizationId: matched.orgId,
+    providerOrganizationId: null,
+    doctorName: String(parsedBlob.doctorName ?? ""),
+  });
 
   const [newInvoice] = await db
     .insert(invoices)
@@ -3177,8 +5109,10 @@ async function resolveMobileInvoiceId(
       caseId: null,
       labOrganizationId: matched.orgId,
       providerOrganizationId: null,
-      status: "draft",
+      doctorIdentity,
+      status: "open",
       displayMetadataJson,
+      issuedAt: new Date(),
       dueAt: invoiceDueDate(new Date()),
       createdByUserId: callerId,
       updatedByUserId: callerId,
@@ -3244,6 +5178,7 @@ async function resolveMobileInvoiceId(
 router.get(
   "/practice-statements",
   asyncHandler(async (req, res) => {
+    const pagination = parsePagination(req.query);
     const callerId = (req as any).auth.userId as string;
     const providerOrganizationId =
       typeof req.query.providerOrganizationId === "string"
@@ -3259,10 +5194,12 @@ router.get(
         "Provide providerOrganizationId or labOrganizationId.",
       );
     }
-    if (labOrganizationId) {
-      await requireMembership(callerId, labOrganizationId);
-    } else if (providerOrganizationId) {
-      await requireMembership(callerId, providerOrganizationId);
+    const { orgIds } = await getInvoiceReadScope(callerId);
+    if (
+      (!labOrganizationId || !orgIds.includes(labOrganizationId)) &&
+      (!providerOrganizationId || !orgIds.includes(providerOrganizationId))
+    ) {
+      throw new HttpError(403, "You do not have access to these statements.");
     }
     const rows = await db.query.practiceStatements.findMany({
       where: and(
@@ -3308,7 +5245,189 @@ router.get(
         lastEmailedTo: last?.recipient ?? null,
       };
     });
-    return ok(res, withLastEmail);
+    // Enrich with payment data: find the most recent payment across all
+    // invoices in each statement so clients can show "Paid On" / "Payment Method".
+    const allInvoiceIds = rows.flatMap(
+      (r) => (r.invoiceIdsJson as string[]) ?? [],
+    );
+    const latestPaymentByInvoiceId = new Map<
+      string,
+      { paidAt: Date; paymentMethod: string }
+    >();
+    if (allInvoiceIds.length > 0) {
+      const pmts = await db
+        .select({
+          invoiceId: payments.invoiceId,
+          paidAt: payments.paidAt,
+          paymentMethod: payments.paymentMethod,
+        })
+        .from(payments)
+        .where(inArray(payments.invoiceId, allInvoiceIds))
+        .orderBy(desc(payments.paidAt));
+      for (const pmt of pmts) {
+        if (!latestPaymentByInvoiceId.has(pmt.invoiceId)) {
+          latestPaymentByInvoiceId.set(pmt.invoiceId, {
+            paidAt: pmt.paidAt,
+            paymentMethod: pmt.paymentMethod,
+          });
+        }
+      }
+    }
+    // The stored totals are the immutable issued snapshot and are never
+    // updated when a payment is recorded, so the reported paid / balance-due
+    // figures are derived from the statement's own invoices as they stand now.
+    const invoiceStateById = new Map<
+      string,
+      {
+        labOrganizationId: string;
+        providerOrganizationId: string | null;
+        total: string;
+        balanceDue: string;
+        status: string;
+      }
+    >();
+    if (allInvoiceIds.length > 0) {
+      const invoiceStates = await db
+        .select({
+          id: invoices.id,
+          labOrganizationId: invoices.labOrganizationId,
+          providerOrganizationId: invoices.providerOrganizationId,
+          total: invoices.total,
+          balanceDue: invoices.balanceDue,
+          status: invoices.status,
+        })
+        .from(invoices)
+        .where(
+          and(inArray(invoices.id, allInvoiceIds), isNull(invoices.deletedAt)),
+        );
+      for (const invoice of invoiceStates) {
+        invoiceStateById.set(invoice.id, invoice);
+      }
+    }
+    const withPayments = withLastEmail.map((r) => {
+      const invoiceIds = (r.invoiceIdsJson as string[]) ?? [];
+      const bundleManifest = coerceStatementBundleManifest(
+        r.bundleManifestJson,
+      );
+      const statementData = { ...r };
+      delete statementData.bundleManifestJson;
+      let latestPaidAt: Date | null = null;
+      let latestPaymentMethod: string | null = null;
+      const scopedInvoices = new Map<string, StatementInvoiceState>();
+      for (const invId of invoiceIds) {
+        const pmt = latestPaymentByInvoiceId.get(invId);
+        if (pmt && (latestPaidAt === null || pmt.paidAt > latestPaidAt)) {
+          latestPaidAt = pmt.paidAt;
+          latestPaymentMethod = pmt.paymentMethod;
+        }
+        const invoice = invoiceStateById.get(invId);
+        if (
+          invoice &&
+          invoice.labOrganizationId === r.labOrganizationId &&
+          invoice.providerOrganizationId === r.providerOrganizationId
+        ) {
+          scopedInvoices.set(invId, invoice);
+        }
+      }
+      const live = deriveLiveStatementFigures(invoiceIds, scopedInvoices);
+      return {
+        ...statementData,
+        // Return only the reader-facing attachment details. Storage keys,
+        // invoice ids, and delivery recipients remain server-side.
+        bundleAttachments: (bundleManifest?.attachments ?? []).map(
+          (attachment, index) => ({
+            index,
+            doctorName: attachment.doctorName,
+            label: attachment.label,
+            fileName: attachment.fileName,
+          }),
+        ),
+        paidAt: latestPaidAt,
+        paymentMethod: latestPaymentMethod,
+        // Live figures. `totalBilled` stays as issued: only settlement moves.
+        totalPaid: live.totalPaid,
+        balanceDue: live.balanceDue,
+        currentTotalPaid: live.totalPaid,
+        currentBalanceDue: live.balanceDue,
+        // The generation-time snapshot, kept for the PDF and the immutable
+        // issued record.
+        snapshotTotalPaid: r.totalPaid,
+        snapshotBalanceDue: r.balanceDue,
+      };
+    });
+    // Keep enrichment based on the complete filtered set, then page the
+    // deterministic newest-first result so totals and payment metadata do not
+    // depend on the requested window.
+    const ordered = withPayments.sort(
+      (a, b) =>
+        b.createdAt.getTime() - a.createdAt.getTime() ||
+        b.id.localeCompare(a.id),
+    );
+    return ok(
+      res,
+      pagination.active
+        ? pageRowsKeyset(ordered, pagination, {
+            sortValues: (row) => [sortTime(row.createdAt)],
+            id: (row) => String(row.id),
+            directions: ["desc"],
+            idDirection: "desc",
+          })
+        : ordered,
+    );
+  }),
+);
+
+// NOTE: must be registered BEFORE GET /:invoiceId (see catch-all note above).
+// Returns all payment records for a lab, joined to invoice + practice org so
+// the Statements page can render a "Collected" drill-down panel without needing
+// to load every invoice's payments individually.
+router.get(
+  "/payments-summary",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const labOrganizationId =
+      typeof req.query.labOrganizationId === "string"
+        ? req.query.labOrganizationId.trim()
+        : null;
+    if (!labOrganizationId) {
+      throw new HttpError(400, "labOrganizationId is required.");
+    }
+    await requireAnyRole(callerId, labOrganizationId, BILLING_ROLES);
+    const { orgIds } = await getInvoiceReadScope(callerId);
+
+    const rows = await db
+      .select({
+        id: payments.id,
+        amount: payments.amount,
+        paidAt: payments.paidAt,
+        practiceId: invoices.providerOrganizationId,
+        practiceName: organizations.name,
+        invoiceNumber: invoices.invoiceNumber,
+        doctorIdentity: invoices.doctorIdentity,
+      })
+      .from(payments)
+      .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+      .innerJoin(
+        organizations,
+        eq(organizations.id, invoices.providerOrganizationId),
+      )
+      .where(
+        and(
+          eq(invoices.labOrganizationId, labOrganizationId),
+          orgIds.length
+            ? or(
+                ...orgIds.flatMap((organizationId) => [
+                  eq(invoices.labOrganizationId, organizationId),
+                  eq(invoices.providerOrganizationId, organizationId),
+                ]),
+              )
+            : sql`false`,
+          isNull(invoices.deletedAt),
+        ),
+      )
+      .orderBy(desc(payments.paidAt));
+
+    return ok(res, rows);
   }),
 );
 
@@ -3327,18 +5446,13 @@ router.get(
     });
     if (!invoice) throw new HttpError(404, "Invoice not found.");
 
-    const labMember = await requireMembership(
-      (req as any).auth.userId,
-      invoice.labOrganizationId
-    ).catch(() => null);
-    const providerMember = invoice.providerOrganizationId
-      ? await requireMembership(
-          (req as any).auth.userId,
-          invoice.providerOrganizationId
-        ).catch(() => null)
-      : null;
-    if (!labMember && !providerMember)
+    const readScope = await getInvoiceReadScope((req as any).auth.userId);
+    if (!invoiceIsInReadScope(invoice, readScope))
       throw new HttpError(403, "You do not have access to this invoice.");
+    const labMember = hasDirectLabMembership(
+      invoice.labOrganizationId,
+      readScope,
+    );
 
     const items = await db.query.invoiceLineItems.findMany({
       where: eq(invoiceLineItems.invoiceId, invoice.id),
@@ -3422,6 +5536,81 @@ router.get(
         }).catch(() => null)
       : null;
 
+    // Invoice audit history — lab members only (billing data).
+    const [paymentDeleteLogs, dateRepairLogs, doctorIdentityRepairLogs] = labMember
+      ? await Promise.all([
+          db
+          .select({
+            id: auditLogs.id,
+            userId: auditLogs.userId,
+            metadataJson: auditLogs.metadataJson,
+            createdAt: auditLogs.createdAt,
+            userInitials: users.initials,
+          })
+          .from(auditLogs)
+          .leftJoin(users, eq(users.id, auditLogs.userId))
+          .where(
+            and(
+              eq(auditLogs.entityType, "invoice"),
+              eq(auditLogs.entityId, invoice.id),
+              eq(auditLogs.action, "invoice_payments_deleted"),
+            ),
+          )
+          .orderBy(desc(auditLogs.createdAt))
+          .limit(50)
+          .catch(() => []),
+          db
+            .select({
+              id: auditLogs.id,
+              userId: auditLogs.userId,
+              beforeJson: auditLogs.beforeJson,
+              afterJson: auditLogs.afterJson,
+              createdAt: auditLogs.createdAt,
+              actorUsername: users.username,
+              actorFirstName: users.firstName,
+              actorLastName: users.lastName,
+              actorInitials: users.initials,
+            })
+            .from(auditLogs)
+            .leftJoin(users, eq(users.id, auditLogs.userId))
+            .where(
+              and(
+                eq(auditLogs.entityType, "invoice"),
+                eq(auditLogs.entityId, invoice.id),
+                eq(auditLogs.action, "invoice_dates_repaired"),
+              ),
+            )
+            .orderBy(desc(auditLogs.createdAt))
+            .limit(50)
+            .catch(() => []),
+          db
+            .select({
+              id: auditLogs.id,
+              userId: auditLogs.userId,
+              beforeJson: auditLogs.beforeJson,
+              afterJson: auditLogs.afterJson,
+              metadataJson: auditLogs.metadataJson,
+              createdAt: auditLogs.createdAt,
+              actorUsername: users.username,
+              actorFirstName: users.firstName,
+              actorLastName: users.lastName,
+              actorInitials: users.initials,
+            })
+            .from(auditLogs)
+            .leftJoin(users, eq(users.id, auditLogs.userId))
+            .where(
+              and(
+                eq(auditLogs.entityType, "invoice"),
+                eq(auditLogs.entityId, invoice.id),
+                eq(auditLogs.action, "invoice_doctor_identity_repaired"),
+              ),
+            )
+            .orderBy(desc(auditLogs.createdAt))
+            .limit(50)
+            .catch(() => []),
+        ])
+      : [[], [], []];
+
     const topLevelItems = items.filter((it) => it.parentLineItemId == null);
     const subItemsByParent = new Map<string, typeof items>();
     for (const it of items) {
@@ -3431,23 +5620,262 @@ router.get(
         subItemsByParent.set(it.parentLineItemId, arr);
       }
     }
+    // Derive priced:false for any alloy-description line whose unitPrice is $0.
+    // The DB has no `priced` column — this derives the signal at serialization
+    // time so clients can surface "alloy pricing needed" affordances without a
+    // separate fetch.  Condition: description starts with "Alloy" (covers both
+    // "Alloy #<tooth>" child lines and the bare "Alloy" top-level line) AND
+    // unitPrice == 0 (stored as a decimal string by Drizzle).
+    const withPriced = <T extends { description: string; unitPrice: string | null }>(
+      item: T,
+    ): T | (T & { priced: false }) => {
+      const isAlloy = item.description.startsWith("Alloy");
+      const isZero = Number(item.unitPrice ?? 0) === 0;
+      return isAlloy && isZero ? { ...item, priced: false as const } : item;
+    };
     const nestedItems = topLevelItems.map((it) => ({
-      ...it,
-      subItems: subItemsByParent.get(it.id) ?? [],
+      ...withPriced(it),
+      subItems: (subItemsByParent.get(it.id) ?? []).map(withPriced),
     }));
+
+    // Check if this invoice appears in any practice statement — surfaced to the
+    // client so the Paid→Open payment-guard dialog can show statement context.
+    const statementRow = labMember && invoice.labOrganizationId
+      ? await db.query.practiceStatements.findFirst({
+          where: and(
+            eq(practiceStatements.labOrganizationId, invoice.labOrganizationId),
+            sql`${practiceStatements.invoiceIdsJson} @> ${JSON.stringify([invoice.id])}::jsonb`,
+          ),
+          columns: { id: true },
+        }).catch(() => null)
+      : null;
 
     return ok(res, {
       ...invoice,
       items: nestedItems,
       payments: safePaymentRows,
       linkedTransactions: labMember ? linkedTxns : [],
+      paymentDeleteLogs,
+      dateRepairLogs,
+      doctorIdentityRepairLogs,
       caseCompletedAt,
       practiceEmail: practiceOrg?.billingEmail ?? null,
       practicePhone: practiceOrg?.phone ?? null,
       linkedCaseIsDeleted,
       linkedCaseNumber,
+      inStatement: statementRow != null,
+      statementId: statementRow?.id ?? null,
     });
   })
+);
+
+router.patch(
+  "/:invoiceId/repair-doctor",
+  asyncHandler(async (req, res) => {
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, req.params.invoiceId),
+    });
+    if (!invoice) throw new HttpError(404, "Invoice not found.");
+    await requireAnyRole(
+      (req as any).auth.userId,
+      invoice.labOrganizationId,
+      ADMIN_ROLES,
+    );
+
+    const { doctorProfileId } = z
+      .object({ doctorProfileId: z.string().min(1) })
+      .strict()
+      .parse(req.body);
+
+    const updated = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.id}))`);
+      const lockedInvoice = await tx.query.invoices.findFirst({
+        where: eq(invoices.id, invoice.id),
+      });
+      if (!lockedInvoice) throw new HttpError(404, "Invoice not found.");
+      if (lockedInvoice.doctorIdentity !== null) {
+        throw new HttpError(
+          409,
+          "This invoice already has a doctor profile and cannot be repaired.",
+        );
+      }
+      if (!lockedInvoice.providerOrganizationId) {
+        throw new HttpError(
+          400,
+          "This legacy invoice has no practice and cannot be assigned to a doctor profile.",
+        );
+      }
+
+      const profile = await tx.query.doctorProfiles.findFirst({
+        where: and(
+          eq(doctorProfiles.id, doctorProfileId),
+          eq(doctorProfiles.labOrganizationId, lockedInvoice.labOrganizationId),
+          eq(
+            doctorProfiles.providerOrganizationId,
+            lockedInvoice.providerOrganizationId,
+          ),
+        ),
+      });
+      if (!profile) {
+        throw new HttpError(
+          400,
+          "Choose a doctor profile from this invoice's lab and practice.",
+        );
+      }
+
+      const [row] = await tx
+        .update(invoices)
+        .set({
+          doctorIdentity: profile.id,
+          updatedAt: new Date(),
+          updatedByUserId: (req as any).auth.userId,
+        })
+        .where(eq(invoices.id, lockedInvoice.id))
+        .returning();
+
+      await writeAuditLogTx(tx, {
+        req,
+        organizationId: lockedInvoice.labOrganizationId,
+        action: "invoice_doctor_identity_repaired",
+        entityType: "invoice",
+        entityId: lockedInvoice.id,
+        beforeJson: {
+          doctorIdentity: null,
+          doctorDisplayName:
+            lockedInvoice.displayMetadataJson &&
+            typeof lockedInvoice.displayMetadataJson === "object" &&
+            typeof (lockedInvoice.displayMetadataJson as Record<string, unknown>).billTo === "string"
+              ? (lockedInvoice.displayMetadataJson as Record<string, string>).billTo
+              : lockedInvoice.displayMetadataJson &&
+                  typeof lockedInvoice.displayMetadataJson === "object" &&
+                  typeof (lockedInvoice.displayMetadataJson as Record<string, unknown>).doctorName === "string"
+                ? (lockedInvoice.displayMetadataJson as Record<string, string>).doctorName
+                : null,
+        },
+        afterJson: {
+          doctorIdentity: profile.id,
+          doctorDisplayName: profile.displayName || profile.doctorName,
+        },
+        metadataJson: {
+          invoiceNumber: row.invoiceNumber,
+          doctorProfileId: profile.id,
+          reason: "explicit_admin_legacy_invoice_repair",
+        },
+      });
+      return row;
+    });
+
+    return ok(res, updated);
+  }),
+);
+
+router.patch(
+  "/:invoiceId/repair-dates",
+  asyncHandler(async (req, res) => {
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, req.params.invoiceId),
+    });
+    if (!invoice) throw new HttpError(404, "Invoice not found.");
+    await requireAnyRole(
+      (req as any).auth.userId,
+      invoice.labOrganizationId,
+      ADMIN_ROLES,
+    );
+    if ((invoice as any).frozen) {
+      throw new HttpError(409, "Invoice is frozen — the linked case was deleted.");
+    }
+
+    const input = z
+      .object({
+        issuedAt: z.string().datetime().nullable(),
+        dueAt: z.string().datetime().nullable(),
+      })
+      .strict()
+      .parse(req.body);
+
+    const toCanonicalDate = (value: string | null, field: string) => {
+      if (value === null) return null;
+      if (!/^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/.test(value)) {
+        throw new HttpError(400, `${field} must be a date at UTC midnight.`);
+      }
+      return new Date(value);
+    };
+    const repairedIssuedAt = toCanonicalDate(input.issuedAt, "issuedAt");
+    const repairedDueAt = toCanonicalDate(input.dueAt, "dueAt");
+
+    const updated = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.id}))`);
+      const lockedInvoice = await tx.query.invoices.findFirst({
+        where: eq(invoices.id, invoice.id),
+      });
+      if (!lockedInvoice) throw new HttpError(404, "Invoice not found.");
+      if (lockedInvoice.frozen) {
+        throw new HttpError(409, "Invoice is frozen — the linked case was deleted.");
+      }
+
+      const issuedEligible = isLikelyLegacyShiftedInvoiceDate(
+        lockedInvoice.issuedAt,
+        lockedInvoice.createdAt,
+      );
+      const dueEligible = isLikelyLegacyShiftedInvoiceDate(
+        lockedInvoice.dueAt,
+        lockedInvoice.createdAt,
+      );
+      if (!issuedEligible && !dueEligible) {
+        throw new HttpError(400, "This invoice does not have a likely legacy date shift.");
+      }
+      if (
+        (issuedEligible && repairedIssuedAt === null) ||
+        (dueEligible && repairedDueAt === null)
+      ) {
+        throw new HttpError(400, "Likely shifted dates require a corrected date.");
+      }
+      const issuedChanged =
+        lockedInvoice.issuedAt?.toISOString() !== repairedIssuedAt?.toISOString();
+      const dueChanged =
+        lockedInvoice.dueAt?.toISOString() !== repairedDueAt?.toISOString();
+      if ((issuedChanged && !issuedEligible) || (dueChanged && !dueEligible)) {
+        throw new HttpError(400, "Only dates identified as likely shifted can be repaired.");
+      }
+      if (!issuedChanged && !dueChanged) {
+        throw new HttpError(400, "Choose at least one corrected date.");
+      }
+
+      const [row] = await tx
+        .update(invoices)
+        .set({
+          issuedAt: repairedIssuedAt,
+          dueAt: repairedDueAt,
+          updatedAt: new Date(),
+          updatedByUserId: (req as any).auth.userId,
+        })
+        .where(eq(invoices.id, invoice.id))
+        .returning();
+
+      await writeAuditLogTx(tx, {
+        req,
+        organizationId: invoice.labOrganizationId,
+        action: "invoice_dates_repaired",
+        entityType: "invoice",
+        entityId: invoice.id,
+        beforeJson: {
+          issuedAt: lockedInvoice.issuedAt,
+          dueAt: lockedInvoice.dueAt,
+        },
+        afterJson: {
+          issuedAt: row.issuedAt,
+          dueAt: row.dueAt,
+        },
+        metadataJson: {
+          invoiceNumber: row.invoiceNumber,
+          reason: "historical_timezone_drift",
+        },
+      });
+      return row;
+    });
+
+    return ok(res, updated);
+  }),
 );
 
 router.patch(
@@ -3470,7 +5898,7 @@ router.patch(
     const input = z
       .object({
         status: z
-          .enum(["draft", "open", "partially_paid", "paid", "void"])
+          .enum(["open", "partially_paid", "paid", "void"])
           .optional(),
         tax: z.coerce.number().min(0).optional(),
         discount: z.coerce.number().min(0).optional(),
@@ -3488,7 +5916,8 @@ router.patch(
               toothLabel: z.string().nullable().optional(),
               description: z.string().min(1),
               quantity: z.coerce.number().min(0),
-              unitPrice: z.coerce.number().min(0),
+              unitPrice: z.number().finite(),
+              isDiscount: z.boolean().optional(),
               sortOrder: z.coerce.number().int().optional(),
               subItems: z
                 .array(
@@ -3499,7 +5928,8 @@ router.patch(
                     toothLabel: z.string().nullable().optional(),
                     description: z.string().min(1),
                     quantity: z.coerce.number().min(0),
-                    unitPrice: z.coerce.number().min(0),
+                    unitPrice: z.number().finite(),
+                    isDiscount: z.boolean().optional(),
                     sortOrder: z.coerce.number().int().optional(),
                   })
                 )
@@ -3539,62 +5969,173 @@ router.patch(
     }
 
     const updated = await db.transaction(async (tx) => {
+      if (invoice.providerOrganizationId) {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.labOrganizationId}), hashtext(${invoice.providerOrganizationId}))`,
+        );
+      }
+      await assertNoActiveCardReversalForInvoices(tx, [invoice.id]);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.id}))`);
+      const lockedInvoice = await tx.query.invoices.findFirst({
+        where: eq(invoices.id, invoice.id),
+      });
+      if (!lockedInvoice) throw new HttpError(404, "Invoice not found.");
+      if (isInvoiceDraftStatus(lockedInvoice.status)) {
+        throw new HttpError(409, "Draft invoices are read-only. Use their original issuance or review workflow.");
+      }
+      const issuedChanged =
+        input.issuedAt !== undefined &&
+        lockedInvoice.issuedAt?.toISOString() !== input.issuedAt;
+      const dueChanged =
+        input.dueAt !== undefined &&
+        lockedInvoice.dueAt?.toISOString() !== input.dueAt;
+      if (
+        (issuedChanged &&
+          isLikelyLegacyShiftedInvoiceDate(
+            lockedInvoice.issuedAt,
+            lockedInvoice.createdAt,
+          )) ||
+        (dueChanged &&
+          isLikelyLegacyShiftedInvoiceDate(
+            lockedInvoice.dueAt,
+            lockedInvoice.createdAt,
+          ))
+      ) {
+        throw new HttpError(
+          409,
+          "Review and confirm likely shifted dates with the invoice date repair action.",
+        );
+      }
       if (input.items) {
-        await tx
-          .delete(invoiceLineItems)
-          .where(eq(invoiceLineItems.invoiceId, invoice.id));
-        if (input.items.length) {
-          const topLevelValues = input.items.map((it, idx) => ({
-            invoiceId: invoice.id,
-            toothNumber: it.toothNumber ?? null,
-            toothLabel: it.toothLabel ?? null,
-            description: it.description,
-            quantity: Math.max(0, Math.round(Number(it.quantity))),
-            unitPrice: Number(it.unitPrice).toFixed(2),
-            lineTotal: calculateLineTotal(
-              Math.max(0, Math.round(Number(it.quantity))),
-              Number(it.unitPrice).toFixed(2)
-            ),
-            sortOrder: it.sortOrder ?? idx,
-          }));
-          const inserted = await tx
-            .insert(invoiceLineItems)
-            .values(topLevelValues)
-            .returning();
-          const subValues: Array<{
-            invoiceId: string;
-            toothNumber: number | null;
-            toothLabel: string | null;
-            description: string;
-            quantity: number;
-            unitPrice: string;
-            lineTotal: string;
-            sortOrder: number;
-            parentLineItemId: string;
-          }> = [];
-          for (let i = 0; i < input.items.length; i++) {
-            const parent = input.items[i];
-            const parentId = inserted[i].id;
-            for (const sub of (parent.subItems ?? [])) {
-              subValues.push({
-                invoiceId: invoice.id,
-                toothNumber: sub.toothNumber ?? null,
-                toothLabel: sub.toothLabel ?? null,
-                description: sub.description,
-                quantity: Math.max(0, Math.round(Number(sub.quantity))),
-                unitPrice: Number(sub.unitPrice).toFixed(2),
-                lineTotal: calculateLineTotal(
-                  Math.max(0, Math.round(Number(sub.quantity))),
-                  Number(sub.unitPrice).toFixed(2)
-                ),
-                sortOrder: sub.sortOrder ?? 0,
-                parentLineItemId: parentId,
-              });
+        const existingItems = await tx.query.invoiceLineItems.findMany({
+          where: eq(invoiceLineItems.invoiceId, invoice.id),
+        });
+        const existingById = new Map(existingItems.map((item) => [item.id, item]));
+        const retainedIds = new Set<string>();
+
+        const saveItem = async (
+          item: (typeof input.items)[number] | NonNullable<(typeof input.items)[number]["subItems"]>[number],
+          sortOrder: number,
+          parentLineItemId: string | null,
+        ) => {
+          const existing = item.id ? existingById.get(item.id) : null;
+          if (item.id && !existing) {
+            throw new HttpError(400, "Invoice line item is stale. Refresh and try again.");
+          }
+          const isDiscount = item.isDiscount ?? existing?.isDiscount ?? false;
+          const rawUnitPrice = Number(item.unitPrice);
+          if (!Number.isFinite(rawUnitPrice)) {
+            throw new HttpError(400, "Invoice line prices must be valid numbers.");
+          }
+          if (isDiscount && rawUnitPrice >= 0) {
+            throw new HttpError(
+              400,
+              "Discount line amounts must be sent as negative values.",
+            );
+          }
+          if (!isDiscount && rawUnitPrice < 0) {
+            throw new HttpError(
+              400,
+              "Charge line amounts cannot be negative. Mark the line as a discount to subtract it.",
+            );
+          }
+          if (
+            isDiscount &&
+            (parentLineItemId !== null ||
+              existing?.caseRestorationId != null ||
+              existing?.sourceType === "restoration")
+          ) {
+            throw new HttpError(
+              400,
+              "Discounts must be separate manual invoice lines, not restoration lines or sub-items.",
+            );
+          }
+          const quantity = Math.max(0, Math.round(Number(item.quantity)));
+          const unitPrice = rawUnitPrice.toFixed(2);
+          const values = {
+            toothNumber: item.toothNumber ?? null,
+            toothLabel: item.toothLabel ?? null,
+            description: item.description,
+            quantity,
+            unitPrice,
+            lineTotal: calculateLineTotal(quantity, unitPrice),
+            isDiscount,
+            sortOrder,
+            parentLineItemId,
+            updatedAt: new Date(),
+          };
+          if (existing && existing.invoiceId === invoice.id) {
+            retainedIds.add(existing.id);
+            await tx.update(invoiceLineItems).set(values).where(eq(invoiceLineItems.id, existing.id));
+            if (
+              existing.caseRestorationId &&
+              existing.unitPrice !== unitPrice
+            ) {
+              const sourceIds = Array.isArray(existing.sourceRestorationIdsJson)
+                ? existing.sourceRestorationIdsJson.filter((id): id is string => typeof id === "string")
+                : [existing.caseRestorationId];
+              await tx.update(caseRestorations).set({
+                unitPrice,
+                priceSource: "manual",
+                priceSourceId: null,
+                priceSourceName: null,
+                updatedAt: new Date(),
+              }).where(inArray(caseRestorations.id, sourceIds));
             }
+            return existing.id;
           }
-          if (subValues.length) {
-            await tx.insert(invoiceLineItems).values(subValues);
+          const [created] = await tx.insert(invoiceLineItems).values({
+            invoiceId: invoice.id,
+            sourceType: "manual",
+            ...values,
+          }).returning();
+          retainedIds.add(created.id);
+          return created.id;
+        };
+
+        for (const [idx, item] of input.items.entries()) {
+          const parentId = await saveItem(item, item.sortOrder ?? idx, null);
+          for (const [subIdx, sub] of (item.subItems ?? []).entries()) {
+            await saveItem(sub, sub.sortOrder ?? subIdx, parentId);
           }
+        }
+        const removedIds = existingItems
+          .filter((item) => !retainedIds.has(item.id))
+          .map((item) => item.id);
+        if (removedIds.length > 0) {
+          const removed = existingItems.filter((item) => removedIds.includes(item.id));
+          const sourceIds = Array.from(new Set(removed.flatMap((item) =>
+            Array.isArray(item.sourceRestorationIdsJson)
+              ? item.sourceRestorationIdsJson.filter((id): id is string => typeof id === "string")
+              : item.caseRestorationId ? [item.caseRestorationId] : [],
+          )));
+          if (sourceIds.length > 0) {
+            await tx.delete(caseRestorations).where(inArray(caseRestorations.id, sourceIds));
+          }
+          const suppressedGeneratedLineKeys = Array.from(new Set([
+            ...(
+              Array.isArray(
+                ((input.displayMetadata ?? lockedInvoice.displayMetadataJson ?? {}) as Record<string, unknown>)
+                  .suppressedGeneratedLineKeys,
+              )
+                ? (((input.displayMetadata ?? lockedInvoice.displayMetadataJson ?? {}) as Record<string, unknown>)
+                    .suppressedGeneratedLineKeys as string[])
+                : []
+            ),
+            ...removed
+              .filter((item) => item.sourceType === "restoration" && item.sourceKey && (
+                !Array.isArray(item.sourceRestorationIdsJson) ||
+                item.sourceRestorationIdsJson.length === 0
+              ))
+              .map((item) => item.sourceKey as string),
+          ]));
+          if (suppressedGeneratedLineKeys.length > 0) {
+            input.displayMetadata = {
+              ...((input.displayMetadata ?? lockedInvoice.displayMetadataJson ?? {}) as Record<string, unknown>),
+              suppressedGeneratedLineKeys,
+            };
+          }
+          await tx.delete(invoiceLineItems).where(inArray(invoiceLineItems.id, removedIds));
         }
       }
 
@@ -3603,11 +6144,11 @@ router.patch(
       });
       const subtotal = sumMoney(items.map((item) => item.lineTotal));
       const tax =
-        input.tax !== undefined ? input.tax.toFixed(2) : invoice.tax;
+        input.tax !== undefined ? input.tax.toFixed(2) : lockedInvoice.tax;
       const discount =
         input.discount !== undefined
           ? input.discount.toFixed(2)
-          : invoice.discount;
+          : lockedInvoice.discount;
       // Credits live in displayMetadata.credits (a JSON-blob column).
       // They behave like an additional discount applied to the invoice
       // — the desktop editor shows them on their own row and subtracts
@@ -3615,7 +6156,7 @@ router.patch(
       // server or the persisted total will drift from what the user
       // saw when they hit Save.
       const incomingMeta = (input.displayMetadata ??
-        (invoice as any).displayMetadataJson ??
+        lockedInvoice.displayMetadataJson ??
         {}) as Record<string, unknown>;
       const credits = Math.max(0, Number(incomingMeta.credits ?? 0) || 0);
       const total = (
@@ -3630,13 +6171,55 @@ router.patch(
         .from(payments)
         .where(eq(payments.invoiceId, invoice.id));
       const paid = Number(paidSum[0]?.value ?? 0);
-      const balanceDue = (Number(total) - paid).toFixed(2);
+      const hasDiscountLines = items.some((item) => item.isDiscount);
+      if (hasDiscountLines && Number(total) < -0.004) {
+        throw new HttpError(
+          409,
+          "Discount lines cannot reduce the invoice total below $0.00.",
+        );
+      }
+      if (
+        hasDiscountLines &&
+        Number(total) + 0.004 < paid
+      ) {
+        throw new HttpError(
+          409,
+          `Discount lines cannot reduce the total below the $${paid.toFixed(2)} already paid. Issue a refund or apply a credit instead.`,
+        );
+      }
+      const newStatus = input.status ?? lockedInvoice.status;
+      // A voided invoice must never carry an outstanding balance — zero it out
+      // regardless of what the (total - paid) arithmetic produces.
+      const balanceDue = newStatus === "void" ? "0.00" : (Number(total) - paid).toFixed(2);
+      // Voiding has to be dated, or the reports cannot tell a reversal made
+      // this month from one made last year: an undated void looks like the
+      // invoice was never revenue at all. Restoring an invoice out of void
+      // clears the date for the same reason.
+      const becomingVoid =
+        newStatus === "void" && lockedInvoice.status !== "void";
+      const leavingVoid =
+        newStatus !== "void" && lockedInvoice.status === "void";
+      const voidFields = becomingVoid
+        ? {
+            voidedAt: new Date(),
+            voidedByUserId: (req as any).auth.userId,
+            voidReason: lockedInvoice.voidReason ?? "Status changed to void",
+            voidKind: lockedInvoice.voidKind ?? "void",
+          }
+        : leavingVoid
+          ? {
+              voidedAt: null,
+              voidedByUserId: null,
+              voidReason: null,
+              voidKind: null,
+            }
+          : {};
 
-      const newStatus = input.status ?? invoice.status;
       const [row] = await tx
         .update(invoices)
         .set({
           status: newStatus,
+          ...voidFields,
           tax,
           discount,
           subtotal,
@@ -3660,7 +6243,14 @@ router.patch(
           providerOrganizationId:
             input.providerOrganizationId ?? invoice.providerOrganizationId,
           displayMetadataJson:
-            input.displayMetadata === undefined
+            (lockedInvoice.displayMetadataJson as Record<string, unknown> | null)?.legacyChargesNeedsReview === true
+              ? {
+                  ...(input.displayMetadata ?? lockedInvoice.displayMetadataJson as Record<string, unknown>),
+                  reviewedCharges: true,
+                  reviewedChargesNeedsReview: !Array.isArray(input.items),
+                  legacyChargesNeedsReview: !Array.isArray(input.items),
+                }
+              : input.displayMetadata === undefined
               ? invoice.displayMetadataJson
               : input.displayMetadata,
           layoutPresetId:
@@ -3741,7 +6331,11 @@ router.patch(
         input.depositBankAccountId
       );
     } else if (invoice.status === "paid" && updated.status !== "paid") {
-      await reverseInvoiceDepositIfAny(invoice.id, (req as any).auth.userId);
+      await reverseInvoiceDepositIfAny(
+        invoice.id,
+        invoice.labOrganizationId,
+        (req as any).auth.userId,
+      );
     }
 
     return ok(res, updated);
@@ -3755,11 +6349,7 @@ router.post(
       where: eq(invoices.id, req.params.invoiceId),
     });
     if (!invoice) throw new HttpError(404, "Invoice not found.");
-    await requireAnyRole(
-      (req as any).auth.userId,
-      invoice.labOrganizationId,
-      BILLING_ROLES
-    );
+    await requireInvoicePaymentAccess((req as any).auth.userId, invoice);
 
     const input = z
       .object({
@@ -3770,42 +6360,55 @@ router.post(
       })
       .parse(req.body);
 
-    const [payment] = await db
-      .insert(payments)
-      .values({
-        invoiceId: invoice.id,
-        amount: input.amount.toFixed(2),
-        paymentMethod: input.paymentMethod,
-        referenceNumber: input.referenceNumber ?? null,
-        recordedByUserId: (req as any).auth.userId,
-      })
-      .returning();
-
-    const paidRows = await db
-      .select({ value: sum(payments.amount) })
-      .from(payments)
-      .where(eq(payments.invoiceId, invoice.id));
-    const paid = Number(paidRows[0]?.value ?? 0);
-    const balanceDue = Math.max(
-      Number(invoice.total) - paid,
-      0
-    ).toFixed(2);
-    const status =
-      balanceDue === "0.00"
-        ? "paid"
-        : paid > 0
-        ? "partially_paid"
-        : invoice.status;
-
-    const [updatedInvoice] = await db
-      .update(invoices)
-      .set({
-        balanceDue,
-        status,
-        updatedByUserId: (req as any).auth.userId,
-      })
-      .where(eq(invoices.id, invoice.id))
-      .returning();
+    const { payment, updatedInvoice } = await db.transaction(async (tx) => {
+      if (invoice.providerOrganizationId) {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.labOrganizationId}), hashtext(${invoice.providerOrganizationId}))`,
+        );
+      }
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.id}))`);
+      const [lockedInvoice] = await tx
+        .select()
+        .from(invoices)
+        .where(eq(invoices.id, invoice.id))
+        .for("update");
+      if (!lockedInvoice) throw new HttpError(404, "Invoice not found.");
+      const [payment] = await tx
+        .insert(payments)
+        .values({
+          invoiceId: lockedInvoice.id,
+          amount: input.amount.toFixed(2),
+          paymentMethod: input.paymentMethod,
+          referenceNumber: input.referenceNumber ?? null,
+          recordedByUserId: (req as any).auth.userId,
+        })
+        .returning();
+      const paidRows = await tx
+        .select({ value: sum(payments.amount) })
+        .from(payments)
+        .where(eq(payments.invoiceId, lockedInvoice.id));
+      const paid = Number(paidRows[0]?.value ?? 0);
+      const balanceDue = Math.max(
+        Number(lockedInvoice.total) - paid,
+        0
+      ).toFixed(2);
+      const status =
+        balanceDue === "0.00"
+          ? "paid"
+          : paid > 0
+            ? "partially_paid"
+            : lockedInvoice.status;
+      const [updatedInvoice] = await tx
+        .update(invoices)
+        .set({
+          balanceDue,
+          status,
+          updatedByUserId: (req as any).auth.userId,
+        })
+        .where(eq(invoices.id, lockedInvoice.id))
+        .returning();
+      return { payment, updatedInvoice };
+    });
 
     if (invoice.caseId) {
       const user = (req as any).user;
@@ -3841,8 +6444,250 @@ router.post(
       );
     }
 
+    if (invoice.providerOrganizationId) {
+      await deliverPaymentNotifications({
+        origin: "lab",
+        sourceType: "invoice_payment",
+        sourceId: payment.id,
+        labOrganizationId: invoice.labOrganizationId,
+        providerOrganizationId: invoice.providerOrganizationId,
+        amount: payment.amount,
+        invoiceIds: [invoice.id],
+        paymentMethod: payment.paymentMethod,
+      });
+    }
+
     return ok(res, { payment, invoice: updatedInvoice }, 201);
   })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Delete all payments on an invoice (Paid → Open guard).
+// Removes every payments row for the invoice, recalculates balance/status back
+// to open, and reverses any auto-deposit so the books stay balanced. Used by
+// the desktop "Delete payment & mark Open" confirmation dialog.
+// ─────────────────────────────────────────────────────────────────────────────
+router.delete(
+  "/:invoiceId/payments",
+  asyncHandler(async (req, res) => {
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, req.params.invoiceId),
+    });
+    if (!invoice) throw new HttpError(404, "Invoice not found.");
+    await requireInvoicePaymentAccess((req as any).auth.userId, invoice);
+
+    if ((invoice as any).frozen) {
+      throw new HttpError(409, "Invoice is frozen — the linked case was deleted.");
+    }
+    // Run the full deletion + deposit reversal in one transaction so a
+    // partial failure cannot leave payments deleted but deposits still active.
+    const { deletedPayments, updatedInvoice, reversedCount } = await db.transaction(async (tx) => {
+      if (invoice.providerOrganizationId) {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.labOrganizationId}), hashtext(${invoice.providerOrganizationId}))`,
+        );
+      }
+      await assertNoActiveCardReversalForInvoices(tx, [invoice.id]);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.id}))`);
+      const [lockedInvoice] = await tx
+        .select()
+        .from(invoices)
+        .where(eq(invoices.id, invoice.id))
+        .for("update");
+      if (!lockedInvoice) throw new HttpError(404, "Invoice not found.");
+      const lockedPayments = await tx
+        .select()
+        .from(payments)
+        .where(eq(payments.invoiceId, invoice.id))
+        .for("update");
+      const linkedTxnIds = lockedPayments
+        .map((payment) => payment.bankTransactionId)
+        .filter(Boolean) as string[];
+      await releaseBatchesForChildren(tx, invoice.labOrganizationId, linkedTxnIds);
+      if (lockedPayments.some((payment) => payment.paymentSessionId)) {
+        throw new HttpError(
+          409,
+          "This invoice includes a statement payment. Cancel that payment session instead.",
+        );
+      }
+      const deleted = await tx
+        .delete(payments)
+        .where(eq(payments.invoiceId, invoice.id))
+        .returning();
+      // Each of these settled the invoice from its payment date until now,
+      // and dated reports still have to see that window.
+      await archiveReversedSettlements(
+        tx,
+        deleted.map((payment) => ({
+          labOrganizationId: invoice.labOrganizationId,
+          invoiceId: invoice.id,
+          sourceType: "payment" as const,
+          sourceId: payment.id,
+          paymentSessionId: payment.paymentSessionId ?? null,
+          amount: payment.amount,
+          settledAt: payment.paidAt ?? new Date(),
+          reversedByUserId: (req as any).auth.userId,
+        })),
+      );
+
+      // With no payments, balance equals the invoice total and status reverts.
+      const balanceDue = Number(lockedInvoice.total ?? 0).toFixed(2);
+      const [updated] = await tx
+        .update(invoices)
+        .set({
+          balanceDue,
+          status: "open",
+          updatedByUserId: (req as any).auth.userId,
+        })
+        .where(eq(invoices.id, invoice.id))
+        .returning();
+
+      // Resolve all non-void invoice-source deposits linked to this invoice.
+      // An invoice can have multiple deposits (repeated receive-payments while
+      // partially_paid) and each deposit may itself be linked to multiple
+      // invoices when a batch payment was recorded.
+      const links = await tx
+        .select({
+          bankTransactionId: bankTransactionInvoices.bankTransactionId,
+          txnSource: bankTransactions.source,
+          txnStatus: bankTransactions.status,
+          txnCreditAmount: bankTransactions.creditAmount,
+          txnNetAmount: bankTransactions.netAmount,
+        })
+        .from(bankTransactionInvoices)
+        .innerJoin(
+          bankTransactions,
+          eq(bankTransactions.id, bankTransactionInvoices.bankTransactionId),
+        )
+        .where(eq(bankTransactionInvoices.invoiceId, invoice.id));
+
+      const autoDeposits = links.filter(
+        (l: any) => l.txnSource === "invoice" && l.txnStatus !== "void",
+      );
+
+      let reversedCnt = 0;
+      for (const dep of autoDeposits) {
+        // Fetch the current link rows for this deposit (I's link is still
+        // present at this point; it is removed at the end of the loop body).
+        const shareRows = await tx
+          .select({ invoiceId: bankTransactionInvoices.invoiceId })
+          .from(bankTransactionInvoices)
+          .where(eq(bankTransactionInvoices.bankTransactionId, dep.bankTransactionId));
+
+        const otherInvoiceIds = shareRows
+          .map((r: any) => r.invoiceId)
+          .filter((id: string) => id !== invoice.id);
+
+        if (otherInvoiceIds.length === 0) {
+          // Exclusively linked to this invoice — safe to void the whole deposit.
+          await tx
+            .update(bankTransactions)
+            .set({ status: "void" })
+            .where(eq(bankTransactions.id, dep.bankTransactionId));
+          reversedCnt++;
+        } else {
+          // Shared with other invoices.  Compute this invoice's attribution for
+          // deposit D as the residual after accounting for the other invoices'
+          // contributions.  Because I's payments are already deleted at this
+          // point in the transaction, summing the current payments for the other
+          // invoices gives an accurate picture of their share.
+          //
+          //   I's share of D = D.creditAmount − Σ(current payments for others in D)
+          //
+          // This is exact when each other invoice has payments from only the
+          // batch that created D.  When an invoice has payments from multiple
+          // batches the attribution is conservative (I's share is understated),
+          // which is always safer than over-reducing and potentially zeroing
+          // funds belonging to uninvolved invoices.
+          const otherPaymentRows = await tx
+            .select({ amount: payments.amount })
+            .from(payments)
+            .where(inArray(payments.invoiceId, otherInvoiceIds));
+
+          const otherTotal = otherPaymentRows.reduce(
+            (s: number, r: any) => s + Number(r.amount),
+            0,
+          );
+
+          const thisInvoiceShareOfDep = Math.max(
+            0,
+            Number(dep.txnCreditAmount) - otherTotal,
+          );
+
+          const newCredit = Math.max(
+            0,
+            Number(dep.txnCreditAmount) - thisInvoiceShareOfDep,
+          );
+          const newNet = Math.max(
+            0,
+            Number(dep.txnNetAmount) - thisInvoiceShareOfDep,
+          );
+          await tx
+            .update(bankTransactions)
+            .set({
+              creditAmount: newCredit.toFixed(2),
+              netAmount: newNet.toFixed(2),
+            })
+            .where(eq(bankTransactions.id, dep.bankTransactionId));
+        }
+
+        // Always remove the link row for this invoice.
+        await tx
+          .delete(bankTransactionInvoices)
+          .where(
+            and(
+              eq(bankTransactionInvoices.bankTransactionId, dep.bankTransactionId),
+              eq(bankTransactionInvoices.invoiceId, invoice.id),
+            ),
+          );
+      }
+
+      return { deletedPayments: deleted, updatedInvoice: updated, reversedCount: reversedCnt };
+    });
+
+    await writeAuditLog({
+      req,
+      organizationId: invoice.labOrganizationId,
+      action: "invoice_payments_deleted",
+      entityType: "invoice",
+      entityId: invoice.id,
+      metadataJson: {
+        invoiceNumber: invoice.invoiceNumber,
+        deletedCount: deletedPayments.length,
+        reversedDepositCount: reversedCount,
+        previousStatus: invoice.status,
+      },
+    });
+
+    // Write a case timeline event so the deletion is visible on the linked case.
+    if (invoice.caseId) {
+      const actorUser = (req as any).user;
+      const actorInitials = actorUser?.initials || "SYS";
+      await db
+        .insert(caseEvents)
+        .values({
+          caseId: invoice.caseId,
+          eventType: "invoice_payments_deleted",
+          actorUserId: (req as any).auth.userId,
+          actorOrganizationId: invoice.labOrganizationId,
+          actorInitials,
+          metadataJson: {
+            invoiceId: invoice.id,
+            invoiceNumber: invoice.invoiceNumber,
+            deletedCount: deletedPayments.length,
+            previousStatus: invoice.status,
+          },
+        })
+        .catch((err: unknown) => {
+          req.log?.warn?.(
+            { err, invoiceId: invoice.id },
+            "case_event insert failed for invoice_payments_deleted",
+          );
+        });
+    }
+
+    return ok(res, { deletedCount: deletedPayments.length, invoice: updatedInvoice });
+  }),
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3877,14 +6722,8 @@ async function loadInvoiceWithAccess(
     await requireAnyRole(callerId, invoice.labOrganizationId, BILLING_ROLES);
     return invoice;
   }
-  const labMember = await requireMembership(
-    callerId,
-    invoice.labOrganizationId,
-  ).catch(() => null);
-  const providerMember = invoice.providerOrganizationId
-    ? await requireMembership(callerId, invoice.providerOrganizationId).catch(() => null)
-    : null;
-  if (!labMember && !providerMember) {
+  const readScope = await getInvoiceReadScope(callerId);
+  if (!invoiceIsInReadScope(invoice, readScope)) {
     throw new HttpError(403, "You do not have access to this invoice.");
   }
   return invoice;
@@ -4084,7 +6923,7 @@ router.post(
           ),
         );
       const used = usedRows.reduce((s, r) => s + Number(r.amount || 0), 0);
-      const capacity = Number(dep.creditAmount || dep.netAmount || 0);
+      const capacity = Math.max(Number(dep.debitAmount ?? 0), Number(dep.creditAmount ?? 0));
       if (used + input.amount > capacity + 0.0001) {
         throw new HttpError(
           409,
@@ -4093,37 +6932,34 @@ router.post(
       }
     }
 
-    const [credit] = await db
-      .insert(invoiceCredits)
-      .values({
-        invoiceId: invoice.id,
-        providerOrganizationId: invoice.providerOrganizationId,
-        labOrganizationId: invoice.labOrganizationId,
+    const credit = await db.transaction(async (tx) => {
+      if (invoice.providerOrganizationId) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.labOrganizationId}), hashtext(${invoice.providerOrganizationId}))`);
+      }
+      await assertNoActiveCardReversalForInvoices(tx, [invoice.id]);
+      const [authoritative] = await tx.select().from(invoices)
+        .where(eq(invoices.id, invoice.id)).for("update");
+      if (!authoritative) throw new HttpError(404, "Invoice not found.");
+      const [credit] = await tx.insert(invoiceCredits).values({
+        invoiceId: authoritative.id,
+        providerOrganizationId: authoritative.providerOrganizationId,
+        labOrganizationId: authoritative.labOrganizationId,
         amount: input.amount.toFixed(2),
         sourceKind: input.sourceKind,
         sourceId: input.sourceId ?? null,
         note: input.note ?? null,
         appliedByUserId: callerId,
-      })
-      .returning();
-
-    // Subtract from balanceDue (cap at 0).
-    const newBalance = Math.max(
-      0,
-      Number(invoice.balanceDue) - input.amount,
-    ).toFixed(2);
-    const newStatus =
-      Number(newBalance) === 0 && invoice.status !== "void"
-        ? "paid"
-        : invoice.status;
-    await db
-      .update(invoices)
-      .set({
+      }).returning();
+      const newBalance = Math.max(0, Number(authoritative.balanceDue) - input.amount).toFixed(2);
+      const newStatus = Number(newBalance) === 0 && authoritative.status !== "void"
+        ? "paid" : authoritative.status;
+      await tx.update(invoices).set({
         balanceDue: newBalance,
         status: newStatus,
         updatedByUserId: callerId,
-      })
-      .where(eq(invoices.id, invoice.id));
+      }).where(eq(invoices.id, authoritative.id));
+      return credit;
+    });
 
     await writeAuditLog({
       req,
@@ -4154,27 +6990,37 @@ router.delete(
     });
     if (!invoice) throw new HttpError(404, "Invoice not found.");
 
-    await db
-      .update(invoiceCredits)
-      .set({ reversedAt: new Date(), reversedByUserId: callerId })
-      .where(eq(invoiceCredits.id, credit.id));
-
-    const newBalance = (
-      Number(invoice.balanceDue) + Number(credit.amount)
-    ).toFixed(2);
-    const newStatus = invoice.status === "paid" ? "open" : invoice.status;
-    await db
-      .update(invoices)
-      .set({
+    await db.transaction(async (tx) => {
+      if (invoice.providerOrganizationId) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.labOrganizationId}), hashtext(${invoice.providerOrganizationId}))`);
+      }
+      await assertNoActiveCardReversalForInvoices(tx, [invoice.id]);
+      const [authoritativeInvoice] = await tx.select().from(invoices)
+        .where(eq(invoices.id, invoice.id)).for("update");
+      const [authoritativeCredit] = await tx.select().from(invoiceCredits)
+        .where(eq(invoiceCredits.id, credit.id)).for("update");
+      if (!authoritativeInvoice || !authoritativeCredit || authoritativeCredit.reversedAt) {
+        throw new HttpError(409, "Credit or invoice changed; reload and retry.");
+      }
+      await tx.update(invoiceCredits).set({
+        reversedAt: new Date(), reversedByUserId: callerId,
+      }).where(eq(invoiceCredits.id, authoritativeCredit.id));
+      const newBalance = (Number(authoritativeInvoice.balanceDue) + Number(authoritativeCredit.amount)).toFixed(2);
+      const newStatus = authoritativeInvoice.status === "paid" ? "open" : authoritativeInvoice.status;
+      await tx.update(invoices).set({
         balanceDue: newBalance,
         status: newStatus,
         updatedByUserId: callerId,
-      })
-      .where(eq(invoices.id, invoice.id));
-
-    if (invoice.status === "paid" && newStatus !== "paid") {
-      await reverseInvoiceDepositIfAny(invoice.id, callerId);
-    }
+      }).where(eq(invoices.id, authoritativeInvoice.id));
+      if (authoritativeInvoice.status === "paid" && newStatus !== "paid") {
+        await reverseInvoiceDepositIfAny(
+          authoritativeInvoice.id,
+          authoritativeInvoice.labOrganizationId,
+          callerId,
+          tx,
+        );
+      }
+    });
 
     await writeAuditLog({
       req,
@@ -4224,6 +7070,13 @@ router.post(
       }
     }
 
+    const linkedCase = original.caseId
+      ? await db.query.cases.findFirst({
+          where: eq(cases.id, original.caseId),
+          columns: { receivedAt: true },
+        })
+      : null;
+
     const cloned = await db.transaction(async (tx) => {
       const [newInvoice] = await tx
         .insert(invoices)
@@ -4232,7 +7085,8 @@ router.post(
           caseId: original.caseId,
           labOrganizationId: original.labOrganizationId,
           providerOrganizationId: original.providerOrganizationId,
-          status: "draft",
+          doctorIdentity: original.doctorIdentity,
+          status: "open",
           subtotal: original.subtotal,
           tax: original.tax,
           discount: original.discount,
@@ -4241,6 +7095,9 @@ router.post(
           notes: original.notes,
           displayMetadataJson: original.displayMetadataJson,
           sourceInvoiceId: original.id,
+          issuedAt: linkedCase?.receivedAt
+            ? calendarDateToUtcNoon(linkedCase.receivedAt)
+            : new Date(),
           createdByUserId: callerId,
           updatedByUserId: callerId,
         })
@@ -4253,13 +7110,19 @@ router.post(
           .values(
             topLevel.map((it: any, idx: number) => ({
               invoiceId: newInvoice.id,
-              caseRestorationId: it.caseRestorationId,
+              // A duplicate is a financial snapshot, not a second owner of
+              // the case's restoration sources.
+              caseRestorationId: null,
+              sourceType: "manual",
+              sourceKey: null,
+              sourceRestorationIdsJson: [],
               toothNumber: it.toothNumber ?? null,
               toothLabel: it.toothLabel ?? null,
               description: it.description,
               quantity: it.quantity,
               unitPrice: it.unitPrice,
               lineTotal: it.lineTotal,
+              isDiscount: !!it.isDiscount,
               sortOrder: it.sortOrder ?? idx,
             })),
           )
@@ -4272,13 +7135,17 @@ router.post(
           await tx.insert(invoiceLineItems).values(
             children.map((it: any, idx: number) => ({
               invoiceId: newInvoice.id,
-              caseRestorationId: it.caseRestorationId,
+              caseRestorationId: null,
+              sourceType: "manual",
+              sourceKey: null,
+              sourceRestorationIdsJson: [],
               toothNumber: it.toothNumber ?? null,
               toothLabel: it.toothLabel ?? null,
               description: it.description,
               quantity: it.quantity,
               unitPrice: it.unitPrice,
               lineTotal: it.lineTotal,
+              isDiscount: !!it.isDiscount,
               sortOrder: it.sortOrder ?? idx,
               parentLineItemId: oldToNew.get(it.parentLineItemId) ?? null,
             })),
@@ -4317,9 +7184,16 @@ const voidBodySchema = z.object({
 
 async function reverseInvoiceDepositIfAny(
   invoiceId: string,
+  labOrganizationId: string,
   callerId: string,
+  executor: any = db,
 ): Promise<{ reversed: boolean; transactionId: string | null }> {
-  const links = await db
+  if (executor === db) {
+    return db.transaction((tx) =>
+      reverseInvoiceDepositIfAny(invoiceId, labOrganizationId, callerId, tx),
+    );
+  }
+  const links = await executor
     .select({
       bankTransactionId: bankTransactionInvoices.bankTransactionId,
       txnSource: bankTransactions.source,
@@ -4335,11 +7209,16 @@ async function reverseInvoiceDepositIfAny(
     (l: any) => l.txnSource === "invoice" && l.txnStatus !== "void",
   );
   if (!autoDeposit) return { reversed: false, transactionId: null };
-  await db
+  await releaseBatchForChild(
+    executor,
+    labOrganizationId,
+    autoDeposit.bankTransactionId,
+  );
+  await executor
     .update(bankTransactions)
     .set({ status: "void" })
     .where(eq(bankTransactions.id, autoDeposit.bankTransactionId));
-  await db
+  await executor
     .delete(bankTransactionInvoices)
     .where(
       and(
@@ -4366,14 +7245,25 @@ router.post(
     if (voidReason.length === 0) {
       throw new HttpError(400, "A reason is required to void an invoice.");
     }
-
-    const dep = input.reverseDeposit
-      ? await reverseInvoiceDepositIfAny(invoice.id, callerId)
-      : { reversed: false, transactionId: null };
-
-    const [updated] = await db
-      .update(invoices)
-      .set({
+    const { updated, dep } = await db.transaction(async (tx) => {
+      if (invoice.providerOrganizationId) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.labOrganizationId}), hashtext(${invoice.providerOrganizationId}))`);
+      }
+      await assertNoActiveCardReversalForInvoices(tx, [invoice.id]);
+      const [authoritative] = await tx.select().from(invoices)
+        .where(eq(invoices.id, invoice.id)).for("update");
+      if (!authoritative || authoritative.status === "void") {
+        throw new HttpError(409, "Invoice is unavailable or already voided.");
+      }
+      const dep = input.reverseDeposit
+        ? await reverseInvoiceDepositIfAny(
+            invoice.id,
+            invoice.labOrganizationId,
+            callerId,
+            tx,
+          )
+        : { reversed: false, transactionId: null };
+      const [updated] = await tx.update(invoices).set({
         status: "void",
         balanceDue: "0.00",
         voidedAt: new Date(),
@@ -4381,14 +7271,11 @@ router.post(
         voidReason: voidReason,
         voidKind: "void",
         updatedByUserId: callerId,
-      })
-      .where(eq(invoices.id, invoice.id))
-      .returning();
-
-    if (invoice.caseId) {
-      const user = (req as any).user;
-      await db.insert(caseEvents).values({
-        caseId: invoice.caseId,
+      }).where(eq(invoices.id, authoritative.id)).returning();
+      if (authoritative.caseId) {
+        const user = (req as any).user;
+        await tx.insert(caseEvents).values({
+        caseId: authoritative.caseId,
         eventType: "invoice_voided",
         actorUserId: callerId,
         actorOrganizationId: invoice.labOrganizationId,
@@ -4399,10 +7286,10 @@ router.post(
           reason: input.reason,
           depositReversed: dep.reversed,
         },
-      }).catch((err: unknown): never => wrapDbError(err, {
-        fallback: "Failed to record invoice_voided timeline event.",
-      }));
-    }
+        });
+      }
+      return { updated, dep };
+    });
 
     await writeAuditLog({
       req,
@@ -4437,32 +7324,37 @@ router.post(
     // sensible value so the audit log/case event always have something
     // human-readable.
     const writeOffReason = input.reason.trim() || "Write-off";
-    const writeOffAmount = Number(invoice.balanceDue);
-
-    // Reverse any auto-generated deposit (mirrors /void) so the bank-side
-    // balance doesn't keep counting a payment for an invoice that's been
-    // written off.
-    const dep = input.reverseDeposit
-      ? await reverseInvoiceDepositIfAny(invoice.id, callerId)
-      : { reversed: false, transactionId: null };
-
-    if (writeOffAmount > 0) {
-      await db.insert(invoiceCredits).values({
-        invoiceId: invoice.id,
-        providerOrganizationId: invoice.providerOrganizationId,
-        labOrganizationId: invoice.labOrganizationId,
+    const { updated, dep, writeOffAmount } = await db.transaction(async (tx) => {
+      if (invoice.providerOrganizationId) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.labOrganizationId}), hashtext(${invoice.providerOrganizationId}))`);
+      }
+      await assertNoActiveCardReversalForInvoices(tx, [invoice.id]);
+      const [authoritative] = await tx.select().from(invoices)
+        .where(eq(invoices.id, invoice.id)).for("update");
+      if (!authoritative || authoritative.status === "void" || authoritative.status === "paid") {
+        throw new HttpError(409, "Only open / partially paid invoices can be written off.");
+      }
+      const writeOffAmount = Number(authoritative.balanceDue);
+      const dep = input.reverseDeposit
+        ? await reverseInvoiceDepositIfAny(
+            authoritative.id,
+            authoritative.labOrganizationId,
+            callerId,
+            tx,
+          )
+        : { reversed: false, transactionId: null };
+      if (writeOffAmount > 0) {
+        await tx.insert(invoiceCredits).values({
+        invoiceId: authoritative.id,
+        providerOrganizationId: authoritative.providerOrganizationId,
+        labOrganizationId: authoritative.labOrganizationId,
         amount: writeOffAmount.toFixed(2),
         sourceKind: "writeoff",
         note: writeOffReason,
         appliedByUserId: callerId,
-      }).catch((err: unknown): never => wrapDbError(err, {
-        fallback: "Failed to record invoice write-off credit.",
-      }));
-    }
-
-    const [updated] = await db
-      .update(invoices)
-      .set({
+        });
+      }
+      const [updated] = await tx.update(invoices).set({
         status: "void",
         balanceDue: "0.00",
         voidedAt: new Date(),
@@ -4470,14 +7362,11 @@ router.post(
         voidReason: writeOffReason,
         voidKind: "writeoff",
         updatedByUserId: callerId,
-      })
-      .where(eq(invoices.id, invoice.id))
-      .returning();
-
-    if (invoice.caseId) {
-      const user = (req as any).user;
-      await db.insert(caseEvents).values({
-        caseId: invoice.caseId,
+      }).where(eq(invoices.id, authoritative.id)).returning();
+      if (authoritative.caseId) {
+        const user = (req as any).user;
+        await tx.insert(caseEvents).values({
+        caseId: authoritative.caseId,
         eventType: "invoice_written_off",
         actorUserId: callerId,
         actorOrganizationId: invoice.labOrganizationId,
@@ -4489,10 +7378,10 @@ router.post(
           writeOffAmount,
           depositReversed: dep.reversed,
         },
-      }).catch((err: unknown): never => wrapDbError(err, {
-        fallback: "Failed to record invoice_written_off timeline event.",
-      }));
-    }
+        });
+      }
+      return { updated, dep, writeOffAmount };
+    });
 
     await writeAuditLog({
       req,
@@ -4511,7 +7400,7 @@ router.post(
   }),
 );
 
-// Mark invoices as sent (sets issuedAt + status=open if still draft).
+// Mark invoices as sent (sets issuedAt if not already set).
 router.post(
   "/batch-mark-sent",
   asyncHandler(async (req, res) => {
@@ -4536,7 +7425,7 @@ router.post(
       const [u] = await db
         .update(invoices)
         .set({
-          status: row.status === "draft" ? "open" : row.status,
+          status: row.status,
           issuedAt: row.issuedAt ?? now,
           updatedByUserId: callerId,
         })
@@ -4618,8 +7507,30 @@ async function buildAndPersistStatementPdf(opts: {
     liByInvoiceId.get(li.invoiceId)!.push(li);
   }
 
+  // Hydrate every payment for the selected invoices. The shared PDF renderer
+  // uses these rows for the chronological running-balance ledger; the last
+  // row also preserves the existing statement-level payment summary.
+  const paymentRows = invoiceIds.length
+    ? await db
+      .select({
+        id: payments.id,
+        invoiceId: payments.invoiceId,
+        amount: payments.amount,
+        paidAt: payments.paidAt,
+        paymentMethod: payments.paymentMethod,
+        referenceNumber: payments.referenceNumber,
+      })
+      .from(payments)
+      .where(inArray(payments.invoiceId, invoiceIds))
+      .orderBy(desc(payments.paidAt), desc(payments.id))
+    : [];
+  const latestPmt = paymentRows[0];
+  const paidAt: Date | null = latestPmt?.paidAt ?? null;
+  const paymentMethod: string | null = latestPmt?.paymentMethod ?? null;
+
   const data: PracticeStatementData = {
     practiceId: opts.providerOrganizationId,
+    providerOrganizationId: opts.providerOrganizationId,
     practiceName,
     practiceEmail: practice?.billingEmail || null,
     statementEmailOptOut: practice?.statementEmailOptOut ?? false,
@@ -4627,12 +7538,23 @@ async function buildAndPersistStatementPdf(opts: {
     totalBilled: opts.totals.billed,
     totalPaid: opts.totals.paid,
     openBalance: opts.totals.open,
+    paidAt,
+    paymentMethod,
+    payments: paymentRows.map((payment: any) => ({
+      id: String(payment.id ?? ""),
+      invoiceId: payment.invoiceId,
+      amount: String(payment.amount ?? "0"),
+      paidAt: payment.paidAt,
+      paymentMethod: payment.paymentMethod,
+      referenceNumber: payment.referenceNumber ?? null,
+    })),
     invoices: opts.invoicesList.map((inv: any) => {
       const meta = (inv.displayMetadataJson ?? null) as
         | { patientName?: string | null; billTo?: string | null }
         | null;
       const items = liByInvoiceId.get(inv.id) ?? [];
       return {
+        id: inv.id,
         invoiceNumber: inv.invoiceNumber,
         issuedAt: inv.issuedAt ?? inv.createdAt ?? null,
         dueAt: inv.dueAt ?? null,
@@ -4647,6 +7569,7 @@ async function buildAndPersistStatementPdf(opts: {
           quantity: li.quantity,
           unitPrice: String(li.unitPrice),
           lineTotal: String(li.lineTotal),
+          isDiscount: !!li.isDiscount,
           parentLineItemId: li.parentLineItemId ?? null,
           toothLabel: li.toothLabel ?? null,
           toothNumber: li.toothNumber ?? null,
@@ -4656,16 +7579,28 @@ async function buildAndPersistStatementPdf(opts: {
     }),
   };
   const periodLabel = `${opts.periodStart.toISOString().slice(0, 10)} to ${opts.periodEnd.toISOString().slice(0, 10)}`;
-  const buf = await generateStatementPdfBuffer(labName, data, periodLabel, null);
-  fs.mkdirSync(practiceStatementsDir, { recursive: true });
-  const safeName = practiceName.replace(/[^a-z0-9-_]+/gi, "_").slice(0, 60);
-  const fileName = `statement-${safeName}-${opts.statementId}.pdf`;
-  const filePath = path.resolve(practiceStatementsDir, fileName);
-  if (!filePath.startsWith(practiceStatementsDir + path.sep)) {
-    throw new HttpError(500, "Invalid statement file path.");
-  }
-  fs.writeFileSync(filePath, buf);
-  return { storageKey: fileName, fileName, size: buf.length };
+  await attachStatementContacts(opts.labOrganizationId, [data]);
+  const template = coerceStatementTemplate((labOrg as any)?.statementTemplate);
+  const buf = await generateStatementPdfBuffer(
+    labName,
+    data,
+    periodLabel,
+    await readLogoBuffer(opts.labOrganizationId),
+    (labOrg as any)?.logoPdfSize,
+    "all",
+    labOrg?.invoiceDueDayOfMonth ?? null,
+    null,
+    template.defaultTextBlocks,
+    opts.labOrganizationId,
+    template,
+  );
+  // Delegate the disk-write to the shared helper so all send paths use
+  // the same storage location and naming convention.
+  return persistStatementPdf({
+    buffer: buf,
+    providerOrganizationId: opts.providerOrganizationId,
+    periodMonth: periodMonthFor(opts.periodStart),
+  });
 }
 
 router.post(
@@ -4679,7 +7614,7 @@ router.post(
         periodStart: z.string().datetime(),
         periodEnd: z.string().datetime(),
         includeStatuses: z
-          .array(z.enum(["draft", "open", "partially_paid", "paid"]))
+          .array(z.enum(["open", "partially_paid", "paid"]))
           .default(["open", "partially_paid"]),
       })
       .parse(req.body);
@@ -4726,6 +7661,33 @@ router.post(
           totalPaid,
           balanceDue,
           invoiceIdsJson: list.map((r: any) => r.id),
+          invoiceAmountsJson: Object.fromEntries(
+            list.map((invoice: any) => [invoice.id, invoice.total]),
+          ),
+          invoiceDetailsJson: Object.fromEntries(
+            list.map((invoice: any) => {
+              const metadata =
+                invoice.displayMetadataJson &&
+                typeof invoice.displayMetadataJson === "object"
+                  ? invoice.displayMetadataJson
+                  : {};
+              return [
+                invoice.id,
+                {
+                  invoiceNumber: invoice.invoiceNumber,
+                  patientName:
+                    typeof metadata.patientName === "string"
+                      ? metadata.patientName
+                      : null,
+                  billTo:
+                    typeof metadata.billTo === "string" ? metadata.billTo : null,
+                  issuedAt: invoice.issuedAt?.toISOString() ?? null,
+                  dueAt: invoice.dueAt?.toISOString() ?? null,
+                  status: invoice.status,
+                },
+              ];
+            }),
+          ),
           createdByUserId: callerId,
         })
         .returning();
@@ -4795,6 +7757,7 @@ router.post(
         to: z.string().email().optional(),
         subject: z.string().min(1).max(500).default("Account statement"),
         message: z.string().min(1).max(20000).default("Please find your account statement attached."),
+        attachmentIndex: z.number().int().min(0).optional(),
       })
       .parse(req.body);
 
@@ -4820,14 +7783,53 @@ router.post(
         "Statement PDF was not generated. Re-generate the statement and try again.",
       );
     }
-    const safeKey = path.basename(stmt.pdfStorageKey);
-    const pdfPath = path.resolve(practiceStatementsDir, safeKey);
-    if (!pdfPath.startsWith(practiceStatementsDir + path.sep)) {
-      throw new HttpError(500, "Invalid statement file path.");
+    const manifest = coerceStatementBundleManifest(stmt.bundleManifestJson);
+    const attachment =
+      input.attachmentIndex === undefined
+        ? undefined
+        : manifest?.attachments[input.attachmentIndex];
+    if (input.attachmentIndex !== undefined && !attachment) {
+      throw new HttpError(404, "Statement PDF attachment not found.");
     }
-    const buffer = fs.readFileSync(pdfPath);
-    if (buffer.length === 0) throw new HttpError(500, "Statement PDF is empty.");
-    const filename = stmt.pdfFileName || "statement.pdf";
+    // An omitted index preserves full-bundle resend behavior. A selected
+    // index replays that exact issued manifest attachment; legacy statements
+    // continue to use the pdf_* columns.
+    const sources = attachment
+      ? [{ storageKey: attachment.storageKey, fileName: attachment.fileName }]
+      : manifest && manifest.attachments.length
+        ? manifest.attachments.map((a) => ({
+            storageKey: a.storageKey,
+            fileName: a.fileName,
+          }))
+        : [
+            {
+              storageKey: stmt.pdfStorageKey,
+              fileName: stmt.pdfFileName || "statement.pdf",
+            },
+          ];
+
+    const mailAttachments: Array<{
+      filename: string;
+      content: Buffer;
+      contentType: string;
+    }> = [];
+    for (const source of sources) {
+      const safeKey = path.basename(source.storageKey);
+      const pdfPath = path.resolve(practiceStatementsDir, safeKey);
+      if (!pdfPath.startsWith(practiceStatementsDir + path.sep)) {
+        throw new HttpError(500, "Invalid statement file path.");
+      }
+      const buffer = fs.readFileSync(pdfPath);
+      if (buffer.length === 0) {
+        throw new HttpError(500, "Statement PDF is empty.");
+      }
+      const filename = source.fileName || "statement.pdf";
+      mailAttachments.push({
+        filename: filename.endsWith(".pdf") ? filename : `${filename}.pdf`,
+        content: buffer,
+        contentType: "application/pdf",
+      });
+    }
 
     let errorMessage: string | null = null;
     let status: "sent" | "failed" = "sent";
@@ -4838,13 +7840,7 @@ router.post(
         to: recipient,
         subject: input.subject,
         text: input.message,
-        attachments: [
-          {
-            filename: filename.endsWith(".pdf") ? filename : `${filename}.pdf`,
-            content: buffer,
-            contentType: "application/pdf",
-          },
-        ],
+        attachments: mailAttachments,
       });
     } catch (err: any) {
       status = "failed";
@@ -4888,19 +7884,46 @@ router.get(
     });
     if (!stmt) throw new HttpError(404, "Statement not found.");
     await requireAnyRole(callerId, stmt.labOrganizationId, BILLING_ROLES);
-    if (!stmt.pdfStorageKey) {
-      throw new HttpError(409, "Statement PDF was not generated.");
+    const attachmentIndex =
+      req.query.attachmentIndex === undefined
+        ? 0
+        : z.coerce.number().int().min(0).parse(req.query.attachmentIndex);
+    const manifest = coerceStatementBundleManifest(stmt.bundleManifestJson);
+    const attachments = manifest?.attachments ?? [];
+    const attachment = attachments[attachmentIndex];
+    if (attachments.length > 0 && !attachment) {
+      throw new HttpError(404, "Statement PDF attachment not found.");
     }
-    const safeKey = path.basename(stmt.pdfStorageKey);
+    if (attachments.length === 0 && attachmentIndex !== 0) {
+      throw new HttpError(404, "Statement PDF attachment not found.");
+    }
+    const storageKey = attachment?.storageKey ?? stmt.pdfStorageKey;
+    const fileName =
+      attachment?.fileName ?? stmt.pdfFileName ?? "statement.pdf";
+    const attachmentDescription = attachment
+      ? ` for ${attachment.doctorName?.trim() || attachment.label || fileName} (${fileName})`
+      : "";
+    if (!storageKey) {
+      throw new HttpError(
+        409,
+        `Statement PDF${attachmentDescription} was not generated.`,
+      );
+    }
+    const safeKey = path.basename(storageKey);
     const pdfPath = path.resolve(practiceStatementsDir, safeKey);
     if (!pdfPath.startsWith(practiceStatementsDir + path.sep)) {
       throw new HttpError(500, "Invalid statement file path.");
     }
-    if (!fs.existsSync(pdfPath)) throw new HttpError(404, "PDF file missing.");
+    if (!fs.existsSync(pdfPath)) {
+      throw new HttpError(
+        404,
+        `Statement PDF${attachmentDescription} is missing.`,
+      );
+    }
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      `inline; filename="${stmt.pdfFileName || "statement.pdf"}"`,
+      `inline; filename="${fileName}"`,
     );
     res.sendFile(pdfPath);
   }),
@@ -5001,6 +8024,7 @@ router.post(
           continue;
         }
         await requireAnyRole(callerId, invoice.labOrganizationId, BILLING_ROLES);
+        assertRecoveryReleased(invoice);
         const practice = invoice.providerOrganizationId
           ? await db.query.organizations.findFirst({
               where: eq(organizations.id, invoice.providerOrganizationId),
@@ -5058,13 +8082,6 @@ router.post(
           });
           continue;
         }
-        // Mark as sent
-        if (invoice.status === "draft") {
-          await db
-            .update(invoices)
-            .set({ status: "open", issuedAt: invoice.issuedAt ?? new Date() })
-            .where(eq(invoices.id, invoice.id));
-        }
         results.push({ invoiceId: item.invoiceId, status: "sent" });
       } catch (err: any) {
         results.push({
@@ -5100,22 +8117,38 @@ router.get(
       BILLING_ROLES
     );
 
-    const rows = await db.query.invoices.findMany({
-      where: and(
-        eq(invoices.labOrganizationId, query.organizationId),
-        query.dateFrom
-          ? gte(invoices.createdAt, new Date(query.dateFrom))
-          : undefined,
-        query.dateTo
-          ? lte(invoices.createdAt, new Date(query.dateTo))
-          : undefined
-      ),
-    });
+    // Match the conventions used elsewhere (sales-series, the Invoices page
+    // date filter): bucket/filter by the invoice's issued date, falling back
+    // to createdAt when it hasn't been issued yet, and always exclude
+    // soft-deleted + voided invoices so this KPI can't disagree with the rest
+    // of the app for the same lab + range.
+    const rows = (await db
+      .select({
+        status: invoices.status,
+        total: invoices.total,
+        balanceDue: invoices.balanceDue,
+        frozen: invoices.frozen,
+      })
+      .from(invoices)
+      .where(
+        salesInvoiceScope(query.organizationId,
+          query.dateFrom ? new Date(query.dateFrom) : undefined,
+          query.dateTo ? new Date(query.dateTo) : undefined),
+      )) as Array<{
+      status: string;
+      total: string;
+      balanceDue: string;
+      frozen: boolean;
+    }>;
 
     const totalSales = rows
       .reduce((acc, row) => acc + Number(row.total), 0)
       .toFixed(2);
+    // Frozen invoices (linked case deleted) are excluded from the open-balance
+    // figure — they're zeroed out at freeze time, and any stragglers should
+    // not surface as outstanding money owed.
     const openBalance = rows
+      .filter((row) => !row.frozen)
       .reduce((acc, row) => acc + Number(row.balanceDue), 0)
       .toFixed(2);
 
@@ -5124,14 +8157,60 @@ router.get(
       openBalance,
       invoices: rows.length,
       paidInvoices: rows.filter((row) => row.status === "paid").length,
-      openInvoices: rows.filter(
-        (row) => row.status !== "paid" && row.status !== "void"
-      ).length,
+      openInvoices: rows.filter((row) => row.status !== "paid").length,
     });
   })
 );
 
 // ───────── Reports: Sales time series (Task #381) ─────────
+router.get(
+  "/reports/sales-invoices",
+  asyncHandler(async (req, res) => {
+    const q = z.object({
+      organizationId: z.string().min(1),
+      dateFrom: z.string().min(1),
+      dateTo: z.string().min(1),
+      offset: z.coerce.number().int().min(0).default(0),
+      limit: z.coerce.number().int().min(1).max(100).default(50),
+    }).parse(req.query);
+    await requireAnyRole((req as any).auth.userId, q.organizationId, BILLING_ROLES);
+    const from = new Date(q.dateFrom);
+    const to = new Date(q.dateTo);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
+      throw new HttpError(400, "Invalid dateFrom/dateTo range.");
+    }
+    // One snapshot prevents the page/count from disagreeing during concurrent writes.
+    const page = await db.transaction(async (tx) => {
+      const where = salesInvoiceScope(q.organizationId, from, to);
+      const [totals] = await tx.select({
+        total: sql<number>`count(*)::int`,
+        billedTotal: sql<string>`coalesce(sum(${invoices.total}), 0)::text`,
+      }).from(invoices).where(where);
+      const rows = await tx.select({
+        id: invoices.id,
+        invoiceNumber: invoices.invoiceNumber,
+        issuedAt: salesIssuedDate,
+        total: invoices.total,
+        status: invoices.status,
+        practiceName: organizations.name,
+        doctorName: sql<string | null>`coalesce(${invoices.displayMetadataJson}->>'billTo', ${invoices.displayMetadataJson}->>'doctorName')`,
+      }).from(invoices)
+        .leftJoin(organizations, eq(organizations.id, invoices.providerOrganizationId))
+        .where(where)
+        .orderBy(desc(salesIssuedDate), desc(invoices.id))
+        .limit(q.limit).offset(q.offset);
+      return {
+        rows: rows.map((row) => ({ ...row, issuedAt: new Date(row.issuedAt).toISOString() })),
+        offset: q.offset,
+        total: totals!.total,
+        billedTotal: Number(totals!.billedTotal).toFixed(2),
+        hasMore: q.offset + rows.length < totals!.total,
+      };
+    }, { isolationLevel: "repeatable read", accessMode: "read only" });
+    return ok(res, page);
+  }),
+);
+
 //
 // Buckets invoiced sales for one lab into day / week (Mon-anchored) /
 // month periods. Bucketing key uses `issuedAt` if set, otherwise
@@ -5173,28 +8252,30 @@ router.get(
       throw new HttpError(400, `Invalid timeZone: ${tz}`);
     }
 
-    const issued = sql<Date>`COALESCE(${invoices.issuedAt}, ${invoices.createdAt})`;
+    const issued = salesIssuedDate;
     const rows = (await db
       .select({
         issued,
         subtotal: invoices.subtotal,
         discount: invoices.discount,
+        lineDiscountTotal: sql<string>`coalesce((
+          select sum(abs(discount_line.line_total))
+          from invoice_line_items as discount_line
+          where discount_line.invoice_id = invoices.id
+            and discount_line.is_discount = true
+        ), 0)::text`,
         tax: invoices.tax,
         total: invoices.total,
         status: invoices.status,
       })
       .from(invoices)
       .where(
-        and(
-          eq(invoices.labOrganizationId, q.organizationId),
-          isNull(invoices.deletedAt),
-          gte(issued, from),
-          lte(issued, to),
-        ),
+        salesInvoiceScope(q.organizationId, from, to),
       )) as Array<{
       issued: string | Date;
       subtotal: string;
       discount: string;
+      lineDiscountTotal: string;
       tax: string;
       total: string;
       status: string;
@@ -5228,6 +8309,7 @@ router.get(
         discounts: number;
         net: number;
         tax: number;
+        billedTotal: number;
         count: number;
       }
     >();
@@ -5235,6 +8317,7 @@ router.get(
     let tDiscounts = 0;
     let tNet = 0;
     let tTax = 0;
+    let tBilledTotal = 0;
     let tCount = 0;
     for (const r of rows) {
       if (r.status === "void") continue;
@@ -5242,10 +8325,12 @@ router.get(
       if (Number.isNaN(d.getTime())) continue;
       const { key, start } = bucketKey(d);
       const subtotal = Number(r.subtotal || 0);
-      const discount = Number(r.discount || 0);
+      const lineDiscount = Number(r.lineDiscountTotal || 0);
+      const discount = Number(r.discount || 0) + lineDiscount;
       const tax = Number(r.tax || 0);
-      const net = subtotal - discount; // pre-tax revenue
-      const gross = subtotal;
+      const billedTotal = Number(r.total || 0);
+      const gross = subtotal + lineDiscount;
+      const net = gross - discount; // pre-tax revenue, excluding credits
       const cur =
         buckets.get(key) ??
         {
@@ -5254,18 +8339,21 @@ router.get(
           discounts: 0,
           net: 0,
           tax: 0,
+          billedTotal: 0,
           count: 0,
         };
       cur.gross += gross;
       cur.discounts += discount;
       cur.net += net;
       cur.tax += tax;
+      cur.billedTotal += billedTotal;
       cur.count += 1;
       buckets.set(key, cur);
       tGross += gross;
       tDiscounts += discount;
       tNet += net;
       tTax += tax;
+      tBilledTotal += billedTotal;
       tCount += 1;
     }
 
@@ -5277,8 +8365,9 @@ router.get(
         discounts: b.discounts.toFixed(2),
         net: b.net.toFixed(2),
         tax: b.tax.toFixed(2),
+        billedTotal: b.billedTotal.toFixed(2),
         count: b.count,
-        avg: b.count ? (b.net / b.count).toFixed(2) : "0.00",
+        avg: b.count ? (b.billedTotal / b.count).toFixed(2) : "0.00",
       }));
 
     return ok(res, {
@@ -5292,8 +8381,232 @@ router.get(
         discounts: tDiscounts.toFixed(2),
         net: tNet.toFixed(2),
         tax: tTax.toFixed(2),
+        billedTotal: tBilledTotal.toFixed(2),
         count: tCount,
-        avg: tCount ? (tNet / tCount).toFixed(2) : "0.00",
+        avg: tCount ? (tBilledTotal / tCount).toFixed(2) : "0.00",
+      },
+    });
+  }),
+);
+
+// ───────── Reports: Discounts given ─────────
+router.get(
+  "/reports/discounts",
+  asyncHandler(async (req, res) => {
+    const q = z
+      .object({
+        organizationId: z.string().min(1),
+        dateFrom: z.string().min(1),
+        dateTo: z.string().min(1),
+        groupBy: z.enum(["day", "week", "month"]).default("month"),
+        timeZone: z.string().min(1).max(64).optional(),
+      })
+      .parse(req.query);
+    await requireAnyRole(
+      (req as any).auth.userId,
+      q.organizationId,
+      BILLING_ROLES,
+    );
+
+    const from = new Date(q.dateFrom);
+    const to = new Date(q.dateTo);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
+      throw new HttpError(400, "Invalid dateFrom/dateTo range.");
+    }
+
+    const tz = q.timeZone ?? "UTC";
+    let tzFmt: Intl.DateTimeFormat;
+    try {
+      tzFmt = new Intl.DateTimeFormat("en-CA", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+    } catch {
+      throw new HttpError(400, `Invalid timeZone: ${tz}`);
+    }
+
+    const { invoicesInRange, discountLines } = await db.transaction(
+      async (tx) => {
+        const where = salesInvoiceScope(q.organizationId, from, to);
+        const invoicesInRange = await tx
+          .select({
+            id: invoices.id,
+            issued: salesIssuedDate,
+            discount: invoices.discount,
+            providerOrganizationId: invoices.providerOrganizationId,
+            practiceName: organizations.name,
+            doctorName: sql<string | null>`coalesce(${doctorProfiles.doctorName}, ${invoices.displayMetadataJson}->>'doctorName')`,
+          })
+          .from(invoices)
+          .leftJoin(
+            organizations,
+            eq(organizations.id, invoices.providerOrganizationId),
+          )
+          .leftJoin(
+            doctorProfiles,
+            eq(doctorProfiles.id, invoices.doctorIdentity),
+          )
+          .where(where);
+        const discountLines = await tx
+          .select({
+            invoiceId: invoiceLineItems.invoiceId,
+            description: invoiceLineItems.description,
+            lineTotal: invoiceLineItems.lineTotal,
+          })
+          .from(invoiceLineItems)
+          .innerJoin(invoices, eq(invoiceLineItems.invoiceId, invoices.id))
+          .where(
+            and(
+              salesInvoiceScope(q.organizationId, from, to),
+              eq(invoiceLineItems.isDiscount, true),
+            ),
+          );
+        return { invoicesInRange, discountLines };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
+
+    function bucketKey(d: Date): { key: string; start: Date } {
+      const parts = tzFmt.format(d).split("-");
+      const yr = Number(parts[0]);
+      const mo = Number(parts[1]) - 1;
+      const day = Number(parts[2]);
+      if (q.groupBy === "day") {
+        const start = new Date(Date.UTC(yr, mo, day));
+        return { key: start.toISOString().slice(0, 10), start };
+      }
+      if (q.groupBy === "month") {
+        const start = new Date(Date.UTC(yr, mo, 1));
+        return { key: `${yr}-${String(mo + 1).padStart(2, "0")}`, start };
+      }
+      const local = new Date(Date.UTC(yr, mo, day));
+      const dow = (local.getUTCDay() + 6) % 7;
+      const start = new Date(Date.UTC(yr, mo, day - dow));
+      return { key: start.toISOString().slice(0, 10), start };
+    }
+
+    const linesByInvoice = new Map<
+      string,
+      Array<{ description: string; amount: number }>
+    >();
+    for (const line of discountLines) {
+      const amount = Math.abs(Number(line.lineTotal || 0));
+      if (amount <= 0) continue;
+      const current = linesByInvoice.get(line.invoiceId) ?? [];
+      current.push({ description: line.description, amount });
+      linesByInvoice.set(line.invoiceId, current);
+    }
+
+    const periodBuckets = new Map<
+      string,
+      { periodStart: string; amount: number; count: number }
+    >();
+    const itemBuckets = new Map<string, { amount: number; count: number }>();
+    const practiceBuckets = new Map<
+      string,
+      {
+        practiceId: string | null;
+        practiceName: string | null;
+        doctorName: string | null;
+        amount: number;
+        count: number;
+      }
+    >();
+    let totalAmount = 0;
+    let totalCount = 0;
+
+    for (const invoice of invoicesInRange) {
+      const issued = new Date(
+        invoice.issued instanceof Date
+          ? invoice.issued.getTime()
+          : String(invoice.issued),
+      );
+      if (Number.isNaN(issued.getTime())) continue;
+      const headerDiscount = Math.max(0, Number(invoice.discount || 0));
+      const lines = linesByInvoice.get(invoice.id) ?? [];
+      const lineAmount = lines.reduce((sum, line) => sum + line.amount, 0);
+      const amount = headerDiscount + lineAmount;
+      if (amount <= 0) continue;
+
+      const { key, start } = bucketKey(issued);
+      const period = periodBuckets.get(key) ?? {
+        periodStart: start.toISOString(),
+        amount: 0,
+        count: 0,
+      };
+      period.amount += amount;
+      period.count += 1;
+      periodBuckets.set(key, period);
+      totalAmount += amount;
+      totalCount += 1;
+
+      if (headerDiscount > 0) {
+        const label = "Invoice-level discount";
+        const item = itemBuckets.get(label) ?? { amount: 0, count: 0 };
+        item.amount += headerDiscount;
+        item.count += 1;
+        itemBuckets.set(label, item);
+      }
+      for (const line of lines) {
+        const item = itemBuckets.get(line.description) ?? {
+          amount: 0,
+          count: 0,
+        };
+        item.amount += line.amount;
+        item.count += 1;
+        itemBuckets.set(line.description, item);
+      }
+
+      const practiceKey = JSON.stringify([
+        invoice.providerOrganizationId,
+        invoice.doctorName,
+      ]);
+      const practice = practiceBuckets.get(practiceKey) ?? {
+        practiceId: invoice.providerOrganizationId,
+        practiceName: invoice.practiceName,
+        doctorName: invoice.doctorName,
+        amount: 0,
+        count: 0,
+      };
+      practice.amount += amount;
+      practice.count += 1;
+      practiceBuckets.set(practiceKey, practice);
+    }
+
+    return ok(res, {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      groupBy: q.groupBy,
+      timeZone: tz,
+      series: Array.from(periodBuckets.values())
+        .sort((a, b) => a.periodStart.localeCompare(b.periodStart))
+        .map((period) => ({
+          ...period,
+          amount: period.amount.toFixed(2),
+        })),
+      items: Array.from(itemBuckets.entries())
+        .sort((a, b) => b[1].amount - a[1].amount || a[0].localeCompare(b[0]))
+        .map(([item, value]) => ({
+          item,
+          amount: value.amount.toFixed(2),
+          count: value.count,
+        })),
+      practices: Array.from(practiceBuckets.values())
+        .sort(
+          (a, b) =>
+            b.amount - a.amount ||
+            (a.practiceName ?? "").localeCompare(b.practiceName ?? "") ||
+            (a.doctorName ?? "").localeCompare(b.doctorName ?? ""),
+        )
+        .map((practice) => ({
+          ...practice,
+          amount: practice.amount.toFixed(2),
+        })),
+      totals: {
+        amount: totalAmount.toFixed(2),
+        count: totalCount,
       },
     });
   }),
@@ -5311,6 +8624,7 @@ router.get(
 const previewRestorationSchema = z.object({
   toothNumber: z.string().trim().default(""),
   restorationType: z.string().trim().min(1),
+  restorationSubtype: z.string().trim().nullish(),
   material: z.string().nullish(),
   shade: z.string().nullish(),
   quantity: z.number().int().positive().max(99).default(1),
@@ -5354,7 +8668,12 @@ router.post(
         let unit = 0;
         let priceSource: string | null = null;
         let priceKey: string | null = null;
-        const key = materialToPriceKey(r.material ?? null, r.restorationType);
+        const key = await resolveRestorationPriceKey({
+          labOrganizationId: input.labOrganizationId,
+          material: r.material ?? null,
+          restorationType: r.restorationType,
+          restorationSubtype: r.restorationSubtype,
+        });
         if (key !== null && batchPriceMap.has(key)) {
           const batchHit = batchPriceMap.get(key)!;
           if (batchHit.source !== null && batchHit.unitPrice > 0) {
@@ -5371,6 +8690,7 @@ router.post(
             },
             r.material ?? null,
             r.restorationType,
+            r.restorationSubtype,
           );
           if (fallback) {
             unit = fallback.amount;
@@ -5391,13 +8711,49 @@ router.post(
       }),
     );
 
+    // When the lab has opted into autoAddAlloyOnPfm, synthesize an alloy
+    // restoration row for each PFM/FCM tooth in the preview. These synthetic
+    // rows are always $0 with no price source, so buildBridgeAwareLineItems
+    // will attach them as $0 child sub-items under their matching PFM/FCM
+    // parent lines — exactly mirroring what addAlloyChargeToCase + invoice
+    // sync produce after the real case is created.
+    const labOrgForAlloy = await db.query.organizations.findFirst({
+      where: eq(organizations.id, input.labOrganizationId),
+      columns: { autoAddAlloyOnPfm: true },
+    });
+    const autoAddAlloy = labOrgForAlloy?.autoAddAlloyOnPfm ?? false;
+
+    const allRestorations = [...priced];
+    if (autoAddAlloy) {
+      for (const p of priced) {
+        const tooth = (p.toothNumber ?? "").trim();
+        if (
+          isPfmOrFcmMaterial(p.material) &&
+          tooth &&
+          tooth !== "N/A" &&
+          /^\d+$/.test(tooth)
+        ) {
+          allRestorations.push({
+            id: `alloy-synth-${p.id}`,
+            toothNumber: tooth,
+            restorationType: "Alloy",
+            material: null,
+            quantity: 1,
+            unitPrice: "0.00",
+            priceSource: null,
+            priceKey: "alloy",
+          });
+        }
+      }
+    }
+
     // Map synthetic id → resolved source so produced lines can report pricing.
     const sourceById = new Map(
-      priced.map((p) => [p.id, { priceSource: p.priceSource, priceKey: p.priceKey }]),
+      allRestorations.map((p) => [p.id, { priceSource: p.priceSource, priceKey: p.priceKey }]),
     );
 
     const grouped = buildBridgeAwareLineItems(
-      priced.map((p) => ({
+      allRestorations.map((p) => ({
         id: p.id,
         toothNumber: p.toothNumber,
         restorationType: p.restorationType,
@@ -5420,9 +8776,22 @@ router.post(
       // above). Surface them so the desktop preview can map a user's inline
       // price edit on a grouped line back to the exact source restorations and
       // thread the override into POST /cases.
+      // NB: alloy-synth-* ids are NaN and filtered out — they must not appear
+      // in restorationIndices since they are child sub-items, not parent lines.
       const restorationIndices = line.groupedRestorationIds
         .map((id) => Number(id))
         .filter((n) => Number.isInteger(n));
+      // Expose child sub-items (Layered Porcelain $37 for PFZ; Alloy $0 for
+      // PFM/FCM) in the preview so the UI renders them beneath the parent line
+      // before case save. Include priced:false on alloy children so the UI can
+      // show the pre-create warning banner.
+      const subItems = (line.childItems ?? []).map((c) => ({
+        description: c.description,
+        quantity: c.quantity,
+        unitPrice: c.unitPrice,
+        lineTotal: c.lineTotal,
+        ...(c.priced === false ? { priced: false as const } : {}),
+      }));
       return {
         description: line.description,
         toothNumber: line.toothNumber,
@@ -5434,10 +8803,15 @@ router.post(
         priceKey,
         priced: isPriced,
         restorationIndices,
+        ...(subItems.length > 0 ? { subItems } : {}),
       };
     });
 
-    const subtotal = sumMoney(lineItems.map((l) => l.lineTotal));
+    // Include child item totals (e.g. Layered Porcelain $37) in the subtotal.
+    const subtotal = sumMoney([
+      ...lineItems.map((l) => l.lineTotal),
+      ...lineItems.flatMap((l) => ((l as any).subItems ?? []).map((s: any) => s.lineTotal)),
+    ]);
     return ok(res, {
       lineItems,
       subtotal,

@@ -20,20 +20,32 @@ import {
 } from "@workspace/api-client-react";
 import { useTheme } from "@/lib/theme-context";
 import { Radius, Spacing, Typography } from "@/constants/tokens";
-import { CASE_STATIONS } from "@/lib/case-stations";
 import { useMe, editableLabMemberships, canAdminAnyLab } from "@/lib/auth-me";
-import { getJson } from "@/lib/read-api";
+import { useLabLocations } from "@/lib/lab-locations";
 import { resilientFetch } from "@/lib/query-client";
 import { router } from "expo-router";
 import {
   OutgoingPhotosModal,
   type OutgoingPhotoCase,
 } from "@/components/OutgoingPhotosModal";
+import {
+  firstReturnedWizardStage,
+  isReturnedLocate,
+  setPendingReturnedWizard,
+} from "@/lib/returned-case-wizard";
 
 type SingleProps = {
   locatingCase: CanonicalCase | null;
   onDismiss: () => void;
   onLocated: (caseId: string) => void;
+  /**
+   * Opt-in: when this single locate brings a case back from a complete status
+   * to an intake status, navigate to the case's detail screen with the
+   * returned-case wizard resumed. Hosts that already sit on that case (the
+   * detail screen's related-cases sheet) leave this off so the user isn't
+   * navigated away. Bulk locates never trigger the wizard.
+   */
+  returnedWizardHandoff?: boolean;
   locatingCases?: undefined;
   onBulkLocated?: undefined;
 };
@@ -48,18 +60,48 @@ type BulkProps = {
 
 type Props = SingleProps | BulkProps;
 
-interface LabLocation {
-  id: string;
-  name: string;
-  code: string;
-  status: string;
-  isActive: boolean;
-  sortOrder: number;
+/**
+ * The lab that owns a case. `organizationId` only reaches the client through
+ * the canonical case's index signature, so it is narrowed here rather than
+ * trusted as a string.
+ */
+function caseLabOrgId(c: CanonicalCase | null | undefined): string | null {
+  const v = c?.labOrganizationId ?? (c as { organizationId?: unknown } | null | undefined)?.organizationId;
+  return typeof v === "string" && v.length > 0 ? v : null;
 }
 
 function patientDisplayName(c: CanonicalCase): string {
   const name = `${c.patientFirstName ?? ""} ${c.patientLastName ?? ""}`.trim();
   return name || "Unnamed patient";
+}
+
+/**
+ * Returns the shared lowercase status when every case in the array has the
+ * same status value, or `null` when the array is empty or statuses differ.
+ *
+ * Exported so unit tests can exercise the filter logic without rendering the
+ * full sheet component.
+ */
+export function computeCommonBulkStatus(
+  cases: ReadonlyArray<{ status?: string | null }>,
+): string | null {
+  if (cases.length === 0) return null;
+  const first = (cases[0]!.status ?? "").toLowerCase();
+  return cases.every((c) => (c.status ?? "").toLowerCase() === first)
+    ? first
+    : null;
+}
+
+export function filterSelectableStations(
+  stations: ReadonlyArray<{ id: string; status: string; name: string }>,
+  currentStatus: string | null,
+  currentLabLocationId: string | null,
+): Array<{ id: string; status: string; name: string }> {
+  return stations.filter((station) =>
+    currentLabLocationId != null
+      ? station.id !== currentLabLocationId
+      : currentStatus === null || station.status !== currentStatus,
+  );
 }
 
 export function LocateCaseSheet(props: Props) {
@@ -75,7 +117,6 @@ export function LocateCaseSheet(props: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
-  const [apiLocations, setApiLocations] = useState<LabLocation[] | null>(null);
   // Set after a single-case move to "complete" succeeds; drives the optional
   // outgoing-photo prompt. The prompt renders in a sibling Modal so it
   // survives the sheet itself being dismissed (this component stays mounted
@@ -85,7 +126,14 @@ export function LocateCaseSheet(props: Props) {
   const updateCase = useUpdateCase();
   const queryClient = useQueryClient();
   const meQuery = useMe();
-  const orgId = editableLabMemberships(meQuery.data)[0]?.organizationId ?? null;
+  // Derive the org that owns this case's locations. For single-case locating
+  // use the case's labOrganizationId (the lab that owns the case). For bulk
+  // use the first case's org. Fall back to the user's first editable lab only
+  // when the case props don't supply an org ID (should be rare).
+  const caseOrgId = !isBulk
+    ? caseLabOrgId(props.locatingCase)
+    : caseLabOrgId(props.locatingCases[0]);
+  const orgId = caseOrgId ?? editableLabMemberships(meQuery.data)[0]?.organizationId ?? null;
   const isAdmin = canAdminAnyLab(meQuery.data);
 
   const isVisible = isBulk
@@ -105,18 +153,13 @@ export function LocateCaseSheet(props: Props) {
     if (!isVisible) { setSelectedId(null); setSelectedStatus(null); }
   }, [isVisible]);
 
-  useEffect(() => {
-    if (!orgId || !isVisible) return;
-    let cancelled = false;
-    getJson<LabLocation[]>(`/api/locations?organizationId=${orgId}&activeOnly=true`)
-      .then((rows) => {
-        if (!cancelled) setApiLocations(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setApiLocations(null);
-      });
-    return () => { cancelled = true; };
-  }, [orgId, isVisible]);
+  // Loading / error / loaded are kept distinct so a list that is merely still
+  // in flight is never shown as if it were the lab's final list.
+  const {
+    locations: apiLocations,
+    status: locationsStatus,
+    retry: retryLocations,
+  } = useLabLocations(orgId, isVisible);
 
   async function confirmLocate() {
     if (!selectedStatus) return;
@@ -137,7 +180,11 @@ export function LocateCaseSheet(props: Props) {
         const response = await resilientFetch("/api/cases/bulk-status", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ caseIds, status: selectedStatus }),
+          body: JSON.stringify({
+            caseIds,
+            status: selectedStatus,
+            ...(selectedId ? { labLocationId: selectedId } : {}),
+          }),
         });
 
         if (!response.ok) {
@@ -184,6 +231,8 @@ export function LocateCaseSheet(props: Props) {
 
         // Await the refetch so the dashboard/HUD shows fresh status before the
         // sheet closes and the success callback fires (eliminates stale HUD).
+        // The ["cases"] prefix covers list, dashboard, and mounted detail
+        // queries (including ["cases", caseId]).
         await queryClient.invalidateQueries({ queryKey: ["cases"] });
         if (__DEV__) {
           console.log("[Locate] Bulk locate invalidated 'cases' queries");
@@ -222,7 +271,10 @@ export function LocateCaseSheet(props: Props) {
       }
       await updateCase.mutateAsync({
         caseId: locatingCase.id,
-        data: { status: selectedStatus as UpdateCaseInputStatus },
+        data: {
+          status: selectedStatus as UpdateCaseInputStatus,
+          ...(selectedId ? { labLocationId: selectedId } : {}),
+        },
       });
       const successId = locatingCase.id;
       // Completing a case? Offer the optional outgoing-photo capture after
@@ -247,6 +299,15 @@ export function LocateCaseSheet(props: Props) {
       }
       onDismiss();
       props.onLocated(successId);
+      // The case just came back to the lab — hand off to the guided wizard on
+      // its detail screen rather than duplicating the questions here.
+      if (props.returnedWizardHandoff && isReturnedLocate(locatingCase.status, selectedStatus)) {
+        const first = firstReturnedWizardStage({ canChangeStep: isAdmin });
+        if (first) {
+          setPendingReturnedWizard(successId, first);
+          router.push(`/case/${successId}` as never);
+        }
+      }
     } catch (e) {
       Alert.alert(
         "Couldn't locate case",
@@ -264,22 +325,34 @@ export function LocateCaseSheet(props: Props) {
     onDismiss();
   }
 
+  // In single-case mode the current status is the case's own status.
+  // In bulk mode, derive the common status only when ALL selected cases share
+  // the same status — if they differ, we can't filter any station out (null
+  // means "unknown / mixed"). This mirrors the single-case filter so a user
+  // can never pick a same-status station on a homogeneous bulk selection.
   const currentStatus = !isBulk
     ? (props.locatingCase?.status ?? "").toLowerCase()
+    : computeCommonBulkStatus(props.locatingCases);
+
+  // When the case has an exact labLocationId, filter out only that specific
+  // station — other stations that share the same workflow status remain
+  // available, allowing moves between custom stations mapped to the same stage.
+  // Bulk mode and cases without labLocationId fall back to the status-based
+  // filter (existing behaviour).
+  const currentLabLocationId = !isBulk
+    ? (props.locatingCase?.labLocationId ?? null)
     : null;
 
+  // Only a genuinely loaded list is ever selectable — loading and error render
+  // their own states instead of standing in the built-in station list.
   const stations: { id: string; value: string; label: string }[] =
-    apiLocations !== null && apiLocations.length > 0
-      ? apiLocations
-          // `value` = mapped workflow stage sent to the API (a valid case-status).
-          // `id`    = unique location row id used for selection + React key, so
-          //           two locations sharing the same status never both appear selected.
-          .filter((loc) => isBulk || loc.status !== currentStatus)
-          .sort((a, b) => a.sortOrder - b.sortOrder)
-          .map((loc) => ({ id: loc.id, value: loc.status, label: loc.name }))
-      : CASE_STATIONS
-          .filter((s) => isBulk || s.value !== currentStatus)
-          .map((s) => ({ id: s.value, value: s.value, label: s.label }));
+    locationsStatus === "loaded"
+      ? filterSelectableStations(
+          apiLocations,
+          currentStatus,
+          typeof currentLabLocationId === "string" ? currentLabLocationId : null,
+        ).map((loc) => ({ id: loc.id, value: loc.status, label: loc.name }))
+      : [];
 
   const headerTitle = isBulk
     ? `Locate ${props.locatingCases.length} Case${props.locatingCases.length === 1 ? "" : "s"}`
@@ -350,9 +423,50 @@ export function LocateCaseSheet(props: Props) {
             ) : null}
           </View>
 
+          {/* Location fetch error — shown instead of the station list */}
+          {locationsStatus === "error" ? (
+            <View style={styles.fetchError} testID="locate-sheet-locations-error">
+              <Ionicons name="cloud-offline-outline" size={28} color={colors.textTertiary} />
+              <Text style={[styles.fetchErrorText, { color: colors.textSecondary }]}>
+                Couldn't load locations
+              </Text>
+              <Pressable
+                style={[styles.retryBtn, { borderColor: colors.tint }]}
+                onPress={retryLocations}
+                testID="locate-sheet-locations-retry"
+              >
+                <Text style={[styles.retryBtnText, { color: colors.tint }]}>Retry</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
+          {/* Still loading — never show the built-in list as a stand-in */}
+          {locationsStatus === "loading" ? (
+            <View style={styles.fetchError} testID="locate-sheet-locations-loading">
+              <ActivityIndicator size="small" color={colors.tint} />
+              <Text style={[styles.fetchErrorText, { color: colors.textSecondary }]}>
+                Loading locations…
+              </Text>
+            </View>
+          ) : null}
+
+          {/* Loaded, but this lab has no active location to move to */}
+          {locationsStatus === "loaded" && stations.length === 0 ? (
+            <View style={styles.fetchError} testID="locate-sheet-locations-empty">
+              <Ionicons name="location-outline" size={28} color={colors.textTertiary} />
+              <Text style={[styles.fetchErrorText, { color: colors.textSecondary }]}>
+                {apiLocations.length === 0
+                  ? "This lab has no active locations yet."
+                  : isBulk
+                  ? "No active locations available."
+                  : "This case is already at the lab's only active location."}
+              </Text>
+            </View>
+          ) : null}
+
           {/* Station list — explicit backgroundColor prevents rows from
               appearing on the dark backdrop during scroll overscroll frames */}
-          <ScrollView
+          {locationsStatus === "loaded" && stations.length > 0 ? <ScrollView
             style={[styles.list, { backgroundColor: colors.surface }]}
             contentContainerStyle={{ backgroundColor: colors.surface }}
             bounces={false}
@@ -371,7 +485,9 @@ export function LocateCaseSheet(props: Props) {
                     ]}
                     onPress={() => { setSelectedId(station.id); setSelectedStatus(station.value); }}
                     android_ripple={{ color: colors.tint + "28" }}
-                    testID={`locate-option-${station.value}`}
+                    // Keyed by the location row id (not its mapped status) so two
+                    // custom locations sharing a status stay independently selectable.
+                    testID={`locate-option-${station.id}`}
                   >
                     <Text
                       style={[
@@ -399,7 +515,7 @@ export function LocateCaseSheet(props: Props) {
                 </React.Fragment>
               );
             })}
-          </ScrollView>
+          </ScrollView> : null}
 
           {/* Action buttons */}
           <View style={styles.actions}>
@@ -541,6 +657,26 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
   },
   locateBtnText: {
+    ...Typography.bodySemibold,
+  },
+  fetchError: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: Spacing.xl,
+    gap: Spacing.sm,
+  },
+  fetchErrorText: {
+    ...Typography.body,
+    textAlign: "center",
+  },
+  retryBtn: {
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    marginTop: Spacing.xs,
+  },
+  retryBtnText: {
     ...Typography.bodySemibold,
   },
 });

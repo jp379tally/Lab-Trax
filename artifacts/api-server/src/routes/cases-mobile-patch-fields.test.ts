@@ -68,7 +68,7 @@ maybe("PATCH /api/cases/:id — mobile-origin (lab_cases) field persistence", ()
     const caseId = `mobpatch_${randomBytes(8).toString("hex")}`;
     const caseData = JSON.stringify({
       patientName: "Jane Doe",
-      doctorName: "Dr. Original",
+      doctorName: "Dr. Synthetic057",
       status: "INTAKE",
       isRush: false,
       dueDate: null,
@@ -262,5 +262,178 @@ maybe("PATCH /api/cases/:id — mobile-origin (lab_cases) field persistence", ()
 
     expect(get.status).toBe(200);
     expect(get.body?.data?.casePanBarcode).toBeNull();
+  });
+
+  // ── Custom Shade field persistence and invariant tests (Task #3631) ────────
+  //
+  // These tests verify that the four custom-shade fields round-trip correctly
+  // for mobile-originated (lab_cases blob) cases, and that the toggle-off
+  // clearing invariant cannot be bypassed regardless of how the PATCH payload
+  // is constructed.
+
+  it("custom shade: PATCH isCustomShade=true + tech name persists to GET", async () => {
+    const caseId = await seedMobileCase();
+
+    const patch = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        isCustomShade: true,
+        customShadeTechnician: "Alice",
+        customShadePicturesAvailable: true,
+        customShadeVideoAvailable: false,
+      });
+
+    expect(patch.status).toBe(200);
+
+    const get = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(get.status).toBe(200);
+    expect(get.body?.data?.isCustomShade).toBe(true);
+    expect(get.body?.data?.customShadeTechnician).toBe("Alice");
+    expect(get.body?.data?.customShadePicturesAvailable).toBe(true);
+    expect(get.body?.data?.customShadeVideoAvailable).toBe(false);
+  });
+
+  it("custom shade: PATCH isCustomShade=false clears all sub-fields", async () => {
+    // Seed a case that already has custom shade data in the blob.
+    const caseId = await seedMobileCase({
+      isCustomShade: true,
+      customShadeTechnician: "Bob",
+      customShadePicturesAvailable: true,
+      customShadeVideoAvailable: true,
+    });
+
+    const patch = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ isCustomShade: false });
+
+    expect(patch.status).toBe(200);
+
+    const get = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(get.status).toBe(200);
+    expect(get.body?.data?.isCustomShade).toBe(false);
+    expect(get.body?.data?.customShadeTechnician).toBeNull();
+    expect(get.body?.data?.customShadePicturesAvailable).toBe(false);
+    expect(get.body?.data?.customShadeVideoAvailable).toBe(false);
+  });
+
+  it("custom shade: isCustomShade=null is treated as off and clears sub-fields", async () => {
+    // null coerces to false in the resolver; the invariant must still fire.
+    const caseId = await seedMobileCase({
+      isCustomShade: true,
+      customShadeTechnician: "Carol",
+      customShadePicturesAvailable: true,
+      customShadeVideoAvailable: false,
+    });
+
+    const patch = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ isCustomShade: null });
+
+    expect(patch.status).toBe(200);
+
+    const get = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(get.status).toBe(200);
+    expect(get.body?.data?.isCustomShade).toBe(false);
+    expect(get.body?.data?.customShadeTechnician).toBeNull();
+    expect(get.body?.data?.customShadePicturesAvailable).toBe(false);
+  });
+
+  it("custom shade: toggle-off invariant cannot be bypassed by combining isCustomShade=false with sub-fields in one payload", async () => {
+    // A combined PATCH (isCustomShade:false + technician:"Dan") must not let
+    // the sub-field win. The clear must be applied AFTER the sub-fields so
+    // the resolved false value always wins.
+    const caseId = await seedMobileCase();
+
+    const patch = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        isCustomShade: false,
+        customShadeTechnician: "Dan",
+        customShadePicturesAvailable: true,
+        customShadeVideoAvailable: true,
+      });
+
+    expect(patch.status).toBe(200);
+
+    const get = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(get.status).toBe(200);
+    expect(get.body?.data?.isCustomShade).toBe(false);
+    // All sub-fields must be cleared even though they were in the same payload.
+    expect(get.body?.data?.customShadeTechnician).toBeNull();
+    expect(get.body?.data?.customShadePicturesAvailable).toBe(false);
+    expect(get.body?.data?.customShadeVideoAvailable).toBe(false);
+  });
+
+  it("custom shade: old blob without isCustomShade property rejects sub-field-only PATCH (effective-off invariant)", async () => {
+    // Simulates a stale mobile blob that predates custom shade: no isCustomShade
+    // property at all. Sending sub-fields alone must not persist them since the
+    // effective flag is falsy (undefined → treated as false).
+    const caseId = await seedMobileCase({
+      // No isCustomShade — old-style blob.
+    });
+
+    const patch = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        customShadeTechnician: "Frank",
+        customShadePicturesAvailable: true,
+        customShadeVideoAvailable: true,
+        // isCustomShade deliberately omitted.
+      });
+
+    expect(patch.status).toBe(200);
+
+    const get = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(get.status).toBe(200);
+    // The effective flag is false (absent in the old blob), so sub-fields
+    // must have been cleared and not persisted.
+    expect(get.body?.data?.isCustomShade).toBe(false);
+    expect(get.body?.data?.customShadeTechnician).toBeNull();
+    expect(get.body?.data?.customShadePicturesAvailable).toBe(false);
+    expect(get.body?.data?.customShadeVideoAvailable).toBe(false);
+  });
+
+  it("custom shade: toggle-off invariant with isCustomShade=null + sub-fields (bypass attempt via null)", async () => {
+    const caseId = await seedMobileCase();
+
+    const patch = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        isCustomShade: null,
+        customShadeTechnician: "Eve",
+        customShadePicturesAvailable: true,
+      });
+
+    expect(patch.status).toBe(200);
+
+    const get = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(get.status).toBe(200);
+    expect(get.body?.data?.isCustomShade).toBe(false);
+    expect(get.body?.data?.customShadeTechnician).toBeNull();
+    expect(get.body?.data?.customShadePicturesAvailable).toBe(false);
   });
 });

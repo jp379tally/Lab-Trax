@@ -10,6 +10,7 @@ export default defineConfig({
     alias: {
       "@": path.resolve(import.meta.dirname, "src"),
       "@assets": path.resolve(import.meta.dirname, "..", "..", "attached_assets"),
+      "virtual:pwa-register": path.resolve(import.meta.dirname, "src/electron-pwa-register.ts"),
     },
     dedupe: ["react", "react-dom"],
   },

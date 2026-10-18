@@ -15,12 +15,96 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch } from "@/lib/query-client";
+import { createAiReaderSubmissionGuard, requestAiReaderAnalysis } from "@/lib/ai-reader-analysis";
+import { uploadCaseAttachment } from "@/lib/uploadCaseAttachment";
 import {
+  clearAiReaderSession,
   getAiReaderSession,
   setAiReaderSession,
   type CapturedPage,
   type ExtractedRx,
 } from "@/lib/ai-reader-store";
+
+/** One-line summary of what the AI read, saved alongside the attachment. */
+function rxSummaryNote(rx: ExtractedRx): string {
+  const bits = [
+    rx.doctorName ? `Dr. ${rx.doctorName}` : null,
+    rx.caseType,
+    rx.material,
+    rx.shade ? `shade ${rx.shade}` : null,
+    rx.toothIndices ? `teeth ${rx.toothIndices}` : null,
+  ].filter((v): v is string => !!v && !!v.trim());
+  return bits.length > 0
+    ? `Rescanned prescription — ${bits.join(" · ")}`
+    : "Rescanned prescription";
+}
+
+/**
+ * Uploads the captured pages to an existing case as attachments.
+ * Returns an error message on failure, or null when every page landed.
+ */
+async function attachPagesToCase(
+  caseId: string,
+  pages: CapturedPage[],
+  extracted: ExtractedRx,
+  submissionId: string,
+): Promise<string | null> {
+  const note = rxSummaryNote(extracted);
+  for (let i = 0; i < pages.length; i++) {
+    const page = pages[i]!;
+    const pageId = `${submissionId}:page:${hashPageUri(page.uri)}`;
+    const session = getAiReaderSession();
+    if (session.attachedRxPageIds.includes(pageId)) continue;
+    const result = await uploadCaseAttachment({
+      caseId,
+      // Attach the captured scan itself so fine prescription text is not lost
+      // to a second resize or lossy recompression.
+      fileUri: page.uri,
+      fileName: `rx-rescan-${pageId}.jpg`,
+      mimeType: "image/jpeg",
+      note,
+      submissionId: pageId,
+    });
+    if (!result.ok) {
+      return `Couldn't attach the prescription: ${result.error}`;
+    }
+    setAiReaderSession({
+      attachedRxPageIds: [...getAiReaderSession().attachedRxPageIds, pageId],
+    });
+  }
+
+  if (extracted.notes?.trim()) {
+    const response = await resilientFetch(
+      `/api/cases/${encodeURIComponent(caseId)}/rx-note-scans`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ submissionId, notes: extracted.notes }),
+      },
+    );
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = await response.text();
+      } catch {}
+      return `Couldn't save prescription notes (${response.status})${detail ? `: ${detail}` : ""}`;
+    }
+  }
+  return null;
+}
+
+function hashPageUri(uri: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < uri.length; i += 1) {
+    hash ^= uri.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function createRxSubmissionId(): string {
+  return `rx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
 
 export default function AiReaderReviewScreen() {
   const insets = useSafeAreaInsets();
@@ -29,6 +113,7 @@ export default function AiReaderReviewScreen() {
 
   const [pages, setPages] = useState<CapturedPage[]>(() => getAiReaderSession().pages);
   const [processing, setProcessing] = useState(false);
+  const submission = useRef(createAiReaderSubmissionGuard());
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Drag-to-reorder state: long-press selects a page, tap another to swap.
@@ -126,67 +211,128 @@ export default function AiReaderReviewScreen() {
   }
 
   const processPages = useCallback(async () => {
-    if (pages.length === 0 || processing) return;
+    if (pages.length === 0 || !submission.current.tryStart()) return;
     if (dragSource !== null) { animateRelease(dragSource); setDragSource(null); }
     setProcessing(true);
     setErrorMsg(null);
     try {
-      const [primary, ...rest] = pages;
-      const body: Record<string, unknown> = { imageBase64: primary.base64 };
-      if (rest.length > 0) body.additionalImages = rest.map((p) => p.base64);
+      const startingSession = getAiReaderSession();
+      let extracted = startingSession.attachToCaseId &&
+        startingSession.rxSubmissionId &&
+        startingSession.extracted
+        ? startingSession.extracted
+        : null;
+      if (!extracted) {
+        const res = await requestAiReaderAnalysis(pages, resilientFetch);
 
-      const res = await resilientFetch("/api/analyze-prescription", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+        if (res.status === 503) {
+          setErrorMsg("AI is not configured on this server. Ask your administrator to enable it.");
+          return;
+        }
 
-      if (res.status === 503) {
-        setErrorMsg("AI is not configured on this server. Ask your administrator to enable it.");
-        return;
+        const data = (await res.json()) as {
+          success?: boolean;
+          data?: Partial<ExtractedRx>;
+          error?: string;
+        };
+
+        if (!data.success || !data.data) {
+          const msg = data.error ?? "AI could not read the prescription. Please retake the photos.";
+          setErrorMsg(
+            msg === "IMAGE_TOO_SMALL"
+              ? "The photos appear too small or out of focus. Please retake them with better lighting."
+              : msg,
+          );
+          return;
+        }
+
+        const VALID_STEPS = ["custom_tray", "rims_and_plates", "wax_setup", "process"] as const;
+        type ValidStep = typeof VALID_STEPS[number];
+        const rawStep = data.data.step as string | null | undefined;
+        const validStep: ValidStep | null =
+          rawStep != null && (VALID_STEPS as readonly string[]).includes(rawStep)
+            ? (rawStep as ValidStep)
+            : null;
+
+        extracted = {
+          doctorName: data.data.doctorName ?? null,
+          patientName: data.data.patientName ?? null,
+          patientInitials: data.data.patientInitials ?? null,
+          caseType: data.data.caseType ?? null,
+          toothIndices: data.data.toothIndices ?? null,
+          shade: data.data.shade ?? null,
+          material: data.data.material ?? null,
+          dueDate: data.data.dueDate ?? null,
+          isRush: data.data.isRush ?? null,
+          notes: data.data.notes ?? null,
+          practiceName: data.data.practiceName ?? null,
+          practiceAddress: data.data.practiceAddress ?? null,
+          practicePhone: data.data.practicePhone ?? null,
+          confidence: data.data.confidence ?? null,
+          step: validStep,
+          gingivialShade: data.data.gingivialShade ?? null,
+        };
+        setAiReaderSession({
+          extracted,
+          ...(startingSession.attachToCaseId
+            ? { rxSubmissionId: startingSession.rxSubmissionId ?? createRxSubmissionId() }
+            : {}),
+        });
       }
 
-      const data = (await res.json()) as {
-        success?: boolean;
-        data?: Partial<ExtractedRx>;
-        error?: string;
-      };
-
-      if (!data.success || !data.data) {
-        const msg = data.error ?? "AI could not read the prescription. Please retake the photos.";
-        setErrorMsg(
-          msg === "IMAGE_TOO_SMALL"
-            ? "The photos appear too small or out of focus. Please retake them with better lighting."
-            : msg,
+      // Attach-to-existing-case mode (returned-case wizard): the pages belong
+      // to a case that already exists, so upload them as attachments and go
+      // back to that case instead of walking on to the create-a-case form.
+      const attachToCaseId = getAiReaderSession().attachToCaseId;
+      if (attachToCaseId) {
+        const rxSubmissionId =
+          getAiReaderSession().rxSubmissionId ?? createRxSubmissionId();
+        setAiReaderSession({ rxSubmissionId });
+        const failure = await attachPagesToCase(
+          attachToCaseId,
+          pages,
+          extracted,
+          rxSubmissionId,
         );
+        if (failure) {
+          setErrorMsg(failure);
+          return;
+        }
+        // Attach mode is finished with the session; leaving attachToCaseId set
+        // would follow the user into their next scan.
+        clearAiReaderSession();
+        // Unwind the whole scanner stack (review + capture) back to the case
+        // that started this, so Back doesn't land on a stale scanner screen.
+        try {
+          router.dismissTo(`/case/${attachToCaseId}` as never);
+        } catch {
+          router.replace(`/case/${attachToCaseId}` as never);
+        }
         return;
       }
 
-      const extracted: ExtractedRx = {
-        doctorName: data.data.doctorName ?? null,
-        patientName: data.data.patientName ?? null,
-        patientInitials: data.data.patientInitials ?? null,
-        caseType: data.data.caseType ?? null,
-        toothIndices: data.data.toothIndices ?? null,
-        shade: data.data.shade ?? null,
-        material: data.data.material ?? null,
-        dueDate: data.data.dueDate ?? null,
-        isRush: data.data.isRush ?? null,
-        notes: data.data.notes ?? null,
-        practiceName: data.data.practiceName ?? null,
-        practiceAddress: data.data.practiceAddress ?? null,
-        practicePhone: data.data.practicePhone ?? null,
-        confidence: data.data.confidence ?? null,
-      };
-
-      setAiReaderSession({ extracted });
       router.push("/ai-reader/extracted" as never);
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : "Network error. Please check your connection.");
     } finally {
+      submission.current.finish();
       setProcessing(false);
     }
-  }, [pages, processing, dragSource]);
+  }, [pages, dragSource]);
+
+  function continueManually() {
+    if (submission.current.active) return;
+    setAiReaderSession({
+      extracted: {
+        doctorName: null, patientName: null, patientInitials: null,
+        caseType: null, toothIndices: null, shade: null, material: null,
+        dueDate: null, isRush: null, notes: null, practiceName: null,
+        practiceAddress: null, practicePhone: null, confidence: null,
+        step: null, gingivialShade: null,
+      },
+    });
+    router.push("/ai-reader/extracted" as never);
+  }
 
   if (pages.length === 0) {
     return (
@@ -232,8 +378,15 @@ export default function AiReaderReviewScreen() {
       {/* Error banner */}
       {errorMsg && (
         <View style={styles.errorBanner}>
-          <Ionicons name="warning-outline" size={18} color={colors.error} />
-          <Text style={styles.errorText}>{errorMsg}</Text>
+          <View style={{ flexDirection: "row", gap: Spacing.sm }}>
+            <Ionicons name="warning-outline" size={18} color={colors.error} />
+            <Text style={styles.errorText}>{errorMsg}</Text>
+          </View>
+          {!getAiReaderSession().attachToCaseId && (
+            <Pressable onPress={continueManually} testID="ai-reader-manual-btn" accessibilityRole="button">
+              <Text style={[styles.errorText, { color: colors.tint, marginLeft: 26 }]}>Continue manually</Text>
+            </Pressable>
+          )}
         </View>
       )}
 
@@ -398,8 +551,7 @@ function makeStyles(c: ThemeColors) {
     dragBannerText: { ...Typography.captionSemibold, color: c.tint, flex: 1 },
 
     errorBanner: {
-      flexDirection: "row",
-      alignItems: "flex-start",
+      flexDirection: "column",
       gap: Spacing.sm,
       backgroundColor: c.error + "18",
       borderLeftWidth: 3,

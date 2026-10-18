@@ -1,27 +1,19 @@
 /**
- * Unit tests for the canonical (Account epic Phase 2) account-number helpers.
+ * Unit tests for shared new-format account-number helpers.
  *
  * These are pure-function tests (no DB) covering the new format
- * `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` and its building blocks. The transactional
- * allocator (`allocateAccountNumberV2`) is exercised by the DB-backed
- * register tests in `account-epic-phase2.test.ts`.
+ * Twelve-digit allocation is exercised by the shared package tests and the
+ * transactional allocator by the DB-backed registration tests.
  */
 import { describe, expect, it } from "vitest";
 import {
-  accountTypeFor,
   normalizePhone10,
-  formatAccountNumberV2,
 } from "./platform-account-number";
-
-describe("accountTypeFor", () => {
-  it("maps lab -> L and everything else -> P", () => {
-    expect(accountTypeFor("lab")).toBe("L");
-    expect(accountTypeFor("provider")).toBe("P");
-    expect(accountTypeFor(null)).toBe("P");
-    expect(accountTypeFor(undefined)).toBe("P");
-    expect(accountTypeFor("anything")).toBe("P");
-  });
-});
+import {
+  classifyAccountNumber,
+  formatAccountNumberForDisplay,
+  generateAccountNumberFromSequence,
+} from "@workspace/account-number";
 
 describe("normalizePhone10", () => {
   it("strips formatting to 10 digits", () => {
@@ -43,24 +35,19 @@ describe("normalizePhone10", () => {
   });
 });
 
-describe("formatAccountNumberV2", () => {
-  it("includes the phone segment when present", () => {
-    expect(formatAccountNumberV2("L", 2026, 3, "5551234567")).toBe(
-      "L-2026-3-5551234567"
-    );
-    expect(formatAccountNumberV2("P", 2026, 12, "5559876543")).toBe(
-      "P-2026-12-5559876543"
+describe("new account numbers", () => {
+  it("formats and classifies generated numbers", () => {
+    const account = generateAccountNumberFromSequence(3);
+    expect(account).toMatch(/^7\d{11}$/);
+    expect(classifyAccountNumber(account)).toBe("new-valid");
+    expect(formatAccountNumberForDisplay(account)).toMatch(
+      /^7\d{3} \d{4} \d{4}$/,
     );
   });
 
-  it("omits the phone segment when null", () => {
-    expect(formatAccountNumberV2("L", 2026, 3, null)).toBe("L-2026-3");
-    expect(formatAccountNumberV2("P", 2025, 1, null)).toBe("P-2025-1");
-  });
-
-  it("produces strings matching the canonical enforcement regex", () => {
-    const canonical = /^[LP]-\d{4}-\d+(-\d{10})?$/;
-    expect(formatAccountNumberV2("L", 2026, 3, "5551234567")).toMatch(canonical);
-    expect(formatAccountNumberV2("P", 2026, 1, null)).toMatch(canonical);
+  it("rejects a marked number with a bad check digit", () => {
+    const account = generateAccountNumberFromSequence(3);
+    const invalid = `${account.slice(0, -1)}${(Number(account.at(-1)) + 1) % 10}`;
+    expect(classifyAccountNumber(invalid)).toBe("new-invalid");
   });
 });

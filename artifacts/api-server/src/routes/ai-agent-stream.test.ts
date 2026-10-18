@@ -25,7 +25,6 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
 import request from "supertest";
 import express from "express";
-import bodyParser from "body-parser";
 import { registerAiAgentRoutes } from "./ai-agent";
 import { TOOL_BY_NAME } from "../lib/ai-agent-tools";
 
@@ -36,9 +35,10 @@ import { TOOL_BY_NAME } from "../lib/ai-agent-tools";
 // iterable. mockStreamCreate is overridden per-describe block so each set of
 // tests can supply its own chunk sequence.
 
-const { mockStreamCreate } = vi.hoisted(() => {
+const { mockStreamCreate, mockDbSelect } = vi.hoisted(() => {
   const mockStreamCreate = vi.fn();
-  return { mockStreamCreate };
+  const mockDbSelect = vi.fn();
+  return { mockStreamCreate, mockDbSelect };
 });
 
 vi.mock("openai", () => {
@@ -67,12 +67,15 @@ const createDbChain = (): any => {
   return chain;
 };
 
-vi.mock("@workspace/db", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@workspace/db")>();
+vi.mock("@workspace/db", async () => {
+  const schema = await import("@workspace/db/schema");
   return {
-    ...actual,
+    ...schema,
     db: {
-      select: () => createDbChain(),
+      select: (...args: any[]) => {
+        mockDbSelect(...args);
+        return createDbChain();
+      },
       insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
       update: () => ({ set: () => ({ where: vi.fn().mockResolvedValue(undefined) }) }),
       delete: () => ({ where: vi.fn().mockResolvedValue(undefined) }),
@@ -108,7 +111,7 @@ vi.mock("../middlewares/auth", () => ({
 
 function makeApp(userId?: string) {
   const app = express();
-  app.use(bodyParser.json());
+  app.use(express.json());
   app.use((req: any, _res, next) => {
     if (userId) req.user = { id: userId, userType: "lab" };
     next();
@@ -200,7 +203,7 @@ describe("POST /api/ai-agent/stream — auth and validation", () => {
     vi.resetModules();
     const { registerAiAgentRoutes: freshRegister } = await import("./ai-agent");
     const freshApp = express();
-    freshApp.use(bodyParser.json());
+    freshApp.use(express.json());
     freshApp.use((req: any, _res, next) => {
       req.user = { id: "user-503", userType: "lab" };
       next();
@@ -256,6 +259,100 @@ describe("POST /api/ai-agent/stream — happy path: text-only response", () => {
 
     const tokens = tokenEvents.map((e) => e.token).join("");
     expect(tokens).toBe("Hello world!");
+  });
+
+  it("emits immediate progress as the first SSE event", async () => {
+    const app = makeApp("user-progress-first");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({ messages: [{ role: "user", content: "Hello" }] });
+
+    const events = parseSseEvents(res.body as string);
+    expect(events[0]).toEqual({
+      progress: {
+        phase: "context",
+        message: expect.stringMatching(/preparing.*secure workspace/i),
+      },
+    });
+  });
+
+  it("uses the safe conversational fast path without DB context preparation", async () => {
+    mockDbSelect.mockClear();
+    const app = makeApp("user-fast-path");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({ messages: [{ role: "user", content: "Hello!" }] });
+
+    expect(res.status).toBe(200);
+    // The only select is the best-effort chat-history persistence after the
+    // response; tenant membership/context queries are skipped entirely.
+    expect(mockDbSelect).toHaveBeenCalledTimes(1);
+    const events = parseSseEvents(res.body as string);
+    expect(events.some((e) => typeof e.token === "string")).toBe(true);
+    expect(events.some((e) => e.done === true)).toBe(true);
+  });
+
+  it("does not fast-path a follow-up thanks with conversation history", async () => {
+    mockStreamCreate.mockClear();
+    mockDbSelect.mockClear();
+    const app = makeApp("user-follow-up-thanks");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({
+        messages: [
+          { role: "user", content: "What is the status of case 42?" },
+          { role: "assistant", content: "I can look that up." },
+          { role: "user", content: "Thanks!" },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    const requestArgs = mockStreamCreate.mock.calls[0]?.[0] as {
+      tools?: unknown[];
+      tool_choice?: string;
+    };
+    expect(requestArgs.tools).toBeDefined();
+    expect(requestArgs.tool_choice).toBe("auto");
+  });
+
+  it("offers no tools and disables tool choice on the single-turn fast path", async () => {
+    mockStreamCreate.mockClear();
+    const app = makeApp("user-fast-path-tools");
+    await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({ messages: [{ role: "user", content: "Hello" }] });
+
+    const requestArgs = mockStreamCreate.mock.calls[0]?.[0] as {
+      tools?: unknown[];
+      tool_choice?: string;
+    };
+    expect(requestArgs.tools).toBeUndefined();
+    expect(requestArgs.tool_choice).toBe("none");
+  });
+
+  it("uses concise LabTrax Assistant identity and confirmation rules", async () => {
+    mockStreamCreate.mockClear();
+    const app = makeApp("user-prompt-contract");
+    await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({ messages: [{ role: "user", content: "What is the status of case 42?" }] });
+
+    const requestArgs = mockStreamCreate.mock.calls[0]?.[0] as { messages: Array<{ role: string; content: string }> };
+    const prompt = requestArgs.messages[0]?.content ?? "";
+    expect(prompt).toContain("LabTrax Assistant");
+    expect(prompt).not.toContain("Maynard");
+    expect(prompt).toMatch(/1.?3 sentences|concise/i);
+    expect(prompt).toMatch(/confirmation/i);
   });
 
   it("emits a done event as the final event", async () => {
@@ -642,7 +739,7 @@ describe("POST /api/ai-agent/stream — auto-execute mode", () => {
     mockStreamCreate.mockReset();
   });
 
-  it("executes impactful tool inline when auto_execute=true and emits auto_executed + done", async () => {
+  it("ignores auto_execute and still requires confirmation for impactful tools", async () => {
     const tool = TOOL_BY_NAME.get("mark_invoice_paid")!;
     const executeSpy = vi
       .spyOn(tool, "execute")
@@ -700,26 +797,9 @@ describe("POST /api/ai-agent/stream — auto-execute mode", () => {
     expect(res.status).toBe(200);
     const events = parseSseEvents(res.body as string);
 
-    // Must execute inline
-    expect(executeSpy).toHaveBeenCalledOnce();
-
-    // Must emit auto_executed event
-    const autoEvent = events.find((e) => e.auto_executed != null);
-    expect(autoEvent).toBeDefined();
-    const ae = autoEvent!.auto_executed as { toolName?: string; summary?: string };
-    expect(ae.toolName).toBe("mark_invoice_paid");
-    expect(ae.summary).toBe("Mark invoice INV-AE-001 as paid");
-
-    // Must NOT emit proposed_action
-    expect(events.some((e) => "proposed_action" in e)).toBe(false);
-
-    // Must emit a done event (loop continued)
-    expect(events.filter((e) => e.done === true).length).toBe(1);
-
-    // Must have token events (second iteration text)
-    const tokens = events.filter((e) => typeof e.token === "string");
-    expect(tokens.length).toBeGreaterThan(0);
-    expect(tokens.map((e) => e.token).join("")).toBe("Done!");
+    expect(executeSpy).not.toHaveBeenCalled();
+    expect(events.some((e) => e.proposed_action != null)).toBe(true);
+    expect(events.some((e) => e.auto_executed != null)).toBe(false);
 
     executeSpy.mockRestore();
     summarizeSpy.mockRestore();
@@ -770,7 +850,7 @@ describe("POST /api/ai-agent/stream — auto-execute mode", () => {
     expect(events.some((e) => "auto_executed" in e)).toBe(false);
   });
 
-  it("handles auto-execute failure gracefully and continues the loop", async () => {
+  it("does not execute impactful tools even when auto_execute requests it", async () => {
     const tool = TOOL_BY_NAME.get("mark_invoice_paid")!;
     const executeSpy = vi
       .spyOn(tool, "execute")
@@ -828,11 +908,10 @@ describe("POST /api/ai-agent/stream — auto-execute mode", () => {
     expect(res.status).toBe(200);
     const events = parseSseEvents(res.body as string);
 
-    // No auto_executed event on failure
+    // No execution or auto_executed event is possible before confirmation.
+    expect(executeSpy).not.toHaveBeenCalled();
     expect(events.some((e) => "auto_executed" in e)).toBe(false);
-
-    // The loop should still continue (tool error is fed back to model)
-    expect(events.filter((e) => e.done === true).length).toBe(1);
+    expect(events.some((e) => "proposed_action" in e)).toBe(true);
 
     executeSpy.mockRestore();
     summarizeSpy.mockRestore();

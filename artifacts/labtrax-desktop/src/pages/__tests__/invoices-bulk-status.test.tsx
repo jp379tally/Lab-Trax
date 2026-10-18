@@ -59,7 +59,7 @@ function makeInvoices(): Invoice[] {
       total: 50,
       balanceDue: 50,
       items: [],
-      displayMetadata: { patientName: "Pam", billTo: "Dr. Dalton" },
+      displayMetadata: { patientName: "Pam", billTo: "Dr. Synthetic028" },
     },
   ] as unknown as Invoice[];
 }
@@ -156,7 +156,7 @@ describe("Invoices bulk change-status", () => {
 
     // No request yet — a confirmation modal must appear first.
     expect(calls.length).toBe(0);
-    const confirmBtn = await screen.findByRole("button", { name: /^Mark as/i });
+    const confirmBtn = await screen.findByRole("button", { name: /^Mark as void$/i });
 
     fireEvent.click(confirmBtn);
 
@@ -173,7 +173,7 @@ describe("Invoices bulk change-status", () => {
 
     await selectAll();
     fireEvent.change(screen.getByLabelText(/change status/i), { target: { value: "void" } });
-    fireEvent.click(await screen.findByRole("button", { name: /^Mark as/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Mark as void$/i }));
 
     const feedback = await screen.findByTestId("bulk-invoice-feedback");
     expect(feedback.textContent).toMatch(/No invoices were updated/i);

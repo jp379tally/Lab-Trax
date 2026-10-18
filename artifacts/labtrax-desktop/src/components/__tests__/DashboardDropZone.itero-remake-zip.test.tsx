@@ -151,6 +151,7 @@ const RX_RESPONSE = {
   shade: "A2",
   material: "Zirconia",
   toothIndices: "14",
+  toothAssignments: [{ toothNumber: "14", role: "prepared_crown", roleEvidence: "Prepared crown #14", material: "Zirconia", shade: "A2", requiresReview: false }],
   dueDate: "2026-08-01",
   isRush: false,
   notes: "",
@@ -238,7 +239,7 @@ describe("DashboardDropZone — iTero ZIP-import remake path", () => {
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path.startsWith("/vocabulary")) return Promise.resolve([]);
       if (path.startsWith("/rx-practice-aliases"))
-        return Promise.resolve({ data: { found: false } });
+        return Promise.resolve({ found: false, providerOrganizationId: null });
 
       // AI analyze.
       if (path === "/analyze-prescription") return Promise.resolve(RX_RESPONSE);
@@ -301,6 +302,11 @@ describe("DashboardDropZone — iTero ZIP-import remake path", () => {
     // Practice auto-resolved from the matching org name → create can proceed.
     const picker = container.querySelector('[data-testid="practice-picker"]');
     expect(picker?.getAttribute("data-value")).toBe("provB");
+    const barcode = container.querySelector<HTMLInputElement>(
+      "#rx-case-pan-barcode",
+    );
+    expect(barcode).not.toBeNull();
+    fireEvent.change(barcode!, { target: { value: "0000789" } });
 
     // 2. Click "Create case" → duplicate check fires → duplicate prompt.
     await act(async () => {
@@ -348,6 +354,7 @@ describe("DashboardDropZone — iTero ZIP-import remake path", () => {
     expect(fd.get("remakeOfCaseId")).toBe("case-original-1");
     expect(fd.get("remakeReason")).toBe("Margin open; remaking under warranty");
     expect(fd.get("remakeCharged")).toBe("false");
+    expect(fd.get("casePanBarcodeHint")).toBe("0000789");
     // It must still post to the dedicated iTero endpoint with the order id.
     expect(fd.get("iteroOrderId")).toBe(ITERO_ORDER_ID);
 

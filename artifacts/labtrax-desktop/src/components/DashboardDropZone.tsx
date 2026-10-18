@@ -17,18 +17,34 @@ import {
   X,
 } from "lucide-react";
 import JSZip from "jszip";
+import {
+  readExplicitAiToothAssignments, withPonticConnectorSuggestions, serializeConnectorState,
+  updateConnectorChoices, validateToothConnectors, toothAssignmentSummary, catalogToothMaterialOptions,
+} from "@workspace/case-taxonomy";
+import { ToothActionDialog, type ToothActionPayload } from "./ToothActionDialog";
 import { apiFetch, ApiError } from "@/lib/api";
+import { runPrescriptionAnalysis, validatePrescriptionPageCount } from "@/lib/prescription-analysis";
+import { prescriptionSourceIdentity } from "@/lib/prescription-source-identity";
 import type {
+  PreCreateInvoiceItemsResultData,
   PreviewDraftInvoiceInput,
   PreviewDraftInvoiceResultData,
 } from "@workspace/api-client-react";
+import { useGetCatalogTree, getGetCatalogTreeQueryKey } from "@workspace/api-client-react";
+import { getCatalogMaterialsForRestoration } from "./CatalogRestorationPicker";
 import type { DoctorMatchCandidate } from "@/lib/types";
 import { uploadMediaFile } from "@/lib/upload-media-file";
 import type { MediaUploadResult } from "@/lib/upload-media-file";
 import { useAuth } from "@/lib/auth-context";
+import { refreshCaseFinanceQueries } from "@/lib/refresh-case-finance";
 import { formatPhone } from "@/lib/format";
+import { isRemovableRestorationType } from "@/lib/restoration-category";
+import { buildPrescriptionRestorations } from "@/lib/prescription-restorations";
+import { expandToothAssignmentIdentifiers, applyToothAssignmentDefaults } from "@workspace/case-taxonomy";
+import { ToothChart } from "./ToothChart";
 import { DoctorNamePicker } from "./DoctorNamePicker";
 import { FieldCombobox } from "./FieldCombobox";
+import { ItemCombobox, type ItemComboboxOption } from "./ItemCombobox";
 import { PracticePicker } from "./PracticePicker";
 
 
@@ -53,11 +69,25 @@ interface ExtractedRx {
   shade?: string | null;
   material?: string | null;
   dueDate?: string | null;
+  /** Calendar date on which this Rx was received (editable during review). */
+  receivedAt?: string | null;
   isRush?: boolean | null;
   notes?: string | null;
   practiceName?: string | null;
   practiceAddress?: string | null;
   practicePhone?: string | null;
+  arch?: "upper" | "lower" | "both" | null;
+  assignmentRoles?: Record<string, "Crown" | "Pontic">;
+  assignmentValues?: Record<string, { material?: string; shade?: string; restorationSubtype?: string }>;
+  assignmentOverridesManual?: boolean;
+  bridgeConnectors?: string;
+  toothAssignments?: unknown;
+}
+
+function localCalendarDate(date = new Date()): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
 }
 
 /**
@@ -162,6 +192,30 @@ function extractConflictingOrg(err: unknown): {
   };
 }
 
+function extractDoctorConfirmationRequired(err: unknown): {
+  doctorName: string;
+  candidates: DoctorMatchCandidate[];
+} | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  const body = err.body;
+  if (body == null || typeof body !== "object") return null;
+  const details = (body as Record<string, unknown>).details;
+  if (details == null || typeof details !== "object") return null;
+  const payload = details as Record<string, unknown>;
+  if (
+    payload.code !== "DOCTOR_CONFIRMATION_REQUIRED" ||
+    typeof payload.doctorName !== "string"
+  ) {
+    return null;
+  }
+  return {
+    doctorName: payload.doctorName,
+    candidates: Array.isArray(payload.candidates)
+      ? (payload.candidates as DoctorMatchCandidate[])
+      : [],
+  };
+}
+
 // Inline-form fields that a 400 validation error can map back to. The keys
 // match both the POST /organizations payload (Zod createOrgSchema) and the
 // NewPracticeDraft shape, so a Zod issue's `path[0]` highlights the offending
@@ -219,6 +273,57 @@ interface OrgLite {
   type?: string;
 }
 
+/**
+ * Client-side mirror of the server's `normalizeRxDoctorName` (which backs the
+ * per-doctor practice memory). Lowercases, strips "Dr."/"Dr" titles, and
+ * collapses punctuation/whitespace so "Dr. Avery Example", "dr avery
+ * example", and "Avery  Example" all resolve to the same key.
+ *
+ * Only used to decide whether the remembered mapping still applies to the name
+ * currently in the form — the server remains the authority for storage.
+ */
+function normalizeDoctorMemoryKey(name: string | null | undefined): string {
+  return (name ?? "")
+    .toString()
+    .toLowerCase()
+    .replace(/\bdr\.?\b/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * What a practice lookup (`/rx-doctor-practice-memory`, `/rx-practice-aliases`)
+ * actually hands back to a caller.
+ *
+ * Both endpoints answer with the `{ ok, data }` envelope, but `apiFetch` strips
+ * that envelope before we ever see it — so the value that lands here is the
+ * INNER object. Reaching for a `.data` on it silently yields `undefined`, the
+ * lookup never resolves, and the intake falls through to prompting as if
+ * nothing were remembered. That failure is invisible: no error, no log, and a
+ * test that mocks the pre-unwrap shape passes happily. One shared reader so
+ * both callers stay pinned to the real contract.
+ */
+type PracticeLookupPayload = {
+  found?: boolean;
+  providerOrganizationId?: string | null;
+};
+
+function lookedUpOrgId(
+  payload: PracticeLookupPayload | null | undefined,
+): string | null {
+  return payload?.found && payload.providerOrganizationId
+    ? payload.providerOrganizationId
+    : null;
+}
+
+/** "100 Example Road, Sampletown, FL" from whatever parts are available. */
+function formatCandidatePracticeAddress(c: DoctorMatchCandidate): string {
+  return [c.practiceAddressLine1, c.practiceCity, c.practiceState]
+    .map((p) => (p ?? "").trim())
+    .filter(Boolean)
+    .join(", ");
+}
+
 function splitPatientName(full: string | null | undefined): {
   first: string;
   last: string;
@@ -239,6 +344,25 @@ function splitPatientName(full: string | null | undefined): {
     first: parts.slice(0, -1).join(" "),
     last: parts[parts.length - 1],
   };
+}
+
+function newestValidDuplicate(matches: DuplicateHit[]): DuplicateHit | null {
+  let newest: DuplicateHit | null = null;
+  let newestTime = Number.NEGATIVE_INFINITY;
+  for (const match of matches) {
+    if (!match.createdAt) continue;
+    const time = new Date(match.createdAt).getTime();
+    if (!Number.isFinite(time) || time <= newestTime) continue;
+    newest = match;
+    newestTime = time;
+  }
+  return newest;
+}
+
+function formatDuplicateDate(value: string): string | null {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
 }
 
 interface DuplicateHit {
@@ -274,7 +398,7 @@ type Phase =
   | { kind: "idle" }
   | { kind: "draggingFile" }
   | { kind: "picking"; files: File[] }
-  | { kind: "analyzing"; fileName: string }
+  | { kind: "analyzing"; fileName: string; message?: string }
   | { kind: "rxConfirm"; file: File; caseNumber: string }
   | {
       kind: "duplicatePrompt";
@@ -296,6 +420,29 @@ async function fileToDataUrl(file: File | Blob): Promise<string> {
   });
 }
 
+// Reduce only the AI request copy; the original File remains the source for
+// subsequent case attachment and review. createImageBitmap applies EXIF
+// orientation before drawing, unlike a naive pixel-size read.
+export async function imageToAnalysisDataUrl(file: File): Promise<string> {
+  if (typeof createImageBitmap !== "function") return fileToDataUrl(file);
+  let bitmap: ImageBitmap | undefined;
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Canvas unavailable");
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.78);
+  } catch {
+    return fileToDataUrl(file);
+  } finally {
+    bitmap?.close();
+  }
+}
+
 let pdfjsReady: Promise<typeof import("pdfjs-dist")> | null = null;
 async function getPdfjs() {
   if (!pdfjsReady) {
@@ -312,29 +459,64 @@ async function getPdfjs() {
 
 async function pdfToJpegDataUrls(
   file: File,
-  maxPages = 3,
+  signal?: AbortSignal,
 ): Promise<string[]> {
+  if (file.size > 9 * 1024 * 1024) throw new Error("This PDF is too large for AI analysis. Split it into smaller files or enter details manually; keep the original as an attachment.");
   const pdfjs = await getPdfjs();
   const ab = await file.arrayBuffer();
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(ab) }).promise;
-  const pages = Math.min(doc.numPages, maxPages);
-  const out: string[] = [];
-  for (let i = 1; i <= pages; i++) {
-    const page = await doc.getPage(i);
-    const viewport = page.getViewport({ scale: 1.6 });
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.ceil(viewport.width);
-    canvas.height = Math.ceil(viewport.height);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) continue;
-    await (page as any).render({
-      canvasContext: ctx,
-      viewport,
-      canvas,
-    }).promise;
-    out.push(canvas.toDataURL("image/jpeg", 0.85));
+  if (signal?.aborted) throw signal.reason;
+  const loading = pdfjs.getDocument({ data: new Uint8Array(ab) });
+  let rendering: { cancel(): void } | undefined;
+  const abort = () => {
+    rendering?.cancel();
+    void loading.destroy?.().catch(() => {});
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    if (signal?.aborted) { abort(); throw signal.reason; }
+    const doc = await loading.promise;
+    const pages = doc.numPages;
+    validatePrescriptionPageCount(pages);
+    const images: string[] = [];
+    let renderedChars = 0;
+    // Keep the main project's bounded, sequential PDF preparation.
+    for (let index = 0; index < pages; index++) {
+          if (signal?.aborted) throw signal.reason;
+          const page = await doc.getPage(index + 1);
+          const initialViewport = page.getViewport({ scale: 1 });
+          const scale = Math.min(
+            1.6,
+            1600 / Math.max(initialViewport.width, initialViewport.height),
+          );
+          const viewport = page.getViewport({ scale });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.ceil(viewport.width);
+          canvas.height = Math.ceil(viewport.height);
+          const ctx = canvas.getContext("2d");
+          if (!ctx) throw new Error("Could not render every prescription page. Try again or enter the details manually.");
+          const task = (page as any).render({
+            canvasContext: ctx,
+            viewport,
+            canvas,
+          });
+          rendering = task;
+          await task.promise;
+          rendering = undefined;
+          page.cleanup?.();
+          const rendered = canvas.toDataURL("image/jpeg", 0.8);
+          canvas.width = 0;
+          canvas.height = 0;
+          renderedChars += rendered.length;
+          if (renderedChars > 11.5 * 1024 * 1024 || rendered.length > 2.7 * 1024 * 1024) {
+            throw new Error("This PDF is too large for AI analysis. Split it into smaller files or enter the details manually; keep the original as an attachment.");
+          }
+          images.push(rendered);
+    }
+    return images;
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    await loading.destroy?.();
   }
-  return out;
 }
 
 function isImage(file: File): boolean {
@@ -394,6 +576,7 @@ export function DuplicatePromptPanel({
   onCancel,
   onCreateAsNew,
   onCreateAsRemake,
+  isAdmin = false,
 }: {
   phase: DuplicatePromptPhase;
   onBack: () => void;
@@ -403,7 +586,9 @@ export function DuplicatePromptPanel({
     remakeOfCaseId: string;
     remakeReason: string;
     remakeCharged: boolean;
+    remakeNotes?: string;
   }) => void;
+  isAdmin?: boolean;
 }) {
   const { matches, patientName } = phase;
   const [selectedId, setSelectedId] = useState<string>(
@@ -411,6 +596,7 @@ export function DuplicatePromptPanel({
   );
   const [reason, setReason] = useState("");
   const [charge, setCharge] = useState<"yes" | "no" | "">("");
+  const [notes, setNotes] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
   // Both canonical (desktop/web) and legacy (mobile) originals are
@@ -437,6 +623,7 @@ export function DuplicatePromptPanel({
       remakeOfCaseId: selectedId,
       remakeReason: reason.trim(),
       remakeCharged: charge === "yes",
+      ...(isAdmin && notes.trim() ? { remakeNotes: notes.trim() } : {}),
     });
   }
 
@@ -494,7 +681,7 @@ export function DuplicatePromptPanel({
                   {[
                     m.status,
                     m.createdAt
-                      ? new Date(m.createdAt).toLocaleDateString()
+                      ? (() => { const d = new Date(m.createdAt); return `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}/${d.getFullYear()}`; })()
                       : null,
                   ]
                     .filter(Boolean)
@@ -529,17 +716,17 @@ export function DuplicatePromptPanel({
                 <span className="font-medium text-foreground truncate">{selectedMatch.doctorName}</span>
               </>
             )}
-            <span className="text-muted-foreground">Received</span>
+            <span className="text-muted-foreground">Created</span>
             <span className="text-foreground">
               {selectedMatch.createdAt
-                ? new Date(selectedMatch.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+                ? (() => { const d = new Date(selectedMatch.createdAt); return `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}/${d.getFullYear()}`; })()
                 : "—"}
             </span>
             {selectedMatch.dueDate && (
               <>
                 <span className="text-muted-foreground">Due date</span>
                 <span className="text-foreground">
-                  {new Date(selectedMatch.dueDate).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                  {(() => { const d = new Date(selectedMatch.dueDate); return `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}/${d.getFullYear()}`; })()}
                 </span>
               </>
             )}
@@ -576,8 +763,6 @@ export function DuplicatePromptPanel({
                   <span className={`capitalize text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
                     selectedMatch.invoiceStatus === "paid"
                       ? "bg-green-100 text-green-700"
-                      : selectedMatch.invoiceStatus === "draft"
-                      ? "bg-muted text-muted-foreground"
                       : selectedMatch.invoiceStatus === "voided"
                       ? "bg-red-50 text-red-500"
                       : "bg-blue-50 text-blue-600"
@@ -597,7 +782,7 @@ export function DuplicatePromptPanel({
             if (daysSince <= 30) {
               return (
                 <div className="pt-1.5 border-t border-amber-100 text-[10px] text-amber-700">
-                  Received {daysSince === 0 ? "today" : `${daysSince}d ago`} — recent case, consider no-charge remake.
+                  Created {daysSince === 0 ? "today" : `${daysSince}d ago`} — recent case, consider no-charge remake.
                 </div>
               );
             }
@@ -653,6 +838,21 @@ export function DuplicatePromptPanel({
           ))}
         </div>
       </div>
+
+      {isAdmin && (
+        <div>
+          <label className="block text-[11px] font-medium text-amber-900 mb-1">
+            Remake notes (optional)
+          </label>
+          <textarea
+            rows={2}
+            className="w-full px-2 py-1.5 rounded bg-white text-xs border border-amber-200 focus:outline-none focus:ring-1 focus:ring-amber-500 resize-none"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Additional technician notes for this remake…"
+          />
+        </div>
+      )}
 
       {err && (
         <p className="text-xs text-destructive bg-destructive/10 px-2 py-1.5 rounded">
@@ -962,6 +1162,86 @@ export function DashboardDropZone() {
   const [caseSearch, setCaseSearch] = useState("");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [rxDraft, setRxDraft] = useState<ExtractedRx>({});
+  const rxClinicalOverrides = useRef<Partial<ExtractedRx>>({});
+  const rxOverrideSource = useRef<string | null>(null);
+  const [rxReanalysisDraft, setRxReanalysisDraft] = useState<ExtractedRx | null>(null);
+  const [rxAssignmentError, setRxAssignmentError] = useState<string | null>(null);
+  const [rxActiveTooth, setRxActiveTooth] = useState<string | null>(null);
+  const [rxAssignmentUndo, setRxAssignmentUndo] = useState<Partial<ExtractedRx> | null>(null);
+  const rxAssignmentUnits = buildPrescriptionRestorations(rxDraft);
+  const rxConnectorState = withPonticConnectorSuggestions(rxDraft.bridgeConnectors, rxAssignmentUnits);
+  const rxConnectorText = serializeConnectorState(rxConnectorState);
+  const rxToothSummary = toothAssignmentSummary(rxAssignmentUnits, rxConnectorText);
+  const rxConnectorValidation = validateToothConnectors(rxConnectorText, rxAssignmentUnits);
+  const rxConnectorsReady = rxConnectorValidation.valid && rxToothSummary.unresolvedPontics.length === 0;
+  function captureRxAssignmentUndo() {
+    setRxAssignmentUndo({
+      assignmentRoles: rxDraft.assignmentRoles, assignmentValues: rxDraft.assignmentValues,
+      bridgeConnectors: rxDraft.bridgeConnectors, toothIndices: rxDraft.toothIndices,
+      material: rxDraft.material, shade: rxDraft.shade, caseType: rxDraft.caseType,
+    });
+  }
+  function editRxTooth(payload: ToothActionPayload) {
+    captureRxAssignmentUndo();
+    const roles = { ...rxDraft.assignmentRoles };
+    const values = { ...rxDraft.assignmentValues };
+    const teeth = new Set(expandToothAssignmentIdentifiers(rxDraft.toothIndices));
+    if (payload.kind === "add_crown" || payload.kind === "add_pontic") {
+      roles[payload.toothId] = payload.kind === "add_pontic" ? "Pontic" : "Crown";
+      values[payload.toothId] = { material: payload.material, shade: payload.shade ?? "", restorationSubtype: payload.restorationSubtype };
+      teeth.add(payload.toothId);
+    } else if (payload.kind === "change_role") roles[payload.toothId] = payload.role;
+    else if (payload.kind === "copy_assignment") {
+      const source = rxAssignmentUnits.find((unit) => unit.toothNumber === payload.restorationId);
+      if (!source || !/^(Crown|Pontic)$/.test(source.restorationType)) return;
+      for (const tooth of payload.toothNumbers) {
+        roles[tooth] = source.restorationType as "Crown" | "Pontic";
+        values[tooth] = { material: source.material ?? undefined, shade: source.shade ?? undefined, restorationSubtype: source.restorationSubtype ?? undefined };
+        teeth.add(tooth);
+      }
+    } else if (payload.kind === "remove_restoration" || payload.kind === "mark_missing") {
+      delete roles[payload.toothId]; delete values[payload.toothId]; teeth.delete(payload.toothId);
+    } else if (payload.kind === "replace_tooth") {
+      if (expandToothAssignmentIdentifiers(payload.newToothNumber).length !== 1) {
+        setRxAssignmentError("Choose one Universal tooth number or primary tooth letter."); return;
+      }
+      if (payload.newToothNumber !== payload.oldToothId && teeth.has(payload.newToothNumber)) {
+        setRxAssignmentError("That tooth already has an assignment. Apply or edit its existing assignment instead."); return;
+      }
+      const nextValue = {
+        ...values[payload.oldToothId],
+        ...(payload.material ? { material: payload.material } : {}),
+        ...(payload.shade !== undefined ? { shade: payload.shade } : {}),
+        ...(payload.restorationSubtype ? { restorationSubtype: payload.restorationSubtype } : {}),
+      };
+      values[payload.newToothNumber] = nextValue;
+      if (payload.newToothNumber !== payload.oldToothId) {
+        roles[payload.newToothNumber] = roles[payload.oldToothId];
+        delete roles[payload.oldToothId]; delete values[payload.oldToothId];
+        teeth.delete(payload.oldToothId); teeth.add(payload.newToothNumber);
+        editRxClinical({ bridgeConnectors: updateConnectorChoices(rxConnectorState, new Set([...rxConnectorState.active].filter((pair) => !pair.split("-").includes(payload.oldToothId)))) });
+      }
+    }
+    editRxClinical({ assignmentRoles: roles, assignmentValues: values, toothIndices: [...teeth].join(", ") });
+    setRxActiveTooth(null);
+  }
+  function editRxClinical(patch: Partial<ExtractedRx>) {
+    captureRxAssignmentUndo();
+    if (patch.material !== undefined || patch.shade !== undefined) {
+      const values = { ...rxDraft.assignmentValues };
+      for (const unit of rxAssignmentUnits) values[unit.toothNumber] = {
+        ...values[unit.toothNumber],
+        restorationSubtype: values[unit.toothNumber]?.restorationSubtype ?? unit.restorationSubtype ?? undefined,
+        material: values[unit.toothNumber]?.material ?? unit.material ?? undefined,
+        shade: values[unit.toothNumber]?.shade ?? unit.shade ?? undefined,
+      };
+      patch.assignmentValues = applyToothAssignmentDefaults(values, { material: patch.material ?? undefined, shade: patch.shade ?? undefined });
+    }
+    if (patch.assignmentRoles || patch.assignmentValues) patch.assignmentOverridesManual = true;
+    rxClinicalOverrides.current = { ...rxClinicalOverrides.current, ...patch };
+    setRxDraft((current) => ({ ...current, ...patch }));
+    setRxAssignmentError(null);
+  }
   const [zipSource, setZipSource] = useState<{
     originalZip: File;
     extraFileCount: number;
@@ -973,7 +1253,17 @@ export function DashboardDropZone() {
   // Selected lab + practice when creating a modern /api/cases case from
   // an AI-read Rx. Lab defaults to the only lab the user belongs to.
   const [rxLabOrgId, setRxLabOrgId] = useState<string>("");
+  const rxCatalog = useGetCatalogTree({ labOrganizationId: rxLabOrgId }, {
+    query: { queryKey: getGetCatalogTreeQueryKey({ labOrganizationId: rxLabOrgId }), enabled: !!rxLabOrgId },
+  });
+  const rxCatalogMaterials = rxCatalog.data?.data
+    ? catalogToothMaterialOptions(rxCatalog.data.data).map((option) => ({
+      key: option.restorationSubtype, label: option.label, parentLabel: option.parentLabel,
+    }))
+    : getCatalogMaterialsForRestoration(undefined, { restorationType: "Crown" });
   const [rxProviderOrgId, setRxProviderOrgId] = useState<string>("");
+  const [earlyDuplicate, setEarlyDuplicate] = useState<DuplicateHit | null>(null);
+  const duplicateLookupSequenceRef = useRef(0);
   const [rxBarcode, setRxBarcode] = useState<string>("");
   const [rxPracticeError, setRxPracticeError] = useState(false);
   // Required "doctor not on file" step — populated when the scanned doctor name
@@ -1017,12 +1307,252 @@ export function DashboardDropZone() {
     Record<string, LinePriceOverride>
   >({});
   // The grouping (and therefore the line→index mapping) only changes when the
-  // teeth, case type, material, or shade change. Reset overrides then so a
+  // teeth, case type, material, shade, or arch change. Reset overrides then so a
   // stale edit can't reattach to a different line. Provider/doctor changes
   // only shift default prices, so an explicit user edit is intentionally kept.
   useEffect(() => {
     setPriceOverrides({});
-  }, [rxDraft.toothIndices, rxDraft.caseType, rxDraft.material, rxDraft.shade]);
+    setAlloyAcknowledged(false);
+  }, [rxDraft.toothIndices, rxDraft.caseType, rxDraft.material, rxDraft.shade, rxDraft.arch]);
+
+  // Alloy pre-create warning: require the user to acknowledge that PFM/FCM
+  // alloy sub-items will be created at $0 and must be manually priced after
+  // case creation. Detected from preview lines with priced:false + "Alloy" desc.
+  const [alloyAcknowledged, setAlloyAcknowledged] = useState(false);
+  const alloyUnpricedSubItems = (invoicePreview?.lineItems ?? [])
+    .flatMap((l) => ((l as any).subItems ?? []) as Array<{ description?: string; priced?: boolean }>)
+    .filter((s) => s.priced === false && (s.description ?? "").startsWith("Alloy"));
+  const hasUnpricedAlloy = alloyUnpricedSubItems.length > 0;
+
+  // ── Full-line edit state (admin/owner only) ──────────────────────────────
+  // Admin/owner users get an editable table that lets them override description,
+  // quantity, and unit price for each invoice line, add custom lines, and remove
+  // auto-generated ones. On submit, the edited set is sent as `invoiceOverrideLines`
+  // to the server, bypassing the auto-pricing engine entirely.
+  // Non-admin users keep the existing price-only edit UI (priceOverrides above).
+  // `catalogItemKey` is the pricing key of the catalog/billable item the line
+  // was picked from (null for a free-typed description). It rides along to
+  // POST /cases so the created draft line is attributable to a catalog item.
+  // `userAdded` marks a row the admin created with "+ Add line". Those rows
+  // are the user's own work, so they survive a preview rebuild (which happens
+  // whenever the practice/doctor changes) instead of being thrown away with
+  // the auto-generated rows. `pickedItemName` remembers which typeahead
+  // suggestion filled the row so it can be re-priced for the new doctor, and
+  // the `*Edited` fields record which values the user changed by hand, which
+  // wins over any later re-pricing for the same restoration mapping.
+  type EditedLine = {
+    key: string;
+    description: string;
+    qty: string;
+    unitPrice: string;
+    catalogItemKey: string | null;
+    userAdded?: boolean;
+    pickedItemName?: string | null;
+    groupingKey?: string;
+    descriptionEdited?: boolean;
+    qtyEdited?: boolean;
+    priceEdited?: boolean;
+    subItems?: Array<{ description: string; qty: string; unitPrice: string }>;
+  };
+  const [editedLines, setEditedLines] = useState<EditedLine[] | null>(null);
+  const isAdminUser = user?.role === "admin" || user?.role === "owner";
+
+  // ── Item typeahead options for the editable preview ──────────────────────
+  // Same catalog / billable-items pairing as the finance invoice editor, but
+  // priced for a case that does not exist yet: the server resolves every row
+  // against the currently selected lab, practice, and doctor, so picking an
+  // item fills that doctor's effective price (per-doctor override → doctor
+  // tier → practice tier → lab default). The query key carries the practice
+  // and doctor, so changing either re-resolves the suggested prices.
+  const preCreateDoctorName = (rxDraft.doctorName ?? "").trim();
+  const preCreateItemsQuery = useQuery({
+    queryKey: [
+      "pricing",
+      "pre-create-items",
+      rxLabOrgId,
+      rxProviderOrgId,
+      preCreateDoctorName,
+    ],
+    queryFn: () => {
+      const sp = new URLSearchParams({ labOrganizationId: rxLabOrgId });
+      if (rxProviderOrgId) sp.set("providerOrganizationId", rxProviderOrgId);
+      if (preCreateDoctorName) sp.set("doctorName", preCreateDoctorName);
+      return apiFetch<PreCreateInvoiceItemsResultData>(
+        `/pricing/pre-create-items?${sp.toString()}`,
+      );
+    },
+    enabled: isAdminUser && phase.kind === "rxConfirm" && !!rxLabOrgId,
+    staleTime: 60_000,
+    retry: false,
+  });
+  // Catalog rows first (material-style entries such as the E.max crown), then
+  // the lab's own billable items, de-duped by case-insensitive name.
+  const itemOptions = useMemo<ItemComboboxOption[]>(() => {
+    const data = preCreateItemsQuery.data;
+    const seen = new Set<string>();
+    const opts: ItemComboboxOption[] = [];
+    for (const c of data?.catalogItems ?? []) {
+      const name = (c.label ?? "").trim();
+      const dedupeKey = name.toLowerCase();
+      if (!name || seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      opts.push({
+        key: `c:${c.key}`,
+        name,
+        unitPrice: c.unitPrice,
+        group: "catalog",
+      });
+    }
+    for (const b of data?.items ?? []) {
+      const name = (b.name ?? "").trim();
+      const dedupeKey = name.toLowerCase();
+      if (!name || seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      opts.push({
+        key: `b:${b.id}`,
+        name,
+        unitPrice: b.unitPrice,
+        group: "custom",
+      });
+    }
+    return opts;
+  }, [preCreateItemsQuery.data]);
+  // Name → the currently-resolved unit price, used to re-price a user-added
+  // line after the practice/doctor changes (the query above re-resolves every
+  // option for the newly selected doctor).
+  const itemPriceByName = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const o of itemOptions) {
+      const name = o.name.trim().toLowerCase();
+      if (name && o.unitPrice != null && !map.has(name)) map.set(name, o.unitPrice);
+    }
+    return map;
+  }, [itemOptions]);
+  // Name → pricing key, so a picked suggestion can carry its catalog identity
+  // through to the created invoice line.
+  const itemPriceKeyByName = useMemo(() => {
+    const data = preCreateItemsQuery.data;
+    const map = new Map<string, string>();
+    for (const c of data?.catalogItems ?? []) {
+      const name = (c.label ?? "").trim().toLowerCase();
+      if (name && !map.has(name)) map.set(name, c.key);
+    }
+    for (const b of data?.items ?? []) {
+      const name = (b.name ?? "").trim().toLowerCase();
+      if (name && b.priceKey && !map.has(name)) map.set(name, b.priceKey);
+    }
+    return map;
+  }, [preCreateItemsQuery.data]);
+  const autoLineGroupingKey = JSON.stringify([
+    rxDraft.toothIndices,
+    rxDraft.caseType,
+    rxDraft.material,
+    rxDraft.shade,
+    rxDraft.arch,
+  ]);
+
+  // Whenever the invoice preview changes (new pricing data from the server),
+  // rebuild the auto-generated rows so the admin table reflects the fresh
+  // auto-pricing. An auto row's restoration mapping is stable across a
+  // practice/doctor change, so preserve values the admin explicitly edited on
+  // that same mapping. Grouping changes clear auto rows in the effect above,
+  // because the same restoration indices can represent a different grouping.
+  // A null preview means we left the review panel (cancel, or a fresh drop),
+  // so everything is cleared there, including the user's own lines.
+  useEffect(() => {
+    if (!isAdminUser) return;
+    setEditedLines((prev) => {
+      if (!invoicePreview) return null;
+      const previousAutoLines = new Map(
+        (prev ?? [])
+          .filter((line) => !line.userAdded)
+          .map((line) => [line.key, line]),
+      );
+      const autoLines: EditedLine[] = (invoicePreview.lineItems ?? []).map(
+        (li, idx) => ({
+          key:
+            (li.restorationIndices ?? []).length > 0
+              ? `auto-${(li.restorationIndices ?? []).join("-")}`
+              : `auto-${idx}-${li.description ?? ""}`,
+          description: [li.toothLabel, li.description].filter(Boolean).join(" "),
+          qty: String(li.quantity ?? 1),
+          unitPrice: li.priced === false ? "" : li.unitPrice ?? "0.00",
+          catalogItemKey: li.priceKey ?? null,
+          groupingKey: autoLineGroupingKey,
+          subItems: (((li as any).subItems ?? []) as Array<{ description: string; quantity: number; unitPrice: string }>).map((sub) => ({
+            description: sub.description,
+            qty: String(sub.quantity ?? 1),
+            unitPrice: sub.unitPrice ?? "0.00",
+          })),
+        }),
+      );
+      const mergedAutoLines = autoLines.map((line) => {
+        const previous = previousAutoLines.get(line.key);
+        if (!previous || previous.groupingKey !== autoLineGroupingKey) return line;
+        return {
+          ...line,
+          description: previous.descriptionEdited
+            ? previous.description
+            : line.description,
+          qty: previous.qtyEdited ? previous.qty : line.qty,
+          unitPrice: previous.priceEdited ? previous.unitPrice : line.unitPrice,
+          catalogItemKey: previous.descriptionEdited
+            ? previous.catalogItemKey
+            : line.catalogItemKey,
+          pickedItemName: previous.descriptionEdited
+            ? previous.pickedItemName
+            : line.pickedItemName,
+          descriptionEdited: previous.descriptionEdited,
+          qtyEdited: previous.qtyEdited,
+          priceEdited: previous.priceEdited,
+          subItems: previous.subItems ?? line.subItems,
+        };
+      });
+      const userLines = (prev ?? []).filter((l) => l.userAdded);
+      return [...mergedAutoLines, ...userLines];
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoicePreview]);
+
+  function reviewedLines() {
+    return (editedLines ?? [])
+      .filter((line) => line.description.trim())
+      .map((line) => ({
+        description: line.description.trim(),
+        quantity: Math.max(1, Math.round(Number(line.qty)) || 1),
+        unitPrice: Math.max(0, Number(line.unitPrice) || 0),
+        ...(line.catalogItemKey ? { catalogItemKey: line.catalogItemKey } : {}),
+        subItems: (line.subItems ?? []).filter((sub) => sub.description.trim()).map((sub) => ({
+          description: sub.description.trim(),
+          quantity: Math.max(1, Math.round(Number(sub.qty)) || 1),
+          unitPrice: Math.max(0, Number(sub.unitPrice) || 0),
+        })),
+      }));
+  }
+
+  // Re-price surviving user-added lines that came from the item typeahead once
+  // the options re-resolve for the newly selected practice/doctor. A price the
+  // user typed by hand (priceEdited) is never overwritten, and a free-typed
+  // description has no suggestion to re-price against.
+  useEffect(() => {
+    if (!isAdminUser) return;
+    if (itemPriceByName.size === 0) return;
+    setEditedLines((prev) => {
+      if (!prev) return prev;
+      let changed = false;
+      const next = prev.map((l) => {
+        if (!l.userAdded || l.priceEdited || !l.pickedItemName) return l;
+        const price = itemPriceByName.get(l.pickedItemName.trim().toLowerCase());
+        if (price == null) return l;
+        const formatted = price.toFixed(2);
+        if (formatted === l.unitPrice) return l;
+        changed = true;
+        return { ...l, unitPrice: formatted };
+      });
+      return changed ? next : prev;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemPriceByName]);
   function setLineOverride(key: string, patch: Partial<LinePriceOverride>) {
     setPriceOverrides((prev) => ({
       ...prev,
@@ -1081,7 +1611,64 @@ export function DashboardDropZone() {
   const rxCaseType = rxDraft.caseType ?? "";
   const rxMaterial = rxDraft.material ?? "";
   const rxShade = rxDraft.shade ?? "";
+  const rxArch = rxDraft.arch ?? "";
   const rxDoctorName = rxDraft.doctorName ?? "";
+  const rxPatientName = rxDraft.patientName ?? "";
+
+  // Best-effort early duplicate warning. Submit performs its own lookup below,
+  // so a transient failure here never weakens or blocks the final checkpoint.
+  // The sequence guard prevents a slow response for old form values from
+  // overwriting the result for the values currently visible to the user.
+  useEffect(() => {
+    const sequence = ++duplicateLookupSequenceRef.current;
+    const { first, last } = splitPatientName(rxPatientName);
+    const cleanFirst = first.trim();
+    const cleanLast = last.trim();
+    if (
+      phase.kind !== "rxConfirm" ||
+      !cleanFirst ||
+      !cleanLast ||
+      !rxLabOrgId ||
+      !rxProviderOrgId
+    ) {
+      setEarlyDuplicate(null);
+      return;
+    }
+
+    setEarlyDuplicate(null);
+    const timer = window.setTimeout(async () => {
+      const qs = new URLSearchParams({
+        patientFirstName: cleanFirst,
+        patientLastName: cleanLast,
+        labOrganizationId: rxLabOrgId,
+        providerOrganizationId: rxProviderOrgId,
+      });
+      if (rxDoctorName.trim()) qs.set("doctorName", rxDoctorName.trim());
+      try {
+        const body = await apiFetch<
+          { matches?: DuplicateHit[] } | DuplicateHit[]
+        >(`/cases/patient-similarity?${qs.toString()}`);
+        if (sequence !== duplicateLookupSequenceRef.current) return;
+        const matches = Array.isArray(body) ? body : (body?.matches ?? []);
+        setEarlyDuplicate(
+          newestValidDuplicate(Array.isArray(matches) ? matches : []),
+        );
+      } catch {
+        if (sequence === duplicateLookupSequenceRef.current) {
+          setEarlyDuplicate(null);
+        }
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    phase.kind,
+    rxPatientName,
+    rxLabOrgId,
+    rxProviderOrgId,
+    rxDoctorName,
+  ]);
+
   useEffect(() => {
     if (phase.kind !== "rxConfirm" || !rxLabOrgId) {
       setInvoicePreview(null);
@@ -1089,37 +1676,16 @@ export function DashboardDropZone() {
       setInvoicePreviewLoading(false);
       return;
     }
-    const teethList = rxToothIndices
-      .split(/[,\s]+/)
-      .map((t) => t.trim())
-      .filter(Boolean);
-    const restorationType = (rxCaseType || "Other").trim() || "Other";
-    const restorations: PreviewDraftInvoiceInput["restorations"] =
-      teethList.length > 0
-        ? teethList.map((toothNumber) => ({
-            toothNumber,
-            restorationType,
-            ...(rxMaterial ? { material: rxMaterial } : {}),
-            ...(rxShade ? { shade: rxShade } : {}),
-            quantity: 1,
-          }))
-        : rxMaterial || rxShade || rxCaseType
-          ? [
-              {
-                toothNumber: "",
-                restorationType,
-                ...(rxMaterial ? { material: rxMaterial } : {}),
-                ...(rxShade ? { shade: rxShade } : {}),
-                quantity: 1,
-              },
-            ]
-          : [];
-    if (restorations.length === 0) {
-      setInvoicePreview(null);
-      setInvoicePreviewError(false);
-      setInvoicePreviewLoading(false);
-      return;
-    }
+    const restorations = buildPrescriptionRestorations({
+      toothIndices: rxToothIndices,
+      caseType: rxCaseType,
+      material: rxMaterial,
+      shade: rxShade,
+      arch: rxArch || null,
+      assignmentRoles: rxDraft.assignmentRoles,
+      assignmentValues: rxDraft.assignmentValues,
+    });
+    // Preview and save must price the exact same per-tooth catalog identities.
     let cancelled = false;
     setInvoicePreviewLoading(true);
     const timer = window.setTimeout(async () => {
@@ -1129,6 +1695,7 @@ export function DashboardDropZone() {
           ...(rxProviderOrgId ? { providerOrganizationId: rxProviderOrgId } : {}),
           ...(rxDoctorName.trim() ? { doctorName: rxDoctorName.trim() } : {}),
           restorations,
+          ...(rxConnectorsReady ? { bridgeConnectors: rxConnectorText } : {}),
         };
         const data = await apiFetch<PreviewDraftInvoiceResultData>(
           "/invoices/preview-draft",
@@ -1159,7 +1726,12 @@ export function DashboardDropZone() {
     rxCaseType,
     rxMaterial,
     rxShade,
+    rxArch,
     rxDoctorName,
+    rxDraft.assignmentRoles,
+    rxDraft.assignmentValues,
+    rxConnectorsReady,
+    rxConnectorText,
   ]);
 
   const [rxProviderSearch, setRxProviderSearch] = useState("");
@@ -1191,6 +1763,7 @@ export function DashboardDropZone() {
   const [manualRemakeSelected, setManualRemakeSelected] = useState<ManualRemakeHit | null>(null);
   const [manualRemakeReason, setManualRemakeReason] = useState("");
   const [manualRemakeCharged, setManualRemakeCharged] = useState<"yes" | "no" | "">("");
+  const [manualRemakeNotes, setManualRemakeNotes] = useState("");
   const manualRemakeSearchTimerRef = useRef<number | null>(null);
 
   function clearManualRemake() {
@@ -1201,6 +1774,7 @@ export function DashboardDropZone() {
     setManualRemakeSelected(null);
     setManualRemakeReason("");
     setManualRemakeCharged("");
+    setManualRemakeNotes("");
     if (manualRemakeSearchTimerRef.current !== null) {
       window.clearTimeout(manualRemakeSearchTimerRef.current);
       manualRemakeSearchTimerRef.current = null;
@@ -1216,6 +1790,130 @@ export function DashboardDropZone() {
   >(null);
   const [showAliasSavePrompt, setShowAliasSavePrompt] = useState(false);
   const [savingAlias, setSavingAlias] = useState(false);
+  const [aliasSaveError, setAliasSaveError] = useState<string | null>(null);
+
+  // ── Per-doctor practice memory ───────────────────────────────────────────
+  // The DOCTOR-keyed counterpart to the Rx-name alias above, and the
+  // higher-priority one: a doctor's practice is stable, the practice text on a
+  // prescription is not. `doctorMemoryOrgId` is the practice the server
+  // remembers for the doctor currently in the form (null = nothing remembered
+  // yet), and `doctorMemoryKey` is the normalized doctor name it belongs to so
+  // editing the doctor name drops the badge instead of mislabeling a different
+  // doctor's practice.
+  const [doctorMemoryOrgId, setDoctorMemoryOrgId] = useState<string | null>(
+    null,
+  );
+  const [doctorMemoryKey, setDoctorMemoryKey] = useState<string>("");
+  const [doctorMemoryError, setDoctorMemoryError] = useState<string | null>(
+    null,
+  );
+  const [savingDoctorMemory, setSavingDoctorMemory] = useState(false);
+  // "Which doctor is this?" step — shown BEFORE any practice prompting when the
+  // scanned doctor name isn't on file but closely resembles one that is.
+  const [doctorIdentify, setDoctorIdentify] = useState<{
+    typedName: string;
+    candidates: DoctorMatchCandidate[];
+  } | null>(null);
+  // A doctor the user explicitly confirmed in the identify step. Lets the
+  // create-time "doctor not on file" gate skip re-asking the same question.
+  const [confirmedDoctorName, setConfirmedDoctorName] = useState<string | null>(
+    null,
+  );
+
+  /**
+   * Persist a doctor → practice mapping. Called from every confirmation point:
+   * "Yes, remember this", confirming a similar-doctor candidate, and manually
+   * changing the practice for a doctor that already had one remembered.
+   *
+   * `doctorNames` may hold more than one spelling — when the user confirms a
+   * candidate we remember BOTH the stored spelling and the scanned one, so the
+   * next Rx carrying the same misreading resolves the practice without asking.
+   *
+   * Returns true on success; the caller decides whether a failure is blocking.
+   */
+  async function rememberDoctorPractice(
+    doctorNames: string[],
+    providerOrganizationId: string,
+    labOrganizationId: string,
+  ): Promise<boolean> {
+    const keys = new Map<string, string>();
+    for (const raw of doctorNames) {
+      const name = (raw ?? "").trim();
+      const key = normalizeDoctorMemoryKey(name);
+      if (name && key && !keys.has(key)) keys.set(key, name);
+    }
+    if (!keys.size || !providerOrganizationId || !labOrganizationId) {
+      return false;
+    }
+    for (const name of keys.values()) {
+      await apiFetch("/rx-doctor-practice-memory", {
+        method: "POST",
+        body: JSON.stringify({
+          labOrganizationId,
+          doctorName: name,
+          providerOrganizationId,
+        }),
+      });
+    }
+    return true;
+  }
+
+  /**
+   * Persist the doctor → practice mapping for whatever is currently in the
+   * form.
+   *
+   * Called from EVERY point where the user finalizes a practice for this
+   * doctor, not only from the "save this mapping?" prompt: picking a practice
+   * by hand (the only path that exists when the Rx shows no readable practice
+   * name), adopting a conflicting practice, adding a brand-new one, and — as
+   * the backstop for a practice that was auto-filled and simply accepted —
+   * creating the case. Missing any one of these puts the doctor straight back
+   * to being asked on every scan, which is the whole thing this memory exists
+   * to stop.
+   *
+   * No-ops when there is nothing to learn (no doctor, lab, or practice, or the
+   * identical mapping is already remembered), so callers can fire it
+   * unconditionally.
+   */
+  async function rememberPracticeForCurrentDoctor(
+    providerOrganizationId: string,
+    doctorNameOverride?: string,
+  ): Promise<void> {
+    const labId = rxLabOrgId || labOrg?.id || "";
+    const doctorName = (
+      doctorNameOverride ??
+      rxDraft.doctorName ??
+      ""
+    ).trim();
+    const key = normalizeDoctorMemoryKey(doctorName);
+    // "Unknown Provider" is the create-time placeholder for a blank scan, not
+    // a doctor anyone will ever scan again.
+    if (
+      !providerOrganizationId ||
+      !labId ||
+      !key ||
+      doctorName === "Unknown Provider"
+    ) {
+      return;
+    }
+    if (
+      doctorMemoryOrgId === providerOrganizationId &&
+      doctorMemoryKey === key
+    ) {
+      return;
+    }
+    try {
+      await rememberDoctorPractice([doctorName], providerOrganizationId, labId);
+      setDoctorMemoryOrgId(providerOrganizationId);
+      setDoctorMemoryKey(key);
+      setDoctorMemoryError(null);
+    } catch {
+      setDoctorMemoryError(
+        "Couldn't remember this practice for this doctor — you may be asked again next time. Pick the practice again to retry.",
+      );
+    }
+  }
+
   const fileRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
 
@@ -1288,7 +1986,12 @@ export function DashboardDropZone() {
       // Refresh the orgs list so the new practice shows up in the dropdown,
       // then auto-select it and close the inline form.
       await qc.invalidateQueries({ queryKey: ["organizations"] });
-      if (created?.id) setRxProviderOrgId(created.id);
+      if (created?.id) {
+        setRxProviderOrgId(created.id);
+        // Adding a practice for this doctor is as explicit a confirmation as
+        // picking one from the list.
+        void rememberPracticeForCurrentDoctor(created.id);
+      }
       setRxProviderSearch("");
       setNewPracticeDraft(null);
     } catch (e: unknown) {
@@ -1367,34 +2070,53 @@ export function DashboardDropZone() {
 
   const runRxAnalyze = useCallback(
     async (file: File) => {
+      // Capture this before any PDF/AI work: a drop that crosses midnight
+      // still belongs to the calendar day on which the user dropped it.
+      const droppedOn = localCalendarDate();
+      const analysisStartedAt = performance.now();
+      setRxAssignmentError(null);
+      setRxReanalysisDraft(null);
       setRxProviderOrgId("");
       setRxDraft({});
       setRxBarcode("");
       setRxProviderSearch("");
       clearManualRemake();
-      setPhase({ kind: "analyzing", fileName: file.name });
+      setPhase({
+        kind: "analyzing",
+        fileName: file.name,
+        message: "Preparing prescription image…",
+      });
       try {
-        let images: string[] = [];
-        if (isPdf(file)) {
-          images = await pdfToJpegDataUrls(file, 3);
-        } else if (isImage(file)) {
-          images = [await fileToDataUrl(file)];
+        const sourceKey = await prescriptionSourceIdentity(await fileToDataUrl(file));
+        if (rxOverrideSource.current !== sourceKey) {
+          rxClinicalOverrides.current = {};
+          rxOverrideSource.current = sourceKey;
         }
-        if (images.length === 0)
-          throw new Error("Could not read this file.");
-        const [primary, ...rest] = images;
         // /analyze-prescription returns either {success:true,data:{...}} (which
         // apiFetch auto-unwraps to the inner data object) OR
         // {success:false,error:"..."} which is NOT unwrapped (no `data` key).
-        const resp = await apiFetch<
-          ExtractedRx | { success: false; error?: string }
-        >("/analyze-prescription", {
-          method: "POST",
-          body: JSON.stringify({
-            imageBase64: primary,
-            additionalImages: rest,
-          }),
-        });
+        const resp = await runPrescriptionAnalysis(
+          async (signal) => isPdf(file) ? pdfToJpegDataUrls(file, signal) : isImage(file) ? [await imageToAnalysisDataUrl(file)] : [],
+          (images, signal) => {
+            setPhase({
+              kind: "analyzing",
+              fileName: file.name,
+              message: `Reading ${images.length} page${images.length === 1 ? "" : "s"} with the accurate AI reader. This can take up to 75 seconds.`,
+            });
+            const [primary, ...rest] = images;
+            return apiFetch<ExtractedRx | { success: false; error?: string }>("/analyze-prescription", {
+              method: "POST",
+              signal,
+              body: JSON.stringify({ imageBase64: primary, additionalImages: rest, desktopReader: true }),
+            });
+          },
+          (stage, durationMs, payloadChars) => {
+            if (import.meta.env.DEV) console.debug("AI Reader stage", {
+              stage, durationMs, payloadChars,
+              totalDurationMs: Math.round(performance.now() - analysisStartedAt),
+            });
+          },
+        );
         if (
           resp &&
           typeof resp === "object" &&
@@ -1407,7 +2129,7 @@ export function DashboardDropZone() {
         }
         const rx = resp as ExtractedRx;
         const caseNumber = nextYearCaseNumber(legacy);
-        setRxDraft({
+        const analyzedDraft: ExtractedRx = {
           doctorName: rx.doctorName ?? "",
           patientName: rx.patientName ?? "",
           patientInitials:
@@ -1417,37 +2139,89 @@ export function DashboardDropZone() {
           toothIndices: rx.toothIndices ?? "",
           shade: rx.shade ?? "",
           material: rx.material ?? "",
+          arch: rx.arch ?? null,
           dueDate: normalizeDueDateForInput(rx.dueDate),
+          // The received date is a workflow field, not an AI extraction. Keep
+          // it on the draft so it survives duplicate/remake/doctor continuations.
+          receivedAt: droppedOn,
           isRush: !!rx.isRush,
           notes: rx.notes ?? "",
           practiceName: rx.practiceName ?? "",
           practiceAddress: rx.practiceAddress ?? "",
           practicePhone: rx.practicePhone ?? "",
-        });
-        // Pre-select lab + resolve practice via alias first (takes priority),
-        // then fall back to the existing fuzzy-name match.
+          assignmentRoles: Object.fromEntries(readExplicitAiToothAssignments(rx.toothAssignments).map((unit) => [unit.toothNumber, unit.restorationType as "Crown" | "Pontic"])),
+          assignmentValues: Object.fromEntries(readExplicitAiToothAssignments(rx.toothAssignments).map((unit) => [unit.toothNumber, {
+            material: unit.material ?? undefined, shade: unit.shade ?? undefined,
+          }])),
+          toothAssignments: rx.toothAssignments,
+        };
+        if (rxClinicalOverrides.current.assignmentRoles === undefined) {
+          rxClinicalOverrides.current = { ...rxClinicalOverrides.current,
+            assignmentRoles: analyzedDraft.assignmentRoles,
+            assignmentValues: analyzedDraft.assignmentValues,
+            toothIndices: analyzedDraft.toothIndices,
+            material: analyzedDraft.material,
+            shade: analyzedDraft.shade,
+            caseType: analyzedDraft.caseType,
+          };
+        }
+        const overrides = rxClinicalOverrides.current;
+        const hasDifferences = Object.entries(overrides).some(([field, value]) =>
+          JSON.stringify(analyzedDraft[field as keyof ExtractedRx]) !== JSON.stringify(value),
+        );
+        setRxReanalysisDraft(hasDifferences ? analyzedDraft : null);
+        setRxDraft({ ...analyzedDraft, ...overrides });
+        // Pre-select the lab, then resolve the practice in strict priority
+        // order:
+        //   1. the per-doctor practice memory — survives a missing or
+        //      differently worded practice name on the prescription,
+        //   2. the saved Rx-practice-name alias,
+        //   3. fuzzy practice-name matching.
         const effectiveLabOrgId = rxLabOrgId || labOrg?.id || "";
         if (!rxLabOrgId && labOrg?.id) setRxLabOrgId(labOrg.id);
 
-        // Reset alias prompt state for this new Rx.
+        // Reset alias + doctor-memory prompt state for this new Rx.
         setAliasExistedForRxName(null);
         setShowAliasSavePrompt(false);
+        setAliasSaveError(null);
+        setDoctorMemoryOrgId(null);
+        setDoctorMemoryKey("");
+        setDoctorMemoryError(null);
+        setDoctorIdentify(null);
+        setConfirmedDoctorName(null);
 
-        if (!rxProviderOrgId && rx.practiceName && effectiveLabOrgId) {
+        const scannedDoctorName = (rx.doctorName ?? "").trim();
+
+        // 1. Per-doctor practice memory (highest priority).
+        let rememberedOrgId: string | null = null;
+        if (scannedDoctorName && effectiveLabOrgId) {
+          try {
+            const memResp = await apiFetch<PracticeLookupPayload>(
+              `/rx-doctor-practice-memory?labOrganizationId=${encodeURIComponent(effectiveLabOrgId)}&doctorName=${encodeURIComponent(scannedDoctorName)}`,
+            );
+            rememberedOrgId = lookedUpOrgId(memResp);
+          } catch {
+            /* non-blocking — fall through to the alias / fuzzy paths */
+          }
+        }
+
+        if (rememberedOrgId) {
+          setRxProviderOrgId(rememberedOrgId);
+          setDoctorMemoryOrgId(rememberedOrgId);
+          setDoctorMemoryKey(normalizeDoctorMemoryKey(scannedDoctorName));
+          // A remembered doctor suppresses the Rx-name save prompt entirely:
+          // we already know this doctor's practice, so there is nothing to ask.
+          setAliasExistedForRxName(null);
+        } else if (!rxProviderOrgId && rx.practiceName && effectiveLabOrgId) {
           const needle = rx.practiceName.trim().toLowerCase();
 
-          // 1. Check saved alias (highest priority).
+          // 2. Check the saved Rx-name alias.
           let aliasOrgId: string | null = null;
           try {
-            const aliasResp = await apiFetch<{
-              data?: { found?: boolean; providerOrganizationId?: string | null };
-            }>(
+            const aliasResp = await apiFetch<PracticeLookupPayload>(
               `/rx-practice-aliases?labOrganizationId=${encodeURIComponent(effectiveLabOrgId)}&rxName=${encodeURIComponent(needle)}`,
             );
-            const d = (aliasResp as any)?.data;
-            if (d?.found && d?.providerOrganizationId) {
-              aliasOrgId = d.providerOrganizationId;
-            }
+            aliasOrgId = lookedUpOrgId(aliasResp);
           } catch {
             /* non-blocking — fall through to fuzzy match */
           }
@@ -1468,6 +2242,39 @@ export function DashboardDropZone() {
         } else if (!rx.practiceName) {
           // No AI name to alias — mark as n/a.
           setAliasExistedForRxName(null);
+        }
+
+        // Identify the doctor BEFORE any practice prompting. When the scanned
+        // name is not on file but closely resembles one that is, we ask a
+        // single "which doctor is this?" question naming each candidate with
+        // their real practice and address. Answering it also settles the
+        // practice, which is why it has to come first.
+        //
+        // Deliberately lab-wide (no providerOrganizationId): at this point we
+        // may not know the practice yet, and the whole point is to discover it.
+        if (scannedDoctorName && effectiveLabOrgId) {
+          try {
+            const qs = new URLSearchParams({
+              labOrganizationId: effectiveLabOrgId,
+              doctorName: scannedDoctorName,
+            });
+            const resolved = await apiFetch<{
+              exactMatch: string | null;
+              similarMatches: DoctorMatchCandidate[];
+              canAddNew: boolean;
+            }>(`/doctors/resolve-name?${qs.toString()}`);
+            const candidates = Array.isArray(resolved?.similarMatches)
+              ? resolved.similarMatches
+              : [];
+            if (!resolved?.exactMatch && candidates.length > 0) {
+              setDoctorIdentify({
+                typedName: scannedDoctorName,
+                candidates,
+              });
+            }
+          } catch {
+            /* non-blocking — the create-time gate remains the backstop */
+          }
         }
 
         setPhase({ kind: "rxConfirm", file, caseNumber });
@@ -1779,6 +2586,51 @@ export function DashboardDropZone() {
     }
   }
 
+  /**
+   * "Yes, this is them" in the identify-the-doctor step.
+   *
+   * Confirming a candidate adopts the STORED spelling and their practice, and
+   * teaches the memory under both the stored and the scanned spelling — so the
+   * next Rx carrying the same misreading resolves the practice with no prompt
+   * at all. The practice question is then skipped entirely for this Rx.
+   *
+   * The mapping is persisted BEFORE any state is applied: if the save fails
+   * the step stays open with an inline error rather than silently claiming to
+   * have remembered something it did not.
+   */
+  async function confirmIdentifiedDoctor(candidate: DoctorMatchCandidate) {
+    const typedName = doctorIdentify?.typedName ?? "";
+    const labId = rxLabOrgId || labOrg?.id || "";
+    const practiceId = candidate.providerOrganizationId;
+    setSavingDoctorMemory(true);
+    setDoctorMemoryError(null);
+    try {
+      if (practiceId && labId) {
+        await rememberDoctorPractice(
+          [candidate.doctorName, typedName],
+          practiceId,
+          labId,
+        );
+        setRxProviderOrgId(practiceId);
+        setRxPracticeError(false);
+        setDoctorMemoryOrgId(practiceId);
+        setDoctorMemoryKey(normalizeDoctorMemoryKey(candidate.doctorName));
+        // The doctor's practice is settled — nothing left to ask about it.
+        setShowAliasSavePrompt(false);
+        setAliasExistedForRxName(null);
+      }
+      setRxDraft((d) => ({ ...d, doctorName: candidate.doctorName }));
+      setConfirmedDoctorName(candidate.doctorName);
+      setDoctorIdentify(null);
+    } catch {
+      setDoctorMemoryError(
+        "Couldn't remember this doctor's practice — try again.",
+      );
+    } finally {
+      setSavingDoctorMemory(false);
+    }
+  }
+
   // Required doctor-resolution gate. The scanned doctor name must STRICTLY
   // match (trim + collapse whitespace, case-insensitive, NO title stripping) an
   // existing doctor in the selected lab+practice. On an exact match we adopt the
@@ -1794,10 +2646,40 @@ export function DashboardDropZone() {
       remakeReason: string;
       remakeCharged: boolean;
     },
-  ): Promise<{ proceed: boolean; doctorNameOverride?: string }> {
-    if (zipSource?.isItero) return { proceed: true };
+  ): Promise<{
+    proceed: boolean;
+    doctorNameOverride?: string;
+    confirmNewDoctor?: boolean;
+  }> {
+    // iTero ZIP drops run the SAME "doctor not on file" pre-check as PDF drops.
+    // The iTero import endpoint now enforces the strict exact-match gate
+    // server-side (Task #2853), so surfacing the resolution step here keeps the
+    // desktop from tripping that 409 and gives the user the similar-doctors +
+    // "Add new doctor" choice before creation.
+    //
+    // Remakes are exempt: the doctor name is inherited from the original case
+    // (not freshly scanned), and the server likewise skips its doctor gate when
+    // remakeOfCaseId is set — so surfacing the resolution step here would block
+    // a legitimate remake with no real name to confirm.
+    if (remake?.remakeOfCaseId) return { proceed: true };
     const typed = (rxDraft.doctorName || "").trim().replace(/\s+/g, " ");
     if (!typed || !rxLabOrgId || !rxProviderOrgId) return { proceed: true };
+    // The user already answered the "which doctor is this?" step during
+    // intake. Re-asking here would be the exact double-prompt this flow exists
+    // to remove, so carry their answer through to creation instead — including
+    // the confirmNewDoctor bypass, so the server's 409 gate does not re-ask
+    // either.
+    if (
+      confirmedDoctorName &&
+      confirmedDoctorName.trim().replace(/\s+/g, " ").toLowerCase() ===
+        typed.toLowerCase()
+    ) {
+      return {
+        proceed: true,
+        doctorNameOverride: confirmedDoctorName,
+        confirmNewDoctor: true,
+      };
+    }
     try {
       const qs = new URLSearchParams({
         labOrganizationId: rxLabOrgId,
@@ -1843,6 +2725,18 @@ export function DashboardDropZone() {
       setRxPracticeError(true);
       return;
     }
+    if (
+      (isRemovableRestorationType(r.caseType) ||
+        /ortho|night guard|retainer|aligner/i.test(r.caseType ?? "")) &&
+      !r.arch
+    ) {
+      setPhase({
+        kind: "error",
+        message: "Select Upper, Lower, or Upper + Lower before creating this case.",
+      });
+      scheduleIdleReset(5000);
+      return;
+    }
 
     // If the user manually selected a remake target, validate and submit
     // directly — skip the auto-duplicate check so the two paths don't
@@ -1867,6 +2761,7 @@ export function DashboardDropZone() {
         remakeOfCaseId: manualRemakeSelected.id,
         remakeReason: manualRemakeReason.trim(),
         remakeCharged: manualRemakeCharged === "yes",
+        ...(isAdminUser && manualRemakeNotes.trim() ? { remakeNotes: manualRemakeNotes.trim() } : {}),
       };
       const remakeGate = await resolveDoctorBeforeCreate(
         phase.file,
@@ -1879,6 +2774,7 @@ export function DashboardDropZone() {
         phase.caseNumber,
         remakePayload,
         remakeGate.doctorNameOverride,
+        remakeGate.confirmNewDoctor,
       );
       return;
     }
@@ -1911,6 +2807,7 @@ export function DashboardDropZone() {
       phase.caseNumber,
       undefined,
       gate.doctorNameOverride,
+      gate.confirmNewDoctor,
     );
   }
 
@@ -1927,11 +2824,34 @@ export function DashboardDropZone() {
   ) {
     const r = rxDraft;
     if (!user?.id || !rxLabOrgId || !rxProviderOrgId) return;
+    let retryCaseNumber = requestedCaseNumber;
+    const reopenDoctorResolution = (error: unknown): boolean => {
+      const resolution = extractDoctorConfirmationRequired(error);
+      if (!resolution) return false;
+      setDoctorResolve({
+        typedName: resolution.doctorName,
+        candidates: resolution.candidates,
+        file,
+        caseNumber: retryCaseNumber,
+        remake,
+      });
+      setPhase({ kind: "rxConfirm", file, caseNumber: retryCaseNumber });
+      return true;
+    };
     // When a doctor was resolved (exact stored spelling adopted, or the user
     // explicitly picked/added one in the "doctor not on file" step), use that
     // name in place of the scanned one.
     const effectiveDoctorName =
       (doctorNameOverride ?? r.doctorName ?? "").trim() || "Unknown Provider";
+
+    // Backstop for the auto-filled paths: when the practice came from fuzzy
+    // matching or the Rx-name alias, the user never touches the picker and no
+    // prompt is shown, so nothing above has taught the mapping. Submitting the
+    // case with that practice IS the confirmation. Best-effort — a memory
+    // hiccup must never cost the user their case (the picker paths are where a
+    // failure gets surfaced inline).
+    await rememberPracticeForCurrentDoctor(rxProviderOrgId, effectiveDoctorName);
+
     setPhase({ kind: "uploading", message: "Creating case…" });
 
     // ── ZIP path ─────────────────────────────────────────────────────────────
@@ -1994,10 +2914,20 @@ export function DashboardDropZone() {
           fd.append("iteroOrderId", iteroOrderId);
           fd.append("labOrganizationId", rxLabOrgId);
           fd.append("providerOrganizationId", rxProviderOrgId);
-          if (r.doctorName?.trim()) fd.append("doctorNameHint", r.doctorName.trim());
+          // Send the RESOLVED doctor name (exact stored spelling adopted, or the
+          // one the user explicitly picked/added in the "doctor not on file"
+          // step) so the server's strict gate sees the confirmed identity, not
+          // the raw scan.
+          if (effectiveDoctorName && effectiveDoctorName !== "Unknown Provider") {
+            fd.append("doctorNameHint", effectiveDoctorName);
+          }
+          // When the user chose "add new doctor" (or picked an existing one) in
+          // the resolution step, re-submit past the server's 409 gate.
+          if (confirmNewDoctor) fd.append("confirmNewDoctor", "true");
           if (first?.trim()) fd.append("patientFirstNameHint", first.trim());
           if (last?.trim()) fd.append("patientLastNameHint", last.trim());
           if (rxBarcode.trim()) fd.append("casePanBarcodeHint", rxBarcode.trim());
+          if (r.receivedAt?.trim()) fd.append("receivedAt", r.receivedAt.trim());
           // Pass all AI-extracted clinical data as hints. The server will merge
           // these into the extracted fields when its own AI extraction fails
           // (e.g. Replit AI proxy does not support openai.files.create() for PDFs).
@@ -2006,10 +2936,25 @@ export function DashboardDropZone() {
           if (r.dueDate?.trim()) fd.append("dueDateHint", r.dueDate.trim());
           if (r.shade?.trim()) fd.append("shadeHint", r.shade.trim());
           if (r.toothIndices?.trim()) fd.append("toothIndicesHint", r.toothIndices.trim());
+          if (r.arch) fd.append("archHint", r.arch);
           if (r.material?.trim()) fd.append("materialHint", r.material.trim());
           if (r.caseType?.trim()) fd.append("caseTypeHint", r.caseType.trim());
+          const assignedUnits = buildPrescriptionRestorations(r);
+          const validAssignedUnits = assignedUnits.filter((unit) =>
+            /^(Crown|Pontic)$/.test(unit.restorationType) && !!unit.material?.trim()
+          );
+          if (rxConnectorsReady && validAssignedUnits.length) {
+            fd.append("toothAssignments", JSON.stringify(applyPriceOverrides(validAssignedUnits.map((unit) => ({ ...unit, unitPrice: 0 })))));
+            fd.append("bridgeConnectors", rxConnectorText);
+          }
           if (r.notes?.trim()) fd.append("notesHint", r.notes.trim());
           if (r.isRush) fd.append("isRushHint", "true");
+          if (isAdminUser && editedLines) {
+            fd.append(
+              "invoiceOverrideLines",
+              JSON.stringify(reviewedLines()),
+            );
+          }
           // Remake metadata: when the user chose "Link as remake" in the
           // duplicate prompt, forward it so the server suffixes the case
           // number, links remakeOfCaseId, writes the cross-link events, and
@@ -2064,9 +3009,6 @@ export function DashboardDropZone() {
             }
           }
 
-          qc.invalidateQueries({ queryKey: ["legacy-cases-for-dropzone"] });
-          qc.invalidateQueries({ queryKey: ["cases"] });
-          qc.invalidateQueries({ queryKey: ["invoices"] });
           setZipSource(null);
 
           if (result.deduped) {
@@ -2075,6 +3017,7 @@ export function DashboardDropZone() {
               message: `This iTero order was already imported as case ${result.caseNumber ?? result.caseId ?? ""}. No duplicate created.`,
             });
           } else {
+            await refreshCaseFinanceQueries(qc);
             const failSuffix =
               attachFailures > 0
                 ? ` (${attachFailures} scan${attachFailures === 1 ? "" : "s"} could not be attached — add manually in the Files tab.)`
@@ -2091,34 +3034,10 @@ export function DashboardDropZone() {
         // ── Generic/Shining path: standard case creation ──────────────────────
         // Upload the Rx PDF and fetch a case number concurrently, then create
         // the case, attach the PDF, and then attach all 3D scan files.
-        const teethList = (r.toothIndices || "")
-          .split(/[,\s]+/)
-          .map((t) => t.trim())
-          .filter(Boolean);
-        // When the AI extracted no tooth indices but did extract material,
-        // shade, or restorative type, create a single stub restoration so
-        // that data is not silently dropped. The server accepts an empty
-        // toothNumber for exactly this case (mirrors the iTero import path).
-        const restorations =
-          teethList.length > 0
-            ? teethList.map((toothNumber) => ({
-                toothNumber,
-                restorationType: (r.caseType || "Other").trim() || "Other",
-                ...(r.material ? { material: r.material } : {}),
-                ...(r.shade ? { shade: r.shade } : {}),
-                quantity: 1,
-                unitPrice: 0,
-              }))
-            : (r.material || r.shade || r.caseType)
-              ? [{
-                  toothNumber: "",
-                  restorationType: (r.caseType || "Other").trim() || "Other",
-                  ...(r.material ? { material: r.material } : {}),
-                  ...(r.shade ? { shade: r.shade } : {}),
-                  quantity: 1,
-                  unitPrice: 0,
-                }]
-              : undefined;
+        const restorations = buildPrescriptionRestorations(r).map((row) => ({
+          ...row,
+          unitPrice: 0,
+        }));
 
         // For remake cases the server assigns the suffixed case number
         // automatically, so skip the next-case-number fetch.
@@ -2133,6 +3052,7 @@ export function DashboardDropZone() {
         const rxUploadPromise = uploadMediaFile(rxFile).catch(() => null);
 
         const [caseNumber, rxUpload] = await Promise.all([caseNumberPromise, rxUploadPromise]);
+        retryCaseNumber = caseNumber;
 
         const created = await apiFetch<{ id: string; caseNumber: string }>("/cases", {
           method: "POST",
@@ -2146,10 +3066,14 @@ export function DashboardDropZone() {
             priority: r.isRush ? "rush" : "normal",
             ...(confirmNewDoctor ? { confirmNewDoctor: true } : {}),
             ...(r.dueDate ? { dueDate: r.dueDate } : {}),
-            ...(restorations
-              ? { restorations: applyPriceOverrides(restorations) }
+            ...(r.receivedAt ? { receivedAt: r.receivedAt } : {}),
+            ...(restorations.length > 0
+              ? {
+                  restorations: applyPriceOverrides(restorations),
+                  ...(rxConnectorsReady ? { bridgeConnectors: rxConnectorText } : {}),
+                }
               : {}),
-            ...(r.notes && r.notes.trim() ? { notes: r.notes.trim() } : {}),
+            ...(r.notes && r.notes.trim() ? { rxNotes: r.notes } : {}),
             ...(rxBarcode.trim() ? { casePanBarcode: rxBarcode.trim() } : {}),
             // Always carry the top-level shade to the case row so it is
             // available for display even before restoration rows are confirmed.
@@ -2158,6 +3082,17 @@ export function DashboardDropZone() {
             // must be forwarded to the server so it can compute the suffix
             // letter, set remakeOfCaseId, and write the cross-link events.
             ...(remake ?? {}),
+            // Admin/owner: if the user edited invoice lines in the preview,
+            // send them verbatim so the server uses them as-is instead of
+            // re-running the auto-pricing engine. Sent whenever the editable
+            // table exists — including an empty array, which is how "the admin
+            // removed every line" reaches the server; omitting it there would
+            // auto-price the removed lines back onto the invoice.
+            ...(isAdminUser && editedLines
+              ? {
+                  invoiceOverrideLines: reviewedLines(),
+                }
+              : {}),
           }),
         });
 
@@ -2213,15 +3148,7 @@ export function DashboardDropZone() {
           }
         }
 
-        qc.invalidateQueries({ queryKey: ["legacy-cases-for-dropzone"] });
-        qc.invalidateQueries({ queryKey: ["cases"] });
-        qc.invalidateQueries({ queryKey: ["invoices"] });
-        // The Customer Center and the provider's practice-account views derive
-        // their practice rows from the organizations query. Invalidate it too so
-        // the remake case (and its draft invoice) surface in those scoped views
-        // without a manual page reload — matching the cases+invoices+organizations
-        // invalidation pattern used after case mutations in practices.tsx.
-        qc.invalidateQueries({ queryKey: ["organizations"] });
+        await refreshCaseFinanceQueries(qc);
         if (remake?.remakeOfCaseId) {
           qc.invalidateQueries({ queryKey: ["case", remake.remakeOfCaseId] });
         }
@@ -2243,6 +3170,7 @@ export function DashboardDropZone() {
         });
         scheduleIdleReset(5000);
       } catch (e: any) {
+        if (reopenDoctorResolution(e)) return;
         setPhase({
           kind: "error",
           message: e?.message || "Could not import ZIP.",
@@ -2260,34 +3188,10 @@ export function DashboardDropZone() {
       //       and the subsequent POST /cases call.
       const { first, last } = splitPatientName(r.patientName);
 
-      const teethList = (r.toothIndices || "")
-        .split(/[,\s]+/)
-        .map((t) => t.trim())
-        .filter(Boolean);
-      // When the AI extracted no tooth indices but did extract material,
-      // shade, or restorative type, create a single stub restoration so
-      // that data is not silently dropped. The server accepts an empty
-      // toothNumber for exactly this case (mirrors the iTero import path).
-      const restorations =
-        teethList.length > 0
-          ? teethList.map((toothNumber) => ({
-              toothNumber,
-              restorationType: (r.caseType || "Other").trim() || "Other",
-              ...(r.material ? { material: r.material } : {}),
-              ...(r.shade ? { shade: r.shade } : {}),
-              quantity: 1,
-              unitPrice: 0,
-            }))
-          : (r.material || r.shade || r.caseType)
-            ? [{
-                toothNumber: "",
-                restorationType: (r.caseType || "Other").trim() || "Other",
-                ...(r.material ? { material: r.material } : {}),
-                ...(r.shade ? { shade: r.shade } : {}),
-                quantity: 1,
-                unitPrice: 0,
-              }]
-            : undefined;
+      const restorations = buildPrescriptionRestorations(r).map((row) => ({
+        ...row,
+        unitPrice: 0,
+      }));
 
       // Start both concurrently.
       const caseNumberPromise: Promise<string> = remake
@@ -2305,6 +3209,7 @@ export function DashboardDropZone() {
         caseNumberPromise,
         uploadPromise,
       ]);
+      retryCaseNumber = caseNumber;
 
       // 4. Create the case via the modern /api/cases endpoint.
       const created = await apiFetch<{ id: string; caseNumber: string }>(
@@ -2321,15 +3226,29 @@ export function DashboardDropZone() {
             priority: r.isRush ? "rush" : "normal",
             ...(confirmNewDoctor ? { confirmNewDoctor: true } : {}),
             ...(r.dueDate ? { dueDate: r.dueDate } : {}),
-            ...(restorations
-              ? { restorations: applyPriceOverrides(restorations) }
+            ...(r.receivedAt ? { receivedAt: r.receivedAt } : {}),
+            ...(restorations.length > 0
+              ? {
+                  restorations: applyPriceOverrides(restorations),
+                  ...(rxConnectorsReady ? { bridgeConnectors: rxConnectorText } : {}),
+                }
               : {}),
-            ...(r.notes && r.notes.trim() ? { notes: r.notes.trim() } : {}),
+            ...(r.notes && r.notes.trim() ? { rxNotes: r.notes } : {}),
             ...(rxBarcode.trim() ? { casePanBarcode: rxBarcode.trim() } : {}),
             // Always carry the top-level shade to the case row so it is
             // available for display even before restoration rows are confirmed.
             ...(r.shade ? { shade: r.shade } : {}),
             ...(remake ?? {}),
+            // Admin/owner: the editable preview is the same panel on this
+            // path, so its lines (edited, hand-added, or picked from the item
+            // typeahead) must reach the created draft invoice here too — an
+            // empty array included, which is how "every line was removed"
+            // reaches the server instead of being auto-priced back.
+            ...(isAdminUser && editedLines
+              ? {
+                  invoiceOverrideLines: reviewedLines(),
+                }
+              : {}),
           }),
         },
       );
@@ -2360,15 +3279,7 @@ export function DashboardDropZone() {
       //    /generate-invoice request would create duplicate History
       //    entries.
 
-      qc.invalidateQueries({ queryKey: ["legacy-cases-for-dropzone"] });
-      qc.invalidateQueries({ queryKey: ["cases"] });
-      qc.invalidateQueries({ queryKey: ["invoices"] });
-      // The Customer Center and the provider's practice-account views derive
-      // their practice rows from the organizations query. Invalidate it too so
-      // the remake case (and its draft invoice) surface in those scoped views
-      // without a manual page reload — matching the cases+invoices+organizations
-      // invalidation pattern used after case mutations in practices.tsx.
-      qc.invalidateQueries({ queryKey: ["organizations"] });
+      await refreshCaseFinanceQueries(qc);
       // When a remake is created, the original case's detail cache must also
       // be invalidated so its History tab immediately shows the new
       // "Remade By" event and its remake-children banner appears without
@@ -2384,6 +3295,7 @@ export function DashboardDropZone() {
       });
       scheduleIdleReset(5000);
     } catch (e: any) {
+      if (reopenDoctorResolution(e)) return;
       setPhase({
         kind: "error",
         message: e?.message || "Could not create case.",
@@ -2436,6 +3348,7 @@ export function DashboardDropZone() {
     return (
       <DuplicatePromptPanel
         phase={phase}
+        isAdmin={isAdminUser}
         onBack={() =>
           setPhase({ kind: "rxConfirm", file: phase.file, caseNumber: phase.caseNumber })
         }
@@ -2448,6 +3361,7 @@ export function DashboardDropZone() {
             phase.caseNumber,
             undefined,
             gate.doctorNameOverride,
+            gate.confirmNewDoctor,
           );
         }}
         onCreateAsRemake={async (remake) => {
@@ -2462,6 +3376,7 @@ export function DashboardDropZone() {
             phase.caseNumber,
             remake,
             gate.doctorNameOverride,
+            gate.confirmNewDoctor,
           );
         }}
       />
@@ -2471,6 +3386,13 @@ export function DashboardDropZone() {
   // ── RxConfirm view ──
   if (phase.kind === "rxConfirm") {
     const r = rxDraft;
+    // Does the remembered practice still belong to the doctor in the form?
+    // Editing the doctor name must drop the badge rather than label a
+    // different doctor's practice as "remembered".
+    const doctorMemoryApplies =
+      !!doctorMemoryOrgId &&
+      !!doctorMemoryKey &&
+      normalizeDoctorMemoryKey(r.doctorName) === doctorMemoryKey;
     return (
       <div className="rounded-xl border border-border bg-card p-4 space-y-3">
         <div className="flex items-center justify-between">
@@ -2497,6 +3419,22 @@ export function DashboardDropZone() {
           Review or edit, then create the case. The Rx will be attached and a
           draft invoice will be generated automatically.
         </p>
+        {earlyDuplicate?.createdAt &&
+          (() => {
+            const date = formatDuplicateDate(earlyDuplicate.createdAt);
+            return date ? (
+              <div
+                className="flex items-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-destructive"
+                role="alert"
+                data-testid="early-duplicate-warning"
+              >
+                <AlertTriangle size={13} className="shrink-0" />
+                <p className="text-xs font-medium">
+                  Possible duplicate case from {date}.
+                </p>
+              </div>
+            ) : null;
+          })()}
         {zipSource && zipSource.extraFileCount > 0 && (
           <div className="flex items-center gap-1.5 rounded-md bg-primary/8 border border-primary/20 px-2.5 py-1.5">
             <PackageOpen size={13} className="text-primary shrink-0" />
@@ -2524,11 +3462,81 @@ export function DashboardDropZone() {
             </select>
           </label>
         )}
+        {/* "Which doctor is this?" — asked BEFORE the practice question,
+            because confirming the doctor settles the practice too. */}
+        {doctorIdentify && (
+          <div
+            data-testid="doctor-identify-step"
+            className="rounded-md border border-primary/40 bg-primary/5 p-2.5 space-y-2"
+          >
+            <p className="text-xs font-medium text-primary">
+              Which doctor is this?
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              The prescription says "{doctorIdentify.typedName}", which isn't an
+              exact match for a doctor on file. Confirm who this is and their
+              practice fills in automatically from now on.
+            </p>
+            <div className="space-y-1.5">
+              {doctorIdentify.candidates.map((c) => {
+                const address = formatCandidatePracticeAddress(c);
+                return (
+                  <button
+                    key={`${c.doctorName}::${c.providerOrganizationId ?? "none"}`}
+                    type="button"
+                    disabled={savingDoctorMemory}
+                    onClick={() => void confirmIdentifiedDoctor(c)}
+                    className="w-full text-left rounded-md border border-border bg-background px-2.5 py-2 hover:border-primary/60 transition-colors disabled:opacity-50"
+                  >
+                    <span className="block text-xs font-medium text-foreground">
+                      Is this {c.doctorName}
+                      {c.practiceName ? ` at ${c.practiceName}` : ""}
+                      {address ? ` — ${address}` : ""}?
+                    </span>
+                    <span className="block text-[10px] text-muted-foreground">
+                      {c.totalCases} case{c.totalCases === 1 ? "" : "s"} on file
+                      · Yes, this is them
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              disabled={savingDoctorMemory}
+              onClick={() => {
+                // Keep the scanned spelling and continue to the normal
+                // practice selection. The bypass stops creation re-asking.
+                setConfirmedDoctorName(doctorIdentify.typedName);
+                setDoctorIdentify(null);
+                setDoctorMemoryError(null);
+              }}
+              className="h-7 px-3 rounded-md bg-secondary text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+            >
+              None of these — add "{doctorIdentify.typedName}" as a new doctor
+            </button>
+            {doctorMemoryError && (
+              <p
+                className="text-[11px] text-destructive"
+                data-testid="doctor-memory-error"
+              >
+                {doctorMemoryError}
+              </p>
+            )}
+          </div>
+        )}
         {!newPracticeDraft && (
           <label className="block text-xs text-muted-foreground space-y-1">
             <span>
               Practice (provider)
-              {r.practiceName && !rxProviderOrgId ? (
+              {doctorMemoryApplies && rxProviderOrgId === doctorMemoryOrgId ? (
+                <span
+                  className="ml-1 text-primary"
+                  data-testid="practice-remembered-badge"
+                >
+                  · Remembered for {(r.doctorName ?? "").trim()}
+                </span>
+              ) : r.practiceName && !rxProviderOrgId ? (
                 <span className="ml-1 text-amber-500">
                   · AI saw "{r.practiceName}" — pick the matching practice or
                   add it
@@ -2557,6 +3565,18 @@ export function DashboardDropZone() {
                     setRxPracticeError(false);
                     // Dismiss any existing alias prompt whenever the selection changes.
                     setShowAliasSavePrompt(false);
+
+                    // Every explicit practice selection teaches the mapping for
+                    // this doctor — the first one as much as a correction of a
+                    // remembered one. Only re-teaching corrections was the gap
+                    // that left a blank-practice Rx asking forever, since that
+                    // Rx never reaches the alias prompt at all.
+                    if (newOrgId) {
+                      void rememberPracticeForCurrentDoctor(newOrgId);
+                    }
+                    // This doctor's practice is already settled by the doctor
+                    // memory, so don't also ask the Rx-name question.
+                    if (doctorMemoryApplies) return;
                     // Show the alias save prompt when:
                     //  1. A non-empty practice was selected
                     //  2. The AI extracted a practiceName
@@ -2596,9 +3616,24 @@ export function DashboardDropZone() {
                 practice or choose "+ Add new practice" from the dropdown.
               </span>
             )}
+            {doctorMemoryApplies && rxProviderOrgId === doctorMemoryOrgId && (
+              <span className="block text-[10px] text-muted-foreground">
+                Auto-filled from what you confirmed for this doctor before.
+                Change it here and we'll remember the new practice instead.
+              </span>
+            )}
+            {doctorMemoryError && !doctorIdentify && (
+              <span
+                className="block text-[10px] text-destructive"
+                data-testid="doctor-memory-error"
+              >
+                {doctorMemoryError}
+              </span>
+            )}
           </label>
         )}
-        {showAliasSavePrompt && rxProviderOrgId && r.practiceName && (() => {
+        {/* The practice question waits until the doctor question is settled. */}
+        {showAliasSavePrompt && rxProviderOrgId && r.practiceName && !doctorIdentify && (() => {
           const selectedPractice = providerOrgs.find((p) => p.id === rxProviderOrgId);
           const practiceName = selectedPractice?.displayName || selectedPractice?.name || "this practice";
           const rxNameDisplay = r.practiceName.trim();
@@ -2617,21 +3652,44 @@ export function DashboardDropZone() {
                   disabled={savingAlias}
                   onClick={async () => {
                     setSavingAlias(true);
+                    setAliasSaveError(null);
+                    const labIdForSave = rxLabOrgId || labOrg?.id || "";
+                    const doctorForSave = (r.doctorName || "").trim();
                     try {
+                      // Remember it against the DOCTOR first — that is the key
+                      // that keeps working when the next Rx shows no practice
+                      // name, or a different wording of it.
+                      if (doctorForSave && labIdForSave) {
+                        await rememberDoctorPractice(
+                          [doctorForSave],
+                          rxProviderOrgId,
+                          labIdForSave,
+                        );
+                      }
+                      // The Rx-name alias is still saved so a different doctor
+                      // at the same practice benefits from it too.
                       await apiFetch("/rx-practice-aliases", {
                         method: "POST",
                         body: JSON.stringify({
-                          labOrganizationId: rxLabOrgId || labOrg?.id || "",
+                          labOrganizationId: labIdForSave,
                           rxName: rxNameDisplay.toLowerCase(),
                           providerOrganizationId: rxProviderOrgId,
                         }),
                       });
+                      if (doctorForSave && labIdForSave) {
+                        setDoctorMemoryOrgId(rxProviderOrgId);
+                        setDoctorMemoryKey(
+                          normalizeDoctorMemoryKey(doctorForSave),
+                        );
+                      }
                       setAliasExistedForRxName(true);
+                      setShowAliasSavePrompt(false);
                     } catch {
-                      /* best-effort; dismiss anyway */
+                      // Never a silent "sure, remembered" — the prompt stays
+                      // open so the user can retry.
+                      setAliasSaveError("Couldn't save — try again.");
                     } finally {
                       setSavingAlias(false);
-                      setShowAliasSavePrompt(false);
                     }
                   }}
                   className="h-7 px-3 rounded-md bg-amber-600 text-white text-[11px] font-medium hover:bg-amber-700 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
@@ -2645,12 +3703,18 @@ export function DashboardDropZone() {
                 <button
                   type="button"
                   disabled={savingAlias}
-                  onClick={() => setShowAliasSavePrompt(false)}
+                  onClick={() => {
+                    setShowAliasSavePrompt(false);
+                    setAliasSaveError(null);
+                  }}
                   className="h-7 px-3 rounded-md bg-secondary text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                 >
                   No thanks
                 </button>
               </div>
+              {aliasSaveError && (
+                <p className="text-[11px] text-destructive" data-testid="alias-save-error">{aliasSaveError}</p>
+              )}
             </div>
           );
         })()}
@@ -2904,6 +3968,9 @@ export function DashboardDropZone() {
                     type="button"
                     onClick={() => {
                       setRxProviderOrgId(newPracticeConflictOrgId);
+                      void rememberPracticeForCurrentDoctor(
+                        newPracticeConflictOrgId,
+                      );
                       setRxPracticeError(false);
                       setRxProviderSearch("");
                       setNewPracticeDraft(null);
@@ -2982,27 +4049,143 @@ export function DashboardDropZone() {
               setRxDraft({ ...r, patientName: e.target.value })
             }
           />
-          <input
-            className={inputCls}
-            placeholder="Teeth (e.g. 3,5,14)"
-            value={r.toothIndices || ""}
-            onChange={(e) =>
-              setRxDraft({ ...r, toothIndices: e.target.value })
-            }
-          />
+          <label
+            htmlFor="rx-case-pan-barcode"
+            className="col-span-2 flex flex-col gap-1 rounded-md border border-border bg-secondary/20 px-2.5 py-2"
+          >
+            <span className="text-xs font-medium text-foreground">
+              Case Pan Barcode{" "}
+              <span className="font-normal text-muted-foreground">(optional)</span>
+            </span>
+            <input
+              id="rx-case-pan-barcode"
+              className={inputCls + " w-full font-mono"}
+              type="text"
+              placeholder="Scan or enter barcode"
+              value={rxBarcode}
+              onChange={(e) => setRxBarcode(e.target.value)}
+            />
+          </label>
+          {!isRemovableRestorationType(r.caseType) && (
+            <input
+              className={inputCls}
+              placeholder="Teeth (e.g. 3,5,14)"
+              value={r.toothIndices || ""}
+              onChange={(e) =>
+                editRxClinical({ toothIndices: e.target.value })
+              }
+            />
+          )}
           <FieldCombobox
             value={r.caseType || ""}
             suggestions={dropZoneRestorationTypeSuggestions}
-            onChange={(t) => setRxDraft({ ...r, caseType: t })}
+            onChange={(t) =>
+              editRxClinical({
+                caseType: t,
+                ...(isRemovableRestorationType(t) ? { toothIndices: "" } : {}),
+              })
+            }
             onCreate={(v) => dropZoneCreateVocabItem("restoration_type", v)}
             placeholder="Restoration type"
             addNewLabel="Add restoration type"
             size="sm"
           />
+          {!isRemovableRestorationType(r.caseType) &&
+            !/ortho|night guard|retainer|aligner/i.test(r.caseType ?? "") && (
+              <div className="col-span-2 space-y-2 rounded-lg border border-border p-3">
+                <p className="text-xs text-muted-foreground">
+                  Optional: use the chart to correct extracted tooth roles or product details. Unassigned teeth keep the prescription values.
+                </p>
+                {rxReanalysisDraft && (
+                  <div className="text-xs space-y-2 rounded-md bg-amber-50 text-amber-900 p-2" role="status">
+                    <p>Re-analysis differs from your current assignment draft. Review the proposed changes before replacing it.</p>
+                    <p>AI suggested teeth {rxReanalysisDraft.toothIndices || "none"}, material {rxReanalysisDraft.material || "unspecified"}, shade {rxReanalysisDraft.shade || "unspecified"}.</p>
+                    <button type="button" className="underline" onClick={() => {
+                      const bridgeConnectors = rxDraft?.bridgeConnectors;
+                      rxClinicalOverrides.current = { assignmentRoles: rxReanalysisDraft.assignmentRoles,
+                        assignmentValues: rxReanalysisDraft.assignmentValues, toothIndices: rxReanalysisDraft.toothIndices,
+                        bridgeConnectors };
+                      setRxDraft({ ...rxReanalysisDraft, bridgeConnectors });
+                      setRxReanalysisDraft(null);
+                    }}>Accept replacement values and review roles again</button>
+                  </div>
+                )}
+                <ToothChart
+                  value={r.toothIndices ?? ""}
+                  onChange={(value) => editRxClinical({ toothIndices: value })}
+                  crownTeeth={new Set(Object.entries(r.assignmentRoles ?? {}).filter(([, role]) => role === "Crown").map(([tooth]) => tooth))}
+                  ponticTeeth={new Set(Object.entries(r.assignmentRoles ?? {}).filter(([, role]) => role === "Pontic").map(([tooth]) => tooth))}
+                  connectedPairs={rxConnectorState.active}
+                  connectorSuggestions={rxConnectorState.suggested}
+                  summaryText={`${rxToothSummary.units} units · ${rxToothSummary.crowns} prepared crowns · ${rxToothSummary.pontics} pontics · ${rxToothSummary.groups.length} connected groups · Unsaved draft`}
+                  onConnectedPairsChange={(pairs) => editRxClinical({ bridgeConnectors: updateConnectorChoices(rxConnectorState, pairs) })}
+                  onToothClick={setRxActiveTooth}
+                />
+                {rxAssignmentUndo && <button type="button" className="text-xs underline" onClick={() => {
+                  editRxClinical(rxAssignmentUndo); setRxAssignmentUndo(null);
+                }}>Undo last unsaved assignment change</button>}
+                {rxActiveTooth && <ToothActionDialog allowMarkMissing={false}
+                  toothId={rxActiveTooth}
+                  restorations={rxAssignmentUnits.map((unit) => ({ ...unit, id: unit.toothNumber, caseId: "", unitPrice: 0, quantity: 1 }))}
+                  groupTeeth={rxActiveTooth ? rxToothSummary.groups.find((group) => group.includes(rxActiveTooth)) : undefined}
+                  materialOptions={rxCatalogMaterials}
+                  onClose={() => setRxActiveTooth(null)}
+                  onConfirm={editRxTooth}
+                />}
+                <div className="flex flex-wrap gap-2">
+                  {expandToothAssignmentIdentifiers(r.toothIndices).map((tooth) => (
+                    <label key={tooth} className="text-xs flex items-center gap-1">
+                      #{tooth}
+                      <button type="button" className="underline" onClick={() => setRxActiveTooth(tooth)}>Edit product / shade</button>
+                      <select
+                        aria-label={`Clinical role for tooth ${tooth}`}
+                        value={r.assignmentRoles?.[tooth] ?? ""}
+                        className="h-9 rounded-md border border-border bg-background px-2"
+                        onChange={(e) => {
+                          const roles = { ...(r.assignmentRoles ?? {}) };
+                          if (e.target.value) roles[tooth] = e.target.value as "Crown" | "Pontic";
+                          else delete roles[tooth];
+                          editRxClinical({ assignmentRoles: roles });
+                        }}
+                      >
+                        <option value="">Needs review</option>
+                        <option value="Crown">Prepared crown</option>
+                        <option value="Pontic">Pontic</option>
+                      </select>
+                    </label>
+                  ))}
+                </div>
+                {rxAssignmentError && <p className="text-xs text-destructive" role="alert">{rxAssignmentError}</p>}
+              </div>
+            )}
+          {(isRemovableRestorationType(r.caseType) ||
+            /ortho|night guard|retainer|aligner/i.test(r.caseType ?? "")) && (
+            <label className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground px-0.5">
+                Arch <span className="text-destructive">*</span>
+              </span>
+              <select
+                aria-label="Arch"
+                className={inputCls}
+                value={r.arch ?? ""}
+                onChange={(e) =>
+                  setRxDraft({
+                    ...r,
+                    arch: e.target.value as ExtractedRx["arch"],
+                  })
+                }
+              >
+                <option value="">Select arch…</option>
+                <option value="upper">Upper</option>
+                <option value="lower">Lower</option>
+                <option value="both">Upper + Lower</option>
+              </select>
+            </label>
+          )}
           <FieldCombobox
             value={r.material || ""}
             suggestions={dropZoneMaterialSuggestions}
-            onChange={(m) => setRxDraft({ ...r, material: m })}
+            onChange={(m) => editRxClinical({ material: m })}
             onCreate={(v) => dropZoneCreateVocabItem("material", v)}
             placeholder="Material"
             addNewLabel="Add material"
@@ -3011,7 +4194,7 @@ export function DashboardDropZone() {
           <FieldCombobox
             value={r.shade || ""}
             suggestions={dropZoneShadeSuggestions}
-            onChange={(s) => setRxDraft({ ...r, shade: s })}
+            onChange={(s) => editRxClinical({ shade: s })}
             onCreate={(v) => dropZoneCreateVocabItem("shade", v)}
             placeholder="Shade"
             addNewLabel="Add shade"
@@ -3038,23 +4221,25 @@ export function DashboardDropZone() {
               )}
             </div>
           </label>
+          <label htmlFor="rx-received-date" className="flex flex-col gap-0.5">
+            <span className="text-xs text-muted-foreground px-0.5">
+              Date received
+            </span>
+            <input
+              id="rx-received-date"
+              type="date"
+              className={inputCls + " w-full"}
+              value={r.receivedAt || ""}
+              onChange={(e) =>
+                setRxDraft({ ...r, receivedAt: e.target.value })
+              }
+            />
+          </label>
           <textarea
             className={inputCls + " col-span-2 h-16 resize-none py-1.5"}
             placeholder="Notes"
             value={r.notes || ""}
             onChange={(e) => setRxDraft({ ...r, notes: e.target.value })}
-          />
-          <input
-            className={inputCls + " col-span-2 font-mono"}
-            type="text"
-            inputMode="numeric"
-            placeholder="Case pan barcode (optional)"
-            value={rxBarcode}
-            onChange={(e) => {
-              const v = e.target.value.replace(/[^0-9]/g, "");
-              setRxBarcode(v);
-            }}
-            aria-label="Case pan barcode"
           />
         </div>
         <div className="flex items-center gap-3">
@@ -3084,6 +4269,7 @@ export function DashboardDropZone() {
                   setManualRemakeSelected(null);
                   setManualRemakeReason("");
                   setManualRemakeCharged("");
+                  setManualRemakeNotes("");
                 } else {
                   setManualRemakeEnabled(true);
                 }
@@ -3241,13 +4427,27 @@ export function DashboardDropZone() {
                     ))}
                   </div>
                 </div>
+                {isAdminUser && (
+                  <div>
+                    <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                      Remake notes (optional)
+                    </label>
+                    <textarea
+                      rows={2}
+                      className="w-full px-2 py-1.5 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+                      value={manualRemakeNotes}
+                      onChange={(e) => setManualRemakeNotes(e.target.value)}
+                      placeholder="Additional technician notes for this remake…"
+                    />
+                  </div>
+                )}
               </>
             )}
           </div>
         )}
         {(invoicePreviewLoading ||
           invoicePreviewError ||
-          (invoicePreview?.lineItems?.length ?? 0) > 0) && (
+          invoicePreview !== null) && (
           <div className="rounded-md border border-border bg-secondary/30 p-3">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground mb-2">
               <FileText size={13} />
@@ -3264,117 +4464,314 @@ export function DashboardDropZone() {
             ) : invoicePreviewLoading && !invoicePreview ? (
               <p className="text-xs text-muted-foreground">Calculating…</p>
             ) : (invoicePreview?.lineItems?.length ?? 0) === 0 ? (
-              <p className="text-xs text-muted-foreground">No line items yet.</p>
+              <p className="text-xs text-muted-foreground">
+                No billable line items were found in the prescription.
+              </p>
             ) : (
               <div
                 className={`space-y-1.5 ${invoicePreviewLoading ? "opacity-60" : ""}`}
               >
-                {(() => {
-                  let runningTotal = 0;
-                  const rows = invoicePreview!.lineItems!.map((li, idx) => {
-                    const qty = li.quantity ?? 1;
-                    const indices = li.restorationIndices ?? [];
-                    const key =
-                      indices.length > 0 ? indices.join("-") : `li-${idx}`;
-                    const override = priceOverrides[key];
-                    const isNoCharge = override?.noCharge === true;
-                    const hasUserPrice =
-                      !!override &&
-                      !override.noCharge &&
-                      override.unitPrice.trim() !== "" &&
-                      Number.isFinite(Number(override.unitPrice));
-                    const serverUnit = li.unitPrice ?? "0.00";
-                    const inputValue = isNoCharge
-                      ? ""
-                      : override
-                        ? override.unitPrice
-                        : li.priced === false
-                          ? ""
-                          : serverUnit;
-                    const effUnit = isNoCharge
-                      ? 0
-                      : hasUserPrice
-                        ? Number(override!.unitPrice)
-                        : Number(serverUnit) || 0;
-                    const showNotPriced =
-                      !isNoCharge && !hasUserPrice && li.priced === false;
-                    const lineTotal = effUnit * qty;
-                    if (!showNotPriced) runningTotal += lineTotal;
-                    return (
-                      <div
-                        key={key}
-                        className="flex items-center justify-between gap-2 text-xs"
-                      >
-                        <span className="min-w-0 flex-1 text-foreground">
-                          {li.toothLabel ? (
-                            <span className="text-muted-foreground">
-                              {li.toothLabel}{" "}
-                            </span>
-                          ) : null}
-                          {li.description}
-                        </span>
-                        <span className="shrink-0 tabular-nums text-muted-foreground">
-                          {qty} ×
-                        </span>
-                        <div className="relative shrink-0">
-                          <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground">
-                            $
-                          </span>
+                {isAdminUser && editedLines !== null ? (
+                  /* ── Admin full-line edit table ─────────────────────────── */
+                  <>
+                    {editedLines.map((line) => {
+                      const qty = Number(line.qty) || 0;
+                      const price = Number(line.unitPrice) || 0;
+                      const lineTotal = qty * price + (line.subItems ?? []).reduce(
+                        (sum, sub) => sum + (Number(sub.qty) || 0) * (Number(sub.unitPrice) || 0), 0,
+                      );
+                      return (
+                        <div key={line.key} className="space-y-1">
+                        <div className="flex items-center gap-1.5 text-xs">
+                          <div className="min-w-0 flex-1">
+                            <ItemCombobox
+                              size="md"
+                              value={line.description}
+                              options={itemOptions}
+                              placeholder="Description"
+                              /* Picking a suggestion fills the description and
+                                 the doctor's effective price; a later manual
+                                 price edit still wins over the auto-fill. */
+                              onPick={(o) =>
+                                setEditedLines((prev) =>
+                                  prev?.map((l) =>
+                                    l.key === line.key
+                                      ? {
+                                          ...l,
+                                          description: o.name,
+                                          catalogItemKey:
+                                            itemPriceKeyByName.get(
+                                              o.name.trim().toLowerCase(),
+                                            ) ?? null,
+                                          unitPrice:
+                                            o.unitPrice != null
+                                              ? o.unitPrice.toFixed(2)
+                                              : l.unitPrice,
+                                          // Remember the suggestion so the row
+                                          // can be re-priced if the doctor
+                                          // changes, and drop any earlier
+                                          // hand-typed price for this row.
+                                          pickedItemName: o.name,
+                                          descriptionEdited: true,
+                                          priceEdited:
+                                            o.unitPrice != null
+                                              ? false
+                                              : l.priceEdited,
+                                        }
+                                      : l
+                                  ) ?? prev
+                                )
+                              }
+                              /* Free-typing keeps working exactly as before —
+                                 the line just loses its catalog identity. */
+                              onText={(text) =>
+                                setEditedLines((prev) =>
+                                  prev?.map((l) =>
+                                    l.key === line.key
+                                      ? {
+                                          ...l,
+                                          description: text,
+                                          catalogItemKey: null,
+                                          pickedItemName: null,
+                                          descriptionEdited: true,
+                                        }
+                                      : l
+                                  ) ?? prev
+                                )
+                              }
+                            />
+                          </div>
                           <input
                             type="number"
-                            min={0}
-                            step="0.01"
-                            inputMode="decimal"
-                            disabled={isNoCharge}
-                            value={inputValue}
-                            placeholder="0.00"
+                            min={1}
+                            step={1}
+                            value={line.qty}
+                            placeholder="1"
                             onChange={(e) =>
-                              setLineOverride(key, {
-                                unitPrice: e.target.value,
-                                noCharge: false,
-                              })
+                              setEditedLines((prev) =>
+                                prev?.map((l) =>
+                                  l.key === line.key
+                                    ? {
+                                        ...l,
+                                        qty: e.target.value,
+                                        qtyEdited: true,
+                                      }
+                                    : l
+                                ) ?? prev
+                              )
                             }
-                            className="h-6 w-20 rounded border border-border bg-background pl-4 pr-1 text-right tabular-nums text-xs text-foreground disabled:opacity-50"
+                            className="h-6 w-12 rounded border border-border bg-background px-1 text-center tabular-nums text-xs text-foreground"
                           />
+                          <div className="relative shrink-0">
+                            <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground">
+                              $
+                            </span>
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              inputMode="decimal"
+                              value={line.unitPrice}
+                              placeholder="0.00"
+                              onChange={(e) =>
+                                setEditedLines((prev) =>
+                                  prev?.map((l) =>
+                                    l.key === line.key
+                                      ? {
+                                          ...l,
+                                          unitPrice: e.target.value,
+                                          priceEdited: true,
+                                        }
+                                      : l
+                                  ) ?? prev
+                                )
+                              }
+                              className="h-6 w-20 rounded border border-border bg-background pl-4 pr-1 text-right tabular-nums text-xs text-foreground"
+                            />
+                          </div>
+                          <span className="w-16 shrink-0 text-right tabular-nums text-foreground">
+                            ${lineTotal.toFixed(2)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditedLines((prev) =>
+                                prev?.filter((l) => l.key !== line.key) ?? prev
+                              )
+                            }
+                            title="Remove this line"
+                            className="shrink-0 rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:text-destructive transition-colors"
+                          >
+                            ×
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setLineOverride(key, { noCharge: !isNoCharge })
-                          }
-                          title="Mark this line as no charge"
-                          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
-                            isNoCharge
-                              ? "bg-amber-500/15 text-amber-700 border border-amber-500/40"
-                              : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
-                          }`}
-                        >
-                          No charge
+                        {(line.subItems ?? []).map((sub, subIndex) => (
+                          <div key={subIndex} className="flex items-center gap-1.5 pl-5 text-xs">
+                            <input aria-label={`Child charge description ${subIndex + 1}`} value={sub.description}
+                              onChange={(e) => setEditedLines((prev) => prev?.map((l) => l.key === line.key
+                                ? { ...l, subItems: l.subItems?.map((s, i) => i === subIndex ? { ...s, description: e.target.value } : s) } : l) ?? prev)}
+                              className="min-w-0 flex-1 h-6 rounded border border-border bg-background px-1" />
+                            <input aria-label={`Child charge quantity ${subIndex + 1}`} type="number" min={1} value={sub.qty}
+                              onChange={(e) => setEditedLines((prev) => prev?.map((l) => l.key === line.key
+                                ? { ...l, subItems: l.subItems?.map((s, i) => i === subIndex ? { ...s, qty: e.target.value } : s) } : l) ?? prev)}
+                              className="w-12 h-6 rounded border border-border bg-background px-1" />
+                            <input aria-label={`Child charge price ${subIndex + 1}`} type="number" min={0} step="0.01" value={sub.unitPrice}
+                              onChange={(e) => setEditedLines((prev) => prev?.map((l) => l.key === line.key
+                                ? { ...l, subItems: l.subItems?.map((s, i) => i === subIndex ? { ...s, unitPrice: e.target.value } : s) } : l) ?? prev)}
+                              className="w-20 h-6 rounded border border-border bg-background px-1 text-right" />
+                            <button type="button" aria-label={`Remove child charge ${subIndex + 1}`}
+                              onClick={() => setEditedLines((prev) => prev?.map((l) => l.key === line.key
+                                ? { ...l, subItems: l.subItems?.filter((_, i) => i !== subIndex) } : l) ?? prev)}>×</button>
+                          </div>
+                        ))}
+                        <button type="button" className="pl-5 text-[10px] text-muted-foreground"
+                          onClick={() => setEditedLines((prev) => prev?.map((l) => l.key === line.key
+                            ? { ...l, subItems: [...(l.subItems ?? []), { description: "", qty: "1", unitPrice: "0.00" }] } : l) ?? prev)}>
+                          + Add child charge
                         </button>
-                        <span
-                          className={`w-16 shrink-0 text-right tabular-nums ${
-                            showNotPriced ? "text-amber-600" : "text-foreground"
-                          }`}
+                        </div>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditedLines((prev) => [
+                          ...(prev ?? []),
+                          {
+                            key: `custom-${Date.now()}-${Math.random()
+                              .toString(36)
+                              .slice(2, 8)}`,
+                            description: "",
+                            qty: "1",
+                            unitPrice: "0.00",
+                            catalogItemKey: null,
+                            userAdded: true,
+                          },
+                        ])
+                      }
+                      className="w-full h-6 rounded border border-dashed border-border text-[10px] text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+                    >
+                      + Add line
+                    </button>
+                    <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-border pt-2 text-xs font-semibold">
+                      <span className="text-foreground">Total</span>
+                      <span className="shrink-0 tabular-nums text-foreground">
+                        ${editedLines
+                          .reduce((sum, l) => sum + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0)
+                            + (l.subItems ?? []).reduce((children, sub) => children + (Number(sub.qty) || 0) * (Number(sub.unitPrice) || 0), 0), 0)
+                          .toFixed(2)}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  /* ── Non-admin price-only edit (unchanged) ──────────────── */
+                  (() => {
+                    let runningTotal = 0;
+                    const rows = invoicePreview!.lineItems!.map((li, idx) => {
+                      const qty = li.quantity ?? 1;
+                      const indices = li.restorationIndices ?? [];
+                      const key =
+                        indices.length > 0 ? indices.join("-") : `li-${idx}`;
+                      const override = priceOverrides[key];
+                      const isNoCharge = override?.noCharge === true;
+                      const hasUserPrice =
+                        !!override &&
+                        !override.noCharge &&
+                        override.unitPrice.trim() !== "" &&
+                        Number.isFinite(Number(override.unitPrice));
+                      const serverUnit = li.unitPrice ?? "0.00";
+                      const inputValue = isNoCharge
+                        ? ""
+                        : override
+                          ? override.unitPrice
+                          : li.priced === false
+                            ? ""
+                            : serverUnit;
+                      const effUnit = isNoCharge
+                        ? 0
+                        : hasUserPrice
+                          ? Number(override!.unitPrice)
+                          : Number(serverUnit) || 0;
+                      const showNotPriced =
+                        !isNoCharge && !hasUserPrice && li.priced === false;
+                      const lineTotal = effUnit * qty;
+                      if (!showNotPriced) runningTotal += lineTotal;
+                      return (
+                        <div
+                          key={key}
+                          className="flex items-center justify-between gap-2 text-xs"
                         >
-                          {showNotPriced
-                            ? "not priced"
-                            : `$${lineTotal.toFixed(2)}`}
-                        </span>
-                      </div>
+                          <span className="min-w-0 flex-1 text-foreground">
+                            {li.toothLabel ? (
+                              <span className="text-muted-foreground">
+                                {li.toothLabel}{" "}
+                              </span>
+                            ) : null}
+                            {li.description}
+                          </span>
+                          <span className="shrink-0 tabular-nums text-muted-foreground">
+                            {qty} ×
+                          </span>
+                          <div className="relative shrink-0">
+                            <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground">
+                              $
+                            </span>
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              inputMode="decimal"
+                              disabled={isNoCharge}
+                              value={inputValue}
+                              placeholder="0.00"
+                              onChange={(e) =>
+                                setLineOverride(key, {
+                                  unitPrice: e.target.value,
+                                  noCharge: false,
+                                })
+                              }
+                              className="h-6 w-20 rounded border border-border bg-background pl-4 pr-1 text-right tabular-nums text-xs text-foreground disabled:opacity-50"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLineOverride(key, { noCharge: !isNoCharge })
+                            }
+                            title="Mark this line as no charge"
+                            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                              isNoCharge
+                                ? "bg-amber-500/15 text-amber-700 border border-amber-500/40"
+                                : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
+                            }`}
+                          >
+                            No charge
+                          </button>
+                          <span
+                            className={`w-16 shrink-0 text-right tabular-nums ${
+                              showNotPriced ? "text-amber-600" : "text-foreground"
+                            }`}
+                          >
+                            {showNotPriced
+                              ? "not priced"
+                              : `$${lineTotal.toFixed(2)}`}
+                          </span>
+                        </div>
+                      );
+                    });
+                    return (
+                      <>
+                        {rows}
+                        <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-border pt-2 text-xs font-semibold">
+                          <span className="text-foreground">Total</span>
+                          <span className="shrink-0 tabular-nums text-foreground">
+                            ${runningTotal.toFixed(2)}
+                          </span>
+                        </div>
+                      </>
                     );
-                  });
-                  return (
-                    <>
-                      {rows}
-                      <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-border pt-2 text-xs font-semibold">
-                        <span className="text-foreground">Total</span>
-                        <span className="shrink-0 tabular-nums text-foreground">
-                          ${runningTotal.toFixed(2)}
-                        </span>
-                      </div>
-                    </>
-                  );
-                })()}
+                  })()
+                )}
               </div>
             )}
           </div>
@@ -3399,6 +4796,43 @@ export function DashboardDropZone() {
           <FileText size={13} />
           Preview document ({phase.file.name})
         </button>
+        {/* Alloy pre-create warning: shown when one or more PFM/FCM teeth will
+            have a $0 Alloy sub-item that needs manual pricing after case save. */}
+        {hasUnpricedAlloy && (
+          <div
+            role="alert"
+            data-testid="alloy-warning-banner"
+            className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs space-y-1"
+          >
+            <p className="font-semibold text-amber-700 dark:text-amber-400">
+              Alloy lines will be added at $0
+            </p>
+            <p className="text-amber-600 dark:text-amber-500">
+              Alloy sub-items for{" "}
+              <span className="font-medium">
+                {alloyUnpricedSubItems
+                  .map((s) => (s.description ?? "").replace(/^Alloy\s*/, "#"))
+                  .join(", ")}
+              </span>{" "}
+              will be created at $0 — you must set the price after creating
+              the case.
+            </p>
+            {alloyAcknowledged ? (
+              <p className="text-amber-600 dark:text-amber-500 font-medium">
+                ✓ Acknowledged
+              </p>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setAlloyAcknowledged(true)}
+                data-testid="alloy-acknowledge-btn"
+                className="mt-1 h-7 px-3 rounded border border-amber-500/60 bg-amber-500/20 text-xs font-medium text-amber-700 dark:text-amber-400 hover:bg-amber-500/30 transition-colors"
+              >
+                I understand
+              </button>
+            )}
+          </div>
+        )}
         <div className="flex flex-wrap gap-2 pt-1">
           <button
             type="button"
@@ -3432,7 +4866,9 @@ export function DashboardDropZone() {
           <button
             type="button"
             onClick={createCaseFromRx}
-            className="flex-1 min-w-0 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
+            disabled={hasUnpricedAlloy && !alloyAcknowledged}
+            data-testid="create-case-btn"
+            className="flex-1 min-w-0 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Create case {phase.caseNumber}
           </button>
@@ -3555,8 +4991,10 @@ export function DashboardDropZone() {
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
+      data-testid="rx-drop-zone"
+      data-idle={isIdle}
       onClick={isIdle ? () => fileRef.current?.click() : undefined}
-      className={`relative flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed select-none transition-all min-h-[140px] px-6 py-8 ${
+      className={`relative flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed select-none transition-all min-h-[180px] px-6 py-8 data-[idle=true]:border-slate-300 ${
         phase.kind === "draggingFile"
           ? "border-primary bg-primary/8 scale-[1.01] cursor-copy"
           : phase.kind === "done"
@@ -3581,7 +5019,7 @@ export function DashboardDropZone() {
         <>
           <Loader2 size={28} className="animate-spin text-primary" />
           <p className="text-sm font-medium text-primary">
-            Reading prescription…
+            {phase.message || "Reading prescription…"}
           </p>
           <p className="text-xs text-muted-foreground truncate max-w-full">
             {phase.fileName}
@@ -3643,7 +5081,7 @@ export function DashboardDropZone() {
           </div>
           <div className="text-center">
             <p className="text-sm font-medium">
-              Rx Drop Zone
+              Drag files here
             </p>
             <p className="text-xs text-muted-foreground mt-0.5 inline-flex items-center gap-1">
               <Sparkles size={11} className="text-primary" />
@@ -3651,7 +5089,7 @@ export function DashboardDropZone() {
             </p>
           </div>
           <p className="text-xs text-primary font-medium">
-            or click to browse
+            or <span className="underline">browse files</span>
           </p>
         </>
       )}

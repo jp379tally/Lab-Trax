@@ -14,6 +14,7 @@ interface Vendor {
   address: string | null;
   phone: string | null;
   vendorType: VendorType;
+  paymentTermsDays: number | null;
   isActive: boolean;
 }
 
@@ -51,6 +52,8 @@ interface FormState {
   phone: string;
   address: string;
   vendorType: VendorType;
+  /** Default net terms for new bills. Empty means no standing terms. */
+  paymentTermsDays: string;
   isActive: boolean;
 }
 
@@ -59,8 +62,16 @@ const emptyForm = (defaultType: VendorType = "vendor"): FormState => ({
   phone: "",
   address: "",
   vendorType: defaultType,
+  paymentTermsDays: "",
   isActive: true,
 });
+
+function termsDaysPayload(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+}
 
 
 function PayeesContent({ organizationId }: { organizationId: string }) {
@@ -111,6 +122,7 @@ function PayeesContent({ organizationId }: { organizationId: string }) {
           phone: input.phone.trim() || null,
           address: input.address.trim() || null,
           vendorType: input.vendorType,
+          paymentTermsDays: termsDaysPayload(input.paymentTermsDays),
           isActive: input.isActive,
         }),
       }),
@@ -130,6 +142,7 @@ function PayeesContent({ organizationId }: { organizationId: string }) {
           phone: input.phone.trim() || null,
           address: input.address.trim() || null,
           vendorType: input.vendorType,
+          paymentTermsDays: termsDaysPayload(input.paymentTermsDays),
           isActive: input.isActive,
         }),
       }),
@@ -162,6 +175,8 @@ function PayeesContent({ organizationId }: { organizationId: string }) {
       phone: v.phone ?? "",
       address: v.address ?? "",
       vendorType: v.vendorType,
+      paymentTermsDays:
+        v.paymentTermsDays == null ? "" : String(v.paymentTermsDays),
       isActive: v.isActive,
     });
     setShowForm(false);
@@ -300,6 +315,7 @@ function PayeesContent({ organizationId }: { organizationId: string }) {
                   <th className="text-left font-medium px-4 py-2">Name</th>
                   <th className="text-left font-medium px-3 py-2">Phone</th>
                   <th className="text-left font-medium px-3 py-2">Address / Notes</th>
+                  <th className="text-left font-medium px-3 py-2 w-24">Terms</th>
                   <th className="text-left font-medium px-3 py-2 w-28">Type</th>
                   <th className="text-center font-medium px-3 py-2 w-20">Active</th>
                   <th className="px-2 py-2 w-24" />
@@ -332,6 +348,21 @@ function PayeesContent({ organizationId }: { organizationId: string }) {
                           onChange={(e) => setForm({ ...form, address: e.target.value })}
                           className="h-8 px-2 rounded-md bg-background border border-input text-sm w-full"
                           placeholder="Address / notes"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          value={form.paymentTermsDays}
+                          onChange={(e) =>
+                            setForm({
+                              ...form,
+                              paymentTermsDays: e.target.value.replace(/[^0-9]/g, ""),
+                            })
+                          }
+                          inputMode="numeric"
+                          title="Default days until a bill from this payee is due"
+                          className="h-8 px-2 rounded-md bg-background border border-input text-sm w-full"
+                          placeholder="Net days"
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -409,6 +440,9 @@ function PayeesContent({ organizationId }: { organizationId: string }) {
                       </td>
                       <td className="px-3 py-2.5 text-muted-foreground text-xs truncate max-w-[240px]">
                         {v.address || "—"}
+                      </td>
+                      <td className="px-3 py-2.5 text-muted-foreground text-xs">
+                        {v.paymentTermsDays == null ? "—" : `Net ${v.paymentTermsDays}`}
                       </td>
                       <td className="px-3 py-2.5">
                         <span
@@ -503,7 +537,7 @@ function PayeeForm({
       <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
         New {typeLabel}
       </p>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
         <input
           value={form.name}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -521,6 +555,15 @@ function PayeeForm({
           value={form.address}
           onChange={(e) => setForm({ ...form, address: e.target.value })}
           placeholder="Address / notes (optional)"
+          className="h-9 px-2.5 rounded-md bg-background border border-input text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+        />
+        <input
+          value={form.paymentTermsDays}
+          onChange={(e) =>
+            setForm({ ...form, paymentTermsDays: e.target.value.replace(/[^0-9]/g, "") })
+          }
+          inputMode="numeric"
+          placeholder="Payment terms, net days (optional)"
           className="h-9 px-2.5 rounded-md bg-background border border-input text-sm focus:outline-none focus:ring-1 focus:ring-primary"
         />
         <select

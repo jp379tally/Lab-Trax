@@ -326,9 +326,9 @@ export function CorrespondenceLayoutPanel() {
         practiceName: "Riverside Dental",
         patientName: "Jane Doe",
         balance: "$1,400.00",
-        dueDate: "June 1, 2026",
+        dueDate: "06/01/2026",
         invoiceNumber: "INV-042",
-        date: new Date().toLocaleDateString("en-US"),
+        date: (() => { const _d = new Date(); const _mm = String(_d.getMonth() + 1).padStart(2, "0"); const _dd = String(_d.getDate()).padStart(2, "0"); return `${_mm}/${_dd}/${_d.getFullYear()}`; })(),
         generatedAt: new Date(),
         logoUrl: user?.practiceLogoUrl ?? null,
         template: draft,
@@ -768,9 +768,9 @@ export function CorrespondenceLayoutPanel() {
                 .replace(/\{\{practiceName\}\}/g, "Riverside Dental")
                 .replace(/\{\{patientName\}\}/g, "Jane Doe")
                 .replace(/\{\{balance\}\}/g, "$1,400.00")
-                .replace(/\{\{dueDate\}\}/g, "June 1, 2026")
+                .replace(/\{\{dueDate\}\}/g, "06/01/2026")
                 .replace(/\{\{labName\}\}/g, "Sample Dental Lab")
-                .replace(/\{\{date\}\}/g, new Date().toLocaleDateString("en-US"))
+                .replace(/\{\{date\}\}/g, (() => { const _d = new Date(); const _mm = String(_d.getMonth() + 1).padStart(2, "0"); const _dd = String(_d.getDate()).padStart(2, "0"); return `${_mm}/${_dd}/${_d.getFullYear()}`; })())
                 .replace(/\{\{invoiceNumber\}\}/g, "INV-042")}
             </div>
           </div>
@@ -807,7 +807,7 @@ export function CorrespondenceLayoutPanel() {
               {draft.closingText
                 .replace(/\{\{labName\}\}/g, "Sample Dental Lab")
                 .replace(/\{\{practiceName\}\}/g, "Riverside Dental")
-                .replace(/\{\{date\}\}/g, new Date().toLocaleDateString("en-US"))}
+                .replace(/\{\{date\}\}/g, (() => { const _d = new Date(); const _mm = String(_d.getMonth() + 1).padStart(2, "0"); const _dd = String(_d.getDate()).padStart(2, "0"); return `${_mm}/${_dd}/${_d.getFullYear()}`; })())}
             </div>
           </div>
           <button type="button" onClick={() => { setDraft((d) => ({ ...d, closingText: DEFAULT_CLOSING_TEXT })); setDirty(true); }}

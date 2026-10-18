@@ -6,7 +6,8 @@
 // useQuery keyed on "auth-me" (seed memberships via meMemberships).
 import React from "react";
 import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react-native";
+import { router } from "expo-router";
+import { render, screen, cleanup, fireEvent, act } from "@testing-library/react-native";
 import StatsScreen from "../manage/stats";
 import { setMockAppState, resetMockAppState } from "../../vitest.setup";
 
@@ -33,6 +34,8 @@ const SUMMARY = {
   totalRevenue: "12345.67",
   invoiceCount: 18,
   averageCaseValue: "293.94",
+  avgTurnaroundDays: 4.2,
+  eligibleTurnaroundCaseCount: 12,
   topCategory: "zirconia",
   topCategoryLabel: "Zirconia",
   topCategoryCount: 15,
@@ -59,6 +62,17 @@ const REVENUE = {
     { period: "2026-07-02", periodStart: "2026-07-02", revenue: "250.00", invoiceCount: 3 },
   ],
   totals: { revenue: "350.00", invoiceCount: 5, averageInvoice: "70.00" },
+};
+
+const INVOICE_DISCOUNTS = {
+  from: SUMMARY.from,
+  to: SUMMARY.to,
+  groupBy: "day",
+  timeZone: "UTC",
+  series: [],
+  items: [],
+  practices: [],
+  totals: { amount: "45.25", count: 3 },
 };
 
 const CATEGORIES = {
@@ -88,37 +102,73 @@ const WEEKDAYS = {
   ],
 };
 
+const REMAKES = {
+  from: SUMMARY.from,
+  to: SUMMARY.to,
+  timeZone: "UTC",
+  totalRemakes: 7,
+  rechargedRemakes: 2,
+  nonRechargedRemakes: 5,
+  remakeReasons: [
+    { reason: "Didn't fit — contacts", count: 3 },
+    { reason: "Shade mismatch", count: 2 },
+  ],
+  byDoctor: [{ doctorName: "Dr. Stats", count: 4 }],
+  byType: [{ typeName: "Restorative", count: 5 }],
+  timeSeries: [
+    { period: "2026-W27", periodStart: "2026-07-06T00:00:00.000Z", count: 2 },
+    { period: "2026-W28", periodStart: "2026-07-13T00:00:00.000Z", count: 5 },
+  ],
+  records: [
+    {
+      id: "remake-1",
+      caseNumber: "R-1001",
+      originalCaseId: "case-1",
+      originalCaseNumber: "SYN-CASE-001",
+      receivedAt: "2026-07-14T12:00:00.000Z",
+      reason: "Didn't fit — contacts",
+      reasonKey: "fit_contacts",
+      recharged: true,
+      returnedToLab: false,
+      category: "crown_bridge",
+      source: "canonical",
+      doctorName: "Dr. Stats",
+    },
+  ],
+};
+
 afterEach(() => {
   cleanup();
   resetMockAppState();
 });
 
 describe("StatsScreen — role gating", () => {
-  it("blocks members without a billing-or-better lab role", () => {
+  it("blocks members without a billing-or-better lab role", async () => {
     setMockAppState({ meMemberships: [TECH_MEMBERSHIP] });
-    render(<StatsScreen />);
+    await render(<StatsScreen />);
     expect(screen.getByTestId("stats-blocked")).toBeTruthy();
     expect(screen.getByText("Not available")).toBeTruthy();
     expect(screen.queryByTestId("stats-summary")).toBeNull();
   });
 
-  it("blocks users with no memberships at all", () => {
+  it("blocks users with no memberships at all", async () => {
     setMockAppState({ meMemberships: [] });
-    render(<StatsScreen />);
+    const rendered = await render(<StatsScreen />);
     expect(screen.getByTestId("stats-blocked")).toBeTruthy();
   });
 });
 
 describe("StatsScreen — billing-role rendering", () => {
-  it("renders summary metrics, revenue totals, categories, and weekday chart", () => {
+  it("renders summary metrics, revenue totals, categories, and weekday chart", async () => {
     setMockAppState({
       meMemberships: [OWNER_MEMBERSHIP],
       statsSummary: SUMMARY,
       statsRevenueSeries: REVENUE,
+      invoiceDiscountsReport: INVOICE_DISCOUNTS,
       statsCaseCategories: CATEGORIES,
       statsWeekdayVolume: WEEKDAYS,
     });
-    render(<StatsScreen />);
+    await render(<StatsScreen />);
 
     expect(screen.queryByTestId("stats-blocked")).toBeNull();
     expect(screen.getByTestId("stats-summary")).toBeTruthy();
@@ -126,6 +176,8 @@ describe("StatsScreen — billing-role rendering", () => {
     // Summary metrics
     expect(screen.getByText("42")).toBeTruthy();
     expect(screen.getByText("$12,345.67")).toBeTruthy();
+    expect(screen.getByText("$45.25")).toBeTruthy();
+    expect(screen.getByText("Discounts given")).toBeTruthy();
     expect(screen.getByText("$293.94")).toBeTruthy();
     // "Zirconia" appears in the category filter chip, the top-case-type
     // metric, the category bars, and the material bars.
@@ -152,7 +204,7 @@ describe("StatsScreen — billing-role rendering", () => {
     expect(screen.getByTestId("stats-range-12mo")).toBeTruthy();
   });
 
-  it("opens start/end calendar pickers when the Custom range chip is tapped", () => {
+  it("opens start/end calendar pickers when the Custom range chip is tapped", async () => {
     setMockAppState({
       meMemberships: [OWNER_MEMBERSHIP],
       statsSummary: SUMMARY,
@@ -160,14 +212,14 @@ describe("StatsScreen — billing-role rendering", () => {
       statsCaseCategories: CATEGORIES,
       statsWeekdayVolume: WEEKDAYS,
     });
-    render(<StatsScreen />);
+    await render(<StatsScreen />);
 
     // Custom chip is present alongside the presets, and the pickers are hidden
     // until it is selected.
     expect(screen.getByTestId("stats-range-custom")).toBeTruthy();
     expect(screen.queryByTestId("stats-custom-range")).toBeNull();
 
-    fireEvent.press(screen.getByTestId("stats-range-custom"));
+    await fireEvent.press(screen.getByTestId("stats-range-custom"));
 
     // Both date-field triggers now render, seeded with a valid range.
     expect(screen.getByTestId("stats-custom-range")).toBeTruthy();
@@ -175,7 +227,252 @@ describe("StatsScreen — billing-role rendering", () => {
     expect(screen.getByTestId("stats-custom-to")).toBeTruthy();
   });
 
-  it("shows empty states when there is no data in the window", () => {
+  it("shows the excluded-days info icon and breakdown on the Avg daily sales tile", async () => {
+    setMockAppState({
+      meMemberships: [OWNER_MEMBERSHIP],
+      statsSummary: {
+        ...SUMMARY,
+        averageDailyRevenue: "1234.56",
+        excludedDays: {
+          holidayCount: 3,
+          customClosedCount: 2,
+          dates: [],
+        },
+      },
+      statsRevenueSeries: REVENUE,
+      statsCaseCategories: CATEGORIES,
+      statsWeekdayVolume: WEEKDAYS,
+    });
+    await render(<StatsScreen />);
+
+    // Info icon is rendered for the Avg daily sales tile.
+    const infoBtn = screen.getByTestId("stats-avg-daily-info");
+    expect(infoBtn).toBeTruthy();
+
+    // The breakdown text is hidden before tapping.
+    expect(
+      screen.queryByText(/Denominator excludes/),
+    ).toBeNull();
+
+    // Tap to expand.
+    await act(async () => {
+      await fireEvent.press(infoBtn); });
+
+    // Now the breakdown is visible with both holiday and custom counts.
+    expect(
+      screen.getByText(
+        "Denominator excludes 3 US federal holidays + 2 custom closed days from the business-day count.",
+      ),
+    ).toBeTruthy();
+
+    // Tap again to collapse.
+    await act(async () => {
+      await fireEvent.press(infoBtn); });
+    expect(
+      screen.queryByText(/Denominator excludes/),
+    ).toBeNull();
+  });
+
+  it("shows sorted date rows with holiday and Closed day labels after tapping the info icon", async () => {
+    setMockAppState({
+      meMemberships: [OWNER_MEMBERSHIP],
+      statsSummary: {
+        ...SUMMARY,
+        averageDailyRevenue: "500.00",
+        excludedDays: {
+          holidayCount: 2,
+          customClosedCount: 1,
+          dates: [
+            { date: "2026-07-04", reason: "holiday" },
+            { date: "2025-12-25", reason: "holiday" },
+            { date: "2026-03-20", reason: "custom" },
+          ],
+        },
+      },
+      statsRevenueSeries: REVENUE,
+      statsCaseCategories: CATEGORIES,
+      statsWeekdayVolume: WEEKDAYS,
+    });
+    await render(<StatsScreen />);
+
+    const infoBtn = screen.getByTestId("stats-avg-daily-info");
+    await act(async () => {
+      await fireEvent.press(infoBtn); });
+
+    // Dates are sorted chronologically: Dec 25 (2025) < Mar 20 (2026) < Jul 4 (2026).
+    expect(screen.getByText("12/25")).toBeTruthy();
+    expect(screen.getByText("03/20")).toBeTruthy();
+    expect(screen.getByText("07/04")).toBeTruthy();
+
+    // Holiday entries show a name note rendered as "· <Name>".
+    // 2025-12-25 is a Thursday → nameMap resolves "Christmas Day".
+    // 2026-07-04 is a Saturday → observed Jul 3, raw date not in nameMap → "Holiday" fallback.
+    // Custom entry (Mar 20) renders no name note.
+    expect(screen.getAllByText(/Christmas Day/).length).toBe(1);
+    expect(screen.getAllByText(/\bHoliday\b/).length).toBe(1);
+    // No generic "US holiday" or "Closed day" labels — the component uses actual names.
+    expect(screen.queryByText("US holiday")).toBeNull();
+    expect(screen.queryByText("Closed day")).toBeNull();
+  });
+
+  it("shows no date rows when dates array is empty even if counts are non-zero", async () => {
+    setMockAppState({
+      meMemberships: [OWNER_MEMBERSHIP],
+      statsSummary: {
+        ...SUMMARY,
+        excludedDays: {
+          holidayCount: 1,
+          customClosedCount: 0,
+          dates: [],
+        },
+      },
+      statsRevenueSeries: REVENUE,
+      statsCaseCategories: CATEGORIES,
+      statsWeekdayVolume: WEEKDAYS,
+    });
+    await render(<StatsScreen />);
+
+    const infoBtn = screen.getByTestId("stats-avg-daily-info");
+    await act(async () => {
+      await fireEvent.press(infoBtn); });
+
+    // The note text still renders
+    expect(screen.getByText(/Denominator excludes/)).toBeTruthy();
+
+    // No individual date rows
+    expect(screen.queryByText("US holiday")).toBeNull();
+    expect(screen.queryByText("Closed day")).toBeNull();
+  });
+
+  it("shows only Closed day labels when all excluded-day entries are custom", async () => {
+    setMockAppState({
+      meMemberships: [OWNER_MEMBERSHIP],
+      statsSummary: {
+        ...SUMMARY,
+        excludedDays: {
+          holidayCount: 0,
+          customClosedCount: 2,
+          dates: [
+            { date: "2026-02-14", reason: "custom" },
+            { date: "2026-04-01", reason: "custom" },
+          ],
+        },
+      },
+      statsRevenueSeries: REVENUE,
+      statsCaseCategories: CATEGORIES,
+      statsWeekdayVolume: WEEKDAYS,
+    });
+    await render(<StatsScreen />);
+
+    const infoBtn = screen.getByTestId("stats-avg-daily-info");
+    await act(async () => {
+      await fireEvent.press(infoBtn); });
+
+    expect(screen.getByText("02/14")).toBeTruthy();
+    expect(screen.getByText("04/01")).toBeTruthy();
+
+    // Custom entries render date labels only — no name note.
+    expect(screen.queryByText("Closed day")).toBeNull();
+    expect(screen.queryByText("US holiday")).toBeNull();
+  });
+
+  it("correctly orders dates that span two different calendar years", async () => {
+    setMockAppState({
+      meMemberships: [OWNER_MEMBERSHIP],
+      statsSummary: {
+        ...SUMMARY,
+        excludedDays: {
+          holidayCount: 1,
+          customClosedCount: 2,
+          dates: [
+            { date: "2026-06-15", reason: "custom" },
+            { date: "2025-11-01", reason: "custom" },
+            { date: "2025-12-25", reason: "holiday" },
+          ],
+        },
+      },
+      statsRevenueSeries: REVENUE,
+      statsCaseCategories: CATEGORIES,
+      statsWeekdayVolume: WEEKDAYS,
+    });
+    await render(<StatsScreen />);
+
+    const infoBtn = screen.getByTestId("stats-avg-daily-info");
+    await act(async () => {
+      await fireEvent.press(infoBtn); });
+
+    // All three dates must be visible after expanding.
+    const nov1 = screen.getByText("11/01");
+    const dec25 = screen.getByText("12/25");
+    const jun15 = screen.getByText("06/15");
+    expect(nov1).toBeTruthy();
+    expect(dec25).toBeTruthy();
+    expect(jun15).toBeTruthy();
+
+    // Verify chronological sort by checking that RNTL returns the date
+    // label elements in document order. getAllByText with an exact-list
+    // regex returns matches in the order they appear in the tree, so the
+    // first match must be Nov 1 (2025), then Dec 25 (2025), then Jun 15 (2026).
+    const allDates = screen.getAllByText(/^(?:11\/01|12\/25|06\/15)$/);
+    expect(allDates[0]).toBe(nov1);
+    expect(allDates[1]).toBe(dec25);
+    expect(allDates[2]).toBe(jun15);
+  });
+
+  it("hides the info icon when no days are excluded", async () => {
+    setMockAppState({
+      meMemberships: [OWNER_MEMBERSHIP],
+      statsSummary: {
+        ...SUMMARY,
+        excludedDays: { holidayCount: 0, customClosedCount: 0, dates: [] },
+      },
+      statsRevenueSeries: REVENUE,
+      statsCaseCategories: CATEGORIES,
+      statsWeekdayVolume: WEEKDAYS,
+    });
+    await render(<StatsScreen />);
+
+    expect(screen.queryByTestId("stats-avg-daily-info")).toBeNull();
+    expect(screen.queryByText(/Denominator excludes/)).toBeNull();
+  });
+
+  it("shows eligible case count subtitle on the Avg turnaround tile", async () => {
+    setMockAppState({
+      meMemberships: [OWNER_MEMBERSHIP],
+      statsSummary: {
+        ...SUMMARY,
+        avgTurnaroundDays: 3.7,
+        eligibleTurnaroundCaseCount: 9,
+      },
+      statsRevenueSeries: REVENUE,
+      statsCaseCategories: CATEGORIES,
+      statsWeekdayVolume: WEEKDAYS,
+    });
+    await render(<StatsScreen />);
+
+    expect(screen.getByText("3.7 days")).toBeTruthy();
+    expect(screen.getByText("9 eligible cases")).toBeTruthy();
+  });
+
+  it("omits the eligible case count subtitle when the field is absent", async () => {
+    setMockAppState({
+      meMemberships: [OWNER_MEMBERSHIP],
+      statsSummary: {
+        ...SUMMARY,
+        avgTurnaroundDays: 2.5,
+        eligibleTurnaroundCaseCount: undefined,
+      },
+      statsRevenueSeries: REVENUE,
+      statsCaseCategories: CATEGORIES,
+      statsWeekdayVolume: WEEKDAYS,
+    });
+    await render(<StatsScreen />);
+
+    expect(screen.getByText("2.5 days")).toBeTruthy();
+    expect(screen.queryByText(/eligible cases/)).toBeNull();
+  });
+
+  it("shows empty states when there is no data in the window", async () => {
     setMockAppState({
       meMemberships: [OWNER_MEMBERSHIP],
       statsSummary: { ...SUMMARY, totalCases: 0, legacyCases: 0 },
@@ -183,11 +480,67 @@ describe("StatsScreen — billing-role rendering", () => {
       statsCaseCategories: { ...CATEGORIES, totalCases: 0, materials: [] },
       statsWeekdayVolume: { ...WEEKDAYS, totalCases: 0 },
     });
-    render(<StatsScreen />);
+    await render(<StatsScreen />);
 
     expect(screen.getByTestId("stats-revenue-empty")).toBeTruthy();
     expect(screen.getByTestId("stats-categories-empty")).toBeTruthy();
     expect(screen.getByTestId("stats-materials-empty")).toBeTruthy();
     expect(screen.getByTestId("stats-weekday-empty")).toBeTruthy();
+  });
+
+  it("renders the compact remake dashboard, trend, breakdowns, and navigable records", async () => {
+    setMockAppState({
+      meMemberships: [OWNER_MEMBERSHIP],
+      statsSummary: SUMMARY,
+      statsRevenueSeries: REVENUE,
+      statsCaseCategories: CATEGORIES,
+      statsWeekdayVolume: WEEKDAYS,
+      statsRemakes: REMAKES,
+    });
+    const rendered = await render(<StatsScreen />);
+
+    expect(screen.getByTestId("stats-remakes-summary")).toBeTruthy();
+    expect(screen.getByTestId("stats-remakes-total").props.children).toBe(7);
+    expect(screen.getByTestId("stats-remakes-reasons")).toBeTruthy();
+    expect(screen.getByTestId("stats-remakes-trend")).toBeTruthy();
+    expect(screen.getByTestId("stats-remakes-by-type")).toBeTruthy();
+    expect(screen.getByTestId("stats-remakes-by-doctor")).toBeTruthy();
+    expect(screen.getByTestId("stats-remakes-records")).toBeTruthy();
+    expect(screen.getByTestId("remake-reason-all")).toBeTruthy();
+    expect(screen.getByTestId("stats-weekday-bar-1")).toBeTruthy();
+    (router.push as unknown as { mockClear: () => void }).mockClear();
+    await fireEvent.press(screen.getByTestId("stats-remake-record-remake-1"));
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: "/cases/[id]",
+      params: { id: "remake-1" },
+    });
+  });
+
+  it("keeps remake analytics restricted to admins and owners", async () => {
+    setMockAppState({
+      meMemberships: [{ ...OWNER_MEMBERSHIP, role: "billing" }],
+      statsSummary: SUMMARY,
+      statsRevenueSeries: REVENUE,
+      statsCaseCategories: CATEGORIES,
+      statsWeekdayVolume: WEEKDAYS,
+      statsRemakes: REMAKES,
+    });
+    await render(<StatsScreen />);
+
+    expect(screen.queryByTestId("stats-remakes")).toBeNull();
+  });
+
+  it("keeps loading and error messages inside the refreshed analytics cards", async () => {
+    setMockAppState({
+      meMemberships: [OWNER_MEMBERSHIP],
+      statsSummaryIsLoading: true,
+      statsRevenueSeriesIsError: true,
+      statsRemakesIsError: true,
+    });
+    await render(<StatsScreen />);
+
+    expect(screen.getAllByText("…").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Couldn’t load this chart. Pull to refresh.").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("stats-remakes-error")).toBeTruthy();
   });
 });

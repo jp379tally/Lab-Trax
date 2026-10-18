@@ -17,24 +17,28 @@ import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
-import * as FileSystem from "expo-file-system";
 import {
   useListLabInboxFiles,
   useAssignLabInboxFile,
+  useUpdateLabInboxFileNote,
   getListLabInboxFilesQueryKey,
 } from "@workspace/api-client-react";
 import type { LabInboxFile } from "@workspace/api-client-react";
 import { useMe, primaryLabOrgId } from "@/lib/auth-me";
-import {
-  resilientFetch,
-  chunkedUploadCaseMedia,
-  mediaFileNameFromUrl,
-} from "@/lib/query-client";
+import { subscribeRxIntake } from "@/lib/rx-intake-events";
+import { resilientFetch } from "@/lib/query-client";
+import { saveFileToUnassignedDocuments } from "@/lib/shared-file-inbox";
 import { openAttachment } from "@/lib/open-attachment";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+  useDismissKeyboardOnTap,
+} from "@/components/ui/DismissKeyboardView";
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null) return "";
   if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
@@ -42,7 +46,8 @@ function formatBytes(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
 }
 
-function mimeIcon(mimeType: string): string {
+function mimeIcon(mimeType: string | null | undefined): string {
+  if (!mimeType) return "attach-outline";
   if (mimeType.startsWith("image/")) return "image-outline";
   if (mimeType === "application/pdf") return "document-text-outline";
   if (mimeType.includes("word") || mimeType.includes("document"))
@@ -52,7 +57,7 @@ function mimeIcon(mimeType: string): string {
   return "attach-outline";
 }
 
-function defaultPhotoFilename(): string {
+function defaultPhotoFilename(sequence?: number): string {
   const now = new Date();
   const pad = (n: number, d = 2) => String(n).padStart(d, "0");
   const dateStr = [
@@ -65,7 +70,8 @@ function defaultPhotoFilename(): string {
     pad(now.getMinutes()),
     pad(now.getSeconds()),
   ].join("");
-  return `photo-${dateStr}-${timeStr}.jpg`;
+  const suffix = sequence == null ? "" : `-${sequence + 1}`;
+  return `photo-${dateStr}-${timeStr}${suffix}.jpg`;
 }
 
 function sanitizeFilename(input: string, fallback: string): string {
@@ -80,6 +86,12 @@ function sanitizeFilename(input: string, fallback: string): string {
   }
   return name || fallback;
 }
+
+type StagedUpload = {
+  uri: string;
+  name: string;
+  mimeType: string;
+};
 
 type QuickCase = {
   id: string;
@@ -106,6 +118,8 @@ function InboxFileRow({
   const [isSearching, setIsSearching] = useState(false);
   const [isViewing, setIsViewing] = useState(false);
   const [isAssigning, setIsAssigning] = useState(false);
+  const [isEditingNote, setIsEditingNote] = useState(false);
+  const [noteDraft, setNoteDraft] = useState(file.note ?? "");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const qc = useQueryClient();
@@ -120,6 +134,19 @@ function InboxFileRow({
       onError: (err: Error) => {
         Alert.alert("Assignment failed", err.message || "Please try again.");
         setIsAssigning(false);
+      },
+    },
+  });
+  const updateNoteMutation = useUpdateLabInboxFileNote({
+    mutation: {
+      onSuccess: () => {
+        setIsEditingNote(false);
+        void qc.invalidateQueries({
+          queryKey: getListLabInboxFilesQueryKey({ labOrganizationId }),
+        });
+      },
+      onError: (err: Error) => {
+        Alert.alert("Could not save note", err.message || "Please try again.");
       },
     },
   });
@@ -182,6 +209,7 @@ function InboxFileRow({
       ? `${file.uploaderFirstName} ${file.uploaderLastName}`
       : (file.uploaderUsername ?? "Unknown");
 
+  const isNoteOnly = !file.storagePath;
   const s = makeRowStyles(colors);
 
   return (
@@ -189,57 +217,132 @@ function InboxFileRow({
       <View style={s.rowTop}>
         <View style={s.iconWrap}>
           <Ionicons
-            name={mimeIcon(file.mimeType) as any}
+            name={isNoteOnly ? "chatbubble-outline" : (mimeIcon(file.mimeType) as any)}
             size={18}
             color={colors.tint}
           />
         </View>
 
-        <Pressable style={s.fileMeta} onPress={handleView} disabled={isViewing}>
-          <Text style={s.fileName} numberOfLines={1}>
-            {file.originalFilename}
-          </Text>
-          <Text style={s.fileSub}>
-            {formatBytes(file.sizeBytes)} · {uploaderName}
-          </Text>
-        </Pressable>
-
-        <View style={s.rowActions}>
-          <Pressable
-            style={s.viewBtn}
-            onPress={handleView}
-            disabled={isViewing}
-            hitSlop={6}
-          >
-            {isViewing ? (
-              <ActivityIndicator size={14} color={colors.tint} />
-            ) : (
-              <Ionicons name="eye-outline" size={16} color={colors.tint} />
-            )}
-          </Pressable>
-
-          <Pressable
-            style={[s.assignBtn, (isAssigning || assignMutation.isPending) && s.assignBtnDisabled]}
-            onPress={() => {
-              if (isAssigning || assignMutation.isPending) return;
-              setAssignOpen((v) => !v);
-              if (assignOpen) setQuery("");
-            }}
-            disabled={isAssigning || assignMutation.isPending}
-          >
-            {isAssigning || assignMutation.isPending ? (
-              <ActivityIndicator size={12} color={colors.textInverse} />
-            ) : assignOpen ? (
-              <Ionicons name="close" size={12} color={colors.textInverse} />
-            ) : (
-              <Ionicons name="link-outline" size={12} color={colors.textInverse} />
-            )}
-            <Text style={s.assignBtnText}>
-              {assignOpen ? "Cancel" : "Assign"}
+        {isNoteOnly ? (
+          <View style={s.fileMeta}>
+            <Text style={s.fileName} numberOfLines={1}>
+              Note only
+            </Text>
+            <Text style={s.fileSub}>{uploaderName}</Text>
+          </View>
+        ) : (
+          <Pressable style={s.fileMeta} onPress={handleView} disabled={isViewing}>
+            <Text style={s.fileName} numberOfLines={1}>
+              {file.originalFilename}
+            </Text>
+            <Text style={s.fileSub}>
+              {file.sizeBytes != null ? `${formatBytes(file.sizeBytes)} · ` : ""}{uploaderName}
             </Text>
           </Pressable>
-        </View>
+        )}
+
+        {!isNoteOnly && (
+          <View style={s.rowActions}>
+            <Pressable
+              style={s.viewBtn}
+              onPress={handleView}
+              disabled={isViewing}
+              hitSlop={6}
+            >
+              {isViewing ? (
+                <ActivityIndicator size={14} color={colors.tint} />
+              ) : (
+                <Ionicons name="eye-outline" size={16} color={colors.tint} />
+              )}
+            </Pressable>
+
+            <Pressable
+              style={[s.assignBtn, (isAssigning || assignMutation.isPending) && s.assignBtnDisabled]}
+              onPress={() => {
+                if (isAssigning || assignMutation.isPending) return;
+                setAssignOpen((v) => !v);
+                if (assignOpen) setQuery("");
+              }}
+              disabled={isAssigning || assignMutation.isPending}
+            >
+              {isAssigning || assignMutation.isPending ? (
+                <ActivityIndicator size={12} color={colors.textInverse} />
+              ) : assignOpen ? (
+                <Ionicons name="close" size={12} color={colors.textInverse} />
+              ) : (
+                <Ionicons name="link-outline" size={12} color={colors.textInverse} />
+              )}
+              <Text style={s.assignBtnText}>
+                {assignOpen ? "Cancel" : "Assign"}
+              </Text>
+            </Pressable>
+          </View>
+        )}
       </View>
+
+      {/* Provider note — shown for all rows that carry one */}
+      {isEditingNote ? (
+        <View style={s.noteEditor}>
+          <TextInput
+            style={s.noteEditorInput}
+            value={noteDraft}
+            onChangeText={setNoteDraft}
+            placeholder="Optional note"
+            placeholderTextColor={colors.textTertiary}
+            multiline
+            maxLength={2000}
+            autoFocus
+            testID={`inbox-note-input-${file.id}`}
+          />
+          <View style={s.noteEditorActions}>
+            <Pressable
+              onPress={() => {
+                setNoteDraft(file.note ?? "");
+                setIsEditingNote(false);
+              }}
+              disabled={updateNoteMutation.isPending}
+            >
+              <Text style={s.noteCancelText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={s.noteSaveBtn}
+              onPress={() =>
+                updateNoteMutation.mutate({
+                  fileId: file.id,
+                  data: { note: noteDraft.trim() || null },
+                })
+              }
+              disabled={updateNoteMutation.isPending}
+              testID={`inbox-note-save-${file.id}`}
+            >
+              {updateNoteMutation.isPending ? (
+                <ActivityIndicator size={12} color={colors.textInverse} />
+              ) : (
+                <Text style={s.noteSaveText}>Save</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      ) : (
+        <Pressable
+          style={s.noteDisplay}
+          onPress={() => {
+            setNoteDraft(file.note ?? "");
+            setIsEditingNote(true);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={file.note ? "Edit inbox note" : "Add inbox note"}
+        >
+          {file.note ? (
+            <Text style={s.providerNote} numberOfLines={4}>
+              &ldquo;{file.note}&rdquo;
+            </Text>
+          ) : (
+            <Text style={s.addNoteText}>Add note</Text>
+          )}
+          <Ionicons name="pencil-outline" size={13} color={colors.textTertiary} />
+        </Pressable>
+      )}
 
       {assignOpen && (
         <View style={s.searchPanel}>
@@ -270,7 +373,12 @@ function InboxFileRow({
           )}
 
           {searchResults.length > 0 && (
-            <ScrollView style={s.results} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+            <ScrollView
+              style={s.results}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={scrollKeyboardDismissMode}
+            >
               {searchResults.map((c) => (
                 <Pressable
                   key={c.id}
@@ -364,6 +472,68 @@ function makeRowStyles(colors: ThemeColors) {
       fontWeight: "600",
       fontSize: 12,
     },
+    providerNote: {
+      ...Typography.caption,
+      color: colors.textSecondary,
+      fontStyle: "italic",
+      marginTop: 4,
+      flex: 1,
+    },
+    noteDisplay: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      marginTop: 4,
+      marginLeft: 38,
+    },
+    addNoteText: {
+      ...Typography.caption,
+      color: colors.textTertiary,
+      flex: 1,
+    },
+    noteEditor: {
+      marginTop: Spacing.xs,
+      marginLeft: 38,
+      gap: Spacing.xs,
+    },
+    noteEditorInput: {
+      ...Typography.body,
+      fontSize: 13,
+      color: colors.text,
+      minHeight: 64,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: 8,
+      backgroundColor: colors.background,
+      textAlignVertical: "top",
+    },
+    noteEditorActions: {
+      flexDirection: "row",
+      justifyContent: "flex-end",
+      alignItems: "center",
+      gap: Spacing.md,
+    },
+    noteCancelText: {
+      ...Typography.caption,
+      color: colors.textSecondary,
+      fontWeight: "600",
+    },
+    noteSaveBtn: {
+      minWidth: 54,
+      height: 28,
+      borderRadius: Radius.sm,
+      backgroundColor: colors.tint,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: Spacing.sm,
+    },
+    noteSaveText: {
+      ...Typography.caption,
+      color: colors.textInverse,
+      fontWeight: "600",
+    },
     searchPanel: {
       marginTop: Spacing.xs,
       marginLeft: 38,
@@ -431,9 +601,11 @@ export function UnassignedDocumentsCard() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
 
   // ── Camera / rename modal state ──────────────────────────────────────────
-  const [capturedUri, setCapturedUri] = useState<string | null>(null);
+  const [stagedUploads, setStagedUploads] = useState<StagedUpload[]>([]);
+  const [activeUpload, setActiveUpload] = useState<StagedUpload | null>(null);
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  const [noteValue, setNoteValue] = useState("");
   const defaultNameRef = useRef("");
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [photoUploadProgress, setPhotoUploadProgress] = useState<number | null>(null);
@@ -453,6 +625,18 @@ export function UnassignedDocumentsCard() {
   const files = filesQuery.data?.data ?? [];
   const count = files.length;
 
+  const beginConfirmation = useCallback((items: StagedUpload[]) => {
+    const first = items[0];
+    if (!first) return;
+    setStagedUploads(items);
+    setActiveUpload(first);
+    defaultNameRef.current = first.name;
+    setRenameValue(first.name);
+    setNoteValue("");
+    setPhotoError(null);
+    setShowRenameModal(true);
+  }, []);
+
   const handlePickAndUpload = useCallback(async () => {
     if (isUploading || !labOrgId) return;
     try {
@@ -462,68 +646,62 @@ export function UnassignedDocumentsCard() {
       });
       if (result.canceled || !result.assets?.length) return;
 
-      setIsUploading(true);
-
-      for (let i = 0; i < result.assets.length; i++) {
-        const asset = result.assets[i];
-        if (!asset) continue;
-
-        setUploadProgress(0);
-        const uploadResult = await chunkedUploadCaseMedia(
-          asset.uri,
-          asset.name,
-          asset.mimeType ?? "application/octet-stream",
-          (fraction) => setUploadProgress(Math.round(fraction * 100)),
-        );
-
-        if (!uploadResult.ok) {
-          Alert.alert(
-            "Upload failed",
-            `Could not upload ${asset.name}. Please try again.`
-          );
-          break;
-        }
-
-        const finalizeRes = await resilientFetch("/api/lab-inbox/finalize-session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            storagePath:
-              uploadResult.filename ??
-              mediaFileNameFromUrl(uploadResult.url) ??
-              uploadResult.url,
-            originalFilename: asset.name,
-            mimeType: asset.mimeType ?? "application/octet-stream",
-            sizeBytes: asset.size ?? 0,
-            labOrganizationId: labOrgId,
-          }),
-        });
-
-        if (!finalizeRes.ok) {
-          let detail = "";
-          try { detail = await finalizeRes.text(); } catch {}
-          Alert.alert(
-            "Upload failed",
-            `Could not save ${asset.name} (${finalizeRes.status})${detail ? ": " + detail : ""}`
-          );
-          break;
-        }
-      }
-
-      void qc.invalidateQueries({
-        queryKey: getListLabInboxFilesQueryKey({ labOrganizationId: labOrgId }),
-      });
-      if (collapsed) setCollapsed(false);
+      beginConfirmation(result.assets.filter(Boolean).map((asset) => ({
+        uri: asset.uri,
+        name: asset.name,
+        mimeType: asset.mimeType ?? "application/octet-stream",
+      })));
     } catch (err) {
       Alert.alert(
         "Upload failed",
         err instanceof Error ? err.message : "Please try again.",
       );
-    } finally {
-      setIsUploading(false);
-      setUploadProgress(null);
     }
-  }, [isUploading, labOrgId, qc, collapsed]);
+  }, [isUploading, labOrgId, beginConfirmation]);
+
+  const handlePickFromLibrary = useCallback(async () => {
+    if (isUploadingPhoto || isUploading || !labOrgId) return;
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted && permission.status !== "granted") {
+        Alert.alert(
+          "Photo Library Permission Required",
+          "LabTrax needs photo access to add documents from your library. Please enable it in your device Settings.",
+        );
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: "images",
+        allowsMultipleSelection: true,
+        quality: 0.85,
+        selectionLimit: 20,
+      });
+      if (result.canceled || !result.assets?.length) return;
+
+      const normalized: StagedUpload[] = [];
+      for (const [index, asset] of result.assets.entries()) {
+        if (!asset?.uri) continue;
+        const resized = await ImageManipulator.manipulateAsync(
+          asset.uri,
+          [{ resize: { width: 1200 } }],
+          { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG },
+        );
+        const sourceName = asset.fileName ?? defaultPhotoFilename(index);
+        const base = sourceName.replace(/\.[^.]+$/, "") || "photo";
+        normalized.push({
+          uri: resized.uri,
+          name: sanitizeFilename(`${base}.jpg`, defaultPhotoFilename()),
+          mimeType: "image/jpeg",
+        });
+      }
+      beginConfirmation(normalized);
+    } catch (err) {
+      Alert.alert(
+        "Could not open photo library",
+        err instanceof Error ? err.message : "Please try again.",
+      );
+    }
+  }, [isUploadingPhoto, isUploading, labOrgId, beginConfirmation]);
 
   const handleTakePhoto = useCallback(async () => {
     if (isUploadingPhoto || !labOrgId) return;
@@ -554,131 +732,69 @@ export function UnassignedDocumentsCard() {
       { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG },
     );
 
-    const defaultName = defaultPhotoFilename();
-    defaultNameRef.current = defaultName;
-    setCapturedUri(resized.uri);
-    setRenameValue(defaultName);
-    setPhotoError(null);
-    setShowRenameModal(true);
-  }, [isUploadingPhoto, labOrgId]);
+    beginConfirmation([{
+      uri: resized.uri,
+      name: defaultPhotoFilename(),
+      mimeType: "image/jpeg",
+    }]);
+  }, [isUploadingPhoto, labOrgId, beginConfirmation]);
+
+  const intakeRef = useRef({ browse: handlePickAndUpload, photo: handleTakePhoto });
+  intakeRef.current = { browse: handlePickAndUpload, photo: handleTakePhoto };
+  useEffect(
+    () =>
+      subscribeRxIntake((action) => {
+        if (action === "reveal") setCollapsed(false);
+        else if (action === "browse") void intakeRef.current.browse();
+        else void intakeRef.current.photo();
+      }),
+    [],
+  );
 
   const handleRenameConfirm = useCallback(async () => {
-    if (!capturedUri || !labOrgId) return;
+    if (!activeUpload || !labOrgId) return;
 
     const defaultName = defaultNameRef.current;
     const finalName = sanitizeFilename(renameValue.trim(), defaultName);
 
     setShowRenameModal(false);
     setIsUploadingPhoto(true);
+    setIsUploading(true);
     setPhotoUploadProgress(0);
     setPhotoError(null);
 
     try {
-      const uploadResult = await chunkedUploadCaseMedia(
-        capturedUri,
-        finalName,
-        "image/jpeg",
-        (fraction) => setPhotoUploadProgress(Math.round(fraction * 100)),
-      );
+      const saveResult = await saveFileToUnassignedDocuments({
+        fileUri: activeUpload.uri,
+        fileName: finalName,
+        mimeType: activeUpload.mimeType,
+        labOrganizationId: labOrgId,
+        note: noteValue,
+        onProgress: (fraction) => setPhotoUploadProgress(Math.round(fraction * 100)),
+      });
 
-      if (!uploadResult.ok) {
-        setPhotoError("Upload failed. Tap to retry.");
+      if (!saveResult.ok) {
+        setPhotoError(saveResult.error || "Upload failed. Tap to retry.");
         return;
       }
 
-      let sizeBytes = 0;
-      try {
-        const info = await FileSystem.getInfoAsync(capturedUri);
-        if (info.exists && "size" in info) sizeBytes = info.size ?? 0;
-      } catch {
-        // size metadata is best-effort; upload still succeeds without it
+      const remaining = stagedUploads.slice(1);
+      if (remaining.length > 0) {
+        setStagedUploads(remaining);
+        setActiveUpload(remaining[0] ?? null);
+        defaultNameRef.current = remaining[0]?.name ?? "";
+        setRenameValue(remaining[0]?.name ?? "");
+        setNoteValue("");
+        setShowRenameModal(true);
+      } else {
+        setStagedUploads([]);
+        setActiveUpload(null);
+        setNoteValue("");
       }
-
-      await resilientFetch("/api/lab-inbox/finalize-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          storagePath:
-            uploadResult.filename ??
-            mediaFileNameFromUrl(uploadResult.url) ??
-            uploadResult.url,
-          originalFilename: finalName,
-          mimeType: "image/jpeg",
-          sizeBytes,
-          labOrganizationId: labOrgId,
-        }),
-      });
-
       void qc.invalidateQueries({
         queryKey: getListLabInboxFilesQueryKey({ labOrganizationId: labOrgId }),
       });
       if (collapsed) setCollapsed(false);
-      setCapturedUri(null);
-    } catch (err) {
-      setPhotoError(
-        err instanceof Error ? err.message : "Upload failed. Tap to retry.",
-      );
-    } finally {
-      setIsUploadingPhoto(false);
-      setPhotoUploadProgress(null);
-    }
-  }, [capturedUri, renameValue, labOrgId, qc, collapsed]);
-
-  const handleRenameCancel = useCallback(() => {
-    setShowRenameModal(false);
-    setCapturedUri(null);
-    setRenameValue("");
-    setPhotoError(null);
-  }, []);
-
-  const handleRetryPhotoUpload = useCallback(async () => {
-    if (!capturedUri || isUploadingPhoto || !labOrgId) return;
-    const finalName = sanitizeFilename(renameValue.trim(), defaultNameRef.current);
-    setIsUploadingPhoto(true);
-    setPhotoUploadProgress(0);
-    setPhotoError(null);
-
-    try {
-      const uploadResult = await chunkedUploadCaseMedia(
-        capturedUri,
-        finalName,
-        "image/jpeg",
-        (fraction) => setPhotoUploadProgress(Math.round(fraction * 100)),
-      );
-
-      if (!uploadResult.ok) {
-        setPhotoError("Upload failed. Tap to retry.");
-        return;
-      }
-
-      let sizeBytes = 0;
-      try {
-        const info = await FileSystem.getInfoAsync(capturedUri);
-        if (info.exists && "size" in info) sizeBytes = info.size ?? 0;
-      } catch {
-        // size metadata is best-effort
-      }
-
-      await resilientFetch("/api/lab-inbox/finalize-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          storagePath:
-            uploadResult.filename ??
-            mediaFileNameFromUrl(uploadResult.url) ??
-            uploadResult.url,
-          originalFilename: finalName,
-          mimeType: "image/jpeg",
-          sizeBytes,
-          labOrganizationId: labOrgId,
-        }),
-      });
-
-      void qc.invalidateQueries({
-        queryKey: getListLabInboxFilesQueryKey({ labOrganizationId: labOrgId }),
-      });
-      if (collapsed) setCollapsed(false);
-      setCapturedUri(null);
       setPhotoError(null);
     } catch (err) {
       setPhotoError(
@@ -686,9 +802,71 @@ export function UnassignedDocumentsCard() {
       );
     } finally {
       setIsUploadingPhoto(false);
+      setIsUploading(false);
       setPhotoUploadProgress(null);
     }
-  }, [capturedUri, renameValue, isUploadingPhoto, labOrgId, qc, collapsed]);
+  }, [activeUpload, stagedUploads, renameValue, noteValue, labOrgId, qc, collapsed]);
+
+  const handleRenameCancel = useCallback(() => {
+    setShowRenameModal(false);
+    setActiveUpload(null);
+    setStagedUploads([]);
+    setRenameValue("");
+    setNoteValue("");
+    setPhotoError(null);
+  }, []);
+
+  const handleRetryPhotoUpload = useCallback(async () => {
+    if (!activeUpload || isUploadingPhoto || !labOrgId) return;
+    const finalName = sanitizeFilename(renameValue.trim(), defaultNameRef.current);
+    setIsUploadingPhoto(true);
+    setIsUploading(true);
+    setPhotoUploadProgress(0);
+    setPhotoError(null);
+
+    try {
+      const saveResult = await saveFileToUnassignedDocuments({
+        fileUri: activeUpload.uri,
+        fileName: finalName,
+        mimeType: activeUpload.mimeType,
+        labOrganizationId: labOrgId,
+        note: noteValue,
+        onProgress: (fraction) => setPhotoUploadProgress(Math.round(fraction * 100)),
+      });
+
+      if (!saveResult.ok) {
+        setPhotoError(saveResult.error || "Upload failed. Tap to retry.");
+        return;
+      }
+
+      const remaining = stagedUploads.slice(1);
+      if (remaining.length > 0) {
+        setStagedUploads(remaining);
+        setActiveUpload(remaining[0] ?? null);
+        defaultNameRef.current = remaining[0]?.name ?? "";
+        setRenameValue(remaining[0]?.name ?? "");
+        setNoteValue("");
+        setShowRenameModal(true);
+      } else {
+        setActiveUpload(null);
+        setStagedUploads([]);
+        setNoteValue("");
+      }
+      void qc.invalidateQueries({
+        queryKey: getListLabInboxFilesQueryKey({ labOrganizationId: labOrgId }),
+      });
+      if (collapsed) setCollapsed(false);
+      setPhotoError(null);
+    } catch (err) {
+      setPhotoError(
+        err instanceof Error ? err.message : "Upload failed. Tap to retry.",
+      );
+    } finally {
+      setIsUploadingPhoto(false);
+      setIsUploading(false);
+      setPhotoUploadProgress(null);
+    }
+  }, [activeUpload, stagedUploads, renameValue, noteValue, isUploadingPhoto, labOrgId, qc, collapsed]);
 
   const handleAssigned = useCallback(() => {
     void qc.invalidateQueries({
@@ -697,11 +875,15 @@ export function UnassignedDocumentsCard() {
   }, [qc, labOrgId]);
 
   const styles = makeStyles(colors);
+  const dismissKeyboardOnModalTap = useDismissKeyboardOnTap();
 
   if (!labOrgId) return null;
 
   return (
-    <View style={styles.card}>
+    <DismissKeyboardView
+      style={styles.card}
+      testID="unassigned-documents-card-keyboard-dismiss"
+    >
       {/* ── Rename modal ─────────────────────────────────────────────────── */}
       <Modal
         visible={showRenameModal}
@@ -714,10 +896,14 @@ export function UnassignedDocumentsCard() {
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             style={styles.modalKav}
           >
-            <Pressable style={styles.modalBox} onPress={() => {}}>
-              <Text style={styles.modalTitle}>Name your photo</Text>
+            <Pressable style={styles.modalBox} onPress={dismissKeyboardOnModalTap}>
+              <Text style={styles.modalTitle}>
+                Add document
+              </Text>
               <Text style={styles.modalSubtitle}>
-                You can rename this photo before uploading it.
+                {stagedUploads.length > 1
+                  ? `${stagedUploads.length} documents queued. Confirm each one before uploading.`
+                  : "Edit the filename and optionally add a note before uploading."}
               </Text>
               <TextInput
                 style={styles.modalInput}
@@ -731,16 +917,28 @@ export function UnassignedDocumentsCard() {
                 onSubmitEditing={handleRenameConfirm}
                 placeholderTextColor={colors.textTertiary}
               />
+              <TextInput
+                style={[styles.modalInput, styles.noteInput]}
+                value={noteValue}
+                onChangeText={setNoteValue}
+                placeholder="Optional note"
+                placeholderTextColor={colors.textTertiary}
+                multiline
+                maxLength={2000}
+                testID="unassigned-document-note"
+              />
               <View style={styles.modalButtons}>
                 <Pressable
                   style={[styles.modalBtn, styles.modalBtnCancel]}
                   onPress={handleRenameCancel}
+                  testID="unassigned-document-cancel"
                 >
                   <Text style={styles.modalBtnCancelText}>Discard</Text>
                 </Pressable>
                 <Pressable
                   style={[styles.modalBtn, styles.modalBtnConfirm]}
                   onPress={handleRenameConfirm}
+                  testID="unassigned-document-upload"
                 >
                   <Text style={styles.modalBtnConfirmText}>Upload</Text>
                 </Pressable>
@@ -778,6 +976,17 @@ export function UnassignedDocumentsCard() {
             ) : (
               <Ionicons name="camera-outline" size={16} color={colors.tint} />
             )}
+          </Pressable>
+
+          {/* Photo library button */}
+          <Pressable
+            onPress={handlePickFromLibrary}
+            hitSlop={8}
+            style={styles.addBtn}
+            disabled={isUploadingPhoto || isUploading}
+            accessibilityLabel="Choose photos from library"
+          >
+            <Ionicons name="images-outline" size={16} color={colors.tint} />
           </Pressable>
 
           {/* File picker button */}
@@ -821,7 +1030,7 @@ export function UnassignedDocumentsCard() {
         </View>
       )}
 
-      {photoError && capturedUri && (
+      {photoError && activeUpload && (
         <Pressable style={styles.errorBanner} onPress={handleRetryPhotoUpload}>
           <Ionicons name="alert-circle-outline" size={14} color="#EF4444" />
           <Text style={styles.errorBannerText}>{photoError}</Text>
@@ -852,7 +1061,7 @@ export function UnassignedDocumentsCard() {
           )}
         </View>
       )}
-    </View>
+    </DismissKeyboardView>
   );
 }
 
@@ -1004,6 +1213,10 @@ function makeStyles(colors: ThemeColors) {
       paddingVertical: 10,
       backgroundColor: colors.background,
       marginTop: Spacing.xs,
+    },
+    noteInput: {
+      minHeight: 56,
+      textAlignVertical: "top",
     },
     modalButtons: {
       flexDirection: "row",

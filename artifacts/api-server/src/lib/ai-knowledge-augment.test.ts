@@ -56,7 +56,7 @@ describe("buildMaterialSuggestionBlock (pure)", () => {
   });
 
   it("returns a guidance block for an anterior tooth + restoration type", () => {
-    const block = buildMaterialSuggestionBlock("Dr. Smith wants a crown on tooth #9");
+    const block = buildMaterialSuggestionBlock("Dr. Synthetic063 wants a crown on tooth #9");
     expect(block).toContain("MATERIAL & SHADE SUGGESTION GUIDANCE");
     expect(block).toContain("ANTERIOR");
     expect(block).toContain("#9");

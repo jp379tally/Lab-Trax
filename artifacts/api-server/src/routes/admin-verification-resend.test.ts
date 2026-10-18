@@ -66,6 +66,11 @@ maybe("Admin verification email resend", () => {
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
     authLib = await import("../lib/auth.js");
+    // Registration is asynchronous; new billing routes must finish mounting
+    // before assertions about an admin endpoint's authentication status.
+    await vi.waitFor(async () => {
+      expect((await request(appMod.default).get("/api/__test_missing_route__")).status).toBe(404);
+    }, { timeout: 15_000, interval: 25 });
   });
 
   beforeEach(async () => {

@@ -11,21 +11,27 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
+import { Camera, useCameraDevice, useCameraPermission, useCodeScanner } from "react-native-vision-camera";
 import * as Haptics from "expo-haptics";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useUpdateCase,
+  type UpdateCaseInput,
   type UpdateCaseInputStatus,
 } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch } from "@/lib/query-client";
 import { extractLookupCase } from "@/lib/barcode-lookup";
-import { pickBestBarcode, guideBoxFromLayout } from "@/lib/barcode-guide-box";
-import { CASE_STATIONS } from "@/lib/case-stations";
+import {
+  filterBarcodesInBox,
+  guideBoxFromFractions,
+  type BarcodeCandidate,
+} from "@/lib/barcode-guide-box";
+import { codesToBarcodeCandidates, SCAN_CODE_TYPES } from "@/lib/vision-camera-codes";
+import { TorchToggleButton } from "@/components/ui/TorchToggleButton";
 import { useMe, primaryLabOrgId, editableLabMemberships } from "@/lib/auth-me";
-import { getJson } from "@/lib/read-api";
+import { useLabLocations } from "@/lib/lab-locations";
 import {
   OutgoingPhotosModal,
   type OutgoingPhotoCase,
@@ -41,15 +47,8 @@ export interface ScannedCase {
   patientName: string;
   caseNumber: string | null;
   currentLocation: string | null;
-}
-
-interface LabLocation {
-  id: string;
-  name: string;
-  code: string;
-  status: string;
-  isActive: boolean;
-  sortOrder: number;
+  /** Lab that owns this case — scopes the destination list to the right lab. */
+  labOrganizationId: string | null;
 }
 
 interface BatchResult {
@@ -58,7 +57,14 @@ interface BatchResult {
   targetName: string;
 }
 
-type ScanNotice = { kind: "duplicate" | "not_found"; barcode: string; id: number } | null;
+type ScanNotice = {
+  kind: "duplicate" | "not_found" | "lab_unavailable";
+  barcode: string;
+  id: number;
+} | null;
+type BarcodeScanState = "queued" | "looking_up" | "succeeded" | "failed";
+
+const SCAN_WINDOW_MS = 120;
 
 // ── Pure helpers (exported for tests) ────────────────────────────────────────
 
@@ -71,6 +77,26 @@ export function prependScannedCase(
   item: ScannedCase,
 ): ScannedCase[] {
   return [item, ...list];
+}
+
+export function removeScannedCase(
+  list: ScannedCase[],
+  caseId: string,
+): ScannedCase[] {
+  return list.filter((item) => item.caseId !== caseId);
+}
+
+export function updateScannedLocations(
+  list: ScannedCase[],
+  succeededIds: ReadonlyArray<string>,
+  locationName: string,
+): ScannedCase[] {
+  const succeeded = new Set(succeededIds);
+  return list.map((item) =>
+    succeeded.has(item.caseId)
+      ? { ...item, currentLocation: locationName }
+      : item,
+  );
 }
 
 export function splitBatchResults(
@@ -99,13 +125,20 @@ export function splitBatchResults(
 export async function runBatchMove(
   cases: ScannedCase[],
   stationValue: string,
-  mutateFn: (args: { caseId: string; data: { status: string } }) => Promise<unknown>,
+  mutateFn: (args: { caseId: string; data: { status: string; labLocationId?: string } }) => Promise<unknown>,
   onProgress: () => void,
+  labLocationId?: string,
 ): Promise<{ succeededIds: string[]; failedIds: string[] }> {
   const results = await Promise.allSettled(
     cases.map(async (c) => {
       try {
-        return await mutateFn({ caseId: c.caseId, data: { status: stationValue } });
+        return await mutateFn({
+          caseId: c.caseId,
+          data: {
+            status: stationValue,
+            ...(labLocationId ? { labLocationId } : {}),
+          },
+        });
       } finally {
         onProgress();
       }
@@ -145,18 +178,21 @@ export default function BatchLocateScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
-  const [permission, requestPermission] = useCameraPermissions();
+  const { hasPermission: permissionGranted, requestPermission } = useCameraPermission();
+  const cameraDevice = useCameraDevice("back");
+  const [torchOn, setTorchOn] = useState(false);
   const [step, setStep] = useState<Step>("scanning");
 
   // Scanning state
-  const seenBarcodes = useRef<Set<string>>(new Set());
+  const barcodeStatesRef = useRef<Map<string, BarcodeScanState>>(new Map());
   const cameraViewSize = useRef<{ width: number; height: number } | null>(null);
-  // Mirrors lookingUp so the debounce timer reads the live value without stale closures.
-  const lookingUpRef = useRef(false);
-  // Accumulate barcodes over a ~120ms frame window so pickBestBarcode can select
-  // the in-box candidate closest to center across the full frame.
-  const barcodeAccumRef = useRef<BarcodeScanningResult[]>([]);
-  const barcodeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+  const batchIdRef = useRef(0);
+  const activeLookupsRef = useRef(0);
+  // Accumulate every candidate during one fixed scan window. The timer starts
+  // on the first native callback and is not restarted by later callbacks.
+  const barcodeAccumRef = useRef<BarcodeCandidate[]>([]);
+  const barcodeWindowRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [scannedCases, setScannedCases] = useState<ScannedCase[]>([]);
   const [scanNotice, setScanNotice] = useState<ScanNotice>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -164,7 +200,6 @@ export default function BatchLocateScreen() {
   const [lookingUp, setLookingUp] = useState(false);
 
   // Station selection state
-  const [apiLocations, setApiLocations] = useState<LabLocation[] | null>(null);
   const [selectedStation, setSelectedStation] = useState<{ id: string; value: string; label: string } | null>(null);
 
   // Moving state
@@ -181,43 +216,58 @@ export default function BatchLocateScreen() {
   const updateCase = useUpdateCase();
   const queryClient = useQueryClient();
   const meQuery = useMe();
-  const orgId = editableLabMemberships(meQuery.data)[0]?.organizationId ?? null;
 
-  // Fetch lab locations when entering selecting step
-  useEffect(() => {
-    if (step !== "selecting" || !orgId) return;
-    let cancelled = false;
-    getJson<LabLocation[]>(`/api/locations?organizationId=${orgId}&activeOnly=true`)
-      .then((rows) => {
-        if (!cancelled) setApiLocations(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setApiLocations(null);
-      });
-    return () => { cancelled = true; };
-  }, [step, orgId]);
+  // Scope the destination list to the lab the *scanned* cases actually belong
+  // to — the barcode lookup returns each case's lab. A membership-derived guess
+  // can point at a different lab for multi-lab accounts, which is how mobile
+  // ended up offering a different station list than desktop. The membership is
+  // only a fallback for cases whose lookup carried no lab.
+  const scannedLabOrgId =
+    scannedCases.find((sc) => sc.labOrganizationId)?.labOrganizationId ?? null;
+  const orgId =
+    scannedLabOrgId ?? editableLabMemberships(meQuery.data)[0]?.organizationId ?? null;
 
-  const stations: { id: string; value: string; label: string }[] = useMemo(() => {
-    if (apiLocations !== null && apiLocations.length > 0) {
-      return apiLocations
-        .sort((a, b) => a.sortOrder - b.sortOrder)
-        // `value` is the mapped workflow stage (a valid case-status), NOT the
-        // free-form code — sending the code broke custom stations.
-        // `id` is the unique location row id — used for selection/key so that
-        // two locations sharing the same status don't both appear selected.
-        .map((loc) => ({ id: loc.id, value: loc.status, label: loc.name }));
-    }
-    return CASE_STATIONS.map((s) => ({ id: s.value, value: s.value, label: s.label }));
-  }, [apiLocations]);
+  const {
+    locations: apiLocations,
+    status: locationsStatus,
+    retry: retryLocations,
+  } = useLabLocations(orgId, step === "selecting");
+
+  // Only a genuinely loaded list is selectable — loading and error render their
+  // own states rather than standing in the built-in station list.
+  const stations: { id: string; value: string; label: string }[] = useMemo(
+    () =>
+      locationsStatus === "loaded"
+        ? // `value` is the mapped workflow stage (a valid case-status), NOT the
+          // free-form code — sending the code broke custom stations.
+          // `id` is the unique location row id — used for selection/key so that
+          // two locations sharing the same status don't both appear selected.
+          apiLocations.map((loc) => ({ id: loc.id, value: loc.status, label: loc.name }))
+        : [],
+    [apiLocations, locationsStatus],
+  );
 
   // Clean up notice timer on unmount
   useEffect(() => {
+    // React Strict Mode runs setup → cleanup → setup on initial mount.
+    // Restore the guard here so the second setup remains able to accept results.
+    mountedRef.current = true;
     return () => {
       if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+      if (barcodeWindowRef.current) clearTimeout(barcodeWindowRef.current);
+      barcodeWindowRef.current = null;
+      barcodeAccumRef.current = [];
+      barcodeStatesRef.current.clear();
+      activeLookupsRef.current = 0;
+      batchIdRef.current += 1;
+      mountedRef.current = false;
     };
   }, []);
 
-  function showNotice(kind: "duplicate" | "not_found", barcode: string) {
+  function showNotice(
+    kind: "duplicate" | "not_found" | "lab_unavailable",
+    barcode: string,
+  ) {
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     const id = ++noticeIdRef.current;
     setScanNotice({ kind, barcode, id });
@@ -227,88 +277,101 @@ export default function BatchLocateScreen() {
   }
 
   const handleBarcodeScanned = useCallback(
-    (event: BarcodeScanningResult) => {
-      if (lookingUpRef.current || !event.data?.trim()) return;
+    (codes: BarcodeCandidate[]) => {
+      if (codes.length === 0) return;
 
-      // Accumulate all barcodes in this ~120ms scan cycle so pickBestBarcode
-      // can compare all in-frame candidates at once.
-      barcodeAccumRef.current.push(event);
-      if (barcodeDebounceRef.current) clearTimeout(barcodeDebounceRef.current);
+      // Collect every native callback in one bounded window. In particular,
+      // don't reset this timer on each frame: sustained scanning should flush
+      // a complete group instead of perpetually postponing the lookup.
+      barcodeAccumRef.current.push(...codes);
+      if (barcodeWindowRef.current) return;
 
-      barcodeDebounceRef.current = setTimeout(() => {
-        barcodeDebounceRef.current = null;
-        if (lookingUpRef.current) {
-          barcodeAccumRef.current = [];
-          return;
-        }
-
+      barcodeWindowRef.current = setTimeout(() => {
+        barcodeWindowRef.current = null;
         const candidates = barcodeAccumRef.current.splice(0);
         if (candidates.length === 0) return;
 
-        // Strict gate: reject until the camera view has been laid out.
         const viewSize = cameraViewSize.current;
-        if (!viewSize) return;
-
-        const box = guideBoxFromLayout(viewSize.width, viewSize.height, 0.2, 0.2, 0.2, 0.6);
-        const best = pickBestBarcode(candidates, box);
-        if (!best || !best.data.trim()) return;
-
-        const trimmed = best.data.trim();
-
-        if (isDuplicateScan(seenBarcodes.current, trimmed)) {
-          showNotice("duplicate", trimmed);
+        const box = guideBoxFromFractions(0.2, 0.2, 0.2, 0.6);
+        const filteredCandidates = filterBarcodesInBox(candidates, box, viewSize);
+        const inBoxCandidates =
+          filteredCandidates.length > 0 ? filteredCandidates : candidates;
+        const labOrganizationId = primaryLabOrgId(meQuery.data) ?? "";
+        if (!labOrganizationId) {
+          showNotice("lab_unavailable", inBoxCandidates[0]?.data ?? "");
           return;
         }
 
-        const labOrganizationId = primaryLabOrgId(meQuery.data) ?? "";
-        if (!labOrganizationId) return;
+        const batchId = batchIdRef.current;
+        for (const candidate of inBoxCandidates) {
+          const trimmed = candidate.data.trim();
+          if (!trimmed) continue;
 
-        lookingUpRef.current = true;
-        setLookingUp(true);
+          if (barcodeStatesRef.current.has(trimmed)) {
+            showNotice("duplicate", trimmed);
+            continue;
+          }
 
-        const qs = new URLSearchParams({ labOrganizationId });
-        resilientFetch(`/api/cases/barcode/${encodeURIComponent(trimmed)}?${qs.toString()}`)
-          .then(async (res) => {
-            if (!res.ok) {
+          // Reserve before starting the request. This closes the duplicate
+          // race between rapid native callbacks and slow network responses.
+          barcodeStatesRef.current.set(trimmed, "queued");
+          activeLookupsRef.current += 1;
+          setLookingUp(true);
+          barcodeStatesRef.current.set(trimmed, "looking_up");
+
+          const qs = new URLSearchParams({ labOrganizationId });
+          resilientFetch(`/api/cases/barcode/${encodeURIComponent(trimmed)}?${qs.toString()}`)
+            .then(async (res) => {
+              if (!res.ok) throw new Error("barcode lookup failed");
+              const body = await res.json();
+              const c = extractLookupCase(body);
+              if (!c?.id) throw new Error("barcode lookup returned no case");
+              if (batchId !== batchIdRef.current || !mountedRef.current) return;
+
+              barcodeStatesRef.current.set(trimmed, "succeeded");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+              const patientName =
+                [`${c.patientFirstName ?? ""}`, `${c.patientLastName ?? ""}`]
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+                  .join(" ") || "Unnamed patient";
+              setScannedCases((prev) =>
+                prependScannedCase(prev, {
+                  barcode: trimmed,
+                  caseId: c.id!,
+                  patientName,
+                  caseNumber: c.caseNumber ?? null,
+                  currentLocation: c.labLocationName ?? c.status ?? null,
+                  labOrganizationId: c.labOrganizationId ?? null,
+                }),
+              );
+            })
+            .catch(() => {
+              if (batchId !== batchIdRef.current || !mountedRef.current) return;
+              barcodeStatesRef.current.set(trimmed, "failed");
               showNotice("not_found", trimmed);
-              return;
-            }
-            const body = await res.json();
-            const c = extractLookupCase(body);
-            if (!c?.id) {
-              showNotice("not_found", trimmed);
-              return;
-            }
-            seenBarcodes.current.add(trimmed);
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-            const patientName =
-              [`${c.patientFirstName ?? ""}`, `${c.patientLastName ?? ""}`]
-                .map((s) => s.trim())
-                .filter(Boolean)
-                .join(" ") || "Unnamed patient";
-            setScannedCases((prev) =>
-              prependScannedCase(prev, {
-                barcode: trimmed,
-                caseId: c.id!,
-                patientName,
-                caseNumber: c.caseNumber ?? null,
-                currentLocation: c.status ?? null,
-              }),
-            );
-          })
-          .catch(() => {
-            showNotice("not_found", trimmed);
-          })
-          .finally(() => {
-            lookingUpRef.current = false;
-            setLookingUp(false);
-          });
-      }, 120);
+            })
+            .finally(() => {
+              if (batchId !== batchIdRef.current || !mountedRef.current) return;
+              activeLookupsRef.current = Math.max(0, activeLookupsRef.current - 1);
+              setLookingUp(activeLookupsRef.current > 0);
+            });
+        }
+      }, SCAN_WINDOW_MS);
     },
     [meQuery.data],
   );
 
-  async function executeBatchMove(cases: ScannedCase[], station: { value: string; label: string }) {
+  const codeScanner = useCodeScanner({
+    codeTypes: SCAN_CODE_TYPES,
+    onCodeScanned: (codes, frame) =>
+      handleBarcodeScanned(codesToBarcodeCandidates(codes, frame)),
+  });
+
+  async function executeBatchMove(
+    cases: ScannedCase[],
+    station: { id: string; value: string; label: string },
+  ) {
     const total = cases.length;
     setMoveTotal(total);
     setMoveProgress(0);
@@ -320,9 +383,13 @@ export default function BatchLocateScreen() {
       ({ caseId, data }) =>
         updateCase.mutateAsync({
           caseId,
-          data: { status: data.status as UpdateCaseInputStatus },
+          data: {
+            status: data.status as UpdateCaseInputStatus,
+            labLocationId: data.labLocationId,
+          } as UpdateCaseInput & { labLocationId: string },
         }),
       () => setMoveProgress((p) => p + 1),
+      station.id,
     );
 
     if (__DEV__) {
@@ -333,8 +400,12 @@ export default function BatchLocateScreen() {
       });
     }
 
-    // Await the refetch so the result screen reflects fresh case status.
+    // The ["cases"] prefix includes list, dashboard, and every case-detail
+    // query, including details that are currently mounted elsewhere.
     await queryClient.invalidateQueries({ queryKey: ["cases"] });
+    setScannedCases((current) =>
+      updateScannedLocations(current, succeededIds, station.label),
+    );
     if (__DEV__) {
       console.log("[BatchLocate] Invalidated 'cases' queries");
     }
@@ -363,9 +434,13 @@ export default function BatchLocateScreen() {
       ({ caseId, data }) =>
         updateCase.mutateAsync({
           caseId,
-          data: { status: data.status as UpdateCaseInputStatus },
+          data: {
+            status: data.status as UpdateCaseInputStatus,
+            labLocationId: data.labLocationId,
+          } as UpdateCaseInput & { labLocationId: string },
         }),
       () => setMoveProgress((p) => p + 1),
+      selectedStation.id,
     );
 
     if (__DEV__) {
@@ -376,8 +451,10 @@ export default function BatchLocateScreen() {
       });
     }
 
-    // Await the refetch so the result screen reflects fresh case status.
     await queryClient.invalidateQueries({ queryKey: ["cases"] });
+    setScannedCases((current) =>
+      updateScannedLocations(current, retrySucceeded, selectedStation.label),
+    );
 
     setResult((prev) => ({
       succeededIds: [...(prev?.succeededIds ?? []), ...retrySucceeded],
@@ -392,8 +469,34 @@ export default function BatchLocateScreen() {
     router.back();
   }
 
+  function handleRemoveCase(item: ScannedCase) {
+    barcodeStatesRef.current.delete(item.barcode);
+    setScannedCases((current) => {
+      const remaining = removeScannedCase(current, item.caseId);
+      if (step === "confirming" && remaining.length === 0) {
+        setStep("scanning");
+      }
+      return remaining;
+    });
+  }
+
+  function freezeScanSession() {
+    if (barcodeWindowRef.current) clearTimeout(barcodeWindowRef.current);
+    barcodeWindowRef.current = null;
+    barcodeAccumRef.current = [];
+    activeLookupsRef.current = 0;
+    batchIdRef.current += 1;
+    for (const [barcode, state] of barcodeStatesRef.current) {
+      if (state === "queued" || state === "looking_up") {
+        barcodeStatesRef.current.delete(barcode);
+      }
+    }
+    setLookingUp(false);
+  }
+
   function handleScanMore() {
-    seenBarcodes.current.clear();
+    freezeScanSession();
+    barcodeStatesRef.current.clear();
     setScannedCases([]);
     setSelectedStation(null);
     setResult(null);
@@ -421,7 +524,7 @@ export default function BatchLocateScreen() {
           <View style={{ width: 36 }} />
         </View>
 
-        {!permission?.granted ? (
+        {!permissionGranted ? (
           <View style={styles.permView}>
             <Ionicons name="barcode-outline" size={48} color={colors.textTertiary} />
             <Text style={styles.permTitle}>Camera needed to scan</Text>
@@ -441,16 +544,24 @@ export default function BatchLocateScreen() {
               cameraViewSize.current = { width, height };
             }}
           >
-            <CameraView
-              style={StyleSheet.absoluteFill}
-              facing="back"
-              onBarcodeScanned={lookingUp ? undefined : handleBarcodeScanned}
-              barcodeScannerSettings={{
-                barcodeTypes: [
-                  "code128", "code39", "qr", "ean13", "ean8", "pdf417", "code93",
-                ],
-              }}
-            />
+            {cameraDevice && (
+              <Camera
+                style={StyleSheet.absoluteFill}
+                device={cameraDevice}
+                isActive
+                codeScanner={codeScanner}
+                torch={torchOn ? "on" : "off"}
+              />
+            )}
+            {cameraDevice?.hasTorch ? (
+              <View style={styles.torchBtnWrap}>
+                <TorchToggleButton
+                  torchOn={torchOn}
+                  onToggle={() => setTorchOn((v) => !v)}
+                  testID="batch-locate-torch-toggle"
+                />
+              </View>
+            ) : null}
             <View style={styles.reticle} pointerEvents="none">
               <View style={styles.reticleTL} />
               <View style={styles.reticleTR} />
@@ -473,7 +584,8 @@ export default function BatchLocateScreen() {
                 >
                   <Ionicons
                     name={
-                      scanNotice.kind === "duplicate"
+                      scanNotice.kind === "duplicate" ||
+                      scanNotice.kind === "lab_unavailable"
                         ? "alert-circle-outline"
                         : "close-circle-outline"
                     }
@@ -483,7 +595,9 @@ export default function BatchLocateScreen() {
                   <Text style={styles.noticeText}>
                     {scanNotice.kind === "duplicate"
                       ? "Already scanned"
-                      : "Barcode not found"}
+                      : scanNotice.kind === "lab_unavailable"
+                        ? "Waiting for lab account"
+                        : "Barcode not found"}
                   </Text>
                 </View>
               </View>
@@ -540,6 +654,19 @@ export default function BatchLocateScreen() {
                         .replace(/\b\w/g, (m) => m.toUpperCase())}
                     </Text>
                   ) : null}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remove ${item.patientName} from batch`}
+                    hitSlop={8}
+                    onPress={() => handleRemoveCase(item)}
+                    style={({ pressed }) => [
+                      styles.removeCaseBtn,
+                      { backgroundColor: pressed ? colors.surfaceAlt : "transparent" },
+                    ]}
+                    testID={`batch-locate-remove-${item.barcode}`}
+                  >
+                    <Ionicons name="close" size={18} color={colors.textSecondary} />
+                  </Pressable>
                 </View>
               )}
             />
@@ -552,6 +679,7 @@ export default function BatchLocateScreen() {
             ]}
             onPress={() => {
               if (scannedCases.length === 0) return;
+              freezeScanSession();
               setStep("selecting");
             }}
             disabled={scannedCases.length === 0}
@@ -592,6 +720,42 @@ export default function BatchLocateScreen() {
           <View style={{ width: 36 }} />
         </View>
 
+        {locationsStatus === "error" ? (
+          <View style={styles.fetchErrorArea} testID="batch-locate-locations-error">
+            <Ionicons name="cloud-offline-outline" size={36} color={colors.textTertiary} />
+            <Text style={[styles.fetchErrorTitle, { color: colors.text }]}>
+              Couldn't load locations
+            </Text>
+            <Text style={[styles.fetchErrorBody, { color: colors.textSecondary }]}>
+              Check your connection and try again.
+            </Text>
+            <Pressable
+              style={[styles.btn, { backgroundColor: colors.tint, marginTop: Spacing.xs }]}
+              onPress={retryLocations}
+              testID="batch-locate-locations-retry"
+            >
+              <Text style={styles.btnText}>Retry</Text>
+            </Pressable>
+          </View>
+        ) : locationsStatus === "loading" ? (
+          <View style={styles.fetchErrorArea} testID="batch-locate-locations-loading">
+            <ActivityIndicator size="large" color={colors.tint} />
+            <Text style={[styles.fetchErrorBody, { color: colors.textSecondary }]}>
+              Loading locations…
+            </Text>
+          </View>
+        ) : stations.length === 0 ? (
+          <View style={styles.fetchErrorArea} testID="batch-locate-locations-empty">
+            <Ionicons name="location-outline" size={36} color={colors.textTertiary} />
+            <Text style={[styles.fetchErrorTitle, { color: colors.text }]}>
+              No active locations
+            </Text>
+            <Text style={[styles.fetchErrorBody, { color: colors.textSecondary }]}>
+              This lab has no active locations to move cases to. A lab admin can add
+              them under Manage → Locations.
+            </Text>
+          </View>
+        ) : (
         <ScrollView
           style={{ flex: 1, backgroundColor: colors.backgroundSolid }}
           contentContainerStyle={{ padding: Spacing.lg, gap: Spacing.xs }}
@@ -615,7 +779,9 @@ export default function BatchLocateScreen() {
                   ]}
                   onPress={() => setSelectedStation(station)}
                   android_ripple={{ color: colors.tint + "28" }}
-                  testID={`batch-locate-station-${station.value}`}
+                  // Keyed by the location row id (not its mapped status) so two
+                  // custom locations sharing a status stay independently selectable.
+                  testID={`batch-locate-station-${station.id}`}
                 >
                   <Text style={[styles.stationLabel, { color: active ? colors.tint : colors.text }]}>
                     {station.label}
@@ -633,6 +799,7 @@ export default function BatchLocateScreen() {
             );
           })}
         </ScrollView>
+        )}
 
         <View
           style={[
@@ -677,6 +844,48 @@ export default function BatchLocateScreen() {
             Each case will be updated and its location history will reflect this move.
           </Text>
 
+          <ScrollView
+            style={styles.confirmList}
+            contentContainerStyle={styles.confirmListContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {scannedCases.map((item, index) => (
+              <View
+                key={item.caseId}
+                style={[
+                  styles.confirmCaseRow,
+                  {
+                    borderBottomColor: colors.border,
+                    borderBottomWidth:
+                      index < scannedCases.length - 1 ? StyleSheet.hairlineWidth : 0,
+                  },
+                ]}
+              >
+                <View style={styles.caseRowLeft}>
+                  <Text style={[styles.caseRowName, { color: colors.text }]} numberOfLines={1}>
+                    {item.patientName}
+                  </Text>
+                  <Text style={[styles.caseRowMeta, { color: colors.textSecondary }]} numberOfLines={1}>
+                    {item.caseNumber ? `#${item.caseNumber}` : "No case #"}
+                  </Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove ${item.patientName} from batch`}
+                  hitSlop={8}
+                  onPress={() => handleRemoveCase(item)}
+                  style={({ pressed }) => [
+                    styles.removeCaseBtn,
+                    { backgroundColor: pressed ? colors.surfaceAlt : "transparent" },
+                  ]}
+                  testID={`batch-locate-confirm-remove-${item.barcode}`}
+                >
+                  <Ionicons name="close" size={18} color={colors.textSecondary} />
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
+
           <View style={styles.confirmActions}>
             <Pressable
               style={[styles.cancelBtn, { borderColor: colors.border, backgroundColor: colors.surfaceAlt }]}
@@ -689,7 +898,7 @@ export default function BatchLocateScreen() {
             <Pressable
               style={[styles.confirmBtn, { backgroundColor: colors.tint }]}
               onPress={() => {
-                if (!selectedStation) return;
+                 if (!selectedStation || scannedCases.length === 0) return;
                 executeBatchMove(scannedCases, selectedStation);
               }}
               testID="batch-locate-confirm"
@@ -873,6 +1082,7 @@ function makeStyles(c: ThemeColors) {
 
     // Camera
     scannerArea: { height: 200, position: "relative", backgroundColor: "#000" },
+    torchBtnWrap: { position: "absolute", top: 10, right: 10, zIndex: 10 },
     reticle: {
       position: "absolute",
       top: "20%", left: "20%", right: "20%", height: "60%",
@@ -930,6 +1140,10 @@ function makeStyles(c: ThemeColors) {
     caseRowName: { ...Typography.bodySemibold },
     caseRowMeta: { ...Typography.caption },
     caseRowLoc: { ...Typography.caption, marginLeft: Spacing.sm, flexShrink: 0 },
+    removeCaseBtn: {
+      width: 36, height: 36, borderRadius: Radius.full ?? 18,
+      alignItems: "center", justifyContent: "center", marginLeft: Spacing.xs,
+    },
     continueBtn: {
       flexDirection: "row", alignItems: "center", justifyContent: "center",
       gap: Spacing.xs, borderRadius: Radius.md, paddingVertical: Spacing.md, marginTop: Spacing.xs,
@@ -966,6 +1180,11 @@ function makeStyles(c: ThemeColors) {
     },
     confirmTitle: { ...Typography.h2, textAlign: "center" },
     confirmBody: { ...Typography.body, textAlign: "center", lineHeight: 22 },
+    confirmList: { maxHeight: 220 },
+    confirmListContent: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border },
+    confirmCaseRow: {
+      flexDirection: "row", alignItems: "center", paddingVertical: Spacing.xs,
+    },
     confirmActions: { flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.xs },
     cancelBtn: {
       flex: 1, alignItems: "center", paddingVertical: Spacing.md,
@@ -1004,5 +1223,13 @@ function makeStyles(c: ThemeColors) {
       gap: Spacing.xs, paddingVertical: Spacing.sm,
     },
     secondaryBtnText: { ...Typography.bodySemibold },
+
+    // Fetch error (selecting step)
+    fetchErrorArea: {
+      flex: 1, alignItems: "center", justifyContent: "center",
+      gap: Spacing.sm, padding: Spacing.xl,
+    },
+    fetchErrorTitle: { ...Typography.h3, textAlign: "center" },
+    fetchErrorBody: { ...Typography.body, textAlign: "center", lineHeight: 22 },
   });
 }

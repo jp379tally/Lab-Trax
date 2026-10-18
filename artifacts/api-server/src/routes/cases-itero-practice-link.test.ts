@@ -35,7 +35,7 @@ maybe("Task #2479 iTero practice-name linking (db integration)", () => {
   const labOrgId = rid("lab");
   const otherLabOrgId = rid("lab");
   // Existing manually-created practice in `labOrgId`.
-  const southwoodOrgId = rid("prov");
+  const riverbendOrgId = rid("prov");
   // A different practice in the same lab used to confirm we pick the best
   // (correct) match rather than just the first qualifying org.
   const eastsideOrgId = rid("prov");
@@ -52,9 +52,9 @@ maybe("Task #2479 iTero practice-name linking (db integration)", () => {
       { id: labOrgId, type: "lab", name: "Test Lab" },
       { id: otherLabOrgId, type: "lab", name: "Other Lab" },
       {
-        id: southwoodOrgId,
+        id: riverbendOrgId,
         type: "provider",
-        name: "Family Dentistry at SouthWood",
+        name: "Riverbend Family Dental",
         parentLabOrganizationId: labOrgId,
       },
       {
@@ -66,7 +66,7 @@ maybe("Task #2479 iTero practice-name linking (db integration)", () => {
       {
         id: foreignSouthwoodOrgId,
         type: "provider",
-        name: "Family Dentistry at SouthWood",
+        name: "Riverbend Family Dental",
         parentLabOrganizationId: otherLabOrgId,
       },
     ]);
@@ -75,7 +75,7 @@ maybe("Task #2479 iTero practice-name linking (db integration)", () => {
   afterAll(async () => {
     if (!SHOULD_RUN) return;
     const { db, organizations } = dbMod as any;
-    await db.delete(organizations).where(eq(organizations.id, southwoodOrgId));
+    await db.delete(organizations).where(eq(organizations.id, riverbendOrgId));
     await db.delete(organizations).where(eq(organizations.id, eastsideOrgId));
     await db
       .delete(organizations)
@@ -87,20 +87,20 @@ maybe("Task #2479 iTero practice-name linking (db integration)", () => {
   it("links a brand-prefixed, bracket-suffixed iTero name to the existing practice", async () => {
     // This is exactly the shape an iTero Rx extraction produces:
     // "<brand/lab> - <practice> [<code>]".
-    const extracted = "Heartland Dental - Family Dentistry at SouthWood [565]";
+    const extracted = "Sample Dental Group - Riverbend Family Dental [101]";
     const matched = await helpers._findProviderOrgByPracticeName(
       labOrgId,
       extracted,
     );
-    expect(matched).toBe(southwoodOrgId);
+    expect(matched).toBe(riverbendOrgId);
   });
 
   it("links an exact practice name (no brand prefix) to the existing practice", async () => {
     const matched = await helpers._findProviderOrgByPracticeName(
       labOrgId,
-      "Family Dentistry at SouthWood",
+      "Riverbend Family Dental",
     );
-    expect(matched).toBe(southwoodOrgId);
+    expect(matched).toBe(riverbendOrgId);
   });
 
   it("does not mislink an unrelated extracted practice name", async () => {
@@ -114,22 +114,22 @@ maybe("Task #2479 iTero practice-name linking (db integration)", () => {
   it("does not match a same-named practice that belongs to a different lab", async () => {
     // foreignSouthwoodOrgId has the identical name but parent lab is
     // otherLabOrgId; scoping by parentLabOrganizationId must exclude it,
-    // and labOrgId has no other "SouthWood" org... so within otherLabOrgId
+    // and labOrgId has no other "Riverbend" org... so within otherLabOrgId
     // the only match is the foreign one, and within labOrgId the only
-    // SouthWood is the legitimate practice.
+    // Riverbend is the legitimate practice.
     const inLab = await helpers._findProviderOrgByPracticeName(
       otherLabOrgId,
-      "Heartland Dental - Family Dentistry at SouthWood [565]",
+      "Sample Dental Group - Riverbend Family Dental [101]",
     );
     expect(inLab).toBe(foreignSouthwoodOrgId);
 
     // Cross-check: matching within labOrgId never returns the foreign org.
     const inOwnLab = await helpers._findProviderOrgByPracticeName(
       labOrgId,
-      "Family Dentistry at SouthWood",
+      "Riverbend Family Dental",
     );
     expect(inOwnLab).not.toBe(foreignSouthwoodOrgId);
-    expect(inOwnLab).toBe(southwoodOrgId);
+    expect(inOwnLab).toBe(riverbendOrgId);
   });
 
   it("returns null for a blank extracted practice name", async () => {

@@ -1,18 +1,25 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { ArrowRight, Eye, EyeOff, Loader2 } from "lucide-react";
+import { formatAccountNumberForDisplay } from "@workspace/account-number";
 import { useAuth } from "@/lib/auth-context";
+import { toast } from "@/hooks/use-toast";
+import ProviderPlanChoices from "./ProviderPlanChoices";
+import type { ProviderSignupTier } from "@workspace/api-client-react";
 import {
   ApiError,
   apiFetch,
   checkEmailAvailable,
   checkUsernameAvailable,
   lookupLabs,
+  lookupPractices,
   sendEmailVerificationCode,
   sendPhoneVerificationCode,
   verifyEmailCode,
   verifyPhoneCode,
+  isSharedTestEmail,
   type LabGroup,
   type LabLookupResult,
+  type PracticeLookupResult,
 } from "@/lib/api";
 
 interface Plan {
@@ -47,6 +54,8 @@ type Step =
   | "user_type"
   | "lab_info"
   | "license"
+  | "provider_intent"
+  | "join_practice"
   | "practice_info"
   | "provider_match"
   | "email_verify"
@@ -54,7 +63,6 @@ type Step =
   | "phone_entry"
   | "phone_verify"
   | "phone_contact_name"
-  | "role_select"
   | "join_group"
   | "plan_select"
   | "hipaa_disclaimer";
@@ -66,6 +74,13 @@ type Step =
 //               role/plan/lab-details steps are shown.
 type LabMode = "create" | "join";
 
+// Provider intent chosen on the `provider_intent` step:
+//  - "create" → create a brand-new practice (practice details required).
+//  - "join"   → join an existing practice: search for the practice, file a
+//               join request, then verify email and finish. No organization is
+//               created and no role/plan/practice-details steps are shown.
+type ProviderMode = "create" | "join";
+
 // Lab owner creating a new lab — collects lab details before verification.
 const LAB_STEPS_CREATE: Step[] = [
   "welcome",
@@ -74,7 +89,6 @@ const LAB_STEPS_CREATE: Step[] = [
   "lab_info",
   "email_verify",
   "updates_opt_in",
-  "role_select",
   "join_group",
   "plan_select",
   "hipaa_disclaimer",
@@ -95,11 +109,11 @@ const PROVIDER_STEPS_NO_UPDATES: Step[] = [
   "welcome",
   "credentials",
   "user_type",
+  "provider_intent",
   "license",
   "practice_info",
   "email_verify",
   "updates_opt_in",
-  "role_select",
   "join_group",
   "plan_select",
   "hipaa_disclaimer",
@@ -109,6 +123,7 @@ const PROVIDER_STEPS_WITH_UPDATES: Step[] = [
   "welcome",
   "credentials",
   "user_type",
+  "provider_intent",
   "license",
   "practice_info",
   "email_verify",
@@ -116,26 +131,46 @@ const PROVIDER_STEPS_WITH_UPDATES: Step[] = [
   "phone_entry",
   "phone_verify",
   "phone_contact_name",
-  "role_select",
   "join_group",
   "plan_select",
   "hipaa_disclaimer",
 ];
 
+// Provider joining an existing practice — find-your-practice search → email
+// verify → finish. No practice-details, role, or plan steps (mirrors
+// LAB_STEPS_JOIN for lab employees).
+const PROVIDER_STEPS_JOIN: Step[] = [
+  "welcome",
+  "credentials",
+  "user_type",
+  "provider_intent",
+  "license",
+  "join_practice",
+  "email_verify",
+  "hipaa_disclaimer",
+];
+
 const STEP_HEADINGS: Record<Step, { title: string; sub: string }> = {
   welcome: { title: "Welcome to LabTrax", sub: "Your dental laboratory management platform." },
-  credentials: { title: "Create your account", sub: "Pick a username, email, and password." },
+  credentials: { title: "Create your account", sub: "Choose your username, email, and password." },
   user_type: { title: "Let's get you set up", sub: "Pick the option that describes you." },
-  lab_info: { title: "Lab details", sub: "Tell us about your lab." },
+  lab_info: { title: "Lab details", sub: "You’ll be Owner with administrator access. You can transfer ownership to an active member later." },
   license: { title: "License number", sub: "Required for verification." },
-  practice_info: { title: "Practice details", sub: "Tell us about your practice." },
+  provider_intent: {
+    title: "Your practice",
+    sub: "Join an existing practice or create a new one.",
+  },
+  join_practice: {
+    title: "Find your practice",
+    sub: "Search for your practice and send a request to join.",
+  },
+  practice_info: { title: "Practice details", sub: "For a new practice, you’ll be Owner with administrator access. You can transfer ownership to an active member later." },
   provider_match: { title: "We found a matching practice", sub: "Select your practice or create a new account." },
   email_verify: { title: "Verify your email", sub: "Enter the 6-digit code we sent." },
   updates_opt_in: { title: "Case updates", sub: "Want SMS updates from your lab?" },
   phone_entry: { title: "Your phone number", sub: "We'll text a 6-digit code." },
   phone_verify: { title: "Verify your phone", sub: "Enter the 6-digit code we sent." },
   phone_contact_name: { title: "Contact name", sub: "Who should we text for case updates?" },
-  role_select: { title: "Account role", sub: "Pick the role for this account." },
   join_group: { title: "Join an existing lab", sub: "Optional — request to join a registered lab." },
   plan_select: { title: "Choose your plan", sub: "Start your 30-day free trial on the right plan." },
   hipaa_disclaimer: { title: "HIPAA notice", sub: "Please review and accept to finish." },
@@ -156,7 +191,10 @@ const USERNAME_REGEX = /^[a-zA-Z0-9_]{3,12}$/;
 
 const inputClass =
   "w-full h-10 px-3 rounded-md bg-background border border-input text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary";
+const credentialsInputClass =
+  "w-full h-11 rounded-lg border border-[#CFE0F2] bg-[#F7FAFD] px-3.5 text-sm text-[#10213D] outline-none transition placeholder:text-[#91A1B5] focus:border-[#2878C8] focus:ring-2 focus:ring-[#2878C8]/15";
 const labelClass = "block text-xs font-medium text-foreground mb-1.5";
+const credentialsLabelClass = "mb-1.5 block text-[13px] font-semibold text-[#10213D]";
 const primaryBtnClass =
   "w-full h-10 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 disabled:cursor-not-allowed transition-colors";
 const secondaryBtnClass =
@@ -179,7 +217,6 @@ export default function SignupWizard({ onCancel }: Props) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [pwTouched, setPwTouched] = useState(false);
   const [emailCheckLoading, setEmailCheckLoading] = useState(false);
   const [emailConflictError, setEmailConflictError] = useState<string | null>(null);
   const [emailConflict409, setEmailConflict409] = useState(false);
@@ -188,6 +225,8 @@ export default function SignupWizard({ onCancel }: Props) {
   const [userType, setUserType] = useState<"lab" | "provider" | null>(null);
   // Lab intent: create a new lab vs. join an existing one (account-only).
   const [labMode, setLabMode] = useState<LabMode | null>(null);
+  // Provider intent: create a new practice vs. join an existing one.
+  const [providerMode, setProviderMode] = useState<ProviderMode | null>(null);
 
   // Lab info
   const [labName, setLabName] = useState("");
@@ -204,6 +243,7 @@ export default function SignupWizard({ onCancel }: Props) {
   const [doctorName, setDoctorName] = useState("");
   const [streetAddress, setStreetAddress] = useState("");
   const [city, setCity] = useState("");
+  const [state, setState] = useState("");
   const [zipCode, setZipCode] = useState("");
   const [practicePhone, setPracticePhone] = useState("");
 
@@ -224,14 +264,37 @@ export default function SignupWizard({ onCancel }: Props) {
   const [wantsUpdates, setWantsUpdates] = useState<boolean | null>(null);
   const [phoneContactName, setPhoneContactName] = useState("");
 
-  // Role
-  const [selectedRole, setSelectedRole] = useState<"user" | "admin" | null>(null);
-
   // Join group
   const [labGroups, setLabGroups] = useState<LabGroup[]>([]);
   const [labSearchFilter, setLabSearchFilter] = useState("");
   const [joinTargetOrgId, setJoinTargetOrgId] = useState<string | null>(null);
+  const [partnerLabs, setPartnerLabs] = useState<LabGroup[]>([]);
+  const [partnersConfirmed, setPartnersConfirmed] = useState(false);
+  const registrationInFlight = useRef(false);
+  const [viewport, setViewport] = useState<{ height: number; top: number } | null>(null);
+  useEffect(() => {
+    const update = () => setViewport({
+      height: window.visualViewport?.height ?? window.innerHeight,
+      top: window.visualViewport?.offsetTop ?? 0,
+    });
+    update();
+    window.visualViewport?.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    return () => {
+      window.visualViewport?.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
   const [groupsLoading, setGroupsLoading] = useState(false);
+  const [groupsError, setGroupsError] = useState<string | null>(null);
+
+  // Join practice (provider joining an existing practice)
+  const [practiceResults, setPracticeResults] = useState<PracticeLookupResult[]>([]);
+  const [practiceSearchFilter, setPracticeSearchFilter] = useState("");
+  const [joinPracticeOrgId, setJoinPracticeOrgId] = useState<string | null>(null);
+  const [practicesLoading, setPracticesLoading] = useState(false);
 
   // HIPAA
   const [hipaaAccepted, setHipaaAccepted] = useState(false);
@@ -241,6 +304,8 @@ export default function SignupWizard({ onCancel }: Props) {
   const [wizardPlansLoading, setWizardPlansLoading] = useState(false);
   const [wizardPlansFailed, setWizardPlansFailed] = useState(false);
   const [selectedPriceId, setSelectedPriceId] = useState<string | null>(null);
+  const [providerPlan, setProviderPlan] = useState<ProviderSignupTier | null>(null);
+  const [reuseSubscriptionCard, setReuseSubscriptionCard] = useState(false);
 
   // Resend timer tick
   useEffect(() => {
@@ -252,6 +317,7 @@ export default function SignupWizard({ onCancel }: Props) {
   // Load plans when reaching the plan_select step
   useEffect(() => {
     if (step !== "plan_select") return;
+    if (userType === "provider") return;
     if (wizardPlans.length > 0 || wizardPlansLoading || wizardPlansFailed) return;
     setWizardPlansLoading(true);
     setWizardPlansFailed(false);
@@ -276,12 +342,15 @@ export default function SignupWizard({ onCancel }: Props) {
   useEffect(() => {
     if (step !== "join_group") return;
     const q = labSearchFilter.trim();
+    setGroupsError(null);
     if (q.length < 2) {
       setLabGroups([]);
       setGroupsLoading(false);
       return;
     }
     let cancelled = false;
+    setLabGroups([]);
+    setGroupsLoading(true);
     const handle = setTimeout(async () => {
       setGroupsLoading(true);
       try {
@@ -290,18 +359,20 @@ export default function SignupWizard({ onCancel }: Props) {
           setLabGroups(
             results.map((r: LabLookupResult) => ({
               organizationId: r.id,
-              practiceName: r.displayName || r.name,
+              selectionKey: r.selectionKey ?? r.id,
+              practiceName: r.displayName,
               username: "",
-              practiceAddress: [r.addressLine1, r.city, r.state, r.zip]
-                .filter(Boolean)
-                .join(", "),
-              phone: r.phone,
+              practiceAddress: [r.city, r.state].filter(Boolean).join(", "),
+              phone: null,
               memberCount: 0,
             })),
           );
         }
       } catch {
-        if (!cancelled) setLabGroups([]);
+        if (!cancelled) {
+          setLabGroups([]);
+          setGroupsError("Could not search labs. Check your connection and search again.");
+        }
       } finally {
         if (!cancelled) setGroupsLoading(false);
       }
@@ -313,11 +384,41 @@ export default function SignupWizard({ onCancel }: Props) {
     };
   }, [labSearchFilter, step]);
 
+  // Debounced practice search for the provider "join an existing practice"
+  // step (mirrors the lab search effect above).
+  useEffect(() => {
+    if (step !== "join_practice") return;
+    const q = practiceSearchFilter.trim();
+    if (q.length < 2) {
+      setPracticeResults([]);
+      setPracticesLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const handle = setTimeout(async () => {
+      setPracticesLoading(true);
+      try {
+        const results = await lookupPractices(q);
+        if (!cancelled) setPracticeResults(results);
+      } catch {
+        if (!cancelled) setPracticeResults([]);
+      } finally {
+        if (!cancelled) setPracticesLoading(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+      setPracticesLoading(false);
+    };
+  }, [practiceSearchFilter, step]);
+
   const stepSequence = useMemo<Step[]>(() => {
     if (userType === "lab") {
       return labMode === "join" ? LAB_STEPS_JOIN : LAB_STEPS_CREATE;
     }
     if (userType === "provider") {
+      if (providerMode === "join") return PROVIDER_STEPS_JOIN;
       const hasMatches = providerMatches.length > 0;
       const isMatched = !!selectedMatchOrgId;
       const base = wantsUpdates ? PROVIDER_STEPS_WITH_UPDATES : PROVIDER_STEPS_NO_UPDATES;
@@ -328,14 +429,14 @@ export default function SignupWizard({ onCancel }: Props) {
           if (s === "practice_info") withMatch.push("provider_match");
         }
         if (isMatched) {
-          return withMatch.filter((s) => s !== "join_group" && s !== "plan_select" && s !== "role_select");
+          return withMatch.filter((s) => s !== "join_group" && s !== "plan_select");
         }
         return withMatch;
       }
       return base;
     }
     return ["welcome", "credentials", "user_type"];
-  }, [userType, labMode, wantsUpdates, providerMatches.length, selectedMatchOrgId]);
+  }, [userType, labMode, providerMode, wantsUpdates, providerMatches.length, selectedMatchOrgId]);
 
   const currentIdx = Math.max(0, stepSequence.indexOf(step));
   const totalSteps = stepSequence.length;
@@ -393,7 +494,7 @@ export default function SignupWizard({ onCancel }: Props) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       return fail("Please enter a valid email address.");
     }
-    if (emailConflictError) {
+    if (emailConflictError && !isSharedTestEmail(email)) {
       return fail("Please use a different email address — that one is already taken.");
     }
     const pw = validatePassword(password);
@@ -422,15 +523,30 @@ export default function SignupWizard({ onCancel }: Props) {
   //  - provider → license
   function selectAccountCategory(cat: "join" | "create" | "provider") {
     setError(null);
+    if (cat !== "provider") setPartnerLabs([]);
+    setJoinTargetOrgId(null);
     if (cat === "provider") {
       setUserType("provider");
       setLabMode(null);
-      setStep("license");
+      setStep("provider_intent");
       return;
     }
     setUserType("lab");
     setLabMode(cat);
     setStep(cat === "create" ? "lab_info" : "join_group");
+  }
+
+  // Provider chose between joining an existing practice and creating a new
+  // one. Both continue to the license step; the license step then branches.
+  function selectProviderIntent(mode: ProviderMode) {
+    setError(null);
+    if (mode === "join") setPartnerLabs([]);
+    setProviderMode(mode);
+    if (mode === "create") {
+      setJoinPracticeOrgId(null);
+      setPracticeSearchFilter("");
+    }
+    setStep("license");
   }
 
   async function sendEmail() {
@@ -470,7 +586,7 @@ export default function SignupWizard({ onCancel }: Props) {
     e.preventDefault();
     if (!licenseNumber.trim()) return fail("Please enter your license number.");
     setError(null);
-    setStep("practice_info");
+    setStep(providerMode === "join" ? "join_practice" : "practice_info");
   }
 
   async function handlePracticeInfoNext(e: FormEvent) {
@@ -480,6 +596,7 @@ export default function SignupWizard({ onCancel }: Props) {
       !doctorName.trim() ||
       !streetAddress.trim() ||
       !city.trim() ||
+      !state.trim() ||
       !zipCode.trim() ||
       !practicePhone.trim()
     ) {
@@ -513,8 +630,9 @@ export default function SignupWizard({ onCancel }: Props) {
     try {
       await verifyEmailCode(email.trim(), emailCode);
       setBusy(false);
-      // Lab joiners finish right after verification — no SMS/role/plan steps.
-      setStep(isLabJoinFlow ? "hipaa_disclaimer" : "updates_opt_in");
+      // Lab joiners and practice joiners finish right after verification —
+      // no SMS/role/plan steps.
+      setStep(isLabJoinFlow || isPracticeJoinFlow ? "hipaa_disclaimer" : "updates_opt_in");
     } catch (err) {
       fail((err as Error)?.message || "Verification failed.");
     }
@@ -528,7 +646,7 @@ export default function SignupWizard({ onCancel }: Props) {
     } else if (userType === "provider" && selectedMatchOrgId) {
       setStep("hipaa_disclaimer");
     } else {
-      setStep("role_select");
+      setStep("join_group");
     }
   }
 
@@ -571,22 +689,17 @@ export default function SignupWizard({ onCancel }: Props) {
     if (userType === "provider" && selectedMatchOrgId) {
       setStep("hipaa_disclaimer");
     } else {
-      setStep("role_select");
+      setStep("join_group");
     }
   }
 
-  function selectRole(role: "user" | "admin") {
-    setSelectedRole(role);
-    setError(null);
-    const roleIdx = stepSequence.indexOf("role_select");
-    const next = stepSequence[roleIdx + 1] ?? "join_group";
-    setStep(next);
-  }
-
   async function completeRegistration() {
+    if (registrationInFlight.current) return;
     if (!hipaaAccepted) return fail("Please accept the HIPAA notice to continue.");
     if (!userType) return fail("Please choose an account type.");
+    if (userType === "provider" && providerMode !== "join" && !selectedMatchOrgId && !providerPlan) return fail("Please explicitly choose a provider plan.");
     setBusy(true);
+    registrationInFlight.current = true;
     setError(null);
     try {
       const isLab = userType === "lab";
@@ -595,20 +708,27 @@ export default function SignupWizard({ onCancel }: Props) {
       // server (which already gates on createOrganization + practiceName)
       // creates a bare user with no membership.
       const isLabJoin = isLab && labMode === "join";
-      const isMatchedJoin = !isLab && !!selectedMatchOrgId;
+      // Provider joining an existing practice: account + join request only —
+      // no practice details collected and no organization created.
+      const isPracticeJoin = !isLab && providerMode === "join";
+      const isMatchedJoin = !isLab && !isPracticeJoin && !!selectedMatchOrgId;
       const resolvedAddress = isLab
         ? [labStreet.trim(), labCity.trim(), labState.trim(), labZip.trim()].filter(Boolean).join(", ")
-        : [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", ");
+        : [streetAddress.trim(), city.trim(), state.trim(), zipCode.trim()].filter(Boolean).join(", ");
+      const structuredAddress = isLab
+        ? { line1: labStreet.trim(), city: labCity.trim(), state: labState.trim(), zip: labZip.trim() }
+        : { line1: streetAddress.trim(), city: city.trim(), state: state.trim(), zip: zipCode.trim() };
       const resolvedPhone = isLab ? labPhone.trim() : practicePhone.trim();
       const resolvedEmail = isLab ? labEmail.trim() || email.trim() : email.trim();
 
-      // Synthesise a per-user account number similar to the mobile flow.
-      const yy = new Date().getFullYear() % 100;
-      const acctNum = isLab
-        ? `DS-${Date.now().toString().slice(-6)}`
-        : `${yy}-${Date.now().toString().slice(-4)}`;
+      // Lab creation retains its legacy account number contract. Provider
+      // accounts do not own a canonical account number; the server assigns
+      // one when appropriate.
+      const acctNum = isLab ? `DS-${Date.now().toString().slice(-6)}` : undefined;
 
       await register({
+        providerPlan: userType === "provider" ? providerPlan ?? undefined : undefined,
+        reuseSubscriptionCard: userType === "provider" ? reuseSubscriptionCard : undefined,
         username: username.trim(),
         password,
         email: resolvedEmail,
@@ -616,30 +736,44 @@ export default function SignupWizard({ onCancel }: Props) {
         wantsUpdates: !!wantsUpdates,
         userType,
         licenseNumber: isLabJoin ? undefined : licenseNumber.trim() || undefined,
-        practiceName: isLabJoin
+        practiceName: isLabJoin || isPracticeJoin
           ? undefined
           : isLab
             ? labName.trim()
             : isMatchedJoin
               ? undefined
               : practiceName.trim(),
-        doctorName: isLab ? undefined : doctorName.trim() || undefined,
-        practiceAddress: isLabJoin || isMatchedJoin ? undefined : resolvedAddress,
-        practicePhone: isLabJoin || isMatchedJoin ? undefined : resolvedPhone,
+        doctorName: isLab || isPracticeJoin ? undefined : doctorName.trim() || undefined,
+        practiceAddress: isLabJoin || isPracticeJoin || isMatchedJoin ? undefined : resolvedAddress,
+        address: isLabJoin || isPracticeJoin || isMatchedJoin ? undefined : structuredAddress,
+        practicePhone: isLabJoin || isPracticeJoin || isMatchedJoin ? undefined : resolvedPhone,
         phoneContactName:
           wantsUpdates && userType === "provider" ? phoneContactName.trim() || undefined : undefined,
-        role: selectedRole || "user",
-        accountNumber: acctNum,
+        ...(acctNum ? { accountNumber: acctNum } : {}),
         createOrganization: isLab
           ? labMode === "create"
-          : !isMatchedJoin && !joinTargetOrgId,
-        joinOrganizationId: isMatchedJoin ? selectedMatchOrgId : (joinTargetOrgId || undefined),
+          : isPracticeJoin
+            ? false
+            : !isMatchedJoin,
+        joinOrganizationId: isPracticeJoin
+          ? joinPracticeOrgId || undefined
+          : isMatchedJoin
+            ? selectedMatchOrgId
+            : isLab ? (joinTargetOrgId || undefined) : undefined,
+        partnerLabSelections: isLab ? undefined : partnerLabs.map((lab) => lab.organizationId),
         claimProvider: undefined,
       });
+      if (!isLab && partnerLabs.length > 0) {
+        toast({
+          title: "Partnership requests submitted",
+          description: `${partnerLabs.map((lab) => lab.practiceName).join(", ")} — approval is pending from each lab.`,
+          duration: 15000,
+        });
+      }
       // Registration succeeded — tokens are now set. If the user picked a
       // plan during sign-up, open Stripe checkout in a new tab before the
       // app router replaces this screen with the dashboard.
-      if (selectedPriceId) {
+      if (selectedPriceId && userType !== "provider") {
         try {
           const result = await apiFetch<{ ok: boolean; url: string }>("/billing/checkout-session", {
             method: "POST",
@@ -662,6 +796,7 @@ export default function SignupWizard({ onCancel }: Props) {
       }
       // Auth context flips to "authed" — the app router will replace this screen.
     } catch (err) {
+      registrationInFlight.current = false;
       if (err instanceof ApiError && err.status === 409 && /email/i.test(err.message)) {
         setEmailConflict409(true);
         fail(err.message);
@@ -678,16 +813,27 @@ export default function SignupWizard({ onCancel }: Props) {
   // first real step (find-your-lab), so it gets a clearer heading than the
   // optional "also join a lab" variant shown to creators/providers.
   const isLabJoinFlow = userType === "lab" && labMode === "join";
+  // Provider joining an existing practice — mirrors the lab-join shortcut.
+  const isPracticeJoinFlow = userType === "provider" && providerMode === "join";
+  const isPartnershipStep = step === "join_group" && userType === "provider";
   const heading =
     step === "join_group" && isLabJoinFlow
       ? { title: "Find your lab", sub: "Search for your lab and send a request to join." }
-      : STEP_HEADINGS[step];
+      : step === "join_group" && userType === "provider"
+        ? { title: "Partner with a lab", sub: "Select one or multiple labs" }
+        : STEP_HEADINGS[step];
 
   return (
-    <div className="w-full max-w-[460px]">
-      <div className="bg-card border border-border rounded-xl shadow-sm p-7">
+    <div className={isPartnershipStep ? "fixed inset-x-0 z-20 flex justify-center bg-background p-3" : "w-full max-w-[460px]"}
+      style={isPartnershipStep ? { top: viewport?.top ?? 0, height: viewport?.height ?? "100dvh" } : undefined}>
+      <div className={`${step === "credentials" ? "rounded-2xl border border-[#E3EBF5] bg-white shadow-[0_12px_40px_rgba(24,59,99,0.10)]" : "bg-card border border-border rounded-xl shadow-sm"} ${isPartnershipStep ? "w-full max-w-[460px] flex flex-col min-h-0 overflow-hidden" : ""}`}>
+      <div className={isPartnershipStep ? "p-5 flex-1 min-h-0 overflow-y-auto" : step === "credentials" ? "p-6 sm:p-8" : "p-7"}>
         {/* Step indicator */}
-        <div className="flex items-center gap-1.5 mb-5" aria-label={`Step ${currentIdx + 1} of ${totalSteps}`}>
+        <div
+          className={`mb-5 flex items-center gap-1.5 ${step === "credentials" ? "mb-6" : ""}`}
+          aria-label={`Step ${currentIdx + 1} of ${totalSteps}`}
+          data-testid="signup-progress"
+        >
           {stepSequence.map((s, i) => (
             <span
               key={s}
@@ -696,11 +842,20 @@ export default function SignupWizard({ onCancel }: Props) {
               }`}
             />
           ))}
+          {step === "credentials" && (
+            <span className="ml-3 shrink-0 text-[9px] font-semibold tracking-[0.14em] text-[#72839A]">
+              STEP {currentIdx + 1} OF {totalSteps}
+            </span>
+          )}
         </div>
 
         <div className="mb-5">
-          <h1 className="text-xl font-semibold tracking-tight">{heading.title}</h1>
-          <p className="text-sm text-muted-foreground mt-1">{heading.sub}</p>
+          <h1 className={step === "credentials" ? "text-[26px] font-bold tracking-tight text-[#0B1433]" : "text-xl font-semibold tracking-tight"}>
+            {heading.title}
+          </h1>
+          <p className={step === "credentials" ? "mt-1 text-[13px] text-[#5B6F8A]" : "text-sm text-muted-foreground mt-1"}>
+            {heading.sub}
+          </p>
         </div>
 
         {error && (
@@ -723,6 +878,12 @@ export default function SignupWizard({ onCancel }: Props) {
                 Go back to fix your email →
               </button>
             )}
+          </div>
+        )}
+        {partnersConfirmed && partnerLabs.length > 0 && !isPartnershipStep && (
+          <div role="status" className="mb-4 rounded-md border border-primary bg-primary/10 p-3 text-sm">
+            <strong>Partnership selections confirmed: {partnerLabs.map((lab) => lab.practiceName).join(", ")}</strong>
+            <p>Requests will be sent when signup is completed. Each lab must approve your request.</p>
           </div>
         )}
 
@@ -774,13 +935,18 @@ export default function SignupWizard({ onCancel }: Props) {
         {step === "credentials" && (
           <form onSubmit={handleCredentialsNext} className="space-y-4">
             <div>
-              <label className={labelClass}>Username</label>
+              <label htmlFor="signup-username" className={credentialsLabelClass}>Username</label>
               <input
-                className={inputClass}
+                id="signup-username"
+                data-testid="signup-username"
+                type="text"
+                className={credentialsInputClass}
                 value={username}
                 autoFocus
                 autoComplete="username"
                 maxLength={12}
+                placeholder="Enter a username"
+                aria-required="true"
                 onChange={(e) => {
                   setUsername(e.target.value);
                   clearError();
@@ -791,13 +957,17 @@ export default function SignupWizard({ onCancel }: Props) {
               </p>
             </div>
             <div>
-              <label className={labelClass}>Email</label>
+              <label htmlFor="signup-email" className={credentialsLabelClass}>Email</label>
               <div className="relative">
                 <input
+                  id="signup-email"
+                  data-testid="signup-email"
                   type="email"
-                  className={`${inputClass} ${emailConflictError ? "border-destructive focus:border-destructive focus:ring-destructive" : ""}`}
+                  className={`${credentialsInputClass} ${emailConflictError ? "border-destructive focus:border-destructive focus:ring-destructive" : ""}`}
                   value={email}
                   autoComplete="email"
+                  placeholder="you@example.com"
+                  aria-required="true"
                   onChange={(e) => {
                     setEmail(e.target.value);
                     setEmailConflictError(null);
@@ -812,54 +982,69 @@ export default function SignupWizard({ onCancel }: Props) {
               {emailConflictError && (
                 <p className="mt-1 text-xs text-destructive">{emailConflictError}</p>
               )}
+              {isSharedTestEmail(email) && (
+                <div
+                  className="mt-2 rounded-lg border border-[#D4E7FA] bg-[#EAF4FE] px-3 py-2.5 text-xs leading-[17px] text-[#385D84]"
+                  data-testid="shared-email-signup-guidance"
+                  role="note"
+                >
+                  <span className="mr-2 inline-flex h-4 w-4 items-center justify-center rounded-full bg-[#4B9DEB] align-middle text-[10px] font-bold text-white" aria-hidden="true">i</span>
+                  This shared test email can be used for multiple accounts. Sign in to each with its unique username; email sign-in can’t distinguish them.
+                </div>
+              )}
             </div>
             <div>
-              <label className={labelClass}>Password</label>
+              <label htmlFor="signup-password" className={credentialsLabelClass}>Password</label>
               <div className="relative">
                 <input
+                  id="signup-password"
+                  data-testid="signup-password"
                   type={showPassword ? "text" : "password"}
-                  className={inputClass + " pr-16"}
+                  className={credentialsInputClass + " pr-12"}
                   value={password}
                   autoComplete="new-password"
+                  placeholder="Create a password"
+                  aria-required="true"
                   onChange={(e) => {
                     setPassword(e.target.value);
-                    setPwTouched(true);
                     clearError();
                   }}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground hover:text-foreground px-2 py-1"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  aria-pressed={showPassword}
+                  data-testid="signup-password-visibility"
+                  className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-md text-[#60758E] hover:text-[#145DA0]"
                 >
-                  {showPassword ? "Hide" : "Show"}
+                  {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
                 </button>
               </div>
-              {pwTouched && (
-                <ul className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-                  {[
-                    { label: "8+ characters", met: pwReq.length },
-                    { label: "Uppercase letter", met: pwReq.upper },
-                    { label: "Lowercase letter", met: pwReq.lower },
-                    { label: "Special character", met: pwReq.special },
-                  ].map((r) => (
-                    <li
-                      key={r.label}
-                      className={r.met ? "text-emerald-600" : "text-muted-foreground"}
-                    >
-                      {r.met ? "✓" : "•"} {r.label}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <ul className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]" aria-label="Password requirements">
+                {[
+                  { label: "8+ characters", met: pwReq.length },
+                  { label: "Uppercase letter", met: pwReq.upper },
+                  { label: "Lowercase letter", met: pwReq.lower },
+                  { label: "Special character", met: pwReq.special },
+                ].map((r) => (
+                  <li key={r.label} className={r.met ? "text-emerald-700" : "text-[#71839A]"}>
+                    <span className="mr-1 font-bold">{r.met ? "✓" : "○"}</span>{r.label}
+                  </li>
+                ))}
+              </ul>
             </div>
             <div>
-              <label className={labelClass}>Confirm Password</label>
+              <label htmlFor="signup-confirm-password" className={credentialsLabelClass}>Confirm Password</label>
               <input
+                id="signup-confirm-password"
+                data-testid="signup-confirm-password"
                 type={showPassword ? "text" : "password"}
-                className={inputClass}
+                className={credentialsInputClass}
                 value={confirm}
                 autoComplete="new-password"
+                placeholder="Re-enter your password"
+                aria-required="true"
                 onChange={(e) => {
                   setConfirm(e.target.value);
                   clearError();
@@ -869,9 +1054,10 @@ export default function SignupWizard({ onCancel }: Props) {
             <button
               type="submit"
               disabled={busy || emailCheckLoading || !!emailConflictError}
-              className={primaryBtnClass}
+              className={step === "credentials" ? "flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#1262B0] text-sm font-semibold text-white transition-colors hover:bg-[#0D559B] disabled:cursor-not-allowed disabled:opacity-60" : primaryBtnClass}
             >
               {busy ? "Checking…" : emailCheckLoading ? "Checking email…" : "Continue"}
+              {!busy && !emailCheckLoading && <ArrowRight size={18} aria-hidden="true" />}
             </button>
           </form>
         )}
@@ -1016,6 +1202,31 @@ export default function SignupWizard({ onCancel }: Props) {
           </form>
         )}
 
+        {step === "provider_intent" && (
+          <div className="space-y-3">
+            <button
+              type="button"
+              onClick={() => selectProviderIntent("join")}
+              className="w-full text-left p-4 rounded-md border border-input hover:border-primary hover:bg-muted/50 transition-colors"
+            >
+              <div className="text-sm font-semibold">Join an existing practice</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                My practice already uses LabTrax. Find it and request to join.
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => selectProviderIntent("create")}
+              className="w-full text-left p-4 rounded-md border border-input hover:border-primary hover:bg-muted/50 transition-colors"
+            >
+              <div className="text-sm font-semibold">Create a new practice</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Set up a new practice on LabTrax with my details.
+              </div>
+            </button>
+          </div>
+        )}
+
         {step === "license" && (
           <form onSubmit={handleLicenseNext} className="space-y-4">
             <div>
@@ -1034,6 +1245,95 @@ export default function SignupWizard({ onCancel }: Props) {
               Continue
             </button>
           </form>
+        )}
+
+        {step === "join_practice" && (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Search for your practice below. A practice admin (or its lab)
+              approves your request before you can see the dashboard.
+            </p>
+            <div>
+              <input
+                className={inputClass}
+                placeholder="Search practices…"
+                value={practiceSearchFilter}
+                onChange={(e) => setPracticeSearchFilter(e.target.value)}
+              />
+            </div>
+            <div className="max-h-60 overflow-auto border border-input rounded-md">
+              {practicesLoading && (
+                <p className="text-xs text-muted-foreground p-4 text-center">Loading practices…</p>
+              )}
+              {!practicesLoading &&
+                practiceResults.map((p) => {
+                  const selected = joinPracticeOrgId === p.id;
+                  const location = [p.addressLine1, p.city, p.state, p.zip]
+                    .filter(Boolean)
+                    .join(", ");
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => setJoinPracticeOrgId(selected ? null : p.id)}
+                      className={`block w-full text-left px-3 py-2 text-sm border-b border-border last:border-b-0 hover:bg-muted ${
+                        selected ? "bg-primary/10" : ""
+                      }`}
+                    >
+                      <div className="font-medium">{p.displayName || p.name}</div>
+                      {location && (
+                        <div className="text-xs text-muted-foreground truncate">{location}</div>
+                      )}
+                      {p.parentLabName && (
+                        <div className="text-xs text-muted-foreground truncate">
+                          Lab: {p.parentLabName}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              {!practicesLoading &&
+                practiceResults.length === 0 &&
+                practiceSearchFilter.trim().length >= 2 && (
+                  <p className="text-xs text-muted-foreground p-4 text-center">
+                    No registered practices found.
+                  </p>
+                )}
+              {!practicesLoading && practiceSearchFilter.trim().length < 2 && (
+                <p className="text-xs text-muted-foreground p-4 text-center">
+                  Type to search for practices…
+                </p>
+              )}
+            </div>
+            {joinPracticeOrgId && (
+              <p className="text-xs text-muted-foreground">
+                A join request will be sent. You'll be added once it's approved.
+              </p>
+            )}
+            <button
+              type="button"
+              disabled={busy || !joinPracticeOrgId}
+              onClick={() => {
+                setError(null);
+                void sendEmail();
+              }}
+              className={primaryBtnClass}
+            >
+              {busy ? "Sending code…" : "Continue with join request"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setError(null);
+                selectProviderIntent("create");
+                setStep("practice_info");
+              }}
+              className="w-full text-sm text-muted-foreground hover:text-foreground underline underline-offset-2 py-1"
+            >
+              Can't find it? Create a new practice instead
+            </button>
+          </div>
         )}
 
         {step === "practice_info" && (
@@ -1072,7 +1372,7 @@ export default function SignupWizard({ onCancel }: Props) {
                   }}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className={labelClass}>City</label>
                   <input
@@ -1080,6 +1380,18 @@ export default function SignupWizard({ onCancel }: Props) {
                     value={city}
                     onChange={(e) => {
                       setCity(e.target.value);
+                      clearError();
+                    }}
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>State</label>
+                  <input
+                    className={inputClass}
+                    value={state}
+                    maxLength={2}
+                    onChange={(e) => {
+                      setState(e.target.value.toUpperCase());
                       clearError();
                     }}
                   />
@@ -1134,6 +1446,7 @@ export default function SignupWizard({ onCancel }: Props) {
                   type="button"
                   onClick={() => {
                     setSelectedMatchOrgId(isSelected ? null : match.orgId);
+                    if (!isSelected) setPartnerLabs([]);
                     setError(null);
                   }}
                   className={`w-full text-left p-4 rounded-md border transition-colors ${
@@ -1151,7 +1464,9 @@ export default function SignupWizard({ onCancel }: Props) {
                   <div className="text-xs text-muted-foreground mt-0.5">
                     {[match.city, match.state].filter(Boolean).join(", ")}
                     {match.platformAccountNumber && (
-                      <span className="ml-2 font-mono">#{match.platformAccountNumber}</span>
+                      <span className="ml-2 font-mono">
+                        #{formatAccountNumberForDisplay(match.platformAccountNumber)}
+                      </span>
                     )}
                   </div>
                   {isSelected && (
@@ -1343,31 +1658,6 @@ export default function SignupWizard({ onCancel }: Props) {
           </form>
         )}
 
-        {step === "role_select" && (
-          <div className="space-y-3">
-            <button
-              type="button"
-              onClick={() => selectRole("user")}
-              className="w-full text-left p-4 rounded-md border border-input hover:border-primary hover:bg-muted/50 transition-colors"
-            >
-              <div className="text-sm font-semibold">User</div>
-              <div className="text-xs text-muted-foreground mt-1">
-                Standard user with access to case management.
-              </div>
-            </button>
-            <button
-              type="button"
-              onClick={() => selectRole("admin")}
-              className="w-full text-left p-4 rounded-md border border-input hover:border-primary hover:bg-muted/50 transition-colors"
-            >
-              <div className="text-sm font-semibold">Administrator</div>
-              <div className="text-xs text-muted-foreground mt-1">
-                Full access including pricing and management.
-              </div>
-            </button>
-          </div>
-        )}
-
         {step === "join_group" && (
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
@@ -1375,7 +1665,7 @@ export default function SignupWizard({ onCancel }: Props) {
                 ? "Search for your lab below. A lab admin approves your request before you can see the dashboard."
                 : userType === "lab"
                   ? "Optional. Browse registered labs you'd like to join as a member."
-                  : "Optional. Browse registered labs and request to join one. The lab admin will need to approve."}
+                  : "Optional. Search and select labs to partner with. Each lab admin must approve your request."}
             </p>
             <div>
               <input
@@ -1385,24 +1675,60 @@ export default function SignupWizard({ onCancel }: Props) {
                 onChange={(e) => setLabSearchFilter(e.target.value)}
               />
             </div>
+            {userType === "provider" && (
+              <div className="space-y-2" aria-label="Selected partner labs" aria-live="polite">
+                <p className="text-sm font-semibold">{partnerLabs.length} labs selected</p>
+                {partnerLabs.map((lab) => (
+                  <div key={lab.selectionKey ?? lab.organizationId} className="flex items-center justify-between gap-2 rounded-md border border-input px-3 py-2 text-sm">
+                    <span>{lab.practiceName}</span>
+                    <button type="button" aria-label={`Remove ${lab.practiceName}`} className="text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => { setPartnersConfirmed(false); setPartnerLabs((current) => current.filter((item) => (item.selectionKey ?? item.organizationId) !== (lab.selectionKey ?? lab.organizationId))); }}>
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="max-h-60 overflow-auto border border-input rounded-md">
               {groupsLoading && (
                 <p className="text-xs text-muted-foreground p-4 text-center">Loading labs…</p>
               )}
               {!groupsLoading &&
                 labGroups.map((g) => {
-                  const selected = joinTargetOrgId === g.organizationId;
+                  const selected = userType === "provider"
+                    ? partnerLabs.some((lab) => (lab.selectionKey ?? lab.organizationId) === (g.selectionKey ?? g.organizationId))
+                    : joinTargetOrgId === g.organizationId;
                   return (
                     <button
                       key={g.organizationId}
                       type="button"
-                      onClick={() =>
-                        setJoinTargetOrgId(selected ? null : g.organizationId)
-                      }
-                      className={`block w-full text-left px-3 py-2 text-sm border-b border-border last:border-b-0 hover:bg-muted ${
-                        selected ? "bg-primary/10" : ""
+                      role={userType === "provider" ? "checkbox" : undefined}
+                      aria-checked={userType === "provider" ? selected : undefined}
+                      aria-pressed={userType === "provider" ? undefined : selected}
+                      aria-label={g.practiceName}
+                      disabled={busy}
+                      onClick={() => {
+                        if (userType !== "provider") {
+                          setJoinTargetOrgId(selected ? null : g.organizationId);
+                          return;
+                        }
+                        setPartnersConfirmed(false);
+                        if (selected) {
+                          setPartnerLabs((current) => current.filter((lab) => (lab.selectionKey ?? lab.organizationId) !== (g.selectionKey ?? g.organizationId)));
+                          return;
+                        }
+                        if (partnerLabs.length >= 20) {
+                          setError("Select up to 20 partner labs.");
+                          return;
+                        }
+                        setPartnerLabs((current) => [...current, g]);
+                      }}
+                      className={`flex items-center gap-3 w-full text-left px-3 py-3 text-sm border-b border-border last:border-b-0 hover:bg-muted ${
+                        selected ? "bg-primary/10 ring-1 ring-inset ring-primary" : ""
                       }`}
                     >
+                      {userType === "provider" && <span aria-hidden="true" className={`h-5 w-5 shrink-0 rounded border flex items-center justify-center ${selected ? "bg-primary text-primary-foreground border-primary" : "border-input"}`}>{selected ? "✓" : ""}</span>}
+                      <div>
                       <div className="font-medium">{g.practiceName}</div>
                       {g.practiceAddress && (
                         <div className="text-xs text-muted-foreground truncate">
@@ -1414,10 +1740,13 @@ export default function SignupWizard({ onCancel }: Props) {
                           {g.phone}
                         </div>
                       )}
+                      {userType === "provider" && selected && <span className="text-xs text-primary">Selected</span>}
+                      </div>
                     </button>
                   );
                 })}
-              {!groupsLoading && labGroups.length === 0 && labSearchFilter.trim().length >= 2 && (
+              {groupsError && <p role="alert" className="text-sm text-destructive p-3">{groupsError}</p>}
+              {!groupsError && !groupsLoading && labGroups.length === 0 && labSearchFilter.trim().length >= 2 && (
                 <p className="text-xs text-muted-foreground p-4 text-center">
                   No registered labs found.
                 </p>
@@ -1428,12 +1757,12 @@ export default function SignupWizard({ onCancel }: Props) {
                 </p>
               )}
             </div>
-            {joinTargetOrgId && (
+            {userType !== "provider" && joinTargetOrgId && (
               <p className="text-xs text-muted-foreground">
                 A join request will be sent. You'll be added once the admin approves.
               </p>
             )}
-            <button
+            {userType !== "provider" && <button
               type="button"
               disabled={busy}
               onClick={() => {
@@ -1455,19 +1784,20 @@ export default function SignupWizard({ onCancel }: Props) {
                 : joinTargetOrgId
                   ? "Continue with join request"
                   : "Skip for now"}
-            </button>
+            </button>}
           </div>
         )}
 
         {step === "plan_select" && (
           <div className="space-y-4">
-            {wizardPlansLoading && (
+            {userType === "provider" && <ProviderPlanChoices selected={providerPlan} onSelect={setProviderPlan} reuseCard={reuseSubscriptionCard} onReuseChange={setReuseSubscriptionCard} />}
+            {userType !== "provider" && wizardPlansLoading && (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="animate-spin text-muted-foreground" size={22} />
               </div>
             )}
 
-            {!wizardPlansLoading && wizardPlans.length === 0 && (
+            {userType !== "provider" && !wizardPlansLoading && wizardPlans.length === 0 && (
               <div className="text-sm text-muted-foreground bg-muted/40 rounded-lg p-4 text-center">
                 {wizardPlansFailed
                   ? "Could not load plans — you can choose later from Billing."
@@ -1475,7 +1805,7 @@ export default function SignupWizard({ onCancel }: Props) {
               </div>
             )}
 
-            {!wizardPlansLoading && wizardPlans.length > 0 && (() => {
+            {userType !== "provider" && !wizardPlansLoading && wizardPlans.length > 0 && (() => {
               const grouped = groupWizardPlans(wizardPlans);
               return (
                 <div className="space-y-4">
@@ -1545,14 +1875,16 @@ export default function SignupWizard({ onCancel }: Props) {
             <button
               type="button"
               onClick={() => {
+                if (userType === "provider" && !providerPlan) return fail("Please explicitly choose a provider plan.");
                 setError(null);
                 setStep("hipaa_disclaimer");
               }}
+              disabled={userType === "provider" && !providerPlan}
               className={primaryBtnClass}
             >
               {selectedPriceId ? "Continue with selected plan" : "Continue"}
             </button>
-            {wizardPlans.length > 0 && !selectedPriceId && (
+            {userType !== "provider" && wizardPlans.length > 0 && !selectedPriceId && (
               <p className="text-xs text-muted-foreground text-center">
                 Select a plan above or continue to choose later.
               </p>
@@ -1610,7 +1942,7 @@ export default function SignupWizard({ onCancel }: Props) {
           </div>
         )}
 
-        <div className="flex items-center justify-between mt-5 pt-4 border-t border-border">
+        <div className={`flex items-center justify-between mt-5 pt-4 ${step === "credentials" ? "border-t border-[#E3EBF5]" : "border-t border-border"}`}>
           <button
             type="button"
             onClick={goBack}
@@ -1619,10 +1951,27 @@ export default function SignupWizard({ onCancel }: Props) {
           >
             {step === "credentials" ? "Back to sign in" : "Back"}
           </button>
-          <span className="text-[10px] text-muted-foreground/70">
-            Step {currentIdx + 1} of {totalSteps}
-          </span>
+          {step !== "credentials" && (
+            <span className="text-[10px] text-muted-foreground/70">
+              Step {currentIdx + 1} of {totalSteps}
+            </span>
+          )}
         </div>
+      </div>
+      {isPartnershipStep && (
+        <div data-testid="partnership-action-bar" className="shrink-0 border-t border-border bg-card px-5 pt-3 space-y-2"
+          style={{ paddingBottom: "max(12px, env(safe-area-inset-bottom))" }}>
+          <p className="text-xs text-muted-foreground">Requests will be sent when signup is completed.</p>
+          <button type="button" className={primaryBtnClass} disabled={busy || partnerLabs.length === 0}
+            onClick={() => { if (busy || partnerLabs.length === 0) return; setPartnersConfirmed(true); setError(null); setStep("plan_select"); }}>
+            Submit partnership request
+          </button>
+          <button type="button" className={secondaryBtnClass} disabled={busy}
+            onClick={() => { if (busy) return; setPartnerLabs([]); setPartnersConfirmed(false); setError(null); setStep("plan_select"); }}>
+            Skip for now
+          </button>
+        </div>
+      )}
       </div>
     </div>
   );

@@ -8,9 +8,9 @@ describe("doctor-name normalization parity (JS ↔ SQL)", () => {
   const cases = [
     "Dr Smith",
     "DR Smith",
-    "dr. smith",
-    "Dr. Smith",
-    "DR. SMITH",
+    "dr. synthetic063",
+    "Dr. Synthetic063",
+    "DR. SYNTHETIC063",
     "  Dr  Smith  ",
     "DR\tSmith",
     "Smith",
@@ -31,8 +31,8 @@ describe("doctor-name normalization parity (JS ↔ SQL)", () => {
   it("uppercase 'DR' prefix is stripped (regression: SQL used to leave it)", () => {
     expect(normalizeDoctor("DR Smith")).toBe("smith");
     expect(__simulateNormalizedDoctorSql("DR Smith")).toBe("smith");
-    expect(normalizeDoctor("DR. Smith")).toBe("smith");
-    expect(__simulateNormalizedDoctorSql("DR. Smith")).toBe("smith");
+    expect(normalizeDoctor("DR. Synthetic063")).toBe("synthetic063");
+    expect(__simulateNormalizedDoctorSql("DR. Synthetic063")).toBe("synthetic063");
   });
 
   it("leading whitespace is trimmed before stripping", () => {

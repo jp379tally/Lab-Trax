@@ -25,6 +25,7 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { db, labInboxFiles } from "@workspace/db";
 import { logger } from "./logger";
 import { extractMediaFileName } from "./case-media";
+import { historicalStartupMaintenanceEnabled } from "./startup-maintenance";
 
 /**
  * Canonicalizes an inbox storage reference to the bare stored filename.
@@ -92,7 +93,7 @@ export async function repairLabInboxStorageNames(): Promise<LabInboxStorageRepai
     }> = {};
     const unrepairable: string[] = [];
 
-    if (isDirtyStorageValue(row.storagePath)) {
+    if (row.storagePath && isDirtyStorageValue(row.storagePath)) {
       const normalized = normalizeInboxStorageName(row.storagePath);
       if (normalized) {
         updates.storagePath = normalized;
@@ -138,6 +139,10 @@ export async function repairLabInboxStorageNames(): Promise<LabInboxStorageRepai
  * and never crash the process.
  */
 export function scheduleLabInboxStorageRepair(): void {
+  if (!historicalStartupMaintenanceEnabled()) {
+    logger.warn("lab-inbox storage repair: deferred outside explicit development startup");
+    return;
+  }
   setImmediate(() => {
     void (async () => {
       try {

@@ -17,6 +17,7 @@ import {
   type DoctorDuplicateCluster,
   type DoctorMergeRequest,
 } from "@workspace/api-client-react";
+import { formatAccountNumberForDisplay } from "@workspace/account-number";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch } from "@/lib/query-client";
@@ -100,6 +101,13 @@ export function DoctorMergeSheet({
   const targetProviderId =
     target?.providerOrganizationId ?? targetPracticeId ?? null;
   const needsPractice = !!target && !target.providerOrganizationId;
+
+  // The account the kept doctor already owns (null for a name-only doctor).
+  // Shown in the preview so an admin can see exactly which account survives
+  // the merge rather than just being told none is created (Task #4397).
+  const targetAccountNumber = target?.platformAccountNumber
+    ? formatAccountNumberForDisplay(target.platformAccountNumber)
+    : null;
 
   // Only fetch the lab's practices when the chosen target has no practice on
   // file and the admin must assign one before the merge can run.
@@ -227,8 +235,9 @@ export function DoctorMergeSheet({
     >
       <Text style={styles.intro}>
         Pick the name to keep. Every other doctor in this group will be merged
-        into it — their cases and pricing move over. You&apos;ll have a few
-        minutes to undo.
+        into it — their cases and pricing move over. The kept doctor keeps the
+        account they already have; merging never creates an account or an
+        account number. You&apos;ll have a few minutes to undo.
       </Text>
 
       <View style={styles.section}>
@@ -236,6 +245,12 @@ export function DoctorMergeSheet({
         {doctors.map((d) => {
           const key = doctorKey(d);
           const selected = key === targetKey;
+          // The account this row's doctor already has. Merging names never
+          // creates or moves an account, so spelling it out lets an admin see
+          // which account survives before they pick a doctor to keep.
+          const accountNumber = d.platformAccountNumber
+            ? formatAccountNumberForDisplay(d.platformAccountNumber)
+            : null;
           return (
             <Pressable
               key={key}
@@ -256,6 +271,20 @@ export function DoctorMergeSheet({
                   {(d.practiceName || "No practice") +
                     ` · ${d.totalCases ?? 0} ${(d.totalCases ?? 0) === 1 ? "case" : "cases"}`}
                 </Text>
+                {accountNumber ? (
+                  // Its own wrapping line, never appended to the truncated
+                  // practice/case line: comparing accounts before choosing who
+                  // to keep only works if every row's number stays readable on
+                  // a phone, however long the practice name is.
+                  <Text
+                    style={[
+                      styles.optionAccount,
+                      selected && styles.optionAccountKept,
+                    ]}
+                  >
+                    {`${selected ? "Keeps" : "Has"} account #${accountNumber}`}
+                  </Text>
+                ) : null}
               </View>
               {selected ? (
                 <Text style={styles.keepBadge}>Keep</Text>
@@ -333,6 +362,9 @@ export function DoctorMergeSheet({
             {preview.targetExists
               ? ` Target already has ${preview.targetCases ?? 0} case${(preview.targetCases ?? 0) === 1 ? "" : "s"}.`
               : ""}
+            {targetAccountNumber
+              ? ` ${target?.doctorName} keeps account #${targetAccountNumber} — no new doctor account or account number is created.`
+              : " No new doctor account or account number is created."}
           </Text>
         ) : (
           <Text style={styles.helpText}>
@@ -365,6 +397,8 @@ function makeStyles(c: ThemeColors) {
     optionMain: { flex: 1 },
     optionName: { ...Typography.bodyMedium, color: c.text },
     optionMeta: { ...Typography.caption, color: c.textSecondary },
+    optionAccount: { ...Typography.caption, color: c.textSecondary },
+    optionAccountKept: { ...Typography.captionSemibold, color: c.tint },
     keepBadge: { ...Typography.captionSemibold, color: c.tint },
     mergeBadge: { ...Typography.caption, color: c.textTertiary },
     toggleRow: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, paddingVertical: Spacing.xs },

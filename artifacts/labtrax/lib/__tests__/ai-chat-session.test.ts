@@ -25,7 +25,7 @@ beforeEach(async () => {
 });
 
 describe("sanitizeMessagesForStorage", () => {
-  it("strips the welcome message", () => {
+  it("strips the welcome message", async () => {
     const msgs: Msg[] = [
       { id: "welcome", role: "assistant", content: "Hi!" },
       { id: "m1", role: "user", content: "Cases due today" },
@@ -35,7 +35,7 @@ describe("sanitizeMessagesForStorage", () => {
     expect(out[0]!.id).toBe("m1");
   });
 
-  it("collapses a pending proposed action to rejected", () => {
+  it("collapses a pending proposed action to rejected", async () => {
     const msgs: Msg[] = [
       {
         id: "m1",
@@ -49,7 +49,7 @@ describe("sanitizeMessagesForStorage", () => {
     expect(out[0]!.proposedAction!.expiresAt).toBeLessThan(Date.now());
   });
 
-  it("leaves resolved proposed actions untouched", () => {
+  it("leaves resolved proposed actions untouched", async () => {
     const msgs: Msg[] = [
       { id: "m1", role: "assistant", content: "", proposedAction: { state: "done" } },
     ];
@@ -59,7 +59,7 @@ describe("sanitizeMessagesForStorage", () => {
 });
 
 describe("generateSessionId", () => {
-  it("produces distinct ids", () => {
+  it("produces distinct ids", async () => {
     expect(generateSessionId()).not.toBe(generateSessionId());
   });
 });

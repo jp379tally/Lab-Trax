@@ -50,12 +50,15 @@ import {
   suppressShiftClickTextSelection,
 } from "@/lib/shift-click-range";
 import { useAuth } from "@/lib/auth-context";
+import { customerRequestLabs, useCustomerRequests } from "@/lib/customer-requests";
+import { CustomerRequestsSection } from "@/components/CustomerRequestsSection";
 import type { Invoice, LabCase, MeResponse, Organization, OrgMemberRow } from "@/lib/types";
-import { formatDate, formatMoney, relativeTime } from "@/lib/format";
+import { formatDate, formatDateTime, formatMoney, relativeTime } from "@/lib/format";
 import type { DoctorRow, MergeSourceInput, UndoToast, MergeDialogResult } from "@/pages/doctors";
 import { DoctorDrawer, MergeDialog } from "@/pages/doctors";
 import { PracticeEditor, AddPracticeDialog } from "@/pages/practices";
 import { InvoiceEditor } from "@/pages/invoices";
+import { formatAccountNumberForDisplay } from "@workspace/account-number";
 
 const EXPANDED_STORAGE_KEY = "accounts_expanded_v1";
 const SCROLL_STORAGE_KEY = "accounts_scroll_v1";
@@ -101,6 +104,14 @@ function normalizeDoctorName(name: string): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
+interface LinkedLabInfo {
+  labId: string;
+  labName: string;
+  status: "active" | "pending";
+  linkedUserId: string;
+  linkedUsername: string;
+}
+
 interface UnassignedDoctorRow {
   userId: string | null;
   username: string | null;
@@ -115,7 +126,12 @@ interface PracticeStats {
   totalBilled: number;
 }
 
+interface CustomerCenterSummary extends PracticeStats {
+  providerOrganizationId: string;
+}
+
 export default function AccountsPage() {
+  const { user } = useAuth();
   const orgsQuery = useQuery({
     queryKey: ["organizations", { includeArchived: true, includeLabPractices: true }],
     queryFn: () =>
@@ -123,18 +139,17 @@ export default function AccountsPage() {
         "/organizations?includeArchived=true&includeLabPractices=true"
       ),
   });
-  const casesQuery = useQuery({
-    queryKey: ["cases"],
-    queryFn: () => apiFetch<LabCase[]>("/cases"),
-  });
-  const invoicesQuery = useQuery({
-    queryKey: ["invoices"],
-    queryFn: () => apiFetch<Invoice[]>("/invoices"),
-  });
   const meQuery = useQuery({
-    queryKey: ["auth", "me"],
+    queryKey: ["auth", "me", user?.id],
     queryFn: () => apiFetch<MeResponse>("/auth/me"),
   });
+  const requestLabs = user ? customerRequestLabs(meQuery.data) : [];
+  const searchString = useSearch();
+  const linkedRequestLabId = new URLSearchParams(searchString).get("requestLabId");
+  const effectiveRequestLabId = requestLabs.find((m) => m.organizationId === linkedRequestLabId)?.organizationId
+    ?? requestLabs.find((m) => m.organizationId === user?.practiceOrganizationId)?.organizationId
+    ?? requestLabs[0]?.organizationId ?? null;
+  const requestsQuery = useCustomerRequests(user?.id, effectiveRequestLabId);
 
   const [search, setSearch] = useState(() => {
     try {
@@ -185,7 +200,20 @@ export default function AccountsPage() {
   const queryClient = useQueryClient();
   const pageRef = useRef<HTMLDivElement>(null);
   const dupBannerRef = useRef<HTMLDivElement>(null);
-  const searchString = useSearch();
+  const summaryQuery = useQuery({
+    queryKey: ["customer-center-summary"],
+    queryFn: () => apiFetch<CustomerCenterSummary[]>("/cases/customer-center-summary"),
+  });
+  const casesQuery = useQuery({
+    queryKey: ["cases"],
+    queryFn: () => apiFetch<LabCase[]>("/cases"),
+    enabled: pageView === "directory",
+  });
+  const invoicesQuery = useQuery({
+    queryKey: ["invoices"],
+    queryFn: () => apiFetch<Invoice[]>("/invoices"),
+    enabled: pageView === "directory",
+  });
 
   const dupClustersQuery = useGetDoctorDuplicateClusters({
     query: {
@@ -253,7 +281,11 @@ export default function AccountsPage() {
           u.username.toLowerCase().includes(q) ||
           (u.email || "").toLowerCase().includes(q) ||
           [u.firstName, u.lastName].filter(Boolean).join(" ").toLowerCase().includes(q) ||
-          (u.practiceName || "").toLowerCase().includes(q)
+          (u.practiceName || "").toLowerCase().includes(q) ||
+          (u.platformAccountNumber || "").toLowerCase().includes(q) ||
+          (u.platformAccountNumber
+            ? formatAccountNumberForDisplay(u.platformAccountNumber).toLowerCase().includes(q)
+            : false)
         );
       })
       .sort((a, b) => a.username.localeCompare(b.username));
@@ -275,7 +307,10 @@ export default function AccountsPage() {
     },
   });
 
-  const isLoading = orgsQuery.isLoading || casesQuery.isLoading || invoicesQuery.isLoading;
+  const isLoading =
+    orgsQuery.isLoading ||
+    summaryQuery.isLoading ||
+    (pageView === "directory" && (casesQuery.isLoading || invoicesQuery.isLoading));
 
   useEffect(() => {
     if (!undoToast) return;
@@ -456,22 +491,17 @@ export default function AccountsPage() {
   }, [orgs]);
 
   const practiceStats = useMemo<Map<string, PracticeStats>>(() => {
-    const map = new Map<string, PracticeStats>();
-    for (const c of cases) {
-      const id = c.providerOrganizationId;
-      const cur = map.get(id) ?? { caseCount: 0, openBalance: 0, totalBilled: 0 };
-      cur.caseCount += 1;
-      map.set(id, cur);
-    }
-    for (const inv of invoices) {
-      const id = inv.providerOrganizationId;
-      const cur = map.get(id) ?? { caseCount: 0, openBalance: 0, totalBilled: 0 };
-      cur.totalBilled += Number(inv.total ?? 0);
-      cur.openBalance += Number(inv.balanceDue ?? 0);
-      map.set(id, cur);
-    }
-    return map;
-  }, [cases, invoices]);
+    return new Map(
+      (summaryQuery.data ?? []).map((summary) => [
+        summary.providerOrganizationId,
+        {
+          caseCount: summary.caseCount,
+          openBalance: Number(summary.openBalance ?? 0),
+          totalBilled: Number(summary.totalBilled ?? 0),
+        },
+      ]),
+    );
+  }, [summaryQuery.data]);
 
   // Legacy / providerless doctor names — these live only in legacy `lab_cases`
   // blobs or in canonical cases with a NULL providerOrganizationId, so the
@@ -630,7 +660,14 @@ export default function AccountsPage() {
         const hasVisibleDoctor = doctors.some((d) => {
           if (d.openCases === 0) return false;
           if (!q) return true;
-          return d.doctorName.toLowerCase().includes(q) || d.practiceName.toLowerCase().includes(q);
+          const accountNumber = doctorAccountMap.get(`${d.doctorName.toLowerCase()}|${o.id}`) ?? "";
+          return (
+            d.doctorName.toLowerCase().includes(q) ||
+            d.practiceName.toLowerCase().includes(q) ||
+            accountNumber.toLowerCase().includes(q) ||
+            (accountNumber !== "" &&
+              formatAccountNumberForDisplay(accountNumber).toLowerCase().includes(q))
+          );
         });
         if (!hasVisibleDoctor) {
           const nameMatch =
@@ -647,13 +684,21 @@ export default function AccountsPage() {
         o.name.toLowerCase().includes(q) ||
         (o.displayName || "").toLowerCase().includes(q);
       if (nameMatch) return true;
-      const doctorMatch = doctors.some((d) => d.doctorName.toLowerCase().includes(q));
+      const doctorMatch = doctors.some((d) => {
+        const accountNumber = doctorAccountMap.get(`${d.doctorName.toLowerCase()}|${o.id}`) ?? "";
+        return (
+          d.doctorName.toLowerCase().includes(q) ||
+          accountNumber.toLowerCase().includes(q) ||
+          (accountNumber !== "" &&
+            formatAccountNumberForDisplay(accountNumber).toLowerCase().includes(q))
+        );
+       });
       if (doctorMatch) autoExp.add(o.id);
       return doctorMatch;
     }).sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
 
     return { filteredPractices: result, autoExpandedIds: autoExp };
-  }, [orgs, search, showArchived, openCasesOnly, doctorsByPractice]);
+  }, [orgs, search, showArchived, openCasesOnly, doctorsByPractice, doctorAccountMap]);
 
   const effectiveExpanded = useMemo(() => {
     if (suppressAutoExpand) return expanded;
@@ -974,6 +1019,38 @@ export default function AccountsPage() {
         </div>
       </div>
 
+      {effectiveRequestLabId && (
+        <>
+          {requestLabs.length > 1 && (
+            <label className="mb-3 flex items-center gap-2 text-sm">
+              Requests for lab
+              <select
+                className="rounded-md border border-input bg-background px-3 py-2"
+                value={effectiveRequestLabId}
+                onChange={(event) => {
+                  const params = new URLSearchParams(searchString);
+                  params.set("requestLabId", event.target.value);
+                  navigate(`/accounts?${params.toString()}`);
+                }}
+              >
+                {requestLabs.map((m) => (
+                  <option key={m.organizationId} value={m.organizationId}>
+                    {m.organization?.displayName || m.organization?.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <CustomerRequestsSection
+            requests={requestsQuery.data ?? []}
+            isLoading={requestsQuery.isLoading}
+            isError={requestsQuery.isError}
+            onRetry={() => { void requestsQuery.refetch(); }}
+            focused={new URLSearchParams(searchString).get("view") === "requests"}
+          />
+        </>
+      )}
+
       {pageView === "practices" && isAdmin && dupClusters.length > 0 && (
         <div
           ref={dupBannerRef}
@@ -1142,7 +1219,7 @@ export default function AccountsPage() {
                     </td>
                     <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
                       {u.lastLoginAt ? (
-                        <span title={new Date(u.lastLoginAt).toLocaleString()}>
+                        <span title={formatDateTime(u.lastLoginAt)}>
                           {relativeTime(u.lastLoginAt)}
                         </span>
                       ) : (
@@ -1554,7 +1631,11 @@ export default function AccountsPage() {
                           </div>
                         </td>
                         <td className="py-2.5 text-muted-foreground text-xs font-mono">
-                          {doctorAccountMap.get(`${doctor.doctorName.toLowerCase()}|${doctor.practiceId}`) || "—"}
+                           {doctorAccountMap.has(`${doctor.doctorName.toLowerCase()}|${doctor.practiceId}`)
+                             ? formatAccountNumberForDisplay(
+                                 doctorAccountMap.get(`${doctor.doctorName.toLowerCase()}|${doctor.practiceId}`) ?? "",
+                               )
+                             : "—"}
                         </td>
                         <td className="py-2.5 text-muted-foreground text-xs">—</td>
                         <td className="py-2.5 text-muted-foreground text-xs">—</td>
@@ -2007,6 +2088,13 @@ function UserDetailDrawer({
   const fullName = [user.firstName, user.lastName].filter(Boolean).join(" ") || null;
   const isActive = user.isActive !== false;
 
+  const linkedLabsQuery = useQuery({
+    queryKey: ["admin", "users", user.id, "linked-labs"],
+    queryFn: () =>
+      apiFetch<{ linkedLabs: LinkedLabInfo[] }>(`/admin/users/${user.id}/linked-labs`),
+  });
+  const linkedLabs = linkedLabsQuery.data?.linkedLabs ?? [];
+
   async function handleChangeRole(newRole: string) {
     if (newRole === (user.role || "user")) return;
     setRoleLoading(true);
@@ -2150,7 +2238,9 @@ function UserDetailDrawer({
               {user.platformAccountNumber && (
                 <>
                   <div className="text-muted-foreground">Account #</div>
-                  <div className="font-mono text-xs font-medium">{user.platformAccountNumber}</div>
+                  <div className="font-mono text-xs font-medium">
+                    {formatAccountNumberForDisplay(user.platformAccountNumber)}
+                  </div>
                 </>
               )}
 
@@ -2166,6 +2256,46 @@ function UserDetailDrawer({
                 </>
               )}
             </div>
+          </section>
+
+          {/* Linked labs (cross-lab doctor identity links, Task #320) */}
+          <section className="space-y-3">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Linked labs</h3>
+            {linkedLabsQuery.isLoading ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 size={12} className="animate-spin shrink-0" />
+                Loading linked labs…
+              </div>
+            ) : linkedLabsQuery.isError ? (
+              <div className="text-xs text-destructive">Failed to load linked labs.</div>
+            ) : linkedLabs.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                This account is not linked to any other labs.
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {linkedLabs.map((link) => (
+                  <li
+                    key={`${link.labId}|${link.linkedUserId}`}
+                    className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Building2 size={14} className="text-muted-foreground shrink-0" />
+                      <span className="text-sm truncate">{link.labName}</span>
+                    </div>
+                    <span
+                      className={`text-[11px] px-2 py-0.5 rounded-full shrink-0 ${
+                        link.status === "active"
+                          ? "bg-success/15 text-success"
+                          : "bg-warning/20 text-warning"
+                      }`}
+                    >
+                      {link.status === "active" ? "Active" : "Pending"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
 
           {/* Admin actions */}

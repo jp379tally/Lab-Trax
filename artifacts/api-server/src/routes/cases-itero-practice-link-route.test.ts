@@ -143,7 +143,7 @@ maybe("Task #2479 iTero practice linking via import route (db integration)", () 
   const defaultOrgId = rid("provDefault");
   // The existing, manually-created practice. iTero will extract a
   // brand-prefixed variant of this name.
-  const southwoodOrgId = rid("provSouthwood");
+  const riverbendOrgId = rid("provRiverbend");
   const adminUserId = rid("uadmin");
   let savedOpenAIKey: string | undefined;
 
@@ -246,9 +246,9 @@ maybe("Task #2479 iTero practice linking via import route (db integration)", () 
         parentLabOrganizationId: labOrgId,
       },
       {
-        id: southwoodOrgId,
+        id: riverbendOrgId,
         type: "provider",
-        name: "Family Dentistry at SouthWood",
+        name: "Riverbend Family Dental",
         parentLabOrganizationId: labOrgId,
       },
     ]);
@@ -291,7 +291,7 @@ maybe("Task #2479 iTero practice linking via import route (db integration)", () 
       .where(eq(iteroImportedOrders.labOrganizationId, labOrgId));
     await db
       .delete(invoices)
-      .where(inArray(invoices.labOrganizationId, [labOrgId, defaultOrgId, southwoodOrgId]));
+      .where(inArray(invoices.labOrganizationId, [labOrgId, defaultOrgId, riverbendOrgId]));
     await db.delete(cases).where(eq(cases.labOrganizationId, labOrgId));
   });
 
@@ -319,7 +319,7 @@ maybe("Task #2479 iTero practice linking via import route (db integration)", () 
     await db.delete(userSessions).where(eq(userSessions.userId, adminUserId));
     await db
       .delete(organizations)
-      .where(inArray(organizations.id, [labOrgId, defaultOrgId, southwoodOrgId]));
+      .where(inArray(organizations.id, [labOrgId, defaultOrgId, riverbendOrgId]));
     await db.delete(users).where(eq(users.id, adminUserId));
   });
 
@@ -330,7 +330,7 @@ maybe("Task #2479 iTero practice linking via import route (db integration)", () 
 
     const r = await importRx({
       token,
-      practiceName: "Heartland Dental - Family Dentistry at SouthWood [565]",
+      practiceName: "Sample Dental Group - Riverbend Family Dental [101]",
     });
 
     expect(r.status).toBe(201);
@@ -351,7 +351,7 @@ maybe("Task #2479 iTero practice linking via import route (db integration)", () 
       .where(eq(cases.id, caseId));
 
     // The case linked to the EXISTING practice, not the poller default.
-    expect(caseRow.providerOrganizationId).toBe(southwoodOrgId);
+    expect(caseRow.providerOrganizationId).toBe(riverbendOrgId);
     expect(caseRow.providerOrganizationId).not.toBe(defaultOrgId);
     // Suggestion is cleared once auto-applied (no stale review prompt).
     expect(caseRow.suggestedProviderOrgId).toBeNull();
@@ -386,9 +386,9 @@ maybe("Task #2479 iTero practice linking via import route (db integration)", () 
       .where(eq(cases.id, caseId));
 
     // No match → the case keeps the poller's default provider and records
-    // no practice suggestion. It must NOT be linked to SouthWood.
+    // no practice suggestion. It must NOT be linked to Riverbend.
     expect(caseRow.providerOrganizationId).toBe(defaultOrgId);
-    expect(caseRow.providerOrganizationId).not.toBe(southwoodOrgId);
+    expect(caseRow.providerOrganizationId).not.toBe(riverbendOrgId);
     expect(caseRow.suggestedProviderOrgId).toBeNull();
 
     expect(await providerOrgCount()).toBe(before);
@@ -400,7 +400,7 @@ maybe("Task #2479 iTero practice linking via import route (db integration)", () 
 
     const r = await importRx({
       token,
-      practiceName: "Heartland Dental - Family Dentistry at SouthWood [565]",
+      practiceName: "Sample Dental Group - Riverbend Family Dental [101]",
     });
 
     expect(r.status).toBe(201);
@@ -418,6 +418,6 @@ maybe("Task #2479 iTero practice linking via import route (db integration)", () 
     // Toggle off → the effective provider stays the default, but the match is
     // surfaced as a suggestion for the desktop review banner.
     expect(caseRow.providerOrganizationId).toBe(defaultOrgId);
-    expect(caseRow.suggestedProviderOrgId).toBe(southwoodOrgId);
+    expect(caseRow.suggestedProviderOrgId).toBe(riverbendOrgId);
   });
 });

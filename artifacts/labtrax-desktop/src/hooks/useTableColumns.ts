@@ -10,6 +10,8 @@ export interface ColumnDef<T> {
   defaultWidth?: number;
   hidden?: boolean;
   render: (row: T) => React.ReactNode;
+  /** Plain-text value used as the native `title` tooltip on the body `<td>`. */
+  titleFor?: (row: T) => string | undefined;
 }
 
 export interface ColumnState {
@@ -72,6 +74,7 @@ export interface UseTableColumnsResult<T> {
   resizingId: string | null;
   startResize: (id: string, e: React.MouseEvent) => void;
   resetWidth: (id: string) => void;
+  fitColumn: (id: string, width: number) => void;
   resetAll: () => void;
   moveColumn: (id: string, direction: "left" | "right") => void;
   reorderColumn: (dragId: string, targetId: string) => void;
@@ -155,6 +158,18 @@ export function useTableColumns<T>(
       });
     },
     [defaults.widths, schedulePersist],
+  );
+
+  const fitColumn = useCallback(
+    (id: string, width: number) => {
+      const clamped = Math.max(MIN_WIDTH, width);
+      setState((prev) => {
+        const updated = { ...prev, widths: { ...prev.widths, [id]: clamped } };
+        schedulePersist(updated);
+        return updated;
+      });
+    },
+    [schedulePersist],
   );
 
   const resetAll = useCallback(() => {
@@ -286,6 +301,7 @@ export function useTableColumns<T>(
     resizingId,
     startResize,
     resetWidth,
+    fitColumn,
     resetAll,
     moveColumn,
     reorderColumn,

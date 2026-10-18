@@ -17,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell, SettingsSection } from "@/components/settings/SettingsRow";
+import { scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
 import { resilientFetch } from "@/lib/query-client";
 
 interface CorrespondenceTemplate {
@@ -128,7 +129,11 @@ export default function CorrespondenceLayoutScreen() {
       onBack={() => router.back()}
       insetTop={insets.top}
     >
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView
+        contentContainerStyle={styles.body}
+        keyboardDismissMode={scrollKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
+      >
         {query.isLoading && <ActivityIndicator color={colors.tint} />}
         {query.error && (
           <Text style={[styles.errorText, { color: colors.error }]}>

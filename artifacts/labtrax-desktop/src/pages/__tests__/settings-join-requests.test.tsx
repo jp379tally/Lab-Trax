@@ -17,6 +17,11 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { vi, describe, it, expect, beforeEach } from "vitest";
 import SettingsPage from "@/pages/settings";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Router } from "wouter";
+import { memoryLocation } from "wouter/memory-location";
+import { AuthContext } from "@/lib/auth-context";
+import { MOCK_AUTH_DEFAULTS } from "../../__tests__/test-utils";
 
 // ─── Module mocks ─────────────────────────────────────────────────────────────
 
@@ -87,7 +92,6 @@ const ADMIN_USER = {
 
 function renderSettings() {
   const Wrapper = makeAuthWrapper("/settings", {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     user: ADMIN_USER as any,
     status: "authed",
     restoreStatus: "ok",
@@ -129,6 +133,30 @@ beforeEach(() => {
 });
 
 describe("SettingsPage — pending join requests (admin)", () => {
+  it("targets the exact request linked from Customer Center and invalidates scoped alert observers after review", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    state.labTeam.pendingJoinRequests = [makeRequest()];
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const scopedKey = ["lab-team", "customer-requests", "user-1", "lab-1"];
+    client.setQueryData(scopedKey, [makeRequest()]);
+    const location = memoryLocation({ path: "/settings?tab=profile&joinRequestId=jr-1" });
+    render(
+      <QueryClientProvider client={client}>
+        <Router hook={location.hook} searchHook={location.searchHook}>
+          <AuthContext.Provider value={{ ...MOCK_AUTH_DEFAULTS, user: ADMIN_USER }}>
+            <SettingsPage />
+          </AuthContext.Provider>
+        </Router>
+      </QueryClientProvider>,
+    );
+    await screen.findByText("Casey Newhire");
+    const row = document.getElementById("join-request-jr-1");
+    expect(row).toHaveFocus();
+    expect(row).toHaveClass("bg-sky-500/10");
+    fireEvent.click(screen.getByText("Approve"));
+    await waitFor(() => expect(client.getQueryState(scopedKey)?.isInvalidated).toBe(true));
+  });
+
   it("renders an incoming request for a team admin", async () => {
     state.labTeam.pendingJoinRequests = [makeRequest()];
     renderSettings();

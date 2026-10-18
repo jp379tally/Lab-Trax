@@ -1,6 +1,6 @@
 import { and, inArray, isNull } from "drizzle-orm";
 import { db, labCases } from "@workspace/db";
-import { writeAuditLog } from "./audit";
+import { writeAuditLog, writeAuditLogTx } from "./audit";
 import type { Request } from "express";
 
 /**
@@ -31,11 +31,14 @@ export async function softDeleteLegacyCases(args: {
   organizationId?: string | null;
   /** Express request, used to enrich the audit log with IP / user-agent. */
   req?: Request;
+  /** Existing transaction when legacy deletion is part of a larger operation. */
+  tx?: any;
 }): Promise<{ deletedIds: string[] }> {
   const ids = Array.from(new Set(args.ids));
   if (ids.length === 0) return { deletedIds: [] };
 
-  const deletedRows = await db
+  const executor = args.tx ?? db;
+  const deletedRows = (await executor
     .update(labCases)
     .set({ deletedAt: new Date(), deletedBy: args.deletedBy })
     .where(and(inArray(labCases.id, ids), isNull(labCases.deletedAt)))
@@ -43,7 +46,11 @@ export async function softDeleteLegacyCases(args: {
       id: labCases.id,
       organizationId: labCases.organizationId,
       caseData: labCases.caseData,
-    });
+    })) as {
+    id: string;
+    organizationId: string | null;
+    caseData: unknown;
+  }[];
 
   for (const row of deletedRows) {
     let caseNumber: string | null = null;
@@ -59,7 +66,7 @@ export async function softDeleteLegacyCases(args: {
       // A malformed blob must not block the soft-delete or its audit entry.
     }
 
-    await writeAuditLog({
+    const auditInput = {
       req: args.req,
       userId: args.actorUserId ?? null,
       organizationId: args.organizationId ?? row.organizationId ?? null,
@@ -74,7 +81,12 @@ export async function softDeleteLegacyCases(args: {
         caseNumber,
         patientName,
       },
-    });
+    };
+    if (args.tx) {
+      await writeAuditLogTx(args.tx, auditInput);
+    } else {
+      await writeAuditLog(auditInput);
+    }
   }
 
   return { deletedIds: deletedRows.map((r) => r.id) };

@@ -16,6 +16,10 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import request from "supertest";
 import bcrypt from "bcryptjs";
+import sharp from "sharp";
+import fs from "node:fs";
+import path from "node:path";
+import { HttpError } from "./lib/http";
 
 interface FakeUser {
   id: string;
@@ -38,6 +42,8 @@ interface FakeUser {
   wantsUpdates: boolean;
   workStatus: string;
   lastLoginAt: Date | null;
+  isActive: boolean;
+  deletedAt: Date | null;
 }
 
 interface FakeSession {
@@ -75,6 +81,9 @@ const state = vi.hoisted(() => {
     wantsUpdates: false,
     workStatus: "available",
     lastLoginAt: null,
+    isActive: true,
+    deletedAt: null,
+    profilePhotoUrl: null as string | null,
   };
   const sessions: Array<Record<string, unknown>> = [];
   return { fakeUser, sessions, PASSWORD };
@@ -117,24 +126,56 @@ vi.mock("@workspace/db", () => {
 
   interface SelectChain extends PromiseLike<readonly unknown[]> {
     from(t: Marker): SelectChain;
-    where(): SelectChain;
+    innerJoin(t: Marker): SelectChain;
+    where(condition: unknown): SelectChain;
     orderBy(): SelectChain;
+    for(mode: string): SelectChain;
+    limit(count: number): SelectChain;
   }
   const select = (): SelectChain => {
     let fromName = "";
+    let joinsUser = false;
+    let conditionValues: unknown[] = [];
+    const valuesIn = (condition: unknown): unknown[] => {
+      if (condition === undefined || condition === null) return [];
+      if (typeof condition !== "object") return [condition];
+      const node = condition as { queryChunks?: unknown[]; value?: unknown };
+      if (node.queryChunks) return node.queryChunks.flatMap(valuesIn);
+      return node.value === undefined ? [] : [node.value];
+    };
     const obj: SelectChain = {
       from(t) {
         fromName = t.__table;
         return obj;
       },
-      where() {
+      innerJoin(t) { joinsUser = t.__table === "users"; return obj; },
+      where(condition) {
+        conditionValues = valuesIn(condition);
         return obj;
       },
       orderBy() {
         return obj;
       },
+      for() {
+        return obj;
+      },
+      limit() {
+        return obj;
+      },
       then(resolve, reject) {
-        return Promise.resolve(rowsByTable[fromName] ?? []).then(
+        const session = fromName === "userSessions" && joinsUser
+          ? state.sessions.find((session) =>
+            conditionValues.includes(session.id) &&
+            conditionValues.includes(session.userId) &&
+            session.userId === state.fakeUser.id &&
+            !session.revokedAt &&
+            session.expiresAt instanceof Date &&
+            session.expiresAt.getTime() > Date.now())
+          : undefined;
+        const rows = fromName === "userSessions" && joinsUser
+          ? (session ? [state.fakeUser] : [])
+          : rowsByTable[fromName] ?? [];
+        return Promise.resolve(rows).then(
           resolve,
           reject,
         );
@@ -189,7 +230,7 @@ vi.mock("@workspace/db", () => {
 
   interface UpdateChain {
     set(v: Record<string, unknown>): UpdateChain;
-    where(): Promise<void>;
+    where(): Promise<void> & { returning(): Promise<Array<Record<string, unknown>>> };
     returning(): Promise<Array<Record<string, unknown>>>;
   }
   const update = (t: Marker): UpdateChain => {
@@ -207,7 +248,9 @@ vi.mock("@workspace/db", () => {
             Object.assign(state.fakeUser, pendingSet);
           }
         }
-        return Promise.resolve();
+        return Object.assign(Promise.resolve(), {
+          returning: () => Promise.resolve(t.__table === "users" ? [state.fakeUser] : []),
+        });
       },
       returning() {
         return Promise.resolve([]);
@@ -220,9 +263,11 @@ vi.mock("@workspace/db", () => {
     select,
     insert,
     update,
+    transaction: async (callback: (tx: any) => Promise<unknown>) =>
+      callback({ select, insert, update }),
     query: {
       users: {
-        findFirst: async () => undefined,
+        findFirst: async () => state.fakeUser,
       },
       userSessions: {
         findFirst: async () =>
@@ -247,6 +292,9 @@ function buildApp(): Express {
   app.use(express.json());
   app.use(cookieParser());
   app.use("/api/auth", authRouter);
+  app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    res.status(err instanceof HttpError ? err.statusCode : 500).json({ error: err.message });
+  });
   return app;
 }
 
@@ -270,6 +318,70 @@ describe("desktop sign-in against the API", () => {
 
   afterAll(() => {
     server.close();
+  });
+
+  it("normalizes self-owned photos, replaces them with unique URLs, and rejects invalid/cross-account uploads", async () => {
+    const login = await request(server).post("/api/auth/login")
+      .send({ username: state.fakeUser.username, password: state.PASSWORD, clientType: "desktop" });
+    expect(login.status).toBe(200);
+    const bearer = `Bearer ${login.body.accessToken}`;
+    const endpoint = `/api/auth/users/${state.fakeUser.id}/profile-photo`;
+    const image = await sharp({ create: { width: 300, height: 150, channels: 3, background: "red" } }).png().toBuffer();
+    const created: string[] = [];
+    try {
+      const anonymous = await request(server).post(endpoint).attach("photo", image, "photo.png");
+      expect(anonymous.status).toBe(401);
+      const newestSession = state.sessions.at(-1)!;
+      newestSession.revokedAt = new Date();
+      try {
+        const revoked = await request(server).post(endpoint)
+          .set("Authorization", bearer).attach("photo", image, "photo.png");
+        expect(revoked.status).toBe(401);
+      } finally {
+        newestSession.revokedAt = null;
+      }
+      const { signAccessToken } = await import("./lib/auth");
+      const wrongSession = await request(server).post(endpoint)
+        .set("Authorization", `Bearer ${signAccessToken(state.fakeUser.id, "unrelated-session")}`)
+        .attach("photo", image, "photo.png");
+      expect(wrongSession.status).toBe(401);
+      const other = await request(server).post("/api/auth/users/another-user/profile-photo")
+        .set("Authorization", bearer).attach("photo", image, "photo.png");
+      expect(other.status).toBe(403);
+      expect(state.fakeUser.profilePhotoUrl).toBeNull();
+      // Account uploads are available even without admin/owner membership.
+      for (const role of ["user", "billing", "admin", "owner", "read_only"]) {
+        state.fakeUser.role = role;
+        const uploaded = await request(server).post(endpoint)
+          .set("Authorization", bearer).attach("photo", image, "photo.png");
+        expect(uploaded.status).toBe(200);
+        expect(uploaded.body.user.id).toBe(state.fakeUser.id);
+        expect(uploaded.body.profilePhotoUrl).toBe(state.fakeUser.profilePhotoUrl);
+        expect(created).not.toContain(uploaded.body.profilePhotoUrl);
+        created.push(uploaded.body.profilePhotoUrl);
+        const metadata = await sharp(path.join(process.cwd(), uploaded.body.profilePhotoUrl)).metadata();
+        expect(metadata).toMatchObject({ width: 200, height: 200, format: "jpeg" });
+      }
+      const confirmed = state.fakeUser.profilePhotoUrl;
+      const invalid = await request(server).post(endpoint).set("Authorization", bearer)
+        .attach("photo", Buffer.from("not an image"), { filename: "bad.png", contentType: "image/png" });
+      expect(invalid.status).toBe(400);
+      expect(invalid.body.error).toContain("could not be read");
+      const oversized = await request(server).post(endpoint).set("Authorization", bearer)
+        .attach("photo", Buffer.alloc(5 * 1024 * 1024 + 1), { filename: "huge.png", contentType: "image/png" });
+      expect(oversized.status).toBe(400);
+      expect(oversized.body.error).toContain("5 MB");
+      const text = await request(server).post(endpoint).set("Authorization", bearer)
+        .attach("photo", Buffer.from("text"), "file.txt");
+      expect(text.status).toBe(400);
+      expect(state.fakeUser.profilePhotoUrl).toBe(confirmed);
+      const profile = await request(server).get("/api/auth/me").set("Authorization", bearer);
+      expect(profile.body.user.profilePhotoUrl).toBe(confirmed);
+    } finally {
+      state.fakeUser.role = "user";
+      state.fakeUser.profilePhotoUrl = null;
+      for (const url of created) fs.rmSync(path.join(process.cwd(), url), { force: true });
+    }
   });
 
   it("CORS preflight from app://labtrax is allowed with credentials", async () => {

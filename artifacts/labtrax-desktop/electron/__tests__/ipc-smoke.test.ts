@@ -51,6 +51,7 @@ const EXPECTED_CHANNELS = [
   "messenger:notify",
   "preview:open-file",
   "backup:save-to-folder",
+  "backup:download-to-folder",
   "dialog:show-folder",
   "dialog:showOpenDialog",
   "dialog:read-file",
@@ -62,7 +63,6 @@ const handleCalls: string[] = [];
 
 function injectModule(name: string, exports: unknown) {
   const filename = path.join(tmpDir, `__virt_${name.replace(/[^a-z0-9]/gi, "_")}.cjs`);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (require.cache as any)[filename] = {
     id: filename,
     filename,
@@ -73,7 +73,6 @@ function injectModule(name: string, exports: unknown) {
     path: tmpDir,
     parent: null,
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const M = Module as any;
   const orig = M._resolveFilename;
   M._resolveFilename = function (request: string, ...rest: unknown[]) {
@@ -125,7 +124,6 @@ beforeAll(async () => {
   });
 
   expect(() => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     require("../main.cjs");
   }).not.toThrow();
 

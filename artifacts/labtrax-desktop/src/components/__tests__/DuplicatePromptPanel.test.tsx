@@ -21,7 +21,7 @@ type Match = DuplicatePromptPhase["matches"][number];
 
 function makeMatch(overrides: Partial<Match> & { id: string; source: Match["source"] }): Match {
   return {
-    caseNumber: "C-1001",
+    caseNumber: "SYN-CASE-001",
     matchKind: "exact",
     patientFirstName: "Jane",
     patientLastName: "Doe",

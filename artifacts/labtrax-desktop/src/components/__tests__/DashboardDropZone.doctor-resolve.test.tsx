@@ -7,8 +7,8 @@
  * for the selected lab+practice, clicking "Create case" must open the
  * resolution modal and BLOCK case creation until the user resolves it. On a
  * strict (exact) match the case is created directly, adopting the stored
- * spelling. The POST /cases 409 DOCTOR_CONFIRMATION_REQUIRED gate remains the
- * authoritative server-side backstop and is out of scope here.
+ * spelling. If the non-blocking probe falls through, the POST /cases 409
+ * DOCTOR_CONFIRMATION_REQUIRED backstop opens the same resolution modal.
  *
  * Invariants protected:
  *  - Non-exact resolve → the "Doctor not on file" modal appears and POST /cases
@@ -26,7 +26,7 @@ import { render, fireEvent, waitFor, act } from "@testing-library/react";
 import { vi, describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { DashboardDropZone } from "../DashboardDropZone";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
-import type { SessionUser } from "@/lib/api";
+import { ApiError, type SessionUser } from "@/lib/api";
 
 // ─── Module mocks ─────────────────────────────────────────────────────────────
 
@@ -37,9 +37,11 @@ vi.mock("@/lib/api", () => ({
   sendUploadChunk: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number;
-    constructor(msg: string, status = 500) {
+    body: unknown;
+    constructor(msg: string, status = 500, body: unknown = null) {
       super(msg);
       this.status = status;
+      this.body = body;
     }
   },
 }));
@@ -151,6 +153,7 @@ const RX_RESPONSE = {
   shade: "A2",
   material: "Zirconia",
   toothIndices: "14",
+  toothAssignments: [{ toothNumber: "14", role: "prepared_crown", roleEvidence: "Prepared crown #14", material: "Zirconia", shade: "A2", requiresReview: false }],
   dueDate: "2026-08-01",
   isRush: false,
   notes: "",
@@ -208,7 +211,8 @@ function installHandlers(opts: {
     similarMatches: Array<Record<string, unknown>>;
     canAddNew: boolean;
   };
-  onPostCases: (body: any) => void;
+  resolveError?: Error;
+  onPostCases: (body: any) => unknown;
 }) {
   mockApiFetch.mockReset();
   mockApiFetch.mockImplementation((path: string, init?: any) => {
@@ -218,14 +222,16 @@ function installHandlers(opts: {
     if (path === "/cases/doctor-directory") return Promise.resolve([]);
     if (path.startsWith("/vocabulary")) return Promise.resolve([]);
     if (path.startsWith("/rx-practice-aliases"))
-      return Promise.resolve({ data: { found: false } });
+      return Promise.resolve({ found: false, providerOrganizationId: null });
     if (path === "/analyze-prescription") return Promise.resolve(RX_RESPONSE);
     if (path.startsWith("/cases/patient-similarity"))
       return Promise.resolve({ matches: [] });
     if (path.startsWith("/cases/next-case-number"))
       return Promise.resolve({ caseNumber: "25-1000" });
     if (path.startsWith("/doctors/resolve-name"))
-      return Promise.resolve(opts.resolveResponse);
+      return opts.resolveError
+        ? Promise.reject(opts.resolveError)
+        : Promise.resolve(opts.resolveResponse);
     if (path === "/media/upload")
       return Promise.resolve({ url: "media://uploaded" });
     if (path === "/cases" && init?.method === "POST") {
@@ -235,13 +241,37 @@ function installHandlers(opts: {
       } catch {
         body = null;
       }
-      opts.onPostCases(body);
-      return Promise.resolve({ id: "case-new-1", caseNumber: "25-1000" });
+      const result = opts.onPostCases(body);
+      return Promise.resolve(
+        result ?? { id: "case-new-1", caseNumber: "25-1000" },
+      );
     }
     if (/^\/cases\/[^/]+\/attachments$/.test(path))
       return Promise.resolve({ ok: true });
     return Promise.resolve([]);
   });
+}
+
+function doctorConfirmationRequiredError() {
+  return new ApiError(
+    "This doctor name closely matches an existing doctor.",
+    409,
+    {
+      details: {
+        code: "DOCTOR_CONFIRMATION_REQUIRED",
+        doctorName: "Dr. Jane Smith",
+        candidates: [
+          {
+            doctorName: "Dr. Janet Smyth",
+            providerOrganizationId: "provB",
+            practiceName: "Maple Dental",
+            similarity: 0.6,
+            totalCases: 3,
+          },
+        ],
+      },
+    },
+  );
 }
 
 async function dropAndReachConfirm(container: HTMLElement) {
@@ -427,5 +457,136 @@ describe("DashboardDropZone — doctor resolution (not on file)", () => {
     await waitFor(() => expect(posted).not.toBeNull(), { timeout: 5000 });
     expect(posted.doctorName).toBe("Dr. Jane Smith");
     expect(posted.confirmNewDoctor).toBe(true);
+  });
+
+  it("opens server-provided doctor resolution after the lookup fails and retries with the selected candidate", async () => {
+    const posts: any[] = [];
+    let postCount = 0;
+    installHandlers({
+      resolveResponse: {
+        exactMatch: null,
+        similarMatches: [],
+        canAddNew: true,
+      },
+      resolveError: new Error("Doctor lookup unavailable"),
+      onPostCases: (body) => {
+        posts.push(body);
+        postCount++;
+        if (postCount === 1) return Promise.reject(doctorConfirmationRequiredError());
+        return undefined;
+      },
+    });
+
+    const { container } = renderDropZone();
+    await dropAndReachConfirm(container);
+
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Create case/i));
+      await new Promise((r) => setTimeout(r, 400));
+    });
+
+    await waitFor(() =>
+      expect(container.textContent ?? "").toMatch(/Doctor not on file/i),
+    );
+    expect(container.textContent ?? "").toMatch(/Dr\. Jane Smith/);
+    expect(container.textContent ?? "").toMatch(/Dr\. Janet Smyth/);
+    expect(container.textContent ?? "").toMatch(/Preview document \(rx\.jpg\)/);
+    expect(container.textContent ?? "").toMatch(/Create case 25-1000/);
+    expect(
+      container
+        .querySelector('[data-testid="practice-picker"]')
+        ?.getAttribute("data-value"),
+    ).toBe("provB");
+    expect(
+      Array.from(container.querySelectorAll<HTMLInputElement>("input")).some(
+        (input) => input.value === "Bob Anderson",
+      ),
+    ).toBe(true);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].confirmNewDoctor).toBeUndefined();
+
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Use this doctor/i));
+      await new Promise((r) => setTimeout(r, 400));
+    });
+
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[1].doctorName).toBe("Dr. Janet Smyth");
+    expect(posts[1].confirmNewDoctor).toBe(true);
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      "/cases/case-new-1/attachments",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("retries a server-required resolution with the scanned name when the user adds a new doctor", async () => {
+    const posts: any[] = [];
+    let postCount = 0;
+    installHandlers({
+      resolveResponse: {
+        exactMatch: null,
+        similarMatches: [],
+        canAddNew: true,
+      },
+      resolveError: new Error("Doctor lookup unavailable"),
+      onPostCases: (body) => {
+        posts.push(body);
+        postCount++;
+        if (postCount === 1) return Promise.reject(doctorConfirmationRequiredError());
+        return undefined;
+      },
+    });
+
+    const { container } = renderDropZone();
+    await dropAndReachConfirm(container);
+
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Create case/i));
+      await new Promise((r) => setTimeout(r, 400));
+    });
+
+    await waitFor(() =>
+      expect(container.textContent ?? "").toMatch(/Doctor not on file/i),
+    );
+    expect(posts).toHaveLength(1);
+
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Add .* as new doctor/i));
+      await new Promise((r) => setTimeout(r, 400));
+    });
+
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[1].doctorName).toBe("Dr. Jane Smith");
+    expect(posts[1].confirmNewDoctor).toBe(true);
+  });
+
+  it("keeps unrelated create errors on the existing generic error path", async () => {
+    installHandlers({
+      resolveResponse: {
+        exactMatch: null,
+        similarMatches: [],
+        canAddNew: true,
+      },
+      resolveError: new Error("Doctor lookup unavailable"),
+      onPostCases: () =>
+        Promise.reject(
+          new ApiError("Case creation failed.", 409, {
+            details: { code: "CASE_NUMBER_CONFLICT" },
+          }),
+        ),
+    });
+
+    const { container } = renderDropZone();
+    await dropAndReachConfirm(container);
+
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Create case/i));
+      await new Promise((r) => setTimeout(r, 400));
+    });
+
+    await waitFor(() =>
+      expect(container.textContent ?? "").toMatch(/Case creation failed\./),
+    );
+    expect(container.textContent ?? "").not.toMatch(/Doctor not on file/i);
   });
 });

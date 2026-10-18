@@ -21,6 +21,7 @@ const store = new Map<
   string,
   { buf: Buffer; contentType: string; updated: string }
 >();
+let streamFailure = false;
 
 vi.mock("@google-cloud/storage", () => {
   class FakeFile {
@@ -56,6 +57,11 @@ vi.mock("@google-cloud/storage", () => {
       store.delete(this.key());
     }
     createReadStream() {
+      if (streamFailure) {
+        const stream = new Readable({ read() {} });
+        queueMicrotask(() => stream.destroy(new Error("storage read failed")));
+        return stream;
+      }
       const e = store.get(this.key());
       return Readable.from(e ? [e.buf] : []);
     }
@@ -93,6 +99,7 @@ describe("lab-logo-storage upload/replace/serve round-trip", () => {
 
   afterEach(() => {
     store.clear();
+    streamFailure = false;
   });
 
   it("serves the bytes of the first upload", async () => {
@@ -154,5 +161,21 @@ describe("lab-logo-storage upload/replace/serve round-trip", () => {
 
   it("returns null when no logo has been uploaded", async () => {
     expect(await mod.openLabLogoStream("org-with-no-logo")).toBeNull();
+  });
+
+  it("reads logo bytes and MIME type for self-contained email attachments", async () => {
+    const png = Buffer.from("email-logo-bytes");
+    await mod.uploadLabLogo(orgId, png, "image/png");
+
+    const asset = await mod.readLabLogoAsset(orgId);
+    expect(asset?.contentType).toBe("image/png");
+    expect(asset?.content.equals(png)).toBe(true);
+  });
+
+  it("returns null when the stored logo cannot be read", async () => {
+    await mod.uploadLabLogo(orgId, Buffer.from("unreadable"), "image/png");
+    streamFailure = true;
+
+    await expect(mod.readLabLogoAsset(orgId)).resolves.toBeNull();
   });
 });

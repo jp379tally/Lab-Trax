@@ -45,7 +45,10 @@ import {
   type ScanDisplayMode,
   type ScanFormat,
 } from "@workspace/scan-viewer";
-import ScanThumbnail from "@/components/ScanThumbnail";
+import ScanThumbnail, {
+  matchPendingPlyTexture,
+  type PendingTextureCandidate,
+} from "@/components/ScanThumbnail";
 import { apiFetch, ApiError, getAccessToken } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { formatDate, relativeTime } from "@/lib/format";
@@ -69,6 +72,12 @@ function detectScanFormat(file: PendingFile): ScanFormat | null {
   return null;
 }
 
+function pendingTextureCandidates(files: PendingFile[]): PendingTextureCandidate[] {
+  return files
+    .filter((candidate) => /^image\/(?:jpeg|jpg|png|webp|bmp|gif|avif)$/i.test(candidate.mimeType))
+    .map(({ fileName, fileUrl, mimeType }) => ({ fileName, fileUrl, mimeType }));
+}
+
 const SCAN_MODE_LABELS: Record<ScanDisplayMode, string> = {
   solid: "Solid",
   wireframe: "Wireframe",
@@ -85,10 +94,12 @@ function ScanPreview({
   fileUrl,
   fileName,
   format,
+  textureCandidates,
 }: {
   fileUrl: string;
   fileName: string;
   format: ScanFormat;
+  textureCandidates: PendingTextureCandidate[];
 }) {
   const [loadState, setLoadState] = useState<
     "downloading" | "rendering" | "error"
@@ -126,7 +137,27 @@ function ScanPreview({
         const buffer = await res.arrayBuffer();
         if (controller.signal.aborted) return;
         const base64 = arrayBufferToBase64(buffer);
-        setHtmlSource(buildViewerHtml(base64, format));
+        let texture: { base64: string; mimeType: string } | undefined;
+        const matchedTexture =
+          format === "ply" ? matchPendingPlyTexture(buffer, textureCandidates) : null;
+        if (matchedTexture) {
+          try {
+            const textureRes = await fetch(matchedTexture.fileUrl, {
+              headers,
+              signal: controller.signal,
+            });
+            if (textureRes.ok) {
+              texture = {
+                base64: arrayBufferToBase64(await textureRes.arrayBuffer()),
+                mimeType: textureRes.headers.get("content-type") || matchedTexture.mimeType,
+              };
+            }
+          } catch {
+            if (controller.signal.aborted) return;
+            // The scan can still be previewed without its companion image.
+          }
+        }
+        setHtmlSource(buildViewerHtml(base64, format, texture));
         setLoadState("rendering");
       } catch (err) {
         if (controller.signal.aborted) return;
@@ -140,7 +171,7 @@ function ScanPreview({
     return () => {
       controller.abort();
     };
-  }, [fileUrl, format]);
+  }, [fileUrl, format, textureCandidates]);
 
   useEffect(() => {
     function onMessage(e: MessageEvent) {
@@ -436,6 +467,7 @@ function AttachDialog({ file, onClose, onAttached }: AttachDialogProps) {
 
 interface PreviewDialogProps {
   file: PendingFile;
+  textureCandidates: PendingTextureCandidate[];
   onClose: () => void;
   onAttachClick: () => void;
   onDelete: () => void;
@@ -792,13 +824,24 @@ function PdfPreview({ fileUrl, fileName }: { fileUrl: string; fileName: string }
   );
 }
 
-function PreviewBody({ file }: { file: PendingFile }) {
+function PreviewBody({
+  file,
+  textureCandidates,
+}: {
+  file: PendingFile;
+  textureCandidates: PendingTextureCandidate[];
+}) {
   const { mimeType, fileUrl, fileName } = file;
 
   const scanFormat = detectScanFormat(file);
   if (scanFormat) {
     return (
-      <ScanPreview fileUrl={fileUrl} fileName={fileName} format={scanFormat} />
+      <ScanPreview
+        fileUrl={fileUrl}
+        fileName={fileName}
+        format={scanFormat}
+        textureCandidates={textureCandidates}
+      />
     );
   }
 
@@ -860,6 +903,7 @@ function PreviewBody({ file }: { file: PendingFile }) {
 
 function PreviewDialog({
   file,
+  textureCandidates,
   onClose,
   onAttachClick,
   onDelete,
@@ -940,6 +984,7 @@ function PreviewDialog({
                   cacheKey={`inbox:${file.id}`}
                   fileUrl={file.fileUrl}
                   format={fmt}
+                  pendingTextureCandidates={textureCandidates}
                   authToken={getAccessToken()}
                   size={28}
                 />
@@ -978,7 +1023,7 @@ function PreviewDialog({
 
         <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
           <div className="flex-1 min-w-0 overflow-auto">
-            <PreviewBody file={file} />
+            <PreviewBody file={file} textureCandidates={textureCandidates} />
           </div>
           <aside className="w-full md:w-72 md:border-l border-t md:border-t-0 border-border bg-card flex flex-col">
             <div className="px-4 py-3 border-b border-border">
@@ -1216,7 +1261,7 @@ function NoteHistoryDialog({ file, onClose }: NoteHistoryDialogProps) {
                     </span>
                     <span
                       className="text-[11px] text-muted-foreground shrink-0"
-                      title={new Date(edit.createdAt).toLocaleString()}
+                      title={(() => { const _d = new Date(edit.createdAt); const _mm = String(_d.getMonth()+1).padStart(2,"0"); const _dd = String(_d.getDate()).padStart(2,"0"); const _yyyy = _d.getFullYear(); const _t = _d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}); return `${_mm}/${_dd}/${_yyyy}, ${_t}`; })()}
                     >
                       {relativeTime(edit.createdAt)}
                     </span>
@@ -1430,6 +1475,7 @@ export function PendingFilesList() {
   });
 
   const files = filesQuery.data ?? [];
+  const textureCandidates = useMemo(() => pendingTextureCandidates(files), [files]);
   const isLoading = filesQuery.isLoading;
   const isFetching = filesQuery.isFetching && !isLoading;
 
@@ -1507,6 +1553,7 @@ export function PendingFilesList() {
                             cacheKey={`inbox:${f.id}`}
                             fileUrl={f.fileUrl}
                             format={fmt}
+                            pendingTextureCandidates={textureCandidates}
                             authToken={getAccessToken()}
                             size={28}
                           />
@@ -1675,6 +1722,7 @@ export function PendingFilesList() {
       {previewTarget && (
         <PreviewDialog
           file={previewTarget}
+          textureCandidates={textureCandidates}
           onClose={() => setPreviewTarget(null)}
           onAttachClick={() => setAttachTarget(previewTarget)}
           onShowHistory={() => setHistoryTarget(previewTarget)}

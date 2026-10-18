@@ -44,26 +44,20 @@ import {
   organizations,
   organizationMemberships,
   pricingOverrides,
+  rxDoctorPracticeMemory,
   users,
 } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
+import { broadcastCaseUpdated } from "../lib/case-events-ws";
 import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { notDeleted } from "../lib/soft-delete";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
+import { normalizeRxDoctorName } from "../lib/rx-practice-normalize";
+import { readDoctorUndoWindowMs as readUndoWindowMs } from "../lib/doctor-undo-window";
 
 const router = Router();
 router.use(requireAuth);
-
-// Window during which a merge can be undone. Configurable via the
-// DOCTOR_MERGE_UNDO_WINDOW_MINUTES env var (default: 10 min). Out-of-range
-// or non-numeric values fall back to the default.
-function readUndoWindowMs(): number {
-  const raw = process.env["DOCTOR_MERGE_UNDO_WINDOW_MINUTES"];
-  const n = raw == null ? NaN : Number(raw);
-  if (!Number.isFinite(n) || n <= 0 || n > 24 * 60) return 10 * 60 * 1000;
-  return Math.floor(n * 60 * 1000);
-}
 
 // `providerOrganizationId` may legitimately be null/missing — when a
 // doctor's cases were created without a practice attached they show up as
@@ -105,8 +99,21 @@ import {
   bigramJaccard,
   doctorNameSimilarity as similarity,
   resolveLabDupThreshold,
-  DOCTOR_RESOLVE_SUGGESTION_THRESHOLD,
 } from "../lib/doctor-similarity.js";
+import { resolveDoctorName } from "../lib/doctor-resolve";
+import {
+  CONSOLIDATION_AUDIT_ACTION,
+  CONSOLIDATION_AUDIT_ENTITY,
+  CONSOLIDATION_UNDO_AUDIT_ACTION,
+  buildProviderAccountClusters,
+  compareAccountSeniority,
+  consolidateProviderAccounts,
+  detectProviderAccountClusters,
+  loadProviderAccountNodes,
+  undoProviderAccountConsolidation,
+  type ConsolidationMoveLog,
+  type ProviderAccountNode,
+} from "../lib/doctor-account-consolidation.js";
 
 async function loadAndAuthorizeMerge(
   userId: string,
@@ -187,6 +194,21 @@ async function loadAndAuthorizeMerge(
     seen.add(key);
     dedupedSources.push(s);
   }
+
+  // Use stable normalized-key order so a multi-source merge cannot let the
+  // caller's payload order decide which source memory reaches an empty target
+  // key first.
+  dedupedSources.sort((a, b) => {
+    const aKey = normalizeRxDoctorName(a.doctorName);
+    const bKey = normalizeRxDoctorName(b.doctorName);
+    return (
+      aKey.localeCompare(bKey) ||
+      (a.providerOrganizationId ?? "").localeCompare(
+        b.providerOrganizationId ?? ""
+      ) ||
+      a.doctorName.localeCompare(b.doctorName)
+    );
+  });
 
   return { labId, practices: byId, sources: dedupedSources };
 }
@@ -269,6 +291,14 @@ function matchLegacyRows(
   }
   return out;
 }
+
+// `migrateDoctorPracticeMemory` + its change type now live in a shared lib so
+// the provider-account consolidation path collapses remembered practices
+// byte-for-byte the same way this merge path always has.
+import {
+  migrateDoctorPracticeMemory,
+  type DoctorPracticeMemoryChange,
+} from "../lib/doctor-practice-memory.js";
 
 router.post(
   "/merge/preview",
@@ -434,11 +464,14 @@ router.post(
     const targetProviderId = input.targetProviderOrganizationId!;
     const targetPractice = practices.get(targetProviderId)!;
 
+    const allMovedCaseIds: string[] = [];
     const result = await db.transaction(async (tx) => {
       let casesMoved = 0;
       let overridesMoved = 0;
       let overridesCollapsed = 0;
       let legacyCasesMoved = 0;
+      let doctorMemoriesMoved = 0;
+      let doctorMemoriesDropped = 0;
       // A legacy row is rewritten by at most one source so undo can attribute
       // it back correctly (two sources may share a name but differ by practice).
       const claimedLegacyIds = new Set<string>();
@@ -450,6 +483,8 @@ router.post(
         overridesMoved: number;
         overridesCollapsed: number;
         legacyCasesMoved: number;
+        doctorMemoryMoved: boolean;
+        doctorMemoryDropped: boolean;
       }> = [];
 
       for (const s of sources) {
@@ -468,6 +503,7 @@ router.post(
               providerOrganizationId: targetProviderId,
             })
             .where(inArray(cases.id, movedIds));
+          allMovedCaseIds.push(...movedIds);
         }
 
         // 2. Pricing overrides keyed on doctorName.
@@ -560,6 +596,18 @@ router.post(
         }
         legacyCasesMoved += legacyMoves.length;
 
+        // 4. Move the confirmed doctor → practice memory along with the doctor
+        // name. If the surviving doctor already has a memory row, it wins and
+        // the source key is removed.
+        const memoryChange = await migrateDoctorPracticeMemory(
+          tx,
+          labId,
+          s.doctorName,
+          input.targetDoctorName
+        );
+        if (memoryChange?.action === "moved") doctorMemoriesMoved++;
+        if (memoryChange?.action === "dropped") doctorMemoriesDropped++;
+
         const sourcePractice = s.providerOrganizationId
           ? practices.get(s.providerOrganizationId)
           : null;
@@ -598,6 +646,7 @@ router.post(
               movedOverrideIds,
               collapsedOverrideIds,
               legacyMoves,
+              memoryChanges: memoryChange ? [memoryChange] : [],
             },
           })
           .returning({ id: auditLogs.id });
@@ -610,6 +659,8 @@ router.post(
           overridesMoved: movedOverrideIds.length,
           overridesCollapsed: collapsedOverrideIds.length,
           legacyCasesMoved: legacyMoves.length,
+          doctorMemoryMoved: memoryChange?.action === "moved",
+          doctorMemoryDropped: memoryChange?.action === "dropped",
         });
       }
 
@@ -618,12 +669,15 @@ router.post(
         overridesMoved,
         overridesCollapsed,
         legacyCasesMoved,
+        doctorMemoriesMoved,
+        doctorMemoriesDropped,
         entries,
       };
     });
 
     // The merge changed doctor rows, so any cached badge count is now stale.
     invalidateDuplicateClusterCache();
+    for (const caseId of allMovedCaseIds) broadcastCaseUpdated(caseId, "doctor_merged");
 
     return ok(res, {
       ...result,
@@ -687,6 +741,24 @@ router.post(
             !!m &&
             typeof (m as any).id === "string" &&
             typeof (m as any).before === "string"
+        )
+      : [];
+    const memoryChanges: DoctorPracticeMemoryChange[] = Array.isArray(
+      meta.memoryChanges
+    )
+      ? meta.memoryChanges.filter(
+          (m: unknown): m is DoctorPracticeMemoryChange =>
+            !!m &&
+            typeof (m as any).sourceDoctorKey === "string" &&
+            typeof (m as any).sourceProviderOrganizationId === "string" &&
+            ((m as any).sourceCreatedByUserId === null ||
+              typeof (m as any).sourceCreatedByUserId === "string") &&
+            typeof (m as any).targetDoctorKey === "string" &&
+            ((m as any).targetProviderOrganizationId === null ||
+              typeof (m as any).targetProviderOrganizationId === "string") &&
+            typeof (m as any).targetMemoryId === "string" &&
+            typeof (m as any).targetUpdatedAt === "string" &&
+            ((m as any).action === "moved" || (m as any).action === "dropped")
         )
       : [];
 
@@ -913,6 +985,105 @@ router.post(
         legacyReverted = restore.length;
       }
 
+      // Restore any doctor-practice memory changed by this merge. Refuse if a
+      // user has since saved a new source mapping or changed the target
+      // mapping, so undo never overwrites a newer confirmation.
+      let doctorMemoriesReverted = 0;
+      for (const memoryChange of memoryChanges) {
+        const [sourceMemory] = await tx
+          .select({ id: rxDoctorPracticeMemory.id })
+          .from(rxDoctorPracticeMemory)
+          .where(
+            and(
+              eq(rxDoctorPracticeMemory.labOrganizationId, auditLabId),
+              eq(
+                rxDoctorPracticeMemory.doctorName,
+                memoryChange.sourceDoctorKey
+              )
+            )
+          )
+          .limit(1);
+        if (sourceMemory) {
+          throw new HttpError(
+            409,
+            "A new remembered practice exists at the source doctor name — undo refused."
+          );
+        }
+
+        const [targetMemory] = await tx
+          .select({
+            id: rxDoctorPracticeMemory.id,
+            providerOrganizationId:
+              rxDoctorPracticeMemory.providerOrganizationId,
+            updatedAt: rxDoctorPracticeMemory.updatedAt,
+          })
+          .from(rxDoctorPracticeMemory)
+          .where(
+            and(
+              eq(rxDoctorPracticeMemory.labOrganizationId, auditLabId),
+              eq(
+                rxDoctorPracticeMemory.doctorName,
+                memoryChange.targetDoctorKey
+              )
+            )
+          )
+          .limit(1);
+        const expectedTargetProviderId =
+          memoryChange.action === "moved"
+            ? memoryChange.sourceProviderOrganizationId
+            : memoryChange.targetProviderOrganizationId;
+        if (
+          !targetMemory ||
+          targetMemory.id !== memoryChange.targetMemoryId ||
+          targetMemory.providerOrganizationId !== expectedTargetProviderId ||
+          new Date(targetMemory.updatedAt).toISOString() !==
+            memoryChange.targetUpdatedAt
+        ) {
+          throw new HttpError(
+            409,
+            "The surviving doctor's remembered practice changed after the merge — undo refused."
+          );
+        }
+
+        if (memoryChange.action === "moved") {
+          const revertedRows = await tx
+            .update(rxDoctorPracticeMemory)
+            .set({
+              doctorName: memoryChange.sourceDoctorKey,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(rxDoctorPracticeMemory.id, memoryChange.targetMemoryId),
+                eq(
+                  rxDoctorPracticeMemory.providerOrganizationId,
+                  memoryChange.sourceProviderOrganizationId
+                ),
+                eq(
+                  rxDoctorPracticeMemory.updatedAt,
+                  new Date(memoryChange.targetUpdatedAt)
+                )
+              )
+            )
+            .returning({ id: rxDoctorPracticeMemory.id });
+          if (revertedRows.length !== 1) {
+            throw new HttpError(
+              409,
+              "The surviving doctor's remembered practice changed during undo — undo refused."
+            );
+          }
+        } else {
+          await tx.insert(rxDoctorPracticeMemory).values({
+            labOrganizationId: auditLabId,
+            doctorName: memoryChange.sourceDoctorKey,
+            providerOrganizationId:
+              memoryChange.sourceProviderOrganizationId,
+            createdByUserId: memoryChange.sourceCreatedByUserId,
+          });
+        }
+        doctorMemoriesReverted++;
+      }
+
       await tx.insert(auditLogs).values({
         userId,
         organizationId: auditLabId,
@@ -928,14 +1099,21 @@ router.post(
           casesReverted,
           overridesReverted,
           legacyReverted,
+          doctorMemoriesReverted,
         },
       });
 
-      return { casesReverted, overridesReverted, legacyReverted };
+      return {
+        casesReverted,
+        overridesReverted,
+        legacyReverted,
+        doctorMemoriesReverted,
+      };
     });
 
     // The undo restored doctor rows, so any cached badge count is now stale.
     invalidateDuplicateClusterCache();
+    for (const caseId of movedCaseIds) broadcastCaseUpdated(caseId, "doctor_merge_undone");
 
     return ok(res, {
       ...result,
@@ -1022,102 +1200,16 @@ router.get(
       ? String(req.query.providerOrganizationId).trim()
       : null;
 
-    // Strict normalization: trim + collapse internal whitespace + lowercase.
-    // No title/name stripping — "Dr. Cole" must NOT strict-match "Dr. Kenisha Cole".
-    const strictNormalize = (s: string) =>
-      s.trim().replace(/\s+/g, " ").toLowerCase();
-
-    const scanned = String(req.query.doctorName ?? "").trim().replace(/\s+/g, " ");
-    if (!scanned) {
-      return ok(res, { exactMatch: null, similarMatches: [], canAddNew: true });
-    }
-
-    // Canonical doctor-name groups (with counts) scoped to lab (+ practice).
-    const canonicalConds = [
-      eq(cases.labOrganizationId, labId),
-      notDeleted(cases),
-      sql`${cases.doctorName} is not null and trim(${cases.doctorName}) <> ''`,
-    ];
-    if (providerOrgId) {
-      canonicalConds.push(eq(cases.providerOrganizationId, providerOrgId));
-    }
-    const canonicalGroups = await db
-      .select({
-        doctorName: cases.doctorName,
-        totalCases: sql<number>`count(*)::int`,
-      })
-      .from(cases)
-      .where(and(...canonicalConds))
-      .groupBy(cases.doctorName);
-
-    // Legacy mobile cases keep the doctor name in a TEXT JSON blob and carry no
-    // practice, so they are only lab-scoped — mirrors the picker union.
-    const legacyRows = await db
-      .select({ caseData: labCases.caseData })
-      .from(labCases)
-      .where(and(isNull(labCases.deletedAt), eq(labCases.organizationId, labId)));
-
-    // Directory keyed by strict-normalized spelling → { stored spelling, count }.
-    const directory = new Map<string, { spelling: string; totalCases: number }>();
-    const addName = (raw: string, count: number) => {
-      const name = raw.trim().replace(/\s+/g, " ");
-      if (!name) return;
-      const key = name.toLowerCase();
-      const existing = directory.get(key);
-      if (existing) existing.totalCases += count;
-      else directory.set(key, { spelling: name, totalCases: count });
-    };
-    for (const g of canonicalGroups) {
-      addName(String(g.doctorName ?? ""), Number(g.totalCases ?? 0));
-    }
-    for (const r of legacyRows) {
-      try {
-        const parsed =
-          typeof r.caseData === "string" ? JSON.parse(r.caseData) : r.caseData;
-        const n = String(parsed?.doctorName ?? "").trim();
-        if (n) addName(n, 1);
-      } catch {
-        // skip malformed blobs
-      }
-    }
-
-    const scannedKey = strictNormalize(scanned);
-    const exact = directory.get(scannedKey);
-    if (exact) {
-      return ok(res, {
-        exactMatch: exact.spelling,
-        similarMatches: [],
-        canAddNew: true,
-      });
-    }
-
-    // No strict match → fuzzy suggestions at the low resolve threshold.
-    const similarMatches: Array<{
-      doctorName: string;
-      providerOrganizationId: string | null;
-      similarity: number;
-      totalCases: number;
-    }> = [];
-    for (const { spelling, totalCases } of directory.values()) {
-      const sim = similarity(scanned, spelling);
-      if (sim >= DOCTOR_RESOLVE_SUGGESTION_THRESHOLD) {
-        similarMatches.push({
-          doctorName: spelling,
-          providerOrganizationId: providerOrgId,
-          similarity: sim,
-          totalCases,
-        });
-      }
-    }
-    similarMatches.sort(
-      (a, b) => b.similarity - a.similarity || b.totalCases - a.totalCases
+    // Delegate to the shared resolver so this endpoint and the iTero import
+    // case-create backstop apply byte-for-byte identical exact-match +
+    // suggestion logic.
+    const result = await resolveDoctorName(
+      labId,
+      providerOrgId,
+      String(req.query.doctorName ?? ""),
     );
 
-    return ok(res, {
-      exactMatch: null,
-      similarMatches: similarMatches.slice(0, 12),
-      canAddNew: true,
-    });
+    return ok(res, result);
   })
 );
 
@@ -1133,6 +1225,7 @@ router.get(
 
     const q = String(req.query.q ?? "").trim();
     const like = String(req.query.like ?? "").trim();
+    const openOnly = req.query.openOnly === "true";
     const limitRaw = Number(req.query.limit ?? 100);
     const limit = Math.min(
       500,
@@ -1205,6 +1298,7 @@ router.get(
             name: organizations.name,
             displayName: organizations.displayName,
             phone: organizations.phone,
+            accountNumber: organizations.accountNumber,
           })
           .from(organizations)
           .where(inArray(organizations.id, orgIds))
@@ -1215,6 +1309,9 @@ router.get(
     const orgPhones = new Map(
       orgs.map((o) => [o.id, o.phone ?? null] as const)
     );
+    const orgAccountNumbers = new Map(
+      orgs.map((o) => [o.id, o.accountNumber ?? null] as const)
+    );
 
     // Batch-look up doctor user phones: only fetch phones for users who are
     // active members of the provider orgs we already resolved for this lab
@@ -1224,13 +1321,19 @@ router.get(
     // Doctors whose cases have no providerOrganizationId are excluded from
     // this lookup since we cannot safely scope them to this lab.
     const doctorNames = Array.from(new Set(groups.map((g) => g.doctorName)));
-    const doctorUserRows: Array<{ doctorName: string | null; phone: string | null; practicePhone: string | null }> =
+    const doctorUserRows: Array<{
+      doctorName: string | null;
+      phone: string | null;
+      practicePhone: string | null;
+      platformAccountNumber: string | null;
+    }> =
       doctorNames.length && orgIds.length
         ? await db
             .selectDistinct({
               doctorName: users.doctorName,
               phone: users.phone,
               practicePhone: users.practicePhone,
+              platformAccountNumber: users.platformAccountNumber,
             })
             .from(users)
             .innerJoin(
@@ -1254,12 +1357,19 @@ router.get(
         : [];
     // Map normalized doctorName → best available phone (prefer practicePhone over phone).
     const doctorPhones = new Map<string, string>();
+    // Map normalized doctorName → the account number this doctor ALREADY has.
+    // Reassign/merge tooling shows it so an admin can see the cases are folding
+    // onto an existing account rather than producing another one (Task #4372).
+    const doctorAccountNumbers = new Map<string, string>();
     for (const u of doctorUserRows) {
       if (!u.doctorName) continue;
       const key = u.doctorName.toLowerCase();
       if (!doctorPhones.has(key)) {
         const phone = u.practicePhone || u.phone || null;
         if (phone) doctorPhones.set(key, phone);
+      }
+      if (!doctorAccountNumbers.has(key) && u.platformAccountNumber) {
+        doctorAccountNumbers.set(key, u.platformAccountNumber);
       }
     }
 
@@ -1270,13 +1380,20 @@ router.get(
       const practicePhone = g.providerOrganizationId
         ? orgPhones.get(g.providerOrganizationId) ?? null
         : null;
+      const practiceAccountNumber = g.providerOrganizationId
+        ? orgAccountNumbers.get(g.providerOrganizationId) ?? null
+        : null;
       const doctorPhone = doctorPhones.get(g.doctorName.toLowerCase()) ?? null;
+      const platformAccountNumber =
+        doctorAccountNumbers.get(g.doctorName.toLowerCase()) ?? null;
       const sim = like ? similarity(like, g.doctorName) : 0;
       return {
         doctorName: g.doctorName,
         providerOrganizationId: g.providerOrganizationId,
         practiceName,
         practicePhone,
+        practiceAccountNumber,
+        platformAccountNumber,
         doctorPhone,
         totalCases: g.totalCases,
         openCases: g.openCases,
@@ -1284,12 +1401,13 @@ router.get(
       };
     });
 
-    const filtered = q
+    const searched = q
       ? enriched.filter((e) => {
           const hay = `${e.doctorName} ${e.practiceName ?? ""}`.toLowerCase();
           return hay.includes(q.toLowerCase());
         })
       : enriched;
+    const filtered = openOnly ? searched.filter((entry) => entry.openCases > 0) : searched;
 
     filtered.sort((a, b) => {
       if (b.similarity !== a.similarity) return b.similarity - a.similarity;
@@ -1328,6 +1446,19 @@ interface DupDoctorNode {
   providerOrganizationId: string | null;
   practiceName: string | null;
   totalCases: number;
+  /**
+   * How many live provider *accounts* carry this exact name in this practice.
+   * > 1 means the row is a duplicate-account cluster even when totalCases is 0
+   * (Task #4373) — those accounts are invisible to the case-derived scan.
+   */
+  accountCount: number;
+  /**
+   * The provider account number this doctor ALREADY has, so the merge UI can
+   * name the account the kept doctor keeps (Task #4397). Null for a name-only
+   * doctor with no provider account. When the row carries several duplicate
+   * accounts this is the one that survives consolidation (oldest number).
+   */
+  platformAccountNumber: string | null;
 }
 
 interface DupClusterResult {
@@ -1339,6 +1470,26 @@ interface DupClusterResult {
     topScore: number;
     clusterKey: string;
     doctors: DupDoctorNode[];
+    /**
+     * "name" — duplicate doctor names found on cases (the original scan).
+     * "account" — duplicate provider accounts for one person, which may have
+     * no cases at all.
+     */
+    kind: "name" | "account";
+    /**
+     * Why an account cluster was NOT consolidated automatically (conflicting
+     * emails/phones). Null when there is no conflict.
+     */
+    conflictReason: string | null;
+    /**
+     * For "account" clusters: the single account number that survives
+     * consolidating the cluster — the oldest across ALL members, which is the
+     * survivor `consolidateProviderAccounts` picks. Per-row
+     * `platformAccountNumber` is the oldest number on that (name, practice)
+     * row only, so it is NOT enough to decide which account a consolidation
+     * keeps. Null for "name" clusters (merging names retires no account).
+     */
+    survivingAccountNumber: string | null;
   }>;
   dismissedClusters: Array<{
     labOrganizationId: string;
@@ -1513,6 +1664,8 @@ const dismissClusterSchema = z.object({
         providerOrganizationId: z.string().nullable().optional(),
         practiceName: z.string().nullable().optional(),
         totalCases: z.number().optional().default(0),
+        accountCount: z.number().optional().default(0),
+        platformAccountNumber: z.string().nullable().optional(),
       })
     )
     .min(1),
@@ -1644,6 +1797,70 @@ router.get(
       dismissedRows.map((r) => `${r.labOrganizationId}::${r.clusterKey}`)
     );
 
+    const accountRowKey = (
+      labId: string,
+      doctorName: string,
+      providerOrganizationId: string | null
+    ) => `${labId}::${doctorName.trim().toLowerCase()}::${providerOrganizationId ?? ""}`;
+
+    const dupThresholdByLab = new Map(
+      labs.map((l) => [l.labId, resolveLabDupThreshold(l.threshold)] as const)
+    );
+
+    // One batched provider-account load for every lab the caller administers.
+    // It feeds both the account-level duplicate detection (Task #4373) and the
+    // "which account does this doctor keep" lookup (Task #4397), so the badge
+    // endpoint pays for a single pass over the accounts instead of two. The
+    // whole response is memoized by the short-TTL cache above, so repeated
+    // badge polls do not repeat this work at all.
+    const accountNodes = await loadProviderAccountNodes(db, labIds);
+
+    // Account-level duplicates (Task #4373). Provider accounts that duplicate
+    // one person are invisible to the case-derived scan below when they have
+    // no cases of their own, so detect them separately and fold them in.
+    const accountClusters = buildProviderAccountClusters(
+      accountNodes,
+      (labId) => dupThresholdByLab.get(labId) ?? resolveLabDupThreshold(null)
+    );
+
+    // Live accounts per (lab, name, practice) row, so the panel can say
+    // "4 accounts" on a row that has zero cases.
+    const accountCountByRow = new Map<string, number>();
+    for (const c of accountClusters) {
+      for (const m of c.members) {
+        const key = accountRowKey(
+          m.labOrganizationId,
+          m.displayName,
+          m.providerOrganizationId
+        );
+        accountCountByRow.set(key, (accountCountByRow.get(key) ?? 0) + 1);
+      }
+    }
+
+    // The account number each (lab, name, practice) row already owns. When a
+    // row carries several duplicate accounts we report the one consolidation
+    // would keep — the oldest account number — so "keeps account #…" in the
+    // merge UI names the account that actually survives.
+    const seniorAccountByRow = new Map<string, ProviderAccountNode>();
+    for (const n of accountNodes) {
+      if (!n.platformAccountNumber) continue;
+      const key = accountRowKey(
+        n.labOrganizationId,
+        n.displayName,
+        n.providerOrganizationId
+      );
+      const current = seniorAccountByRow.get(key);
+      if (!current || compareAccountSeniority(n, current) < 0) {
+        seniorAccountByRow.set(key, n);
+      }
+    }
+    const accountNumberByRow = new Map<string, string>();
+    for (const [key, node] of seniorAccountByRow) {
+      if (node.platformAccountNumber) {
+        accountNumberByRow.set(key, node.platformAccountNumber);
+      }
+    }
+
     // Distinct (doctor, practice) groups per lab, mirroring the desktop's
     // DoctorRow keying. Only non-deleted canonical cases with a real name.
     const groups = await db
@@ -1669,9 +1886,12 @@ router.get(
 
     const orgIds = Array.from(
       new Set(
-        groups
-          .map((g) => g.providerOrganizationId)
-          .filter((x): x is string => !!x)
+        [
+          ...groups.map((g) => g.providerOrganizationId),
+          ...accountClusters.flatMap((c) =>
+            c.members.map((m) => m.providerOrganizationId)
+          ),
+        ].filter((x): x is string => !!x)
       )
     );
     const orgs = orgIds.length
@@ -1695,7 +1915,8 @@ router.get(
             l.labId,
             {
               name: l.displayName || l.name,
-              threshold: resolveLabDupThreshold(l.threshold),
+              threshold:
+                dupThresholdByLab.get(l.labId) ?? resolveLabDupThreshold(null),
             },
           ] as const
       )
@@ -1705,6 +1926,11 @@ router.get(
     for (const g of groups) {
       if (!g.doctorName) continue;
       const arr = byLab.get(g.labOrganizationId) ?? [];
+      const rowKey = accountRowKey(
+        g.labOrganizationId,
+        g.doctorName,
+        g.providerOrganizationId
+      );
       arr.push({
         doctorName: g.doctorName,
         providerOrganizationId: g.providerOrganizationId,
@@ -1712,6 +1938,8 @@ router.get(
           ? orgName.get(g.providerOrganizationId) ?? null
           : null,
         totalCases: g.totalCases,
+        accountCount: accountCountByRow.get(rowKey) ?? 0,
+        platformAccountNumber: accountNumberByRow.get(rowKey) ?? null,
       });
       byLab.set(g.labOrganizationId, arr);
     }
@@ -1729,9 +1957,78 @@ router.get(
           topScore: c.topScore,
           clusterKey: c.clusterKey,
           doctors: c.doctors,
+          kind: "name",
+          conflictReason: null,
+          // A name merge moves cases and pricing only — every doctor keeps the
+          // account they already have, so nothing "survives" at cluster level.
+          survivingAccountNumber: null,
         });
       }
     }
+
+    // Fold in the account-level clusters. A four-way same-name duplicate
+    // collapses to a single (name, practice) row, which the case-derived scan
+    // can never surface — emit it anyway so the panel and its badge see it.
+    const caseCountByRow = new Map<string, number>();
+    for (const g of groups) {
+      if (!g.doctorName) continue;
+      caseCountByRow.set(
+        accountRowKey(
+          g.labOrganizationId,
+          g.doctorName,
+          g.providerOrganizationId
+        ),
+        g.totalCases
+      );
+    }
+    const emittedKeys = new Set(
+      clusters.map((c) => `${c.labOrganizationId}::${c.clusterKey}`)
+    );
+    for (const ac of accountClusters) {
+      const meta = labMeta.get(ac.labOrganizationId);
+      if (!meta) continue;
+      const seenRows = new Set<string>();
+      const doctors: DupDoctorNode[] = [];
+      for (const m of ac.members) {
+        const rowKey = accountRowKey(
+          ac.labOrganizationId,
+          m.displayName,
+          m.providerOrganizationId
+        );
+        if (seenRows.has(rowKey)) continue;
+        seenRows.add(rowKey);
+        doctors.push({
+          doctorName: m.displayName,
+          providerOrganizationId: m.providerOrganizationId,
+          practiceName: m.providerOrganizationId
+            ? orgName.get(m.providerOrganizationId) ?? null
+            : null,
+          totalCases: caseCountByRow.get(rowKey) ?? 0,
+          accountCount: accountCountByRow.get(rowKey) ?? 0,
+          platformAccountNumber: accountNumberByRow.get(rowKey) ?? null,
+        });
+      }
+      if (doctors.length === 0) continue;
+      const clusterKey = computeClusterKey(ac.labOrganizationId, doctors);
+      const fullKey = `${ac.labOrganizationId}::${clusterKey}`;
+      if (emittedKeys.has(fullKey)) continue;
+      if (dismissedKeySet.has(fullKey)) continue;
+      emittedKeys.add(fullKey);
+      clusters.push({
+        labOrganizationId: ac.labOrganizationId,
+        labName: meta.name,
+        topScore: ac.topScore,
+        clusterKey,
+        doctors,
+        kind: "account",
+        conflictReason: ac.conflictReason,
+        // Consolidation keeps ONE account for the whole cluster — the oldest
+        // number across every member — and retires the rest. Name it here so
+        // the consolidate UI can't claim each row keeps its own account.
+        survivingAccountNumber: ac.survivor.platformAccountNumber ?? null,
+      });
+    }
+
     clusters.sort((a, b) => b.topScore - a.topScore);
 
     // Build dismissed clusters list from the stored dismissal rows.
@@ -1739,7 +2036,17 @@ router.get(
       dismissedRows.map((r) => ({
         labOrganizationId: r.labOrganizationId,
         clusterKey: r.clusterKey,
-        doctors: Array.isArray(r.doctorsJson) ? (r.doctorsJson as DupDoctorNode[]) : [],
+        doctors: (Array.isArray(r.doctorsJson)
+          ? (r.doctorsJson as Array<Partial<DupDoctorNode>>)
+          : []
+        ).map((d) => ({
+          doctorName: String(d.doctorName ?? ""),
+          providerOrganizationId: d.providerOrganizationId ?? null,
+          practiceName: d.practiceName ?? null,
+          totalCases: Number(d.totalCases ?? 0),
+          accountCount: Number(d.accountCount ?? 0),
+          platformAccountNumber: d.platformAccountNumber ?? null,
+        })),
         dismissedAt:
           r.dismissedAt instanceof Date
             ? r.dismissedAt.toISOString()
@@ -1755,6 +2062,199 @@ router.get(
     };
     writeDupClusterCache(userId, payload);
     return ok(res, payload);
+  })
+);
+
+// ---------------------------------------------------------------------------
+// POST /doctors/account-consolidations
+// POST /doctors/account-consolidations/:auditLogId/undo
+//
+// Account-level consolidation (Task #4373). The automatic sweep handles
+// unambiguous duplicates on its own; these endpoints let an admin resolve a
+// cluster the sweep refused to touch (conflicting email/phone) straight from
+// the duplicate-suspects panel, and reverse a consolidation within the same
+// undo window the doctor-name merge uses.
+// ---------------------------------------------------------------------------
+
+const consolidateAccountsSchema = z.object({
+  labOrganizationId: z.string().min(1),
+  doctors: z
+    .array(
+      z.object({
+        doctorName: z.string().trim().min(1),
+        providerOrganizationId: optionalOrgId,
+      })
+    )
+    .min(1)
+    .max(100),
+  /** Consolidate even when the cluster's identity signals conflict. */
+  force: z.boolean().optional().default(false),
+});
+
+router.post(
+  "/account-consolidations",
+  asyncHandler(async (req, res) => {
+    const input = consolidateAccountsSchema.parse(req.body);
+    const userId = (req as any).auth.userId as string;
+    await requireAnyRole(userId, input.labOrganizationId, ADMIN_ROLES);
+
+    const wanted = new Set(
+      input.doctors.map(
+        (d) =>
+          `${d.doctorName.trim().toLowerCase()}::${d.providerOrganizationId ?? ""}`
+      )
+    );
+
+    const clusters = (
+      await detectProviderAccountClusters([input.labOrganizationId])
+    ).filter((c) =>
+      c.members.some((m) =>
+        wanted.has(
+          `${m.displayName.trim().toLowerCase()}::${m.providerOrganizationId ?? ""}`
+        )
+      )
+    );
+
+    if (clusters.length === 0) {
+      throw new HttpError(
+        404,
+        "No duplicate provider accounts found for those doctors."
+      );
+    }
+
+    if (!input.force) {
+      const conflicting = clusters.find(
+        (c) => c.classification === "conflicting"
+      );
+      if (conflicting) {
+        throw new HttpError(
+          409,
+          conflicting.conflictReason ??
+            "These accounts have conflicting contact details."
+        );
+      }
+    }
+
+    const consolidations = [];
+    for (const cluster of clusters) {
+      const result = await consolidateProviderAccounts({
+        labOrganizationId: cluster.labOrganizationId,
+        providerOrganizationId: cluster.providerOrganizationId,
+        survivorUserId: cluster.survivor.userId,
+        retiredUserIds: cluster.retired.map((r) => r.userId),
+        actorUserId: userId,
+        trigger: "admin",
+      });
+      consolidations.push({
+        auditLogId: result.auditLogId,
+        survivorUserId: result.survivorUserId,
+        survivorName: result.survivorName,
+        survivorAccountNumber: result.survivorAccountNumber,
+        retiredUserIds: result.retiredUserIds,
+        retiredAccountNumbers: result.retiredAccountNumbers,
+        referencesMoved: result.referencesMoved,
+      });
+    }
+
+    invalidateDuplicateClusterCache();
+
+    return ok(res, {
+      consolidations,
+      accountsRetired: consolidations.reduce(
+        (n, c) => n + c.retiredUserIds.length,
+        0
+      ),
+      undoWindowMs: readUndoWindowMs(),
+    });
+  })
+);
+
+router.post(
+  "/account-consolidations/:auditLogId/undo",
+  asyncHandler(async (req, res) => {
+    const auditLogId = String(req.params.auditLogId);
+    const userId = (req as any).auth.userId as string;
+
+    const audit = await db.query.auditLogs.findFirst({
+      where: eq(auditLogs.id, auditLogId),
+    });
+    if (!audit) throw new HttpError(404, "Consolidation audit entry not found.");
+    if (audit.action !== CONSOLIDATION_AUDIT_ACTION) {
+      throw new HttpError(
+        400,
+        "That audit entry is not a provider-account consolidation."
+      );
+    }
+    if (!audit.organizationId) {
+      throw new HttpError(400, "Audit entry is missing a lab id.");
+    }
+    await requireAnyRole(userId, audit.organizationId, ADMIN_ROLES);
+
+    const undoWindowMs = readUndoWindowMs();
+    const created = audit.createdAt ? new Date(audit.createdAt as any) : null;
+    const ageMs = created ? Date.now() - created.getTime() : Infinity;
+    if (ageMs > undoWindowMs) {
+      throw new HttpError(
+        409,
+        `This consolidation is past the ${Math.round(
+          undoWindowMs / 60000
+        )}-minute undo window.`
+      );
+    }
+
+    // Undo is single-shot: replaying the move log a second time would
+    // resurrect rows that the first undo already restored.
+    const alreadyUndone = await db
+      .select({ id: auditLogs.id })
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.action, CONSOLIDATION_UNDO_AUDIT_ACTION),
+          sql`${auditLogs.metadataJson} ->> 'consolidationAuditLogId' = ${auditLogId}`
+        )
+      )
+      .limit(1);
+    if (alreadyUndone.length > 0) {
+      throw new HttpError(409, "This consolidation has already been undone.");
+    }
+
+    const meta = (audit.metadataJson as any) ?? {};
+    const moves = meta.moves as ConsolidationMoveLog | undefined;
+    if (!moves || !Array.isArray(moves.retired)) {
+      throw new HttpError(400, "Audit entry is missing the consolidation log.");
+    }
+    if (!audit.entityId) {
+      throw new HttpError(400, "Audit entry is missing the survivor account.");
+    }
+
+    await undoProviderAccountConsolidation(moves, {
+      labOrganizationId: audit.organizationId,
+      survivorUserId: audit.entityId,
+    });
+
+    await db.insert(auditLogs).values({
+      userId,
+      organizationId: audit.organizationId,
+      action: CONSOLIDATION_UNDO_AUDIT_ACTION,
+      entityType: CONSOLIDATION_AUDIT_ENTITY,
+      entityId: audit.entityId,
+      ipAddress: req.ip ?? null,
+      userAgent: req.get("user-agent") ?? null,
+      beforeJson: audit.afterJson ?? null,
+      afterJson: audit.beforeJson ?? null,
+      metadataJson: {
+        consolidationAuditLogId: auditLogId,
+        restoredUserIds: moves.retired.map((r) => r.userId),
+      },
+    });
+
+    invalidateDuplicateClusterCache();
+
+    return ok(res, {
+      undone: true,
+      survivorUserId: audit.entityId,
+      restoredUserIds: moves.retired.map((r) => r.userId),
+    });
   })
 );
 

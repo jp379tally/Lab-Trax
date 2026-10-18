@@ -26,25 +26,40 @@ import { inArray } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import request from "supertest";
 import * as path from "node:path";
+import { SDR1_CLEANUP_CONFIRM } from "../lib/sdr1-legacy-cleanup.js";
 
 vi.mock("../lib/backup.js", () => ({
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../lib/recovery-billing-scope.js", () => ({
+  RECOVERY_DATA_UNAVAILABLE_MESSAGE: "Synthetic recovery data unavailable.",
+  RECOVERY_LAB_ID: "00000000-0000-4000-8000-000000000123",
+  RECOVERY_SAFEGUARD_VERSION: "synthetic-safeguard",
+  RECOVERY_TAG: "recovery-test-fixture",
+  RECOVERY_TIMEZONE: "UTC",
+  legacyCleanupConfiguration: {
+    confirmationPhrase: "CONFIRM_SYNTHETIC_LEGACY_CLEANUP",
+    eraStartMs: Date.parse("2026-05-01T00:00:00.000Z"),
+    eraEndMs: Date.parse("2026-07-01T00:00:00.000Z"),
+    targetPatients: ["Synthetic Patient Alpha", "Synthetic Patient Beta"],
+  },
+  recoveryDataAvailable: true,
+  assertRecoveryDataAvailable: () => undefined,
 }));
 vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
-  caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-sdr1-cleanup"),
+  caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-synthetic-cleanup"),
   extractMediaFileName: () => null,
 }));
 
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
 const maybe = SHOULD_RUN ? describe : describe.skip;
 
-const PLATFORM_ADMIN_SECRET = "sdr1-cleanup-test-secret";
+const PLATFORM_ADMIN_SECRET = "synthetic-cleanup-test-secret";
 process.env["PLATFORM_ADMIN_SECRET"] = PLATFORM_ADMIN_SECRET;
 
-const CONFIRM = "DELETE_SDR1_LEGACY_OPEN_INVOICES";
 const ERA_MS = Date.parse("2026-05-01T00:00:00.000Z"); // inside the window
 const PRE_ERA_MS = Date.parse("2025-12-01T00:00:00.000Z"); // outside (before)
 
@@ -59,24 +74,24 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
   const labOrgId = rid("lab");
   const otherOrgId = rid("olab");
   const practiceId = rid("prov");
-  const userId = rid("usdr1");
+  const userId = rid("synthetic-user");
 
-  // Legacy rows in the target org. Target names use entries from the real
-  // SDR1 list that are obviously test patients: Sally Test, Jane Doe,
-  // John Toe, Ohhh Crumbs, Zurko/Cindee.
-  const matchTargetId = rid("lcm1"); // "Sally Test", era, has invoiceId → deleted
-  const matchVariantId = rid("lcm2"); // "Zurko, Cindee" variant, era, no invoiceId → deleted
-  const nonTargetId = rid("lcnt"); // "Random Person", era → kept
-  const outOfEraId = rid("lcoe"); // "Jane Doe" but pre-era → kept (ambiguous)
+  // Legacy rows use synthetic target names and preserve order/punctuation
+  // variants needed to exercise exact-token matching.
+  const matchTargetId = rid("lcm1"); // synthetic target, era, has invoiceId → deleted
+  const matchVariantId = rid("lcm2"); // punctuation/order variant, era → deleted
+  const nonTargetId = rid("lcnt"); // synthetic non-target, era → kept
+  const outOfEraId = rid("lcoe"); // target but pre-era → kept (ambiguous)
   const badBlobId = rid("lcbb"); // unparseable blob → kept (ambiguous)
-  const otherOrgLegacyId = rid("lcoo"); // "Sally Test" in ANOTHER org → kept
+  const otherOrgLegacyId = rid("lcoo"); // target in ANOTHER org → kept
 
   // Canonical rows in the target org.
-  const linkedCaseId = rid("ccl"); // 26-40 "Sally Test" → deleted (number+name)
-  const collisionCaseId = rid("ccc"); // 26-77 "Different Patient" → kept (collision)
-  const linkedInvoiceId = rid("invl"); // INV-26-40 "Sally Test" → deleted
-  const collisionInvoiceId = rid("invc"); // INV-26-77 "Different Patient" → kept
-  const unrelatedInvoiceId = rid("invu"); // INV-26-999 unrelated → kept
+  const linkedCaseId = rid("ccl"); // matching number+name → deleted
+  const collisionCaseId = rid("ccc"); // same number, different patient → kept
+  const linkedInvoiceId = rid("invl"); // linked synthetic invoice → deleted
+  const collisionInvoiceId = rid("invc"); // collision invoice → kept
+  const unrelatedInvoiceId = rid("invu"); // unrelated synthetic invoice → kept
+  const freezeInvoiceId = rid("invf"); // linked to deleted case, but not itself a target
 
   function adminPost(body: Record<string, unknown>) {
     return request(appMod.default)
@@ -98,12 +113,12 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
 
     await db.insert(users).values([{ id: userId, username: `u_${userId}`, password: "x" }]);
     await db.insert(organizations).values([
-      { id: labOrgId, type: "lab", name: "SDR1 Cleanup Test Lab" },
-      { id: otherOrgId, type: "lab", name: "SDR1 Cleanup Other Lab" },
+      { id: labOrgId, type: "lab", name: "Synthetic Cleanup Test Lab" },
+      { id: otherOrgId, type: "lab", name: "Synthetic Cleanup Other Lab" },
       {
         id: practiceId,
         type: "provider",
-        name: "SDR1 Cleanup Practice",
+        name: "Synthetic Cleanup Practice",
         parentLabOrganizationId: labOrgId,
       },
     ]);
@@ -114,9 +129,9 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
         ownerId: userId,
         organizationId: labOrgId,
         caseData: JSON.stringify({
-          caseNumber: "26-40",
-          patientName: "Sally Test",
-          invoiceId: "1778506322824test0001",
+          caseNumber: "SYN-CASE-001",
+          patientName: "Synthetic Patient Alpha",
+          invoiceId: "SYNTHETIC-INVOICE-REFERENCE-001",
           createdAt: ERA_MS,
         }),
       },
@@ -125,8 +140,8 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
         ownerId: userId,
         organizationId: labOrgId,
         caseData: JSON.stringify({
-          caseNumber: "26-22B",
-          patientName: "Zurko, Cindee",
+          caseNumber: "SYN-CASE-002B",
+          patientName: "Beta, Synthetic Patient",
           createdAt: String(ERA_MS), // numeric-string format also seen in prod
         }),
       },
@@ -135,8 +150,8 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
         ownerId: userId,
         organizationId: labOrgId,
         caseData: JSON.stringify({
-          caseNumber: "26-1",
-          patientName: "Random Person",
+          caseNumber: "SYN-CASE-003",
+          patientName: "Synthetic Person Gamma",
           createdAt: ERA_MS,
         }),
       },
@@ -145,8 +160,8 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
         ownerId: userId,
         organizationId: labOrgId,
         caseData: JSON.stringify({
-          caseNumber: "26-9",
-          patientName: "Jane Doe",
+          caseNumber: "SYN-CASE-004",
+          patientName: "Synthetic Patient Alpha",
           createdAt: PRE_ERA_MS,
         }),
       },
@@ -161,8 +176,8 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
         ownerId: userId,
         organizationId: otherOrgId,
         caseData: JSON.stringify({
-          caseNumber: "26-40",
-          patientName: "Sally Test",
+          caseNumber: "SYN-CASE-001",
+          patientName: "Synthetic Patient Alpha",
           createdAt: ERA_MS,
         }),
       },
@@ -171,23 +186,23 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
     const caseBase = {
       labOrganizationId: labOrgId,
       providerOrganizationId: practiceId,
-      doctorName: "Dr. Sdr1",
+      doctorName: "Dr. Synthetic Provider",
       status: "received",
       createdByUserId: userId,
     };
     await db.insert(cases).values([
       {
         id: linkedCaseId,
-        caseNumber: "26-40",
+        caseNumber: "SYN-CASE-001",
         ...caseBase,
-        patientFirstName: "Sally",
-        patientLastName: "Test",
+        patientFirstName: "Synthetic",
+        patientLastName: "Patient Alpha",
       },
       {
         id: collisionCaseId,
-        caseNumber: "26-22B",
+        caseNumber: "SYN-CASE-002B",
         ...caseBase,
-        patientFirstName: "Different",
+        patientFirstName: "Different Synthetic",
         patientLastName: "Patient",
       },
     ]);
@@ -203,21 +218,28 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
     await db.insert(invoices).values([
       {
         id: linkedInvoiceId,
-        invoiceNumber: "INV-26-40",
+        invoiceNumber: "INV-SYN-CASE-001",
         ...invBase,
-        displayMetadataJson: { patientName: "Sally Test" },
+        displayMetadataJson: { patientName: "Synthetic Patient Alpha" },
       },
       {
         id: collisionInvoiceId,
-        invoiceNumber: "INV-26-22B",
+        invoiceNumber: "INV-SYN-CASE-002B",
         ...invBase,
-        displayMetadataJson: { patientName: "Different Patient" },
+        displayMetadataJson: { patientName: "Different Synthetic Patient" },
       },
       {
         id: unrelatedInvoiceId,
-        invoiceNumber: "INV-26-999",
+        invoiceNumber: "INV-SYN-CASE-099",
         ...invBase,
-        displayMetadataJson: { patientName: "Sally Test" },
+        displayMetadataJson: { patientName: "Synthetic Patient Alpha" },
+      },
+      {
+        id: freezeInvoiceId,
+        invoiceNumber: rid("INV-FREEZE"),
+        ...invBase,
+        caseId: linkedCaseId,
+        displayMetadataJson: { patientName: "Unrelated Synthetic Patient" },
       },
     ]);
   });
@@ -239,12 +261,20 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
           linkedInvoiceId,
           collisionInvoiceId,
           unrelatedInvoiceId,
+          freezeInvoiceId,
           "sdr1-legacy-cleanup",
         ]),
       );
     await db
       .delete(invoices)
-      .where(inArray(invoices.id, [linkedInvoiceId, collisionInvoiceId, unrelatedInvoiceId]));
+      .where(
+        inArray(invoices.id, [
+          linkedInvoiceId,
+          collisionInvoiceId,
+          unrelatedInvoiceId,
+          freezeInvoiceId,
+        ]),
+      );
     await db.delete(cases).where(inArray(cases.id, [linkedCaseId, collisionCaseId]));
     await db
       .delete(labCases)
@@ -286,7 +316,14 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
     const invoiceRows = await db
       .select()
       .from(invoices)
-      .where(inArray(invoices.id, [linkedInvoiceId, collisionInvoiceId, unrelatedInvoiceId]));
+      .where(
+        inArray(invoices.id, [
+          linkedInvoiceId,
+          collisionInvoiceId,
+          unrelatedInvoiceId,
+          freezeInvoiceId,
+        ]),
+      );
     const byId = (rows: any[]) => Object.fromEntries(rows.map((r) => [r.id, r]));
     return { legacy: byId(legacyRows), cases: byId(caseRows), invoices: byId(invoiceRows) };
   }
@@ -302,6 +339,8 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
     const res = await request(appMod.default)
       .post("/api/admin/cleanup/sdr1-legacy-open-invoices")
       .set("X-Platform-Admin-Secret", PLATFORM_ADMIN_SECRET)
+      // sweep-scope-lint:allow the missing scope IS the assertion — the route
+      // answers 400 before it reads a row, so nothing can be swept.
       .send({});
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/organizationId/i);
@@ -324,9 +363,9 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
 
     // Only this suite's org rows are in scope (5 of the 6 seeded legacy rows).
     expect(res.body.activeLegacyRows).toBe(5);
-    expect(res.body.matched).toBe(2); // Sally Test + Zurko, Cindee
-    expect(res.body.nonTargetSkipped).toBe(1); // Random Person
-    expect(res.body.ambiguousSkipped).toBe(2); // out-of-era Jane Doe + bad blob
+    expect(res.body.matched).toBe(2); // both synthetic targets
+    expect(res.body.nonTargetSkipped).toBe(1); // synthetic non-target
+    expect(res.body.ambiguousSkipped).toBe(2); // out-of-era target + bad blob
 
     const matchedIds = res.body.matchedRows.map((r: any) => r.id).sort();
     expect(matchedIds).toEqual([matchTargetId, matchVariantId].sort());
@@ -361,8 +400,44 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
     expect(rows.cases[linkedCaseId].deletedAt).toBeNull();
   });
 
+  it("rolls back the cleanup match set when a linked invoice freeze audit fails", async () => {
+    const { pool } = dbMod as any;
+    const triggerName = `fail_sdr1_freeze_${randomBytes(8).toString("hex")}`;
+    const functionName = `${triggerName}_fn`;
+
+    try {
+      await pool.query(`
+        CREATE FUNCTION ${functionName}() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.action = 'invoice_frozen_case_deleted'
+             AND NEW.entity_id = '${freezeInvoiceId}' THEN
+            RAISE EXCEPTION 'injected SDR1 freeze audit failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER ${triggerName}
+          BEFORE INSERT ON audit_logs
+          FOR EACH ROW EXECUTE FUNCTION ${functionName}();
+      `);
+
+      const res = await adminPost({ dryRun: false, confirm: SDR1_CLEANUP_CONFIRM });
+      expect(res.status).toBe(500);
+
+      const rows = await fetchRows();
+      expect(rows.legacy[matchTargetId].deletedAt).toBeNull();
+      expect(rows.cases[linkedCaseId].deletedAt).toBeNull();
+      expect(rows.invoices[linkedInvoiceId].deletedAt).toBeNull();
+      expect(rows.invoices[freezeInvoiceId].frozen).toBe(false);
+      expect(Number(rows.invoices[freezeInvoiceId].balanceDue)).toBe(100);
+    } finally {
+      await pool.query(`DROP TRIGGER IF EXISTS ${triggerName} ON audit_logs`);
+      await pool.query(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    }
+  });
+
   it("live run soft-deletes matched + strictly-linked rows only", async () => {
-    const res = await adminPost({ dryRun: false, confirm: CONFIRM });
+    const res = await adminPost({ dryRun: false, confirm: SDR1_CLEANUP_CONFIRM });
     expect(res.status).toBe(200);
     expect(res.body.dryRun).toBe(false);
     expect(res.body.legacyDeleted).toBe(2);
@@ -388,6 +463,9 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
     expect(rows.invoices[linkedInvoiceId].deletedAt).not.toBeNull();
     expect(rows.invoices[collisionInvoiceId].deletedAt).toBeNull();
     expect(rows.invoices[unrelatedInvoiceId].deletedAt).toBeNull();
+    expect(rows.invoices[freezeInvoiceId].deletedAt).toBeNull();
+    expect(rows.invoices[freezeInvoiceId].frozen).toBe(true);
+    expect(Number(rows.invoices[freezeInvoiceId].balanceDue)).toBe(0);
 
     // Summary audit entry written.
     const { db, auditLogs } = dbMod as any;
@@ -400,7 +478,7 @@ maybe("POST /api/admin/cleanup/sdr1-legacy-open-invoices (db integration)", () =
 
   it("second live run is idempotent", async () => {
     const before = await fetchRows();
-    const res = await adminPost({ dryRun: false, confirm: CONFIRM });
+    const res = await adminPost({ dryRun: false, confirm: SDR1_CLEANUP_CONFIRM });
     expect(res.status).toBe(200);
     expect(res.body.legacyDeleted).toBe(0);
     expect(res.body.canonicalCasesDeleted).toBe(0);

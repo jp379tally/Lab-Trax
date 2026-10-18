@@ -24,6 +24,10 @@ import { randomBytes, createHash } from "node:crypto";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import request from "supertest";
+import {
+  buildMigratedLegacyPhotoContract,
+  buildMigratedLegacyVideoContract,
+} from "@workspace/legacy-case-media-contract";
 
 vi.mock("../lib/backup.js", () => ({
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
@@ -54,11 +58,47 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
 
   const ownerUserId = rid("uowner");
   const strangerUserId = rid("ustranger");
+  const labOrgId = rid("lab");
   const caseId = `${Date.now()}${randomBytes(4).toString("hex")}`;
   const crafterCaseId = `${Date.now()}${randomBytes(4).toString("hex")}c`;
-  const fileName = `${rid("legacyphoto")}.jpg`;
-  const fileBytes = randomBytes(2048);
-  let filePath = "";
+  const fileFixtures = [
+    {
+      eventId: "evt-photo-space",
+      fileName: `${rid("legacy photo")}.jpg`,
+      fileBytes: randomBytes(2048),
+      occurredAt: "2024-01-12T12:00:00.000Z",
+    },
+    {
+      eventId: "evt-photo-unicode",
+      fileName: `${rid("legacy-фото-雪")}.jpg`,
+      fileBytes: randomBytes(2048),
+      occurredAt: "2024-01-12T12:01:00.000Z",
+    },
+    {
+      eventId: "evt-photo-reserved",
+      fileName: `${rid("legacy#photo?100%")}.jpg`,
+      fileBytes: randomBytes(2048),
+      occurredAt: "2024-01-12T12:02:00.000Z",
+    },
+  ];
+  const videoFixtures = [
+    {
+      eventId: "evt-video-space",
+      fileName: `${rid("legacy video")}.mp4`,
+      fileBytes: randomBytes(2048),
+      occurredAt: "2024-01-12T12:03:00.000Z",
+    },
+    {
+      eventId: "evt-video-reserved",
+      fileName: `${rid("legacy#video?100%")}.mp4`,
+      fileBytes: randomBytes(2048),
+      occurredAt: "2024-01-12T12:04:00.000Z",
+    },
+  ];
+  const mediaFixtures = [...fileFixtures, ...videoFixtures];
+  const [primaryFile] = fileFixtures;
+  const encodedFileUrl = (fileName: string) =>
+    `/api/cases/attachment-file/${encodeURIComponent(fileName)}`;
   let ownerToken = "";
   let strangerToken = "";
 
@@ -85,18 +125,33 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
     auth = await import("../lib/auth.js");
     caseMediaMod = await import("../lib/case-media.js");
 
-    const { db, users } = dbMod as any;
+    const { db, users, organizations, organizationMemberships } = dbMod as any;
     await db.insert(users).values([
       { id: ownerUserId, username: `own_${ownerUserId}`, password: "x" },
       { id: strangerUserId, username: `str_${strangerUserId}`, password: "x" },
     ]);
+    await db.insert(organizations).values({
+      id: labOrgId,
+      type: "lab",
+      name: "Legacy media contract lab",
+    });
+    await db.insert(organizationMemberships).values({
+      id: rid("mbr"),
+      labId: labOrgId,
+      userId: ownerUserId,
+      role: "admin",
+      status: "active",
+    });
     ownerToken = await makeSession(ownerUserId);
     strangerToken = await makeSession(strangerUserId);
 
     // Place a real file on disk where the upload endpoint would have stored it.
     await fsp.mkdir(caseMediaMod.caseMediaDir, { recursive: true });
-    filePath = path.join(caseMediaMod.caseMediaDir, fileName);
-    await fsp.writeFile(filePath, fileBytes);
+    await Promise.all(
+      mediaFixtures.map(({ fileName, fileBytes }) =>
+        fsp.writeFile(path.join(caseMediaMod.caseMediaDir, fileName), fileBytes),
+      ),
+    );
   });
 
   // Refresh session tokens before every test so a concurrent user_sessions
@@ -108,15 +163,33 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
 
   afterAll(async () => {
     if (!SHOULD_RUN) return;
-    const { db, users, labCases, userSessions, legacyCaseMedia } = dbMod as any;
-    await db.delete(legacyCaseMedia).where(eq(legacyCaseMedia.fileName, fileName));
+    const {
+      db,
+      users,
+      organizations,
+      organizationMemberships,
+      labCases,
+      userSessions,
+      legacyCaseMedia,
+    } = dbMod as any;
+    await db
+      .delete(legacyCaseMedia)
+      .where(inArray(legacyCaseMedia.fileName, mediaFixtures.map(({ fileName }) => fileName)));
     await db.delete(labCases).where(inArray(labCases.id, [caseId, crafterCaseId]));
+    await db
+      .delete(organizationMemberships)
+      .where(eq(organizationMemberships.labId, labOrgId));
+    await db.delete(organizations).where(eq(organizations.id, labOrgId));
     await db
       .delete(userSessions)
       .where(inArray(userSessions.userId, [ownerUserId, strangerUserId]));
     await db.delete(users).where(inArray(users.id, [ownerUserId, strangerUserId]));
     try {
-      await fsp.rm(filePath, { force: true });
+      await Promise.all(
+        mediaFixtures.map(({ fileName }) =>
+          fsp.rm(path.join(caseMediaMod.caseMediaDir, fileName), { force: true }),
+        ),
+      );
     } catch {
       // ignore
     }
@@ -130,18 +203,30 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
     const caseData = {
       id: caseId,
       ownerId: ownerUserId,
+      organizationId: labOrgId,
+      affiliationKey: `org:${labOrgId}`,
       caseNumber: "26-MEDIA",
       patientName: "Media Test",
       status: "INTAKE",
-      photos: [`/api/cases/attachment-file/${fileName}`],
+      photos: fileFixtures.map(({ fileName }) => encodedFileUrl(fileName)),
+      videos: videoFixtures.map(({ fileName }) => encodedFileUrl(fileName)),
       activityLog: [
-        {
-          id: "evt-photo",
+        ...fileFixtures.map(({ eventId, fileName, occurredAt }) => ({
+          id: eventId,
           type: "photo",
-          timestamp: 1000,
+          timestamp: Date.parse(occurredAt),
           description: "Photo added",
-          imageUri: `/api/cases/attachment-file/${fileName}`,
-        },
+          imageUri: encodedFileUrl(fileName),
+          fileName,
+        })),
+        ...videoFixtures.map(({ eventId, fileName, occurredAt }) => ({
+          id: eventId,
+          type: "video",
+          timestamp: Date.parse(occurredAt),
+          description: "Video added",
+          imageUri: encodedFileUrl(fileName),
+          fileName,
+        })),
       ],
     };
 
@@ -153,63 +238,198 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
 
     // Ledger binding must exist (first-writer-wins).
     const { db, legacyCaseMedia } = dbMod as any;
-    const [binding] = await db
+    const bindings = await db
       .select()
       .from(legacyCaseMedia)
-      .where(eq(legacyCaseMedia.fileName, fileName));
-    expect(binding).toBeTruthy();
-    expect(binding.ownerId).toBe(ownerUserId);
+      .where(inArray(legacyCaseMedia.fileName, mediaFixtures.map(({ fileName }) => fileName)));
+    expect(bindings).toHaveLength(mediaFixtures.length);
+    expect(bindings.every((row: { ownerId: string }) => row.ownerId === ownerUserId)).toBe(true);
 
-    // Owner can fetch the bytes.
-    const getRes = await request(app)
-      .get(`/api/cases/attachment-file/${fileName}`)
-      .set("Authorization", `Bearer ${ownerToken}`)
-      .buffer(true)
-      .parse((res, cb) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (c: Buffer) => chunks.push(c));
-        res.on("end", () => cb(null, Buffer.concat(chunks)));
+    // Owner can fetch every filename after exactly one URL-decoding pass.
+    for (const { fileName, fileBytes } of mediaFixtures) {
+      const getRes = await request(app)
+        .get(encodedFileUrl(fileName))
+        .set("Authorization", `Bearer ${ownerToken}`)
+        .buffer(true)
+        .parse((res, cb) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (c: Buffer) => chunks.push(c));
+          res.on("end", () => cb(null, Buffer.concat(chunks)));
+        });
+      expect(getRes.status, fileName).toBe(200);
+      expect(Buffer.isBuffer(getRes.body), fileName).toBe(true);
+      expect((getRes.body as Buffer).equals(fileBytes), fileName).toBe(true);
+      expect(getRes.headers["content-type"], fileName).toMatch(/^application\/octet-stream/);
+      expect(getRes.headers["content-disposition"], fileName).toMatch(/^attachment;/);
+      expect(getRes.headers["x-content-type-options"], fileName).toBe("nosniff");
+    }
+  });
+
+  it("rejects forged attachment rows that point to another lab's legacy media", async () => {
+    const app = appMod.default;
+    const { db, organizations, organizationMemberships, labCases, caseAttachments } =
+      dbMod as any;
+    const attackerOrgId = rid("attacker-lab");
+    const attackerCaseId = `${Date.now()}${randomBytes(4).toString("hex")}a`;
+    const attachmentId = rid("attacker-attachment");
+    const victimFile = fileFixtures[0]!;
+
+    try {
+      await db.insert(organizations).values({
+        id: attackerOrgId,
+        type: "lab",
+        name: `Attacker lab ${attackerOrgId}`,
       });
-    expect(getRes.status).toBe(200);
-    expect(Buffer.isBuffer(getRes.body)).toBe(true);
-    expect((getRes.body as Buffer).equals(fileBytes)).toBe(true);
+      await db.insert(organizationMemberships).values({
+        id: rid("attacker-membership"),
+        labId: attackerOrgId,
+        userId: strangerUserId,
+        role: "user",
+        status: "active",
+      });
+      await db.insert(labCases).values({
+        id: attackerCaseId,
+        ownerId: strangerUserId,
+        organizationId: attackerOrgId,
+        caseData: JSON.stringify({
+          id: attackerCaseId,
+          ownerId: strangerUserId,
+          organizationId: attackerOrgId,
+        }),
+      });
+      await db.insert(caseAttachments).values({
+        id: attachmentId,
+        labCaseId: attackerCaseId,
+        uploadedByUserId: strangerUserId,
+        uploadedByOrganizationId: attackerOrgId,
+        fileName: victimFile.fileName,
+        storageKey: `/uploads/case-media/${victimFile.fileName}`,
+        fileType: "image/jpeg",
+        visibility: "internal_lab_only",
+      });
+
+      const compatibilityDownload = await request(app)
+        .get(encodedFileUrl(victimFile.fileName))
+        .set("Authorization", `Bearer ${strangerToken}`);
+      expect(compatibilityDownload.status).toBe(403);
+
+      const attachmentIdDownload = await request(app)
+        .get(`/api/cases/${attackerCaseId}/attachments/${attachmentId}/file`)
+        .set("Authorization", `Bearer ${strangerToken}`);
+      expect(attachmentIdDownload.status).toBe(403);
+    } finally {
+      await db.delete(caseAttachments).where(eq(caseAttachments.id, attachmentId));
+      await db.delete(labCases).where(eq(labCases.id, attackerCaseId));
+      await db
+        .delete(organizationMemberships)
+        .where(eq(organizationMemberships.labId, attackerOrgId));
+      await db.delete(organizations).where(eq(organizations.id, attackerOrgId));
+    }
+  });
+
+  it("keeps migrated photo and video projections aligned with the shared client contracts", async () => {
+    const expectedPhotos = buildMigratedLegacyPhotoContract(
+      caseId,
+      fileFixtures.map(({ eventId, fileName, occurredAt }) => ({
+        eventId,
+        fileName,
+        occurredAt,
+      })),
+    );
+    const expectedVideos = buildMigratedLegacyVideoContract(
+      caseId,
+      videoFixtures.map(({ eventId, fileName, occurredAt }) => ({
+        eventId,
+        fileName,
+        occurredAt,
+      })),
+    );
+
+    const response = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${ownerToken}`);
+    expect(response.status).toBe(200);
+
+    const projectedAttachments = response.body.data.attachments.map(
+      (attachment: Record<string, unknown>) => ({
+        id: attachment.id,
+        caseId: attachment.caseId,
+        fileName: attachment.fileName,
+        fileType: attachment.fileType,
+        storageKey: attachment.storageKey,
+        url: attachment.url,
+      }),
+    );
+    const expectedEventIds = new Set(
+      [...expectedPhotos.events, ...expectedVideos.events].map((event) => event.id),
+    );
+    const projectedEvents = response.body.data.events
+      .filter((event: { id: string }) => expectedEventIds.has(event.id))
+      .map((event: Record<string, unknown>) => ({
+        id: event.id,
+        eventType: event.eventType,
+        metadataJson: event.metadataJson,
+        occurredAt: event.occurredAt,
+      }))
+      .sort((a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id));
+
+    expect(projectedAttachments).toEqual([
+      ...expectedPhotos.attachments,
+      ...expectedVideos.attachments,
+    ]);
+    expect(projectedEvents).toEqual(
+      [...expectedPhotos.events, ...expectedVideos.events].sort((a, b) => a.id.localeCompare(b.id)),
+    );
   });
 
   it("denies a cross-tenant user (403)", async () => {
     const app = appMod.default;
     const getRes = await request(app)
-      .get(`/api/cases/attachment-file/${fileName}`)
+      .get(encodedFileUrl(primaryFile.fileName))
       .set("Authorization", `Bearer ${strangerToken}`);
     expect(getRes.status).toBe(403);
   });
 
-  // The desktop/web client renders legacy photos via the id-based route using
-  // the SYNTHETIC attachment id projected by the case-detail transform
-  // (`legacy-photo-<caseId>-<idx>`). That id has no case_attachments row, so the
-  // route must resolve it from the legacy case's own photos[] array. This was
-  // the root cause of "can't see mobile pics on desktop/web".
-  it("serves a synthetic legacy-photo id to the owner via the id-based route", async () => {
+  // Desktop renders legacy photos via the synthetic attachment ids projected
+  // by case detail. Exercise every filename class using the ids it actually
+  // returns, rather than constructing an id independent of that projection.
+  it("serves every projected legacy photo to the owner and denies other tenants", async () => {
     const app = appMod.default;
-    const getRes = await request(app)
-      .get(`/api/cases/${caseId}/attachments/legacy-photo-${caseId}-0/file`)
-      .set("Authorization", `Bearer ${ownerToken}`)
-      .buffer(true)
-      .parse((res, cb) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (c: Buffer) => chunks.push(c));
-        res.on("end", () => cb(null, Buffer.concat(chunks)));
-      });
-    expect(getRes.status).toBe(200);
-    expect(Buffer.isBuffer(getRes.body)).toBe(true);
-    expect((getRes.body as Buffer).equals(fileBytes)).toBe(true);
-  });
+    const detail = await request(app)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${ownerToken}`);
+    expect(detail.status).toBe(200);
+    const attachments = detail.body.data.attachments as Array<{
+      id: string;
+      storageKey: string;
+    }>;
 
-  it("denies a cross-tenant user on the synthetic id route (403)", async () => {
-    const app = appMod.default;
-    const getRes = await request(app)
-      .get(`/api/cases/${caseId}/attachments/legacy-photo-${caseId}-0/file`)
-      .set("Authorization", `Bearer ${strangerToken}`);
-    expect(getRes.status).toBe(403);
+    for (const { fileName, fileBytes } of fileFixtures) {
+      const matches = attachments.filter(
+        (attachment) => attachment.storageKey === encodedFileUrl(fileName),
+      );
+      expect(matches, fileName).toHaveLength(1);
+      const attachmentId = matches[0]!.id;
+      expect(attachmentId, fileName).toMatch(/^legacy-photo-/);
+      const url = `/api/cases/${caseId}/attachments/${encodeURIComponent(attachmentId)}/file`;
+      const getRes = await request(app)
+        .get(url)
+        .set("Authorization", `Bearer ${ownerToken}`)
+        .buffer(true)
+        .parse((res, cb) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (c: Buffer) => chunks.push(c));
+          res.on("end", () => cb(null, Buffer.concat(chunks)));
+        });
+      expect(getRes.status, fileName).toBe(200);
+      expect(Buffer.isBuffer(getRes.body), fileName).toBe(true);
+      expect((getRes.body as Buffer).equals(fileBytes), fileName).toBe(true);
+
+      const denied = await request(app)
+        .get(url)
+        .set("Authorization", `Bearer ${strangerToken}`);
+      expect(denied.status, fileName).toBe(403);
+    }
   });
 
   it("404s a synthetic id whose index is out of range", async () => {
@@ -225,7 +445,7 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
   // synthetic id route. Case-level auth passes (they own the crafted case), so
   // the serving path MUST additionally enforce the legacy_case_media ledger
   // (which bound the file to the original owner) and deny — never serve.
-  it("denies a crafted caseData referencing another tenant's file (403)", async () => {
+  it("denies a crafted caseData referencing another tenant's files (403)", async () => {
     const app = appMod.default;
     const craftedData = {
       id: crafterCaseId,
@@ -233,7 +453,7 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
       caseNumber: "26-CRAFT",
       patientName: "Crafted",
       status: "INTAKE",
-      photos: [`/api/cases/attachment-file/${fileName}`],
+      photos: fileFixtures.map(({ fileName }) => encodedFileUrl(fileName)),
     };
     const createRes = await request(app)
       .post("/api/legacy/cases")
@@ -241,10 +461,12 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
       .send({ id: crafterCaseId, ownerId: strangerUserId, caseData: craftedData });
     expect(createRes.status).toBe(200);
 
-    const getRes = await request(app)
-      .get(`/api/cases/${crafterCaseId}/attachments/legacy-photo-${crafterCaseId}-0/file`)
-      .set("Authorization", `Bearer ${strangerToken}`);
-    expect(getRes.status).toBe(403);
+    for (const [index, { fileName }] of fileFixtures.entries()) {
+      const getRes = await request(app)
+        .get(`/api/cases/${crafterCaseId}/attachments/legacy-photo-${crafterCaseId}-${index}/file`)
+        .set("Authorization", `Bearer ${strangerToken}`);
+      expect(getRes.status, fileName).toBe(403);
+    }
   });
 
   it("orphan cleanup never trashes a ledger-bound legacy file", async () => {
@@ -256,13 +478,21 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
     // alone. Re-writing here is safe: the ledger row is already in the DB
     // (committed by the previous test in this suite).
     await fsp.mkdir(caseMediaMod.caseMediaDir, { recursive: true });
-    await fsp.writeFile(filePath, fileBytes);
+    await Promise.all(
+      fileFixtures.map(({ fileName, fileBytes }) =>
+        fsp.writeFile(path.join(caseMediaMod.caseMediaDir, fileName), fileBytes),
+      ),
+    );
 
     const report = await caseMediaMod.cleanupOrphanedCaseMedia({ dryRun: false });
     expect(report.mediaDirExists).toBe(true);
 
     // File must still be present (protected by the ledger reference).
-    await expect(fsp.access(filePath)).resolves.toBeUndefined();
+    for (const { fileName } of fileFixtures) {
+      await expect(
+        fsp.access(path.join(caseMediaMod.caseMediaDir, fileName)),
+      ).resolves.toBeUndefined();
+    }
   });
 
   it("fail-safe: skips deletion when a reference scan errors", async () => {

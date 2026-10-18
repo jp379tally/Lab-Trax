@@ -32,6 +32,10 @@ import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { FormSheet } from "@/components/ui/FormSheet";
 import { TextField } from "@/components/ui/TextField";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+} from "@/components/ui/DismissKeyboardView";
 import { useMe, primaryLabOrgId, adminLabMemberships } from "@/lib/auth-me";
 
 const AI_MEMORY_KINDS = ["glossary", "preference", "fact"] as const;
@@ -178,12 +182,15 @@ export default function AiKnowledgeScreen() {
   const [candidateEditor, setCandidateEditor] = useState<AiMemoryCandidateItem | null>(null);
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <DismissKeyboardView
+      style={[styles.screen, { paddingTop: insets.top }]}
+      testID="ai-knowledge-keyboard-dismiss"
+    >
       <View style={styles.header}>
         <Pressable style={styles.backBtn} onPress={() => router.back()} hitSlop={8} testID="ai-knowledge-back">
           <Ionicons name="chevron-back" size={26} color={colors.text} />
         </Pressable>
-        <Text style={styles.title}>AI Assistant</Text>
+        <Text style={styles.title}>LabTrax Assistant</Text>
       </View>
 
       {!labOrgId ? (
@@ -191,7 +198,7 @@ export default function AiKnowledgeScreen() {
           <Ionicons name="sparkles-outline" size={40} color={colors.textTertiary} />
           <Text style={styles.emptyTitle}>No lab available</Text>
           <Text style={styles.emptyBody}>
-            AI Assistant knowledge is managed per lab. Join a lab to view its glossary, preferences, and facts.
+            LabTrax Assistant knowledge is managed per lab. Join a lab to view its glossary, preferences, and facts.
           </Text>
         </View>
       ) : memQ.isLoading ? (
@@ -200,6 +207,8 @@ export default function AiKnowledgeScreen() {
         </View>
       ) : (
         <ScrollView
+          keyboardDismissMode={scrollKeyboardDismissMode}
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.content}
           refreshControl={
             <RefreshControl
@@ -213,7 +222,7 @@ export default function AiKnowledgeScreen() {
           }
         >
           <Text style={styles.intro}>
-            Teach Maynard about your lab. Glossary terms, preferences, and facts you add here are included in
+            Teach LabTrax Assistant about your lab. Glossary terms, preferences, and facts you add here are included in
             the AI’s context so its answers match how your lab works.
           </Text>
 
@@ -351,7 +360,7 @@ export default function AiKnowledgeScreen() {
           onReviewed={invalidateCandidates}
         />
       ) : null}
-    </View>
+    </DismissKeyboardView>
   );
 }
 

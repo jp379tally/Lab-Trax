@@ -1,14 +1,22 @@
+import { assertRecoveryReleased } from "../lib/recovery-billing-hold";
+import { GetRegisterAnalyticsQueryParams } from "@workspace/api-zod";
+import { registerAnalytics } from "../lib/register-analytics";
 import { Router } from "express";
 import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import multer from "multer";
 import { db } from "@workspace/db";
 import {
   bankAccounts,
+  bankImportBatches,
   bankTransactionInvoices,
+  bankDepositBatchMembers,
   bankTransactions,
   invoices,
   organizationMemberships,
   organizations,
+  payments,
+  practiceStatements,
   recurringTransactions,
   reconciliationItems,
   reconciliations,
@@ -17,7 +25,9 @@ import {
   vendors,
   vendorTypes,
 } from "@workspace/db";
+import * as workspaceDb from "@workspace/db";
 import { HttpError, ok, wrapDbError } from "../lib/http";
+import { archiveReversedSettlements } from "../lib/settlement-history";
 import { softDelete, softDeleteById } from "../lib/soft-delete";
 import { writeAuditLog } from "../lib/audit";
 import {
@@ -28,55 +38,106 @@ import {
   resolveVendorTypeId,
   type VendorTypeRow,
 } from "../lib/vendor-types-seed";
-import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
+import { ensureDefaultCategories } from "../lib/default-categories";
+import { ADMIN_ROLES, BILLING_ROLES, hasCapability, OWNER_ROLES, requireAnyRole, requireMembership, type MembershipRole } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth, requireVerifiedAccount } from "../middlewares/auth";
+import { createOpenAIClient } from "../lib/ai-openai-client";
+import { findDuplicateCandidates, type ExtractedRow } from "../lib/bank-import-duplicates";
+import { assertNoActiveCardReversalForTransactions } from "../lib/payment-reversal-guards";
+import { pageRows, pageRowsKeyset, parsePagination, sortTime, type Keyset } from "../lib/pagination";
+import { assertNotBillPaymentTransaction } from "../lib/vendor-bills";
+import {
+  BILL_PAYMENT_TXN_SOURCE,
+  type InvoiceVersion,
+  apBalanceAsOf,
+  arBalanceAsOf,
+  unappliedCustomerCreditsAsOf,
+  billedExpensesInPeriod,
+  endOfDayInTz,
+  invoiceRecognizedAsOf,
+  invoiceVersionsAsOf,
+  invoicedRevenueThrough,
+} from "../lib/ap-ar-reporting";
+import {
+  lockDepositBatchMutations,
+  releaseBatchForChild,
+  releaseDepositBatch,
+} from "../lib/deposit-batches";
+// pdf-parse@1.1.1 index.js reads a test PDF at require() time (known bug).
+// Require the implementation file directly to skip the test-file read.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pdfParseImpl = require("pdf-parse/lib/pdf-parse.js") as (
+  buf: Buffer,
+  options?: Record<string, unknown>
+) => Promise<{ text: string }>;
+async function parsePdf(buffer: Buffer): Promise<string> {
+  const result = await pdfParseImpl(buffer);
+  return result.text ?? "";
+}
 
 const router = Router();
+const { customerCredits, statementPaymentSessions, statementPaymentReversals } = workspaceDb;
 router.use(requireAuth);
 router.use(requireVerifiedAccount);
 
-// Resolve end-of-day for a calendar Y/M/D in an IANA tz, returned as
-// the UTC instant. Falls back to UTC if no tz is supplied or invalid.
-function endOfDayInTz(
-  yr: number,
-  mo: number,
-  day: number,
-  tz: string | undefined,
-): Date {
-  if (!tz) return new Date(Date.UTC(yr, mo, day, 23, 59, 59, 999));
-  try {
-    const guess = Date.UTC(yr, mo, day, 23, 59, 59, 999);
-    const fmt = new Intl.DateTimeFormat("en-US", {
-      timeZone: tz,
-      hourCycle: "h23",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    const parts = fmt.formatToParts(new Date(guess));
-    const get = (t: string) =>
-      Number(parts.find((p) => p.type === t)?.value ?? "0");
-    const wallAsUtc = Date.UTC(
-      get("year"),
-      get("month") - 1,
-      get("day"),
-      get("hour"),
-      get("minute"),
-      get("second"),
-    );
-    const offset = wallAsUtc - guess; // ms tz is ahead of UTC
-    return new Date(guess - offset);
-  } catch {
-    return new Date(Date.UTC(yr, mo, day, 23, 59, 59, 999));
-  }
-}
 
 function uid(req: any): string {
   return req.auth.userId as string;
+}
+
+function normalizeLegacyDoctorName(name: string | null): string | null {
+  return name ? name.trim().replace(/\s+/g, " ").toLocaleLowerCase() : null;
+}
+
+function invoiceDoctorDisplayName(invoice: {
+  displayMetadataJson: unknown;
+}): string | null {
+  const metadata =
+    invoice.displayMetadataJson &&
+    typeof invoice.displayMetadataJson === "object"
+      ? (invoice.displayMetadataJson as Record<string, unknown>)
+      : null;
+  const value = metadata?.billTo ?? metadata?.doctorName;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function doctorAttributionFromLinks(
+  links: Array<{
+    doctorIdentity?: string | null;
+    doctorDisplayName?: string | null;
+  }>,
+) {
+  const stableDoctorIdentities = [
+    ...new Set(
+      links
+        .map((link) => link.doctorIdentity?.trim() || null)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+  const doctorIdentityKeys = [
+    ...new Set(
+      links
+        .map((link) =>
+          link.doctorIdentity ?? normalizeLegacyDoctorName(link.doctorDisplayName ?? null),
+        )
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+  const doctorDisplayNames = [
+    ...new Set(
+      links
+        .map((link) => link.doctorDisplayName?.trim() || null)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+  return {
+    doctorIdentity:
+      stableDoctorIdentities.length === 1 ? stableDoctorIdentities[0] : null,
+    doctorDisplayName: doctorDisplayNames.length === 1 ? doctorDisplayNames[0] : null,
+    doctorIdentityKeys,
+    doctorDisplayNames,
+  };
 }
 
 async function activeLabIds(userId: string): Promise<string[]> {
@@ -218,6 +279,7 @@ router.get(
               createdByUserId: uid(req),
             },
           ]);
+          await ensureDefaultCategories(orgId, tx);
         });
         accounts = await db.query.bankAccounts.findMany({
           where: inArray(bankAccounts.labOrganizationId, orgIds),
@@ -387,6 +449,13 @@ router.get(
   asyncHandler(async (req, res) => {
     const { organizationId } = orgIdQuery.parse(req.query);
     await requireAnyRole(uid(req), organizationId, BILLING_ROLES);
+    // Lazily seed AR/AP defaults so every lab that visits the Finance page
+    // gets them without requiring a separate migration job.
+    try {
+      await ensureDefaultCategories(organizationId);
+    } catch (err) {
+      req.log.warn({ err, organizationId }, "ensureDefaultCategories failed in GET /categories");
+    }
     const rows = await db.query.transactionCategories.findMany({
       where: eq(transactionCategories.labOrganizationId, organizationId),
       orderBy: [asc(transactionCategories.name)],
@@ -477,6 +546,38 @@ router.delete(
 
 // ─────────────────────────── Register Transactions ───────────────────────
 
+/**
+ * Register and Undeposited Funds both return bank transactions newest-first
+ * (txnDate, then createdAt, then id — all descending), so a cursor anchors on
+ * those three values.
+ */
+const bankTransactionKeyset: Keyset<any> = {
+  sortValues: (row) => [sortTime(row.txnDate), sortTime(row.createdAt)],
+  id: (row) => String(row.id),
+  directions: ["desc", "desc"],
+  idDirection: "desc",
+};
+
+router.get("/register-analytics", asyncHandler(async (req, res) => {
+  const q = GetRegisterAnalyticsQueryParams.extend({
+    organizationId: z.string().uuid(),
+    bankAccountId: z.string().uuid(),
+  }).parse(req.query);
+  const from = new Date(`${q.dateFrom}T00:00:00.000Z`);
+  const to = new Date(`${q.dateTo}T00:00:00.000Z`);
+  if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) ||
+      from.toISOString().slice(0, 10) !== q.dateFrom || to.toISOString().slice(0, 10) !== q.dateTo ||
+      to < from || to.getTime() - from.getTime() > 365 * 86_400_000) {
+    throw new HttpError(400, "Choose a valid range of up to 366 calendar days.");
+  }
+  await requireAnyRole(uid(req), q.organizationId, BILLING_ROLES);
+  const [account] = await db.select({ id: bankAccounts.id }).from(bankAccounts).where(and(
+    eq(bankAccounts.id, q.bankAccountId), eq(bankAccounts.labOrganizationId, q.organizationId),
+  ));
+  if (!account) throw new HttpError(404, "Bank account not found in this lab.");
+  ok(res, await registerAnalytics(q));
+}));
+
 const txnListQuery = z.object({
   organizationId: z.string().min(1),
   bankAccountId: z.string().optional(),
@@ -493,9 +594,18 @@ const txnListQuery = z.object({
 router.get(
   "/transactions",
   asyncHandler(async (req, res) => {
+    const pagination = parsePagination(req.query);
     const q = txnListQuery.parse(req.query);
     await requireAnyRole(uid(req), q.organizationId, BILLING_ROLES);
-    const conds: any[] = [eq(bankTransactions.labOrganizationId, q.organizationId)];
+    const conds: any[] = [
+      eq(bankTransactions.labOrganizationId, q.organizationId),
+      ne(bankTransactions.status, "deposited_child"),
+      sql`NOT EXISTS (
+        SELECT 1 FROM bank_deposit_batch_members dbm
+        WHERE dbm.child_bank_transaction_id = ${bankTransactions.id}
+          AND dbm.released_at IS NULL
+      )`,
+    ];
     if (q.bankAccountId) conds.push(eq(bankTransactions.bankAccountId, q.bankAccountId));
     if (q.status === "posted" || q.status === "projected" || q.status === "void") {
       conds.push(eq(bankTransactions.status, q.status));
@@ -527,7 +637,11 @@ router.get(
       .select()
       .from(bankTransactions)
       .where(and(...conds))
-      .orderBy(asc(bankTransactions.txnDate), asc(bankTransactions.createdAt));
+      .orderBy(
+        asc(bankTransactions.txnDate),
+        asc(bankTransactions.createdAt),
+        asc(bankTransactions.id),
+      );
 
     const txnIds = rows.map((r: any) => r.id);
     const linkRows = txnIds.length
@@ -536,6 +650,8 @@ router.get(
             bankTransactionId: bankTransactionInvoices.bankTransactionId,
             invoiceId: bankTransactionInvoices.invoiceId,
             invoiceNumber: invoices.invoiceNumber,
+            doctorIdentity: invoices.doctorIdentity,
+            displayMetadataJson: invoices.displayMetadataJson,
           })
           .from(bankTransactionInvoices)
           .innerJoin(
@@ -546,12 +662,147 @@ router.get(
       : [];
     const linksByTxn = new Map<
       string,
-      Array<{ invoiceId: string; invoiceNumber: string }>
+      Array<{
+        invoiceId: string;
+        invoiceNumber: string;
+        doctorIdentity: string | null;
+        doctorDisplayName: string | null;
+      }>
     >();
     for (const l of linkRows) {
       const arr = linksByTxn.get(l.bankTransactionId) ?? [];
-      arr.push({ invoiceId: l.invoiceId, invoiceNumber: l.invoiceNumber });
+      arr.push({
+        invoiceId: l.invoiceId,
+        invoiceNumber: l.invoiceNumber,
+        doctorIdentity: l.doctorIdentity,
+        doctorDisplayName: invoiceDoctorDisplayName(l),
+      });
       linksByTxn.set(l.bankTransactionId, arr);
+    }
+
+    // Expand aggregate deposits without making their non-posting children
+    // visible register rows.  All detail amounts are retained as decimal
+    // strings; grouping uses integer cents to avoid floating point drift.
+    const aggregateRows = rows.filter((r: any) => r.source === "deposit_batch");
+    const aggregateIds = aggregateRows.map((r: any) => r.id);
+    const members = aggregateIds.length
+      ? await db.select().from(bankDepositBatchMembers)
+          .where(inArray(bankDepositBatchMembers.aggregateBankTransactionId, aggregateIds))
+      : [];
+    const childIds = members.map((m) => m.childBankTransactionId);
+    const children = childIds.length
+      ? await db.select().from(bankTransactions).where(and(
+          inArray(bankTransactions.id, childIds),
+          eq(bankTransactions.labOrganizationId, q.organizationId),
+        ))
+      : [];
+    const childById = new Map(children.map((c: any) => [c.id, c]));
+    const childSessions = childIds.length
+      ? await db.select().from(statementPaymentSessions)
+          .where(and(
+            inArray(statementPaymentSessions.bankTransactionId, childIds),
+            eq(statementPaymentSessions.labOrganizationId, q.organizationId),
+          ))
+      : [];
+    const sessionByTxn = new Map(childSessions.map((s: any) => [s.bankTransactionId, s]));
+    const childLinks = childIds.length
+      ? await db.select().from(bankTransactionInvoices)
+          .where(inArray(bankTransactionInvoices.bankTransactionId, childIds))
+      : [];
+    const childInvoiceIds = [...new Set(childLinks.map((l: any) => l.invoiceId))];
+    const childInvoiceRows = childInvoiceIds.length
+      ? await db.select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          providerOrganizationId: invoices.providerOrganizationId,
+          doctorIdentity: invoices.doctorIdentity,
+          displayMetadataJson: invoices.displayMetadataJson,
+        }).from(invoices).where(and(
+          inArray(invoices.id, childInvoiceIds),
+          eq(invoices.labOrganizationId, q.organizationId),
+        ))
+      : [];
+    const invoiceById = new Map(childInvoiceRows.map((i) => [i.id, i]));
+    const providerIds = [...new Set([
+      ...childSessions.map((s: any) => s.providerOrganizationId),
+      ...childInvoiceRows.map((i) => i.providerOrganizationId),
+    ].filter(Boolean))] as string[];
+    const providerRows = providerIds.length
+      ? await db.select({ id: organizations.id, name: organizations.name, displayName: organizations.displayName })
+          .from(organizations).where(and(
+            inArray(organizations.id, providerIds),
+            eq(organizations.parentLabOrganizationId, q.organizationId),
+          ))
+      : [];
+    const providerById = new Map(providerRows.map((p: any) => [p.id, p]));
+    const childLinksByTxn = new Map<string, any[]>();
+    for (const link of childLinks) {
+      const list = childLinksByTxn.get(link.bankTransactionId) ?? [];
+      const invoice = invoiceById.get(link.invoiceId);
+      list.push({
+        invoiceId: link.invoiceId,
+        invoiceNumber: null,
+        doctorIdentity: invoice?.doctorIdentity ?? null,
+        doctorDisplayName: invoice ? invoiceDoctorDisplayName(invoice) : null,
+      });
+      childLinksByTxn.set(link.bankTransactionId, list);
+    }
+    if (childLinks.length) {
+      const invs = await db.select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber })
+        .from(invoices).where(and(
+          inArray(invoices.id, [...new Set(childLinks.map((l: any) => l.invoiceId))]),
+          eq(invoices.labOrganizationId, q.organizationId),
+        ));
+      const numbers = new Map(invs.map((i) => [i.id, i.invoiceNumber]));
+      for (const links of childLinksByTxn.values()) for (const link of links) link.invoiceNumber = numbers.get(link.invoiceId) ?? null;
+    }
+    const splitGroupsByAggregate = new Map<string, any[]>();
+    const aggregateInvoiceLinks = new Map<string, any[]>();
+    for (const member of members) {
+      const child: any = childById.get(member.childBankTransactionId);
+      if (!child) continue;
+      const session: any = sessionByTxn.get(child.id);
+      const linkedProviders = [...new Set((childLinksByTxn.get(child.id) ?? [])
+        .map((link: any) => invoiceById.get(link.invoiceId)?.providerOrganizationId)
+        .filter(Boolean))] as string[];
+      const invoiceProviderId = !session && linkedProviders.length === 1
+        ? linkedProviders[0]
+        : null;
+      const providerOrganizationId = session?.providerOrganizationId ?? invoiceProviderId;
+      const provider: any = providerOrganizationId ? providerById.get(providerOrganizationId) : null;
+      const providerName = provider?.displayName || provider?.name || "Unassigned";
+      const detail = {
+        childTransactionId: child.id,
+        amount: child.netAmount,
+        payee: child.payee,
+        memo: child.memo,
+        checkNumber: session?.checkNumber ?? child.checkNumber,
+        paymentMethod: session?.paymentMethod ?? null,
+        receiptNumber: session?.receiptNumber ?? null,
+        statementId: session?.statementId ?? null,
+        paymentSessionId: session?.id ?? null,
+        providerOrganizationId,
+        providerName,
+        ...doctorAttributionFromLinks(childLinksByTxn.get(child.id) ?? []),
+        invoices: childLinksByTxn.get(child.id) ?? [],
+      };
+      const groups = splitGroupsByAggregate.get(member.aggregateBankTransactionId) ?? [];
+      const aggregateLinks = aggregateInvoiceLinks.get(member.aggregateBankTransactionId) ?? [];
+      for (const invoiceLink of childLinksByTxn.get(child.id) ?? []) {
+        if (!aggregateLinks.some((link) => link.invoiceId === invoiceLink.invoiceId)) {
+          aggregateLinks.push(invoiceLink);
+        }
+      }
+      aggregateInvoiceLinks.set(member.aggregateBankTransactionId, aggregateLinks);
+      let group = groups.find((g) => g.providerOrganizationId === providerOrganizationId);
+      if (!group) {
+        group = { providerOrganizationId, providerName, subtotal: "0.00", payments: [] };
+        groups.push(group);
+      }
+      group.payments.push(detail);
+      const cents = Math.round(Number(group.subtotal) * 100) + Math.round(Number(child.netAmount || 0) * 100);
+      group.subtotal = (cents / 100).toFixed(2);
+      splitGroupsByAggregate.set(member.aggregateBankTransactionId, groups);
     }
 
     const vendorIds = Array.from(
@@ -589,7 +840,9 @@ router.get(
     const running = new Map<string, number>();
     const enriched = rows.map((r: any) => {
       const cur = running.get(r.bankAccountId) ?? 0;
-      const next = r.status === "void" ? cur : cur + Number(r.netAmount || 0);
+      const next = r.status === "void"
+        ? cur
+        : cur + Math.round(Number(r.netAmount || 0) * 100);
       running.set(r.bankAccountId, next);
       const liveVendorName = r.vendorId
         ? vendorNameById.get(r.vendorId)
@@ -602,17 +855,172 @@ router.get(
           ? `${depositor.firstName} ${depositor.lastName}`
           : depositor.username
         : null;
+      const splitGroups = splitGroupsByAggregate.get(r.id);
       return {
         ...r,
         payee: liveVendorName ?? r.payee,
-        runningBalance: next.toFixed(2),
-        invoices: linksByTxn.get(r.id) ?? [],
+        runningBalance: (next / 100).toFixed(2),
+        invoices: aggregateInvoiceLinks.get(r.id) ?? linksByTxn.get(r.id) ?? [],
+        ...doctorAttributionFromLinks(
+          aggregateInvoiceLinks.get(r.id) ?? linksByTxn.get(r.id) ?? [],
+        ),
         depositedByName,
+        ...(r.source === "deposit_batch"
+          ? { isAggregateDeposit: true, splitGroups: splitGroups ?? [] }
+          : {}),
       };
     });
     enriched.reverse();
-    return ok(res, enriched);
+    return ok(
+      res,
+      pagination.active
+        ? pageRowsKeyset(enriched, pagination, bankTransactionKeyset)
+        : enriched,
+    );
   })
+);
+
+// Read-only audit history for Make Deposits batches. This deliberately has its
+// own query and endpoint: released child payments must remain visible here
+// without changing register balance, filtering, or export semantics.
+router.get(
+  "/deposit-batches",
+  asyncHandler(async (req, res) => {
+    const pagination = parsePagination(req.query);
+    const { organizationId } = orgIdQuery.parse(req.query);
+    await requireAnyRole(uid(req), organizationId, ADMIN_ROLES);
+
+    const parentWhere = and(
+      eq(bankTransactions.labOrganizationId, organizationId),
+      eq(bankTransactions.source, "deposit_batch"),
+    );
+    const [{ count: parentCount }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(bankTransactions)
+      .where(parentWhere);
+    const parentQuery = db
+      .select()
+      .from(bankTransactions)
+      .orderBy(desc(bankTransactions.txnDate), desc(bankTransactions.createdAt), desc(bankTransactions.id));
+    const parents = await (pagination.active
+      ? parentQuery.where(parentWhere).limit(pagination.limit).offset(pagination.offset)
+      : parentQuery.where(parentWhere));
+    const parentIds = parents.map((row) => row.id);
+    const members = parentIds.length
+      ? await db.select().from(bankDepositBatchMembers)
+        .where(inArray(bankDepositBatchMembers.aggregateBankTransactionId, parentIds))
+      : [];
+    const childIds = members.map((member) => member.childBankTransactionId);
+    const children = childIds.length
+      ? await db.select().from(bankTransactions).where(and(
+        inArray(bankTransactions.id, childIds),
+        eq(bankTransactions.labOrganizationId, organizationId),
+      ))
+      : [];
+    const childById = new Map(children.map((child) => [child.id, child]));
+    const links = childIds.length
+      ? await db.select({
+        bankTransactionId: bankTransactionInvoices.bankTransactionId,
+        invoiceId: bankTransactionInvoices.invoiceId,
+        invoiceNumber: invoices.invoiceNumber,
+      }).from(bankTransactionInvoices)
+        .innerJoin(invoices, eq(invoices.id, bankTransactionInvoices.invoiceId))
+        .where(and(
+          inArray(bankTransactionInvoices.bankTransactionId, childIds),
+          eq(invoices.labOrganizationId, organizationId),
+        ))
+      : [];
+    const linksByChild = new Map<string, Array<{ invoiceId: string; invoiceNumber: string }>>();
+    for (const link of links) {
+      const list = linksByChild.get(link.bankTransactionId) ?? [];
+      list.push({ invoiceId: link.invoiceId, invoiceNumber: link.invoiceNumber });
+      linksByChild.set(link.bankTransactionId, list);
+    }
+    const sessions = childIds.length
+      ? await db.select().from(statementPaymentSessions)
+        .where(and(
+          inArray(statementPaymentSessions.bankTransactionId, childIds),
+          eq(statementPaymentSessions.labOrganizationId, organizationId),
+        ))
+      : [];
+    const sessionByChild = new Map(sessions.map((session) => [session.bankTransactionId, session]));
+    const membersByParent = new Map<string, typeof members>();
+    for (const member of members) {
+      const list = membersByParent.get(member.aggregateBankTransactionId) ?? [];
+      list.push(member);
+      membersByParent.set(member.aggregateBankTransactionId, list);
+    }
+    const rows = parents.map((parent) => {
+      const batchMembers = (membersByParent.get(parent.id) ?? [])
+        .map((member) => {
+          const child = childById.get(member.childBankTransactionId);
+          const session = child ? sessionByChild.get(child.id) : undefined;
+          const released = Boolean(member.releasedAt);
+          const auditedMember = member as typeof member & {
+            snapshot?: unknown;
+            releaseOutcome?: string | null;
+          };
+          const snapshot = (auditedMember.snapshot ?? {}) as {
+            amount?: string; payee?: string | null; memo?: string | null;
+            checkNumber?: string | null; paymentMethod?: string | null;
+            receiptNumber?: string | null; paymentSessionId?: string | null;
+            invoiceLinks?: Array<{ invoiceId: string; invoiceNumber: string }>;
+            legacyUnverified?: boolean;
+          };
+          const hasSnapshot = Object.prototype.hasOwnProperty.call(snapshot, "amount");
+          const legacyUnverified = snapshot.legacyUnverified === true;
+          const correctionState = !released ? "active" : auditedMember.releaseOutcome ?? "unknown";
+          return {
+            childTransactionId: member.childBankTransactionId,
+            amount: hasSnapshot ? (snapshot.amount as string) : child?.netAmount ?? "0.00",
+            payee: hasSnapshot ? snapshot.payee : child?.payee ?? null,
+            memo: hasSnapshot ? snapshot.memo : child?.memo ?? null,
+            checkNumber: hasSnapshot ? snapshot.checkNumber : session?.checkNumber ?? child?.checkNumber ?? null,
+            paymentMethod: hasSnapshot ? snapshot.paymentMethod : session?.paymentMethod ?? null,
+            receiptNumber: hasSnapshot ? snapshot.receiptNumber : session?.receiptNumber ?? null,
+            paymentSessionId: hasSnapshot ? snapshot.paymentSessionId : session?.id ?? null,
+            invoiceLinks: hasSnapshot ? snapshot.invoiceLinks ?? [] : linksByChild.get(member.childBankTransactionId) ?? [],
+            releasedAt: member.releasedAt,
+            childStatus: child?.status ?? null,
+            correctionState,
+            auditQuality: legacyUnverified ? "legacy_unverified" : "verified",
+          };
+        });
+      const releasedMembers = batchMembers.filter((member) => member.releasedAt);
+      return {
+        id: parent.id,
+        organizationId,
+        bankAccountId: parent.bankAccountId,
+        createdAt: parent.createdAt,
+        txnDate: parent.txnDate,
+        status: parent.status,
+        originalTotal: parent.netAmount,
+        releasedAt: releasedMembers.length
+          ? releasedMembers.reduce((latest, member) =>
+            !latest || (member.releasedAt && member.releasedAt > latest) ? member.releasedAt : latest,
+            null as Date | null)
+          : null,
+        correctionState: releasedMembers.length
+          ? batchMembers.some((member) => member.correctionState === "unknown")
+            ? "unknown"
+            : batchMembers.some((member) => member.correctionState === "corrected")
+              ? "corrected"
+              : "restored"
+          : "active",
+        auditQuality: batchMembers.some((member) => member.auditQuality === "legacy_unverified")
+          ? "legacy_unverified"
+          : "verified",
+        members: batchMembers,
+      };
+    });
+    return ok(res, pagination.active ? {
+      rows,
+      total: parentCount,
+      limit: pagination.limit,
+      offset: pagination.offset,
+      hasMore: pagination.offset + rows.length < parentCount,
+    } : rows);
+  }),
 );
 
 const txnSchema = z.object({
@@ -669,6 +1077,7 @@ async function syncTxnInvoiceLinks(
       throw new HttpError(400, "One or more invoices were not found.");
     }
     for (const inv of found) {
+      assertRecoveryReleased(inv);
       if (inv.labOrganizationId !== labOrganizationId) {
         throw new HttpError(
           400,
@@ -722,6 +1131,9 @@ router.post(
     const input = txnSchema.parse(req.body);
     const acct = await loadAccountOrThrow(uid(req), input.bankAccountId);
     await requireAnyRole(uid(req), acct.labOrganizationId, BILLING_ROLES);
+    if (acct.accountType === "undeposited_funds") {
+      throw new HttpError(400, "Undeposited Funds entries are created through Receive Payments, not manual register entries.");
+    }
     if (input.vendorId) {
       await assertVendorBelongsToOrg(input.vendorId, acct.labOrganizationId);
     }
@@ -729,6 +1141,15 @@ router.post(
     const credit = Number(input.deposit || 0);
     const net = credit - debit;
     const cleared = input.cleared ?? false;
+
+    // Uncategorized check/payment debits used to be auto-filed under the
+    // legacy "Accounts Payable" expense category. Accounts payable is now a
+    // real liability tracked by the bill subledger, so stamping a cash expense
+    // with that label misstates both the expense and the liability. New
+    // register entries stay uncategorized until someone categorizes them;
+    // existing rows keep whatever category they already carry.
+    const resolvedCategoryId: string | null = input.categoryId || null;
+
     const [row] = await db
       .insert(bankTransactions)
       .values({
@@ -740,7 +1161,7 @@ router.post(
         payee: input.payee || null,
         vendorId: input.vendorId || null,
         memo: input.memo || null,
-        categoryId: input.categoryId || null,
+        categoryId: resolvedCategoryId,
         debitAmount: debit.toFixed(2),
         creditAmount: credit.toFixed(2),
         netAmount: net.toFixed(2),
@@ -776,8 +1197,39 @@ router.patch(
     if (!txn) throw new HttpError(404, "Transaction not found.");
     await requireAnyRole(uid(req), txn.labOrganizationId, BILLING_ROLES);
     const input = txnSchema.partial().parse(req.body);
+    const aggregateMemberships = await db.query.bankDepositBatchMembers.findMany({
+      where: eq(bankDepositBatchMembers.aggregateBankTransactionId, txn.id),
+    });
+    const childMembership = await db.query.bankDepositBatchMembers.findFirst({
+      where: and(
+        eq(bankDepositBatchMembers.childBankTransactionId, txn.id),
+        isNull(bankDepositBatchMembers.releasedAt),
+      ),
+    });
+    if (txn.source === "deposit_batch") {
+      const forbidden = ["bankAccountId", "txnDate", "type", "payment", "deposit",
+        "categoryId", "status", "payee", "memo", "checkNumber", "vendorId"];
+      if (forbidden.some((key) => Object.prototype.hasOwnProperty.call(req.body, key))) {
+        throw new HttpError(409, "Aggregate deposit accounting fields cannot be edited.");
+      }
+    }
+    if (childMembership || txn.status === "deposited_child") {
+      throw new HttpError(409, "Deposited payment children cannot be edited independently.");
+    }
     const isClearingStatusOnly =
       Object.keys(req.body as object).every((k) => k === "cleared" || k === "reconciled");
+    if (txn.source === "customer_payment" && !isClearingStatusOnly) {
+      throw new HttpError(
+        409,
+        "Statement payment transactions must be changed through their payment session.",
+      );
+    }
+    // A bill payment's bank entry is owned by its vendor payment. Editing it
+    // here would desynchronize the bill allocations from the cash that settled
+    // them; clearing/reconciling it is still allowed.
+    if (!isClearingStatusOnly) {
+      assertNotBillPaymentTransaction(txn, "edit");
+    }
     if (txn.reconciled && !isClearingStatusOnly) {
       throw new HttpError(400, "Reconciled entries cannot be edited.");
     }
@@ -811,11 +1263,20 @@ router.patch(
         updates.clearedAt = txn.clearedAt ?? new Date();
       }
     }
-    const [row] = await db
-      .update(bankTransactions)
-      .set(updates)
-      .where(eq(bankTransactions.id, txn.id))
-      .returning();
+    const row = await db.transaction(async (tx) => {
+      if (txn.source === "deposit_batch") {
+        await lockDepositBatchMutations(tx, txn.labOrganizationId);
+      }
+      const [locked] = await tx.select().from(bankTransactions)
+        .where(eq(bankTransactions.id, txn.id)).for("update");
+      if (!locked) throw new HttpError(404, "Transaction not found.");
+      if (locked.source === "customer_payment") {
+        await assertNoActiveCardReversalForTransactions(tx, [locked.id]);
+      }
+      const [updated] = await tx.update(bankTransactions).set(updates)
+        .where(eq(bankTransactions.id, locked.id)).returning();
+      return updated;
+    });
     await syncTxnInvoiceLinks(
       row.id,
       row.labOrganizationId,
@@ -841,6 +1302,14 @@ router.post(
     if (!txn) throw new HttpError(404, "Transaction not found.");
     await requireAnyRole(uid(req), txn.labOrganizationId, BILLING_ROLES);
     const cleared = z.object({ cleared: z.boolean() }).parse(req.body).cleared;
+    if (await db.query.bankDepositBatchMembers.findFirst({
+      where: and(
+        eq(bankDepositBatchMembers.childBankTransactionId, txn.id),
+        isNull(bankDepositBatchMembers.releasedAt),
+      ),
+    })) {
+      throw new HttpError(409, "Deposited payment children cannot be changed independently.");
+    }
     const [row] = await db
       .update(bankTransactions)
       .set({ cleared, clearedAt: cleared ? new Date() : null, updatedAt: new Date() })
@@ -859,6 +1328,22 @@ router.post(
     if (!txn) throw new HttpError(404, "Transaction not found.");
     await requireAnyRole(uid(req), txn.labOrganizationId, BILLING_ROLES);
     if (txn.reconciled) throw new HttpError(400, "Reconciled entries cannot be voided.");
+    if (txn.source === "customer_payment") {
+      throw new HttpError(
+        409,
+        "Statement payment transactions must be cancelled through their payment session.",
+      );
+    }
+    assertNotBillPaymentTransaction(txn, "delete");
+    if (txn.source === "deposit_batch") {
+      await db.transaction(async (tx) => {
+        await releaseDepositBatch(tx, txn.labOrganizationId, txn.id);
+      });
+      return ok(res, { ...txn, status: "void" });
+    }
+    if (txn.status === "deposited_child") {
+      throw new HttpError(409, "Deposited payment children cannot be voided independently.");
+    }
 
     if (txn.transferGroupId) {
       const sibling = await db.query.bankTransactions.findFirst({
@@ -906,6 +1391,16 @@ router.delete(
     await requireAnyRole(uid(req), txn.labOrganizationId, ADMIN_ROLES);
     if (txn.reconciled)
       throw new HttpError(400, "Reconciled entries cannot be deleted.");
+    if (txn.source === "customer_payment") {
+      throw new HttpError(
+        409,
+        "Statement payment transactions must be cancelled through their payment session.",
+      );
+    }
+    assertNotBillPaymentTransaction(txn, "delete");
+    if (txn.source === "deposit_batch" || txn.status === "deposited_child") {
+      throw new HttpError(409, "Deposit batches and deposited payment children cannot be deleted.");
+    }
 
     if (txn.transferGroupId) {
       const sibling = await db.query.bankTransactions.findFirst({
@@ -1342,16 +1837,15 @@ router.post(
     }
 
     const recon = await db.transaction(async (tx) => {
+      await lockDepositBatchMutations(tx, acct.labOrganizationId);
       const verify = input.transactionIds.length
-        ? await tx.query.bankTransactions.findMany({
-            where: and(
+        ? await tx.select().from(bankTransactions).where(and(
               eq(bankTransactions.bankAccountId, acct.id),
               inArray(bankTransactions.id, input.transactionIds),
               eq(bankTransactions.reconciled, false),
               eq(bankTransactions.status, "posted"),
               lte(bankTransactions.txnDate, stmtDate)
-            ),
-          })
+            )).for("update")
         : [];
       if (verify.length !== input.transactionIds.length) {
         throw new HttpError(
@@ -1359,6 +1853,10 @@ router.post(
           "Selected entries changed during finalize; please reload and retry."
         );
       }
+      await assertNoActiveCardReversalForTransactions(
+        tx,
+        verify.filter((item: any) => item.source === "customer_payment").map((item: any) => item.id),
+      );
       const [r] = await tx
         .insert(reconciliations)
         .values({
@@ -1403,6 +1901,7 @@ router.post(
 router.get(
   "/reconciliation/history",
   asyncHandler(async (req, res) => {
+    const pagination = parsePagination(req.query);
     const q = z
       .object({
         bankAccountId: z.string().optional(),
@@ -1418,15 +1917,27 @@ router.get(
       conds.push(eq(reconciliations.labOrganizationId, q.organizationId));
     } else {
       const ids = await activeBillingLabIds(uid(req));
-      if (!ids.length) return ok(res, []);
+      if (!ids.length) {
+         return ok(res, pagination.active ? { ...pageRows([], pagination), nextCursor: null } : []);
+       }
       conds.push(inArray(reconciliations.labOrganizationId, ids));
     }
     const rows = await db
       .select()
       .from(reconciliations)
       .where(and(...conds))
-      .orderBy(desc(reconciliations.statementDate));
-    return ok(res, rows);
+      .orderBy(desc(reconciliations.statementDate), desc(reconciliations.id));
+    return ok(
+      res,
+      pagination.active
+        ? pageRowsKeyset(rows, pagination, {
+            sortValues: (row) => [sortTime(row.statementDate)],
+            id: (row) => String(row.id),
+            directions: ["desc"],
+            idDirection: "desc",
+          })
+        : rows,
+    );
   })
 );
 
@@ -1993,6 +2504,7 @@ router.get(
       eq(bankTransactions.labOrganizationId, q.organizationId),
       gte(bankTransactions.txnDate, from),
       lte(bankTransactions.txnDate, to),
+      ne(bankTransactions.status, "deposited_child"),
     ];
     if (q.bankAccountId) conds.push(eq(bankTransactions.bankAccountId, q.bankAccountId));
     const rows = await db
@@ -2070,6 +2582,7 @@ router.get(
     const startConds: any[] = [
       eq(bankTransactions.labOrganizationId, q.organizationId),
       lte(bankTransactions.txnDate, from),
+      ne(bankTransactions.status, "deposited_child"),
     ];
     if (q.bankAccountId) startConds.push(eq(bankTransactions.bankAccountId, q.bankAccountId));
     const startRows = await db
@@ -2135,7 +2648,16 @@ router.get(
           .transform((v) => v === true || v === "true"),
       })
       .parse(req.query);
-    await requireAnyRole(uid(req), q.organizationId, BILLING_ROLES);
+    // view_financial_reports capability: billing-role members pass via their
+    // existing role; non-billing members may also view reports with an explicit
+    // capability grant (owners and admins always pass via hasCapability).
+    const _plMembership = await requireMembership(uid(req), q.organizationId);
+    if (!BILLING_ROLES.includes(_plMembership.role as MembershipRole)) {
+      const _allowed = await hasCapability(uid(req), q.organizationId, "view_financial_reports");
+      if (!_allowed) {
+        throw new HttpError(403, "You do not have permission to view financial reports.");
+      }
+    }
     const from = new Date(q.dateFrom);
     const to = new Date(q.dateTo);
     if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
@@ -2172,6 +2694,7 @@ router.get(
 );
 
 interface PnlBlock {
+  basis: "accrual";
   from: string;
   to: string;
   revenue: string;
@@ -2192,24 +2715,33 @@ async function computePnl(
   to: Date,
   catById: Map<string, { id: string; name: string; kind: string }>,
 ): Promise<PnlBlock> {
-  const issued = sql<Date>`COALESCE(${invoices.issuedAt}, ${invoices.createdAt})`;
-  const invRows = (await db
-    .select({ total: invoices.total, status: invoices.status })
-    .from(invoices)
-    .where(
-      and(
-        eq(invoices.labOrganizationId, organizationId),
-        sql`${invoices.deletedAt} IS NULL`,
-        gte(issued, from),
-        lte(issued, to),
-      ),
-    )) as Array<{ total: string; status: string }>;
+  // Revenue is recognized when an invoice is issued, and the period figure is
+  // the difference between two dated reconstructions: what the books had
+  // recognized by the period end, less what they had recognized the instant
+  // before it began. Issuing recognizes the invoice on its issue date;
+  // raising or voiding it later lands in the period of that change, so
+  // adjacent periods add up to the combined range.
+  const priorEnd = new Date(from.getTime() - 1);
+  const [versionsAtEnd, versionsBefore] = await Promise.all([
+    invoiceVersionsAsOf(organizationId, to),
+    priorEnd.getTime() > 0
+      ? invoiceVersionsAsOf(organizationId, priorEnd)
+      : Promise.resolve(new Map<string, InvoiceVersion>()),
+  ]);
   let revenue = 0;
   let invoiceCount = 0;
-  for (const r of invRows) {
-    if (r.status === "void") continue;
-    revenue += Number(r.total || 0);
-    invoiceCount += 1;
+  for (const [invoiceId, version] of versionsAtEnd) {
+    const nowRecognized = invoiceRecognizedAsOf(version, to);
+    const before = versionsBefore.get(invoiceId);
+    const wasRecognized = before ? invoiceRecognizedAsOf(before, priorEnd) : false;
+    const nowCents = nowRecognized ? version.totalCents : 0;
+    const beforeCents = wasRecognized && before ? before.totalCents : 0;
+    revenue += (nowCents - beforeCents) / 100;
+    // The count reports documents issued during this period, so reversing or
+    // revising an earlier invoice moves money without inflating the count.
+    if (nowRecognized && !wasRecognized && version.issuedAt && version.issuedAt >= from) {
+      invoiceCount += 1;
+    }
   }
 
   const txnRows = (await db
@@ -2217,6 +2749,7 @@ async function computePnl(
       categoryId: bankTransactions.categoryId,
       debit: bankTransactions.debitAmount,
       transferGroupId: bankTransactions.transferGroupId,
+      source: bankTransactions.source,
     })
     .from(bankTransactions)
     .where(
@@ -2231,14 +2764,27 @@ async function computePnl(
     categoryId: string | null;
     debit: string;
     transferGroupId: string | null;
+    source: string | null;
   }>;
 
   const cogsByName = new Map<string, number>();
   const opexByName = new Map<string, number>();
   let cogsTotal = 0;
   let opexTotal = 0;
+  const addExpense = (name: string, amount: number, isCogs: boolean) => {
+    if (isCogs) {
+      cogsByName.set(name, (cogsByName.get(name) ?? 0) + amount);
+      cogsTotal += amount;
+    } else {
+      opexByName.set(name, (opexByName.get(name) ?? 0) + amount);
+      opexTotal += amount;
+    }
+  };
   for (const t of txnRows) {
     if (t.transferGroupId) continue;
+    // Cash that settled a vendor bill is not an expense: entering the bill
+    // already recognized one. Counting both would double the cost.
+    if (t.source === BILL_PAYMENT_TXN_SOURCE) continue;
     const debit = Number(t.debit || 0);
     if (debit <= 0) continue;
     const cat = t.categoryId ? catById.get(t.categoryId) : null;
@@ -2247,14 +2793,16 @@ async function computePnl(
     // distorting the P&L.
     if (cat && cat.kind !== "expense") continue;
     const name = cat?.name ?? "Uncategorized";
-    const isCogs = cat ? COGS_PATTERN.test(name) : false;
-    if (isCogs) {
-      cogsByName.set(name, (cogsByName.get(name) ?? 0) + debit);
-      cogsTotal += debit;
-    } else {
-      opexByName.set(name, (opexByName.get(name) ?? 0) + debit);
-      opexTotal += debit;
-    }
+    addExpense(name, debit, cat ? COGS_PATTERN.test(name) : false);
+  }
+
+  // Vendor bills recognize their expense on the bill date, whether or not
+  // they have been paid yet. This is the accrual half of the basis.
+  const billed = await billedExpensesInPeriod(organizationId, from, to);
+  for (const [categoryId, cents] of billed.byCategoryId) {
+    const cat = categoryId ? catById.get(categoryId) : null;
+    const name = cat?.name ?? "Uncategorized";
+    addExpense(name, cents / 100, cat ? COGS_PATTERN.test(name) : false);
   }
 
   const cogs = Array.from(cogsByName.entries())
@@ -2268,6 +2816,10 @@ async function computePnl(
   const netIncome = grossProfit - opexTotal;
 
   return {
+    // Revenue is recognized when an invoice is issued and expense when a bill
+    // is entered; cash movement afterwards is not recognized again. Immediate
+    // register expenses without a bill are recognized on their own date.
+    basis: "accrual" as const,
     from: from.toISOString(),
     to: to.toISOString(),
     revenue: revenue.toFixed(2),
@@ -2296,7 +2848,16 @@ router.get(
         timeZone: z.string().min(1).max(64).optional(),
       })
       .parse(req.query);
-    await requireAnyRole(uid(req), q.organizationId, BILLING_ROLES);
+    // export_data capability: billing-role members pass via their existing role;
+    // non-billing members may also export balance-sheet data with an explicit
+    // capability grant (owners and admins always pass via hasCapability).
+    const _bsMembership = await requireMembership(uid(req), q.organizationId);
+    if (!BILLING_ROLES.includes(_bsMembership.role as MembershipRole)) {
+      const _allowed = await hasCapability(uid(req), q.organizationId, "export_data");
+      if (!_allowed) {
+        throw new HttpError(403, "You do not have permission to export financial data.");
+      }
+    }
     const ymdMatch = /^(\d{4})-(\d{2})-(\d{2})/.exec(q.asOfDate);
     if (!ymdMatch) throw new HttpError(400, "Invalid asOfDate.");
     const [, ys, ms, ds] = ymdMatch;
@@ -2324,13 +2885,20 @@ router.get(
       ? ((await db
           .select({
             bankAccountId: bankTransactions.bankAccountId,
-            sum: sql<string>`COALESCE(SUM(CASE WHEN ${bankTransactions.status} <> 'void' THEN ${bankTransactions.netAmount} ELSE 0 END), 0)::text`,
+            // A bill-payment withdrawal voided after this date was still live
+            // then, so it counts here even though it is void today.
+            sum: sql<string>`COALESCE(SUM(CASE WHEN ${bankTransactions.status} = 'posted' OR (${bankTransactions.source} = ${BILL_PAYMENT_TXN_SOURCE} AND ${bankTransactions.deletedAt} > ${asOfEnd}) THEN ${bankTransactions.netAmount} ELSE 0 END), 0)::text`,
           })
           .from(bankTransactions)
           .where(
             and(
               eq(bankTransactions.labOrganizationId, q.organizationId),
-              sql`${bankTransactions.deletedAt} IS NULL`,
+              // Voiding a bill payment soft-deletes its withdrawal on the void
+              // date. A report dated before that void must still see the cash
+              // leave, because the AP allocation history treats it as live
+              // then. Other deletions stay hidden: they are corrections of
+              // entries that should never have existed.
+              sql`(${bankTransactions.deletedAt} IS NULL OR (${bankTransactions.source} = ${BILL_PAYMENT_TXN_SOURCE} AND ${bankTransactions.deletedAt} > ${asOfEnd}))`,
               lte(bankTransactions.txnDate, asOfEnd),
               inArray(
                 bankTransactions.bankAccountId,
@@ -2365,33 +2933,25 @@ router.get(
     );
 
     const issued = sql<Date>`COALESCE(${invoices.issuedAt}, ${invoices.createdAt})`;
-    const arRows = (await db
-      .select({
-        balanceDue: invoices.balanceDue,
-        total: invoices.total,
-        status: invoices.status,
-        frozen: invoices.frozen,
-      })
-      .from(invoices)
-      .where(
-        and(
-          eq(invoices.labOrganizationId, q.organizationId),
-          sql`${invoices.deletedAt} IS NULL`,
-          lte(issued, asOfEnd),
-        ),
-      )) as Array<{ balanceDue: string; total: string; status: string; frozen: boolean }>;
-    let accountsReceivable = 0;
-    let customerCredits = 0;
-    let cumulativeRevenue = 0;
-    for (const r of arRows) {
-      if (r.status === "void") continue;
-      cumulativeRevenue += Number(r.total || 0);
-      if (r.status === "paid") continue;
-      if (r.frozen) continue;
-      const due = Number(r.balanceDue || 0);
-      if (due >= 0) accountsReceivable += due;
-      else customerCredits += -due;
-    }
+    // Cumulative revenue replays the same dated invoice snapshots the P&L
+    // uses, so retained earnings ties back to the periods that produced it:
+    // drafts have recognized nothing, an invoice voided after this date was
+    // still revenue as of it, and a later edit has not happened yet.
+    const cumulativeRevenue =
+      (await invoicedRevenueThrough(q.organizationId, asOfEnd)) / 100;
+    // Receivable at the as-of date comes from dated payments and dated credit
+    // applications, not from today's remaining balance on each invoice.
+    const datedAr = await arBalanceAsOf(q.organizationId, asOfEnd);
+    const accountsReceivable = datedAr.receivableCents / 100;
+    // Overpayment sits in two places: on an invoice that was paid past its
+    // total, and in the customer-credit subledger when a session routed the
+    // excess there. Both are money owed back to the customer.
+    const unappliedCustomerCredit = await unappliedCustomerCreditsAsOf(
+      q.organizationId,
+      asOfEnd,
+    );
+    const customerCredits =
+      datedAr.invoiceOverpaymentCents / 100 + unappliedCustomerCredit / 100;
 
     const cats = (await db.query.transactionCategories.findMany({
       where: eq(transactionCategories.labOrganizationId, q.organizationId),
@@ -2402,6 +2962,7 @@ router.get(
         categoryId: bankTransactions.categoryId,
         debit: bankTransactions.debitAmount,
         transferGroupId: bankTransactions.transferGroupId,
+        source: bankTransactions.source,
       })
       .from(bankTransactions)
       .where(
@@ -2415,41 +2976,70 @@ router.get(
       categoryId: string | null;
       debit: string;
       transferGroupId: string | null;
+      source: string | null;
     }>;
     let cumulativeExpenses = 0;
     for (const t of expenseRows) {
       if (t.transferGroupId) continue;
+      // Settling a vendor bill moves cash; the expense was recognized when
+      // the bill was entered and is added below from the bill records.
+      if (t.source === BILL_PAYMENT_TXN_SOURCE) continue;
       const debit = Number(t.debit || 0);
       if (debit <= 0) continue;
       const kind = t.categoryId ? catKindById.get(t.categoryId) : null;
       if (kind && kind !== "expense") continue;
       cumulativeExpenses += debit;
     }
+    const billedToDate = await billedExpensesInPeriod(
+      q.organizationId,
+      new Date(0),
+      asOfEnd,
+    );
+    cumulativeExpenses += billedToDate.totalCents / 100;
+
+    // Accounts payable is a liability: what the lab owes on entered bills that
+    // were not yet settled as of this date. It is not derived from the legacy
+    // "Accounts Payable" expense category.
+    const datedAp = await apBalanceAsOf(q.organizationId, asOfEnd);
+    const accountsPayable = datedAp.balanceCents / 100;
+    // Unapplied vendor credit is value the lab can still spend with that
+    // vendor, so it is an asset until it settles a bill. It is never netted
+    // into the payable, which would understate both sides.
+    const vendorCredits = datedAp.unappliedVendorCreditCents / 100;
 
     const retainedEarnings = cumulativeRevenue - cumulativeExpenses;
-    const assetsTotal = cashTotal + accountsReceivable;
+    const assetsTotal = cashTotal + accountsReceivable + vendorCredits;
     const liabilityItems: Array<{ name: string; amount: string }> = [];
+    if (accountsPayable > 0) {
+      liabilityItems.push({
+        name: "Accounts payable",
+        amount: accountsPayable.toFixed(2),
+      });
+    }
     if (customerCredits > 0) {
       liabilityItems.push({
         name: "Customer credits",
         amount: customerCredits.toFixed(2),
       });
     }
-    const liabilitiesTotal = customerCredits;
+    const liabilitiesTotal = customerCredits + accountsPayable;
     const ownerContributions =
       assetsTotal - liabilitiesTotal - retainedEarnings;
     const equityTotal = retainedEarnings + ownerContributions;
 
     return ok(res, {
+      basis: "accrual",
       asOf: asOfEnd.toISOString(),
       assets: {
         cashAccounts,
         cashTotal: cashTotal.toFixed(2),
         accountsReceivable: accountsReceivable.toFixed(2),
+        vendorCredits: vendorCredits.toFixed(2),
         total: assetsTotal.toFixed(2),
       },
       liabilities: {
         items: liabilityItems,
+        accountsPayable: accountsPayable.toFixed(2),
         customerCredits: customerCredits.toFixed(2),
         total: liabilitiesTotal.toFixed(2),
       },
@@ -2458,6 +3048,49 @@ router.get(
         ownerContributions: ownerContributions.toFixed(2),
         total: equityTotal.toFixed(2),
       },
+      // Owner contributions is still the residual that balances the sheet,
+      // and reversed payments can leave AR without dated evidence. Say so
+      // rather than presenting these figures as audited.
+      limitations: [
+        ...(datedAr.approximate
+          ? [
+              {
+                code: "reversed_payments_not_dated",
+                message:
+                  "Some invoices are settled today but have no dated payment record, " +
+                  "usually because a payment was reversed. Receivable figures for " +
+                  "past dates are approximate.",
+              },
+            ]
+          : []),
+        // Invoices settled before payment history existed, where no payment,
+        // deposit, or receipt dates the settlement. Their current balance is
+        // carried at every date; inventing an opening balance for them would
+        // put a number in the report that nothing recorded.
+        ...(datedAr.unreconstructedInvoiceCount
+          ? [
+              {
+                code: "legacy_settlements_not_dated",
+                message:
+                  `${datedAr.unreconstructedInvoiceCount} invoice` +
+                  `${datedAr.unreconstructedInvoiceCount === 1 ? "" : "s"} carrying ` +
+                  `${(datedAr.unreconstructedSettlementCents / 100).toFixed(2)} of settlement ` +
+                  "predate payment history, and nothing records when they were settled. " +
+                  "Their current balances are used at every date.",
+                affectedInvoiceCount: datedAr.unreconstructedInvoiceCount,
+                affectedAmount: (
+                  datedAr.unreconstructedSettlementCents / 100
+                ).toFixed(2),
+              },
+            ]
+          : []),
+        {
+          code: "owner_contributions_residual",
+          message:
+            "Owner contributions is a balancing residual, not a recorded equity " +
+            "account. LabTrax does not keep a general ledger for capital activity.",
+        },
+      ],
     });
   }),
 );
@@ -2744,9 +3377,13 @@ const vendorBodySchema = z.object({
   website: z.string().max(500).nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
   unitPrice: z.string().max(20).nullable().optional(),
+  priceKey: z.string().trim().min(1).max(120).nullable().optional(),
   itemCategory: z.enum(["Restorative", "Removable", "Appliance"]).nullable().optional(),
   vendorType: z.string().optional(),
   vendorTypeId: z.string().optional(),
+  // Default net terms used when entering a bill for this vendor. Null means
+  // "no standing terms" and the bill form asks for a due date instead.
+  paymentTermsDays: z.coerce.number().int().min(0).max(365).nullable().optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -2802,9 +3439,11 @@ router.post(
         website: input.website ?? null,
         notes: input.notes ?? null,
         unitPrice: normalizeUnitPrice(input.unitPrice),
+        priceKey: kind === "item" ? (input.priceKey ?? null) : null,
         itemCategory: kind === "item" ? (input.itemCategory ?? null) : null,
         vendorType: kind ?? "vendor",
         vendorTypeId: typeId,
+        paymentTermsDays: input.paymentTermsDays ?? null,
         isActive: input.isActive ?? true,
       })
       .returning();
@@ -2825,6 +3464,7 @@ const importRecordSchema = z.object({
   website: z.string().max(500).nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
   unitPrice: z.string().max(20).nullable().optional(),
+  priceKey: z.string().trim().min(1).max(120).nullable().optional(),
 });
 
 async function importVendorRecords(
@@ -2905,6 +3545,7 @@ async function importVendorRecords(
         website: r.website ?? null,
         notes: r.notes ?? null,
         unitPrice: builtinKind === "item" ? normalizePrice(r.unitPrice) : null,
+        priceKey: builtinKind === "item" ? (r.priceKey ?? null) : null,
         vendorType: builtinKind,
         vendorTypeId,
         isActive: true,
@@ -3077,6 +3718,9 @@ router.patch(
       }
       updates.vendorTypeId = resolved.id;
       updates.vendorType = resolved.builtinKind ?? "vendor";
+    }
+    if (input.paymentTermsDays !== undefined) {
+      updates.paymentTermsDays = input.paymentTermsDays;
     }
     if (input.isActive !== undefined) updates.isActive = input.isActive;
     if (input.unitPrice !== undefined) {
@@ -3274,15 +3918,22 @@ export async function runVendorLinkBackfill(
 
 // GET /finance/undeposited-funds?organizationId=&summary=1
 // With ?summary=1 returns { count, total } for sidebar badge use.
-// Without summary, returns transactions enriched with invoice info.
+// With ?selection=ids returns the identifiers and amounts of every match, so a
+// paged client can select the whole filtered set rather than the loaded batch.
+// Without either, returns transactions enriched with invoice info.
+const emptyUndepositedSelection = { selection: [] as Array<{ id: string; creditAmount: string }>, total: 0, amountTotal: "0.00" };
 router.get(
   "/undeposited-funds",
   asyncHandler(async (req, res) => {
+    const pagination = parsePagination(req.query);
     const orgId = req.query.organizationId as string | undefined;
+    const practiceId = typeof req.query.practiceId === "string" ? req.query.practiceId : undefined;
+    const doctorKey = typeof req.query.doctorKey === "string" ? req.query.doctorKey : undefined;
     if (!orgId) throw new HttpError(400, "organizationId is required.");
-    await requireAnyRole(uid(req), orgId, BILLING_ROLES);
+    await requireAnyRole(uid(req), orgId, ADMIN_ROLES);
 
     const isSummary = req.query.summary === "1";
+    const isSelection = !isSummary && req.query.selection === "ids";
 
     const ufAccount = await db.query.bankAccounts.findFirst({
       where: and(
@@ -3290,15 +3941,31 @@ router.get(
         eq(bankAccounts.accountType, "undeposited_funds")
       ),
     });
-    if (!ufAccount) return ok(res, isSummary ? { count: 0, total: 0 } : []);
+    if (!ufAccount) {
+      return ok(
+        res,
+        isSummary
+          ? { count: 0, total: 0 }
+          : isSelection
+            ? emptyUndepositedSelection
+            : pagination.active
+              ? { ...pageRowsKeyset([], pagination, bankTransactionKeyset), amountTotal: "0.00", staleCount: 0 }
+              : [],
+      );
+    }
 
     const txns = await db.query.bankTransactions.findMany({
       where: and(
         eq(bankTransactions.bankAccountId, ufAccount.id),
         eq(bankTransactions.status, "posted"),
+        ne(bankTransactions.status, "deposited_child"),
         isNull(bankTransactions.deletedAt)
       ),
-      orderBy: [desc(bankTransactions.txnDate)],
+      orderBy: [
+        desc(bankTransactions.txnDate),
+        desc(bankTransactions.createdAt),
+        desc(bankTransactions.id),
+      ],
     });
 
     if (isSummary) {
@@ -3310,9 +3977,34 @@ router.get(
       return ok(res, { count, total });
     }
 
-    if (!txns.length) return ok(res, []);
+    if (!txns.length) {
+      return ok(res, isSelection
+        ? emptyUndepositedSelection
+        : pagination.active
+          ? { ...pageRowsKeyset([], pagination, bankTransactionKeyset), amountTotal: "0.00", staleCount: 0 }
+          : []);
+    }
 
     const txnIds = txns.map((t: any) => t.id);
+    const paymentSessions = await db
+      .select()
+      .from(statementPaymentSessions)
+      .where(inArray(statementPaymentSessions.bankTransactionId, txnIds));
+    const paymentSessionByTxn = new Map(
+      paymentSessions
+        .filter((session) => !!session.bankTransactionId)
+        .map((session) => [session.bankTransactionId!, session]),
+    );
+    const paymentSessionIds = paymentSessions.map((session) => session.id);
+    const accountCreditRows = paymentSessionIds.length
+      ? await db
+          .select()
+          .from(customerCredits)
+          .where(inArray(customerCredits.paymentSessionId, paymentSessionIds))
+      : [];
+    const accountCreditBySession = new Map(
+      accountCreditRows.map((credit) => [credit.paymentSessionId, credit]),
+    );
     const links = await db
       .select()
       .from(bankTransactionInvoices)
@@ -3321,7 +4013,12 @@ router.get(
     let invMap = new Map<string, any>();
     if (invoiceIds.length) {
       const invRows = await db
-        .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber })
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          doctorIdentity: invoices.doctorIdentity,
+          displayMetadataJson: invoices.displayMetadataJson,
+        })
         .from(invoices)
         .where(inArray(invoices.id, invoiceIds));
       for (const r of invRows) invMap.set(r.id, r);
@@ -3333,6 +4030,30 @@ router.get(
       linksByTxn.set(l.bankTransactionId, list);
     }
 
+    // Build a map from invoiceId → latest statement periodEnd so each
+    // transaction can surface the statement date that covers its invoices.
+    const invoiceIdSet = new Set(invoiceIds);
+    const statementDateByInvoiceId = new Map<string, Date>();
+    if (invoiceIdSet.size > 0) {
+      const stmts = await db.query.practiceStatements.findMany({
+        where: eq(practiceStatements.labOrganizationId, orgId),
+        columns: { periodEnd: true, invoiceIdsJson: true },
+      });
+      for (const stmt of stmts) {
+        const ids = Array.isArray(stmt.invoiceIdsJson)
+          ? (stmt.invoiceIdsJson as unknown as string[])
+          : [];
+        for (const id of ids) {
+          if (invoiceIdSet.has(id)) {
+            const existing = statementDateByInvoiceId.get(id);
+            if (!existing || stmt.periodEnd > existing) {
+              statementDateByInvoiceId.set(id, stmt.periodEnd);
+            }
+          }
+        }
+      }
+    }
+
     const now = Date.now();
     const MS_PER_DAY = 86_400_000;
     const STALE_THRESHOLD_DAYS = 30;
@@ -3340,18 +4061,148 @@ router.get(
     const enriched = txns.map((t: any) => {
       const txnMs = new Date(t.txnDate).getTime();
       const staleDays = Math.floor((now - txnMs) / MS_PER_DAY);
+      const txnInvoiceIds = linksByTxn.get(t.id) ?? [];
+      // Pick the latest statement periodEnd across all linked invoices.
+      let statementDate: string | null = null;
+      for (const id of txnInvoiceIds) {
+        const d = statementDateByInvoiceId.get(id);
+        if (d) {
+          if (!statementDate || d.toISOString() > statementDate) {
+            statementDate = d.toISOString();
+          }
+        }
+      }
       return {
         ...t,
         staleDays,
         ageWarning: staleDays > STALE_THRESHOLD_DAYS,
-        invoiceLinks: (linksByTxn.get(t.id) ?? []).map((id) => ({
+        statementDate,
+        invoiceLinks: txnInvoiceIds.map((id) => ({
           invoiceId: id,
           invoiceNumber: invMap.get(id)?.invoiceNumber ?? null,
+          doctorIdentity: invMap.get(id)?.doctorIdentity ?? null,
+          doctorDisplayName: invMap.get(id)
+            ? invoiceDoctorDisplayName(invMap.get(id))
+            : null,
         })),
+        ...doctorAttributionFromLinks(
+          txnInvoiceIds.map((id) => {
+            const invoice = invMap.get(id);
+            return {
+              doctorIdentity: invoice?.doctorIdentity ?? null,
+              doctorDisplayName: invoice ? invoiceDoctorDisplayName(invoice) : null,
+            };
+          }),
+        ),
+        paymentSession: (() => {
+          const session = paymentSessionByTxn.get(t.id);
+          if (!session) return null;
+          const credit = accountCreditBySession.get(session.id);
+          return {
+            id: session.id,
+            receiptNumber: session.receiptNumber,
+            statementId: session.statementId,
+            providerOrganizationId: session.providerOrganizationId,
+            practiceName: session.customerName,
+            doctorIdentity: session.doctorIdentity,
+            doctorDisplayName: session.doctorDisplayName,
+            receivedAmount: session.receivedAmount,
+            appliedAmount: session.appliedAmount,
+            customerCreditAmount: session.customerCreditAmount,
+            customerCreditRemaining: credit?.remainingAmount ?? "0.00",
+            paymentMethod: session.paymentMethod,
+            checkNumber: session.checkNumber,
+            cardLast4: session.cardLast4,
+            status: session.status,
+          };
+        })(),
       };
     });
 
-    return ok(res, enriched);
+    // Mirror the desktop's compatibility predicate exactly. Filtering after
+    // enrichment is intentional because practice and doctor attribution comes
+    // from payment sessions and linked invoice snapshots.
+    const filtered = enriched.filter((row) => {
+      const rowPracticeId =
+        row.practiceId ||
+        row.providerOrganizationId ||
+        row.paymentSession?.providerOrganizationId ||
+        "";
+      if (practiceId && practiceId !== "all" && rowPracticeId !== practiceId) return false;
+      const doctorKeys = (row.doctorIdentityKeys?.length
+        ? row.doctorIdentityKeys
+        : [
+            row.doctorIdentity,
+            row.paymentSession?.doctorIdentity,
+            row.doctorName,
+            row.paymentSession?.doctorName,
+          ])
+        .map((value: string | null | undefined) => normalizeLegacyDoctorName(value ?? null))
+        .filter((value: string | null): value is string => Boolean(value));
+      if (doctorKey === "entire") return doctorKeys.length === 0;
+      return !doctorKey || doctorKey === "all" ||
+        doctorKeys.includes(normalizeLegacyDoctorName(doctorKey) ?? "");
+    });
+    const amountTotal = filtered.reduce(
+      (sum, row) => sum + Number(row.creditAmount ?? 0),
+      0,
+    );
+    // Selection mode answers "which payments does this filter match?" without
+    // shipping the enriched rows, so Select all can cover matches the client
+    // has not paged in yet.
+    if (isSelection) {
+      return ok(res, {
+        selection: filtered.map((row) => ({
+          id: row.id,
+          creditAmount: String(row.creditAmount ?? "0"),
+        })),
+        total: filtered.length,
+        amountTotal: amountTotal.toFixed(2),
+      });
+    }
+    if (!pagination.active) return ok(res, filtered);
+    const practices = new Map<string, string>();
+    const doctors = new Map<string, { practiceId: string; identity: string; displayName: string }>();
+    for (const row of enriched) {
+      const rowPracticeId =
+        row.practiceId ||
+        row.providerOrganizationId ||
+        row.paymentSession?.providerOrganizationId ||
+        "";
+      const practiceName =
+        row.practiceName ||
+        row.providerName ||
+        row.paymentSession?.practiceName ||
+        "Unknown practice";
+      if (rowPracticeId) practices.set(rowPracticeId, practiceName);
+      const identities: string[] = row.doctorIdentityKeys?.length
+        ? row.doctorIdentityKeys
+        : [
+            row.doctorIdentity,
+            row.paymentSession?.doctorIdentity,
+            row.doctorName,
+            row.paymentSession?.doctorName,
+          ].filter((value: string | null | undefined): value is string => Boolean(value));
+      const displayNames: string[] = row.doctorDisplayNames ?? [];
+      identities.forEach((identity, index) => {
+        const normalized = normalizeLegacyDoctorName(identity);
+        if (!normalized) return;
+        doctors.set(`${rowPracticeId}:${normalized}`, {
+          practiceId: rowPracticeId,
+          identity: normalized,
+          displayName: displayNames[index] || row.doctorDisplayName || identity,
+        });
+      });
+    }
+    return ok(res, {
+      ...pageRowsKeyset(filtered, pagination, bankTransactionKeyset),
+      amountTotal: amountTotal.toFixed(2),
+      staleCount: filtered.filter((row) => row.ageWarning).length,
+      filterOptions: {
+        practices: [...practices].map(([id, name]) => ({ id, name })),
+        doctors: [...doctors.values()],
+      },
+    });
   })
 );
 
@@ -3361,14 +4212,19 @@ const makeDepositsSchema = z.object({
   organizationId: z.string().min(1),
   bankAccountId: z.string().min(1),
   depositDate: z.string().optional(),
-  transactionIds: z.array(z.string().min(1)).min(1).max(500),
+  transactionIds: z.array(z.string().min(1)).min(1).max(500)
+    .refine((ids) => new Set(ids).size === ids.length, "transactionIds must be unique"),
 });
 
 router.post(
   "/make-deposits",
   asyncHandler(async (req, res) => {
     const input = makeDepositsSchema.parse(req.body);
-    await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
+    await requireAnyRole(uid(req), input.organizationId, ADMIN_ROLES);
+    if (new Set(input.transactionIds).size !== input.transactionIds.length) {
+      throw new HttpError(400, "Each payment can only be selected once.");
+    }
+    const transactionIds = [...input.transactionIds].sort();
 
     const targetAccount = await db.query.bankAccounts.findFirst({
       where: eq(bankAccounts.id, input.bankAccountId),
@@ -3395,28 +4251,37 @@ router.post(
     const depositDate = input.depositDate
       ? new Date(input.depositDate)
       : new Date();
-    if (Number.isNaN(depositDate.getTime())) {
+    const requestedDay = input.depositDate?.slice(0, 10);
+    if (
+      Number.isNaN(depositDate.getTime()) ||
+      (requestedDay !== undefined &&
+        (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDay) ||
+          depositDate.toISOString().slice(0, 10) !== requestedDay))
+    ) {
       throw new HttpError(400, "Invalid deposit date.");
     }
 
     const depositorId = uid(req);
     const depositedAt = new Date();
     let movedTxns: (typeof bankTransactions.$inferSelect)[] = [];
+    let aggregateTransactionId: string | null = null;
 
 
     await db.transaction(async (tx) => {
+      await lockDepositBatchMutations(tx, input.organizationId);
       // Lock the requested rows for update so that two concurrent duplicate
       // POSTs for the same transactionIds serialize here rather than both
       // passing the "still in UF?" check and double-depositing.
       const lockedRows = await tx
         .select()
         .from(bankTransactions)
-        .where(inArray(bankTransactions.id, input.transactionIds))
+        .where(inArray(bankTransactions.id, transactionIds))
+        .orderBy(asc(bankTransactions.id))
         .for("update");
 
       // Detect any IDs that don't exist in the DB at all.
       const foundIds = new Set(lockedRows.map((r) => r.id));
-      const missingCount = input.transactionIds.filter(
+      const missingCount = transactionIds.filter(
         (id) => !foundIds.has(id)
       ).length;
       if (missingCount > 0) {
@@ -3430,7 +4295,10 @@ router.post(
       // account with status=posted.  A row that has already been moved (e.g. by
       // a concurrent first call) will no longer satisfy this condition.
       const notInUf = lockedRows.filter(
-        (r) => r.bankAccountId !== ufAccount.id || r.status !== "posted"
+        (r) => r.labOrganizationId !== input.organizationId ||
+          r.bankAccountId !== ufAccount.id ||
+          r.status !== "posted" ||
+          r.deletedAt !== null
       );
       if (notInUf.length > 0) {
         throw new HttpError(
@@ -3438,33 +4306,627 @@ router.post(
           "One or more transactions are already deposited."
         );
       }
+      const reserved = await tx
+        .select({ transactionId: statementPaymentSessions.bankTransactionId })
+        .from(statementPaymentSessions)
+        .innerJoin(
+          statementPaymentReversals,
+          eq(statementPaymentReversals.paymentSessionId, statementPaymentSessions.id),
+        )
+        .where(and(
+          inArray(statementPaymentSessions.bankTransactionId, transactionIds),
+          inArray(statementPaymentReversals.status, [
+            "pending_processor", "processing", "processor_succeeded",
+          ]),
+        ));
+      if (reserved.length > 0) {
+        throw new HttpError(
+          409,
+          "One or more card payments have a reversal in progress and cannot be deposited.",
+        );
+      }
 
       movedTxns = lockedRows;
-
-      for (const t of movedTxns) {
-        await tx
-          .update(bankTransactions)
-          .set({
-            bankAccountId: targetAccount.id,
-            txnDate: depositDate,
-            cleared: true,
-            depositedByUserId: depositorId,
-            depositedAt,
-            updatedAt: new Date(),
-          })
-          .where(eq(bankTransactions.id, t.id));
+      const totalCents = movedTxns.reduce(
+        (sum, t) => sum + Math.round(Number(t.netAmount || "0") * 100), 0,
+      );
+      const movedIds = movedTxns.map((transaction) => transaction.id);
+      const [movedLinks, movedSessions] = await Promise.all([
+        tx.select({
+          bankTransactionId: bankTransactionInvoices.bankTransactionId,
+          invoiceId: bankTransactionInvoices.invoiceId,
+          invoiceNumber: invoices.invoiceNumber,
+        }).from(bankTransactionInvoices)
+          .innerJoin(invoices, eq(invoices.id, bankTransactionInvoices.invoiceId))
+          .where(inArray(bankTransactionInvoices.bankTransactionId, movedIds)),
+        tx.select().from(statementPaymentSessions)
+          .where(inArray(statementPaymentSessions.bankTransactionId, movedIds)),
+      ]);
+      const linksByTxn = new Map<string, Array<{ invoiceId: string; invoiceNumber: string }>>();
+      for (const link of movedLinks) {
+        const links = linksByTxn.get(link.bankTransactionId) ?? [];
+        links.push({ invoiceId: link.invoiceId, invoiceNumber: link.invoiceNumber });
+        linksByTxn.set(link.bankTransactionId, links);
       }
+      const sessionsByTxn = new Map(movedSessions.map((session) => [session.bankTransactionId, session]));
+      const [aggregate] = await tx.insert(bankTransactions).values({
+        labOrganizationId: input.organizationId,
+        bankAccountId: targetAccount.id,
+        txnDate: depositDate,
+        type: "deposit",
+        payee: "Deposit batch",
+        memo: `Deposit batch (${movedTxns.length} payments)`,
+        debitAmount: "0.00",
+        creditAmount: (totalCents / 100).toFixed(2),
+        netAmount: (totalCents / 100).toFixed(2),
+        cleared: true,
+        clearedAt: depositedAt,
+        status: "posted",
+        source: "deposit_batch",
+        createdByUserId: depositorId,
+        depositedByUserId: depositorId,
+        depositedAt,
+      }).returning();
+      aggregateTransactionId = aggregate.id;
+      await tx.insert(bankDepositBatchMembers).values(
+        movedTxns.map((t) => ({
+          aggregateBankTransactionId: aggregate.id,
+          childBankTransactionId: t.id,
+          snapshot: {
+            amount: t.netAmount,
+            payee: t.payee,
+            memo: t.memo,
+            checkNumber: sessionsByTxn.get(t.id)?.checkNumber ?? t.checkNumber,
+            paymentMethod: sessionsByTxn.get(t.id)?.paymentMethod ?? null,
+            receiptNumber: sessionsByTxn.get(t.id)?.receiptNumber ?? null,
+            paymentSessionId: sessionsByTxn.get(t.id)?.id ?? null,
+            invoiceLinks: linksByTxn.get(t.id) ?? [],
+          },
+        })),
+      );
+      await tx.update(bankTransactions)
+        .set({ status: "deposited_child", cleared: true, depositedByUserId: depositorId,
+          depositedAt, updatedAt: new Date() })
+        .where(inArray(bankTransactions.id, movedTxns.map((t) => t.id)));
+      await tx
+        .update(statementPaymentSessions)
+        .set({ status: "deposited", updatedAt: new Date() })
+        .where(
+          inArray(
+            statementPaymentSessions.bankTransactionId,
+            movedTxns.map((transaction) => transaction.id),
+          ),
+        );
     });
 
     const totalAmount = movedTxns.reduce(
-      (s: number, t: any) => s + Number(t.netAmount),
-      0
+      (s: number, t: any) => s + Math.round(Number(t.netAmount) * 100), 0
     );
     return ok(res, {
       moved: movedTxns.length,
-      totalAmount: totalAmount.toFixed(2),
+      totalAmount: (totalAmount / 100).toFixed(2),
       bankAccountId: targetAccount.id,
+      aggregateTransactionId,
     });
+  })
+);
+
+// DELETE /finance/payments/:bankTransactionId
+// Reverses a "Receive Payment" batch: restores each invoice's balance, deletes
+// the payment rows, and soft-deletes the bank transaction.
+// Only undeposited (still in the Undeposited Funds account) and non-reconciled
+// transactions can be deleted.
+router.delete(
+  "/payments/:bankTransactionId",
+  asyncHandler(async (req, res) => {
+    const callerId = uid(req);
+    const txnId = String(req.params.bankTransactionId);
+
+    // Load the bank transaction and verify it belongs to an org the caller
+    // has admin access to.
+    const txn = await db.query.bankTransactions.findFirst({
+      where: and(
+        eq(bankTransactions.id, txnId),
+        isNull(bankTransactions.deletedAt)
+      ),
+    });
+    if (!txn) throw new HttpError(404, "Payment transaction not found.");
+    await requireAnyRole(callerId, txn.labOrganizationId, ADMIN_ROLES);
+
+    // Only receive-payment (source="invoice") transactions can be reversed via
+    // this endpoint. Other undeposited entries (manual credits, transfers, etc.)
+    // are not backed by payments rows and must be edited through the register.
+    if (txn.source !== "invoice") {
+      throw new HttpError(
+        400,
+        "Only payments recorded via Receive Payments can be deleted from this screen."
+      );
+    }
+
+    // Reconciled transactions cannot be deleted.
+    if (txn.reconciled) {
+      throw new HttpError(
+        400,
+        "Cannot delete a reconciled payment. Reconciled transactions require a journal entry to reverse."
+      );
+    }
+
+    // Only allow deleting from the Undeposited Funds account — once a
+    // payment has been moved to a real bank account it is "deposited" and
+    // requires a reversal workflow instead.
+    const ufAccount = await db.query.bankAccounts.findFirst({
+      where: and(
+        eq(bankAccounts.labOrganizationId, txn.labOrganizationId),
+        eq(bankAccounts.accountType, "undeposited_funds")
+      ),
+    });
+    if (!ufAccount || txn.bankAccountId !== ufAccount.id) {
+      throw new HttpError(
+        400,
+        "Only undeposited payments can be deleted. Payments that have already been deposited require a reversal."
+      );
+    }
+
+    await db.transaction(async (tx) => {
+      await releaseBatchForChild(tx, txn.labOrganizationId, txnId);
+      // Lock and re-read the bank transaction inside the transaction to
+      // prevent a TOCTOU race where a concurrent Make Deposit moves the row
+      // out of Undeposited Funds between our pre-check and the DELETE.
+      const [lockedTxn] = await tx
+        .select()
+        .from(bankTransactions)
+        .where(
+          and(
+            eq(bankTransactions.id, txnId),
+            isNull(bankTransactions.deletedAt)
+          )
+        )
+        .for("update");
+      if (!lockedTxn) {
+        throw new HttpError(404, "Payment transaction not found.");
+      }
+      if (lockedTxn.source !== "invoice") {
+        throw new HttpError(
+          400,
+          "Only payments recorded via Receive Payments can be deleted from this screen."
+        );
+      }
+      if (lockedTxn.reconciled) {
+        throw new HttpError(
+          400,
+          "Cannot delete a reconciled payment. Reconciled transactions require a journal entry to reverse."
+        );
+      }
+      if (lockedTxn.bankAccountId !== ufAccount.id) {
+        throw new HttpError(
+          400,
+          "Only undeposited payments can be deleted. Payments that have already been deposited require a reversal."
+        );
+      }
+
+      // Find all payment rows linked to this bank transaction.
+      const linkedPayments = await tx
+        .select()
+        .from(payments)
+        .where(eq(payments.bankTransactionId, txnId))
+        .for("update");
+
+      // Require at least one payment row — if none exist, this transaction
+      // is not a receive-payment batch and should not be deleted via this path.
+      if (linkedPayments.length === 0) {
+        throw new HttpError(
+          400,
+          "No payment records are linked to this transaction. Use the register to edit it."
+        );
+      }
+
+      // For each payment, restore the invoice balance and recalculate status.
+      for (const pmt of linkedPayments) {
+        const [inv] = await tx
+          .select()
+          .from(invoices)
+          .where(eq(invoices.id, pmt.invoiceId))
+          .for("update");
+        if (!inv) continue;
+        assertRecoveryReleased(inv);
+
+        const restoredBalance =
+          Number(inv.balanceDue) + Number(pmt.amount);
+        const totalAmount = Number(inv.total ?? restoredBalance);
+        let newStatus: string;
+        if (restoredBalance < 0.005) {
+          newStatus = "paid";
+        } else if (restoredBalance >= totalAmount - 0.005) {
+          newStatus = "open";
+        } else {
+          newStatus = "partially_paid";
+        }
+
+        await tx
+          .update(invoices)
+          .set({
+            balanceDue: restoredBalance.toFixed(2),
+            status: newStatus,
+            updatedAt: new Date(),
+          })
+          .where(eq(invoices.id, inv.id));
+      }
+
+      // Hard-delete the payment rows, keeping a dated record that they
+      // settled their invoices up to this moment.
+      await archiveReversedSettlements(
+        tx,
+        linkedPayments.map((payment) => ({
+          labOrganizationId: txn.labOrganizationId,
+          invoiceId: payment.invoiceId,
+          sourceType: "payment" as const,
+          sourceId: payment.id,
+          paymentSessionId: payment.paymentSessionId ?? null,
+          amount: payment.amount,
+          settledAt: payment.paidAt ?? new Date(),
+          reversedByUserId: callerId,
+        })),
+      );
+      await tx
+        .delete(payments)
+        .where(
+          inArray(
+            payments.id,
+            linkedPayments.map((p) => p.id)
+          )
+        );
+
+      // Remove the invoice↔transaction links so the deleted transaction no
+      // longer surfaces in invoice-linked queries.
+      await tx
+        .delete(bankTransactionInvoices)
+        .where(eq(bankTransactionInvoices.bankTransactionId, txnId));
+
+      // Soft-delete the bank transaction.
+      await tx
+        .update(bankTransactions)
+        .set({
+          deletedAt: new Date(),
+          deletedByUserId: callerId,
+          updatedAt: new Date(),
+        })
+        .where(eq(bankTransactions.id, txnId));
+
+      // Legacy Receive Payment batches now have a durable payment session as
+      // well. Keep its lifecycle aligned with the existing reversal semantics
+      // instead of leaving a cancelled payment looking active to other finance
+      // readers that address sessions directly.
+      await tx
+        .update(statementPaymentSessions)
+        .set({
+          status: "cancelled",
+          cancelledByUserId: callerId,
+          cancelledAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(statementPaymentSessions.bankTransactionId, txnId));
+    });
+
+    await writeAuditLog({
+      req,
+      organizationId: txn.labOrganizationId,
+      action: "payment_deleted",
+      entityType: "bank_transaction",
+      entityId: txnId,
+      metadataJson: { bankTransactionId: txnId },
+    });
+
+    return ok(res, { deleted: true });
+  })
+);
+
+// ─────────────────────── AI Bank Statement Import ────────────────────────
+
+const statementUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"];
+    cb(null, allowed.includes(file.mimetype) || file.originalname.match(/\.(pdf|png|jpg|jpeg|webp)$/i) !== null);
+  },
+});
+
+// In-memory preview token store (TTL 30 min)
+interface PreviewEntry {
+  rows: ExtractedRow[];
+  orgId: string;
+  userId: string;
+  expiresAt: number;
+}
+const previewStore = new Map<string, PreviewEntry>();
+
+function genPreviewToken(): string {
+  return Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+}
+
+function cleanExpiredPreviews() {
+  const now = Date.now();
+  for (const [k, v] of previewStore) {
+    if (v.expiresAt < now) previewStore.delete(k);
+  }
+}
+
+const BANK_STATEMENT_SYSTEM_PROMPT = `You are a bank statement parser. Extract all transactions from the provided bank statement.
+Return ONLY a JSON array of transaction objects. Each object must have these exact fields:
+- txnDate: ISO date string "YYYY-MM-DD"
+- description: payee/description text (string)
+- checkNumber: check number if present, else null
+- debit: withdrawal/payment amount as a positive number, or 0 if it is a deposit/credit
+- credit: deposit/credit amount as a positive number, or 0 if it is a withdrawal/debit
+- confidence: "high", "medium", or "low"
+
+Rules:
+- Amounts must be positive numbers (no negative values)
+- If a row is a debit/withdrawal/payment: set debit > 0, credit = 0
+- If a row is a credit/deposit: set credit > 0, debit = 0
+- Skip header rows, balance rows, and summary lines — only include actual transactions
+- confidence = "high" when date+amount are clearly readable, "medium" when either is estimated, "low" when both are uncertain
+
+Return ONLY the JSON array, no markdown, no explanation.`;
+
+async function extractTransactionsWithAI(
+  fileBuffer: Buffer,
+  mimeType: string,
+  filename: string,
+  logger: any
+): Promise<ExtractedRow[]> {
+  const openai = createOpenAIClient();
+  if (!openai) throw new HttpError(422, "AI key not configured — only text-based PDFs are supported in this environment");
+
+  let rawRows: any[] = [];
+
+  if (mimeType === "application/pdf" || filename.toLowerCase().endsWith(".pdf")) {
+    // Text PDF: extract text with pdf-parse, then send to gpt-4o as text
+    let pdfText = "";
+    try {
+      pdfText = await parsePdf(fileBuffer);
+    } catch (err) {
+      logger.warn({ err }, "pdf-parse failed, falling back to vision");
+    }
+    if (pdfText.trim().length > 100) {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: BANK_STATEMENT_SYSTEM_PROMPT },
+          { role: "user", content: `Bank statement text:\n\n${pdfText.slice(0, 50000)}` },
+        ],
+        temperature: 0,
+        max_tokens: 4096,
+      });
+      const content = completion.choices[0]?.message?.content ?? "[]";
+      rawRows = JSON.parse(content.replace(/```json\n?|```\n?/g, "").trim());
+    } else {
+      // Scanned PDF or empty text — send PDF bytes with the correct MIME type.
+      // GPT-4o natively accepts application/pdf data URIs in the image_url field.
+      const b64 = fileBuffer.toString("base64");
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: BANK_STATEMENT_SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Extract all transactions from this scanned bank statement PDF:" },
+              { type: "image_url", image_url: { url: `data:application/pdf;base64,${b64}`, detail: "high" } },
+            ],
+          },
+        ],
+        temperature: 0,
+        max_tokens: 4096,
+      });
+      const content = completion.choices[0]?.message?.content ?? "[]";
+      rawRows = JSON.parse(content.replace(/```json\n?|```\n?/g, "").trim());
+    }
+  } else {
+    // Image file — send directly to vision
+    const b64 = fileBuffer.toString("base64");
+    const imgMime = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: BANK_STATEMENT_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Extract all transactions from this bank statement:" },
+            { type: "image_url", image_url: { url: `data:${imgMime};base64,${b64}`, detail: "high" } },
+          ],
+        },
+      ],
+      temperature: 0,
+      max_tokens: 4096,
+    });
+    const content = completion.choices[0]?.message?.content ?? "[]";
+    rawRows = JSON.parse(content.replace(/```json\n?|```\n?/g, "").trim());
+  }
+
+  const extracted: ExtractedRow[] = [];
+  let idx = 0;
+  for (const r of rawRows) {
+    if (!r || typeof r !== "object") continue;
+    const dateStr = String(r.txnDate ?? r.date ?? "").slice(0, 10);
+    if (!dateStr || isNaN(Date.parse(dateStr))) continue;
+    extracted.push({
+      rowIndex: idx++,
+      txnDate: dateStr,
+      description: String(r.description ?? r.payee ?? r.memo ?? "").slice(0, 500),
+      checkNumber: r.checkNumber ? String(r.checkNumber).slice(0, 20) : null,
+      debit: Math.max(0, Number(r.debit ?? 0)),
+      credit: Math.max(0, Number(r.credit ?? 0)),
+      confidence: (["high", "medium", "low"].includes(r.confidence) ? r.confidence : "medium") as "high" | "medium" | "low",
+    });
+  }
+  return extracted;
+}
+
+// POST /finance/transactions/import/preview
+// Admin+: upload a bank statement, extract transactions via AI, return preview
+router.post(
+  "/transactions/import/preview",
+  statementUpload.single("file"),
+  asyncHandler(async (req, res) => {
+    const { organizationId, bankAccountId } = z
+      .object({ organizationId: z.string().min(1), bankAccountId: z.string().min(1) })
+      .parse(req.body);
+
+    await requireAnyRole(uid(req), organizationId, ADMIN_ROLES);
+
+    const acct = await db.query.bankAccounts.findFirst({ where: eq(bankAccounts.id, bankAccountId) });
+    if (!acct || acct.labOrganizationId !== organizationId) {
+      throw new HttpError(404, "Bank account not found for this organization.");
+    }
+
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) throw new HttpError(400, "No file uploaded.");
+
+    cleanExpiredPreviews();
+
+    const rows = await extractTransactionsWithAI(
+      file.buffer,
+      file.mimetype,
+      file.originalname,
+      req.log
+    );
+
+    const annotated = await findDuplicateCandidates(organizationId, bankAccountId, rows);
+
+    const previewToken = genPreviewToken();
+    previewStore.set(previewToken, {
+      rows,
+      orgId: organizationId,
+      userId: uid(req),
+      expiresAt: Date.now() + 30 * 60 * 1000,
+    });
+
+    return ok(res, {
+      previewToken,
+      rows: annotated,
+      filename: file.originalname,
+      totalCount: annotated.length,
+    });
+  })
+);
+
+const confirmImportSchema = z.object({
+  previewToken: z.string().min(1),
+  organizationId: z.string().min(1),
+  bankAccountId: z.string().min(1),
+  sourceFilename: z.string().min(1),
+  approvedRows: z.array(
+    z.object({
+      rowIndex: z.number().int(),
+      txnDate: z.string(),
+      description: z.string(),
+      checkNumber: z.string().nullable().optional(),
+      debit: z.number().min(0),
+      credit: z.number().min(0),
+    })
+  ),
+  skippedCount: z.number().int().min(0).default(0),
+});
+
+// POST /finance/transactions/import/confirm
+// Admin+: commit approved rows from a preview session into the register
+router.post(
+  "/transactions/import/confirm",
+  asyncHandler(async (req, res) => {
+    const input = confirmImportSchema.parse(req.body);
+
+    await requireAnyRole(uid(req), input.organizationId, ADMIN_ROLES);
+
+    const acct = await db.query.bankAccounts.findFirst({ where: eq(bankAccounts.id, input.bankAccountId) });
+    if (!acct || acct.labOrganizationId !== input.organizationId) {
+      throw new HttpError(404, "Bank account not found.");
+    }
+
+    cleanExpiredPreviews();
+    const preview = previewStore.get(input.previewToken);
+    if (!preview) throw new HttpError(400, "Preview session expired or not found. Please re-upload the file.");
+    if (preview.orgId !== input.organizationId) throw new HttpError(403, "Preview token does not match organization.");
+    if (preview.userId !== uid(req)) throw new HttpError(403, "Preview token belongs to a different user.");
+    if (preview.expiresAt < Date.now()) {
+      previewStore.delete(input.previewToken);
+      throw new HttpError(400, "Preview session has expired. Please re-upload the file.");
+    }
+
+    if (!input.approvedRows.length) {
+      previewStore.delete(input.previewToken);
+      return ok(res, { imported: 0, batchId: null });
+    }
+
+    const [batch] = await db.insert(bankImportBatches).values({
+      organizationId: input.organizationId,
+      bankAccountId: input.bankAccountId,
+      sourceFilename: input.sourceFilename,
+      importedByUserId: uid(req),
+      transactionCount: input.approvedRows.length,
+      skippedCount: input.skippedCount,
+    }).returning();
+
+    const insertValues = input.approvedRows.map((r) => {
+      const debit = Math.max(0, r.debit);
+      const credit = Math.max(0, r.credit);
+      const net = credit - debit;
+      const txnDate = new Date(r.txnDate);
+      return {
+        labOrganizationId: input.organizationId,
+        bankAccountId: input.bankAccountId,
+        txnDate,
+        type: debit > 0 ? "payment" : "deposit",
+        checkNumber: r.checkNumber ?? null,
+        payee: r.description ?? null,
+        memo: null as string | null,
+        debitAmount: debit.toFixed(2),
+        creditAmount: credit.toFixed(2),
+        netAmount: net.toFixed(2),
+        cleared: false,
+        status: "posted" as const,
+        source: "import" as const,
+        importBatchId: batch.id,
+        aiImportSource: input.sourceFilename,
+        createdByUserId: uid(req),
+      };
+    });
+
+    await db.insert(bankTransactions).values(insertValues).catch((err: unknown): never => wrapDbError(err));
+
+    // Mirror the existing transaction-creation pipeline: soft-delete any
+    // projected recurring transaction that matches each newly imported row.
+    for (const v of insertValues) {
+      const net = Number(v.creditAmount) - Number(v.debitAmount);
+      if (net !== 0) {
+        await replaceMatchingProjected(
+          v.bankAccountId,
+          v.txnDate,
+          net,
+          v.payee ?? null
+        );
+      }
+    }
+
+    previewStore.delete(input.previewToken);
+
+    await writeAuditLog({
+      userId: uid(req),
+      organizationId: input.organizationId,
+      action: "bank_import_confirmed",
+      entityType: "bank_import_batch",
+      entityId: batch.id,
+      metadataJson: {
+        batchId: batch.id,
+        sourceFilename: input.sourceFilename,
+        bankAccountId: input.bankAccountId,
+        transactionCount: input.approvedRows.length,
+        skippedCount: input.skippedCount,
+      },
+    });
+
+    return ok(res, { imported: input.approvedRows.length, batchId: batch.id }, 201);
   })
 );
 

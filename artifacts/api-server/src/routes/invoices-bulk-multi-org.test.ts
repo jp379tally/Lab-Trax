@@ -254,7 +254,7 @@ maybe("Bulk invoice delete/reset across lab orgs (db integration)", () => {
     for (const row of rows) {
       expect(Number(row.total)).toBe(0);
       expect(Number(row.balanceDue)).toBe(0);
-      expect(row.status).toBe("draft");
+      expect(row.status).toBe("open");
     }
   });
 
@@ -465,11 +465,11 @@ maybe("Bulk invoice delete/reset across lab orgs (db integration)", () => {
     const blob = JSON.parse(row.caseData);
     expect(blob.invoiceId).toBe(localInvoiceId);
     expect(blob.price).toBe(0);
-    expect(blob.invoiceStatus).toBe("draft");
+    expect(blob.invoiceStatus).toBe("open");
     expect(blob.invoiceResetPriorPrice).toBe(250);
     expect(row.deletedAt).toBeNull();
 
-    // The synthesized invoice now reads $0.00 draft in the list.
+    // The synthesized invoice now reads $0.00 open in the list.
     const list = await request(appMod.default)
       .get("/api/invoices")
       .set("Authorization", `Bearer ${tokens.both}`);
@@ -480,7 +480,7 @@ maybe("Bulk invoice delete/reset across lab orgs (db integration)", () => {
     expect(synth, "synthesized invoice should still surface").toBeTruthy();
     expect(Number(synth.total)).toBe(0);
     expect(Number(synth.balanceDue)).toBe(0);
-    expect(synth.status).toBe("draft");
+    expect(synth.status).toBe("open");
 
     // An audit row was written for the legacy reset.
     const audits = await db.query.auditLogs.findMany({
@@ -529,7 +529,7 @@ maybe("Bulk invoice delete/reset across lab orgs (db integration)", () => {
     });
     expect(Number(realRow.total)).toBe(0);
     expect(Number(realRow.balanceDue)).toBe(0);
-    expect(realRow.status).toBe("draft");
+    expect(realRow.status).toBe("open");
 
     const lcRow = await db.query.labCases.findFirst({
       where: eq(labCases.id, lcId),
@@ -537,7 +537,7 @@ maybe("Bulk invoice delete/reset across lab orgs (db integration)", () => {
     });
     const blob = JSON.parse(lcRow.caseData);
     expect(blob.price).toBe(0);
-    expect(blob.invoiceStatus).toBe("draft");
+    expect(blob.invoiceStatus).toBe("open");
     expect(blob.invoiceResetPriorPrice).toBe(99);
   });
 
@@ -614,7 +614,7 @@ maybe("Bulk invoice delete/reset across lab orgs (db integration)", () => {
         columns: { total: true, status: true },
       });
       expect(Number(realRow.total)).toBe(0);
-      expect(realRow.status).toBe("draft");
+      expect(realRow.status).toBe("open");
 
       const lcRow = await db.query.labCases.findFirst({
         where: eq(labCases.id, lcId),
@@ -622,7 +622,7 @@ maybe("Bulk invoice delete/reset across lab orgs (db integration)", () => {
       });
       const blob = JSON.parse(lcRow.caseData);
       expect(blob.price).toBe(0);
-      expect(blob.invoiceStatus).toBe("draft");
+      expect(blob.invoiceStatus).toBe("open");
     } finally {
       await db
         .delete(auditLogs)

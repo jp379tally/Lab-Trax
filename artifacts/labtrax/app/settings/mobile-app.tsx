@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell, SettingsSection } from "@/components/settings/SettingsRow";
+import { scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
 import { resilientFetch } from "@/lib/query-client";
 
 type Platform = "ios" | "android";
@@ -47,7 +48,7 @@ interface MobileBuildInfo {
 
 function formatDate(s: string | null | undefined) {
   if (!s) return "—";
-  try { return new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }); }
+  try { return new Date(s).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric", hour: "numeric", minute: "2-digit" }); }
   catch { return s; }
 }
 
@@ -127,7 +128,11 @@ export default function MobileAppScreen() {
 
   return (
     <ScreenShell title="Mobile App" subtitle="EAS builds and app version" onBack={() => router.back()} insetTop={insets.top}>
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView
+        contentContainerStyle={styles.body}
+        keyboardDismissMode={scrollKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
+      >
         {infoQuery.isLoading && <ActivityIndicator color={colors.tint} />}
 
         <SettingsSection title="Version">

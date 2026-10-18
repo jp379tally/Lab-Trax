@@ -42,7 +42,6 @@ beforeAll(() => {
       },
     },
   });
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   authStore = require("../auth-store.cjs") as AuthStore;
 });
 

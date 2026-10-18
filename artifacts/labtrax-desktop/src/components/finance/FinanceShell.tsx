@@ -1,7 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { Link, useLocation } from "wouter";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Link, Redirect, useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Plus, Settings2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Plus, Settings2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -12,15 +12,38 @@ import {
 } from "@/lib/finance";
 import type { BankAccount, TransactionCategory } from "@/lib/types";
 import { formatMoney } from "@/lib/format";
+import { LAB_ADMIN_ROLES, LAB_BILLING_ROLES, useLabMembershipRole } from "@/lib/membership-roles";
 
+// Grouped so the two sides of the ledger read as separate bodies of work:
+// what customers owe the lab (receivable) and what the lab owes vendors
+// (payable), with the shared register and reporting tools after them.
 const ALL_TABS = [
-  { path: "/finance/register", label: "Register", billingOnly: false },
-  { path: "/finance/receive-payments", label: "Receive Payments", billingOnly: true },
-  { path: "/finance/make-deposits", label: "Make Deposits", billingOnly: true, showUndepositedBadge: true },
-  { path: "/finance/reconcile", label: "Reconcile", billingOnly: false },
-  { path: "/finance/cash-flow", label: "Cash Flow", billingOnly: false },
-  { path: "/finance/recurring", label: "Recurring", billingOnly: false },
-  { path: "/finance/payees", label: "Payees", billingOnly: false },
+  { path: "/finance/register", label: "Register", billingOnly: false, group: null },
+  { path: "/finance/receive-payments", label: "Receive Payments", billingOnly: true, group: "Receivable" },
+  { path: "/finance/make-deposits", label: "Make Deposits", billingOnly: true, showUndepositedBadge: true, group: "Receivable" },
+  { path: "/finance/bills", label: "Bills", billingOnly: true, group: "Payable" },
+  { path: "/finance/pay-bills", label: "Pay Bills", billingOnly: true, group: "Payable" },
+  { path: "/finance/aging", label: "Aging", billingOnly: true, group: "Payable" },
+  { path: "/finance/reconcile", label: "Reconcile", billingOnly: false, group: null },
+  { path: "/finance/cash-flow", label: "Cash Flow", billingOnly: false, group: null },
+  { path: "/finance/recurring", label: "Recurring", billingOnly: false, group: null },
+  { path: "/finance/payees", label: "Payees", billingOnly: false, group: null },
+];
+
+// The server authorizes these screens by the user's membership in the lab
+// chosen in this header, not by their primary-lab role, so they gate on that
+// per-lab role with the server's role sets. A lab's owners and admins can then
+// finish what Receive Payments starts (Make Deposits) and open the report it
+// links to (Aging) even when their primary-lab role is lower.
+const LAB_ROLE_SCREENS: ReadonlyArray<{
+  path: string;
+  label: string;
+  roles: ReadonlySet<string>;
+  audience: string;
+}> = [
+  { path: "/finance/receive-payments", label: "Receive Payments", roles: LAB_ADMIN_ROLES, audience: "lab owners and administrators" },
+  { path: "/finance/make-deposits", label: "Make Deposits", roles: LAB_ADMIN_ROLES, audience: "lab owners and administrators" },
+  { path: "/finance/aging", label: "Aging", roles: LAB_BILLING_ROLES, audience: "lab owners, administrators and billing members" },
 ];
 
 export function canReceivePayments(user: {
@@ -29,7 +52,18 @@ export function canReceivePayments(user: {
 } | null): boolean {
   if (!user) return false;
   if (user.userType !== "lab") return false;
-  return user.role === "admin" || user.role === "billing";
+  return user.role === "owner" || user.role === "admin";
+}
+
+/**
+ * Route guard for the screens FinanceShell gates on the user's role in the
+ * selected lab. It redirects only accounts that are not lab accounts; the
+ * shell names the user's role in that lab when a screen is not available.
+ */
+export function LabFinanceRoute({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  if (user?.userType !== "lab") return <Redirect to="/finance/register" />;
+  return <>{children}</>;
 }
 
 type Props = {
@@ -43,15 +77,50 @@ type Props = {
 
 export function FinanceShell({ children, requireAccount }: Props) {
   const [location] = useLocation();
+  const registerPresentation = location.startsWith("/finance/register");
   const { user } = useAuth();
   const billingAllowed = canReceivePayments(user);
-  const TABS = ALL_TABS.filter((t) => !t.billingOnly || billingAllowed);
   const orgs = useLabOrganizations();
   const [orgId, setOrgId] = useSelectedOrg();
+  const labScreen = LAB_ROLE_SCREENS.find((screen) => location.startsWith(screen.path)) ?? null;
+  const labRole = useLabMembershipRole(orgId, !!labScreen || !billingAllowed);
+  const allowedInLab = (roles: ReadonlySet<string>) =>
+    labRole.status === "ready" && !!labRole.role && roles.has(labRole.role);
+  const labScreenAllowed = !!labScreen && allowedInLab(labScreen.roles);
+  const depositsAllowed = billingAllowed || allowedInLab(LAB_ADMIN_ROLES);
+  const labName = (() => {
+    const org = (orgs.data || []).find((o) => o.id === orgId);
+    return org?.displayName || org?.name || "this lab";
+  })();
+  const TABS = ALL_TABS.filter((t) => {
+    if (!t.billingOnly || billingAllowed) return true;
+    const screen = LAB_ROLE_SCREENS.find((row) => row.path === t.path);
+    return !!screen && allowedInLab(screen.roles);
+  });
   const accounts = useBankAccounts(orgId);
   const [accountId, setAccountId] = useSelectedAccount(orgId);
   const [showManage, setShowManage] = useState(false);
   const qc = useQueryClient();
+  const appliedAccountParamRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!location.startsWith("/finance/register")) {
+      appliedAccountParamRef.current = null;
+      return;
+    }
+    if (!accounts.data?.length) return;
+    const requestedAccountId = new URLSearchParams(window.location.search).get("account");
+    if (!requestedAccountId || appliedAccountParamRef.current === requestedAccountId) return;
+    if (
+      requestedAccountId !== accountId &&
+      accounts.data.some((account) => account.id === requestedAccountId)
+    ) {
+      setAccountId(requestedAccountId);
+    }
+    if (accounts.data.some((account) => account.id === requestedAccountId)) {
+      appliedAccountParamRef.current = requestedAccountId;
+    }
+  }, [accountId, accounts.data, location, setAccountId]);
 
   const undepositedSummary = useQuery({
     queryKey: ["finance", "undeposited-summary", orgId],
@@ -59,13 +128,13 @@ export function FinanceShell({ children, requireAccount }: Props) {
       apiFetch<{ count: number; total: number }>(
         `/finance/undeposited-funds?organizationId=${orgId}&summary=1`
       ),
-    enabled: !!orgId && billingAllowed,
+    enabled: !!orgId && depositsAllowed,
     refetchInterval: 15_000,
     staleTime: 10_000,
   });
 
   useEffect(() => {
-    if (!orgId || !billingAllowed) return;
+    if (!orgId || !depositsAllowed) return;
     const ch = new BroadcastChannel("labtrax:finance");
     ch.onmessage = (e: MessageEvent) => {
       if (e.data === "undeposited-changed") {
@@ -73,18 +142,18 @@ export function FinanceShell({ children, requireAccount }: Props) {
       }
     };
     return () => ch.close();
-  }, [orgId, billingAllowed, qc]);
+  }, [orgId, depositsAllowed, qc]);
 
   return (
-    <div className="px-8 py-7">
-      <div className="flex items-start justify-between mb-5">
-        <div>
+    <div className={registerPresentation ? "finance-register-shell min-w-0 px-3 sm:px-8 py-7" : "px-8 py-7"}>
+      <div className={registerPresentation ? "flex flex-wrap items-start justify-between gap-3 mb-5" : "flex items-start justify-between mb-5"}>
+        <div className={registerPresentation ? "min-w-0 max-w-full" : undefined}>
           <h1 className="text-2xl font-semibold tracking-tight">Financial</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Bank register, reconciliation, cash flow, and recurring entries.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className={registerPresentation ? "flex flex-wrap min-w-0 max-w-full items-center gap-2" : "flex items-center gap-2"}>
           <select
             value={orgId || ""}
             onChange={(e) => setOrgId(e.target.value || null)}
@@ -121,21 +190,27 @@ export function FinanceShell({ children, requireAccount }: Props) {
       </div>
 
       <div className="border-b border-border mb-5">
-        <nav className="flex gap-1 -mb-px">
-          {TABS.map((t) => {
+        <nav className="flex gap-1">
+          {TABS.map((t, index) => {
             const active = location.startsWith(t.path);
             const pendingCount =
               t.showUndepositedBadge ? (undepositedSummary.data?.count ?? 0) : 0;
             const pendingTotal =
               t.showUndepositedBadge ? (undepositedSummary.data?.total ?? 0) : 0;
+            const startsGroup = !!t.group && TABS[index - 1]?.group !== t.group;
             return (
+              <div key={t.path} className="flex items-end">
+                {startsGroup && (
+                  <span className="self-center px-2 text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
+                    {t.group}
+                  </span>
+                )}
               <Link
-                key={t.path}
                 href={t.path}
-                className={`px-3.5 py-2 text-sm font-medium border-b-2 transition-colors inline-flex items-center gap-1.5 ${
+                className={`px-4 py-2 text-sm font-medium border border-b-0 rounded-t-md transition-colors inline-flex items-center gap-1.5 ${
                   active
-                    ? "border-primary text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
+                    ? "bg-sky-100 border-sky-300 text-foreground border-b border-b-background -mb-px relative z-10"
+                    : "bg-sky-50 border-sky-200 text-sky-900 hover:bg-sky-100 hover:text-foreground"
                 }`}
               >
                 {t.label}
@@ -148,6 +223,7 @@ export function FinanceShell({ children, requireAccount }: Props) {
                   </span>
                 )}
               </Link>
+              </div>
             );
           })}
         </nav>
@@ -173,7 +249,39 @@ export function FinanceShell({ children, requireAccount }: Props) {
         </div>
       )}
 
-      {orgId && (!requireAccount || accountId) &&
+      {orgId && labScreen && labRole.status === "loading" && (
+        <div role="status" className="text-sm text-muted-foreground py-12 text-center">
+          Checking your role in {labName}…
+        </div>
+      )}
+
+      {orgId && labScreen && labRole.status === "error" && (
+        <div role="alert" className="text-sm py-12 text-center border border-dashed border-border rounded-md">
+          <p className="font-medium">Your role in {labName} could not be loaded</p>
+          <p className="mt-1 text-muted-foreground">{labRole.error.message}</p>
+          <button
+            type="button"
+            onClick={labRole.retry}
+            className="mt-3 h-8 px-3 rounded-md bg-secondary text-xs font-medium hover:bg-secondary/80"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {orgId && labScreen && labRole.status === "ready" && !labScreenAllowed && (
+        <div role="alert" className="text-sm py-12 text-center border border-dashed border-border rounded-md">
+          <p className="font-medium">Not available</p>
+          <p className="mt-1 text-muted-foreground">
+            {labScreen.label} is available only to {labScreen.audience}.{" "}
+            {labRole.label
+              ? `Your role in ${labName} is ${labRole.label}.`
+              : `You are not an active member of ${labName}.`}
+          </p>
+        </div>
+      )}
+
+      {orgId && (labScreen ? labScreenAllowed : billingAllowed) && (!requireAccount || accountId) &&
         children({ organizationId: orgId, accountId, accounts: accounts.data || [] })}
 
       {showManage && orgId && (
@@ -252,6 +360,16 @@ function ManageAccountsModal({
       qc.invalidateQueries({ queryKey: ["finance", "accounts", organizationId] }),
   });
 
+  const unarchiveAccount = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/finance/accounts/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ isArchived: false }),
+      }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["finance", "accounts", organizationId] }),
+  });
+
   const addCategory = useMutation({
     mutationFn: () =>
       apiFetch("/finance/categories", {
@@ -314,7 +432,16 @@ function ManageAccountsModal({
                         {formatMoney(a.bookBalance ?? a.openingBalance)}
                       </td>
                       <td className="px-2 py-2 text-right">
-                        {!a.isArchived && (
+                        {a.isArchived ? (
+                          <button
+                            type="button"
+                            onClick={() => unarchiveAccount.mutate(a.id)}
+                            className="h-7 w-7 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
+                            aria-label="Unarchive"
+                          >
+                            <ArchiveRestore size={13} />
+                          </button>
+                        ) : (
                           <button
                             type="button"
                             onClick={() => archiveAccount.mutate(a.id)}

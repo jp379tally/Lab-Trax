@@ -41,6 +41,27 @@ export interface StatementTemplateTextBlock {
   sourceId?: string;
 }
 
+export type StatementGeneratedSectionType =
+  | "stmtHeader"
+  | "labInfo"
+  | "practiceInfo"
+  | "balanceSummary"
+  | "transactions"
+  | "aging"
+  | "totals"
+  | "footer";
+
+export interface StatementTemplateSection {
+  id: string;
+  type: "generated" | "custom";
+  generatedType?: StatementGeneratedSectionType;
+  title: string;
+  enabled: boolean;
+  contentMode: "generated" | "custom";
+  customText?: string;
+  box: StatementTemplateBox;
+}
+
 export interface StatementDefaultTextBlock {
   id: string;
   text: string;
@@ -61,6 +82,7 @@ export interface StatementTemplate {
   };
   boxes: {
     stmtHeader: StatementTemplateBox;
+    labInfo: StatementTemplateBox;
     practiceInfo: StatementTemplateBox;
     balanceSummary: StatementTemplateBox;
     transactions: StatementTemplateBox;
@@ -68,6 +90,8 @@ export interface StatementTemplate {
     totals: StatementTemplateBox;
     footer: StatementTemplateBox;
   };
+  /** Registry of visible statement sections. `boxes` remains for old clients. */
+  sections: StatementTemplateSection[];
   extraImages: StatementExtraImage[];
   customTexts: StatementTemplateTextBlock[];
   defaultTextBlocks: StatementDefaultTextBlock[];
@@ -77,6 +101,7 @@ export type StatementSectionKey = keyof StatementTemplate["boxes"];
 
 export const STATEMENT_SECTION_KEYS: StatementSectionKey[] = [
   "stmtHeader",
+  "labInfo",
   "practiceInfo",
   "balanceSummary",
   "transactions",
@@ -87,6 +112,7 @@ export const STATEMENT_SECTION_KEYS: StatementSectionKey[] = [
 
 export const STATEMENT_SECTION_LABELS: Record<StatementSectionKey, string> = {
   stmtHeader: "Statement Header",
+  labInfo: "Lab Information",
   practiceInfo: "Practice Info",
   balanceSummary: "Balance Summary",
   transactions: "Transaction Table",
@@ -95,8 +121,15 @@ export const STATEMENT_SECTION_LABELS: Record<StatementSectionKey, string> = {
   footer: "Footer / Notes",
 };
 
+export const STATEMENT_SECTION_DEFAULT_TITLES: Record<StatementSectionKey, string> = {
+  ...STATEMENT_SECTION_LABELS,
+  stmtHeader: "Statement",
+  transactions: "Invoices",
+};
+
 export const STATEMENT_SECTION_COLORS: Record<StatementSectionKey, string> = {
   stmtHeader: "rgba(59,130,246,0.18)",
+  labInfo: "rgba(14,165,233,0.18)",
   practiceInfo: "rgba(16,185,129,0.18)",
   balanceSummary: "rgba(234,179,8,0.18)",
   transactions: "rgba(168,85,247,0.18)",
@@ -104,6 +137,20 @@ export const STATEMENT_SECTION_COLORS: Record<StatementSectionKey, string> = {
   totals: "rgba(249,115,22,0.18)",
   footer: "rgba(99,102,241,0.18)",
 };
+
+export function defaultStatementSections(
+  boxes: StatementTemplate["boxes"] = DEFAULT_STATEMENT_TEMPLATE.boxes,
+): StatementTemplateSection[] {
+  return STATEMENT_SECTION_KEYS.map((type) => ({
+    id: type,
+    type: "generated" as const,
+    generatedType: type,
+    title: STATEMENT_SECTION_DEFAULT_TITLES[type],
+    enabled: true,
+    contentMode: "generated" as const,
+    box: { ...boxes[type] },
+  }));
+}
 
 export const DEFAULT_STATEMENT_TEMPLATE: StatementTemplate = {
   version: 1,
@@ -117,35 +164,77 @@ export const DEFAULT_STATEMENT_TEMPLATE: StatementTemplate = {
   },
   boxes: {
     stmtHeader: { x: 40, y: 30, w: 300, h: 50 },
-    practiceInfo: { x: 40, y: 90, w: 300, h: 50 },
-    balanceSummary: { x: 40, y: 150, w: 532, h: 60 },
-    transactions: { x: 40, y: 220, w: 532, h: 340 },
-    aging: { x: 40, y: 570, w: 532, h: 60 },
-    totals: { x: 380, y: 640, w: 192, h: 80 },
+    labInfo: { x: 40, y: 90, w: 260, h: 90 },
+    practiceInfo: { x: 312, y: 90, w: 260, h: 90 },
+    balanceSummary: { x: 40, y: 190, w: 532, h: 60 },
+    transactions: { x: 40, y: 260, w: 532, h: 280 },
+    aging: { x: 40, y: 550, w: 532, h: 60 },
+    totals: { x: 380, y: 620, w: 192, h: 80 },
     footer: { x: 40, y: 730, w: 532, h: 40 },
   },
+  sections: [],
   extraImages: [],
   customTexts: [],
   defaultTextBlocks: [],
 };
+DEFAULT_STATEMENT_TEMPLATE.sections = defaultStatementSections();
 
 export function coerceStatementTemplate(value: unknown): StatementTemplate {
-  if (!value || typeof value !== "object") return DEFAULT_STATEMENT_TEMPLATE;
+  if (!value || typeof value !== "object") {
+    return { ...DEFAULT_STATEMENT_TEMPLATE, sections: defaultStatementSections() };
+  }
   const v = value as Partial<StatementTemplate>;
-  if (v.version !== 1 || !v.logo || !v.boxes) return DEFAULT_STATEMENT_TEMPLATE;
+  if (v.version !== 1 || !v.logo || !v.boxes) {
+    return { ...DEFAULT_STATEMENT_TEMPLATE, sections: defaultStatementSections() };
+  }
   const db = DEFAULT_STATEMENT_TEMPLATE.boxes;
+  const boxes = {
+    stmtHeader: { ...db.stmtHeader, ...v.boxes.stmtHeader },
+    labInfo: { ...db.labInfo, ...v.boxes.labInfo },
+    practiceInfo: { ...db.practiceInfo, ...v.boxes.practiceInfo },
+    balanceSummary: { ...db.balanceSummary, ...v.boxes.balanceSummary },
+    transactions: { ...db.transactions, ...v.boxes.transactions },
+    aging: { ...db.aging, ...v.boxes.aging },
+    totals: { ...db.totals, ...v.boxes.totals },
+    footer: { ...db.footer, ...v.boxes.footer },
+  };
+  const rawSections = (v as { sections?: unknown }).sections;
+  const sections = Array.isArray(rawSections)
+    ? rawSections
+        .map((raw): StatementTemplateSection | null => {
+          if (!raw || typeof raw !== "object") return null;
+          const section = raw as Partial<StatementTemplateSection>;
+          const generatedType =
+            typeof section.generatedType === "string" &&
+            STATEMENT_SECTION_KEYS.includes(section.generatedType as StatementSectionKey)
+              ? (section.generatedType as StatementGeneratedSectionType)
+              : undefined;
+          const type = section.type === "custom" ? "custom" : "generated";
+          if (type === "generated" && !generatedType) return null;
+          const fallbackBox = generatedType ? boxes[generatedType] : { x: 40, y: 650, w: 260, h: 70 };
+          const boxValue = section.box && typeof section.box === "object" ? section.box : {};
+          const box = {
+            ...fallbackBox,
+            ...boxValue,
+          };
+          return {
+            id: typeof section.id === "string" && section.id ? section.id : crypto.randomUUID(),
+            type,
+            ...(generatedType ? { generatedType } : {}),
+            title: typeof section.title === "string" ? section.title : type === "custom" ? "Custom section" : STATEMENT_SECTION_DEFAULT_TITLES[generatedType!],
+            enabled: section.enabled !== false,
+            contentMode: section.contentMode === "custom" ? "custom" : "generated",
+            ...(typeof section.customText === "string" ? { customText: section.customText } : {}),
+            box,
+          };
+        })
+        .filter((section): section is StatementTemplateSection => section !== null)
+    : defaultStatementSections(boxes);
   return {
     version: 1,
     logo: { ...DEFAULT_STATEMENT_TEMPLATE.logo, ...v.logo },
-    boxes: {
-      stmtHeader: { ...db.stmtHeader, ...v.boxes.stmtHeader },
-      practiceInfo: { ...db.practiceInfo, ...v.boxes.practiceInfo },
-      balanceSummary: { ...db.balanceSummary, ...v.boxes.balanceSummary },
-      transactions: { ...db.transactions, ...v.boxes.transactions },
-      aging: { ...db.aging, ...v.boxes.aging },
-      totals: { ...db.totals, ...v.boxes.totals },
-      footer: { ...db.footer, ...v.boxes.footer },
-    },
+    boxes,
+    sections,
     extraImages: Array.isArray(v.extraImages)
       ? v.extraImages.map((img) => ({ ...img, opacity: img.opacity ?? 1 }))
       : [],

@@ -7,6 +7,7 @@ import { logger } from "./logger";
  */
 async function getStripeCredentials(): Promise<{
   secretKey: string;
+  publishableKey?: string;
   webhookSecret?: string;
 } | null> {
   const hostname = process.env.REPLIT_CONNECTORS_HOSTNAME;
@@ -49,6 +50,7 @@ async function getStripeCredentials(): Promise<{
 
     return {
       secretKey: settings.secret_key,
+      publishableKey: settings.publishable_key,
       webhookSecret: settings.webhook_secret,
     };
   } catch (err: any) {
@@ -58,6 +60,11 @@ async function getStripeCredentials(): Promise<{
     );
     return null;
   }
+}
+
+export async function getStripePublishableKey(): Promise<string | null> {
+  const creds = await getStripeCredentials();
+  return creds?.publishableKey ?? null;
 }
 
 /**

@@ -14,41 +14,97 @@ import {
   Platform,
   TouchableWithoutFeedback,
   Keyboard,
+  Alert,
 } from "react-native";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
+import { Camera, useCameraDevice, useCameraPermission, useCodeScanner } from "react-native-vision-camera";
 import * as Haptics from "expo-haptics";
 import {
-  useCases,
+  useCasesPage,
+  useCasesOverview,
+  getListLabInboxFilesQueryKey,
   type CanonicalCase,
 } from "@workspace/api-client-react";
-import { LocateCaseSheet } from "@/components/LocateCaseSheet";
+import type { CaseSavedView, CaseSavedViewFilters } from "@workspace/api-client-react";
+import { CASE_STATUS_GROUPS } from "@workspace/case-taxonomy";
+import { CaseRangeWindow } from "@/components/CaseRangeWindow";
+import { CasesSummary } from "@/components/CasesSummary";
+import { parseRangeDate } from "@workspace/calendar-date";
+import { CaseQuickActionSheet } from "@/components/CaseQuickActionSheet";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import {
   peekSharedFiles,
   popSharedFiles,
+  removeSharedFiles,
   subscribeSharedFileInbox,
+  saveSharedFilesToUnassignedDocuments,
   type InboxEntry,
 } from "@/lib/shared-file-inbox";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
-import { CASE_STATIONS } from "@/lib/case-stations";
+import { CASE_STATIONS, canonicalCaseStatus } from "@/lib/case-stations";
 import { resilientFetch } from "@/lib/query-client";
-import { formatRelativeCreated, formatRelativeDue } from "@/lib/format";
+import {
+  formatRelativeCreated,
+  formatRelativeDue,
+  formatCompletedAt,
+  getDueDayDiff,
+  isDueTimePast,
+} from "@/lib/format";
 import { useDayChange } from "@/hooks/useDayChange";
-import { extractLookupCase } from "@/lib/barcode-lookup";
-import { pickBestBarcode, guideBoxFromLayout } from "@/lib/barcode-guide-box";
+import { fetchCaseByBarcode } from "@/lib/barcode-lookup";
+import { pickBestBarcode, guideBoxFromFractions, type BarcodeCandidate } from "@/lib/barcode-guide-box";
+import { codesToBarcodeCandidates, SCAN_CODE_TYPES } from "@/lib/vision-camera-codes";
+import { TorchToggleButton } from "@/components/ui/TorchToggleButton";
 import { useMe, primaryLabOrgId } from "@/lib/auth-me";
-import { classifyCaseCategory, CASE_CATEGORY_KEYS, type CaseCategory } from "@/lib/case-category";
+import {
+  classifyCaseCategory,
+  CASE_CATEGORY_KEYS,
+  CASE_TYPES,
+  deriveCaseHierarchy,
+  getCaseTypeLabel,
+  getCompactWorkDetails,
+  type CaseCategory,
+  type CaseType,
+} from "@/lib/case-category";
+import { TypeBadge } from "@/components/ui/TypeBadge";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+} from "@/components/ui/DismissKeyboardView";
+import { caseLocationLabel } from "@/lib/case-location-label";
+import { useLongPressGuard } from "@/lib/use-long-press-guard";
+import { isActiveCaseRecord } from "@/lib/case-quick-actions";
 
 type DateFilterPreset = "all" | "today" | "yesterday" | "thisWeek" | "thisMonth" | "custom";
+async function savedCaseViewRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await resilientFetch(`/api${path}`, options);
+  let body: any = null;
+  if (response.status !== 204) {
+    try { body = await response.json(); } catch { body = null; }
+  }
+  if (!response.ok) {
+    throw new Error(body?.message ?? body?.error ?? `Request failed (${response.status})`);
+  }
+  return response.status === 204 ? (null as T) : body?.data as T;
+}
 
 // Labels for the category chip seeded by the Stats screen — mirrors the
 // Stats screen's CATEGORY_OPTIONS labels.
+// "Type" filter options — the top-level Case Type taxonomy (restorative /
+// removable / ortho), mirroring the same categorisation the desktop cases
+// list exposes. Derived per-case from the first restoration via
+// `deriveCaseHierarchy`, so a case with no recognisable restoration type
+// simply won't match any specific option (it still shows under "All types").
+const TYPE_FILTER_OPTIONS: { value: CaseType | "all"; label: string }[] = [
+  { value: "all", label: "All types" },
+  ...CASE_TYPES.map((ct) => ({ value: ct, label: getCaseTypeLabel(ct) })),
+];
+
 const CATEGORY_FILTER_LABELS: Record<CaseCategory, string> = {
   implants: "Implants",
   zirconia: "Zirconia",
@@ -64,6 +120,24 @@ const DATE_PRESET_OPTIONS: { value: DateFilterPreset; label: string }[] = [
   { value: "thisWeek", label: "This week" },
   { value: "thisMonth", label: "This month" },
   { value: "custom", label: "Custom range" },
+];
+
+const CASE_STATUS_QUICK_FILTERS = [
+  { id: "all", label: "All Cases", statuses: [] as readonly string[] },
+  { id: "processing", label: "Processing", statuses: CASE_STATUS_GROUPS.processing },
+  { id: "received", label: "Received", statuses: CASE_STATUS_GROUPS.received },
+  { id: "inDesign", label: "In Design", statuses: CASE_STATUS_GROUPS.inDesign },
+  { id: "modelRoom", label: "Model Room", statuses: CASE_STATUS_GROUPS.modelRoom },
+  { id: "scan", label: "Scan", statuses: CASE_STATUS_GROUPS.scan },
+  { id: "milling", label: "In Milling", statuses: CASE_STATUS_GROUPS.milling },
+  { id: "postMill", label: "Post Mill", statuses: CASE_STATUS_GROUPS.postMill },
+  { id: "sinteringFurnace", label: "Sintering Furnace", statuses: CASE_STATUS_GROUPS.sinteringFurnace },
+  { id: "porcelain", label: "Porcelain", statuses: CASE_STATUS_GROUPS.porcelain },
+  { id: "qualityCheck", label: "Quality Check", statuses: CASE_STATUS_GROUPS.qualityCheck },
+  { id: "onHold", label: "On Hold", statuses: CASE_STATUS_GROUPS.onHold },
+  { id: "remake", label: "Remake", statuses: CASE_STATUS_GROUPS.remake },
+  { id: "shipped", label: "Shipped", statuses: CASE_STATUS_GROUPS.shipped },
+  { id: "overdue", label: "Overdue", statuses: [] as readonly string[] },
 ];
 
 interface ScanMatch {
@@ -96,7 +170,7 @@ function MobileTrialBanner() {
   const { status, trialDaysRemaining } = entitlement;
   if (status === "active" || status === "legacy_free") return null;
 
-  if (status === "locked" || status === "canceled" || status === "grace") {
+  if (status === "locked" || status === "deactivated" || status === "read_only" || status === "canceled" || status === "grace") {
     return (
       <Pressable
         onPress={() => router.push("/settings/subscriptions" as never)}
@@ -116,7 +190,11 @@ function MobileTrialBanner() {
       >
         <Ionicons name="alert-circle" size={16} color="#EF4444" />
         <Text style={{ flex: 1, fontSize: 13, fontWeight: "500", color: "#EF4444" }}>
-          {status === "grace" ? "Trial expired — add billing to continue" : "Subscription Required"}
+          {status === "grace"
+            ? "Trial expired — add billing to continue"
+            : status === "deactivated" || status === "read_only"
+              ? "Read-only access — renew to restore full access"
+              : "Subscription Required"}
         </Text>
         <Text style={{ fontSize: 12, fontWeight: "600", color: "#EF4444" }}>Upgrade →</Text>
       </Pressable>
@@ -223,6 +301,11 @@ function patientName(c: CanonicalCase): string {
   return name || "Unnamed patient";
 }
 
+function firstListValue(value: string | null | undefined): string | null {
+  const first = value?.split(",")[0]?.trim();
+  return first || null;
+}
+
 function titleCase(s: string): string {
   return s
     .replace(/[_-]+/g, " ")
@@ -232,7 +315,9 @@ function titleCase(s: string): string {
 
 
 function formatShort(d: Date): string {
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}/${dd}`;
 }
 
 function startOfDay(d: Date): Date {
@@ -283,23 +368,6 @@ function endOfMonth(d: Date): Date {
   return r;
 }
 
-/** Parse "M/D/YYYY", "MM/DD/YYYY", or "YYYY-MM-DD". Returns null on failure. */
-function parseInputDate(text: string): Date | null {
-  const t = text.trim();
-  if (!t) return null;
-  const slash = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (slash) {
-    const d = new Date(Number(slash[3]), Number(slash[1]) - 1, Number(slash[2]));
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-  const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (iso) {
-    const d = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-  return null;
-}
-
 function statusVariant(status: string | null | undefined): BadgeVariant {
   const s = (status ?? "").toLowerCase();
   if (s.includes("remake")) return "remake";
@@ -326,9 +394,27 @@ export default function CasesListScreen() {
 
   // ── Search
   const [query, setQuery] = useState("");
+  // Debounced copy of the search term that is sent to the SERVER. Typing only
+  // updates `query` (instant local filtering); this trails it by 300ms so we
+  // don't fire a request per keystroke.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [casePage, setCasePage] = useState(1);
+  const [loadedCases, setLoadedCases] = useState<CanonicalCase[]>([]);
 
   // ── Auth / membership — used to resolve lab org ID for barcode scan
   const meQuery = useMe();
+  const qc = useQueryClient();
+  const savedViewsLabOrgId = primaryLabOrgId(meQuery.data);
+  const [showSavedViewsModal, setShowSavedViewsModal] = useState(false);
+  const [selectedSavedViewId, setSelectedSavedViewId] = useState("");
+  const [savedViewNameDraft, setSavedViewNameDraft] = useState("");
+  const savedViewsQuery = useQuery({
+    queryKey: ["cases", "saved-views", savedViewsLabOrgId],
+    enabled: !!savedViewsLabOrgId,
+    queryFn: () => savedCaseViewRequest<CaseSavedView[]>(
+      `/cases/saved-views?labOrganizationId=${encodeURIComponent(savedViewsLabOrgId!)}`,
+    ),
+  });
 
   // ── Barcode scan modal
   const [showScanModal, setShowScanModal] = useState(false);
@@ -338,15 +424,16 @@ export default function CasesListScreen() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanScanned, setScanScanned] = useState(false);
   const [scanMatch, setScanMatch] = useState<ScanMatch | null>(null);
-  const [scanTarget, setScanTarget] = useState<BarcodeScanningResult | null>(null);
   const cameraViewSize = useRef<{ width: number; height: number } | null>(null);
   // Ref mirrors scanScanned so timer callbacks read the live value without stale closures.
   const scanLockedRef = useRef(false);
   // Accumulate all barcodes detected in a ~120ms frame window so pickBestBarcode
   // can choose the in-box barcode closest to center across the whole frame.
-  const barcodeAccumRef = useRef<BarcodeScanningResult[]>([]);
+  const barcodeAccumRef = useRef<BarcodeCandidate[]>([]);
   const barcodeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const { hasPermission: cameraHasPermission, requestPermission: requestCameraPermission } = useCameraPermission();
+  const cameraDevice = useCameraDevice("back");
+  const [scanTorchOn, setScanTorchOn] = useState(false);
 
   function openScanModal() {
     setScanStep("scan");
@@ -355,7 +442,7 @@ export default function CasesListScreen() {
     setScanScanned(false);
     scanLockedRef.current = false;
     setScanMatch(null);
-    setScanTarget(null);
+    setScanTorchOn(false);
     barcodeAccumRef.current = [];
     if (barcodeDebounceRef.current) {
       clearTimeout(barcodeDebounceRef.current);
@@ -370,7 +457,7 @@ export default function CasesListScreen() {
     setScanScanned(false);
     scanLockedRef.current = false;
     setScanMatch(null);
-    setScanTarget(null);
+    setScanTorchOn(false);
     setManualBarcode("");
     barcodeAccumRef.current = [];
     if (barcodeDebounceRef.current) {
@@ -389,7 +476,7 @@ export default function CasesListScreen() {
     // users whose primary lab differs from the case they're browsing).
     let labOrganizationId =
       primaryLabOrgId(meQuery.data) ??
-      (casesQuery.data ?? [])[0]?.labOrganizationId ??
+      casesQuery.data?.rows[0]?.labOrganizationId ??
       "";
 
     // If auth/me hasn't resolved yet (cold open, fast scan), fetch it on
@@ -415,65 +502,29 @@ export default function CasesListScreen() {
     setScanError(null);
 
     try {
-      const qs = new URLSearchParams({
-        labOrganizationId,
-      });
-      const res = await resilientFetch(
-        `/api/cases/barcode/${encodeURIComponent(trimmed)}?${qs.toString()}`,
-      );
+      // Shared with the dashboard's Look Up Case pop-up so both surfaces agree
+      // on the request shape, envelope parsing, and the user-facing wording.
+      const outcome = await fetchCaseByBarcode(trimmed, labOrganizationId, resilientFetch);
 
-      if (res.status === 404) {
-        setScanError("No case found for that pan.");
+      if (outcome.status !== "found") {
+        setScanError(outcome.message);
         setScanScanned(false);
         scanLockedRef.current = false;
-        setScanTarget(null);
         return;
       }
-
-      if (!res.ok) {
-        setScanError("Something went wrong. Please try again.");
-        setScanScanned(false);
-        scanLockedRef.current = false;
-        setScanTarget(null);
-        return;
-      }
-
-      const body = await res.json();
-      const found = extractLookupCase(body);
-      const caseId = found?.id;
-      if (!caseId) {
-        setScanError("No case found for that pan.");
-        setScanScanned(false);
-        scanLockedRef.current = false;
-        setScanTarget(null);
-        return;
-      }
-
-      const matchPatientName = [
-        `${found.patientFirstName ?? ""}`,
-        `${found.patientLastName ?? ""}`,
-      ]
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .join(" ") || "Unnamed patient";
 
       setScanMatch({
         barcode: trimmed,
-        patientName: matchPatientName,
-        caseNumber: found.caseNumber ?? null,
-        caseId,
+        patientName: outcome.patientName,
+        caseNumber: outcome.caseNumber,
+        caseId: outcome.caseId,
       });
 
       setTimeout(() => {
         closeScanModal();
         leavingIntoCasesWorkflow = true;
-        router.push(`/case/${caseId}` as never);
+        router.push(`/case/${outcome.caseId}` as never);
       }, 900);
-    } catch {
-      setScanError("Network error. Please try again.");
-      setScanScanned(false);
-      scanLockedRef.current = false;
-      setScanTarget(null);
     } finally {
       setScanSearching(false);
     }
@@ -485,12 +536,12 @@ export default function CasesListScreen() {
   lookupBarcodeRef.current = lookupBarcode;
 
   const handleCameraBarcode = useCallback(
-    (event: BarcodeScanningResult) => {
-      if (scanLockedRef.current || !event.data?.trim()) return;
+    (codes: BarcodeCandidate[]) => {
+      if (scanLockedRef.current || codes.length === 0) return;
 
       // Accumulate all barcodes arriving in this ~120ms scan cycle so
       // pickBestBarcode can compare all in-frame candidates at once.
-      barcodeAccumRef.current.push(event);
+      barcodeAccumRef.current.push(...codes);
       if (barcodeDebounceRef.current) clearTimeout(barcodeDebounceRef.current);
 
       barcodeDebounceRef.current = setTimeout(() => {
@@ -503,23 +554,25 @@ export default function CasesListScreen() {
         const candidates = barcodeAccumRef.current.splice(0);
         if (candidates.length === 0) return;
 
-        // Strict gate: reject until the camera view has been laid out.
         const viewSize = cameraViewSize.current;
-        if (!viewSize) return;
-
-        const box = guideBoxFromLayout(viewSize.width, viewSize.height, 0.12, 0.28, 0.12, 0.44);
-        const best = pickBestBarcode(candidates, box);
+        const box = guideBoxFromFractions(0.12, 0.28, 0.12, 0.44);
+        const best = pickBestBarcode(candidates, box, viewSize) ?? candidates[0];
         if (!best || !best.data.trim()) return;
 
         scanLockedRef.current = true;
         setScanScanned(true);
-        setScanTarget(best);
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+        Promise.resolve(Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)).catch(() => {});
         lookupBarcodeRef.current(best.data.trim());
       }, 120);
     },
     [],
   );
+
+  const scanCodeScanner = useCodeScanner({
+    codeTypes: SCAN_CODE_TYPES,
+    onCodeScanned: (codes, frame) =>
+      handleCameraBarcode(codesToBarcodeCandidates(codes, frame)),
+  });
 
   async function handleManualBarcode() {
     const code = manualBarcode.trim();
@@ -543,7 +596,6 @@ export default function CasesListScreen() {
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [draftFrom, setDraftFrom] = useState("");
   const [draftTo, setDraftTo] = useState("");
-  const [customError, setCustomError] = useState("");
 
   // Date picker sheet (for Today/Yesterday/This week/This month/Custom)
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -561,11 +613,20 @@ export default function CasesListScreen() {
   // dismissible chip only when active.
   const [categoryFilter, setCategoryFilter] = useState<CaseCategory | "">("");
 
-  // ── Location filter (empty array = all locations)
-  const [locationFilter, setLocationFilter] = useState<string[]>([]);
-  const [showLocationModal, setShowLocationModal] = useState(false);
+  // ── Case Type filter (Restorative / Removable / Ortho / Appliances) —
+  // user-selectable via the "Type" chip below. Filters to cases whose first
+  // restoration maps to that top-level case type via `deriveCaseHierarchy`.
+  const [typeFilter, setTypeFilter] = useState<CaseType | "all">("all");
+  const [showTypeModal, setShowTypeModal] = useState(false);
+
+  // ── Status filter — multi-select, union semantics: a case is kept when its
+  // status matches ANY checked value. An empty array means "All" (no
+  // filtering), mirroring the desktop cases list's MultiSelectFilter contract.
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [overdueOnly, setOverdueOnly] = useState(false);
+  const [showStatusModal, setShowStatusModal] = useState(false);
   // Draft selections while the modal is open
-  const [locationDraft, setLocationDraft] = useState<string[]>([]);
+  const [statusDraft, setStatusDraft] = useState<string[]>([]);
 
   // Reset every record-hiding Cases filter to its default. Sort/display prefs
   // are untouched. Stable identity (only stable setters referenced) so the
@@ -580,13 +641,124 @@ export default function CasesListScreen() {
     setDueCustomTo(null);
     setDraftFrom("");
     setDraftTo("");
-    setCustomError("");
-    setLocationFilter([]);
+    setStatusFilter([]);
+    setOverdueOnly(false);
+    setStatusDraft([]);
     setBarcodeFilter("");
     setShowBarcodeFilter(false);
     setConflictFilter(false);
     setCategoryFilter("");
+    setTypeFilter("all");
   }, []);
+
+  const applySavedCaseView = useCallback((view: CaseSavedView) => {
+    setQuery(view.filters.search);
+    setDebouncedSearch(view.filters.search.trim());
+    setStatusFilter([...view.filters.statusFilters]);
+    setStatusDraft([]);
+    setOverdueOnly(false);
+    setBarcodeFilter("");
+    setShowBarcodeFilter(false);
+    setConflictFilter(false);
+    setCategoryFilter("");
+    setTypeFilter("all");
+    setCreatedFilter((view.filters.mobile?.createdFilter ?? "all") as DateFilterPreset);
+    setCreatedCustomFrom(calendarDateFromString(view.filters.mobile?.createdCustomFrom ?? ""));
+    setCreatedCustomTo(calendarDateFromString(view.filters.mobile?.createdCustomTo ?? ""));
+    setDueFilter((view.filters.mobile?.dueFilter ?? "all") as DateFilterPreset);
+    setDueCustomFrom(calendarDateFromString(view.filters.mobile?.dueCustomFrom ?? ""));
+    setDueCustomTo(calendarDateFromString(view.filters.mobile?.dueCustomTo ?? ""));
+    setShowDatePicker(false);
+    setShowCustomModal(false);
+    setCasePage(1);
+    setLoadedCases([]);
+    setSelectedSavedViewId(view.id);
+    if (!view.filters.mobile && view.filters.desktop) {
+      Alert.alert(
+        "Date filter not applied",
+        "This view was saved on desktop. Search and status were applied; mobile created and due dates were cleared because desktop uses a different date field.",
+      );
+    }
+  }, []);
+
+  const createSavedViewMutation = useMutation({
+    mutationFn: (name: string) => {
+      if (!savedViewsLabOrgId) throw new Error("No lab is available for saved views.");
+      const filters: CaseSavedViewFilters = {
+        search: query.trim(),
+        statusFilters: [...statusFilter],
+        mobile: {
+          createdFilter,
+          createdCustomFrom: calendarDateString(createdCustomFrom),
+          createdCustomTo: calendarDateString(createdCustomTo),
+          dueFilter,
+          dueCustomFrom: calendarDateString(dueCustomFrom),
+          dueCustomTo: calendarDateString(dueCustomTo),
+        },
+      };
+      return savedCaseViewRequest<CaseSavedView>("/cases/saved-views", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ labOrganizationId: savedViewsLabOrgId, name, filters }),
+      });
+    },
+    onSuccess: (view) => {
+      setSelectedSavedViewId(view.id);
+      setSavedViewNameDraft("");
+      void qc.invalidateQueries({ queryKey: ["cases", "saved-views", savedViewsLabOrgId] });
+      Alert.alert("Saved view", `“${view.name}” is now shared with your lab team.`);
+    },
+    onError: (error) => Alert.alert("Could not save view", error instanceof Error ? error.message : "Please try again."),
+  });
+  const updateSavedViewFiltersMutation = useMutation({
+    mutationFn: ({ id, filters }: { id: string; filters: CaseSavedViewFilters }) => {
+      if (!savedViewsLabOrgId) throw new Error("No lab is available for saved views.");
+      return savedCaseViewRequest<CaseSavedView>(`/cases/saved-views/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ labOrganizationId: savedViewsLabOrgId, filters }),
+      });
+    },
+    onSuccess: (view) => {
+      setSelectedSavedViewId(view.id);
+      setSavedViewNameDraft(view.name);
+      void qc.invalidateQueries({ queryKey: ["cases", "saved-views", savedViewsLabOrgId] });
+      Alert.alert("Saved view updated", `“${view.name}” is now updated for everyone in your lab.`);
+    },
+    onError: (error) => Alert.alert("Could not update view", error instanceof Error ? error.message : "Please try again."),
+  });
+  const renameSavedViewMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => {
+      if (!savedViewsLabOrgId) throw new Error("No lab is available for saved views.");
+      return savedCaseViewRequest<CaseSavedView>(`/cases/saved-views/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ labOrganizationId: savedViewsLabOrgId, name }),
+      });
+    },
+    onSuccess: (view) => {
+      setSavedViewNameDraft(view.name);
+      void qc.invalidateQueries({ queryKey: ["cases", "saved-views", savedViewsLabOrgId] });
+    },
+    onError: (error) => Alert.alert("Could not rename view", error instanceof Error ? error.message : "Please try again."),
+  });
+  const deleteSavedViewMutation = useMutation({
+    mutationFn: (id: string) => {
+      if (!savedViewsLabOrgId) throw new Error("No lab is available for saved views.");
+      return savedCaseViewRequest<null>(
+        `/cases/saved-views/${encodeURIComponent(id)}?labOrganizationId=${encodeURIComponent(savedViewsLabOrgId)}`,
+        { method: "DELETE" },
+      );
+    },
+    onSuccess: (_result, id) => {
+      if (selectedSavedViewId === id) {
+        setSelectedSavedViewId("");
+        setSavedViewNameDraft("");
+      }
+      void qc.invalidateQueries({ queryKey: ["cases", "saved-views", savedViewsLabOrgId] });
+    },
+    onError: (error) => Alert.alert("Could not remove view", error instanceof Error ? error.message : "Please try again."),
+  });
 
   // Reset Cases filters when leaving the Cases section entirely, but preserve
   // them when the exit was into an in-Cases workflow (case detail / new-case),
@@ -637,78 +809,138 @@ export default function CasesListScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.category, params.createdFrom, params.createdTo]);
 
-  // ── Long-press locate (single) + multi-select mode
-  // Guard: after a long-press fires, the subsequent pressOut→onPress (on that
-  // same card) must not navigate or toggle. Store the ID of the long-pressed
-  // item so we only absorb the onPress for that specific card, not others.
-  const longPressActiveRef = useRef<string | null>(null);
+  // Long press is the one consistent action for active cases. The guard
+  // absorbs RN's release onPress after onLongPress without affecting other rows.
+  const { markLongPress, consumeLongPress } = useLongPressGuard<string>();
+  const [quickActionCase, setQuickActionCase] = useState<CanonicalCase | null>(null);
 
-  const [locatingCase, setLocatingCase] = useState<CanonicalCase | null>(null);
-  const [locateSuccessId, setLocateSuccessId] = useState<string | null>(null);
-
-  // Multi-select state
-  const [selectionMode, setSelectionMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [showBulkLocateSheet, setShowBulkLocateSheet] = useState(false);
-  const [bulkLocateSuccessIds, setBulkLocateSuccessIds] = useState<Set<string>>(new Set());
-
-  function exitSelectionMode() {
-    longPressActiveRef.current = null;
-    setSelectionMode(false);
-    setSelectedIds(new Set());
-    setShowBulkLocateSheet(false);
-  }
-
-  function toggleSelection(id: string) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      if (next.size === 0) {
-        setSelectionMode(false);
-      }
-      return next;
-    });
-  }
-
-  function dismissLocate() {
-    longPressActiveRef.current = null;
-    setLocatingCase(null);
-  }
-
-  function handleLocated(caseId: string) {
-    setLocateSuccessId(caseId);
-    setTimeout(() => setLocateSuccessId(null), 2500);
-  }
-
-  function handleBulkLocated(succeededIds: string[], failedIds: string[]) {
-    if (succeededIds.length > 0) {
-      // At least one case moved — close the sheet, exit selection mode,
-      // and flash Located badges on the succeeded rows.
-      setShowBulkLocateSheet(false);
-      exitSelectionMode();
-      const successSet = new Set(succeededIds);
-      setBulkLocateSuccessIds(successSet);
-      setTimeout(() => setBulkLocateSuccessIds(new Set()), 2500);
-    }
-    // If all failed (succeededIds empty): leave the sheet open and keep
-    // selection intact so the user can retry without re-selecting cases.
-  }
 
   // ── Share-intent inbox
   const [pendingShared, setPendingShared] = useState<InboxEntry[]>([]);
 
-  const casesQuery = useCases();
-  const cases = casesQuery.data ?? [];
+  // Without a search term the server returns only the 500 most-recent cases
+  // (a deliberate cap to bound query time). With one, it runs the match in SQL
+  // across EVERY case in the lab. Labs routinely hold thousands of cases, so
+  // filtering purely on the client made anything outside that 500-case window
+  // permanently unfindable. Send the term to the server instead.
+  //
+  // The barcode quick-filter feeds the same param (the server's search covers
+  // casePanBarcode); a free-text query wins when both are set, because the
+  // barcode filter is then applied client-side as an additional narrowing.
+  //
+  // Only schedule the debounce when the term actually changed. Scheduling it
+  // unconditionally meant every mount wiped the loaded page 300ms later — a
+  // state update with no user action behind it, which also lands outside
+  // act() in screen tests and aborts the run as an unhandled error.
+  const appliedSearchRef = useRef("");
+  useEffect(() => {
+    const term = query.trim() || barcodeFilter.trim();
+    if (term === appliedSearchRef.current) return;
+    const t = setTimeout(() => {
+      appliedSearchRef.current = term;
+      setDebouncedSearch(term);
+      setCasePage(1);
+      setLoadedCases([]);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query, barcodeFilter]);
+
+  function dateRangeParams(
+    preset: DateFilterPreset,
+    from: Date | null,
+    to: Date | null,
+  ): { start?: string; end?: string } {
+    if (preset === "all") return {};
+    const today = new Date();
+    let start: Date | null = null;
+    let end: Date | null = null;
+    if (preset === "today") start = end = today;
+    else if (preset === "yesterday") start = end = addDays(today, -1);
+    else if (preset === "thisWeek") {
+      start = startOfWeek(today);
+      end = endOfWeek(today);
+    } else if (preset === "thisMonth") {
+      start = startOfMonth(today);
+      end = endOfMonth(today);
+    } else {
+      start = from ?? new Date(1970, 0, 1);
+      end = to ?? new Date(2999, 11, 31);
+    }
+    const format = (date: Date) =>
+      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    return { start: format(start), end: format(end) };
+  }
+
+  const dayKey = useDayChange();
+  const localNow = new Date();
+  const localDate = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, "0")}-${String(localNow.getDate()).padStart(2, "0")}`;
+  const createdRange = dateRangeParams(createdFilter, createdCustomFrom, createdCustomTo);
+  const dueRange = dateRangeParams(dueFilter, dueCustomFrom, dueCustomTo);
+  const casesRequest = {
+    ...(query.trim() && debouncedSearch ? { search: debouncedSearch } : {}),
+    ...(!query.trim() && debouncedSearch ? { barcode: debouncedSearch } : {}),
+    ...(statusFilter.length ? { status: statusFilter } : {}),
+    ...(overdueOnly ? { overdueOnly: true, localDate } : {}),
+    ...(categoryFilter ? { category: categoryFilter } : {}),
+    ...(typeFilter !== "all" ? { taxonomyType: typeFilter } : {}),
+    ...(conflictFilter ? { conflictsOnly: true } : {}),
+    ...(createdRange.start ? { createdStart: createdRange.start, createdEnd: createdRange.end } : {}),
+    ...(dueRange.start ? { dueStart: dueRange.start, dueEnd: dueRange.end } : {}),
+  };
+  const casesRequestKey = JSON.stringify(casesRequest);
+
+  useEffect(() => {
+    setCasePage(1);
+    setLoadedCases([]);
+  }, [
+    statusFilter,
+    overdueOnly,
+    categoryFilter,
+    typeFilter,
+    conflictFilter,
+    createdFilter,
+    createdCustomFrom,
+    createdCustomTo,
+    dueFilter,
+    dueCustomFrom,
+    dueCustomTo,
+  ]);
+  useEffect(() => {
+    if (!overdueOnly) return;
+    setCasePage(1);
+    setLoadedCases([]);
+  }, [dayKey, overdueOnly]);
+
+  const casesQuery = useCasesPage(
+    { ...casesRequest, page: casePage, pageSize: 10 },
+    // Keep the previous results on screen while a new search resolves so the
+    // list doesn't flash empty on every debounce tick.
+    { placeholderData: (prev) => prev },
+  );
+  const overviewQuery = useCasesOverview();
+  const cases = loadedCases;
+  const matchingTotal =
+    casesQuery.data?.requestKey === casesRequestKey ? casesQuery.data.total : null;
+  useEffect(() => {
+    if (
+      !casesQuery.data ||
+      casesQuery.data.requestKey !== casesRequestKey ||
+      casesQuery.data.page !== casePage
+    ) return;
+    setLoadedCases((previous) => casesQuery.data!.page === 1
+      ? casesQuery.data!.rows
+      : [...previous.filter((row) => !casesQuery.data!.rows.some((next) => next.id === row.id)), ...casesQuery.data!.rows]);
+  }, [
+    casePage,
+    casesQuery.data?.page,
+    casesQuery.data?.rows,
+    casesQuery.data?.requestKey,
+    casesRequestKey,
+  ]);
 
   // Recompute relative date labels and date-preset filters ("Today",
   // "Yesterday", "Due today", "Overdue", ...) whenever the local calendar day
   // rolls over or the app resumes on a later day.
-  const dayKey = useDayChange();
-
   // ── Conflict detection ────────────────────────────────────────────────────
   // A case is "conflicting" when two or more active (non-terminal) cases in the
   // same lab share the same casePanBarcode — mirrors the desktop Conflict badge
@@ -733,6 +965,9 @@ export default function CasesListScreen() {
       else counts.set(key, [c.id]);
     }
     const result = new Set<string>();
+    for (const c of cases) {
+      if (c.hasBarcodeConflict) result.add(c.id);
+    }
     for (const ids of counts.values()) {
       if (ids.length >= 2) {
         for (const id of ids) result.add(id);
@@ -767,78 +1002,92 @@ export default function CasesListScreen() {
     setPendingShared([]);
   }
 
+  const [savingSharedToInbox, setSavingSharedToInbox] = useState<{ completed: number; total: number } | null>(null);
+
+  async function resolveLabOrgIdForShared(): Promise<string> {
+    let labOrganizationId = primaryLabOrgId(meQuery.data) ?? "";
+    if (!labOrganizationId && (meQuery.isLoading || meQuery.isPending)) {
+      try {
+        const freshMe = await meQuery.refetch();
+        labOrganizationId = primaryLabOrgId(freshMe.data) ?? "";
+      } catch {
+        // ignore — falls through to the "no lab" alert below
+      }
+    }
+    return labOrganizationId;
+  }
+
+  async function saveSharedToUnassigned() {
+    // Non-destructive peek — we only remove entries once we know they
+    // actually saved, so a failure (no lab resolved, upload error, etc.)
+    // never silently loses the file.
+    const entries = await peekSharedFiles();
+    if (entries.length === 0) return;
+    const labOrganizationId = await resolveLabOrgIdForShared();
+    if (!labOrganizationId) {
+      Alert.alert(
+        "Could not save files",
+        "No lab organization found. Please sign out and back in, then try again.",
+      );
+      return;
+    }
+    setSavingSharedToInbox({ completed: 0, total: entries.length });
+    const summary = await saveSharedFilesToUnassignedDocuments(
+      entries,
+      labOrganizationId,
+      (completed, total) => setSavingSharedToInbox({ completed, total }),
+    );
+    setSavingSharedToInbox(null);
+    if (summary.succeeded.length > 0) {
+      await removeSharedFiles(summary.succeeded);
+      void qc.invalidateQueries({
+        queryKey: getListLabInboxFilesQueryKey({ labOrganizationId }),
+      });
+    }
+    if (summary.failures.length === 0) {
+      Alert.alert(
+        "Saved",
+        `${summary.savedCount} file${summary.savedCount === 1 ? "" : "s"} saved to Unassigned Documents.`,
+      );
+    } else if (summary.savedCount === 0) {
+      Alert.alert(
+        "Could not save files",
+        `${summary.failures.map((f) => `${f.name}: ${f.error}`).join("\n")}\n\nThe file${
+          summary.failures.length === 1 ? "" : "s"
+        } will remain available to try again.`,
+      );
+    } else {
+      Alert.alert(
+        "Some files could not be saved",
+        `Saved ${summary.savedCount} of ${entries.length}. Failed (still pending, try again): ${summary.failures
+          .map((f) => f.name)
+          .join(", ")}`,
+      );
+    }
+  }
+
+  function handleSharedBannerPress() {
+    if (pendingShared.length === 0 || savingSharedToInbox) return;
+    Alert.alert(
+      "Shared files",
+      `${pendingShared.length} file${pendingShared.length === 1 ? "" : "s"} ready. Save ${
+        pendingShared.length === 1 ? "it" : "them"
+      } to Unassigned Documents, or discard?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Discard", style: "destructive", onPress: () => void dismissShared() },
+        { text: "Save to Unassigned Documents", onPress: () => void saveSharedToUnassigned() },
+      ],
+    );
+  }
+
   // ── Filtering ────────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let result = cases;
 
-    // Text search
-    const q = query.trim().toLowerCase();
-    if (q) {
-      result = result.filter((c) => {
-        const haystack = [patientName(c), c.doctorName ?? "", c.caseNumber ?? "", c.casePanBarcode ?? ""]
-          .join(" ")
-          .toLowerCase();
-        return haystack.includes(q);
-      });
-    }
-
-    // Created-date filter
-    if (createdFilter !== "all") {
-      const today = new Date();
-      result = result.filter((c) => {
-        if (!c.createdAt) return false;
-        const d = new Date(c.createdAt);
-        if (Number.isNaN(d.getTime())) return false;
-        return dateMatchesPreset(d, today, createdFilter, createdCustomFrom, createdCustomTo);
-      });
-    }
-
-    // Due-date filter
-    if (dueFilter !== "all") {
-      const today = new Date();
-      result = result.filter((c) => {
-        if (!c.dueDate) return false;
-        const d = new Date(c.dueDate);
-        if (Number.isNaN(d.getTime())) return false;
-        return dateMatchesPreset(d, today, dueFilter, dueCustomFrom, dueCustomTo);
-      });
-    }
-
-    // Location filter
-    if (locationFilter.length > 0) {
-      result = result.filter(
-        (c) => locationFilter.includes((c.status ?? "").toLowerCase()),
-      );
-    }
-
-    // Barcode quick-filter — exact pan-barcode match
-    const bc = barcodeFilter.trim().toLowerCase();
-    if (bc) {
-      result = result.filter(
-        (c) => (c.casePanBarcode ?? "").trim().toLowerCase() === bc,
-      );
-    }
-
-    // Conflict filter — only cases that share an active barcode with another case
-    if (conflictFilter) {
-      result = result.filter((c) => conflictIds.has(c.id));
-    }
-
-    // Category filter (seeded from the Stats screen) — classify each case from
-    // its restoration type/material strings, mirroring the Stats grouping.
-    if (categoryFilter) {
-      result = result.filter(
-        (c) =>
-          classifyCaseCategory(
-            typeof c.restorationTypes === "string" ? c.restorationTypes : null,
-            typeof c.restorationMaterials === "string" ? c.restorationMaterials : null,
-          ) === categoryFilter,
-      );
-    }
-
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cases, query, createdFilter, dueFilter, createdCustomFrom, createdCustomTo, dueCustomFrom, dueCustomTo, locationFilter, barcodeFilter, conflictFilter, categoryFilter, conflictIds, dayKey]);
+  }, [cases, dayKey]);
 
   // ── Date preset matching helper ─────────────────────────────────────────
   function dateMatchesPreset(
@@ -874,40 +1123,11 @@ export default function CasesListScreen() {
     setCustomTarget(target);
     const from = target === "created" ? createdCustomFrom : dueCustomFrom;
     const to = target === "created" ? createdCustomTo : dueCustomTo;
-    setDraftFrom(from ? from.toLocaleDateString("en-US") : "");
-    setDraftTo(to ? to.toLocaleDateString("en-US") : "");
-    setCustomError("");
+    const toMDY = (d: Date) =>
+      `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+    setDraftFrom(from ? toMDY(from) : "");
+    setDraftTo(to ? toMDY(to) : "");
     setShowCustomModal(true);
-  }
-
-  function applyCustom() {
-    const from = parseInputDate(draftFrom);
-    const to = parseInputDate(draftTo);
-
-    if (draftFrom && !from) {
-      setCustomError('Invalid "From" date \u2014 use M/D/YYYY format.');
-      return;
-    }
-    if (draftTo && !to) {
-      setCustomError('Invalid "To" date \u2014 use M/D/YYYY format.');
-      return;
-    }
-    if (from && to && from > to) {
-      setCustomError('"From" must be on or before "To".');
-      return;
-    }
-
-    if (customTarget === "created") {
-      setCreatedCustomFrom(from);
-      setCreatedCustomTo(to);
-      setCreatedFilter("custom");
-    } else {
-      setDueCustomFrom(from);
-      setDueCustomTo(to);
-      setDueFilter("custom");
-    }
-    setCustomError("");
-    setShowCustomModal(false);
   }
 
   function clearCustom(target?: "created" | "due") {
@@ -923,7 +1143,6 @@ export default function CasesListScreen() {
     }
     setDraftFrom("");
     setDraftTo("");
-    setCustomError("");
     setShowCustomModal(false);
   }
 
@@ -939,11 +1158,11 @@ export default function CasesListScreen() {
       const to = target === "created" ? createdCustomTo : dueCustomTo;
       if (!from && !to) return "Custom…";
       const parts: string[] = [];
-      if (from) parts.push(formatShort(from));
-      if (to) parts.push(formatShort(to));
+      if (from) parts.push(`${formatShort(from)}/${String(from.getFullYear()).padStart(4, "0")}`);
+      if (to) parts.push(`${formatShort(to)}/${String(to.getFullYear()).padStart(4, "0")}`);
       return parts.join(" \u2013 ");
     }
-    return target === "created" ? "Date created" : "Date due";
+    return target === "created" ? "Date" : "Date due";
   }
 
   function clearAllDates() {
@@ -955,51 +1174,84 @@ export default function CasesListScreen() {
     setDueCustomTo(null);
     setDraftFrom("");
     setDraftTo("");
-    setCustomError("");
   }
 
-  // ── Location chip label ──────────────────────────────────────────────────
-  const locationLabel = useMemo(() => {
-    if (locationFilter.length === 0) return "Location";
-    if (locationFilter.length === 1) {
-      return CASE_STATIONS.find((s) => s.value === locationFilter[0])?.label ?? titleCase(locationFilter[0]);
+  // ── Status chip label ────────────────────────────────────────────────────
+  // Mirrors the desktop MultiSelectFilter summary: the bare noun when nothing
+  // is checked, the single option's label when exactly one is, and a count
+  // otherwise, so the number of selected statuses is always visible.
+  const statusFilterLabel = useMemo(() => {
+    if (statusFilter.length === 0) return "Location";
+    if (statusFilter.length === 1) {
+      return CASE_STATIONS.find((s) => s.value === statusFilter[0])?.label ?? titleCase(statusFilter[0]);
     }
-    return `${locationFilter.length} stations`;
-  }, [locationFilter]);
+    return `${statusFilter.length} selected`;
+  }, [statusFilter]);
+
+  // ── Type chip label ──────────────────────────────────────────────────────
+  const typeFilterLabel = useMemo(() => {
+    if (typeFilter === "all") return "Type";
+    return TYPE_FILTER_OPTIONS.find((o) => o.value === typeFilter)?.label ?? "Type";
+  }, [typeFilter]);
 
   const activeFilters =
-    createdFilter !== "all" || dueFilter !== "all" || locationFilter.length > 0 || barcodeFilter.trim().length > 0 || conflictFilter || categoryFilter !== "";
+    createdFilter !== "all" || dueFilter !== "all" || statusFilter.length > 0 || overdueOnly || barcodeFilter.trim().length > 0 || conflictFilter || categoryFilter !== "" || typeFilter !== "all";
 
   // Includes the text search too — drives the visible Reset filters control.
   const anyFilterActive = activeFilters || query.trim().length > 0;
-
-  // Derived: the CanonicalCase objects for the currently selected IDs
-  const selectedCases = useMemo(
-    () => filtered.filter((c) => selectedIds.has(c.id)),
-    [filtered, selectedIds]
-  );
+  const isQuickFilterActive = (id: string, statuses: readonly string[]) => {
+    if (id === "overdue") return overdueOnly;
+    if (overdueOnly) return false;
+    return statuses.length === statusFilter.length &&
+      statuses.every((status) => statusFilter.includes(status));
+  };
+  const applyQuickFilter = (id: string, statuses: readonly string[]) => {
+    if (id === "overdue") {
+      setStatusFilter([]);
+      setOverdueOnly((active) => !active);
+      return;
+    }
+    const selected = isQuickFilterActive(id, statuses);
+    setStatusFilter(selected ? [] : [...statuses]);
+    setOverdueOnly(false);
+  };
+  const quickFilterCount = (id: string) => {
+    const counts = overviewQuery.isLoading || overviewQuery.isError ? undefined : overviewQuery.data;
+    if (id === "processing") return counts?.processingCases;
+    if (id === "received") return counts?.receivedCases;
+    if (id === "inDesign") return counts?.inDesignCases;
+    if (id === "modelRoom") return counts?.modelRoomCases;
+    if (id === "scan") return counts?.scanCases;
+    if (id === "milling") return counts?.millingCases;
+    if (id === "postMill") return counts?.postMillCases;
+    if (id === "sinteringFurnace") return counts?.sinteringFurnaceCases;
+    if (id === "porcelain") return counts?.porcelainCases;
+    if (id === "qualityCheck") return counts?.qualityCheckCases;
+    if (id === "onHold") return counts?.onHoldCases;
+    if (id === "remake") return counts?.remakeCases;
+    if (id === "shipped") return counts?.shippedCases;
+    if (id === "overdue") return counts?.overdueCases;
+    return counts?.totalCases;
+  };
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
-      {/* Header — swaps to selection header when selectionMode is active */}
-      {selectionMode ? (
-        <View style={styles.header}>
-          <Pressable onPress={exitSelectionMode} hitSlop={8} testID="selection-cancel-btn">
-            <Ionicons name="close" size={22} color={colors.text} />
-          </Pressable>
-          <Text style={[styles.title, { flex: 1, marginLeft: Spacing.sm }]}>
-            {selectedIds.size} selected
-          </Text>
-        </View>
-      ) : (
+    // The whole screen is a keyboard-dismissal surface: tapping the title, the
+    // case count, the search row's padding, the chip row background, or empty
+    // space behind the results closes the keyboard without touching the search
+    // text or any active filter. Rows, chips and buttons keep their own taps.
+    <DismissKeyboardView
+      style={styles.screen}
+      testID="cases-keyboard-dismiss"
+    >
+      <View style={[styles.hero, { paddingTop: insets.top }]}>
         <View style={styles.header}>
           <View style={styles.headerText}>
             <Text style={styles.title}>Cases</Text>
             <Text style={styles.subtitle}>
-              {casesQuery.isLoading
+              {casesQuery.isLoading || matchingTotal === null
                 ? "Loading…"
-                : `${filtered.length} case${filtered.length === 1 ? "" : "s"}${activeFilters ? " (filtered)" : ""}`}
+                : `${matchingTotal.toLocaleString()} case${matchingTotal === 1 ? "" : "s"}${activeFilters || query.trim() ? " (filtered)" : ""}`}
             </Text>
           </View>
           <Pressable
@@ -1011,62 +1263,291 @@ export default function CasesListScreen() {
             testID="new-case-button"
           >
             <Ionicons name="add" size={18} color={colors.textInverse} />
-            <Text style={styles.newBtnText}>New</Text>
+            <Text style={styles.newBtnText}>New Case</Text>
           </Pressable>
         </View>
-      )}
+
+        <View style={styles.searchRow}>
+          <View style={styles.searchWrap}>
+            <Ionicons name="search" size={19} color={colors.textTertiary} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search patient, doctor, or case #"
+              placeholderTextColor={colors.textTertiary}
+              value={query}
+              onChangeText={setQuery}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+              onSubmitEditing={() => Keyboard.dismiss()}
+              testID="cases-search"
+            />
+            {query.length > 0 ? (
+              <Pressable onPress={() => setQuery("")} hitSlop={8} accessibilityLabel="Clear case search">
+                <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
+              </Pressable>
+            ) : null}
+            <View style={styles.searchDivider} />
+            <Pressable
+              style={styles.scanBtn}
+              onPress={openScanModal}
+              hitSlop={4}
+              accessibilityRole="button"
+              accessibilityLabel="Scan or enter a case barcode"
+              testID="cases-scan-barcode"
+            >
+              <Ionicons name="barcode-outline" size={23} color={colors.tint} />
+            </Pressable>
+          </View>
+        </View>
+      </View>
+
+      <CasesSummary
+        data={overviewQuery.data}
+        isLoading={overviewQuery.isLoading}
+        isError={overviewQuery.isError}
+        onRetry={() => void overviewQuery.refetch()}
+      />
+
+      <View style={styles.quickFiltersRow} testID="cases-status-quick-filters">
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.quickFiltersContent}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Pressable
+            style={styles.quickFilter}
+            onPress={() => setShowSavedViewsModal(true)}
+            accessibilityRole="button"
+            testID="cases-saved-views-open"
+          >
+            <Ionicons name="bookmark-outline" size={13} color={colors.tint} />
+            <Text style={[styles.quickFilterText, { color: colors.tint }]}>Saved views</Text>
+          </Pressable>
+          {CASE_STATUS_QUICK_FILTERS.map(({ id, label, statuses }) => {
+            const active = isQuickFilterActive(id, statuses);
+            const count = quickFilterCount(id);
+            return (
+              <Pressable
+                key={id}
+                style={[styles.quickFilter, active && { backgroundColor: colors.tint, borderColor: colors.tint }]}
+                onPress={() => applyQuickFilter(id, statuses)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                testID={`cases-quick-filter-${id}`}
+              >
+                <Text style={[styles.quickFilterText, active && { color: colors.textInverse }]}>
+                  {label}{count !== undefined ? ` (${count.toLocaleString()})` : ""}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      <Modal
+        visible={showSavedViewsModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowSavedViewsModal(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowSavedViewsModal(false)}>
+          <View style={styles.modalBackdrop} />
+        </TouchableWithoutFeedback>
+        <View style={[styles.modalSheet, { top: 0, justifyContent: "center", padding: Spacing.lg }]}>
+          <DismissKeyboardView
+            style={[styles.sheetInner, { maxHeight: "84%", paddingBottom: Math.max(insets.bottom, Spacing.lg), borderRadius: Radius.xl }]}
+            testID="cases-saved-view-keyboard-dismiss"
+          >
+            <View style={styles.sheetHandle} />
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+              <Text style={styles.sheetTitle}>Saved Cases views</Text>
+              <Pressable onPress={() => setShowSavedViewsModal(false)} hitSlop={10} accessibilityLabel="Close saved views">
+                <Ionicons name="close" size={22} color={colors.textSecondary} />
+              </Pressable>
+            </View>
+            <Text style={styles.sheetHint}>
+              Shared with your lab team. Mobile created and due dates stay separate.
+            </Text>
+            {savedViewsQuery.isError ? (
+              <Text style={{ color: colors.error }}>Saved views could not be loaded. Close and reopen to retry.</Text>
+            ) : (
+              <ScrollView style={{ maxHeight: 250 }} keyboardShouldPersistTaps="handled">
+                {(savedViewsQuery.data ?? []).map((view) => {
+                  const selected = selectedSavedViewId === view.id;
+                  return (
+                    <View
+                      key={view.id}
+                      style={{
+                        minHeight: 48,
+                        borderBottomWidth: StyleSheet.hairlineWidth,
+                        borderBottomColor: colors.border,
+                        paddingVertical: Spacing.sm,
+                        paddingHorizontal: Spacing.xs,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        backgroundColor: selected ? colors.tint + "12" : "transparent",
+                      }}
+                    >
+                      <Pressable
+                        onPress={() => {
+                          setSelectedSavedViewId(view.id);
+                          setSavedViewNameDraft(view.name);
+                        }}
+                        style={{ flex: 1, paddingVertical: Spacing.sm }}
+                        testID={`cases-saved-view-row-${view.id}`}
+                      >
+                        <Text style={{ color: selected ? colors.tint : colors.text, fontWeight: selected ? "600" : "400" }}>
+                          {view.name}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          applySavedCaseView(view);
+                          setShowSavedViewsModal(false);
+                        }}
+                        style={[styles.applyBtn, { backgroundColor: colors.tint }]}
+                        testID={`cases-saved-view-apply-${view.id}`}
+                      >
+                        <Text style={[styles.applyBtnText, { color: colors.textInverse }]}>Apply</Text>
+                      </Pressable>
+                    </View>
+                  );
+                })}
+                {!savedViewsQuery.isLoading && !savedViewsQuery.data?.length && (
+                  <Text style={{ color: colors.textSecondary, paddingVertical: Spacing.md }}>No shared views yet.</Text>
+                )}
+              </ScrollView>
+            )}
+            {savedViewsLabOrgId ? (
+              <>
+                <TextInput
+                  value={savedViewNameDraft}
+                  onChangeText={setSavedViewNameDraft}
+                  placeholder="Name this view"
+                  placeholderTextColor={colors.textTertiary}
+                  maxLength={60}
+                  accessibilityLabel="Saved view name"
+                  testID="cases-saved-view-name"
+                  style={{
+                    minHeight: 44,
+                    borderWidth: 1,
+                    borderColor: colors.border,
+                    borderRadius: Radius.md,
+                    paddingHorizontal: Spacing.md,
+                    color: colors.text,
+                    backgroundColor: colors.surface,
+                  }}
+                />
+                <View style={styles.sheetActions}>
+                  <Pressable
+                    style={[styles.clearBtn, { borderColor: colors.border, minWidth: "46%" }]}
+                    disabled={!savedViewNameDraft.trim() || createSavedViewMutation.isPending}
+                    onPress={() => createSavedViewMutation.mutate(savedViewNameDraft.trim())}
+                    testID="cases-saved-view-save"
+                  >
+                    <Text style={[styles.clearBtnText, { color: colors.tint }]}>Save current filters</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.applyBtn, { backgroundColor: colors.tint, minWidth: "46%" }]}
+                    disabled={!selectedSavedViewId || updateSavedViewFiltersMutation.isPending}
+                    onPress={() => {
+                      const view = savedViewsQuery.data?.find((item) => item.id === selectedSavedViewId);
+                      if (!view) return;
+                      Alert.alert(
+                        "Update shared view?",
+                        `“${view.name}” will be updated for everyone in your lab with the current search, status, and mobile created/due date filters.`,
+                        [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Update filters",
+                            onPress: () => {
+                              const filters: CaseSavedViewFilters = {
+                                search: query.trim(),
+                                statusFilters: [...statusFilter],
+                                mobile: {
+                                  createdFilter,
+                                  createdCustomFrom: calendarDateString(createdCustomFrom),
+                                  createdCustomTo: calendarDateString(createdCustomTo),
+                                  dueFilter,
+                                  dueCustomFrom: calendarDateString(dueCustomFrom),
+                                  dueCustomTo: calendarDateString(dueCustomTo),
+                                },
+                                ...(view.filters.desktop ? { desktop: view.filters.desktop } : {}),
+                              };
+                              updateSavedViewFiltersMutation.mutate({ id: view.id, filters });
+                            },
+                          },
+                        ],
+                      );
+                    }}
+                    testID="cases-saved-view-update"
+                  >
+                    <Text style={[styles.applyBtnText, { color: colors.textInverse }]}>Update filters</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.applyBtn, { backgroundColor: colors.tint, minWidth: "46%" }]}
+                    disabled={!selectedSavedViewId || !savedViewNameDraft.trim() || renameSavedViewMutation.isPending}
+                    onPress={() => renameSavedViewMutation.mutate({ id: selectedSavedViewId, name: savedViewNameDraft.trim() })}
+                    testID="cases-saved-view-rename"
+                  >
+                    <Text style={[styles.applyBtnText, { color: colors.textInverse }]}>Rename</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.clearBtn, { borderColor: colors.error, minWidth: "46%" }]}
+                    disabled={!selectedSavedViewId || deleteSavedViewMutation.isPending}
+                    onPress={() => {
+                      const view = savedViewsQuery.data?.find((item) => item.id === selectedSavedViewId);
+                      if (!view) return;
+                      Alert.alert("Remove shared view?", `“${view.name}” will be removed for everyone in this lab.`, [
+                        { text: "Cancel", style: "cancel" },
+                        { text: "Remove", style: "destructive", onPress: () => deleteSavedViewMutation.mutate(view.id) },
+                      ]);
+                    }}
+                    testID="cases-saved-view-delete"
+                  >
+                    <Text style={[styles.clearBtnText, { color: colors.error }]}>Remove</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              <Text style={{ color: colors.textSecondary }}>Your lab is still loading.</Text>
+            )}
+          </DismissKeyboardView>
+        </View>
+      </Modal>
 
       {/* Trial status banner */}
       <MobileTrialBanner />
 
       {/* Share-intent banner */}
       {pendingShared.length > 0 ? (
-        <Pressable style={styles.shareBanner} onPress={dismissShared} testID="share-banner">
-          <Ionicons name="cloud-upload-outline" size={18} color={colors.tint} />
+        <Pressable style={styles.shareBanner} onPress={handleSharedBannerPress} testID="share-banner">
+          {savingSharedToInbox ? (
+            <ActivityIndicator size="small" color={colors.tint} />
+          ) : (
+            <Ionicons name="cloud-upload-outline" size={18} color={colors.tint} />
+          )}
           <Text style={styles.shareBannerText}>
-            {pendingShared.length} file{pendingShared.length === 1 ? "" : "s"} ready — open a case to attach.
+            {savingSharedToInbox
+              ? `Saving to Unassigned Documents… (${savingSharedToInbox.completed}/${savingSharedToInbox.total})`
+              : `${pendingShared.length} file${pendingShared.length === 1 ? "" : "s"} ready — tap to save or discard.`}
           </Text>
-          <Ionicons name="close" size={16} color={colors.textTertiary} />
+          {!savingSharedToInbox && <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />}
         </Pressable>
       ) : null}
 
-      {/* Search + barcode scan row */}
-      <View style={styles.searchRow}>
-        <View style={styles.searchWrap}>
-          <Ionicons name="search" size={18} color={colors.textTertiary} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search patient, doctor, or case #"
-            placeholderTextColor={colors.textTertiary}
-            value={query}
-            onChangeText={setQuery}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="search"
-            testID="cases-search"
-          />
-          {query.length > 0 ? (
-            <Pressable onPress={() => setQuery("")} hitSlop={8}>
-              <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
-            </Pressable>
-          ) : null}
-        </View>
-        <Pressable
-          style={styles.scanBtn}
-          onPress={openScanModal}
-          hitSlop={4}
-          testID="cases-scan-barcode"
-        >
-          <Ionicons name="barcode-outline" size={22} color={colors.tint} />
-        </Pressable>
-      </View>
-
-      {/* ── Filter row ── */}
+      {/* ── Detailed filters ── */}
       <View style={styles.filterRow}>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.chipScroll}
+          // Without this the row would swallow the first chip tap while the
+          // keyboard is up (RN's default is to spend that tap on dismissal).
+          keyboardShouldPersistTaps="handled"
         >
           {/* All — clears both date filters */}
           <Pressable
@@ -1088,6 +1569,8 @@ export default function CasesListScreen() {
 
           {/* Date created chip */}
           <Pressable
+            testID="cases-date-filter-chip"
+            accessibilityLabel={`Date, created: ${dateChipLabel("created")}`}
             style={[
               styles.chip,
               createdFilter !== "all" && { backgroundColor: colors.tint, borderColor: colors.tint },
@@ -1109,7 +1592,7 @@ export default function CasesListScreen() {
                 createdFilter !== "all" && { color: colors.textInverse },
               ]}
             >
-              {dateChipLabel("created")}
+              {createdFilter === "all" ? "Date" : `Date: ${dateChipLabel("created")}`}
             </Text>
             {createdFilter !== "all" && (
               <Pressable
@@ -1124,6 +1607,8 @@ export default function CasesListScreen() {
 
           {/* Date due chip */}
           <Pressable
+            testID="cases-due-date-filter-chip"
+            accessibilityLabel={`Date due: ${dateChipLabel("due")}`}
             style={[
               styles.chip,
               dueFilter !== "all" && { backgroundColor: colors.tint, borderColor: colors.tint },
@@ -1145,7 +1630,7 @@ export default function CasesListScreen() {
                 dueFilter !== "all" && { color: colors.textInverse },
               ]}
             >
-              {dateChipLabel("due")}
+              {dueFilter === "all" ? "Date due" : `Date due: ${dateChipLabel("due")}`}
             </Text>
             {dueFilter !== "all" && (
               <Pressable
@@ -1161,41 +1646,85 @@ export default function CasesListScreen() {
           {/* Divider */}
           <View style={styles.chipDivider} />
 
-          {/* Location chip */}
+          {/* Status chip — multi-select */}
           <Pressable
             style={[
               styles.chip,
-              locationFilter.length > 0 && { backgroundColor: colors.violet + "22", borderColor: colors.violet },
+              statusFilter.length > 0 && { backgroundColor: colors.violet + "22", borderColor: colors.violet },
             ]}
             onPress={() => {
-              setLocationDraft(locationFilter);
-              setShowLocationModal(true);
+              setStatusDraft(statusFilter);
+              setShowStatusModal(true);
             }}
+            testID="cases-status-filter-chip"
           >
             <Ionicons
-              name="location-outline"
+              name="flag-outline"
               size={13}
-              color={locationFilter.length > 0 ? colors.violet : colors.textSecondary}
+              color={statusFilter.length > 0 ? colors.violet : colors.textSecondary}
               style={{ marginRight: 4 }}
             />
             <Text
               style={[
                 styles.chipText,
-                locationFilter.length > 0 && { color: colors.violet },
+                statusFilter.length > 0 && { color: colors.violet },
               ]}
             >
-              {locationLabel}
+              {statusFilterLabel}
             </Text>
             <Ionicons
               name="chevron-down"
               size={12}
-              color={locationFilter.length > 0 ? colors.violet : colors.textTertiary}
+              color={statusFilter.length > 0 ? colors.violet : colors.textTertiary}
               style={{ marginLeft: 2 }}
             />
-            {locationFilter.length > 0 && (
+            {statusFilter.length > 0 && (
               <Pressable
                 hitSlop={8}
-                onPress={(e) => { e.stopPropagation(); setLocationFilter([]); }}
+                onPress={(e) => { e?.stopPropagation?.(); setStatusFilter([]); setOverdueOnly(false); }}
+                style={{ marginLeft: 4 }}
+                testID="cases-status-filter-chip-clear"
+              >
+                <Ionicons name="close-circle" size={14} color={colors.violet} />
+              </Pressable>
+            )}
+          </Pressable>
+
+          {/* Case Type chip */}
+          <Pressable
+            style={[
+              styles.chip,
+              typeFilter !== "all" && { backgroundColor: colors.violet + "22", borderColor: colors.violet },
+            ]}
+            onPress={() => {
+              setShowTypeModal(true);
+            }}
+            testID="cases-type-filter-chip"
+          >
+            <Ionicons
+              name="pricetag-outline"
+              size={13}
+              color={typeFilter !== "all" ? colors.violet : colors.textSecondary}
+              style={{ marginRight: 4 }}
+            />
+            <Text
+              style={[
+                styles.chipText,
+                typeFilter !== "all" && { color: colors.violet },
+              ]}
+            >
+              {typeFilterLabel}
+            </Text>
+            <Ionicons
+              name="chevron-down"
+              size={12}
+              color={typeFilter !== "all" ? colors.violet : colors.textTertiary}
+              style={{ marginLeft: 2 }}
+            />
+            {typeFilter !== "all" && (
+              <Pressable
+                hitSlop={8}
+                onPress={(e) => { e.stopPropagation(); setTypeFilter("all"); }}
                 style={{ marginLeft: 4 }}
               >
                 <Ionicons name="close-circle" size={14} color={colors.violet} />
@@ -1342,6 +1871,7 @@ export default function CasesListScreen() {
               autoCorrect={false}
               autoFocus
               returnKeyType="search"
+              onSubmitEditing={() => Keyboard.dismiss()}
               testID="cases-barcode-filter-input"
             />
             {barcodeFilter.length > 0 ? (
@@ -1371,105 +1901,171 @@ export default function CasesListScreen() {
           data={filtered}
           keyExtractor={(c) => c.id}
           renderItem={({ item }) => {
-            const isSelected = selectedIds.has(item.id);
-            const isLocateSuccess = locateSuccessId === item.id || bulkLocateSuccessIds.has(item.id);
+            const work = getCompactWorkDetails(item);
+            const materials = Array.from(new Set(
+              (item.restorationMaterials ?? "")
+                .split(",")
+                .map((material) => material.trim())
+                .filter(Boolean),
+            ));
+            const workMaterial = materials.length > 1 ? materials.join(", ") : (materials[0] ?? work.material);
+            const detailLabel = work.detail;
+            const hasConflict = Boolean(item.hasBarcodeConflict) || conflictIds.has(item.id);
+            const status = canonicalCaseStatus(item.status);
+            const isComplete = status === "complete" || status === "delivered";
+            const dueDayDiff = getDueDayDiff(item.dueDate);
+            const isOverdue = dueDayDiff !== null &&
+              (dueDayDiff < 0 || (dueDayDiff === 0 && isDueTimePast(item.dueTime)));
+            const duePanelLabel = isComplete
+              ? "COMPLETED"
+              : dueDayDiff === null
+                ? "NO DUE DATE"
+                : isOverdue
+                  ? "OVERDUE"
+                  : dueDayDiff === 0
+                    ? "DUE TODAY"
+                    : "DUE IN";
+            const duePanelValue = isComplete
+              ? "✓"
+              : dueDayDiff === null
+                ? "—"
+                : isOverdue
+                  ? dueDayDiff === 0 ? "TODAY" : String(Math.abs(dueDayDiff))
+                  : dueDayDiff === 0 ? "TODAY" : String(dueDayDiff);
+            const duePanelFoot = isComplete
+              ? formatCompletedAt(item.updatedAt).replace(/^Completed\s*/, "")
+              : dueDayDiff === null
+                ? "Add a due date"
+                : isOverdue
+                  ? dueDayDiff === 0 ? "Due time passed" : `DAY${Math.abs(dueDayDiff) === 1 ? "" : "S"} AGO`
+                  : dueDayDiff === 0 ? "" : `DAY${dueDayDiff === 1 ? "" : "S"}`;
             return (
               <Pressable
                 onPress={() => {
-                  // Guard must come first: long-press fires onLongPress then
-                  // immediately fires onPress on finger-lift for the SAME card.
-                  // Only absorb the follow-up press on the card that was
-                  // long-pressed — pressing a different card must still toggle.
-                  if (longPressActiveRef.current === item.id) {
-                    longPressActiveRef.current = null;
-                    return;
-                  }
-                  if (selectionMode) {
-                    toggleSelection(item.id);
-                    return;
-                  }
+                  if (consumeLongPress(item.id)) return;
                   leavingIntoCasesWorkflow = true;
                   router.push(`/case/${item.id}` as never);
                 }}
                 onLongPress={() => {
-                  if (selectionMode) {
-                    toggleSelection(item.id);
-                    return;
-                  }
-                  longPressActiveRef.current = item.id;
-                  setSelectionMode(true);
-                  setSelectedIds(new Set([item.id]));
+                  if (!isActiveCaseRecord(item)) return;
+                  markLongPress(item.id);
+                  Promise.resolve(Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)).catch(() => {});
+                  setQuickActionCase(item);
                 }}
                 delayLongPress={400}
                 testID={`case-card-${item.id}`}
+                accessibilityRole="button"
+                accessibilityLabel={`${patientName(item)}${item.caseNumber ? `, case ${item.caseNumber}` : ""}`}
+                accessibilityHint={
+                  isActiveCaseRecord(item)
+                    ? "Tap to open case details. Long press for quick actions."
+                    : "Tap to open case details."
+                }
                 style={({ pressed }) => [
-                  isSelected && { backgroundColor: colors.tint + "10" },
                   pressed ? styles.rowPressed : undefined,
                 ]}
               >
                 <Card
+                  padding="none"
                   style={[
-                    styles.row,
-                    isSelected && { borderWidth: 1.5, borderColor: colors.tint + "60" },
+                    styles.caseCard,
+                    item.priority === "rush" && { borderLeftColor: colors.error, borderLeftWidth: 4 },
                   ]}
                 >
-                  {selectionMode ? (
-                    <View style={[
-                      styles.checkbox,
-                      isSelected
-                        ? { backgroundColor: colors.tint, borderColor: colors.tint }
-                        : { borderColor: colors.border, backgroundColor: "transparent" },
-                    ]}>
-                      {isSelected && <Ionicons name="checkmark" size={13} color="#fff" />}
-                    </View>
-                  ) : null}
-                  <View style={styles.rowMain}>
-                    <Text style={styles.rowName} numberOfLines={1}>
-                      {patientName(item)}
-                    </Text>
-                    <Text style={styles.rowMeta} numberOfLines={1}>
-                      {item.caseNumber ? `#${item.caseNumber}` : "No case #"}
-                      {item.doctorName ? `  ·  ${item.doctorName}` : ""}
-                    </Text>
-                    {item.casePanBarcode ? (
-                      <View style={styles.panRow}>
-                        <Ionicons name="barcode-outline" size={12} color={colors.textTertiary} />
-                        <Text style={styles.panText} numberOfLines={1}>{item.casePanBarcode}</Text>
-                        {conflictIds.has(item.id) ? (
-                          <View style={styles.conflictBadge} testID={`conflict-badge-${item.id}`}>
-                            <Text style={styles.conflictBadgeText}>Conflict</Text>
+                  <View style={styles.caseCardInner}>
+                    <View style={styles.caseCardTop}>
+                      <View style={styles.caseCopy}>
+                        <Text style={styles.casePatient} numberOfLines={2}>{patientName(item)}</Text>
+                        {item.doctorName ? (
+                          <Text style={styles.caseDoctor} numberOfLines={1}>{item.doctorName}</Text>
+                        ) : null}
+                        {workMaterial || detailLabel || item.priority === "rush" || hasConflict ? (
+                          <View style={styles.caseWorkRow} testID={`compact-case-details-${item.id}`}>
+                            {workMaterial ? <Text style={styles.caseMaterial}>{workMaterial}</Text> : null}
+                            {detailLabel ? (
+                              <View style={styles.caseDetailChip}>
+                                <Text style={styles.caseDetailText}>{detailLabel}</Text>
+                              </View>
+                            ) : null}
+                            {item.priority === "rush" ? (
+                              <View style={styles.rushBadge} testID={`rush-badge-${item.id}`}>
+                                <Text style={styles.rushBadgeText}>Rush</Text>
+                              </View>
+                            ) : null}
+                            {hasConflict ? (
+                              <View style={styles.conflictBadge} testID={`conflict-badge-${item.id}`}>
+                                <Ionicons name="alert-circle" size={12} color={colors.warningStrong} />
+                                <Text style={styles.conflictBadgeText}>Conflict</Text>
+                              </View>
+                            ) : null}
                           </View>
                         ) : null}
                       </View>
-                    ) : null}
-                    {formatRelativeCreated(item.createdAt) ? (
-                      <Text style={styles.rowDue}>{formatRelativeCreated(item.createdAt)}</Text>
-                    ) : null}
-                    {formatRelativeDue(item.dueDate) ? (
-                      <Text style={styles.rowDue}>{formatRelativeDue(item.dueDate)}</Text>
-                    ) : null}
-                  </View>
-                  <View style={styles.rowRight}>
-                    <StatusBadge label={titleCase(item.status ?? "—")} variant={statusVariant(item.status)} />
-                    {isLocateSuccess ? (
-                      <View style={styles.locatedBadge}>
-                        <Ionicons name="checkmark-circle" size={14} color={colors.tint} />
-                        <Text style={[styles.locatedBadgeText, { color: colors.tint }]}>Located</Text>
+                      <View
+                        style={[
+                          styles.duePanel,
+                          isOverdue && !isComplete && styles.duePanelOverdue,
+                          isComplete && styles.duePanelComplete,
+                        ]}
+                        accessibilityLabel={
+                          isComplete ? formatCompletedAt(item.updatedAt) :
+                            dueDayDiff === null ? "No due date" : formatRelativeDue(item.dueDate, item.dueTime)
+                        }
+                        testID={`case-due-panel-${item.id}`}
+                      >
+                        <Text style={[styles.duePanelLabel, isOverdue && !isComplete && { color: colors.error }]}>
+                          {duePanelLabel}
+                        </Text>
+                        <Text style={[styles.duePanelValue, isOverdue && !isComplete && { color: colors.error }, isComplete && { color: colors.successStrong }]}>
+                          {duePanelValue}
+                        </Text>
+                        <Text style={[styles.duePanelFoot, isComplete && styles.completedDate]} numberOfLines={2}>
+                          {duePanelFoot}
+                        </Text>
                       </View>
-                    ) : selectionMode ? null : (
-                      <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
-                    )}
+                      <Ionicons name="chevron-forward" size={19} color={colors.textSecondary} />
+                    </View>
+                    <View style={styles.caseFooter}>
+                      <View style={styles.caseFooterBadges}>
+                        <StatusBadge label={caseLocationLabel(item)} variant={statusVariant(item.status)} />
+                        {work.typeLabel === "C" || work.typeLabel === "D" || work.typeLabel === "O" ? (
+                          <TypeBadge letter={work.typeLabel} />
+                        ) : work.typeLabel ? (
+                          <View style={styles.caseTypeTextBadge}>
+                            <Text style={styles.caseTypeText}>{work.typeLabel}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <View style={styles.createdLabel}>
+                        <Ionicons name="calendar-outline" size={15} color={colors.textSecondary} />
+                        <Text style={styles.createdDate} numberOfLines={1}>
+                          {formatRelativeCreated(item.createdAt) || "Created date unavailable"}
+                        </Text>
+                      </View>
+                    </View>
                   </View>
                 </Card>
               </Pressable>
             );
           }}
+          testID="cases-list"
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
+          // Dragging the results closes the keyboard (interactively on iOS).
+          keyboardDismissMode={scrollKeyboardDismissMode}
           refreshControl={
             <RefreshControl
               refreshing={casesQuery.isFetching}
-              onRefresh={() => casesQuery.refetch()}
+              onRefresh={() => {
+                void qc.invalidateQueries({ queryKey: ["cases", "paged"] });
+              void overviewQuery.refetch();
+                if (casePage === 1) {
+                  void casesQuery.refetch();
+                } else {
+                  setLoadedCases([]);
+                  setCasePage(1);
+                }
+              }}
               tintColor={colors.tint}
             />
           }
@@ -1485,6 +2081,20 @@ export default function CasesListScreen() {
                   : "Cases will appear here once created."}
               </Text>
             </View>
+          }
+          ListFooterComponent={
+            casesQuery.data?.hasMore ? (
+              <Pressable
+                testID="cases-load-more"
+                style={styles.retryBtn}
+                disabled={casesQuery.isFetching}
+                onPress={() => setCasePage((current) => current + 1)}
+              >
+                <Text style={styles.retryText}>
+                  {casesQuery.isFetching ? "Loading…" : `Load more (${loadedCases.length} of ${casesQuery.data.total})`}
+                </Text>
+              </Pressable>
+            ) : null
           }
         />
       )}
@@ -1577,99 +2187,63 @@ export default function CasesListScreen() {
       </Modal>
 
       {/* ══ Custom Date Range Modal ══════════════════════════════════════════ */}
+      {showCustomModal && <CaseRangeWindow
+        context={customTarget}
+        start={parseRangeDate(draftFrom) ?? ""}
+        end={parseRangeDate(draftTo) ?? ""}
+        onCancel={() => setShowCustomModal(false)}
+        onApply={(start, end) => {
+          const localDate = (s: string) => {
+            const [y, m, d] = s.split("-").map(Number);
+            const date = new Date(0);
+            date.setHours(0, 0, 0, 0); date.setFullYear(y, m - 1, d);
+            return date;
+          };
+          if (customTarget === "created") {
+            setCreatedCustomFrom(localDate(start)); setCreatedCustomTo(localDate(end)); setCreatedFilter("custom");
+          } else {
+            setDueCustomFrom(localDate(start)); setDueCustomTo(localDate(end)); setDueFilter("custom");
+          }
+          setShowCustomModal(false);
+        }}
+      />}
+
+      {/* ══ Status Picker Modal (multi-select) ═══════════════════════════════ */}
       <Modal
-        visible={showCustomModal}
+        visible={showStatusModal}
         transparent
         animationType="slide"
-        onRequestClose={() => setShowCustomModal(false)}
+        onRequestClose={() => setShowStatusModal(false)}
       >
-        <TouchableWithoutFeedback onPress={() => setShowCustomModal(false)}>
-          <View style={styles.modalBackdrop} />
-        </TouchableWithoutFeedback>
-
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "position" : "height"}
-          style={styles.modalSheet}
-        >
-          <View style={[styles.sheetInner, { paddingBottom: Math.max(insets.bottom, Spacing.lg) }]}>
-            <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>
-              {customTarget === "created" ? "Custom created date" : "Custom due date"}
-            </Text>
-            <Text style={styles.sheetHint}>Enter dates in M/D/YYYY format</Text>
-
-            {/* From */}
-            <View style={styles.dateRow}>
-              <Text style={styles.dateLabel}>From</Text>
-              <TextInput
-                style={[styles.dateInput, { color: colors.text, borderColor: colors.border }]}
-                placeholder="M/D/YYYY"
-                placeholderTextColor={colors.textTertiary}
-                value={draftFrom}
-                onChangeText={(t) => { setDraftFrom(t); setCustomError(""); }}
-                keyboardType="numbers-and-punctuation"
-                returnKeyType="next"
-                autoCorrect={false}
-              />
-            </View>
-
-            {/* To */}
-            <View style={styles.dateRow}>
-              <Text style={styles.dateLabel}>To</Text>
-              <TextInput
-                style={[styles.dateInput, { color: colors.text, borderColor: colors.border }]}
-                placeholder="M/D/YYYY  (leave blank for open end)"
-                placeholderTextColor={colors.textTertiary}
-                value={draftTo}
-                onChangeText={(t) => { setDraftTo(t); setCustomError(""); }}
-                keyboardType="numbers-and-punctuation"
-                returnKeyType="done"
-                onSubmitEditing={() => Keyboard.dismiss()}
-                autoCorrect={false}
-              />
-            </View>
-
-            {customError ? (
-              <Text style={[styles.errorText, { color: colors.error }]}>{customError}</Text>
-            ) : null}
-
-            <View style={styles.sheetActions}>
-              <Pressable style={styles.clearBtn} onPress={() => clearCustom(customTarget)}>
-                <Text style={[styles.clearBtnText, { color: colors.textSecondary }]}>Clear</Text>
-              </Pressable>
-              <Pressable style={[styles.applyBtn, { backgroundColor: colors.tint }]} onPress={applyCustom}>
-                <Text style={[styles.applyBtnText, { color: colors.textInverse }]}>Apply</Text>
-              </Pressable>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* ══ Location Picker Modal ════════════════════════════════════════════ */}
-      <Modal
-        visible={showLocationModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowLocationModal(false)}
-      >
-        <TouchableWithoutFeedback onPress={() => setShowLocationModal(false)}>
+        <TouchableWithoutFeedback onPress={() => setShowStatusModal(false)}>
           <View style={styles.modalBackdrop} />
         </TouchableWithoutFeedback>
 
         <View style={[styles.modalSheet, styles.locationSheet]}>
-          <View style={[styles.sheetInner, { paddingBottom: Math.max(insets.bottom, Spacing.lg) }]}>
+          <View
+            testID="cases-status-sheet-panel"
+            style={[styles.sheetInner, { paddingBottom: Math.max(insets.bottom, Spacing.lg) }]}
+          >
             <View style={styles.sheetHandle} />
             <Text style={styles.sheetTitle}>Filter by location</Text>
+            <Text style={styles.sheetHint} testID="cases-status-filter-summary">
+              {statusDraft.length === 0
+                ? "All locations"
+                : `${statusDraft.length} selected`}
+            </Text>
 
             <ScrollView style={styles.locationList} bounces={false}>
               {CASE_STATIONS.map((station) => {
-                const checked = locationDraft.includes(station.value);
+                const checked = statusDraft.includes(station.value);
                 return (
                   <Pressable
                     key={station.value}
                     style={styles.locationRow}
+                    testID={`cases-status-option-${station.value}`}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked }}
                     onPress={() => {
-                      setLocationDraft((prev) =>
+                      setStatusDraft((prev) =>
                         prev.includes(station.value)
                           ? prev.filter((v) => v !== station.value)
                           : [...prev, station.value],
@@ -1694,25 +2268,29 @@ export default function CasesListScreen() {
             <View style={styles.sheetActions}>
               <Pressable
                 style={styles.clearBtn}
+                testID="cases-status-clear"
                 onPress={() => {
-                  setLocationDraft([]);
-                  setLocationFilter([]);
-                  setShowLocationModal(false);
+                  setStatusDraft([]);
+                  setStatusFilter([]);
+                  setOverdueOnly(false);
+                  setShowStatusModal(false);
                 }}
               >
                 <Text style={[styles.clearBtnText, { color: colors.textSecondary }]}>Clear</Text>
               </Pressable>
               <Pressable
                 style={[styles.applyBtn, { backgroundColor: colors.violet }]}
+                testID="cases-status-apply"
                 onPress={() => {
-                  setLocationFilter(locationDraft);
-                  setShowLocationModal(false);
+                  setStatusFilter(statusDraft);
+                  setOverdueOnly(false);
+                  setShowStatusModal(false);
                 }}
               >
                 <Text style={[styles.applyBtnText, { color: "#fff" }]}>
-                  {locationDraft.length === 0
+                  {statusDraft.length === 0
                     ? "Show all"
-                    : `Show ${locationDraft.length} station${locationDraft.length === 1 ? "" : "s"}`}
+                    : `Show ${statusDraft.length} status${statusDraft.length === 1 ? "" : "es"}`}
                 </Text>
               </Pressable>
             </View>
@@ -1720,53 +2298,77 @@ export default function CasesListScreen() {
         </View>
       </Modal>
 
-      {/* ══ Single long-press Locate Sheet ══════════════════════════════════ */}
-      <LocateCaseSheet
-        locatingCase={locatingCase}
-        onDismiss={dismissLocate}
-        onLocated={handleLocated}
-      />
+      {/* ══ Case Type Picker Modal ═══════════════════════════════════════════ */}
+      <Modal
+        visible={showTypeModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowTypeModal(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowTypeModal(false)}>
+          <View style={styles.modalBackdrop} />
+        </TouchableWithoutFeedback>
 
-      {/* ══ Bulk Locate Sheet (multi-select) ════════════════════════════════ */}
-      <LocateCaseSheet
-        locatingCases={showBulkLocateSheet ? selectedCases : []}
-        onDismiss={() => setShowBulkLocateSheet(false)}
-        onBulkLocated={handleBulkLocated}
-      />
+        <View style={styles.modalSheet}>
+          <View style={[styles.sheetInner, { paddingBottom: Math.max(insets.bottom, Spacing.lg) }]}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>Filter by case type</Text>
 
-      {/* ══ Multi-select action bar ══════════════════════════════════════════ */}
-      {selectionMode ? (
-        <View
-          style={[
-            styles.selectionBar,
-            { paddingBottom: Math.max(insets.bottom, Spacing.md), backgroundColor: colors.surface },
-          ]}
-          testID="selection-action-bar"
-        >
-          <Pressable
-            style={[styles.selectionCancelBtn, { borderColor: colors.border, backgroundColor: colors.surfaceAlt }]}
-            onPress={exitSelectionMode}
-          >
-            <Text style={[styles.selectionCancelBtnText, { color: colors.textSecondary }]}>Cancel</Text>
-          </Pressable>
-          <Pressable
-            style={[
-              styles.selectionLocateBtn,
-              { backgroundColor: selectedIds.size > 0 ? colors.tint : colors.border },
-            ]}
-            onPress={() => {
-              if (selectedIds.size > 0) setShowBulkLocateSheet(true);
-            }}
-            disabled={selectedIds.size === 0}
-            testID="bulk-locate-btn"
-          >
-            <Ionicons name="location-outline" size={17} color={colors.textInverse} />
-            <Text style={[styles.selectionLocateBtnText, { color: colors.textInverse }]}>
-              Locate{selectedIds.size > 0 ? ` (${selectedIds.size})` : ""}
-            </Text>
-          </Pressable>
+            <ScrollView style={styles.locationList} bounces={false}>
+              {TYPE_FILTER_OPTIONS.map((opt) => {
+                const isActive = typeFilter === opt.value;
+                return (
+                  <Pressable
+                    key={opt.value}
+                    style={styles.locationRow}
+                    testID={`cases-type-option-${opt.value}`}
+                    onPress={() => {
+                      setTypeFilter(opt.value);
+                      setShowTypeModal(false);
+                    }}
+                  >
+                    <View style={[
+                      styles.locationCheckbox,
+                      isActive && { backgroundColor: colors.violet, borderColor: colors.violet },
+                      !isActive && { borderColor: colors.border },
+                    ]}>
+                      {isActive && <Ionicons name="checkmark" size={13} color="#fff" />}
+                    </View>
+                    <Text style={[styles.locationLabel, { color: isActive ? colors.violet : colors.text }]}>
+                      {opt.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            <View style={styles.sheetActions}>
+              <Pressable
+                style={styles.clearBtn}
+                onPress={() => {
+                  setTypeFilter("all");
+                  setShowTypeModal(false);
+                }}
+              >
+                <Text style={[styles.clearBtnText, { color: colors.textSecondary }]}>Clear</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.applyBtn, { backgroundColor: colors.violet }]}
+                onPress={() => setShowTypeModal(false)}
+              >
+                <Text style={[styles.applyBtnText, { color: "#fff" }]}>Done</Text>
+              </Pressable>
+            </View>
+          </View>
         </View>
-      ) : null}
+      </Modal>
+
+      <CaseQuickActionSheet
+        visible={quickActionCase !== null}
+        caseItem={quickActionCase}
+        onDismiss={() => setQuickActionCase(null)}
+        returnedWizardHandoff
+      />
 
       {/* ══ Barcode Scan Modal ═══════════════════════════════════════════════ */}
       <Modal
@@ -1818,7 +2420,7 @@ export default function CasesListScreen() {
           </View>
 
           {scanStep === "scan" ? (
-            !cameraPermission?.granted ? (
+            !cameraHasPermission ? (
               <View style={styles.scanPermView}>
                 <Ionicons name="camera-outline" size={52} color={colors.textTertiary} />
                 <Text style={styles.scanPermTitle}>Camera access needed</Text>
@@ -1838,16 +2440,24 @@ export default function CasesListScreen() {
                   cameraViewSize.current = { width, height };
                 }}
               >
-                {!scanScanned && (
-                  <CameraView
+                {!scanScanned && cameraDevice && (
+                  <Camera
                     style={StyleSheet.absoluteFill}
-                    facing="back"
-                    onBarcodeScanned={scanSearching ? undefined : handleCameraBarcode}
-                    barcodeScannerSettings={{
-                      barcodeTypes: ["code128", "code39", "qr", "ean13", "ean8", "pdf417", "code93"],
-                    }}
+                    device={cameraDevice}
+                    isActive
+                    codeScanner={scanSearching ? undefined : scanCodeScanner}
+                    torch={scanTorchOn ? "on" : "off"}
                   />
                 )}
+                {!scanScanned && cameraDevice?.hasTorch ? (
+                  <View style={styles.scanTorchBtnWrap}>
+                    <TorchToggleButton
+                      torchOn={scanTorchOn}
+                      onToggle={() => setScanTorchOn((v) => !v)}
+                      testID="scan-torch-toggle"
+                    />
+                  </View>
+                ) : null}
                 {/* Reticle corners */}
                 <View style={styles.scanReticle} pointerEvents="none">
                   <View style={styles.scanCornerTL} />
@@ -1855,22 +2465,6 @@ export default function CasesListScreen() {
                   <View style={styles.scanCornerBL} />
                   <View style={styles.scanCornerBR} />
                 </View>
-                {/* Targeted-barcode bounds highlight — visible while lookup is in flight */}
-                {scanTarget?.bounds && !scanMatch ? (
-                  <View
-                    pointerEvents="none"
-                    style={{
-                      position: "absolute",
-                      left: scanTarget.bounds.origin.x,
-                      top: scanTarget.bounds.origin.y,
-                      width: scanTarget.bounds.size.width,
-                      height: scanTarget.bounds.size.height,
-                      borderWidth: 2,
-                      borderColor: "#4ade80",
-                      borderRadius: 4,
-                    }}
-                  />
-                ) : null}
                 {/* Match result overlay — shown briefly after a successful scan */}
                 {scanMatch ? (
                   <View style={styles.scanMatchOverlay} pointerEvents="none">
@@ -1913,71 +2507,82 @@ export default function CasesListScreen() {
               behavior={Platform.OS === "ios" ? "padding" : "height"}
               style={styles.scanManualWrap}
             >
-              <Text style={styles.scanManualLabel}>Enter barcode value</Text>
-              <TextInput
-                style={[styles.scanManualInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceAlt }]}
-                value={manualBarcode}
-                onChangeText={(t) => { setManualBarcode(t); setScanError(null); }}
-                placeholder="Type or paste barcode…"
-                placeholderTextColor={colors.textTertiary}
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoFocus
-                returnKeyType="search"
-                onSubmitEditing={handleManualBarcode}
-              />
-              {scanError ? (
-                <View style={styles.scanInlineError}>
-                  <Ionicons name="alert-circle-outline" size={15} color={colors.error} />
-                  <Text style={[styles.scanInlineErrorText, { color: colors.error }]}>{scanError}</Text>
-                </View>
-              ) : null}
-              <Pressable
-                style={[styles.scanActionBtn, { backgroundColor: scanSearching ? colors.border : colors.tint }]}
-                onPress={handleManualBarcode}
-                disabled={scanSearching}
-                testID="scan-manual-submit"
+              {/* Tapping anywhere in the manual pane that isn't the field or a
+                  button closes the keyboard; the dialog stays open. */}
+              <DismissKeyboardView
+                style={styles.scanManualInner}
+                testID="cases-manual-barcode-keyboard-dismiss"
               >
-                {scanSearching ? (
-                  <ActivityIndicator color={colors.textInverse} size="small" />
-                ) : (
-                  <Text style={[styles.scanActionBtnText, { color: "#fff" }]}>Find Case</Text>
-                )}
-              </Pressable>
+                <Text style={styles.scanManualLabel}>Enter barcode value</Text>
+                <TextInput
+                  style={[styles.scanManualInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceAlt }]}
+                  value={manualBarcode}
+                  onChangeText={(t) => { setManualBarcode(t); setScanError(null); }}
+                  placeholder="Type or paste barcode…"
+                  placeholderTextColor={colors.textTertiary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoFocus
+                  returnKeyType="search"
+                  onSubmitEditing={handleManualBarcode}
+                />
+                {scanError ? (
+                  <View style={styles.scanInlineError}>
+                    <Ionicons name="alert-circle-outline" size={15} color={colors.error} />
+                    <Text style={[styles.scanInlineErrorText, { color: colors.error }]}>{scanError}</Text>
+                  </View>
+                ) : null}
+                <Pressable
+                  style={[styles.scanActionBtn, { backgroundColor: scanSearching ? colors.border : colors.tint }]}
+                  onPress={handleManualBarcode}
+                  disabled={scanSearching}
+                  testID="scan-manual-submit"
+                >
+                  {scanSearching ? (
+                    <ActivityIndicator color={colors.textInverse} size="small" />
+                  ) : (
+                    <Text style={[styles.scanActionBtnText, { color: "#fff" }]}>Find Case</Text>
+                  )}
+                </Pressable>
+              </DismissKeyboardView>
             </KeyboardAvoidingView>
           )}
         </View>
       </Modal>
-    </View>
+    </DismissKeyboardView>
   );
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
-    screen: { flex: 1, backgroundColor: c.backgroundSolid },
+    screen: { flex: 1, backgroundColor: c.surfaceAlt },
+    hero: {
+      backgroundColor: c.casesHeader,
+      paddingBottom: Spacing.md,
+    },
     header: {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
       paddingHorizontal: Spacing.lg,
       paddingTop: Spacing.sm,
-      paddingBottom: Spacing.xs,
+      paddingBottom: Spacing.sm,
       gap: Spacing.md,
     },
     headerText: { flex: 1 },
-    title: { ...Typography.h1, color: c.text },
-    subtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
+    title: { fontSize: 36, lineHeight: 42, fontFamily: "Inter_700Bold", color: c.casesHeaderText },
+    subtitle: { ...Typography.body, color: c.casesHeaderMuted, marginTop: 1 },
     newBtn: {
       flexDirection: "row",
       alignItems: "center",
-      gap: Spacing.xs,
-      paddingHorizontal: Spacing.lg,
-      paddingVertical: Spacing.sm,
-      borderRadius: Radius.full,
-      backgroundColor: c.tint,
+      gap: 5,
+      paddingHorizontal: Spacing.md,
+      minHeight: 44,
+      borderRadius: Radius.md,
+      backgroundColor: c.info,
     },
-    newBtnText: { ...Typography.bodySemibold, color: c.textInverse },
+    newBtnText: { ...Typography.bodySemibold, color: c.casesHeaderText },
     shareBanner: {
       flexDirection: "row",
       alignItems: "center",
@@ -1995,27 +2600,25 @@ function makeStyles(c: ThemeColors) {
     searchRow: {
       flexDirection: "row",
       alignItems: "center",
-      gap: Spacing.sm,
       marginHorizontal: Spacing.lg,
       marginTop: Spacing.sm,
-      marginBottom: Spacing.xs,
     },
     searchWrap: {
       flex: 1,
       flexDirection: "row",
       alignItems: "center",
       gap: Spacing.sm,
-      paddingHorizontal: Spacing.md,
-      paddingVertical: Spacing.sm,
-      borderRadius: Radius.md,
-      backgroundColor: c.surfaceAlt,
+      minHeight: 46,
+      paddingLeft: Spacing.md,
+      paddingRight: Spacing.xs,
+      borderRadius: 14,
+      backgroundColor: c.surface,
     },
-    searchInput: { flex: 1, ...Typography.body, color: c.text, paddingVertical: 0 },
+    searchInput: { flex: 1, ...Typography.body, color: c.text, paddingVertical: 5, minWidth: 0 },
+    searchDivider: { height: 26, width: StyleSheet.hairlineWidth, backgroundColor: c.border },
     scanBtn: {
       width: 42,
-      height: 42,
-      borderRadius: Radius.md,
-      backgroundColor: c.surfaceAlt,
+      minHeight: 42,
       alignItems: "center",
       justifyContent: "center",
     },
@@ -2029,6 +2632,20 @@ function makeStyles(c: ThemeColors) {
     },
 
     // Filter row
+    quickFiltersRow: { marginBottom: Spacing.xs },
+    quickFiltersContent: { paddingHorizontal: Spacing.xs, gap: Spacing.xs, alignItems: "center" },
+    quickFilter: {
+      minHeight: 36,
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: Spacing.md,
+      paddingVertical: 6,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surfaceAlt,
+    },
+    quickFilterText: { ...Typography.captionSemibold, color: c.textSecondary },
     filterRow: { marginBottom: Spacing.xs },
     chipScroll: {
       paddingHorizontal: Spacing.lg,
@@ -2053,29 +2670,98 @@ function makeStyles(c: ThemeColors) {
       marginHorizontal: Spacing.xs,
     },
 
-    // List
-    listContent: { padding: Spacing.lg, paddingTop: Spacing.xs, gap: Spacing.sm },
-    row: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
-    rowMain: { flex: 1, gap: 2 },
-    rowName: { ...Typography.bodySemibold, color: c.text },
-    rowMeta: { ...Typography.caption, color: c.textSecondary },
-    rowDue: { ...Typography.caption, color: c.textTertiary, marginTop: 2 },
-    panRow: { flexDirection: "row", alignItems: "center", gap: 3, marginTop: 2 },
-    panText: { ...Typography.caption, color: c.textTertiary, fontVariant: ["tabular-nums"] as any },
+    // Reference-aligned case cards
+    listContent: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.xs, paddingBottom: Spacing.xxl, gap: Spacing.md },
+    caseCard: {
+      borderRadius: 14,
+      borderColor: c.borderLight,
+      backgroundColor: c.surface,
+      overflow: "hidden",
+    },
+    caseCardInner: { paddingHorizontal: Spacing.md, paddingTop: Spacing.md, paddingBottom: Spacing.sm },
+    caseCardTop: { flexDirection: "row", alignItems: "center", gap: Spacing.xs },
+    caseCopy: { flex: 1, minWidth: 0, justifyContent: "center" },
+    casePatient: { ...Typography.h2, fontSize: 20, lineHeight: 25, color: c.text },
+    caseDoctor: { ...Typography.body, color: c.textSecondary, marginTop: 1 },
+    caseWorkRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      flexWrap: "wrap",
+      columnGap: Spacing.sm,
+      rowGap: Spacing.xs,
+      marginTop: 4,
+    },
+    caseMaterial: { ...Typography.body, color: c.textSecondary, flexShrink: 1 },
+    caseDetailChip: {
+      maxWidth: "100%",
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 7,
+      backgroundColor: c.infoSurface,
+    },
+    caseDetailText: { ...Typography.captionMedium, color: c.infoStrong, flexShrink: 1 },
+    duePanel: {
+      width: 70,
+      minHeight: 78,
+      paddingHorizontal: 4,
+      paddingVertical: 6,
+      borderRadius: 10,
+      backgroundColor: c.infoSurface,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    duePanelOverdue: { backgroundColor: c.errorSurface },
+    duePanelComplete: { backgroundColor: c.successSurface },
+    duePanelLabel: {
+      fontSize: 9,
+      lineHeight: 12,
+      fontFamily: "Inter_600SemiBold",
+      letterSpacing: 0.35,
+      color: c.textSecondary,
+      textAlign: "center",
+    },
+    duePanelValue: {
+      fontSize: 24,
+      lineHeight: 28,
+      fontFamily: "Inter_700Bold",
+      color: c.infoStrong,
+      textAlign: "center",
+      fontVariant: ["tabular-nums"],
+    },
+    duePanelFoot: { fontSize: 9, lineHeight: 12, fontFamily: "Inter_500Medium", color: c.textSecondary, textAlign: "center" },
+    completedDate: { fontSize: 8, lineHeight: 10 },
+    caseFooter: {
+      minHeight: 34,
+      marginTop: Spacing.sm,
+      paddingTop: Spacing.sm,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.borderLight,
+      flexDirection: "row",
+      flexWrap: "wrap",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: Spacing.xs,
+    },
+    caseFooterBadges: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: Spacing.xs },
+    createdLabel: { flexDirection: "row", alignItems: "center", gap: 5, maxWidth: "58%" },
+    createdDate: { ...Typography.caption, color: c.textSecondary, flexShrink: 1, textAlign: "right" },
+    caseTypeTextBadge: { paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6, backgroundColor: c.tintLight },
+    caseTypeText: { ...Typography.tiny, color: c.tintDark },
+    rushBadge: { paddingHorizontal: 7, paddingVertical: 3, borderRadius: 6, backgroundColor: c.errorLight },
+    rushBadgeText: { ...Typography.tiny, color: c.errorStrong },
     conflictBadge: {
-      marginLeft: 4,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 3,
+      marginLeft: 2,
       paddingHorizontal: 5,
-      paddingVertical: 1,
+      paddingVertical: 3,
       borderRadius: Radius.xs,
-      backgroundColor: "rgba(245,158,11,0.15)",
+      backgroundColor: c.warningLight,
       borderWidth: 1,
-      borderColor: "rgba(245,158,11,0.5)",
+      borderColor: c.warning,
     },
-    conflictBadgeText: {
-      fontSize: 10,
-      fontWeight: "600" as const,
-      color: "#D97706",
-    },
+    conflictBadgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold", color: c.warningText },
     rowRight: { alignItems: "flex-end", gap: Spacing.xs },
     center: {
       flex: 1,
@@ -2111,7 +2797,11 @@ function makeStyles(c: ThemeColors) {
       maxHeight: "75%",
     },
     sheetInner: {
-      backgroundColor: c.background,
+      // Must be an opaque surface: these sheets live inside a `transparent`
+      // Modal, and the light theme's `background` token is literally
+      // "transparent" (it exists so full-screen views sit on the app gradient),
+      // which made the panel see-through over the case list.
+      backgroundColor: c.backgroundSolid,
       borderTopLeftRadius: Radius.xl,
       borderTopRightRadius: Radius.xl,
       paddingHorizontal: Spacing.lg,
@@ -2144,6 +2834,7 @@ function makeStyles(c: ThemeColors) {
     errorText: { ...Typography.caption, marginTop: -Spacing.xs },
     sheetActions: {
       flexDirection: "row",
+      flexWrap: "wrap",
       gap: Spacing.sm,
       marginTop: Spacing.xs,
     },
@@ -2285,6 +2976,7 @@ function makeStyles(c: ThemeColors) {
     scanPermBody: { ...Typography.body, color: c.textSecondary, textAlign: "center" },
 
     scanCameraWrap: { flex: 1, position: "relative", backgroundColor: "#000" },
+    scanTorchBtnWrap: { position: "absolute", top: 16, right: 16, zIndex: 10 },
     scanReticle: {
       position: "absolute",
       top: "28%",
@@ -2373,7 +3065,9 @@ function makeStyles(c: ThemeColors) {
     },
     scanErrorBannerText: { flex: 1, ...Typography.captionSemibold, color: "#fff" },
 
-    scanManualWrap: { flex: 1, padding: Spacing.xl, gap: Spacing.lg },
+    scanManualWrap: { flex: 1, padding: Spacing.xl },
+    // Inner layer so the dismissal wrapper fills the pane and owns the gaps.
+    scanManualInner: { flex: 1, gap: Spacing.lg },
     scanManualLabel: { ...Typography.bodySemibold, color: c.text },
     scanManualInput: {
       ...Typography.body,
@@ -2400,4 +3094,22 @@ function makeStyles(c: ThemeColors) {
     },
     scanActionBtnText: { ...Typography.bodySemibold },
   });
+}
+
+function calendarDateFromString(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+    ? date
+    : null;
+}
+
+function calendarDateString(date: Date | null): string {
+  return date
+    ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+    : "";
 }

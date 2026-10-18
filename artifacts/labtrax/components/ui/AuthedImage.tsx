@@ -2,7 +2,9 @@ import React, { useEffect, useState } from "react";
 import { Image } from "expo-image";
 import type { StyleProp } from "react-native";
 import type { ImageStyle } from "expo-image";
-import { getAuthedMediaUri } from "@/lib/authed-media-cache";
+import {
+  acquireAuthedMediaUri,
+} from "@/lib/authed-media-cache";
 
 interface AuthedImageProps {
   url: string | null | undefined;
@@ -18,10 +20,22 @@ export function AuthedImage({ url, style, contentFit, resizeMode, testID }: Auth
   useEffect(() => {
     if (!url) { setLocalUri(null); return; }
     let cancelled = false;
-    getAuthedMediaUri(url)
-      .then((uri) => { if (!cancelled) setLocalUri(uri); })
+    let release = () => {};
+    setLocalUri(null);
+    acquireAuthedMediaUri(url)
+      .then((acquired) => {
+        if (!cancelled) {
+          release = acquired?.release ?? (() => {});
+          setLocalUri(acquired?.uri ?? null);
+        } else {
+          acquired?.release();
+        }
+      })
       .catch(() => { if (!cancelled) setLocalUri(null); });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      release();
+    };
   }, [url]);
 
   return (

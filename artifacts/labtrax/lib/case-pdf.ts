@@ -12,7 +12,9 @@
 // share flow mirrors `open-attachment.ts` (isAvailableAsync → shareAsync with a
 // PDF mime type / UTI).
 import * as Print from "expo-print";
+import { formatRxNoteScanDate, IMPLANT_FIELDS, IMPLANT_FIELD_LABELS, implantFieldText, describeToothAssignments, type ImplantDetails } from "@workspace/case-taxonomy";
 import * as Sharing from "expo-sharing";
+import { isRemovableRestorationType } from "./restoration-category";
 
 // ─── Local formatting helpers (kept independent of the screen) ────────────────
 function esc(value: unknown): string {
@@ -29,14 +31,16 @@ function fmtDate(iso?: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}/${dd}/${d.getFullYear()}`;
 }
 
 function fmtMoney(v?: string | number | null): string {
   if (v === null || v === undefined || v === "") return "—";
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return String(v);
-  return `$${n.toFixed(2)}`;
+  return `${n < 0 ? "−" : ""}$${Math.abs(n).toFixed(2)}`;
 }
 
 function titleCaseLocal(s?: string | null): string {
@@ -45,6 +49,75 @@ function titleCaseLocal(s?: string | null): string {
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (m) => m.toUpperCase())
     .trim();
+}
+
+/** Formats the active provider-preference fields in the same clinical order as desktop. */
+export function formatProviderPreferences(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const p = value as Record<string, unknown>;
+  const measurement = (amount: unknown, unit: unknown) =>
+    typeof amount === "number" &&
+    Number.isFinite(amount) &&
+    amount >= 0 &&
+    (unit === "mm" || unit === "microns")
+      ? `${amount} ${unit}`
+      : "";
+  const occlusion = measurement(p.occlusionAmount, p.occlusionUnit);
+  const proximal = measurement(p.proximalContactAmount, p.proximalContactUnit);
+  const anatomy =
+    p.anatomyPreference === "primary_only"
+      ? "Primary only"
+      : p.anatomyPreference === "primary_and_secondary"
+        ? "Primary and secondary"
+        : p.anatomyPreference === "other" &&
+            typeof p.anatomyOther === "string" &&
+            p.anatomyOther.trim()
+          ? p.anatomyOther.trim()
+          : "";
+  const method =
+    p.caseQuestionContactMethod === "phone_call"
+      ? "Phone call"
+      : p.caseQuestionContactMethod === "text"
+        ? "Text"
+        : p.caseQuestionContactMethod === "email"
+          ? "Email"
+          : "";
+  const contact =
+    typeof p.caseQuestionContactValue === "string"
+      ? p.caseQuestionContactValue.trim()
+      : "";
+
+  return [
+    occlusion && `Occlusion: ${occlusion}`,
+    proximal && `Proximal contact: ${proximal}`,
+    anatomy && `Anatomy: ${anatomy}`,
+    method && contact && `Case questions: ${method}: ${contact}`,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+/**
+ * A custom advanced print layout owns its field visibility. Standard/default
+ * layouts have no custom element list, so the organization toggle alone
+ * determines whether preferences are included.
+ */
+export function shouldIncludeProviderPreferencesOnLabSlip(
+  organizationEnabled: boolean | null | undefined,
+  printTemplate?: { isCustom?: boolean | null; template?: unknown } | null,
+): boolean {
+  if (organizationEnabled !== true) return false;
+  if (printTemplate?.isCustom !== true) return true;
+  const template = printTemplate.template;
+  if (!template || typeof template !== "object") return false;
+  const elements = (template as { elements?: unknown }).elements;
+  return Array.isArray(elements) && elements.some(
+    (element) =>
+      !!element &&
+      typeof element === "object" &&
+      (element as { kind?: unknown }).kind === "providerPreferences" &&
+      (element as { visible?: unknown }).visible !== false,
+  );
 }
 
 const DOC_CSS = `
@@ -112,6 +185,11 @@ const DOC_CSS = `
   .totals td { border: none; padding: 3px 8px; }
   .totals .total-row td { font-size: 15px; font-weight: 700; border-top: 2px solid #1a1a1a; padding-top: 8px; }
   .rx-block { background: #f7f8f9; border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; }
+  .rx-history { background: #f7f8f9; border-radius: 6px; padding: 10px 12px; }
+  .rx-note-row { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 8px; align-items: start; margin-bottom: 8px; break-inside: avoid; }
+  .rx-note-row:last-child { margin-bottom: 0; }
+  .rx-note-date { color: #666; font-size: 10px; white-space: nowrap; }
+  .rx-note-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .empty { color: #999; font-style: italic; }
 `;
 
@@ -120,7 +198,8 @@ function docShell(title: string, body: string): string {
 }
 
 // ─── Case work-order card ─────────────────────────────────────────────────────
-export interface CaseCardRestoration {
+export interface CaseCardRestoration extends ImplantDetails {
+  restorationSubtype?: string | null;
   toothNumber?: string | null;
   restorationType?: string | null;
   material?: string | null;
@@ -129,18 +208,35 @@ export interface CaseCardRestoration {
 }
 
 export interface CaseCardData {
+  bridgeConnectors?: string | null;
   caseNumber?: string | null;
   patientName?: string | null;
   doctorName?: string | null;
   dueDate?: string | null;
-  expectedDeliveryDate?: string | null;
   priority?: string | null;
   status?: string | null;
   rxNotes?: string | null;
+  rxNoteEntries?: Array<{
+    id: string;
+    caseId: string;
+    noteText: string;
+    scannedAt: string | null;
+    provenance: string;
+  }>;
   restorations?: CaseCardRestoration[] | null;
   labName?: string | null;
   /** Case pan barcode value — rendered as a scannable code block when present. */
   casePanBarcode?: string | null;
+  /** Free-text technician notes from the remake questionnaire (admin/owner only). */
+  remakeNotes?: string | null;
+  /** Human-readable remake reason label. */
+  remakeReason?: string | null;
+  /** Gingival (tissue) shade for removable/denture cases. Omitted when null/empty. */
+  gingivialShade?: string | null;
+  /** Structured preferences saved on the provider profile. */
+  providerDoctorPreferences?: Record<string, unknown> | null;
+  /** Lab organization setting controlling whether provider preferences print. */
+  printProviderPreferencesOnLabSlips?: boolean | null;
 }
 
 export function buildCaseCardHtml(d: CaseCardData): string {
@@ -150,8 +246,10 @@ export function buildCaseCardHtml(d: CaseCardData): string {
     ["Status", esc(titleCaseLocal(d.status) || "—")],
     ["Priority", esc(titleCaseLocal(d.priority) || "Standard")],
     ["Due", esc(fmtDate(d.dueDate))],
-    ["Expected delivery", esc(fmtDate(d.expectedDeliveryDate))],
   ];
+  if (d.gingivialShade && d.gingivialShade.trim()) {
+    rows.push(["Gingival Shade", esc(d.gingivialShade.trim())]);
+  }
   const meta = rows
     .map(
       ([label, value]) =>
@@ -160,22 +258,55 @@ export function buildCaseCardHtml(d: CaseCardData): string {
     .join("");
 
   const restorations = d.restorations ?? [];
+  const allRemovable =
+    restorations.length > 0 &&
+    restorations.every((r) => isRemovableRestorationType(r.restorationType));
   const restRows = restorations.length
     ? restorations
         .map(
           (r) =>
-            `<tr><td>${esc(r.toothNumber || "—")}</td><td>${esc(
+            `<tr>${allRemovable ? "" : `<td>${esc(r.toothNumber || "—")}</td>`}<td>${esc(
               titleCaseLocal(r.restorationType) || "—",
             )}</td><td>${esc(r.material || "—")}</td><td>${esc(r.shade || "—")}</td><td class="num">${esc(
               r.quantity ?? 1,
             )}</td></tr>`,
         )
         .join("")
-    : `<tr><td colspan="5" class="empty">No restorations recorded.</td></tr>`;
+    : `<tr><td colspan="${allRemovable ? 4 : 5}" class="empty">No restorations recorded.</td></tr>`;
 
+  const rxEntries = d.rxNoteEntries?.length
+    ? d.rxNoteEntries
+    : d.rxNotes?.trim()
+      ? [{
+          id: `legacy-${d.caseNumber ?? "case"}`,
+          caseId: "",
+          noteText: d.rxNotes,
+          scannedAt: null,
+          provenance: "legacy",
+        }]
+      : [];
   const rx =
-    d.rxNotes && d.rxNotes.trim()
-      ? `<div class="section-title">Rx Instructions</div><div class="rx-block">${esc(d.rxNotes.trim())}</div>`
+    rxEntries.length > 0
+      ? `<div class="section-title">Rx Instructions</div><div class="rx-history">${rxEntries.map((entry) =>
+          `<div class="rx-note-row"><span class="rx-note-date">${esc(formatRxNoteScanDate(entry.scannedAt))}</span><span class="rx-note-text">${esc(entry.noteText)}</span></div>`
+        ).join("")}</div>`
+      : "";
+  const structuredProviderPreferences = formatProviderPreferences(d.providerDoctorPreferences);
+  const providerPreferences =
+    d.printProviderPreferencesOnLabSlips &&
+    structuredProviderPreferences
+      ? `<div class="section-title">Provider Preferences</div><div class="rx-block">${esc(structuredProviderPreferences)}</div>`
+      : "";
+
+  const remakeBlock =
+    d.remakeReason || (d.remakeNotes && d.remakeNotes.trim())
+      ? `<div class="section-title">Remake Information</div>` +
+        (d.remakeReason
+          ? `<div class="meta-row"><span class="meta-label">Reason</span><span class="meta-value">${esc(d.remakeReason)}</span></div>`
+          : "") +
+        (d.remakeNotes && d.remakeNotes.trim()
+          ? `<div style="margin-top:6px;"><div class="meta-label" style="margin-bottom:4px;">Remake Notes</div><div class="rx-block">${esc(d.remakeNotes.trim())}</div></div>`
+          : "")
       : "";
 
   const body = `
@@ -200,10 +331,18 @@ export function buildCaseCardHtml(d: CaseCardData): string {
     </div>` : ""}
     <div class="section-title">Restorations</div>
     <table>
-      <thead><tr><th>Tooth</th><th>Type</th><th>Material</th><th>Shade</th><th class="num">Qty</th></tr></thead>
+      <thead><tr>${allRemovable ? "" : "<th>Tooth</th>"}<th>Type</th><th>Material</th><th>Shade</th><th class="num">Qty</th></tr></thead>
       <tbody>${restRows}</tbody>
     </table>
+    ${remakeBlock}
     ${rx}
+    ${describeToothAssignments(restorations.map((r) => ({ ...r, toothNumber: r.toothNumber ?? "", restorationType: r.restorationType ?? "" })), d.bridgeConnectors)
+      ? `<div class="notes">${esc(describeToothAssignments(restorations.map((r) => ({ ...r, toothNumber: r.toothNumber ?? "", restorationType: r.restorationType ?? "" })), d.bridgeConnectors))}</div>` : ""}
+    ${IMPLANT_FIELDS.map((field) => {
+      const value = implantFieldText(restorations, field);
+      return value ? `<div class="section-title">${IMPLANT_FIELD_LABELS[field]}</div><div class="rx-block">${esc(value)}</div>` : "";
+    }).join("")}
+    ${providerPreferences}
   `;
   return docShell(`Work Order #${d.caseNumber ?? ""}`, body);
 }
@@ -211,6 +350,7 @@ export function buildCaseCardHtml(d: CaseCardData): string {
 // ─── Invoice document ─────────────────────────────────────────────────────────
 export interface InvoicePdfLine {
   description?: string | null;
+  isDiscount?: boolean | null;
   toothNumbers?: string | null;
   quantity?: number | string | null;
   unitPrice?: number | string | null;
@@ -235,7 +375,7 @@ export function buildInvoiceHtml(d: InvoicePdfData): string {
   const itemRows = items.length
     ? items
         .map((li) => {
-          const desc = li.description || "Item";
+          const desc = `${li.isDiscount ? "Discount: " : ""}${li.description || "Item"}`;
           const tooth = li.toothNumbers ? ` · #${li.toothNumbers}` : "";
           return `<tr><td>${esc(desc)}${esc(tooth)}</td><td class="num">${esc(
             li.quantity ?? 1,

@@ -1,8 +1,9 @@
-import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
-import { PARSERS_AND_HELPERS_JS } from "./index";
+import {
+  PARSERS_AND_HELPERS_JS,
+  buildThumbnailHtml,
+  buildViewerHtml,
+} from "./index";
 
 // The parsers live inside a JS template string so they can be inlined into the
 // viewer/thumbnail HTML docs. Evaluate that string here to get callable
@@ -22,7 +23,7 @@ const { parsePLY, parseScanBuffer } = factory() as {
   parseScanBuffer: (
     buf: ArrayBuffer,
     format: string,
-  ) => { vertices: Float32Array; colors?: Float32Array } | null;
+  ) => { vertices: Float32Array; colors?: Float32Array; uvs?: Float32Array } | null;
 };
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -120,6 +121,65 @@ function buildBinaryColorPly(): ArrayBuffer {
   out.set(headerBytes, 0);
   out.set(new Uint8Array(body), headerBytes.byteLength);
   return toArrayBuffer(out);
+}
+
+function buildSyntheticInterleavedColorPly(): ArrayBuffer {
+  const header = [
+    "ply",
+    "format binary_little_endian 1.0",
+    "comment synthetic test geometry",
+    "element vertex 3",
+    "property float x",
+    "property float y",
+    "property float z",
+    "property uchar red",
+    "property uchar green",
+    "property uchar blue",
+    "property float nx",
+    "property float ny",
+    "property float nz",
+    "element face 1",
+    "property int object",
+    "property list uchar int vertex_indices",
+    "end_header\n",
+  ].join("\n");
+  const headerBytes = new TextEncoder().encode(header);
+  const vertices: Array<[number, number, number, number, number, number]> = [
+    [0, 0, 0, 255, 0, 0],
+    [1, 0, 0, 0, 255, 0],
+    [0, 1, 0, 0, 0, 255],
+  ];
+  const body = new ArrayBuffer(3 * 27 + 17);
+  const view = new DataView(body);
+  let offset = 0;
+
+  for (const [x, y, z, red, green, blue] of vertices) {
+    view.setFloat32(offset, x, true);
+    view.setFloat32(offset + 4, y, true);
+    view.setFloat32(offset + 8, z, true);
+    view.setUint8(offset + 12, red);
+    view.setUint8(offset + 13, green);
+    view.setUint8(offset + 14, blue);
+    view.setFloat32(offset + 15, 0, true);
+    view.setFloat32(offset + 19, 0, true);
+    view.setFloat32(offset + 23, 1, true);
+    offset += 27;
+  }
+
+  // The object scalar precedes the face's vertex-index list in this layout.
+  view.setInt32(offset, 7, true);
+  offset += 4;
+  view.setUint8(offset, 3);
+  offset += 1;
+  for (const index of [0, 1, 2]) {
+    view.setInt32(offset, index, true);
+    offset += 4;
+  }
+
+  const output = new Uint8Array(headerBytes.byteLength + body.byteLength);
+  output.set(headerBytes, 0);
+  output.set(new Uint8Array(body), headerBytes.byteLength);
+  return toArrayBuffer(output);
 }
 
 const EXPECTED_COLORS = [1, 0, 0, 0, 1, 0, 0, 0, 1];
@@ -376,22 +436,9 @@ describe("parsePLY additional color layouts", () => {
   });
 });
 
-describe("real iTero-exported PLY fixture", () => {
-  // Trimmed from a real iTero color scan (binary_little_endian): the exact
-  // original header — including the `comment` line, per-vertex red/green/blue
-  // between xyz and nx/ny/nz, and the face element's `property int object`
-  // scalar declared BEFORE the vertex-index list — plus the first 800 vertices
-  // and the faces fully contained in them. This layout combination is the
-  // class that synthetic buffers miss (it previously produced gray scans).
-  const fixturePath = join(
-    dirname(fileURLToPath(import.meta.url)),
-    "__fixtures__",
-    "itero-color-scan.ply",
-  );
-  const fixtureBuf = toArrayBuffer(new Uint8Array(readFileSync(fixturePath)));
-
+describe("synthetic interleaved-color PLY layout", () => {
   it("parses vertex colors with no colorWarning via parseScanBuffer", () => {
-    const result = parseScanBuffer(fixtureBuf, "ply") as {
+    const result = parseScanBuffer(buildSyntheticInterleavedColorPly(), "ply") as {
       vertices: Float32Array;
       normals: Float32Array;
       colors?: Float32Array;
@@ -400,15 +447,13 @@ describe("real iTero-exported PLY fixture", () => {
     expect(result).not.toBeNull();
     expect(result!.colorWarning).toBeUndefined();
 
-    // Geometry: 838 triangles from the trimmed face set.
-    expect(result!.vertices.length).toBe(838 * 9);
+    // One synthetic triangle with xyz, interleaved RGB, and vertex normals.
+    expect(result!.vertices.length).toBe(9);
     expect(result!.normals.length).toBe(result!.vertices.length);
 
-    // hasColor: per-vertex colors present, one RGB triple per vertex.
     expect(result!.colors).toBeInstanceOf(Float32Array);
     expect(result!.colors!.length).toBe(result!.vertices.length);
-
-    // Real scan colors: all normalized to 0–1 and not uniformly gray.
+    expect(Array.from(result!.colors!)).toEqual(EXPECTED_COLORS);
     let min = Infinity;
     let max = -Infinity;
     for (const c of result!.colors!) {
@@ -452,5 +497,118 @@ describe("parsePLY color warning", () => {
     const result = parsePLY(asciiToArrayBuffer(ASCII_NO_COLOR_PLY));
     expect(result).not.toBeNull();
     expect(result!.colorWarning).toBeUndefined();
+  });
+});
+
+const ASCII_UV_PLY = [
+  "ply",
+  "format ascii 1.0",
+  "element vertex 4",
+  "property float x",
+  "property float y",
+  "property float z",
+  "element face 1",
+  "property uchar quality",
+  "property list uchar int vertex_indices",
+  "property list uchar float texcoord",
+  "end_header",
+  "0 0 0",
+  "1 0 0",
+  "1 1 0",
+  "0 1 0",
+  // A quad deliberately exercises fan triangulation and UV lockstep.
+  "7 4 0 1 2 3 8 0 0 1 0 1 1 0 1",
+  "",
+].join("\n");
+
+function buildBinaryUvPly(): ArrayBuffer {
+  const header = [
+    "ply",
+    "format binary_little_endian 1.0",
+    "element vertex 4",
+    "property float x",
+    "property float y",
+    "property float z",
+    "element face 1",
+    "property uchar quality",
+    "property list uchar int vertex_indices",
+    "property list uchar float texcoord",
+    "end_header\n",
+  ].join("\n");
+  const hb = new TextEncoder().encode(header);
+  const body = new ArrayBuffer(4 * 12 + 1 + 1 + 4 * 4 + 1 + 8 * 4);
+  const dv = new DataView(body);
+  let off = 0;
+  for (const [x, y] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+    dv.setFloat32(off, x, true); dv.setFloat32(off + 4, y, true);
+    dv.setFloat32(off + 8, 0, true); off += 12;
+  }
+  dv.setUint8(off++, 7);
+  dv.setUint8(off++, 4);
+  for (const i of [0, 1, 2, 3]) { dv.setInt32(off, i, true); off += 4; }
+  dv.setUint8(off++, 8);
+  for (const value of [0, 0, 1, 0, 1, 1, 0, 1]) {
+    dv.setFloat32(off, value, true); off += 4;
+  }
+  const out = new Uint8Array(hb.length + body.byteLength);
+  out.set(hb); out.set(new Uint8Array(body), hb.length);
+  return toArrayBuffer(out);
+}
+
+describe("PLY face-corner texture coordinates", () => {
+  it("reads declared-order ASCII UVs and triangulates a quad in lockstep", () => {
+    const result = parsePLY(asciiToArrayBuffer(ASCII_UV_PLY)) as {
+      vertices: Float32Array; uvs?: Float32Array;
+    };
+    expect(result.vertices.length).toBe(18);
+    // Texture V is flipped for three.js: [0,0],[1,0],[1,1] then [0,0],[1,1],[0,1].
+    expect(Array.from(result.uvs!)).toEqual([
+      0, 1, 1, 1, 1, 0,
+      0, 1, 1, 0, 0, 0,
+    ]);
+  });
+
+  it("reads binary UVs after a scalar and index list in declaration order", () => {
+    const result = parsePLY(buildBinaryUvPly()) as { vertices: Float32Array; uvs?: Float32Array };
+    expect(result.vertices.length).toBe(18);
+    expect(result.uvs).toBeInstanceOf(Float32Array);
+    expect(Array.from(result.uvs!)).toEqual([
+      0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0,
+    ]);
+  });
+
+  it("keeps geometry but omits UVs when a face UV list is malformed", () => {
+    const malformed = ASCII_UV_PLY.replace(
+      "7 4 0 1 2 3 8 0 0 1 0 1 1 0 1",
+      "7 4 0 1 2 3 8 0 0 1 0",
+    );
+    const result = parsePLY(asciiToArrayBuffer(malformed)) as {
+      vertices: Float32Array; uvs?: Float32Array;
+    };
+    expect(result.vertices.length).toBe(18);
+    expect(result.uvs).toBeUndefined();
+  });
+});
+
+describe("textured viewer HTML safety and material setup", () => {
+  it("embeds validated data URI texture setup in both renderers", () => {
+    const texture = { base64: "aGVsbG8=", mimeType: "image/png" };
+    const viewer = buildViewerHtml("cGx5", "ply", texture);
+    const thumb = buildThumbnailHtml("cGx5", "ply", {}, texture);
+    for (const html of [viewer, thumb]) {
+      expect(html).toContain("TextureLoader");
+      expect(html).toContain("data:image/png;base64,aGVsbG8=");
+      expect(html).toContain("SRGBColorSpace");
+      expect(html).not.toContain("TextureFile");
+    }
+  });
+
+  it("rejects arbitrary texture URLs and unsafe MIME types", () => {
+    const html = buildViewerHtml("cGx5", "ply", {
+      base64: "https://evil.example/texture.png",
+      mimeType: "text/html",
+    });
+    expect(html).toContain("TEXTURE_URI=null");
+    expect(html).not.toContain("https://evil.example");
   });
 });

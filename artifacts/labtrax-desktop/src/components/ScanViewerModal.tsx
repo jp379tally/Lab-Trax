@@ -14,6 +14,8 @@ interface ScanViewerModalProps {
   fileName: string;
   format: ScanFormat;
   authToken?: string | null;
+  /** Canonical authenticated URL for the declared texture attachment. */
+  textureUrl?: string | null;
   onClose: () => void;
   onFallback: () => void;
 }
@@ -38,6 +40,7 @@ export default function ScanViewerModal({
   fileName,
   format,
   authToken,
+  textureUrl,
   onClose,
   onFallback,
 }: ScanViewerModalProps) {
@@ -73,7 +76,22 @@ export default function ScanViewerModal({
         const buffer = await res.arrayBuffer();
         if (controller.signal.aborted) return;
         const base64 = arrayBufferToBase64(buffer);
-        setHtmlSource(buildViewerHtml(base64, format));
+        let texture: { base64: string; mimeType: string } | undefined;
+        if (textureUrl) {
+          try {
+            const textureRes = await fetch(textureUrl, { headers, signal: controller.signal });
+            if (textureRes.ok) {
+              texture = {
+                base64: arrayBufferToBase64(await textureRes.arrayBuffer()),
+                mimeType: textureRes.headers.get("content-type") || "image/jpeg",
+              };
+            }
+          } catch {
+            if (controller.signal.aborted) return;
+            // Keep the scan visible if a companion image is unavailable.
+          }
+        }
+        setHtmlSource(buildViewerHtml(base64, format, texture));
         setLoadState("rendering");
       } catch (err) {
         if (controller.signal.aborted) return;
@@ -87,7 +105,7 @@ export default function ScanViewerModal({
     return () => {
       controller.abort();
     };
-  }, [open, fileUrl, format, authToken]);
+  }, [open, fileUrl, format, authToken, textureUrl]);
 
   // Listen for parse-error messages from the iframe
   useEffect(() => {

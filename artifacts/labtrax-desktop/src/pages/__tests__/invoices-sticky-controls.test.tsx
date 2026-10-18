@@ -96,7 +96,7 @@ describe("Invoices sticky filter/bulk controls", () => {
 
     // The filter row lives inside the sticky group.
     expect(controls.contains(screen.getByPlaceholderText(/search invoice/i))).toBe(true);
-    expect(controls.contains(screen.getByRole("button", { name: /statements/i }))).toBe(true);
+    expect(controls.contains(screen.getByRole("button", { name: /multi-practice statement/i }))).toBe(true);
 
     // No ancestor may clip the sticky group with overflow-hidden, or
     // position:sticky silently stops working.
@@ -116,6 +116,7 @@ describe("Invoices sticky filter/bulk controls", () => {
 
     const controls = screen.getByTestId("invoice-controls");
     const sendBtn = screen.getByRole("button", { name: /send 60 invoices/i });
+    expect(screen.getByTestId("invoice-bulk-controls")).toHaveClass("flex-wrap");
     expect(controls.contains(sendBtn)).toBe(true);
     expect(controls.contains(screen.getByRole("button", { name: /delete selected/i }))).toBe(true);
     expect(controls.contains(screen.getByRole("button", { name: /^Reset to \$0$/i }))).toBe(true);

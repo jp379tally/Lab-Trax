@@ -35,7 +35,7 @@ describe("share-intent config (app.json) — regression firewall", () => {
     );
   }
 
-  it("registers the expo-share-intent config plugin", () => {
+  it("registers the expo-share-intent config plugin", async () => {
     const entry = findPlugin("expo-share-intent");
     expect(
       entry,
@@ -43,14 +43,14 @@ describe("share-intent config (app.json) — regression firewall", () => {
     ).toBeDefined();
   });
 
-  it("keeps the iOS share extension name and App Group identifier", () => {
+  it("keeps the iOS share extension name and App Group identifier", async () => {
     const [, opts] = findPlugin("expo-share-intent")!;
     expect(opts.iosShareExtensionName).toBe("LabTraxShare");
     // App Group is required for the share extension to hand files to the app.
     expect(opts.iosAppGroupIdentifier).toBe("group.app.replit.labtrax.sdr");
   });
 
-  it("accepts images, videos and files from the iOS share sheet", () => {
+  it("accepts images, videos and files from the iOS share sheet", async () => {
     const [, opts] = findPlugin("expo-share-intent")!;
     const rules = opts.iosActivationRules as Record<string, number>;
     expect(rules.NSExtensionActivationSupportsImageWithMaxCount).toBeGreaterThan(
@@ -64,9 +64,11 @@ describe("share-intent config (app.json) — regression firewall", () => {
     );
   });
 
-  it("accepts images from the Android share sheet (single and multi)", () => {
+  it("accepts images from the Android share sheet (single and multi)", async () => {
     const [, opts] = findPlugin("expo-share-intent")!;
     expect(opts.androidIntentFilters).toContain("image/*");
+    expect(opts.androidIntentFilters).toContain("video/*");
     expect(opts.androidMultiIntentFilters).toContain("image/*");
+    expect(opts.androidMultiIntentFilters).toContain("video/*");
   });
 });

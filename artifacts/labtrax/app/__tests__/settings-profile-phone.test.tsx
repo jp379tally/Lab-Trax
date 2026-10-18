@@ -23,8 +23,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react-native";
-import { Alert } from "react-native";
+import { cleanup, render, screen, fireEvent, waitFor, act } from "@testing-library/react-native";
+import { Alert, Keyboard } from "react-native";
+import { mockScrollViewScrollTo } from "../../test-stubs/react-native";
 
 import ProfileScreen from "../settings/profile";
 import {
@@ -68,6 +69,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
       data: { user: UNVERIFIED_PHONE_USER },
       isLoading: false,
       isError: false,
+      refetch: vi.fn(),
     })),
     // Simple mutation shim: invokes mutationFn and routes to onSuccess/onError.
     // Each render creates a fresh shim capturing the latest opts closure so
@@ -124,8 +126,8 @@ vi.mock("@/lib/theme-context", () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function renderProfile() {
-  return render(<ProfileScreen />);
+async function renderProfile() {
+  return await render(<ProfileScreen />);
 }
 
 function jsonOk(body: unknown, status = 200): Response {
@@ -142,16 +144,27 @@ function jsonFail(body: unknown, status = 422): Response {
   });
 }
 
+/** Finish interval-driven countdown updates while the screen is still mounted. */
+async function drainProfileTimers(): Promise<void> {
+  await act(async () => {
+    vi.runOnlyPendingTimers();
+    await Promise.resolve();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Setup / teardown
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
   vi.mocked(Alert.alert).mockClear();
+  vi.mocked(Keyboard.dismiss).mockClear();
+  mockScrollViewScrollTo.mockClear();
   resetMockFetchHandler();
 });
 
 afterEach(() => {
+  cleanup();
   resetMockFetchHandler();
 });
 
@@ -160,8 +173,19 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("ProfileScreen — OTP panel absent when PUT profile rejects", () => {
+  it("dismisses the keyboard, scrolls to the top, and shows confirmation after a successful profile save", async () => {
+    await renderProfile();
+    setMockFetchHandler(() => jsonOk({}));
+
+    await fireEvent.press(screen.getByText("Save profile"));
+
+    await waitFor(() => expect(screen.getByText("Profile saved.")).toBeTruthy());
+    expect(Keyboard.dismiss).toHaveBeenCalledTimes(1);
+    expect(mockScrollViewScrollTo).toHaveBeenCalledWith({ y: 0, animated: true });
+  });
+
   it("shows Alert with the server error and does NOT open the OTP panel when PUT rejects", async () => {
-    renderProfile();
+    await renderProfile();
 
     // Wait for the form to be populated from the seeded user.
     await waitFor(() =>
@@ -178,11 +202,11 @@ describe("ProfileScreen — OTP panel absent when PUT profile rejects", () => {
 
     // Change the phone to a new value so the save mutation has something to send.
     const phoneInput = screen.getByPlaceholderText("000-000-0000");
-    fireEvent.changeText(phoneInput, "555-987-6543");
+    await fireEvent.changeText(phoneInput, "555-987-6543");
 
     // Tap "Save profile".
     const saveBtn = screen.getByText("Save profile");
-    fireEvent.press(saveBtn);
+    await fireEvent.press(saveBtn);
 
     // The profile-level error must surface as an Alert.
     await waitFor(() =>
@@ -195,10 +219,12 @@ describe("ProfileScreen — OTP panel absent when PUT profile rejects", () => {
     // The OTP panel must NOT appear — onSuccess was never reached.
     expect(screen.queryByText("Enter verification code")).toBeNull();
     expect(screen.queryByPlaceholderText("000000")).toBeNull();
+    expect(Keyboard.dismiss).not.toHaveBeenCalled();
+    expect(mockScrollViewScrollTo).not.toHaveBeenCalled();
   });
 
   it("does NOT open the OTP panel when PUT rejects with a network-level error", async () => {
-    renderProfile();
+    await renderProfile();
 
     await waitFor(() =>
       expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
@@ -213,10 +239,10 @@ describe("ProfileScreen — OTP panel absent when PUT profile rejects", () => {
     });
 
     const phoneInput = screen.getByPlaceholderText("000-000-0000");
-    fireEvent.changeText(phoneInput, "555-000-0000");
+    await fireEvent.changeText(phoneInput, "555-000-0000");
 
     const saveBtn = screen.getByText("Save profile");
-    fireEvent.press(saveBtn);
+    await fireEvent.press(saveBtn);
 
     await waitFor(() =>
       expect(Alert.alert).toHaveBeenCalledWith(
@@ -230,7 +256,7 @@ describe("ProfileScreen — OTP panel absent when PUT profile rejects", () => {
   });
 
   it("opens the OTP panel automatically after a successful save with a changed phone", async () => {
-    renderProfile();
+    await renderProfile();
 
     await waitFor(() =>
       expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
@@ -244,10 +270,10 @@ describe("ProfileScreen — OTP panel absent when PUT profile rejects", () => {
     });
 
     const phoneInput = screen.getByPlaceholderText("000-000-0000");
-    fireEvent.changeText(phoneInput, "555-987-6543");
+    await fireEvent.changeText(phoneInput, "555-987-6543");
 
     const saveBtn = screen.getByText("Save profile");
-    fireEvent.press(saveBtn);
+    await fireEvent.press(saveBtn);
 
     // The OTP panel must appear automatically (no separate "Verify" press).
     await waitFor(() =>
@@ -270,7 +296,7 @@ async function openOtpPanelViaVerifyButton() {
     if (url.includes("/send-phone-code")) return jsonOk({ success: true });
     return jsonOk({ ok: true });
   });
-  fireEvent.press(screen.getByText("Verify phone number"));
+  await fireEvent.press(screen.getByText("Verify phone number"));
   await waitFor(() =>
     expect(screen.getByText("Enter verification code")).toBeTruthy(),
   );
@@ -289,13 +315,15 @@ describe("ProfileScreen — resend failure keeps OTP panel visible with inline e
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainProfileTimers();
+    cleanup();
     vi.useRealTimers();
     resetMockFetchHandler();
   });
 
   it("shows the resend error inside the OTP panel and does not close it", async () => {
-    renderProfile();
+    await renderProfile();
 
     await waitFor(() =>
       expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
@@ -321,7 +349,12 @@ describe("ProfileScreen — resend failure keeps OTP panel visible with inline e
       return jsonOk({ ok: true });
     });
 
-    fireEvent.press(screen.getByText("Resend"));
+    // The request intentionally never resolves. Do not await the event helper
+    // itself, because RNTL v14 awaits the async handler's unresolved promise.
+    await act(async () => {
+      fireEvent.press(screen.getByText("Resend"));
+      await Promise.resolve();
+    });
 
     // The OTP panel must remain visible — user must not be dropped to idle.
     await waitFor(() =>
@@ -353,13 +386,15 @@ describe("ProfileScreen — cancel mid-resend clears resending state", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainProfileTimers();
+    cleanup();
     vi.useRealTimers();
     resetMockFetchHandler();
   });
 
   it("does not leave the resend button stuck disabled after cancelling mid-resend", async () => {
-    renderProfile();
+    await renderProfile();
 
     await waitFor(() =>
       expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
@@ -386,7 +421,12 @@ describe("ProfileScreen — cancel mid-resend clears resending state", () => {
       return jsonOk({ ok: true });
     });
 
-    fireEvent.press(screen.getByText("Resend"));
+    // The request intentionally never resolves. Do not await the event helper
+    // itself, because RNTL v14 awaits the async handler's unresolved promise.
+    await act(async () => {
+      fireEvent.press(screen.getByText("Resend"));
+      await Promise.resolve();
+    });
 
     // The OTP panel must still be open (step remains "otp") while resending.
     await waitFor(() =>
@@ -394,11 +434,20 @@ describe("ProfileScreen — cancel mid-resend clears resending state", () => {
     );
 
     // Cancel while resend is in-flight — must clear resending state and close panel.
-    fireEvent.press(screen.getByText("Cancel"));
+    await fireEvent.press(screen.getByText("Cancel"));
     expect(screen.queryByText("Enter verification code")).toBeNull();
 
     // Reopen the OTP panel with a fresh successful send.
-    await openOtpPanelViaVerifyButton();
+    setMockFetchHandler((url) => {
+      if (url.includes("/send-phone-code")) return jsonOk({ success: true });
+      return jsonOk({ ok: true });
+    });
+    await act(async () => {
+      await fireEvent.press(screen.getByText("Verify phone number"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Enter verification code")).toBeTruthy();
 
     // Advance past the new 60-second countdown.
     await act(async () => {
@@ -406,9 +455,7 @@ describe("ProfileScreen — cancel mid-resend clears resending state", () => {
     });
 
     // The Resend button must be enabled — stale resending=true must NOT block it.
-    await waitFor(() =>
-      expect(screen.getByText("Resend")).toBeTruthy(),
-    );
+    expect(screen.getByText("Resend")).toBeTruthy();
   });
 });
 
@@ -423,11 +470,12 @@ describe("ProfileScreen — Save button is disabled while OTP panel is open", ()
   });
 
   afterEach(() => {
+    cleanup();
     resetMockFetchHandler();
   });
 
   it("disables the Save profile button while phoneVerifyStep is otp", async () => {
-    renderProfile();
+    await renderProfile();
 
     await waitFor(() =>
       expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
@@ -465,13 +513,15 @@ describe("ProfileScreen — successful resend resets countdown and keeps OTP pan
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainProfileTimers();
+    cleanup();
     vi.useRealTimers();
     resetMockFetchHandler();
   });
 
   it("keeps the OTP panel open and disables Resend for 60 s after a successful resend", async () => {
-    renderProfile();
+    await renderProfile();
 
     await waitFor(() =>
       expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
@@ -495,7 +545,7 @@ describe("ProfileScreen — successful resend resets countdown and keeps OTP pan
       return jsonOk({ ok: true });
     });
 
-    fireEvent.press(screen.getByText("Resend"));
+    await fireEvent.press(screen.getByText("Resend"));
 
     // The OTP panel must remain open — step must NOT go back to "idle".
     await waitFor(() =>
@@ -530,11 +580,12 @@ describe("ProfileScreen — editing an unrelated field does not dismiss the OTP 
   });
 
   afterEach(() => {
+    cleanup();
     resetMockFetchHandler();
   });
 
   it("keeps the OTP panel open when the user edits firstName while the panel is visible", async () => {
-    renderProfile();
+    await renderProfile();
 
     await waitFor(() =>
       expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
@@ -545,7 +596,7 @@ describe("ProfileScreen — editing an unrelated field does not dismiss the OTP 
 
     // The OTP panel is open; now edit the First name field — an unrelated field.
     const firstNameInput = screen.getByPlaceholderText("First name");
-    fireEvent.changeText(firstNameInput, "Testing");
+    await fireEvent.changeText(firstNameInput, "Testing");
 
     // The OTP panel must still be visible — phone value did not change.
     expect(screen.getByText("Enter verification code")).toBeTruthy();
@@ -568,11 +619,12 @@ describe("ProfileScreen — Confirm button disabled while verification is in-fli
   });
 
   afterEach(() => {
+    cleanup();
     resetMockFetchHandler();
   });
 
   it("does not fire a second /verify-phone-code when Confirm is tapped twice while the first request is in-flight", async () => {
-    renderProfile();
+    await renderProfile();
 
     await waitFor(() =>
       expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
@@ -582,7 +634,7 @@ describe("ProfileScreen — Confirm button disabled while verification is in-fli
     await openOtpPanelViaVerifyButton();
 
     // Enter a 6-digit code so the button is enabled.
-    fireEvent.changeText(screen.getByPlaceholderText("000000"), "123456");
+    await fireEvent.changeText(screen.getByPlaceholderText("000000"), "123456");
 
     // Wire /verify-phone-code to a never-resolving promise so the request
     // stays in-flight indefinitely — this is the stall that triggers isVerifying.
@@ -600,7 +652,13 @@ describe("ProfileScreen — Confirm button disabled while verification is in-fli
 
     // First tap — starts the in-flight request.
     const confirmBtn = screen.getByTestId("confirm-otp-btn");
-    fireEvent.press(confirmBtn);
+    // The verification request intentionally never resolves. Keep the press
+    // inside act but do not await fireEvent's promise, which would wait for
+    // the unresolved handler.
+    await act(async () => {
+      fireEvent.press(confirmBtn);
+      await Promise.resolve();
+    });
 
     // Wait for the button to become disabled (isVerifying=true).
     await waitFor(() =>
@@ -611,11 +669,15 @@ describe("ProfileScreen — Confirm button disabled while verification is in-fli
     expect(verifyCallCount).toBe(1);
 
     // Second tap — must be a no-op because disabled=true / onPress=undefined.
-    fireEvent.press(screen.getByTestId("confirm-otp-btn"));
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("confirm-otp-btn"));
+      await Promise.resolve();
+    });
 
     // Give any async work a tick to settle.
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     // No additional /verify-phone-code request should have been fired.
@@ -627,6 +689,13 @@ describe("ProfileScreen — Confirm button disabled while verification is in-fli
 
     // No Alert should have been shown — the request is still pending, not errored.
     expect(Alert.alert).not.toHaveBeenCalled();
+
+    // End the pending verification flow while the screen is mounted so its
+    // resend countdown cannot tick after the test has finished.
+    await act(async () => {
+      await fireEvent.press(screen.getByText("Cancel"));
+      await Promise.resolve();
+    });
   });
 });
 
@@ -642,13 +711,15 @@ describe("ProfileScreen — Resend button disabled during countdown is a no-op",
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainProfileTimers();
+    cleanup();
     vi.useRealTimers();
     resetMockFetchHandler();
   });
 
   it("does not fire a second /send-phone-code when the Resend button is pressed during the countdown", async () => {
-    renderProfile();
+    await renderProfile();
 
     await waitFor(() =>
       expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
@@ -677,7 +748,7 @@ describe("ProfileScreen — Resend button disabled during countdown is a no-op",
     });
 
     // Press Resend once — this is the legitimate resend.
-    fireEvent.press(screen.getByText("Resend"));
+    await fireEvent.press(screen.getByText("Resend"));
 
     // Wait for the countdown to restart after the successful resend.
     await waitFor(() =>
@@ -693,7 +764,7 @@ describe("ProfileScreen — Resend button disabled during countdown is a no-op",
     expect(countAfterLegitimateResend).toBe(1);
 
     // Press the button again while the countdown is active — this must be a no-op.
-    fireEvent.press(resendPressable);
+    await fireEvent.press(resendPressable);
 
     // Give any async work a chance to settle.
     await act(async () => {

@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const helpers = require("../itero-helpers.cjs") as {
   DEFAULT_POLL_INTERVAL_MIN: number;
   MIN_POLL_INTERVAL_MIN: number;

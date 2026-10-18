@@ -18,6 +18,7 @@ interface HubItem {
   subtitle: string;
   icon: IconName;
   route: string;
+  group: "Customers owe the lab" | "The lab owes vendors" | "Aging reports" | "Banking";
 }
 
 interface UndepositedSummary {
@@ -31,24 +32,63 @@ const ITEMS: HubItem[] = [
     subtitle: "Billing, balances, and line items",
     icon: "document-text-outline",
     route: "/finance/invoices",
+    group: "Customers owe the lab",
+  },
+  {
+    title: "Receive Payments",
+    subtitle: "Apply payments to open invoices",
+    icon: "card-outline",
+    route: "/finance/receive-payments",
+    group: "Customers owe the lab",
   },
   {
     title: "Customer Center",
     subtitle: "Doctors and practices you bill",
     icon: "people-outline",
     route: "/finance/customers",
+    group: "Customers owe the lab",
   },
   {
     title: "Statements",
     subtitle: "Monthly statement send runs",
     icon: "mail-outline",
     route: "/finance/statements",
+    group: "Customers owe the lab",
+  },
+  {
+    title: "Bills",
+    subtitle: "Enter and review money the lab owes vendors",
+    icon: "receipt-outline",
+    route: "/finance/bills",
+    group: "The lab owes vendors",
+  },
+  {
+    title: "Pay Bills",
+    subtitle: "Record payments for money the lab owes vendors",
+    icon: "cash-outline",
+    route: "/finance/pay-bills",
+    group: "The lab owes vendors",
+  },
+  {
+    title: "A/P & A/R Aging",
+    subtitle: "Age vendor payables and customer receivables",
+    icon: "time-outline",
+    route: "/finance/ap-aging",
+    group: "Aging reports",
+  },
+  {
+    title: "Make Deposits",
+    subtitle: "Move Undeposited Funds to a bank account",
+    icon: "wallet-outline",
+    route: "/finance/make-deposits",
+    group: "Banking",
   },
   {
     title: "Bank Register",
     subtitle: "Transactions and running balances",
     icon: "swap-horizontal-outline",
     route: "/finance/bank-register",
+    group: "Banking",
   },
 ];
 
@@ -84,7 +124,7 @@ export default function FinancialHubScreen() {
           <TouchableOpacity
             testID="undeposited-funds-banner"
             activeOpacity={0.8}
-            onPress={() => router.push("/finance/bank-register" as never)}
+            onPress={() => router.push("/finance/make-deposits" as never)}
             style={[styles.alertRow, { backgroundColor: colors.warningSurface, borderColor: colors.warning }]}
           >
             <View style={[styles.alertIcon, { backgroundColor: colors.warningLight }]}>
@@ -101,8 +141,10 @@ export default function FinancialHubScreen() {
             <Ionicons name="chevron-forward" size={16} color={colors.warning} />
           </TouchableOpacity>
         )}
-        {ITEMS.map((item) => (
-          <Card key={item.route} style={styles.row} onPress={() => router.push(item.route as never)} testID={`hub-${item.route}`}>
+        {ITEMS.map((item, index) => (
+          <React.Fragment key={item.route}>
+          {(index === 0 || ITEMS[index - 1].group !== item.group) && <Text style={styles.groupTitle}>{item.group}</Text>}
+          <Card style={styles.row} onPress={() => router.push(item.route as never)} testID={`hub-${item.route}`}>
             <View style={[styles.rowIcon, { backgroundColor: colors.tint + "1A" }]}>
               <Ionicons name={item.icon} size={20} color={colors.tint} />
             </View>
@@ -114,6 +156,7 @@ export default function FinancialHubScreen() {
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
           </Card>
+          </React.Fragment>
         ))}
       </ScrollView>
     </View>
@@ -127,6 +170,7 @@ function makeStyles(c: ThemeColors) {
     title: { ...Typography.h1, color: c.text },
     subtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
     content: { padding: Spacing.lg, paddingTop: Spacing.sm, gap: Spacing.sm },
+    groupTitle: { ...Typography.label, color: c.textSecondary, marginTop: Spacing.sm },
     alertRow: {
       flexDirection: "row",
       alignItems: "center",

@@ -28,10 +28,15 @@ import {
 } from "@workspace/db";
 import OpenAI from "openai";
 import { writeAuditLog } from "./audit";
+import { HttpError } from "./http";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole } from "./rbac";
 import { notDeleted } from "./soft-delete";
 import { runBatchSendStatements } from "./statements";
 import { ensureInvoiceDeposit } from "./invoice-deposits";
+import { formatNumericDate, formatNumericMonthYear } from "./date-format";
+import { deliverInAppNotification } from "./in-app-notifications";
+import { broadcastCaseUpdated } from "./case-events-ws";
+import { releaseBatchForChild } from "./deposit-batches";
 import type { Request } from "express";
 
 // ─── Lazy OpenAI client for draft_message tool ───────────────────────────────
@@ -63,6 +68,8 @@ export interface ToolContext {
   req: Request;
   /** "lab" | "provider" — determines which tools are available */
   userType: string;
+  /** Explicit surface boundary: "labtrax" for lab/admin callers, "provider_portal" for provider callers. */
+  appSurface: "labtrax" | "provider_portal";
   /** Primary lab org ID resolved from the user's memberships (null for providers) */
   labOrganizationId: string | null;
   /** Provider org IDs for provider users (empty for lab staff) */
@@ -88,6 +95,32 @@ async function requireLabId(ctx: ToolContext): Promise<string> {
   return labId;
 }
 
+/**
+ * Throw a 403 HttpError if the caller is not on the "labtrax" surface.
+ * Use at the top of any tool that is inappropriate for provider-portal callers.
+ */
+function requireLabSurface(ctx: ToolContext): void {
+  if (ctx.appSurface !== "labtrax") {
+    throw new HttpError(
+      403,
+      "This action is only available to lab staff. Please contact your lab directly.",
+    );
+  }
+}
+
+/**
+ * Throw a 403 HttpError if the caller is not on the "provider_portal" surface.
+ * Use at the top of any tool that should only be available to provider callers.
+ */
+function requireProviderSurface(ctx: ToolContext): void {
+  if (ctx.appSurface !== "provider_portal") {
+    throw new HttpError(
+      403,
+      "This action is only available to provider accounts.",
+    );
+  }
+}
+
 // ─── Tool: lookup_invoice ────────────────────────────────────────────────────
 
 const lookupInvoiceTool: AgentTool = {
@@ -109,6 +142,8 @@ const lookupInvoiceTool: AgentTool = {
   execute: async (args, ctx) => {
     const q = String(args.invoiceNumber ?? "").trim();
     let whereClause;
+    // Allowed provider org IDs for enrichment scoping — populated below based on surface.
+    let enrichmentAllowedIds: Set<string>;
 
     if (ctx.userType === "provider") {
       // Provider users search across their linked practices
@@ -119,6 +154,7 @@ const lookupInvoiceTool: AgentTool = {
         inArray(invoices.providerOrganizationId, ctx.providerOrgIds),
         or(ilike(invoices.invoiceNumber, `%${q}%`), eq(invoices.invoiceNumber, q)),
       );
+      enrichmentAllowedIds = new Set(ctx.providerOrgIds);
     } else {
       const labId = await requireLabId(ctx);
       await requireAnyRole(ctx.userId, labId, BILLING_ROLES);
@@ -126,6 +162,12 @@ const lookupInvoiceTool: AgentTool = {
         eq(invoices.labOrganizationId, labId),
         or(ilike(invoices.invoiceNumber, `%${q}%`), eq(invoices.invoiceNumber, q)),
       );
+      // Scope enrichment to provider orgs actually connected to this lab.
+      const conns = await db
+        .select({ pid: organizationConnections.providerOrganizationId })
+        .from(organizationConnections)
+        .where(eq(organizationConnections.labOrganizationId, labId));
+      enrichmentAllowedIds = new Set(conns.map((c) => c.pid));
     }
 
     const rows = await db
@@ -151,11 +193,14 @@ const lookupInvoiceTool: AgentTool = {
 
     const enriched = await Promise.all(
       rows.map(async (r) => {
-        const org = r.providerOrganizationId
-          ? await db.query.organizations.findFirst({
-              where: eq(organizations.id, r.providerOrganizationId),
-            })
-          : null;
+        // Only look up org names that belong to the caller's allowed scope —
+        // defence-in-depth against data leaking across org boundaries.
+        const org =
+          r.providerOrganizationId && enrichmentAllowedIds.has(r.providerOrganizationId)
+            ? await db.query.organizations.findFirst({
+                where: eq(organizations.id, r.providerOrganizationId),
+              })
+            : null;
         return { ...r, practiceName: org?.displayName || org?.name || "Unknown" };
       }),
     );
@@ -338,6 +383,7 @@ const voidInvoiceTool: AgentTool = {
     return `Void invoice ${num} — reason: "${args.reason}"`;
   },
   execute: async (args, ctx) => {
+    requireLabSurface(ctx);
     const inv = await db.query.invoices.findFirst({
       where: eq(invoices.id, String(args.invoiceId)),
     });
@@ -348,39 +394,52 @@ const voidInvoiceTool: AgentTool = {
     const voidReason = String(args.reason ?? "").trim();
     if (!voidReason) throw new Error("A reason is required to void an invoice.");
 
-    // Mirror the existing void route: reverse any auto-deposit if present.
-    const depositLinks = await db
-      .select({
-        bankTransactionId: bankTransactionInvoices.bankTransactionId,
-        txnSource: bankTransactions.source,
-        txnStatus: bankTransactions.status,
-      })
-      .from(bankTransactionInvoices)
-      .innerJoin(bankTransactions, eq(bankTransactions.id, bankTransactionInvoices.bankTransactionId))
-      .where(eq(bankTransactionInvoices.invoiceId, inv.id));
-    const autoDeposit = depositLinks.find(
-      (l) => l.txnSource === "invoice" && l.txnStatus !== "void",
-    );
-    if (autoDeposit) {
-      await db
-        .update(bankTransactions)
-        .set({ status: "void" })
-        .where(eq(bankTransactions.id, autoDeposit.bankTransactionId));
-    }
+    const { updated, autoDeposit } = await db.transaction(async (tx) => {
+      // Keep the AI entry point on the same atomic, batch-aware correction
+      // path as the invoice route.
+      const depositLinks = await tx
+        .select({
+          bankTransactionId: bankTransactionInvoices.bankTransactionId,
+          txnSource: bankTransactions.source,
+          txnStatus: bankTransactions.status,
+        })
+        .from(bankTransactionInvoices)
+        .innerJoin(bankTransactions, eq(bankTransactions.id, bankTransactionInvoices.bankTransactionId))
+        .where(eq(bankTransactionInvoices.invoiceId, inv.id));
+      const linkedDeposit = depositLinks.find(
+        (l) => l.txnSource === "invoice" && l.txnStatus !== "void",
+      );
+      if (linkedDeposit) {
+        await releaseBatchForChild(
+          tx,
+          inv.labOrganizationId,
+          linkedDeposit.bankTransactionId,
+        );
+        await tx
+          .update(bankTransactions)
+          .set({ status: "void" })
+          .where(eq(bankTransactions.id, linkedDeposit.bankTransactionId));
+        await tx.delete(bankTransactionInvoices).where(and(
+          eq(bankTransactionInvoices.bankTransactionId, linkedDeposit.bankTransactionId),
+          eq(bankTransactionInvoices.invoiceId, inv.id),
+        ));
+      }
 
-    const [updated] = await db
-      .update(invoices)
-      .set({
-        status: "void",
-        balanceDue: "0.00",
-        voidedAt: new Date(),
-        voidedByUserId: ctx.userId,
-        voidReason,
-        voidKind: "void",
-        updatedByUserId: ctx.userId,
-      })
-      .where(eq(invoices.id, inv.id))
-      .returning();
+      const [voidedInvoice] = await tx
+        .update(invoices)
+        .set({
+          status: "void",
+          balanceDue: "0.00",
+          voidedAt: new Date(),
+          voidedByUserId: ctx.userId,
+          voidReason,
+          voidKind: "void",
+          updatedByUserId: ctx.userId,
+        })
+        .where(eq(invoices.id, inv.id))
+        .returning();
+      return { updated: voidedInvoice, autoDeposit: linkedDeposit };
+    });
 
     // Fire case event if invoice is linked to a case.
     if (inv.caseId) {
@@ -457,6 +516,7 @@ const sendStatementsTool: AgentTool = {
     return `Send ${scope} statements${period} via ${channels} for lab "${org?.displayName ?? org?.name ?? labId}"`;
   },
   execute: async (args, ctx) => {
+    requireLabSurface(ctx);
     const labId = await requireLabId(ctx);
     await requireAnyRole(ctx.userId, labId, ADMIN_ROLES);
 
@@ -526,6 +586,7 @@ const mergeDoctorsTool: AgentTool = {
     return `Merge doctor "${args.sourceDoctorName}" → "${args.targetDoctorName}" (${count} case${count === 1 ? "" : "s"} will be re-attributed)`;
   },
   execute: async (args, ctx) => {
+    requireLabSurface(ctx);
     const labId = await requireLabId(ctx);
     await requireAnyRole(ctx.userId, labId, ADMIN_ROLES);
 
@@ -576,6 +637,8 @@ const mergeDoctorsTool: AgentTool = {
       metadataJson: { casesMoved: matchedCases.length },
     });
 
+    for (const c of matchedCases) broadcastCaseUpdated(c.id, "doctor_merged");
+
     return { success: true, casesMoved: matchedCases.length, sourceDoctorName: sourceName, targetDoctorName: targetName };
   },
 };
@@ -604,6 +667,7 @@ const setPracticePricingTierTool: AgentTool = {
   summarize: async (args) =>
     `Set pricing tier for "${args.practiceNameOrId}" to "${args.tierName}"`,
   execute: async (args, ctx) => {
+    requireLabSurface(ctx);
     const labId = await requireLabId(ctx);
     await requireAnyRole(ctx.userId, labId, ADMIN_ROLES);
 
@@ -711,6 +775,7 @@ const createPricingOverrideTool: AgentTool = {
   summarize: async (args) =>
     `Set custom pricing for Dr. "${args.doctorName}" based on the "${args.tierName}" tier`,
   execute: async (args, ctx) => {
+    requireLabSurface(ctx);
     const labId = await requireLabId(ctx);
     await requireAnyRole(ctx.userId, labId, ADMIN_ROLES);
 
@@ -799,9 +864,7 @@ const createCaseTool: AgentTool = {
     return `Create case for ${args.patientFirstName} ${args.patientLastName}, doctor ${args.doctorName}${due}${priority}`;
   },
   execute: async (args, ctx) => {
-    if (ctx.userType === "provider") {
-      throw new Error("Case creation is only available for lab staff accounts.");
-    }
+    requireLabSurface(ctx);
     const labId = await requireLabId(ctx);
     await requireAnyRole(ctx.userId, labId, ADMIN_ROLES);
 
@@ -849,6 +912,18 @@ const createCaseTool: AgentTool = {
       afterJson: created,
     });
 
+    await deliverInAppNotification({
+      labOrganizationId: labId,
+      category: created.priority === "rush" ? "rush_case" : "new_case",
+      type: created.priority === "rush" ? "rush_case_created" : "case_created",
+      title:
+        created.priority === "rush"
+          ? `Rush case: ${created.caseNumber}`
+          : `New case: ${created.caseNumber}`,
+      body: `Case ${created.caseNumber} for ${created.patientFirstName} ${created.patientLastName} was created by LabTrax Assistant.`,
+      dataJson: { caseId: created.id, caseNumber: created.caseNumber },
+    });
+
     return {
       success: true,
       caseId: created.id,
@@ -886,6 +961,7 @@ const updateCaseStatusTool: AgentTool = {
     return `Update case ${num} status → "${args.status}"`;
   },
   execute: async (args, ctx) => {
+    requireLabSurface(ctx);
     const c = await db.query.cases.findFirst({
       where: and(eq(cases.id, String(args.caseId)), isNull(cases.deletedAt)),
     });
@@ -907,6 +983,8 @@ const updateCaseStatusTool: AgentTool = {
       beforeJson: { status: c.status },
       afterJson: { status: updated.status },
     });
+
+    broadcastCaseUpdated(c.id);
 
     return { success: true, caseId: c.id, caseNumber: c.caseNumber, status: updated.status };
   },
@@ -950,6 +1028,7 @@ const updateCaseTool: AgentTool = {
     return `Edit case ${num}: ${changes.join(", ") || "no fields specified"}`;
   },
   execute: async (args, ctx) => {
+    requireLabSurface(ctx);
     const c = await db.query.cases.findFirst({
       where: and(eq(cases.id, String(args.caseId)), isNull(cases.deletedAt)),
     });
@@ -987,6 +1066,8 @@ const updateCaseTool: AgentTool = {
       afterJson: updates,
     });
 
+    broadcastCaseUpdated(c.id);
+
     return {
       success: true,
       caseId: c.id,
@@ -1014,6 +1095,7 @@ const resetInvoiceLayoutTool: AgentTool = {
     return `Reset invoice print layout to default for "${org?.displayName ?? org?.name ?? labId}"`;
   },
   execute: async (_args, ctx) => {
+    requireLabSurface(ctx);
     const labId = await requireLabId(ctx);
     await requireAnyRole(ctx.userId, labId, ADMIN_ROLES);
 
@@ -1140,7 +1222,7 @@ const getCaseHistoryTool: AgentTool = {
         status: caseRow.status,
         priority: caseRow.priority,
         dueDate: caseRow.dueDate?.toISOString() ?? null,
-        receivedAt: caseRow.receivedAt?.toISOString() ?? null,
+        receivedAt: caseRow.receivedAt ?? null,
         createdAt: caseRow.createdAt?.toISOString() ?? null,
         remakeOf: remakeOf ? remakeOf.caseNumber : null,
         remakeReason: caseRow.remakeReason ?? null,
@@ -1317,7 +1399,7 @@ const draftMessageTool: AgentTool = {
         },
       });
       if (c) {
-        caseContext = ` Case #${c.caseNumber} for patient ${c.patientFirstName} ${c.patientLastName} (status: ${c.status}${c.dueDate ? `, due ${c.dueDate.toLocaleDateString()}` : ""}).`;
+        caseContext = ` Case #${c.caseNumber} for patient ${c.patientFirstName} ${c.patientLastName} (status: ${c.status}${c.dueDate ? `, due ${formatNumericDate(c.dueDate)}` : ""}).`;
       }
     }
 
@@ -1413,7 +1495,6 @@ const monthlySalesSnapshotTool: AgentTool = {
           or(
             eq(invoices.status, "paid"),
             eq(invoices.status, "open"),
-            eq(invoices.status, "draft"),
           ),
         ),
       );
@@ -1437,7 +1518,7 @@ const monthlySalesSnapshotTool: AgentTool = {
       }
     }
 
-    const monthLabel = start.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    const monthLabel = formatNumericMonthYear(start);
 
     return {
       month: monthLabel,
@@ -1478,7 +1559,7 @@ const financialSummaryTool: AgentTool = {
         and(
           eq(invoices.labOrganizationId, labId),
           isNull(invoices.deletedAt),
-          or(eq(invoices.status, "open"), eq(invoices.status, "draft")),
+          eq(invoices.status, "open"),
         ),
       );
     const arBalance = arRows.reduce((sum, r) => sum + Number(r.balanceDue), 0);
@@ -1554,7 +1635,7 @@ const financialSummaryTool: AgentTool = {
         next60Days: proj60.toFixed(2),
         next90Days: proj90.toFixed(2),
       },
-      asOf: now.toLocaleDateString(),
+      asOf: formatNumericDate(now),
     };
   },
 };
@@ -1627,8 +1708,8 @@ const remakeRateTool: AgentTool = {
 
     return {
       period: {
-        from: dateFrom.toLocaleDateString(),
-        to: dateTo.toLocaleDateString(),
+        from: formatNumericDate(dateFrom),
+        to: formatNumericDate(dateTo),
       },
       totalCases: total,
       remakeCases: remakes,

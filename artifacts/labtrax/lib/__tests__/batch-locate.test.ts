@@ -2,10 +2,22 @@ import { describe, it, expect, vi } from "vitest";
 import {
   isDuplicateScan,
   prependScannedCase,
+  removeScannedCase,
+  updateScannedLocations,
   splitBatchResults,
   runBatchMove,
   type ScannedCase,
 } from "@/app/batch-locate/index";
+
+describe("updateScannedLocations", () => {
+  it("updates only cases whose move succeeded", async () => {
+    const cases = [makeCase("a"), makeCase("b")];
+    expect(updateScannedLocations(cases, ["case-a"], "Wax Room")).toEqual([
+      { ...cases[0], currentLocation: "Wax Room" },
+      cases[1],
+    ]);
+  });
+});
 
 function makeCase(barcode: string, overrides: Partial<ScannedCase> = {}): ScannedCase {
   return {
@@ -14,6 +26,7 @@ function makeCase(barcode: string, overrides: Partial<ScannedCase> = {}): Scanne
     patientName: `Patient ${barcode}`,
     caseNumber: `CN-${barcode}`,
     currentLocation: "received",
+    labOrganizationId: "lab-1",
     ...overrides,
   };
 }
@@ -21,22 +34,22 @@ function makeCase(barcode: string, overrides: Partial<ScannedCase> = {}): Scanne
 // ── isDuplicateScan ───────────────────────────────────────────────────────────
 
 describe("isDuplicateScan", () => {
-  it("returns false for a barcode not yet in the seen set", () => {
+  it("returns false for a barcode not yet in the seen set", async () => {
     const seen = new Set<string>();
     expect(isDuplicateScan(seen, "ABC123")).toBe(false);
   });
 
-  it("returns true for a barcode already in the seen set", () => {
+  it("returns true for a barcode already in the seen set", async () => {
     const seen = new Set(["ABC123"]);
     expect(isDuplicateScan(seen, "ABC123")).toBe(true);
   });
 
-  it("is case-sensitive", () => {
+  it("is case-sensitive", async () => {
     const seen = new Set(["abc123"]);
     expect(isDuplicateScan(seen, "ABC123")).toBe(false);
   });
 
-  it("scanning the same barcode 3× → count stays 1", () => {
+  it("scanning the same barcode 3× → count stays 1", async () => {
     const seen = new Set<string>();
     const barcode = "REPEAT";
     let addCount = 0;
@@ -56,14 +69,14 @@ describe("isDuplicateScan", () => {
 // ── prependScannedCase ────────────────────────────────────────────────────────
 
 describe("prependScannedCase", () => {
-  it("adds the first case to an empty list", () => {
+  it("adds the first case to an empty list", async () => {
     const c = makeCase("A");
     const result = prependScannedCase([], c);
     expect(result).toHaveLength(1);
     expect(result[0]?.barcode).toBe("A");
   });
 
-  it("puts the newest case at index 0 (newest-on-top)", () => {
+  it("puts the newest case at index 0 (newest-on-top)", async () => {
     const first = makeCase("FIRST");
     const second = makeCase("SECOND");
     let list = prependScannedCase([], first);
@@ -72,7 +85,7 @@ describe("prependScannedCase", () => {
     expect(list[1]?.barcode).toBe("FIRST");
   });
 
-  it("multi-scan count reflects total distinct barcodes", () => {
+  it("multi-scan count reflects total distinct barcodes", async () => {
     const barcodes = ["A", "B", "C", "D"];
     let list: ScannedCase[] = [];
     for (const b of barcodes) {
@@ -81,7 +94,7 @@ describe("prependScannedCase", () => {
     expect(list).toHaveLength(barcodes.length);
   });
 
-  it("does not mutate the original list", () => {
+  it("does not mutate the original list", async () => {
     const original = [makeCase("X")];
     const result = prependScannedCase(original, makeCase("Y"));
     expect(original).toHaveLength(1);
@@ -89,10 +102,20 @@ describe("prependScannedCase", () => {
   });
 });
 
+describe("removeScannedCase", () => {
+  it("removes only the selected case without mutating the original list", async () => {
+    const original = [makeCase("A"), makeCase("B"), makeCase("C")];
+    const result = removeScannedCase(original, "case-B");
+
+    expect(result.map((item) => item.caseId)).toEqual(["case-A", "case-C"]);
+    expect(original).toHaveLength(3);
+  });
+});
+
 // ── splitBatchResults ─────────────────────────────────────────────────────────
 
 describe("splitBatchResults", () => {
-  it("puts fulfilled results in succeededIds", () => {
+  it("puts fulfilled results in succeededIds", async () => {
     const results: PromiseSettledResult<unknown>[] = [
       { status: "fulfilled", value: {} },
       { status: "fulfilled", value: {} },
@@ -102,7 +125,7 @@ describe("splitBatchResults", () => {
     expect(failedIds).toEqual([]);
   });
 
-  it("puts rejected results in failedIds", () => {
+  it("puts rejected results in failedIds", async () => {
     const results: PromiseSettledResult<unknown>[] = [
       { status: "rejected", reason: new Error("network") },
       { status: "rejected", reason: new Error("server error") },
@@ -112,7 +135,7 @@ describe("splitBatchResults", () => {
     expect(failedIds).toEqual(["c1", "c2"]);
   });
 
-  it("correctly splits a partial failure", () => {
+  it("correctly splits a partial failure", async () => {
     const results: PromiseSettledResult<unknown>[] = [
       { status: "fulfilled", value: {} },
       { status: "rejected", reason: new Error("timeout") },
@@ -123,7 +146,7 @@ describe("splitBatchResults", () => {
     expect(failedIds).toEqual(["c2"]);
   });
 
-  it("handles an empty batch", () => {
+  it("handles an empty batch", async () => {
     const { succeededIds, failedIds } = splitBatchResults([], []);
     expect(succeededIds).toEqual([]);
     expect(failedIds).toEqual([]);
@@ -218,7 +241,7 @@ describe("runBatchMove", () => {
     expect(retryFailed).toEqual([]);
   });
 
-  it("invalid barcode is not added — scanned count unchanged", () => {
+  it("invalid barcode is not added — scanned count unchanged", async () => {
     const seen = new Set<string>();
     let list: ScannedCase[] = [];
 

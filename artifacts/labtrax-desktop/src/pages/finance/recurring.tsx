@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Check, Link2, Pause, Play, Plus, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
@@ -56,8 +56,9 @@ function Recurring({
   const [genResult, setGenResult] = useState<string | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
 
-  const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn, resetAll } =
+  const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn, fitColumn, resetAll } =
     useColumnWidths([...RECURRING_COL_DEFAULTS], "labtrax_recurring_col_widths_v1");
+  const tableRef = useRef<HTMLTableElement>(null);
 
   const columnsAreCustom = colWidths.some((w, i) => w !== RECURRING_COL_DEFAULTS[i]);
 
@@ -192,6 +193,7 @@ function Recurring({
             />
           )}
           <table
+            ref={tableRef}
             className="text-sm"
             style={{
               tableLayout: "fixed",
@@ -212,13 +214,21 @@ function Recurring({
                   return (
                     <th
                       key={label}
+                      data-col-id={`col-${i}`}
                       className={`font-medium py-2 relative px-3${i === 0 ? " pl-4" : ""}${isAmount ? " text-right" : " text-left"}`}
                       style={{ overflow: "hidden" }}
                     >
                       {label}
                       <div
                         onMouseDown={(e) => startResize(i, e)}
-                        onDoubleClick={() => resetColumn(i)}
+                        onDoubleClick={() => {
+                          const table = tableRef.current;
+                          if (!table) { resetColumn(i); return; }
+                          const cells = table.querySelectorAll<HTMLElement>(`[data-col-id="col-${i}"]`);
+                          let max = 0;
+                          cells.forEach((el) => { max = Math.max(max, el.scrollWidth); });
+                          fitColumn(i, max + 8);
+                        }}
                         className="group/resize"
                         style={{
                           position: "absolute",
@@ -251,22 +261,34 @@ function Recurring({
                   onClick={() => setEditing(r)}
                   className="border-t border-border cursor-pointer hover:bg-secondary/30"
                 >
-                  <td className="pl-4 pr-3 py-2.5 font-medium truncate">{r.name}</td>
-                  <td className="px-3 py-2.5 truncate">{acctNameById.get(r.bankAccountId) || "—"}</td>
-                  <td className="px-3 py-2.5 truncate">
+                  <td data-col-id="col-0" className="pl-4 pr-3 py-2.5 font-medium truncate" title={r.name}>{r.name}</td>
+                  <td data-col-id="col-1" className="px-3 py-2.5 truncate" title={acctNameById.get(r.bankAccountId) || ""}>{acctNameById.get(r.bankAccountId) || "—"}</td>
+                  <td data-col-id="col-2" className="px-3 py-2.5 truncate" title={r.vendorName || r.payee || ""}>
                     {r.vendorId && r.vendorType ? (
                       <span className="inline-flex items-center gap-1.5 min-w-0">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setLocation(`/lists?vendor=${r.vendorId}`);
-                          }}
-                          title={`Open ${TYPE_LABEL[r.vendorType]} "${r.vendorName || r.payee || ""}"`}
-                          className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full hover:opacity-80 ${TYPE_BADGE_CLASS[r.vendorType]}`}
-                        >
-                          {TYPE_LABEL[r.vendorType]}
-                        </button>
+                        {/* Only vendors and employees have a record on the Lists
+                            page. Billable items are managed in Pricing Tiers and
+                            have no Lists row, so their badge is not a link. */}
+                        {r.vendorType === "item" ? (
+                          <span
+                            title={`Billable item "${r.vendorName || r.payee || ""}" — manage billable items in Pricing Tiers`}
+                            className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[r.vendorType]}`}
+                          >
+                            {TYPE_LABEL[r.vendorType]}
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLocation(`/lists?vendor=${r.vendorId}`);
+                            }}
+                            title={`Open ${TYPE_LABEL[r.vendorType]} "${r.vendorName || r.payee || ""}"`}
+                            className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full hover:opacity-80 ${TYPE_BADGE_CLASS[r.vendorType]}`}
+                          >
+                            {TYPE_LABEL[r.vendorType]}
+                          </button>
+                        )}
                         <span className="truncate">{r.vendorName || r.payee || "—"}</span>
                       </span>
                     ) : r.payee ? (
@@ -283,23 +305,23 @@ function Recurring({
                       "—"
                     )}
                   </td>
-                  <td className="px-3 py-2.5 text-muted-foreground truncate">
+                  <td data-col-id="col-3" className="px-3 py-2.5 text-muted-foreground truncate" title={r.categoryId ? catNameById.get(r.categoryId) || "" : ""}>
                     {r.categoryId ? catNameById.get(r.categoryId) || "—" : "—"}
                   </td>
-                  <td className="px-3 py-2.5 capitalize truncate">{r.direction}</td>
-                  <td className="px-3 py-2.5 truncate">Day {r.dayOfMonth}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums truncate">
+                  <td data-col-id="col-4" className="px-3 py-2.5 capitalize truncate" title={r.direction}>{r.direction}</td>
+                  <td data-col-id="col-5" className="px-3 py-2.5 truncate" title={`Day ${r.dayOfMonth}`}>Day {r.dayOfMonth}</td>
+                  <td data-col-id="col-6" className="px-3 py-2.5 text-right tabular-nums truncate" title={r.amount != null ? formatMoney(r.amount) : "avg"}>
                     {r.amount != null
                       ? formatMoney(r.amount)
                       : <span className="text-muted-foreground italic">avg</span>}
                   </td>
-                  <td className="px-3 py-2.5 text-muted-foreground truncate">
+                  <td data-col-id="col-7" className="px-3 py-2.5 text-muted-foreground truncate" title={r.lastGeneratedFor || ""}>
                     {r.lastGeneratedFor || "—"}
                   </td>
-                  <td className="px-3 py-2.5 text-muted-foreground truncate">
+                  <td data-col-id="col-8" className="px-3 py-2.5 text-muted-foreground truncate" title={r.isActive ? computeNextRun(r) : ""}>
                     {r.isActive ? computeNextRun(r) : "—"}
                   </td>
-                  <td className="px-3 py-2.5 truncate">
+                  <td data-col-id="col-9" className="px-3 py-2.5 truncate" title={r.isActive ? "Active" : "Paused"}>
                     {r.isActive ? (
                       <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
                         Active

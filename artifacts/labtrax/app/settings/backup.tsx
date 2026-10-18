@@ -8,6 +8,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  Platform,
   TextInput,
 } from "react-native";
 import { router } from "expo-router";
@@ -17,6 +18,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell, SettingsSection } from "@/components/settings/SettingsRow";
+import BackupWebScreen from "@/components/settings/BackupWebScreen";
+import { scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
 import { resilientFetch } from "@/lib/query-client";
 import { getPlatformAdminSessionHeaders } from "@/lib/platform-admin-session";
 
@@ -73,7 +76,7 @@ function formatDate(s: string | null | undefined) {
   if (!s) return "—";
   try {
     return new Date(s).toLocaleString("en-US", {
-      month: "short", day: "numeric", year: "numeric",
+      month: "2-digit", day: "2-digit", year: "numeric",
       hour: "numeric", minute: "2-digit",
     });
   } catch { return s; }
@@ -93,6 +96,11 @@ export function isBackupOverdue(schedule: Pick<BackupSchedule, "lastSuccessfulBa
 }
 
 export default function BackupScreen() {
+  if (Platform.OS === "web") return <BackupWebScreen />;
+  return <NativeBackupScreen />;
+}
+
+function NativeBackupScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -236,7 +244,11 @@ export default function BackupScreen() {
 
   return (
     <ScreenShell title="Backup" subtitle="Data backup and restore" onBack={() => router.back()} insetTop={insets.top}>
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView
+        contentContainerStyle={styles.body}
+        keyboardDismissMode={scrollKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
+      >
         {scheduleQuery.isLoading && <ActivityIndicator color={colors.tint} />}
 
         {overdue && (

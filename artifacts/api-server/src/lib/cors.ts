@@ -31,6 +31,7 @@ const allowedOrigins = buildAllowedOrigins();
 
 export const corsOptions: CorsOptions = {
   credentials: true,
+  exposedHeaders: ["Server-Timing"],
   origin(origin, cb) {
     // Same-origin browser requests, mobile native fetch, and tools like curl
     // do not send an Origin header — allow those through. Cookie-auth still

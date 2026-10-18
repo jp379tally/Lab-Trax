@@ -41,10 +41,12 @@
 
 import { spawnSync } from "node:child_process";
 import {
+  cpSync,
   createWriteStream,
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -151,15 +153,19 @@ const updateFeedUrl = process.env.UPDATE_FEED_URL;
 const ghToken = process.env.GH_TOKEN;
 const shouldPublish = Boolean(updateFeedUrl || ghToken);
 
-function run(cmd, args, env = {}) {
+function run(cmd, args, env = {}, timeoutMs = undefined) {
   console.log(`\n$ ${cmd} ${args.join(" ")}`);
-  const result = spawnSync(cmd, args, {
+  const opts = {
     stdio: "inherit",
     cwd: root,
     shell: false,
     env: { ...process.env, ...env },
-  });
-  return result.status ?? 0;
+  };
+  if (timeoutMs !== undefined) opts.timeout = timeoutMs;
+  const result = spawnSync(cmd, args, opts);
+  // spawnSync sets status=null when the process was killed (e.g. by timeout).
+  // Treat null as non-zero so the caller can fall through to the zip fallback.
+  return result.status ?? 1;
 }
 
 async function zipUnpacked() {
@@ -306,7 +312,12 @@ if (shouldPublish) {
   );
 }
 
-const buildExitCode = run("pnpm", builderArgs);
+// On Linux (Replit), electron-builder hangs indefinitely at the npm node-modules
+// probe step (emits "searching for node modules pm=npm" then blocks forever).
+// Kill it after 115 s — win-unpacked will contain the base Electron binary files
+// but NOT resources/app (our code). The manual staging below copies them in.
+const builderTimeout = process.platform === "linux" ? 115_000 : undefined;
+const buildExitCode = run("pnpm", builderArgs, {}, builderTimeout);
 
 if (buildExitCode === 0) {
   if (isMac) {
@@ -328,9 +339,65 @@ if (buildExitCode === 0) {
   }
 } else if (!isMac) {
   console.warn(
-    "\nelectron-builder did not complete (Wine is required on Linux for NSIS).",
+    "\nelectron-builder did not complete (Wine is required on Linux for NSIS, or timed out).",
   );
-  console.warn("Creating portable zip from win-unpacked instead…");
+
+  // ── Manual staging ────────────────────────────────────────────────────────
+  // On Replit/Linux, electron-builder v26 hangs at the npm node-modules probe
+  // and is killed by the 115 s timeout above. At that point win-unpacked
+  // contains only the base Electron binary (electron.exe) — it has NOT copied
+  // resources/app (our code). We stage it manually before zipping.
+  const unpackedRoot = resolve(root, "electron-dist", "win-unpacked");
+  const appDir = resolve(unpackedRoot, "resources", "app");
+
+  // Always re-stage — stale win-unpacked from a previous build may contain an
+  // old build-stamp.json that would cause the zip's stamp check to fail.
+  {
+    console.warn("Staging resources/app from vite output into win-unpacked…");
+
+    mkdirSync(resolve(appDir, "dist"), { recursive: true });
+
+    // package.json — Electron reads main: "electron/main.cjs" from here
+    writeFileSync(
+      resolve(appDir, "package.json"),
+      readFileSync(resolve(root, "package.json"), "utf8"),
+      "utf8",
+    );
+
+    // Electron main-process sources
+    cpSync(resolve(root, "electron"), resolve(appDir, "electron"), {
+      recursive: true,
+      filter: (src) => !src.includes("__tests__") && !src.endsWith(".test.ts") && !src.endsWith(".test.js"),
+    });
+
+    // Vite renderer output (includes build-stamp.json)
+    cpSync(
+      resolve(root, "dist", "electron-app"),
+      resolve(appDir, "dist", "electron-app"),
+      { recursive: true },
+    );
+
+    // Rename electron.exe → LabTrax.exe (if not already done)
+    const exeOld = resolve(unpackedRoot, "electron.exe");
+    const exeNew = resolve(unpackedRoot, "LabTrax.exe");
+    if (existsSync(exeOld) && !existsSync(exeNew)) {
+      renameSync(exeOld, exeNew);
+    }
+
+    // Write app-update.yml so the auto-updater knows where to fetch latest.yml
+    if (updateFeedUrl) {
+      writeFileSync(
+        resolve(unpackedRoot, "resources", "app-update.yml"),
+        `provider: generic\nurl: ${updateFeedUrl}\nchannel: latest\nupdaterCacheDirName: '@workspacelabtrax-desktop-updater'\n`,
+        "utf8",
+      );
+      console.log(`Wrote resources/app-update.yml (url: ${updateFeedUrl})`);
+    }
+
+    console.warn("Manual staging complete — win-unpacked/resources/app is populated.");
+  }
+
+  console.warn("Creating portable zip from win-unpacked…");
   await zipUnpacked();
 } else {
   console.error("\nERROR: macOS build failed. Check that Xcode command-line tools are installed.");

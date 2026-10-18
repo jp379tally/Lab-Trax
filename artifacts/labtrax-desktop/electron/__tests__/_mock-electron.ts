@@ -139,7 +139,6 @@ export function installElectronMock(overrides: Partial<ElectronMock> = {}): Elec
   } as ElectronMock;
 
   const electronPath = localRequire.resolve("electron");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (require.cache as any)[electronPath] = {
     id: electronPath,
     filename: electronPath,
@@ -155,6 +154,5 @@ export function installElectronMock(overrides: Partial<ElectronMock> = {}): Elec
 
 export function uninstallElectronMock(): void {
   const electronPath = localRequire.resolve("electron");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (require.cache as any)[electronPath];
 }

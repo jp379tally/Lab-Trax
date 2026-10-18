@@ -11,6 +11,11 @@ on:
         description: "Production API base URL (e.g. https://your-app.replit.app)"
         required: true
         type: string
+      include_store_package:
+        description: "Also build and validate a separate Microsoft Store MSIX package"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build:
@@ -49,6 +54,22 @@ jobs:
           VITE_API_BASE_URL: ${{ github.event.inputs.api_base_url }}
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
+      - name: Build and validate Microsoft Store package
+        if: ${{ inputs.include_store_package }}
+        run: pnpm --filter @workspace/labtrax-desktop run electron:store-package
+        env:
+          STORE_PACKAGE_IDENTITY_NAME: ${{ vars.STORE_PACKAGE_IDENTITY_NAME }}
+          STORE_PACKAGE_PUBLISHER: ${{ vars.STORE_PACKAGE_PUBLISHER }}
+          STORE_PACKAGE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PACKAGE_PUBLISHER_DISPLAY_NAME }}
+
+      - name: Revalidate Microsoft Store package before publishing artifacts
+        if: ${{ inputs.include_store_package }}
+        run: pnpm --filter @workspace/labtrax-desktop run electron:store-package:validate
+        env:
+          STORE_PACKAGE_IDENTITY_NAME: ${{ vars.STORE_PACKAGE_IDENTITY_NAME }}
+          STORE_PACKAGE_PUBLISHER: ${{ vars.STORE_PACKAGE_PUBLISHER }}
+          STORE_PACKAGE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PACKAGE_PUBLISHER_DISPLAY_NAME }}
 
       # Persist the incremented build-number.json so that the counter stays
       # monotonically increasing across runs. Without this commit the file
@@ -177,6 +198,14 @@ jobs:
           path: artifacts/labtrax-desktop/electron-dist/LabTrax-Windows-Portable.zip
           if-no-files-found: warn
 
+      - name: Upload Microsoft Store package as a separate workflow artifact
+        if: ${{ inputs.include_store_package }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: LabTrax-Windows-Store-MSIX
+          path: artifacts/labtrax-desktop/electron-dist/LabTrax-Store.msix
+          if-no-files-found: error
+
       # Auto-publish the freshly built installer to the live download page so
       # admins don't have to download → upload → update URL by hand. Gated by
       # the PLATFORM_ADMIN_SECRET and PUBLISH_API_BASE_URL secrets — if either
@@ -212,23 +241,8 @@ jobs:
           # Pull release notes for this version out of RELEASE_NOTES.md if
           # present, falling back to a generic CI message. Same logic as
           # before — just now sent inline to /publish.
-          NOTES=$(node -e "
-const fs = require('fs');
-const ver = 'v${VERSION}';
-let raw;
-try { raw = fs.readFileSync('artifacts/labtrax-desktop/RELEASE_NOTES.md', 'utf8'); } catch { process.exit(0); }
-const lines = raw.split(/\r?\n/);
-let inBlock = false, out = [];
-for (const line of lines) {
-  if (/^## v/.test(line)) {
-    if (inBlock) break;
-    if (line.replace(/^##\s+/, '').trim() === ver) inBlock = true;
-    continue;
-  }
-  if (inBlock) out.push(line);
-}
-process.stdout.write(out.join('\n').trim());
-" 2>/dev/null) || true
+          NOTES=$(node scripts/src/lib/parse-release-notes.mjs \
+            artifacts/labtrax-desktop/RELEASE_NOTES.md "v${VERSION}")
           if [[ -z "$NOTES" ]]; then
             NOTES="Auto-published from GitHub Actions run ${GITHUB_RUN_ID} (commit ${GITHUB_SHA})."
             echo "::notice::No entry for v${VERSION} found in RELEASE_NOTES.md — using generic notes."
@@ -291,23 +305,8 @@ process.stdout.write(out.join('\n').trim());
             exit 0
           fi
           VERSION=$(node -p "require('./artifacts/labtrax-desktop/package.json').version")
-          NOTES=$(node -e "
-const fs = require('fs');
-const ver = 'v${VERSION}';
-let raw;
-try { raw = fs.readFileSync('artifacts/labtrax-desktop/RELEASE_NOTES.md', 'utf8'); } catch { process.exit(0); }
-const lines = raw.split(/\r?\n/);
-let inBlock = false, out = [];
-for (const line of lines) {
-  if (/^## v/.test(line)) {
-    if (inBlock) break;
-    if (line.replace(/^##\s+/, '').trim() === ver) inBlock = true;
-    continue;
-  }
-  if (inBlock) out.push(line);
-}
-process.stdout.write(out.join('\n').trim());
-" 2>/dev/null) || true
+          NOTES=$(node scripts/src/lib/parse-release-notes.mjs \
+            artifacts/labtrax-desktop/RELEASE_NOTES.md "v${VERSION}")
           if [[ -z "$NOTES" ]]; then
             NOTES="Auto-published from GitHub Actions run ${GITHUB_RUN_ID} (commit ${GITHUB_SHA})."
           fi

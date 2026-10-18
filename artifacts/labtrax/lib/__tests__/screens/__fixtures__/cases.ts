@@ -20,6 +20,11 @@ export const inProgressCase = {
   dueDate: "2024-01-15",
   createdAt: "2024-01-10T12:00:00.000Z",
   updatedAt: "2024-01-11T12:00:00.000Z",
+  restorationTypes: "Crown",
+  restorationMaterials: "Zirconia",
+  firstRestorationSubtype: "restorative/crown",
+  teeth: "8, 9",
+  casePanBarcode: "PAN-5001",
   shade: "A2",
   caseNotes: "Standard zirconia crown",
   restorations: [
@@ -74,6 +79,7 @@ export const completedCaseWithInvoice = {
   patientFirstName: "John",
   patientLastName: "Roe",
   doctorName: "Dr. Patel",
+  casePanBarcode: "PAN-5002",
   status: "complete",
   events: [
     ...inProgressCase.events,
@@ -171,6 +177,58 @@ export const caseWithInvoiceEventHistory = {
   ],
 };
 
+// A PFM case whose invoice has an alloy sub-item that was auto-added at $0
+// (no alloy price set in the pricing tier). Used to test the "unpriced alloy
+// badge" that reminds techs to price alloy before billing.
+export const pfmCaseWithUnpricedAlloyInvoice = {
+  ...inProgressCase,
+  id: "case-pfm-alloy",
+  caseNumber: "5006",
+  patientFirstName: "Carol",
+  patientLastName: "Kim",
+  doctorName: "Dr. Lane",
+  restorations: [
+    {
+      id: "rest-pfm-1",
+      toothNumber: "14",
+      restorationType: "crown",
+      restorationSubtype: "pfm",
+      material: "PFM",
+      shade: "A3",
+      quantity: 1,
+    },
+  ],
+};
+
+export const invoiceWithUnpricedAlloySub = {
+  id: "inv-pfm-alloy",
+  caseId: "case-pfm-alloy",
+  invoiceNumber: "INV-2024-006",
+  status: "draft",
+  total: 150,
+  balanceDue: 150,
+  items: [
+    {
+      id: "li-pfm-1",
+      description: "PFM Crown",
+      quantity: 1,
+      unitPrice: 150,
+      lineTotal: 150,
+      toothNumbers: "14",
+      subItems: [
+        {
+          id: "li-pfm-alloy",
+          description: "Alloy surcharge",
+          quantity: 1,
+          unitPrice: 0,
+          lineTotal: 0,
+          priced: false,
+        },
+      ],
+    },
+  ],
+};
+
 export const aiImportedCase = {
   ...inProgressCase,
   id: "case-ai",
@@ -178,6 +236,72 @@ export const aiImportedCase = {
   patientFirstName: "Sam",
   patientLastName: "Iverson",
   doctorName: "Dr. Lee",
+};
+
+// ── Removable lab-slip Step fixtures (Task #3980) ────────────────────────────
+// The case detail payload carries `step` / `stepShade` for both canonical and
+// legacy mobile-blob cases, and the Details card renders (and, for admins,
+// edits) them the way the desktop lab slip does.
+
+/** Removable case owned by org-1 with no step and no subtype/material set. */
+export const removableCaseNoStep = {
+  ...inProgressCase,
+  id: "case-removable",
+  caseNumber: "5010",
+  organizationId: "org-1",
+  labOrganizationId: "org-1",
+  step: null,
+  stepShade: null,
+  restorations: [
+    {
+      id: "rest-removable-1",
+      toothNumber: "",
+      restorationType: "Full Denture",
+      restorationSubtype: null,
+      material: null,
+      shade: null,
+      quantity: 1,
+    },
+  ],
+};
+
+/** Same case, mid wax-setup with a recorded shade. */
+export const removableCaseWaxSetup = {
+  ...removableCaseNoStep,
+  id: "case-removable-wax",
+  caseNumber: "5011",
+  step: "wax_setup",
+  stepShade: "A2",
+};
+
+/** Removable case whose restoration carries no type/subtype/material at all. */
+export const removableCaseNoHierarchy = {
+  ...removableCaseNoStep,
+  id: "case-removable-bare",
+  caseNumber: "5013",
+  restorationTypes: null,
+  restorationMaterials: null,
+  firstRestorationSubtype: null,
+  restorations: [
+    {
+      id: "rest-bare-1",
+      toothNumber: "",
+      restorationType: null,
+      restorationSubtype: null,
+      material: null,
+      shade: null,
+      quantity: 1,
+    },
+  ],
+};
+
+/** Step moved past wax setup — the server has cleared the shade. */
+export const removableCaseProcessStep = {
+  ...removableCaseNoStep,
+  id: "case-removable-process",
+  caseNumber: "5012",
+  step: "process",
+  stepShade: null,
 };
 
 export const sampleInvoice = {

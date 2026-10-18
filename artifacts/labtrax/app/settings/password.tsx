@@ -14,6 +14,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell, SettingsSection } from "@/components/settings/SettingsRow";
+import { scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
 import { resilientFetch } from "@/lib/query-client";
 import { ME_QUERY_KEY } from "@/lib/auth-me";
 
@@ -68,7 +69,12 @@ export default function PasswordScreen() {
 
   return (
     <ScreenShell title="Password" subtitle="Change your sign-in password" onBack={() => router.back()} insetTop={insets.top}>
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView
+        contentContainerStyle={styles.body}
+        keyboardDismissMode={scrollKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
+        testID="password-scroll"
+      >
         {saved && (
           <View style={[styles.banner, { backgroundColor: colors.success + "20", borderColor: colors.success + "40" }]}>
             <Text style={[styles.bannerText, { color: colors.success }]}>Password updated.</Text>

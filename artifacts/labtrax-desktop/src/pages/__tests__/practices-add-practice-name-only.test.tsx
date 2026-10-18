@@ -17,6 +17,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
+import { ApiError } from "@/lib/api";
 
 const apiFetchMock = vi.fn();
 
@@ -95,5 +96,40 @@ describe("AddPracticeDialog — name-only practice creation", () => {
       wrapper: makeAuthWrapper(),
     });
     expect(screen.getByRole("button", { name: "Create practice" })).toBeDisabled();
+  });
+
+  it("shows the server's verbatim account-number conflict message on a 409 with no conflictingOrg", async () => {
+    // Regression: a 409 whose body has no details.conflictingOrg (i.e. an
+    // account-number conflict) must display the server message verbatim rather
+    // than a generic fallback such as "Could not create practice."
+    const serverMessage = "Account number 'ABC-123' is already in use.";
+    const onClose = vi.fn();
+    apiFetchMock.mockImplementation((url: string, opts?: { method?: string }) => {
+      if (url === "/organizations" && (!opts || opts.method !== "POST")) {
+        return Promise.resolve([LAB]);
+      }
+      if (url === "/organizations" && opts?.method === "POST") {
+        return Promise.reject(
+          new ApiError(serverMessage, 409, { ok: false, message: serverMessage }),
+        );
+      }
+      return Promise.resolve(null);
+    });
+
+    render(<AddPracticeDialog adminLabOrgIds={["lab1"]} onClose={onClose} />, {
+      wrapper: makeAuthWrapper(),
+    });
+
+    const label = screen.getByText("Legal name");
+    const nameInput = label.parentElement?.querySelector("input") as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: "Riverside Dental" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Create practice" }));
+
+    await waitFor(() =>
+      expect(screen.getByText(serverMessage)).toBeInTheDocument(),
+    );
+    // The dialog must stay open so the admin can correct the account number.
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

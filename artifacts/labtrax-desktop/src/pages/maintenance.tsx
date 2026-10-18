@@ -46,13 +46,14 @@ function formatBytes(bytes: number): string {
 
 function formatDateTime(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const timeStr = d.toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
   });
+  return `${mm}/${dd}/${yyyy}, ${timeStr}`;
 }
 
 function formatDuration(start: string, end: string | null, now?: number): string {

@@ -144,7 +144,7 @@ export function classifyMatch(
 
 /**
  * Split a free-form patient display name (mobile legacy) into (first, last).
- * "Debra Hudson" → { first: "Debra", last: "Hudson" }
+ * "Patient Example" → { first: "Patient", last: "Example" }
  * "Hudson"       → { first: "", last: "Hudson" }
  */
 export function splitDisplayName(displayName: string | null | undefined): {

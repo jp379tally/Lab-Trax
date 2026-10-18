@@ -9,7 +9,7 @@
  *    MUST include data from every linked-doctor copy so the doctor sees one
  *    unified worklist across all their labs.
  */
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   doctorAccountLinks,
@@ -71,7 +71,8 @@ export async function getProviderOrgIdsForUserAndLinks(
   const memberships = await db.query.organizationMemberships.findMany({
     where: and(
       inArray(organizationMemberships.userId, userIds),
-      eq(organizationMemberships.status, "active")
+      eq(organizationMemberships.status, "active"),
+      isNull(organizationMemberships.deletedAt)
     ),
   });
   const orgIds = Array.from(
@@ -107,11 +108,12 @@ export async function getLinkedProviderOrgsForProviderOrg(
   providerOrgId: string,
   currentLabId: string,
 ): Promise<Array<{ providerOrgId: string; labOrgId: string }>> {
-  // Step 1: find active members of this provider org.
+  // Step 1: find active, non-deleted members of this provider org.
   const memberships = await db.query.organizationMemberships.findMany({
     where: and(
       eq(organizationMemberships.labId, providerOrgId),
-      eq(organizationMemberships.status, "active")
+      eq(organizationMemberships.status, "active"),
+      isNull(organizationMemberships.deletedAt)
     ),
   });
   if (memberships.length === 0) return [];
@@ -123,11 +125,12 @@ export async function getLinkedProviderOrgsForProviderOrg(
     for (const id of linked) allLinkedUserIds.add(id);
   }
 
-  // Step 3: find active org memberships for all linked users.
+  // Step 3: find active, non-deleted org memberships for all linked users.
   const linkedMemberships = await db.query.organizationMemberships.findMany({
     where: and(
       inArray(organizationMemberships.userId, Array.from(allLinkedUserIds)),
-      eq(organizationMemberships.status, "active")
+      eq(organizationMemberships.status, "active"),
+      isNull(organizationMemberships.deletedAt)
     ),
   });
 

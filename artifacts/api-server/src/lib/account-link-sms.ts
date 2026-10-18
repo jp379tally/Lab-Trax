@@ -67,9 +67,8 @@ export interface SendLinkInviteSmsResult {
 /**
  * Send the cross-lab link-invite SMS via the generic provider.
  *
- * The SMS deliberately tells the doctor what to do (reply YES to link) and
- * mentions the new lab + the freshly-issued platform account number so they
- * have a paper trail even if they don't reply.
+ * The SMS notifies the doctor about the new lab and account number. Linking
+ * requires the invited user to sign in and respond in LabTrax.
  */
 export async function sendLinkInviteSms(
   args: SendLinkInviteSmsArgs
@@ -77,7 +76,7 @@ export async function sendLinkInviteSms(
   const body =
     `LabTrax: ${args.newLabName} just added you as a doctor ` +
     `(account ${args.newAccountNumber}). ` +
-    `Reply YES to link this number to your existing LabTrax account.`;
+    `Sign in to LabTrax to review and accept linking this account.`;
   const result = await sendSms({
     to: args.toPhoneE164,
     body,

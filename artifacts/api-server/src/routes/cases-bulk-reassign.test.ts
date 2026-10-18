@@ -369,7 +369,7 @@ maybe("POST /api/cases/bulk-reassign (db integration)", () => {
       caseNumber: rid(`BLK${i}`),
       labOrganizationId: labOrgId,
       providerOrganizationId: practiceAId,
-      doctorName: "Dr. Chunk",
+      doctorName: "Dr. Synthetic021",
       patientFirstName: "Chunk",
       patientLastName: "Test",
       status: "draft",

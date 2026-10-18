@@ -35,6 +35,14 @@ vi.mock("@workspace/api-client-react", () => ({
   useGetDoctorDuplicateClusters: () => ({ data: undefined, isLoading: false }),
   useDismissDoctorDuplicateCluster: () => ({ mutate: vi.fn(), isPending: false }),
   useRestoreDoctorDuplicateCluster: () => ({ mutate: vi.fn(), isPending: false }),
+  useConsolidateDuplicateDoctorAccounts: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+  }),
+  useUndoDuplicateDoctorAccountConsolidation: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+  }),
   // The dialog's picker searches for names similar to the first source; return
   // both cluster doctors so the search list renders realistically.
   searchDoctors: async () => ({
@@ -43,14 +51,14 @@ vi.mock("@workspace/api-client-react", () => ({
         {
           doctorName: "Dr. Kanesha Cole",
           providerOrganizationId: PROVIDER_ID,
-          practiceName: "Mahan Village Dental Care",
+          practiceName: "Summit Dental Care",
           totalCases: 3,
           similarity: 1,
         },
         {
           doctorName: "Kanesha Cole",
           providerOrganizationId: PROVIDER_ID,
-          practiceName: "Mahan Village Dental Care",
+          practiceName: "Summit Dental Care",
           totalCases: 2,
           similarity: 1,
         },
@@ -138,7 +146,7 @@ beforeEach(() => {
     makeCase("c1", "Dr. Kanesha Cole"),
     makeCase("c2", "Kanesha Cole"),
   ];
-  orgsData = [LAB_ORG, providerOrg(PROVIDER_ID, "Mahan Village Dental Care")];
+  orgsData = [LAB_ORG, providerOrg(PROVIDER_ID, "Summit Dental Care")];
 });
 
 describe("MergeDialog — opened from the duplicate-doctor notification", () => {
@@ -209,7 +217,7 @@ describe("MergeDialog — opened from the duplicate-doctor notification", () => 
     ];
     orgsData = [
       LAB_ORG,
-      providerOrg(PROVIDER_ID, "Mahan Village Dental Care"),
+      providerOrg(PROVIDER_ID, "Summit Dental Care"),
       providerOrg(PROVIDER_ID_2, "Riverside Family Dentistry"),
     ];
 

@@ -2,18 +2,8 @@ import { useState } from "react";
 import { Loader2, X } from "lucide-react";
 import type { CaseRestoration } from "@/lib/types";
 import { parseToothField } from "@/components/ToothChart";
-
-const CROWN_MATERIALS = [
-  "Zirconia",
-  "PFM",
-  "Lithium Disilicate (Emax)",
-  "Full Cast",
-  "Composite",
-  "Acrylic",
-  "Metal",
-  "PMMA",
-  "Other",
-] as const;
+import { encodeCatalogSelection } from "@/components/CatalogRestorationPicker";
+import { isImplantRestoration } from "@workspace/case-taxonomy";
 
 const VITA_SHADES = [
   "A1", "A2", "A3", "A3.5", "A4",
@@ -25,14 +15,23 @@ const VITA_SHADES = [
 ] as const;
 
 export type ToothActionPayload =
+  | { kind: "change_role"; restorationId: string; toothId: string; role: "Crown" | "Pontic" }
+  | { kind: "copy_assignment"; restorationId: string; toothNumbers: string[] }
   | {
       kind: "add_crown";
       toothId: string;
       material: string;
       restorationType: string;
+      restorationSubtype?: string;
       shade?: string;
     }
-  | { kind: "add_pontic"; toothId: string }
+  | {
+      kind: "add_pontic";
+      toothId: string;
+      material: string;
+      restorationSubtype?: string;
+      shade?: string;
+    }
   | { kind: "mark_missing"; toothId: string }
   | {
       kind: "replace_tooth";
@@ -40,6 +39,7 @@ export type ToothActionPayload =
       oldToothId: string;
       newToothNumber: string;
       material?: string;
+      restorationSubtype?: string;
       shade?: string;
     }
   | { kind: "remove_restoration"; toothId: string; restorationId?: string };
@@ -55,6 +55,7 @@ type Step =
   | "replace_shade";
 
 interface ToothActionDialogProps {
+  allowMarkMissing?: boolean;
   toothId: string;
   restorations: CaseRestoration[];
   isPending?: boolean;
@@ -62,6 +63,8 @@ interface ToothActionDialogProps {
   onClose: () => void;
   onConfirm: (payload: ToothActionPayload) => void;
   locallySelectedType?: "crown" | "pontic" | "missing";
+  materialOptions?: Array<{ key: string; label: string; parentLabel?: string }>;
+  groupTeeth?: string[];
 }
 
 export function ToothActionDialog({
@@ -72,12 +75,17 @@ export function ToothActionDialog({
   onClose,
   onConfirm,
   locallySelectedType,
+  materialOptions = [],
+  groupTeeth = [],
+  allowMarkMissing = true,
 }: ToothActionDialogProps) {
   const billedRestorations = restorations.filter((r) => {
     const teeth = parseToothField(r.toothNumber);
-    return teeth.has(toothId);
+    return /^(Crown(?:\s*(?:&|and)\s*Bridge)?|Pontic|Bridge|Implant|Veneer|Inlay|Onlay)$/i.test(r.restorationType) && teeth.has(toothId);
   });
   const isBilled = billedRestorations.length > 0;
+  const [copyTargets, setCopyTargets] = useState("");
+  const [copyError, setCopyError] = useState<string | null>(null);
 
   const [step, setStep] = useState<Step>(
     isBilled ? "choose_action" : "choose_kind",
@@ -98,6 +106,14 @@ export function ToothActionDialog({
   const selectedRestoration = restorations.find(
     (r) => r.id === selectedRestorationId,
   );
+  const selectedMaterialOption = materialOptions.find(
+    (option) => option.key === selectedMaterial,
+  );
+  const selectedMaterialLabel = selectedMaterialOption?.label ?? selectedMaterial;
+  const selectedRestorationSubtype = selectedMaterial
+    ? selectedMaterial.includes("/") ? selectedMaterial
+      : encodeCatalogSelection("restorative", selectedRestoration && isImplantRestoration(selectedRestoration) ? "implant" : "crown", selectedMaterial)
+    : undefined;
 
   function resolvedShade() {
     if (isCustomShade) return customShade.trim();
@@ -114,14 +130,10 @@ export function ToothActionDialog({
 
   function handleKindSelect(kind: "crown" | "pontic" | "missing") {
     setSelectedKind(kind);
-    if (kind === "crown") {
+    if (kind === "crown" || kind === "pontic") {
       setStep("choose_material");
     } else {
-      onConfirm(
-        kind === "pontic"
-          ? { kind: "add_pontic", toothId }
-          : { kind: "mark_missing", toothId },
-      );
+      onConfirm({ kind: "mark_missing", toothId });
     }
   }
 
@@ -135,13 +147,24 @@ export function ToothActionDialog({
 
   function handleShadeConfirm() {
     const shade = resolvedShade() || undefined;
-    onConfirm({
-      kind: "add_crown",
-      toothId,
-      material: selectedMaterial,
-      restorationType: "Crown",
-      shade,
-    });
+    if (selectedKind === "pontic") {
+      onConfirm({
+        kind: "add_pontic",
+        toothId,
+        material: selectedMaterialLabel,
+        restorationSubtype: selectedRestorationSubtype ?? undefined,
+        shade,
+      });
+    } else {
+      onConfirm({
+        kind: "add_crown",
+        toothId,
+        material: selectedMaterialLabel,
+        restorationType: "Crown",
+        restorationSubtype: selectedRestorationSubtype ?? undefined,
+        shade,
+      });
+    }
   }
 
   function handleReplaceToothNext() {
@@ -187,7 +210,8 @@ export function ToothActionDialog({
       restorationId: selectedRestorationId,
       oldToothId: toothId,
       newToothNumber: newToothNumber.trim(),
-      material: selectedMaterial || undefined,
+      material: selectedMaterialLabel || undefined,
+      restorationSubtype: selectedRestorationSubtype ?? undefined,
       shade,
     });
   }
@@ -282,6 +306,18 @@ export function ToothActionDialog({
         aria-modal="true"
         aria-label={`Tooth ${toothId} action`}
       >
+        {selectedRestoration && parseToothField(selectedRestoration.toothNumber).size > 1 ? (
+          <div className="px-5 py-4 space-y-3">
+            <h2 className="font-semibold">Review legacy restoration</h2>
+            <p>This record covers teeth {selectedRestoration.toothNumber}. Its individual roles are unconfirmed. Remove the entire legacy row before assigning these teeth individually.</p>
+            {error && <p role="alert">{error}</p>}
+            <button type="button" disabled={isPending} onClick={onClose} className="min-h-11 px-3">Cancel</button>
+            <button type="button" disabled={isPending} className="min-h-11 px-3 text-destructive"
+              onClick={() => onConfirm({ kind: "remove_restoration", toothId, restorationId: selectedRestoration.id })}>
+              Remove entire row ({selectedRestoration.toothNumber})
+            </button>
+          </div>
+        ) : <div>
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <h2 className="text-sm font-semibold">Tooth {toothId}</h2>
           <button
@@ -306,6 +342,44 @@ export function ToothActionDialog({
                   : `a restoration (${billedRestorations[0]?.restorationType}${materialShadeLabel(billedRestorations[0]?.material, billedRestorations[0]?.shade) ? ` / ${materialShadeLabel(billedRestorations[0]?.material, billedRestorations[0]?.shade)}` : ""})`}
                 .
               </p>
+              <p className="text-xs text-muted-foreground">
+                {groupTeeth.length ? `Connected group: ${groupTeeth.map((tooth) => `#${tooth}`).join(", ")}` : "Not connected to another assigned unit."}
+              </p>
+              {billedRestorations.length === 1 &&
+                parseToothField(billedRestorations[0].toothNumber).size === 1 && (
+                  <div className="flex gap-2">
+                    {(["Crown", "Pontic"] as const).map((role) => (
+                      <button key={role} type="button" disabled={isPending}
+                        className="min-h-10 px-3 rounded-md border border-border text-xs"
+                        onClick={() => onConfirm({ kind: "change_role", restorationId: billedRestorations[0].id, toothId, role })}>
+                        Set as {role === "Crown" ? "prepared crown" : "pontic"}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              <label className="block text-xs text-muted-foreground">
+                Copy role, catalog material, and shade to unassigned teeth
+                <input className="mt-1 w-full h-10 px-2 border border-border rounded-md bg-background"
+                  aria-label="Copy assignment to teeth"
+                  placeholder="e.g. 4, 5 or 6-8 (same arch)"
+                  value={copyTargets} onChange={(event) => setCopyTargets(event.target.value)} />
+              </label>
+              <button type="button" disabled={isPending || !copyTargets.trim()}
+                className="min-h-10 px-3 rounded-md bg-primary text-primary-foreground text-xs disabled:opacity-40"
+                onClick={() => {
+                  const targets = [...parseToothField(copyTargets)].filter((target) => target !== toothId);
+                  const numbers = targets.map(Number);
+                  if (!targets.length || numbers.some((n) => !Number.isInteger(n) || n < 1 || n > 32) ||
+                      numbers.some((n) => (n <= 16) !== (numbers[0] <= 16))) {
+                    setCopyError("Choose valid teeth from one arch.");
+                    return;
+                  }
+                  setCopyError(null);
+                  onConfirm({ kind: "copy_assignment", restorationId: selectedRestorationId, toothNumbers: targets });
+                }}>
+                Apply copied values to teeth
+              </button>
+              {copyError && <p className="text-xs text-destructive" role="alert">{copyError}</p>}
 
               {billedRestorations.length > 1 && (
                 <div>
@@ -404,7 +478,7 @@ export function ToothActionDialog({
                       desc: "Visual only, no invoice",
                     },
                   ] as const
-                ).map((opt) => (
+                ).filter((opt) => allowMarkMissing || opt.kind !== "missing").map((opt) => (
                   <button
                     key={opt.kind}
                     type="button"
@@ -438,22 +512,22 @@ export function ToothActionDialog({
           {step === "choose_material" && (
             <>
               <p className="text-sm text-muted-foreground">
-                Select a material for the crown on tooth{" "}
+                Select a material for the {selectedKind === "pontic" ? "pontic" : "crown"} on tooth{" "}
                 <span className="font-medium text-foreground">{toothId}</span>:
               </p>
               <div className="grid grid-cols-3 gap-2">
-                {CROWN_MATERIALS.map((m) => (
+                {materialOptions.map((option) => (
                   <button
-                    key={m}
+                    key={option.key}
                     type="button"
-                    onClick={() => setSelectedMaterial(m)}
+                    onClick={() => setSelectedMaterial(option.key)}
                     className={`h-10 rounded-lg border text-xs font-medium transition-colors ${
-                      selectedMaterial === m
+                        selectedMaterial === option.key
                         ? "border-primary bg-primary/10 text-primary"
                         : "border-border bg-secondary/50 hover:bg-secondary"
                     }`}
                   >
-                    {m}
+                    {option.label}{option.parentLabel ? ` · ${option.parentLabel}` : ""}
                   </button>
                 ))}
               </div>
@@ -469,16 +543,27 @@ export function ToothActionDialog({
             </>
           )}
 
-          {/* Step: choose_shade (add crown path) */}
+          {/* Step: choose_shade (crown or pontic path) */}
           {step === "choose_shade" &&
             renderShadeStep(
-              () =>
-                onConfirm({
-                  kind: "add_crown",
-                  toothId,
-                  material: selectedMaterial,
-                  restorationType: "Crown",
-                }),
+              () => {
+                if (selectedKind === "pontic") {
+                  onConfirm({
+                    kind: "add_pontic",
+                    toothId,
+                    material: selectedMaterialLabel,
+                    restorationSubtype: selectedRestorationSubtype ?? undefined,
+                  });
+                } else {
+                  onConfirm({
+                    kind: "add_crown",
+                    toothId,
+                    material: selectedMaterialLabel,
+                    restorationType: "Crown",
+                    restorationSubtype: selectedRestorationSubtype ?? undefined,
+                  });
+                }
+              },
               handleShadeConfirm,
             )}
 
@@ -554,18 +639,18 @@ export function ToothActionDialog({
                 Select the new material:
               </p>
               <div className="grid grid-cols-3 gap-2">
-                {CROWN_MATERIALS.map((m) => (
+                {materialOptions.map((option) => (
                   <button
-                    key={m}
+                    key={option.key}
                     type="button"
-                    onClick={() => setSelectedMaterial(m)}
+                    onClick={() => setSelectedMaterial(option.key)}
                     className={`h-10 rounded-lg border text-xs font-medium transition-colors ${
-                      selectedMaterial === m
+                        selectedMaterial === option.key
                         ? "border-primary bg-primary/10 text-primary"
                         : "border-border bg-secondary/50 hover:bg-secondary"
                     }`}
                   >
-                    {m}
+                    {option.label}{option.parentLabel ? ` · ${option.parentLabel}` : ""}
                   </button>
                 ))}
               </div>
@@ -590,7 +675,8 @@ export function ToothActionDialog({
                   restorationId: selectedRestorationId,
                   oldToothId: toothId,
                   newToothNumber: newToothNumber.trim(),
-                  material: selectedMaterial || undefined,
+                  material: selectedMaterialLabel || undefined,
+                  restorationSubtype: selectedRestorationSubtype ?? undefined,
                 }),
               handleReplaceShadeConfirm,
             )}
@@ -601,6 +687,7 @@ export function ToothActionDialog({
             </p>
           )}
         </div>
+        </div>}
       </div>
     </div>
   );

@@ -27,7 +27,10 @@ import { Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import { AuthContext } from "@/lib/auth-context";
 import { MOCK_AUTH_DEFAULTS } from "./test-utils";
-import { getNotificationDestination } from "@/components/AppLayout";
+import {
+  getNotificationDestination,
+  getProviderCaseActivityId,
+} from "@/components/AppLayout";
 
 // ── Module-level mocks (vi.mock is hoisted before imports) ──────────────────
 
@@ -73,6 +76,7 @@ vi.mock("@/lib/print", () => ({
   printCaseCard: vi.fn(),
   printCaseCardAdvanced: vi.fn(),
   printCaseHistory: vi.fn(),
+  printCaseLabel: vi.fn(),
   printCaseOverview: vi.fn(),
   printInvoice: vi.fn(),
   printTabContent: vi.fn(),
@@ -279,6 +283,15 @@ describe("getNotificationDestination — notification → URL routing", () => {
     expect(dest).toBe("/cases?caseId=abc-123");
   });
 
+  it.each(["case_created", "rush_case_created", "case_exception_created"])(
+    "%s with caseId opens the relevant case",
+    (type) => {
+      expect(getNotificationDestination(notif(type, { caseId: "new-case" }))).toBe(
+        "/cases?caseId=new-case",
+      );
+    },
+  );
+
   it("alert type with caseId → /cases?caseId=<id>", () => {
     const dest = getNotificationDestination(
       notif("alert", { caseId: "xyz-789" })
@@ -324,6 +337,36 @@ describe("getNotificationDestination — notification → URL routing", () => {
     const dest = getNotificationDestination(notif("some_unknown_type"));
     expect(dest).toBeNull();
   });
+
+  it("pending partnership request opens the existing admin review screen", () => {
+    expect(getNotificationDestination(notif("join_request_pending", { joinRequestId: "request-1" })))
+      .toBe("/settings?tab=profile");
+  });
+});
+
+describe("getProviderCaseActivityId — live case activity refresh", () => {
+  it.each(["provider_note_added", "provider_attachment_added"])(
+    "%s with a case ID returns the case ID",
+    (type) => {
+      expect(getProviderCaseActivityId(notif(type, { caseId: "case-123" }))).toBe(
+        "case-123",
+      );
+    },
+  );
+
+  it.each(["shared_note_added", "shared_attachment_added", "case_created"])(
+    "%s does not refresh through the provider activity path",
+    (type) => {
+      expect(getProviderCaseActivityId(notif(type, { caseId: "case-123" }))).toBeNull();
+    },
+  );
+
+  it("returns null when the provider notification has no usable case ID", () => {
+    expect(getProviderCaseActivityId(notif("provider_note_added"))).toBeNull();
+    expect(
+      getProviderCaseActivityId(notif("provider_attachment_added", { caseId: 42 })),
+    ).toBeNull();
+  });
 });
 
 // ── Runtime: deep-link drawer behavior ──────────────────────────────────────
@@ -353,7 +396,7 @@ describe("CasesPage deep-link — initial mount with ?caseId=abc opens drawer", 
     render(React.createElement(Wrapper, null, React.createElement(CasesPage, null)));
 
     await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith("/cases");
+      expect(mockApiFetch).not.toHaveBeenCalledWith("/cases");
     }, { timeout: 10000 });
 
     mockApiFetch.mockClear();

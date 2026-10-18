@@ -38,6 +38,13 @@ config.resolver = {
   ...config.resolver,
   blockList: combined,
   resolveRequest: (context, moduleName, platform) => {
+    if (platform === "web" && moduleName === "react-native-vision-camera") {
+      return {
+        type: "sourceFile",
+        filePath: path.resolve(__dirname, "lib/vision-camera-web.ts"),
+      };
+    }
+
     const isNative = platform === "ios" || platform === "android";
     if (isNative) {
       if (

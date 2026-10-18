@@ -55,6 +55,7 @@ maybe("Canonical mobile rebuild — acceptance criteria (db integration)", () =>
   let authLib: typeof import("../lib/auth.js");
 
   const labOwnerId = rid("u");
+  const providerUserId = rid("provider-user");
   const labOrgId = rid("lab");
   const providerOrgId = rid("prov");
 
@@ -85,11 +86,18 @@ maybe("Canonical mobile rebuild — acceptance criteria (db integration)", () =>
 
     const { db, users, organizations, organizationMemberships } = dbMod as any;
 
-    await db.insert(users).values({
-      id: labOwnerId,
-      username: `canonical_mobile_${labOwnerId}`,
-      password: "doesnotmatter",
-    });
+    await db.insert(users).values([
+      {
+        id: labOwnerId,
+        username: `canonical_mobile_${labOwnerId}`,
+        password: "doesnotmatter",
+      },
+      {
+        id: providerUserId,
+        username: `canonical_provider_${providerUserId}`,
+        password: "doesnotmatter",
+      },
+    ]);
 
     await db.insert(organizations).values([
       { id: labOrgId, type: "lab", name: rid("CanonicalMobileLab") },
@@ -101,15 +109,26 @@ maybe("Canonical mobile rebuild — acceptance criteria (db integration)", () =>
       },
     ]);
 
-    await db.insert(organizationMemberships).values({
-      id: rid("m"),
-      labId: labOrgId,
-      userId: labOwnerId,
-      role: "owner",
-      status: "active",
-      approvedByUserId: labOwnerId,
-      joinedAt: new Date(),
-    });
+    await db.insert(organizationMemberships).values([
+      {
+        id: rid("m"),
+        labId: labOrgId,
+        userId: labOwnerId,
+        role: "owner",
+        status: "active",
+        approvedByUserId: labOwnerId,
+        joinedAt: new Date(),
+      },
+      {
+        id: rid("m"),
+        labId: providerOrgId,
+        userId: providerUserId,
+        role: "admin",
+        status: "active",
+        approvedByUserId: labOwnerId,
+        joinedAt: new Date(),
+      },
+    ]);
   });
 
   // Ensure a fresh session exists before each test; per-test sessions created
@@ -157,15 +176,15 @@ maybe("Canonical mobile rebuild — acceptance criteria (db integration)", () =>
       .where(inArray(casesTable.labOrganizationId, [labOrgId]));
     await db
       .delete(userSessions)
-      .where(inArray(userSessions.userId, [labOwnerId]));
+      .where(inArray(userSessions.userId, [labOwnerId, providerUserId]));
     await db
       .delete(organizationMemberships)
-      .where(inArray(organizationMemberships.userId, [labOwnerId]));
+      .where(inArray(organizationMemberships.userId, [labOwnerId, providerUserId]));
     await db
       .delete(organizations)
       .where(eq(organizations.id, providerOrgId));
     await db.delete(organizations).where(eq(organizations.id, labOrgId));
-    await db.delete(users).where(inArray(users.id, [labOwnerId]));
+    await db.delete(users).where(inArray(users.id, [labOwnerId, providerUserId]));
   });
 
   // ── Acceptance criterion 1: canonical UUID identity ────────────────────────
@@ -351,6 +370,241 @@ maybe("Canonical mobile rebuild — acceptance criteria (db integration)", () =>
     const events = detailRes.body?.data?.events;
     expect(Array.isArray(events)).toBe(true);
     expect(events.length).toBeGreaterThan(0);
+  });
+
+  it("GET /api/cases/:id projects historical invoice date repairs as distinct audit events", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, invoices, auditLogs } = dbMod as any;
+    const caseRes = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("CDR"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Audit",
+        patientLastName: "Export",
+        doctorName: "Dr. History",
+        status: "received",
+      });
+    expect(caseRes.status).toBe(201);
+    const caseId = caseRes.body?.data?.id;
+    createdCaseIds.push(caseId);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.caseId, caseId),
+    });
+    expect(invoice).toBeTruthy();
+    createdInvoiceIds.push(invoice.id);
+    const repairedAt = new Date("2026-09-16T14:30:00.000Z");
+    await db.insert(auditLogs).values({
+      id: rid("audit"),
+      organizationId: labOrgId,
+      userId: labOwnerId,
+      action: "invoice_dates_repaired",
+      entityType: "invoice",
+      entityId: invoice.id,
+      beforeJson: {
+        issuedAt: "2026-01-15T05:00:00.000Z",
+        dueAt: "2026-02-15T05:00:00.000Z",
+      },
+      afterJson: {
+        issuedAt: "2026-01-15T00:00:00.000Z",
+        dueAt: "2026-02-15T00:00:00.000Z",
+      },
+      createdAt: repairedAt,
+    });
+
+    const detail = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(detail.status).toBe(200);
+    const repair = detail.body.data.events.find(
+      (event: any) => event.eventType === "invoice_dates_repaired",
+    );
+    expect(repair).toEqual(
+      expect.objectContaining({
+        actorUserId: labOwnerId,
+        occurredAt: repairedAt.toISOString(),
+        metadataJson: expect.objectContaining({
+          invoiceNumber: invoice.invoiceNumber,
+          authorName: `canonical_mobile_${labOwnerId}`,
+          previousIssuedAt: "2026-01-15T05:00:00.000Z",
+          previousDueAt: "2026-02-15T05:00:00.000Z",
+          correctedIssuedAt: "2026-01-15T00:00:00.000Z",
+          correctedDueAt: "2026-02-15T00:00:00.000Z",
+        }),
+      }),
+    );
+    expect(
+      detail.body.data.events.some(
+        (event: any) =>
+          event.eventType === "invoice_updated" &&
+          event.metadataJson?.auditLogId === repair.metadataJson.auditLogId,
+      ),
+    ).toBe(false);
+  });
+
+  it("GET /api/cases/:id projects payment-deletion audits once with export details", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, invoices, auditLogs, caseEvents } = dbMod as any;
+    const caseRes = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("CPD"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Payment",
+        patientLastName: "Correction",
+        doctorName: "Dr. History",
+        status: "received",
+      });
+    expect(caseRes.status).toBe(201);
+    const caseId = caseRes.body?.data?.id;
+    createdCaseIds.push(caseId);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.caseId, caseId),
+    });
+    expect(invoice).toBeTruthy();
+    createdInvoiceIds.push(invoice.id);
+    const correctedAt = new Date("2026-09-17T15:45:00.000Z");
+    const auditLogId = rid("audit");
+    await db.insert(auditLogs).values({
+      id: auditLogId,
+      organizationId: labOrgId,
+      userId: labOwnerId,
+      action: "invoice_payments_deleted",
+      entityType: "invoice",
+      entityId: invoice.id,
+      metadataJson: {
+        invoiceNumber: invoice.invoiceNumber,
+        deletedCount: 2,
+        reversedDepositCount: 1,
+        previousStatus: "paid",
+      },
+      createdAt: correctedAt,
+    });
+    await db.insert(caseEvents).values({
+      caseId,
+      eventType: "invoice_payments_deleted",
+      actorUserId: labOwnerId,
+      actorOrganizationId: labOrgId,
+      actorInitials: "LO",
+      metadataJson: {
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        deletedCount: 2,
+      },
+      occurredAt: correctedAt,
+    });
+
+    const detail = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(detail.status).toBe(200);
+    const corrections = detail.body.data.events.filter(
+      (event: any) => event.eventType === "invoice_payments_deleted",
+    );
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0]).toEqual(
+      expect.objectContaining({
+        actorUserId: labOwnerId,
+        occurredAt: correctedAt.toISOString(),
+        metadataJson: expect.objectContaining({
+          auditLogId,
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          authorName: `canonical_mobile_${labOwnerId}`,
+          deletedCount: 2,
+          reversedDepositCount: 1,
+          previousStatus: "paid",
+        }),
+      }),
+    );
+  });
+
+  it("GET /api/cases/:id projects historical doctor identity repairs as distinct lab-only audit events", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, invoices, auditLogs } = dbMod as any;
+    const caseRes = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("CDI"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Doctor",
+        patientLastName: "Correction",
+        doctorName: "Dr. Legacy",
+        status: "received",
+      });
+    expect(caseRes.status).toBe(201);
+    const caseId = caseRes.body?.data?.id;
+    createdCaseIds.push(caseId);
+
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.caseId, caseId),
+    });
+    expect(invoice).toBeTruthy();
+    createdInvoiceIds.push(invoice.id);
+    const repairedAt = new Date("2026-09-17T15:45:00.000Z");
+    await db.insert(auditLogs).values({
+      id: rid("audit"),
+      organizationId: labOrgId,
+      userId: labOwnerId,
+      action: "invoice_doctor_identity_repaired",
+      entityType: "invoice",
+      entityId: invoice.id,
+      beforeJson: {
+        doctorIdentity: null,
+        doctorDisplayName: "Dr. Legacy",
+      },
+      afterJson: {
+        doctorIdentity: "doctor-profile-corrected",
+        doctorDisplayName: "Dr. Corrected",
+      },
+      createdAt: repairedAt,
+    });
+
+    const detail = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(detail.status).toBe(200);
+    const repair = detail.body.data.events.find(
+      (event: any) => event.eventType === "invoice_doctor_identity_repaired",
+    );
+    expect(repair).toEqual(
+      expect.objectContaining({
+        actorUserId: labOwnerId,
+        occurredAt: repairedAt.toISOString(),
+        metadataJson: expect.objectContaining({
+          invoiceNumber: invoice.invoiceNumber,
+          authorName: `canonical_mobile_${labOwnerId}`,
+          previousDoctorIdentity: null,
+          previousDoctorDisplayName: "Dr. Legacy",
+          correctedDoctorIdentity: "doctor-profile-corrected",
+          correctedDoctorDisplayName: "Dr. Corrected",
+        }),
+      }),
+    );
+    expect(repair.eventType).not.toBe("invoice_updated");
+    expect(repair.eventType).not.toBe("invoice_dates_repaired");
+
+    const { access: providerAccess } = await makeSession(providerUserId);
+    const providerDetail = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${providerAccess}`);
+    expect(providerDetail.status).toBe(200);
+    expect(
+      providerDetail.body.data.events.some(
+        (event: any) =>
+          event.eventType === "invoice_doctor_identity_repaired",
+      ),
+    ).toBe(false);
   });
 
   // ── Acceptance criterion 6: GET /api/cases list includes new canonical case ─

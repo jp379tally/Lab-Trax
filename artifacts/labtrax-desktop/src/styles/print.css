@@ -184,6 +184,14 @@
   letter-spacing: 0.05em;
 }
 
+/* ── Doctor preferences (lab slip) ── */
+.lt-adv-box .doctor-preferences {
+  font-style: italic;
+  font-size: 0.9em;
+  margin-top: 4px;
+  color: #444;
+}
+
 @media print {
   .lt-no-print { display: none !important; }
 }

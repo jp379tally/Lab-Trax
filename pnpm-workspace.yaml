@@ -42,7 +42,6 @@ packages:
 
 catalog:
   '@replit/vite-plugin-cartographer': ^0.5.1
-  '@replit/vite-plugin-dev-banner': ^0.1.1
   '@replit/vite-plugin-runtime-error-modal': ^0.0.6
   '@tailwindcss/vite': ^4.1.14
   '@tanstack/react-query': ^5.90.21
@@ -62,7 +61,7 @@ catalog:
   tailwind-merge: ^3.3.1
   tailwindcss: ^4.1.14
   tsx: ^4.21.0
-  vite: ^7.3.2
+  vite: ^7.3.5
   wouter: ^3.3.5
   zod: ^3.25.76
 
@@ -159,7 +158,7 @@ overrides:
   "@expo/ngrok-bin>@expo/ngrok-bin-win32-x64": "-"
   # drizzle-kit uses esbuild internally on an older version that's vulnerable, this overrides it
   "@esbuild-kit/esm-loader": "npm:tsx@^4.21.0"
-  esbuild: "0.27.3"
+  esbuild: "0.28.2"
   # Security vulnerability fixes (GHSA advisories)
   # picomatch: GHSA-c2c7-rcm5-vvqj, GHSA-3v7f-55p6-f55p — ReDoS
   "picomatch@2": "2.3.2"
@@ -170,21 +169,75 @@ overrides:
   "lodash": "4.18.1"
   # yaml: GHSA-48c2-rrv3-qjmp
   "yaml@2": "2.8.4"
-  # brace-expansion: GHSA-f886-m6hf-6m8v
-  "brace-expansion@2": "2.1.0"
-  # postcss: GHSA-qx2v-qp2m-jg93
-  "postcss": "8.5.14"
+  # brace-expansion: GHSA-f886-m6hf-6m8v, GHSA-6j4f-fj2g-mc7p,
+  # GHSA-qhr7-859c-m2p7, GHSA-q2hr-2g5m-vwhr
+  "brace-expansion@1": "1.1.21"
+  "brace-expansion@2": "2.1.7"
+  "brace-expansion@5": "5.0.12"
+  # postcss: parser denial-of-service advisories
+  "postcss": "8.5.28"
   # follow-redirects: GHSA-r4q5-vmmm-2653
   "follow-redirects": "1.16.0"
-  # @xmldom/xmldom: GHSA-2v35-w6hq-6mfw, GHSA-f6ww-3ggp-fr8h, GHSA-j759-j44w-7fr8, GHSA-x6wf-f3px-wcqx
-  # Pinned to 0.8.10 (not 0.9.x) — 0.9.0 introduced a breaking change where
+  # @xmldom/xmldom security advisories
+  # Pinned to the patched 0.8 line (not 0.9.x) — 0.9.0 introduced a breaking change where
   # DOMParser.parseFromString requires a valid mimeType argument. @expo/plist
   # calls it without one, causing expo prebuild to fail during EAS builds.
-  # 0.8.10 includes the same security patches without the breaking API change.
-  "@xmldom/xmldom": "0.8.10"
-  # nodemailer: GHSA-vvjj-xcjg-gr5g
-  "nodemailer": "8.0.7"
+  "@xmldom/xmldom": "0.8.15"
+  # Security floors for vulnerable direct and transitive dependencies.
+  "@babel/core@7": "7.29.6"
+  "@vitest/mocker@4": "4.1.11"
+  "baseline-browser-mapping": "2.11.25"
+  "body-parser": "2.3.0"
+  "browserslist": "4.29.0"
+  "builder-util-runtime": "9.7.0"
+  "decode-uri-component": "0.5.0"
+  # twilio's axios range includes vulnerable versions; keep all resolved copies patched.
+  "axios": "1.20.0"
+  "dompurify": "3.4.16"
+  "fast-uri@3": "3.1.8"
+  "fflate": "0.8.3"
+  "form-data@2": "2.5.6"
+  "form-data@4": "4.0.6"
+  # Metro still depends on the vulnerable image-size parser. Use the bounded
+  # local compatibility parser until Metro's asset utilities replace it.
+  "image-size": "link:lib/metro-image-size"
+  "js-yaml@3": "3.15.2"
+  "js-yaml@4": "4.3.2"
+  "linkify-it@5": "5.0.2"
+  "markdown-it@14": "14.3.1"
+  "nanoid@3": "3.3.18"
+  "nodemailer": "10.0.9"
+  "qs": "6.16.0"
+  "shell-quote": "1.12.0"
+  # Security floors for the proxy, source-map, cache, compression, native image,
+  # copy and selector-parser advisories. See docs/dependency-security-remediation.md.
+  "proxy-addr": "2.0.8"
+  "source-map-js": "1.2.2"
+  "http-cache-semantics": "4.3.0"
+  "compression": "1.8.2"
+  "sharp": "0.35.5"
+  "fast-copy@4": "4.1.2"
+  "postcss-selector-parser": "7.1.6"
+  # Both legacy sprintf consumers share the same API; patch the latest release.
+  "sprintf-js": "1.1.3"
+  "tar": "7.5.22"
+  "tmp": "0.2.7"
+  "undici@6": "6.28.1"
+  "undici@7": "7.29.1"
+  "uuid": "11.1.1"
+  "vite": "7.3.6"
+  "vitest@4": "4.1.11"
+  "ws@6": "6.2.4"
+  "ws@7": "7.5.11"
+  "ws@8": "8.21.3"
   # Dedupe to the version @google-cloud/storage@7.x ships with, so the typed
   # ExternalAccountClientOptions we pass to `new Storage({ credentials })`
   # comes from the same module instance the Storage SDK consumes.
   "google-auth-library": "9.15.1"
+
+# Apply narrow source fixes until compatible upstream releases are available.
+patchedDependencies:
+  braces@3.0.3: patches/braces@3.0.3.patch
+  http-cache-semantics@4.3.0: patches/http-cache-semantics@4.3.0.patch
+  node-forge@1.4.0: patches/node-forge@1.4.0.patch
+  sprintf-js@1.1.3: patches/sprintf-js@1.1.3.patch

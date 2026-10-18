@@ -49,7 +49,7 @@ describe("AiReaderStore", () => {
   it("clearAiReaderSession resets all fields", () => {
     const page: CapturedPage = { uri: "file://test.jpg", base64: "data:image/jpeg;base64,abc" };
     const rx: ExtractedRx = {
-      doctorName: "Dr. Smith",
+      doctorName: "Dr. Synthetic063",
       patientName: "Jane Doe",
       patientInitials: "JD",
       caseType: "Crown & Bridge",
@@ -63,6 +63,8 @@ describe("AiReaderStore", () => {
       practiceAddress: null,
       practicePhone: null,
       confidence: 0.92,
+      step: null,
+      gingivialShade: null,
     };
     const restorations: AiReaderRestoration[] = [
       { toothNumber: "3", restorationType: "Crown & Bridge", material: "Zirconia", shade: "A2" },
@@ -74,7 +76,7 @@ describe("AiReaderStore", () => {
       caseNumber: "26-42",
       restorations,
       labName: "Acme Lab",
-      doctorName: "Dr. Smith",
+      doctorName: "Dr. Synthetic063",
       patientName: "Jane Doe",
       dueDate: "2026-07-01",
     });
@@ -209,6 +211,186 @@ describe("Capture session isolation", () => {
     setAiReaderSession({ pages: updated });
     expect(getAiReaderSession().pages[0].uri).toBe("file://p1-new.jpg");
     expect(getAiReaderSession().pages[1].uri).toBe("file://p2.jpg");
+  });
+});
+
+// ── userOverrides — AI fill does not overwrite user-edited fields ─────────────
+
+describe("AiReaderUserOverrides — field protection", () => {
+  beforeEach(() => {
+    clearAiReaderSession();
+  });
+
+  it("fresh session has empty userOverrides", () => {
+    const s = getAiReaderSession();
+    expect(s.userOverrides).toEqual({});
+  });
+
+  it("setAiReaderSession stores userOverrides", () => {
+    setAiReaderSession({ userOverrides: { shade: "B2", material: "Zirconia" } });
+    const s = getAiReaderSession();
+    expect(s.userOverrides.shade).toBe("B2");
+    expect(s.userOverrides.material).toBe("Zirconia");
+  });
+
+  it("userOverrides survive a subsequent setAiReaderSession({ extracted })", () => {
+    // Simulate: user edits shade on extracted screen, then goes back to capture
+    // and triggers re-analysis — the store only updates `extracted`, leaving
+    // userOverrides intact so the screen re-initializes from the user's value.
+    setAiReaderSession({ userOverrides: { shade: "B2" } });
+
+    const newExtracted: ExtractedRx = {
+      doctorName: "Dr. Test",
+      patientName: null,
+      patientInitials: null,
+      caseType: "Crown & Bridge",
+      toothIndices: "3",
+      shade: "A1",
+      material: "Zirconia",
+      dueDate: null,
+      isRush: false,
+      notes: null,
+      practiceName: null,
+      practiceAddress: null,
+      practicePhone: null,
+      confidence: 0.9,
+      step: null,
+      gingivialShade: null,
+    };
+    setAiReaderSession({ extracted: newExtracted });
+
+    const s = getAiReaderSession();
+    // User's shade override is still B2 — AI's A1 did NOT overwrite it
+    expect(s.userOverrides.shade).toBe("B2");
+    expect(s.extracted?.shade).toBe("A1");
+  });
+
+  it("field initialization prefers userOverride over extracted value", () => {
+    // Simulates the useState initializer logic in extracted.tsx
+    const overrides = { shade: "B2" };
+    const extractedShade = "A1";
+    const initialShade =
+      overrides.shade !== undefined ? overrides.shade : (extractedShade ?? "");
+    expect(initialShade).toBe("B2");
+  });
+
+  it("field initialization uses extracted value when no override is set", () => {
+    const overrides: Record<string, string> = {};
+    const extractedShade = "A1";
+    const initialShade =
+      overrides.shade !== undefined ? overrides.shade : (extractedShade ?? "");
+    expect(initialShade).toBe("A1");
+  });
+
+  it("an empty-string override is respected (user intentionally cleared the field)", () => {
+    // The user deleted the pre-filled shade — empty string must NOT fall back to
+    // the AI value on a re-scan.
+    const overrides = { shade: "" };
+    const extractedShade = "A1";
+    const initialShade =
+      overrides.shade !== undefined ? overrides.shade : (extractedShade ?? "");
+    expect(initialShade).toBe("");
+  });
+
+  it("clearAiReaderSession wipes userOverrides so the next scan starts fresh", () => {
+    setAiReaderSession({ userOverrides: { shade: "B2", material: "Zirconia" } });
+    clearAiReaderSession();
+    const s = getAiReaderSession();
+    expect(s.userOverrides).toEqual({});
+  });
+
+  it("merging a second override field leaves prior override fields intact", () => {
+    setAiReaderSession({ userOverrides: { shade: "B2" } });
+    // Simulate saveOverride("material", "Emax") merging into existing overrides
+    const session = getAiReaderSession();
+    setAiReaderSession({
+      userOverrides: { ...session.userOverrides, material: "Emax" },
+    });
+    const s = getAiReaderSession();
+    expect(s.userOverrides.shade).toBe("B2");
+    expect(s.userOverrides.material).toBe("Emax");
+  });
+
+  it("AI fill does not overwrite shade when the field was dirtied before re-analysis", () => {
+    // Full end-to-end simulation of the bug scenario:
+    // 1. First scan: AI returns shade A1 → screen initializes shade from extracted
+    // 2. User edits shade to B2 → saveOverride persists it
+    // 3. User goes back, scans again → AI returns A3 (different result)
+    // 4. Screen remounts: should use B2 (user override), not A3 (new AI value)
+
+    // Step 1 — first analysis result arrives
+    const firstExtracted: ExtractedRx = {
+      doctorName: null, patientName: null, patientInitials: null,
+      caseType: "Crown & Bridge", toothIndices: "3",
+      shade: "A1", material: "Zirconia",
+      dueDate: null, isRush: false, notes: null,
+      practiceName: null, practiceAddress: null, practicePhone: null,
+      confidence: 0.9,
+      step: null,
+      gingivialShade: null,
+    };
+    setAiReaderSession({ extracted: firstExtracted });
+
+    // Simulate: initial shade value the component would read
+    let s = getAiReaderSession();
+    const shadeAfterFirstScan =
+      s.userOverrides.shade !== undefined ? s.userOverrides.shade : (s.extracted?.shade ?? "");
+    expect(shadeAfterFirstScan).toBe("A1");
+
+    // Step 2 — user edits shade to B2 (saveOverride is called)
+    setAiReaderSession({ userOverrides: { ...s.userOverrides, shade: "B2" } });
+
+    // Step 3 — re-scan produces a different AI shade
+    const secondExtracted: ExtractedRx = { ...firstExtracted, shade: "A3" };
+    setAiReaderSession({ extracted: secondExtracted });
+
+    // Step 4 — screen remounts: reads override first
+    s = getAiReaderSession();
+    const shadeAfterRescan =
+      s.userOverrides.shade !== undefined ? s.userOverrides.shade : (s.extracted?.shade ?? "");
+    expect(shadeAfterRescan).toBe("B2"); // user's edit preserved
+    expect(s.extracted?.shade).toBe("A3"); // AI result is stored but not applied
+  });
+});
+
+// ── Barcode-print session → PDF contract ─────────────────────────────────────
+// Verifies that gingival shade stored in the session reaches buildCaseCardHtml
+// and that it is omitted when absent (the two states that the barcode print
+// screen delegates through without any extra transformation).
+
+describe("AiReaderSession → barcode PDF: gingivialShade contract", () => {
+  beforeEach(() => {
+    clearAiReaderSession();
+  });
+
+  it("session gingivialShade is present in the generated HTML when set", async () => {
+    const { buildCaseCardHtml } = await import("../lib/case-pdf");
+    setAiReaderSession({ gingivialShade: "Medium Pink" });
+    const s = getAiReaderSession();
+    const html = buildCaseCardHtml({ caseNumber: "5100", gingivialShade: s.gingivialShade });
+    expect(html).toContain("Gingival Shade");
+    expect(html).toContain("Medium Pink");
+  });
+
+  it("session gingivialShade is absent from the generated HTML when null", async () => {
+    const { buildCaseCardHtml } = await import("../lib/case-pdf");
+    setAiReaderSession({ gingivialShade: null });
+    const s = getAiReaderSession();
+    const html = buildCaseCardHtml({ caseNumber: "5101", gingivialShade: s.gingivialShade });
+    expect(html).not.toContain("Gingival Shade");
+  });
+
+  it("ExtractedRx gingivialShade survives a setAiReaderSession round-trip", () => {
+    const rx: ExtractedRx = {
+      doctorName: null, patientName: null, patientInitials: null,
+      caseType: "Removable", toothIndices: null,
+      shade: null, material: null, dueDate: null,
+      isRush: null, notes: null, practiceName: null,
+      practiceAddress: null, practicePhone: null, confidence: null,
+      step: null, gingivialShade: "Light Pink",
+    };
+    setAiReaderSession({ extracted: rx });
+    expect(getAiReaderSession().extracted?.gingivialShade).toBe("Light Pink");
   });
 });
 

@@ -26,6 +26,8 @@ describe("buildInvoiceMetaPairs", () => {
   it("always includes Issued, Due, and Status", () => {
     const pairs = buildInvoiceMetaPairs(base);
     expect(labels(pairs)).toEqual(["Issued", "Due", "Status"]);
+    expect(valueFor(pairs, "Issued")).toBe("01/15/2026");
+    expect(valueFor(pairs, "Due")).toBe("02/15/2026");
     expect(valueFor(pairs, "Status")).toBe("open");
   });
 

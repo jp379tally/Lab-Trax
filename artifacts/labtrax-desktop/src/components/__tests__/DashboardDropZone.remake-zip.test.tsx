@@ -154,6 +154,7 @@ const RX_RESPONSE = {
   shade: "A2",
   material: "Zirconia",
   toothIndices: "14",
+  toothAssignments: [{ toothNumber: "14", role: "prepared_crown", roleEvidence: "Prepared crown #14", material: "Zirconia", shade: "A2", requiresReview: false }],
   dueDate: "2026-08-01",
   isRush: false,
   notes: "",
@@ -178,6 +179,12 @@ const SIMILARITY_MATCH = {
   doctorName: "Dr. Jane Smith",
   status: "complete",
   createdAt: "2026-05-01T00:00:00.000Z",
+};
+const NEWEST_SIMILARITY_MATCH = {
+  ...SIMILARITY_MATCH,
+  id: "case-newest-match",
+  caseNumber: "26-2042",
+  createdAt: "2026-07-04T12:00:00.000Z",
 };
 
 const DROP_ZONE_USER = {
@@ -237,15 +244,29 @@ describe("DashboardDropZone — ZIP-import remake path", () => {
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path.startsWith("/vocabulary")) return Promise.resolve([]);
       if (path.startsWith("/rx-practice-aliases"))
-        return Promise.resolve({ data: { found: false } });
+        return Promise.resolve({ found: false, providerOrganizationId: null });
 
       // AI analyze.
       if (path === "/analyze-prescription")
         return Promise.resolve(RX_RESPONSE);
 
       // Duplicate / remake candidate lookup.
-      if (path.startsWith("/cases/patient-similarity"))
-        return Promise.resolve({ matches: [SIMILARITY_MATCH] });
+      if (path.startsWith("/cases/patient-similarity")) {
+        const query = new URL(path, "https://labtrax.test").searchParams;
+        if (query.get("patientFirstName") === "Different") {
+          return Promise.resolve({ matches: [] });
+        }
+        if (query.get("patientFirstName") === "LookupError") {
+          return Promise.reject(new Error("temporary lookup failure"));
+        }
+        return Promise.resolve({
+          matches: [
+            NEWEST_SIMILARITY_MATCH,
+            { ...SIMILARITY_MATCH, id: "invalid-date", createdAt: "not-a-date" },
+            SIMILARITY_MATCH,
+          ],
+        });
+      }
 
       // Doctor-not-on-file resolve gate: the extracted doctor is already on
       // file (exact match), so creation proceeds without the resolution modal.
@@ -310,6 +331,55 @@ describe("DashboardDropZone — ZIP-import remake path", () => {
     // Practice auto-resolved from the matching org name → create can proceed.
     const picker = container.querySelector('[data-testid="practice-picker"]');
     expect(picker?.getAttribute("data-value")).toBe("provB");
+    const barcode = container.querySelector<HTMLInputElement>(
+      "#rx-case-pan-barcode",
+    );
+    expect(barcode).not.toBeNull();
+    fireEvent.change(barcode!, { target: { value: "0000456" } });
+
+    // The early, non-blocking lookup warns before Create is pressed.
+    await waitFor(
+      () =>
+        expect(
+          container.querySelector('[data-testid="early-duplicate-warning"]')
+            ?.textContent,
+        ).toBe("Possible duplicate case from 7/4/2026."),
+      { timeout: 5000 },
+    );
+
+    const patientInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="Patient"]',
+    );
+    if (!patientInput) throw new Error("patient input not found");
+
+    // Identifying-field changes clear and refresh the early warning.
+    fireEvent.change(patientInput, { target: { value: "Different Patient" } });
+    await waitFor(
+      () =>
+        expect(
+          container.querySelector('[data-testid="early-duplicate-warning"]'),
+        ).toBeNull(),
+      { timeout: 5000 },
+    );
+
+    // A transient failure remains non-blocking and does not show a false hit.
+    fireEvent.change(patientInput, { target: { value: "LookupError Patient" } });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 350));
+    });
+    expect(
+      container.querySelector('[data-testid="early-duplicate-warning"]'),
+    ).toBeNull();
+
+    fireEvent.change(patientInput, { target: { value: "Bob Anderson" } });
+    await waitFor(
+      () =>
+        expect(
+          container.querySelector('[data-testid="early-duplicate-warning"]')
+            ?.textContent,
+        ).toBe("Possible duplicate case from 7/4/2026."),
+      { timeout: 5000 },
+    );
 
     // 2. Click "Create case" → duplicate check fires → duplicate prompt.
     await act(async () => {
@@ -353,9 +423,10 @@ describe("DashboardDropZone — ZIP-import remake path", () => {
     );
 
     expect(postCasesBody).toMatchObject({
-      remakeOfCaseId: "case-original-1",
+      remakeOfCaseId: "case-newest-match",
       remakeReason: "Shade came back too dark; remaking as A2",
       remakeCharged: true,
+      casePanBarcode: "0000456",
     });
 
     // And the next-case-number fetch must have been skipped for the remake.

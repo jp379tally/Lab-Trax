@@ -1,13 +1,25 @@
 import printCss from "@/styles/print.css?raw";
-import { formatDate, formatDateTime, formatMoney, statusLabel } from "./format";
+import { formatRxNoteScanDate, IMPLANT_FIELDS, implantFieldText, IMPLANT_FIELD_LABELS, renderSharedSlip, SHARED_SLIP_CSS, describeToothAssignments } from "@workspace/case-taxonomy";
+import {
+  formatDate,
+  formatDateTime,
+  formatDatedNote,
+  formatDueDate,
+  formatInvoiceLineMoney,
+  formatMoney,
+  statusLabel,
+} from "./format";
+import { formatInvoiceDate } from "./invoice-date";
 import {
   buildHighlightedToothValue,
   deriveRxSummary,
   formatRxTeethLabel,
   formatRxTeethWithShades,
 } from "./rx-summary";
+import { isRemovableRestorationType } from "./restoration-category";
 import type {
   CaseAttachment,
+  CaseScanAccuracy,
   CaseEvent,
   CaseRestoration,
   Invoice,
@@ -29,6 +41,7 @@ import {
   type InvoiceScalarKind,
 } from "./case-print-template";
 import { apiFetchArrayBuffer, getApiOrigin } from "./api";
+import { providerDoctorPreferencesForLabSlip } from "./provider-preferences";
 
 function escapeHtml(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -40,12 +53,146 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, "&#39;");
 }
 
-function openPrintWindow(opts: {
+function rxHistoryForCase(labCase: LabCase) {
+  if (labCase.rxNoteEntries?.length) return labCase.rxNoteEntries;
+  const noteText = labCase.caseNotes ?? "";
+  if (!noteText.trim()) return [];
+  return [{
+    id: `legacy-${labCase.id}`,
+    caseId: labCase.id,
+    noteText,
+    scannedAt: null,
+    provenance: "legacy" as const,
+  }];
+}
+
+function rxHistoryPlainText(entries: ReturnType<typeof rxHistoryForCase>): string {
+  return entries
+    .map((entry) => `${formatRxNoteScanDate(entry.scannedAt)}\n${entry.noteText}`)
+    .join("\n\n");
+}
+
+function rxHistoryRowsHtml(
+  entries: ReturnType<typeof rxHistoryForCase>,
+  className = "lt-rx-note-history",
+): string {
+  return `<div class="${className}">${entries.map((entry) =>
+    `<div class="lt-rx-note-row"><span class="lt-rx-note-date">${escapeHtml(formatRxNoteScanDate(entry.scannedAt))}</span><span class="lt-rx-note-text">${escapeHtml(entry.noteText)}</span></div>`
+  ).join("")}</div>`;
+}
+
+const STEP_LABELS: Record<string, string> = {
+  custom_tray: "Custom Tray",
+  rims_and_plates: "Rims and Plates",
+  wax_setup: "Wax Setup",
+  process: "Process",
+};
+
+/**
+ * Print the Wax Setup shade as part of the Step value so the two values remain
+ * adjacent on every Lab Slip and case-export template.
+ */
+export function formatPrintableStep(labCase: LabCase): string {
+  const step = labCase.step?.trim();
+  if (!step) return "—";
+  const label = STEP_LABELS[step] ?? step;
+  const shade = labCase.stepShade?.trim();
+  return step === "wax_setup" && shade
+    ? `${label} · Shade: ${shade}`
+    : label;
+}
+
+const SCAN_MIME_TYPES = new Set([
+  "model/stl",
+  "model/obj",
+  "model/ply",
+  "application/sla",
+]);
+const SCAN_EXTENSIONS = new Set([
+  ".stl",
+  ".obj",
+  ".ply",
+  ".dcm",
+  ".3ds",
+  ".dae",
+]);
+
+function isScanAttachment(attachment: CaseAttachment): boolean {
+  if (attachment.scanAccuracy) return true;
+  if (SCAN_MIME_TYPES.has((attachment.fileType ?? "").toLowerCase())) {
+    return true;
+  }
+  const fileName = attachment.fileName ?? "";
+  return SCAN_EXTENSIONS.has(
+    fileName.slice(fileName.lastIndexOf(".")).toLowerCase(),
+  );
+}
+
+export function formatScanCondition(
+  scanAccuracy: CaseScanAccuracy | null | undefined,
+): string {
+  if (!scanAccuracy) return "Not available";
+  switch (scanAccuracy.objectCondition) {
+    case "simple-matte":
+      return "Matte / non-reflective";
+    case "dental-complex":
+      return "Complex dental surface";
+    case "reflective-or-translucent":
+      return "Reflective / translucent";
+    default:
+      return "Not verified";
+  }
+}
+
+export function formatScanRange(
+  scanAccuracy: CaseScanAccuracy | null | undefined,
+): string {
+  if (!scanAccuracy) return "Not available";
+  const range = scanAccuracy.estimatedErrorRangeMm;
+  if (
+    !range ||
+    !Number.isFinite(range.min) ||
+    !Number.isFinite(range.max) ||
+    range.min < 0 ||
+    range.max < range.min
+  ) {
+    return "Unmeasured / conservative";
+  }
+  const value =
+    range.min === range.max
+      ? `${range.max} mm`
+      : `${range.min}–${range.max} mm`;
+  return `Measured: ${value}`;
+}
+
+function scanQualificationHtml(
+  attachments: CaseAttachment[] | undefined,
+  sectionClass: "lt-card" | "lt-adv" | "lt-ov",
+): string {
+  const scans = (attachments ?? []).filter(isScanAttachment);
+  if (!scans.length) return "";
+  const rows = scans
+    .map(
+      (attachment) => `
+<div class="${sectionClass}-field">
+  <span class="${sectionClass}-key">${escapeHtml(attachment.fileName || "Scan")}</span>
+  <span class="${sectionClass}-val">Condition: ${escapeHtml(formatScanCondition(attachment.scanAccuracy))} · ${escapeHtml(formatScanRange(attachment.scanAccuracy))}</span>
+</div>`,
+    )
+    .join("");
+  return `
+<div class="${sectionClass}-section">Scan Qualification</div>
+<div class="${sectionClass}-grid">${rows}</div>`;
+}
+
+export interface PrintDocument {
   title: string;
   body: string;
   extraCss?: string;
   bodyClass?: string;
-}): void {
+}
+
+function openPrintWindow(opts: PrintDocument): void {
   const w = window.open("", "_blank", "width=900,height=700");
   if (!w) {
     window.alert(
@@ -78,12 +225,21 @@ function openPrintWindow(opts: {
   }, 200);
 }
 
-function formatEventTitle(eventType: string | null | undefined): string {
+export function formatEventTitle(eventType: string | null | undefined): string {
   if (!eventType) return "Event";
   // Mirror the in-app label: the desktop "Locate Case" action records
   // a status_changed event, but users think of it as locating the case
   // at a station — show it as "Location Changed" in the printed history.
   if (eventType === "status_changed") return "Location Changed";
+  if (eventType === "internal_exception_opened_note") {
+    return "Internal Exception — Issue";
+  }
+  if (eventType === "internal_exception_note_added") {
+    return "Internal Exception Note";
+  }
+  if (eventType === "internal_exception_resolution_note_added") {
+    return "Internal Exception — Resolution Note";
+  }
   return eventType
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -95,6 +251,23 @@ function formatInvoiceStatus(value: unknown): string {
   return String(value)
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatAuditTimestamp(value: unknown): string {
+  if (typeof value !== "string" || !value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return `${parsed.toISOString().replace(".000Z", "Z")} (UTC)`;
+}
+
+function formatDoctorIdentity(displayName: unknown, identity: unknown): string {
+  const name =
+    typeof displayName === "string" && displayName.trim()
+      ? displayName.trim()
+      : "Unassigned";
+  return typeof identity === "string" && identity.trim()
+    ? `${name} [${identity.trim()}]`
+    : name;
 }
 
 export function eventMetaLine(event: CaseEvent): string {
@@ -122,6 +295,45 @@ export function eventMetaLine(event: CaseEvent): string {
     ].filter(Boolean);
     if (parts.length) return parts.join(" · ");
   }
+  if (t === "invoice_emailed" || t === "statement_emailed") {
+    const parts: string[] = [];
+    if (meta.invoiceNumber) parts.push(`Invoice ${meta.invoiceNumber}`);
+    if (meta.to) parts.push(`To: ${meta.to}`);
+    if (parts.length) return parts.join(" · ");
+  }
+  if (t === "invoice_dates_repaired") {
+    const invoice = meta.invoiceNumber ? `Invoice ${meta.invoiceNumber} · ` : "";
+    return `${invoice}Issued: ${formatAuditTimestamp(meta.previousIssuedAt)} → ${formatAuditTimestamp(meta.correctedIssuedAt)} · Due: ${formatAuditTimestamp(meta.previousDueAt)} → ${formatAuditTimestamp(meta.correctedDueAt)}`;
+  }
+  if (t === "invoice_payments_deleted") {
+    const parts: string[] = [];
+    if (meta.invoiceNumber) parts.push(`Invoice ${meta.invoiceNumber}`);
+    const count =
+      typeof meta.deletedCount === "number" ? meta.deletedCount : null;
+    parts.push(
+      count === 1
+        ? "1 cleared payment deleted"
+        : count != null
+          ? `${count} cleared payments deleted`
+          : "Cleared payments deleted",
+    );
+    if (meta.previousStatus) {
+      parts.push(`Previous status: ${formatInvoiceStatus(meta.previousStatus)}`);
+    }
+    if (
+      typeof meta.reversedDepositCount === "number" &&
+      meta.reversedDepositCount > 0
+    ) {
+      parts.push(
+        `${meta.reversedDepositCount} linked deposit${meta.reversedDepositCount === 1 ? "" : "s"} reversed`,
+      );
+    }
+    return parts.join(" · ");
+  }
+  if (t === "invoice_doctor_identity_repaired") {
+    const invoice = meta.invoiceNumber ? `Invoice ${meta.invoiceNumber} · ` : "";
+    return `${invoice}Doctor: ${formatDoctorIdentity(meta.previousDoctorDisplayName, meta.previousDoctorIdentity)} → ${formatDoctorIdentity(meta.correctedDoctorDisplayName, meta.correctedDoctorIdentity)}`;
+  }
   if (t.includes("invoice")) {
     const parts: string[] = [];
     if (meta.invoiceNumber) parts.push(`Invoice ${meta.invoiceNumber}`);
@@ -147,8 +359,17 @@ export function eventMetaLine(event: CaseEvent): string {
 // lab-only `note_added` event metadata for non-lab viewers, so reading it here
 // cannot leak a withheld body — this mirrors the on-screen desktop history,
 // which renders `metadata.noteText ?? metadata.description` directly.
-function eventNoteBody(event: CaseEvent): string {
-  if (event.eventType !== "note_added") return "";
+export function eventNoteBody(event: CaseEvent): string {
+  if (
+    ![
+      "note_added",
+      "internal_exception_opened_note",
+      "internal_exception_note_added",
+      "internal_exception_resolution_note_added",
+    ].includes(event.eventType ?? "")
+  ) {
+    return "";
+  }
   const meta =
     event.metadataJson && typeof event.metadataJson === "object"
       ? (event.metadataJson as Record<string, unknown>)
@@ -159,6 +380,20 @@ function eventNoteBody(event: CaseEvent): string {
     (typeof meta.description === "string" && meta.description) ||
     "";
   return body.trim();
+}
+
+export function eventAuthorName(event: CaseEvent): string | null {
+  const metadata =
+    event.metadataJson && typeof event.metadataJson === "object"
+      ? (event.metadataJson as Record<string, unknown>)
+      : {};
+  if (
+    typeof metadata.authorName === "string" &&
+    metadata.authorName.trim()
+  ) {
+    return metadata.authorName;
+  }
+  return event.actorInitials ?? null;
 }
 
 function caseHeaderHtml(labCase: LabCase): string {
@@ -195,7 +430,8 @@ export function printCaseHistory(
       const what = formatEventTitle(e.eventType);
       const meta = eventMetaLine(e);
       const noteBody = eventNoteBody(e);
-      const actor = e.actorInitials ? ` · ${escapeHtml(e.actorInitials)}` : "";
+      const author = eventAuthorName(e);
+      const actor = author ? ` · ${escapeHtml(author)}` : "";
       return `
 <div class="lt-event">
   <div class="lt-event-when">${escapeHtml(when)}</div>
@@ -233,6 +469,7 @@ export function printInvoice(
       quantity: number | string;
       unitPrice: number | string;
       lineTotal: number | string;
+      isDiscount?: boolean;
     }>;
   } = {},
 ): void {
@@ -242,10 +479,10 @@ export function printInvoice(
         .map(
           (it) => `
 <tr>
-  <td>${escapeHtml(it.description)}</td>
+  <td>${escapeHtml(`${it.isDiscount ? "Discount: " : ""}${it.description}`)}</td>
   <td class="lt-right lt-mono">${escapeHtml(String(it.quantity))}</td>
-  <td class="lt-right lt-mono">${escapeHtml(formatMoney(it.unitPrice))}</td>
-  <td class="lt-right lt-mono">${escapeHtml(formatMoney(it.lineTotal))}</td>
+  <td class="lt-right lt-mono">${escapeHtml(it.isDiscount ? formatInvoiceLineMoney(it.unitPrice) : formatMoney(it.unitPrice))}</td>
+  <td class="lt-right lt-mono">${escapeHtml(it.isDiscount ? formatInvoiceLineMoney(it.lineTotal) : formatMoney(it.lineTotal))}</td>
 </tr>`,
         )
         .join("")
@@ -253,7 +490,7 @@ export function printInvoice(
 
   const headerCase = labCase ? caseHeaderHtml(labCase) : "";
   const issued = invoice.issuedAt
-    ? formatDate(invoice.issuedAt)
+    ? formatInvoiceDate(invoice.issuedAt)
     : "Not yet issued";
 
   const body = `
@@ -261,7 +498,7 @@ ${headerCase}
 <h2>Invoice ${escapeHtml(invoice.invoiceNumber)}</h2>
 <div class="lt-row"><div class="lt-label">Status</div><div class="lt-value">${escapeHtml(statusLabel(invoice.status))}</div></div>
 <div class="lt-row"><div class="lt-label">Issued</div><div class="lt-value">${escapeHtml(issued)}</div></div>
-${invoice.dueDate ? `<div class="lt-row"><div class="lt-label">Due</div><div class="lt-value">${escapeHtml(formatDate(invoice.dueDate))}</div></div>` : ""}
+${invoice.dueDate ? `<div class="lt-row"><div class="lt-label">Due</div><div class="lt-value">${escapeHtml(formatInvoiceDate(invoice.dueDate))}</div></div>` : ""}
 
 <table>
   <thead>
@@ -307,9 +544,10 @@ export function printCaseLabel(
   const patient = `${labCase.patientFirstName ?? ""} ${
     labCase.patientLastName ?? ""
   }`.trim();
-  const due = labCase.dueDate ? formatDate(labCase.dueDate) : "—";
+  const due = formatDueDate(labCase.dueDate, labCase.dueTime);
   const material = extras.material ?? labCase.restorationMaterials ?? "";
   const teeth = extras.teeth ?? labCase.teeth ?? "";
+  const providerPreferences = providerDoctorPreferencesForLabSlip(labCase);
 
   const body = `
 <div class="lt-label-header">
@@ -329,6 +567,7 @@ export function printCaseLabel(
   <div><div class="lt-label-key">Due</div>${escapeHtml(due)}</div>
   ${material ? `<div><div class="lt-label-key">Material</div>${escapeHtml(material)}</div>` : ""}
   ${teeth ? `<div><div class="lt-label-key">Teeth</div>${escapeHtml(teeth)}</div>` : ""}
+   ${providerPreferences ? `<div><div class="lt-label-key">Provider Preferences</div><div style="white-space:pre-wrap">${escapeHtml(providerPreferences)}</div></div>` : ""}
 </div>`;
 
   openPrintWindow({
@@ -534,12 +773,35 @@ const CARD_CSS = `
   border-top: 1px solid #eee;
   padding-top: 4px;
 }
+
+.lt-rx-note-history {
+  display: grid;
+  gap: 6px;
+}
+.lt-rx-note-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  break-inside: avoid;
+}
+.lt-rx-note-date {
+  color: #666;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.lt-rx-note-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 `;
 
 export function printCaseCard(
   labCase: LabCase,
   extras: {
     restorations?: CaseRestoration[];
+    attachments?: CaseAttachment[];
     notes?: Array<{
       noteText?: string | null;
       visibility?: string | null;
@@ -557,7 +819,9 @@ export function printCaseCard(
   const restorations = extras.restorations ?? [];
   const summary = deriveRxSummary(restorations);
   const restorativeType =
-    summary.restorativeType ?? labCase.restorationTypes ?? "";
+    [summary.restorativeType ?? labCase.restorationTypes ?? "",
+      describeToothAssignments(restorations.map((r) => ({ ...r, toothNumber: r.toothNumber ?? "", restorationType: r.restorationType ?? "" })), labCase.bridgeConnectors)]
+      .filter(Boolean).join(" · ");
   const materialLabel =
     summary.materials.length > 0
       ? summary.materials.join(", ")
@@ -578,6 +842,8 @@ export function printCaseCard(
       : labCase.teeth,
   );
   const isRush = labCase.priority === "rush";
+  const printableStep = formatPrintableStep(labCase);
+  const providerPreferences = providerDoctorPreferencesForLabSlip(labCase);
 
   const badgeHtml = isRush
     ? `<span class="lt-card-badge rush">Rush</span>`
@@ -599,7 +865,8 @@ export function printCaseCard(
   <div class="lt-card-field"><span class="lt-card-key">Doctor</span><span class="lt-card-val">${escapeHtml(labCase.doctorName || "—")}</span></div>
   <div class="lt-card-field"><span class="lt-card-key">Status</span><span class="lt-card-val">${escapeHtml(statusLabel(labCase.status))}</span></div>
   <div class="lt-card-field"><span class="lt-card-key">Priority</span><span class="lt-card-val">${escapeHtml(isRush ? "Rush" : "Normal")}</span></div>
-  <div class="lt-card-field"><span class="lt-card-key">Due Date</span><span class="lt-card-val">${escapeHtml(formatDate(labCase.dueDate))}</span></div>
+  <div class="lt-card-field"><span class="lt-card-key">Step</span><span class="lt-card-val">${escapeHtml(printableStep)}</span></div>
+  <div class="lt-card-field"><span class="lt-card-key">Due Date</span><span class="lt-card-val">${escapeHtml(formatDueDate(labCase.dueDate, labCase.dueTime))}</span></div>
   <div class="lt-card-field"><span class="lt-card-key">Created</span><span class="lt-card-val">${escapeHtml(formatDate(labCase.createdAt))}</span></div>
 </div>`;
 
@@ -615,10 +882,21 @@ export function printCaseCard(
   <div class="lt-card-field"><span class="lt-card-key">Material</span><span class="lt-card-val">${escapeHtml(materialLabel || "—")}</span></div>
   <div class="lt-card-field"><span class="lt-card-key">${escapeHtml(summary.shades.length > 1 ? "Shades" : "Shade")}</span><span class="lt-card-val">${escapeHtml(shadeLabel || "—")}</span></div>
 </div>`;
+  const providerPreferencesSection = providerPreferences
+    ? `\n<div class="lt-card-section">Provider Preferences</div>\n<div class="lt-card-val" style="white-space:pre-wrap">${escapeHtml(providerPreferences)}</div>`
+    : "";
+  const rxEntries = rxHistoryForCase(labCase);
+  const rxNotesSection = rxEntries.length
+    ? `\n<div class="lt-card-section">Rx Notes</div>\n${rxHistoryRowsHtml(rxEntries)}`
+    : "";
 
-  const toothChartSection = `
-<div class="lt-card-section">Tooth Chart</div>
-${buildToothChart(selected)}`;
+  const caseIsRemovable =
+    restorations.length > 0 &&
+    restorations.every((r) => isRemovableRestorationType(r.restorationType));
+
+  const toothChartSection = caseIsRemovable
+    ? ""
+    : `\n<div class="lt-card-section">Tooth Chart</div>\n${buildToothChart(selected)}`;
 
   // Notes section — prefer the full notes array if provided, else fall back
   // to the denormalized caseNotes string on the LabCase object.
@@ -641,13 +919,15 @@ ${buildToothChart(selected)}`;
         })
         .join("");
     }
-  } else if (labCase.caseNotes) {
-    notesSection = `\n<div class="lt-card-section">Notes</div>\n<div style="font-size:10px;white-space:pre-wrap">${escapeHtml(labCase.caseNotes)}</div>`;
   }
 
   const footer = `<div class="lt-card-footer">LabTrax · Case ${escapeHtml(labCase.caseNumber)} · Printed ${escapeHtml(formatDateTime(new Date().toISOString()))}</div>`;
 
-  const body = `${header}${detailsGrid}${rxGrid}${toothChartSection}${notesSection}\n${footer}`;
+  const implantSection = IMPLANT_FIELDS.map((field) => {
+    const value = implantFieldText(restorations, field);
+    return value ? `<div class="lt-card-section">${IMPLANT_FIELD_LABELS[field]}</div><div class="lt-card-val" style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(value)}</div>` : "";
+  }).join("");
+  const body = `${header}${detailsGrid}${rxGrid}${rxNotesSection}${implantSection}${providerPreferencesSection}${scanQualificationHtml(extras.attachments, "lt-card")}${toothChartSection}${notesSection}\n${footer}`;
 
   openPrintWindow({
     title: `Case ${labCase.caseNumber} — Label`,
@@ -800,10 +1080,11 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
 export async function fetchTemplateImageAsDataUrl(
   orgId: string,
   imageId: string,
+  caseId?: string,
 ): Promise<string | null> {
   try {
     const { buffer, headers } = await apiFetchArrayBuffer(
-      `/organizations/${orgId}/case-print-template/images/${imageId}`,
+      `/organizations/${orgId}/case-print-template/images/${imageId}${caseId ? `?caseId=${encodeURIComponent(caseId)}` : ""}`,
     );
     const ct = headers.get("Content-Type") || "application/octet-stream";
     return `data:${ct};base64,${arrayBufferToBase64(buffer)}`;
@@ -882,11 +1163,14 @@ interface AdvancedCaseValues {
   doctor: string;
   dueDate: string;
   priority: string;
+  step: string;
   restorativeType: string;
   teeth: string;
   material: string;
   shade: string;
+  gingivialShade: string;
   rxNotes: string;
+  remakeNotes: string;
   selected: Set<string>;
 }
 
@@ -943,6 +1227,22 @@ function renderDoctorInfoElement(
     );
   }
 
+  // `doctorPreferences` is the legacy lab-authored doctor-profile note. It is
+  // intentionally unrelated to structured providerDoctorPreferences, and only
+  // belongs inside this legacy Doctor Info block.
+  const doctorInfo = labCase as LabCase & {
+    doctorPreferences?: string | null;
+  };
+  const legacyDoctorInfoElement = el as CasePrintElement & {
+    showPreferences?: boolean;
+  };
+  const prefs = doctorInfo.doctorPreferences;
+  if (legacyDoctorInfoElement.showPreferences !== false && prefs && prefs.trim()) {
+    lines.push(
+      `<div class="doctor-preferences"><strong>Doctor Profile Notes:</strong> ${escapeHtml(prefs.trim())}</div>`,
+    );
+  }
+
   const body =
     lines.length > 0
       ? lines.join("")
@@ -974,17 +1274,28 @@ function renderTextElement(
     return `<div class="lt-adv-box" style="${style}"><div class="lt-el-cap">${escapeHtml(caption)}</div>${body}</div>`;
   }
 
+  if (kind === "remakeNotes") {
+    const body = values.remakeNotes
+      ? `<div class="lt-el-val notes" style="white-space:pre-wrap">${escapeHtml(values.remakeNotes)}</div>`
+      : `<div class="lt-el-val notes lt-el-empty">No remake notes.</div>`;
+    return `<div class="lt-adv-box" style="${style}"><div class="lt-el-cap">${escapeHtml(caption)}</div>${body}</div>`;
+  }
+
   const valueMap: Record<string, string> = {
     patient: values.patient,
     doctor: values.doctor,
     dueDate: values.dueDate,
     priority: values.priority,
+    step: values.step,
     restorativeType: values.restorativeType,
     teeth: values.teeth,
     material: values.material,
     shade: values.shade,
+    gingivialShade: values.gingivialShade,
   };
   const value = valueMap[kind] ?? "";
+  // Omit gingival shade entirely when it has no value (only applies to removable cases).
+  if (kind === "gingivialShade" && !value) return "";
   return `<div class="lt-adv-box" style="${style}"><div class="lt-el-cap">${escapeHtml(caption)}</div><div class="lt-el-val">${escapeHtml(value || "—")}</div></div>`;
 }
 
@@ -993,7 +1304,7 @@ function resolveInvoiceScalarValue(kind: InvoiceScalarKind, invoice: Invoice): s
     case "invoiceNumber":
       return invoice.invoiceNumber ?? "";
     case "invoiceDate":
-      return invoice.issuedAt ? formatDate(invoice.issuedAt) : "";
+      return invoice.issuedAt ? formatInvoiceDate(invoice.issuedAt) : "";
     case "invoiceStatus":
       return invoice.status ? String(invoice.status) : "";
     case "invoiceTotal":
@@ -1052,22 +1363,57 @@ function renderInvoiceLineItemsElement(
     tbodyRows = `<tr><td colspan="${orderedCols.length}" class="lt-el-empty">No line items.</td></tr>`;
   } else {
     tbodyRows = items
-      .map((item) => {
+      .flatMap((item) => {
         const cells = orderedCols.map((col) => {
           let val = "";
-          if (col === "description") val = item.description ?? "";
+          if (col === "description")
+            val = `${item.isDiscount ? "Discount: " : ""}${item.description ?? ""}`;
           else if (col === "tooth")
             val = item.toothLabel ?? (item.toothNumber != null ? String(item.toothNumber) : "");
           else if (col === "shade") val = "";
           else if (col === "quantity") val = String(item.quantity ?? "");
           else if (col === "unitPrice")
-            val = item.unitPrice != null ? formatMoney(item.unitPrice) : "";
+            val = item.unitPrice != null
+              ? item.isDiscount
+                ? formatInvoiceLineMoney(item.unitPrice)
+                : formatMoney(item.unitPrice)
+              : "";
           else if (col === "lineTotal")
-            val = item.lineTotal != null ? formatMoney(item.lineTotal) : "";
+            val = item.lineTotal != null
+              ? item.isDiscount
+                ? formatInvoiceLineMoney(item.lineTotal)
+                : formatMoney(item.lineTotal)
+              : "";
           const cls = isRight(col) ? ' class="lt-r"' : "";
           return `<td${cls}>${escapeHtml(val)}</td>`;
         });
-        return `<tr>${cells.join("")}</tr>`;
+        const parentRow = `<tr>${cells.join("")}</tr>`;
+        // Render child sub-items (e.g. Layered Porcelain for PFZ) as
+        // indented rows beneath the parent, mirroring the export.ts pattern.
+        const childRows = ((item as any).subItems ?? []).map((sub: any) => {
+          const subCells = orderedCols.map((col) => {
+            let val = "";
+            if (col === "description")
+              val = `  \u2514 ${sub.isDiscount ? "Discount: " : ""}${sub.description ?? ""}`;
+            else if (col === "quantity") val = String(sub.quantity ?? "");
+            else if (col === "unitPrice")
+              val = sub.unitPrice != null
+                ? sub.isDiscount
+                  ? formatInvoiceLineMoney(sub.unitPrice)
+                  : formatMoney(sub.unitPrice)
+                : "";
+            else if (col === "lineTotal")
+              val = sub.lineTotal != null
+                ? sub.isDiscount
+                  ? formatInvoiceLineMoney(sub.lineTotal)
+                  : formatMoney(sub.lineTotal)
+                : "";
+            const cls = isRight(col) ? ' class="lt-r"' : "";
+            return `<td${cls} style="font-size:0.9em;color:#555">${escapeHtml(val)}</td>`;
+          });
+          return `<tr style="background:#f8f8f8">${subCells.join("")}</tr>`;
+        });
+        return [parentRow, ...childRows];
       })
       .join("");
   }
@@ -1082,9 +1428,12 @@ export async function printCaseCardAdvanced(
   extras: {
     restorations?: CaseRestoration[];
     invoice?: Invoice | null;
+    attachments?: CaseAttachment[];
+    bridgeConnectors?: string | null;
   },
   template: CasePrintTemplate,
-): Promise<void> {
+  prepareOnly = false,
+): Promise<PrintDocument | void> {
   const patient = `${labCase.patientFirstName ?? ""} ${
     labCase.patientLastName ?? ""
   }`.trim();
@@ -1092,7 +1441,9 @@ export async function printCaseCardAdvanced(
   const restorations = extras.restorations ?? [];
   const invoice = extras.invoice ?? null;
   const summary = deriveRxSummary(restorations);
-  const restorativeType = summary.restorativeType ?? labCase.restorationTypes ?? "";
+  const restorativeType = [summary.restorativeType ?? labCase.restorationTypes ?? "",
+    describeToothAssignments(restorations.map((r) => ({ ...r, toothNumber: r.toothNumber ?? "", restorationType: r.restorationType ?? "" })), extras.bridgeConnectors ?? labCase.bridgeConnectors)]
+    .filter(Boolean).join(" · ");
   const materialLabel =
     summary.materials.length > 0
       ? summary.materials.join(", ")
@@ -1117,17 +1468,22 @@ export async function printCaseCardAdvanced(
     caseNumber: labCase.caseNumber,
     patient,
     doctor: labCase.doctorName ?? "",
-    dueDate: formatDate(labCase.dueDate),
+    dueDate: formatDueDate(labCase.dueDate, labCase.dueTime),
     priority: isRush ? "Rush" : "Normal",
+    step: formatPrintableStep(labCase),
     restorativeType,
     teeth: teethLabel,
     material: materialLabel,
     shade: shadeLabel,
+    gingivialShade: labCase.gingivialShade ?? "",
     // Prescription notes ONLY — the case's Rx notes field, never internal
     // lab activity notes.
-    rxNotes: labCase.caseNotes ?? "",
+    rxNotes: rxHistoryPlainText(rxHistoryForCase(labCase)),
+    // Admin-only remake notes — only present on DetailedCase responses.
+    remakeNotes: (labCase as { remakeNotes?: string | null }).remakeNotes?.trim() ?? "",
     selected,
   };
+  const providerPreferences = providerDoctorPreferencesForLabSlip(labCase);
 
   // Pre-fetch image elements as data: URLs (bearer auth can't ride on a
   // plain <img src>), so we inline the bytes before building the HTML.
@@ -1135,84 +1491,66 @@ export async function printCaseCardAdvanced(
   const imageElements = template.elements.filter(
     (el) => el.kind === "image" && el.visible,
   );
-  const imageSrcs = orgId
+  const imageSrcs: Array<string | null> = prepareOnly
+    ? await (async () => {
+        const images: Array<string | null> = [];
+        for (const el of imageElements) images.push(orgId ? await fetchTemplateImageAsDataUrl(orgId, el.id, labCase.id) : null);
+        return images;
+      })()
+    : orgId
     ? await Promise.all(
-        imageElements.map((el) => fetchTemplateImageAsDataUrl(orgId, el.id)),
+        imageElements.map((el) => fetchTemplateImageAsDataUrl(orgId, el.id, labCase.id)),
       )
     : imageElements.map(() => null);
   const imageSrcById = new Map<string, string | null>();
   imageElements.forEach((el, i) => imageSrcById.set(el.id, imageSrcs[i]));
-
-  const sections: string[] = [];
-
-  for (const el of template.elements) {
-    if (!el.visible) continue;
-
-    if (el.kind === "image") {
-      const src = imageSrcById.get(el.id);
-      if (!src) continue;
-      sections.push(
-        `<div class="lt-adv-box" style="${boxStyle(el, `opacity:${el.opacity ?? 1}`)}"><img src="${escapeHtml(src)}" class="lt-adv-img" alt="" /></div>`,
-      );
-      continue;
-    }
-
-    if (el.kind === "toothChart") {
-      sections.push(
-        `<div class="lt-adv-box" style="${boxStyle(el, "padding:1px")}">${buildAnatomicalToothChartSvg(values.selected)}</div>`,
-      );
-      continue;
-    }
-
-    if (el.kind === "barcode") {
-      sections.push(
-        `<div class="lt-adv-box" style="${boxStyle(el, "display:flex;flex-direction:column;justify-content:center")}"><div class="lt-adv-barcode-bars"></div><div class="lt-adv-barcode">${escapeHtml(values.caseNumber)}</div></div>`,
-      );
-      continue;
-    }
-
-    if (el.kind === "doctorInfo") {
-      sections.push(renderDoctorInfoElement(el, labCase));
-      continue;
-    }
-
-    if ((INVOICE_SCALAR_KINDS as readonly string[]).includes(el.kind)) {
-      const kind = el.kind as InvoiceScalarKind;
-      const caption = ELEMENT_LABELS[kind] ?? "";
-      const style = boxStyle(
-        el,
-        `${elTextStyle(el)};display:flex;flex-direction:column;justify-content:flex-start`,
-      );
-      if (!invoice) {
-        sections.push(
-          `<div class="lt-adv-box" style="${style}"><div class="lt-el-cap">${escapeHtml(caption)}</div><div class="lt-el-val lt-el-empty">No invoice</div></div>`,
-        );
-      } else {
-        const value = resolveInvoiceScalarValue(kind, invoice);
-        sections.push(
-          `<div class="lt-adv-box" style="${style}"><div class="lt-el-cap">${escapeHtml(caption)}</div><div class="lt-el-val">${escapeHtml(value || "—")}</div></div>`,
-        );
-      }
-      continue;
-    }
-
-    if (el.kind === "invoiceLineItems") {
-      sections.push(renderInvoiceLineItemsElement(el, invoice));
-      continue;
-    }
-
-    // text element
-    sections.push(renderTextElement(el, values));
+  if (prepareOnly && imageSrcs.some((src) => !src)) {
+    throw new Error(`Could not load a template image for case ${labCase.caseNumber}. Check access and retry.`);
   }
 
-  const body = `<div class="lt-adv-page">${sections.join("\n")}</div>`;
+  const textValues: Record<string, string> = {
+    caseNumber: values.caseNumber, patient: values.patient, doctor: values.doctor, dueDate: values.dueDate,
+    priority: values.priority, step: values.step, restorativeType: values.restorativeType, teeth: values.teeth,
+    material: values.material, shade: values.shade, gingivialShade: values.gingivialShade, rxNotes: values.rxNotes, remakeNotes: values.remakeNotes,
+    ...Object.fromEntries(IMPLANT_FIELDS.map((field) => [field, implantFieldText(restorations, field)])),
+  };
+  const unwrap = (html: string) => html.replace(/^<div class="lt-adv-box" style="[^"]*">/, "").replace(/<\/div>$/, "");
+  const body = renderSharedSlip(template, (element) => {
+    const el = element as CasePrintElement;
+    if (el.kind === "rxNotes") {
+      const entries = rxHistoryForCase(labCase);
+      return entries.length
+        ? {
+            caption: "Rx Notes",
+            text: rxHistoryPlainText(entries),
+            html: rxHistoryRowsHtml(entries),
+          }
+        : null;
+    }
+    if (el.kind === "image") {
+      const src = imageSrcById.get(el.id);
+      return src ? { graphic: true, html: `<img src="${escapeHtml(src)}" style="width:100%;height:100%;object-fit:contain;opacity:${el.opacity ?? 1}" alt="" />` } : null;
+    }
+    if (el.kind === "toothChart") return { graphic: true, html: buildAnatomicalToothChartSvg(values.selected) };
+    if (el.kind === "barcode") return { graphic: true, html: `<div class="lt-adv-barcode-bars"></div><div class="lt-adv-barcode">${escapeHtml(labCase.casePanBarcode || values.caseNumber)}</div>` };
+    if (el.kind === "doctorInfo") return { html: unwrap(renderDoctorInfoElement(el, labCase)), text: JSON.stringify(labCase.providerOrganizationContact ?? {}) };
+    if (el.kind === "providerPreferences") return providerPreferences ? { caption: "Provider Preferences", text: providerPreferences } : null;
+    if (el.kind === "invoiceLineItems") return { html: unwrap(renderInvoiceLineItemsElement(el, invoice)), text: (invoice?.items ?? []).map((item) => item.description).join("\n") };
+    if ((INVOICE_SCALAR_KINDS as readonly string[]).includes(el.kind)) return { caption: ELEMENT_LABELS[el.kind], text: invoice ? resolveInvoiceScalarValue(el.kind as InvoiceScalarKind, invoice) : "No invoice" };
+    const value = textValues[el.kind] ?? "";
+    if ((IMPLANT_FIELDS as readonly string[]).includes(el.kind) && !value) return null;
+    if (el.kind === "gingivialShade" && !value) return null;
+    return { caption: el.kind === "caseNumber" ? undefined : ELEMENT_LABELS[el.kind], text: el.kind === "caseNumber" ? `Case ${value}` : value || "—" };
+  }) + scanQualificationHtml(extras.attachments, "lt-adv");
 
-  openPrintWindow({
+  const document: PrintDocument = {
     title: `Case ${labCase.caseNumber} — Label`,
     bodyClass: "",
-    extraCss: ADVANCED_CARD_CSS,
+    extraCss: ADVANCED_CARD_CSS + SHARED_SLIP_CSS,
     body,
-  });
+  };
+  if (prepareOnly) return document;
+  openPrintWindow(document);
 }
 
 // ── Full Lab Slip (letter-size, mirrors the on-screen Lab Slip tab) ─────────
@@ -1341,6 +1679,33 @@ const OVERVIEW_CSS = `
   border-top: 1px solid #eee;
   padding-top: 4px;
 }
+.lt-rx-history-continuation {
+  break-before: page;
+  page-break-before: always;
+  padding-top: 12px;
+}
+.lt-rx-history-continuation h2 {
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+.lt-rx-history-continuation .lt-rx-note-history { display: grid; gap: 10px; }
+.lt-rx-history-continuation .lt-rx-note-row {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  break-inside: avoid;
+}
+.lt-rx-history-continuation .lt-rx-note-date {
+  color: #555;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.lt-rx-history-continuation .lt-rx-note-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 `;
 
 const FONT_SIZE_PX: Record<string, string> = {
@@ -1353,15 +1718,18 @@ export function printCaseOverview(
   labCase: LabCase,
   extras: {
     restorations?: CaseRestoration[];
+    attachments?: CaseAttachment[];
     notes?: Array<{
       noteText?: string | null;
       visibility?: string | null;
       createdAt?: string | null;
       authorName?: string | null;
     }>;
+    isAdmin?: boolean;
   } = {},
   config?: PrintLayoutConfig,
-): void {
+  prepareOnly = false,
+): PrintDocument | void {
   const layout = config ?? loadPrintLayoutConfig();
 
   const patient = `${labCase.patientFirstName ?? ""} ${
@@ -1370,10 +1738,11 @@ export function printCaseOverview(
   const isRush = labCase.priority === "rush";
   const restorations = extras.restorations ?? [];
   const summary = deriveRxSummary(restorations);
-  const teethLabel = formatRxTeethWithShades(
-    restorations,
-    formatRxTeethLabel(summary),
-  );
+  const teethBase =
+    summary.teeth.length > 0 || summary.isFullArch
+      ? formatRxTeethLabel(summary)
+      : labCase.teeth ?? "";
+  const teethLabel = formatRxTeethWithShades(restorations, teethBase);
   const highlighted = parseAdultTeeth(buildHighlightedToothValue(summary));
 
   const badgeHtml = isRush
@@ -1391,20 +1760,25 @@ export function printCaseOverview(
 
   // ── Resolve field values keyed by field id ─────────────────────────────────
   const teethKey = summary.isFullArch ? "Tooth coverage" : "Tooth number(s)";
+  const providerPreferences = providerDoctorPreferencesForLabSlip(labCase);
+  const rxEntries = rxHistoryForCase(labCase);
   const fieldValues: Record<string, { key: string; value: string }> = {
+    ...Object.fromEntries(IMPLANT_FIELDS.map((field) => [field, { key: IMPLANT_FIELD_LABELS[field], value: implantFieldText(restorations, field) }])),
     patient:         { key: "Patient",         value: patient || "—" },
     doctor:          { key: "Doctor",           value: labCase.doctorName || "—" },
     status:          { key: "Status",           value: statusLabel(labCase.status) },
     priority:        { key: "Priority",         value: isRush ? "Rush" : "Normal" },
-    dueDate:         { key: "Due Date",         value: formatDate(labCase.dueDate) },
+    step:            { key: "Step",             value: formatPrintableStep(labCase) },
+    dueDate:         { key: "Due Date",         value: formatDueDate(labCase.dueDate, labCase.dueTime) },
     created:         { key: "Created",          value: formatDate(labCase.createdAt) },
     casePanBarcode:  { key: "Case Pan Barcode", value: labCase.casePanBarcode ?? "" },
     restorativeType: { key: "Restorative Type", value: summary.restorativeType ?? "Other" },
     material:        { key: summary.materials.length > 1 ? "Materials" : "Material", value: summary.materials.length > 0 ? summary.materials.join(", ") : "—" },
     // Fall back to the case-level shade when no restoration rows carry one.
     shade:           { key: summary.shades.length > 1 ? "Shades" : "Shade",          value: summary.shades.length > 0 ? summary.shades.join(", ") : (labCase.shade ? labCase.shade : "—") },
+    gingivialShade:  { key: "Gingival Shade",   value: labCase.gingivialShade ?? "" },
     toothNumbers:    { key: teethKey,           value: teethLabel || "—" },
-    rxNotes:         { key: "Rx Notes",         value: (labCase.caseNotes ?? "").trim() || "—" },
+    rxNotes:         { key: "Rx Notes",         value: rxEntries.length ? "See Rx Notes continuation" : "—" },
   };
 
   function renderField(id: string, fontSize: string, fullWidth: boolean): string {
@@ -1412,6 +1786,9 @@ export function printCaseOverview(
     if (!fv) return "";
     // casePanBarcode: skip if empty
     if (id === "casePanBarcode" && !labCase.casePanBarcode) return "";
+    // gingivialShade: omit entirely when not set (only applies to removable/denture cases)
+    if (id === "gingivialShade" && !labCase.gingivialShade) return "";
+    if ((IMPLANT_FIELDS as readonly string[]).includes(id) && !fv.value) return "";
     const spanStyle = fontSize !== "sm" ? ` style="font-size:${FONT_SIZE_PX[fontSize] ?? "12px"}"` : "";
     const colStyle = fullWidth ? ` style="grid-column:1/-1"` : "";
     return `<div class="lt-ov-field"${colStyle}><span class="lt-ov-key">${escapeHtml(fv.key)}</span><span class="lt-ov-val"${spanStyle}>${escapeHtml(fv.value)}</span></div>`;
@@ -1433,6 +1810,12 @@ ${detailRows}
   const rxFields = layout.fields.filter((f) => f.section === "rx" && f.visible);
   const rxRows = rxFields.map((f) => renderField(f.id, f.fontSize, f.fullWidth)).join("\n");
   rxSection += `<div class="lt-ov-grid">\n${rxRows}\n</div>`;
+  const providerPreferencesSection = providerPreferences
+    ? `\n<div class="lt-ov-section">Provider Preferences</div>\n<div class="lt-ov-val" style="white-space:pre-wrap">${escapeHtml(providerPreferences)}</div>`
+    : "";
+  const rxHistoryContinuation = rxEntries.length
+    ? `<div class="lt-rx-history-continuation"><h2>Prescription Notes</h2>${rxHistoryRowsHtml(rxEntries)}</div>`
+    : "";
 
   // ── Tooth chart ────────────────────────────────────────────────────────────
   // Tooth chart is intentionally omitted from the lab slip to keep the printed
@@ -1460,23 +1843,50 @@ ${detailRows}
           const author = n.authorName ? ` · ${escapeHtml(n.authorName)}` : "";
           return `<div class="lt-ov-note">
   <div class="lt-ov-note-meta">${escapeHtml(vis)}${author}${when ? ` · ${escapeHtml(when)}` : ""}</div>
-  <div class="lt-ov-note-text">${escapeHtml(n.noteText || "—")}</div>
+  <div class="lt-ov-note-text">${escapeHtml(formatDatedNote(n.noteText || "—", n.createdAt))}</div>
 </div>`;
         })
         .join("");
     }
   }
 
+  // ── Custom Shade sub-section ───────────────────────────────────────────────
+  const caseAny = labCase as {
+    remakeOfCaseId?: string | null;
+    remakeNotes?: string | null;
+    isCustomShade?: boolean | null;
+    customShadeTechnician?: string | null;
+    customShadePicturesAvailable?: boolean | null;
+    customShadeVideoAvailable?: boolean | null;
+  };
+  let customShadeSection = "";
+  if (caseAny.isCustomShade) {
+    const techRow = caseAny.customShadeTechnician
+      ? `<div class="lt-ov-field"><span class="lt-ov-key">Technician</span><span class="lt-ov-val">${escapeHtml(caseAny.customShadeTechnician)}</span></div>`
+      : "";
+    const picsRow = `<div class="lt-ov-field"><span class="lt-ov-key">Pictures available</span><span class="lt-ov-val">${caseAny.customShadePicturesAvailable ? "Yes" : "No"}</span></div>`;
+    const videoRow = `<div class="lt-ov-field"><span class="lt-ov-key">Video available</span><span class="lt-ov-val">${caseAny.customShadeVideoAvailable ? "Yes" : "No"}</span></div>`;
+    customShadeSection = `\n<div class="lt-ov-section">Custom Shade</div>\n<div class="lt-ov-grid">${techRow}${picsRow}${videoRow}</div>`;
+  }
+
+  const remakeAny = caseAny;
+  const remakeSection =
+    remakeAny.remakeOfCaseId && remakeAny.remakeNotes && remakeAny.remakeNotes.trim()
+      ? `\n<div class="lt-ov-section">Remake Notes</div>\n<div style="font-size:10px;white-space:pre-wrap;padding:4px 0">${escapeHtml(remakeAny.remakeNotes.trim())}</div>`
+      : "";
+
   const footer = `<div class="lt-ov-footer">LabTrax · Case ${escapeHtml(labCase.caseNumber)} · Printed ${escapeHtml(formatDateTime(new Date().toISOString()))}</div>`;
 
-  const body = `${header}${detailsGrid}${rxSection}${chartSection}${notesSection}${footer}`;
+  const body = `${header}${detailsGrid}${rxSection}${providerPreferencesSection}${scanQualificationHtml(extras.attachments, "lt-ov")}${customShadeSection}${chartSection}${remakeSection}${notesSection}${footer}${rxHistoryContinuation}`;
 
-  openPrintWindow({
+  const document: PrintDocument = {
     title: `Case ${labCase.caseNumber} — Lab Slip`,
     bodyClass: "lt-ov-page",
     extraCss: OVERVIEW_CSS,
     body,
-  });
+  };
+  if (prepareOnly) return document;
+  openPrintWindow(document);
 }
 
 // ── Per-tab generic printers ────────────────────────────────────────────────
@@ -1485,17 +1895,21 @@ export function printOverview(labCase: LabCase): string {
   const patient = `${labCase.patientFirstName ?? ""} ${
     labCase.patientLastName ?? ""
   }`.trim();
+  const providerPreferences = providerDoctorPreferencesForLabSlip(labCase);
   return `
 <h2>Lab Slip</h2>
 <div class="lt-row"><div class="lt-label">Patient</div><div class="lt-value">${escapeHtml(patient || "—")}</div></div>
 <div class="lt-row"><div class="lt-label">Doctor</div><div class="lt-value">${escapeHtml(labCase.doctorName || "—")}</div></div>
 <div class="lt-row"><div class="lt-label">Status</div><div class="lt-value">${escapeHtml(statusLabel(labCase.status))}</div></div>
 <div class="lt-row"><div class="lt-label">Priority</div><div class="lt-value">${escapeHtml(labCase.priority === "rush" ? "Rush" : "Normal")}</div></div>
-<div class="lt-row"><div class="lt-label">Due Date</div><div class="lt-value">${escapeHtml(formatDate(labCase.dueDate))}</div></div>
+<div class="lt-row"><div class="lt-label">Step</div><div class="lt-value">${escapeHtml(formatPrintableStep(labCase))}</div></div>
+<div class="lt-row"><div class="lt-label">Due Date</div><div class="lt-value">${escapeHtml(formatDueDate(labCase.dueDate, labCase.dueTime))}</div></div>
 <div class="lt-row"><div class="lt-label">Created</div><div class="lt-value">${escapeHtml(formatDateTime(labCase.createdAt))}</div></div>
 ${labCase.restorationTypes ? `<div class="lt-row"><div class="lt-label">Type</div><div class="lt-value">${escapeHtml(labCase.restorationTypes)}</div></div>` : ""}
 ${labCase.restorationMaterials ? `<div class="lt-row"><div class="lt-label">Material</div><div class="lt-value">${escapeHtml(labCase.restorationMaterials)}</div></div>` : ""}
 ${labCase.teeth ? `<div class="lt-row"><div class="lt-label">Teeth</div><div class="lt-value">${escapeHtml(labCase.teeth)}</div></div>` : ""}
+${rxHistoryForCase(labCase).length ? `<div class="lt-row"><div class="lt-label">Rx Notes</div><div class="lt-value">${rxHistoryRowsHtml(rxHistoryForCase(labCase))}</div></div>` : ""}
+${providerPreferences ? `<div class="lt-row"><div class="lt-label">Provider Preferences</div><div class="lt-value" style="white-space:pre-wrap">${escapeHtml(providerPreferences)}</div></div>` : ""}
 ${Number(labCase.totalPrice ?? 0) > 0 ? `<div class="lt-row"><div class="lt-label">Total</div><div class="lt-value">${escapeHtml(formatMoney(labCase.totalPrice))}</div></div>` : ""}
 `;
 }
@@ -1563,14 +1977,19 @@ export function printAttachmentsList(attachments: CaseAttachment[]): string {
   }
   const rows = attachments
     .map(
-      (a) => `
+      (a) => {
+        const isScan = isScanAttachment(a);
+        return `
 <tr>
   <td>${escapeHtml(a.fileName)}</td>
   <td>${escapeHtml(a.fileType || "—")}</td>
   <td>${escapeHtml(a.visibility === "internal_lab_only" ? "Lab only" : "Shared")}</td>
   <td>${escapeHtml(a.uploaderName || "—")}</td>
   <td>${escapeHtml(formatDateTime(a.createdAt))}</td>
-</tr>`,
+  <td>${escapeHtml(isScan ? formatScanCondition(a.scanAccuracy) : "—")}</td>
+  <td>${escapeHtml(isScan ? formatScanRange(a.scanAccuracy) : "—")}</td>
+</tr>`;
+      },
     )
     .join("");
   return `
@@ -1578,6 +1997,7 @@ export function printAttachmentsList(attachments: CaseAttachment[]): string {
 <table>
   <thead><tr>
     <th>File</th><th>Type</th><th>Visibility</th><th>Uploaded by</th><th>Uploaded</th>
+    <th>Scan condition</th><th>Measured range</th>
   </tr></thead>
   <tbody>${rows}</tbody>
 </table>`;

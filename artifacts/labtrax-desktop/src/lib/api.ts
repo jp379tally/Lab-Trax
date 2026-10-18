@@ -28,9 +28,28 @@ const _CONFIGURED_ORIGIN = (import.meta.env.VITE_API_BASE_URL as string | undefi
 const _API_ORIGIN =
   _CONFIGURED_ORIGIN || (_isElectronRenderer() ? _PROD_API_FALLBACK : "");
 
+/**
+ * Build the full URL for an API call.
+ *
+ * PREFIX CONVENTION (desktop): callers pass the path AFTER `/api` — e.g.
+ * `apiFetch("/organizations/…/quick-reference-notes")` — and this helper
+ * prepends `/api` exactly once. This differs from the mobile client, where
+ * `resilientFetch` callers include `/api` themselves. Copying a mobile-style
+ * `/api/...` path into a desktop `apiFetch`/`apiUrl` call would silently
+ * produce `/api/api/...`, which the server answers with a misleading 404
+ * (the Quick Reference Notes outage). To make that mistake loud instead of
+ * silent, we reject such paths here at the helper boundary.
+ */
 export function apiUrl(path: string): string {
   if (path.startsWith("http")) return path;
   const normalized = path.startsWith("/") ? path : `/${path}`;
+  if (normalized === "/api" || normalized.startsWith("/api/")) {
+    throw new Error(
+      `apiUrl/apiFetch received a path that already starts with "/api" (${path}). ` +
+        `Desktop callers must pass the path after /api (e.g. "/cases", not "/api/cases") — ` +
+        `the helper prepends /api itself, so this would become a silent /api/api 404.`,
+    );
+  }
   return `${_API_ORIGIN}/api${normalized}`;
 }
 
@@ -44,9 +63,37 @@ export function getApiOrigin(): string {
   return _API_ORIGIN;
 }
 
+/** Uploaded files live at the server root, not under the /api route. */
+export function serverAssetUrl(path: string): string {
+  const origin = getApiOrigin() || (typeof window !== "undefined" ? window.location.origin : "");
+  const resolved = new URL(path, `${origin}/`);
+  if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+    throw new Error("Unsupported server asset URL");
+  }
+  return resolved.href;
+}
+
+/** Detail suffix for "can't reach the server" errors. Surfaces the URL the
+ * renderer tried to reach so a tech-support screenshot is enough to diagnose
+ * the problem. The "reinstall the installer" hint is Electron-only: same-origin
+ * web builds legitimately run with an empty configured origin (relative
+ * fetches against window.location.origin), so a fetch failure there is a
+ * network/access problem, not a packaging one. */
+function unreachableDetail(path: string): string {
+  const origin = getApiOrigin();
+  if (origin) return ` (tried ${origin}/api${path})`;
+  if (_isElectronRenderer()) {
+    return " (this installer was built without an API server URL — please reinstall the latest LabTrax Desktop)";
+  }
+  const webOrigin =
+    typeof window !== "undefined" && window.location ? window.location.origin : "";
+  return webOrigin ? ` (tried ${webOrigin}/api${path})` : "";
+}
+
 export type SessionUser = {
   id: string;
   username: string;
+  profilePhotoUrl?: string | null;
   email?: string | null;
   phone?: string | null;
   firstName?: string | null;
@@ -85,6 +132,12 @@ export type SessionUser = {
   // (e.g. "SDR1-2603-BC-1"). Surfaced by /api/auth/me via the active
   // membership lookup. Null for lab users and providers with no membership.
   practiceAccountNumber?: string | null;
+  // Raw membership role from the primary lab_memberships row ("owner",
+  // "admin", "billing", "user"). Distinct from `role` which collapses
+  // owner→admin for uniform authorization gate logic. Use this field for
+  // display-only purposes (e.g. profile badge "Owner" vs "Admin").
+  // Null when the user has no active lab membership.
+  membershipRole?: string | null;
 };
 
 type SessionListener = (user: SessionUser | null) => void;
@@ -128,6 +181,7 @@ function clearPlatformAdminSecretCacheSafe() {
 }
 
 export class ApiError extends Error {
+  downloadRunId?: string;
   status: number;
   body: unknown;
   /** Seconds until the client may retry, parsed from the Retry-After header. Only set on 429 responses. */
@@ -178,6 +232,13 @@ function getPlatformAdminBridge(): PlatformAdminBridge | null {
 }
 
 let platformAdminSecretCache: string | null = null;
+let providerOrganizationId: string | null = null;
+export function setProviderOrganizationId(id: string | null): void {
+  providerOrganizationId = id;
+}
+export function getProviderOrganizationId(): string | null {
+  return providerOrganizationId;
+}
 let platformAdminCacheLoaded = false;
 let platformAdminInflight: Promise<string | null> | null = null;
 
@@ -209,13 +270,19 @@ async function loadPlatformAdminSecret(): Promise<string | null> {
 }
 
 async function getPlatformAdminSecretForRequest(): Promise<PlatformAdminCred | null> {
+  // Human-only creator tools reject the automation secret even in Electron.
+  // Once a user enters the admin PIN, prefer it for every admin request so the
+  // packaged client uses the same authenticated-human contract as the browser.
+  const sessionPin = getSessionSecret();
+  if (sessionPin) {
+    return { header: PLATFORM_ADMIN_HEADER_PIN, value: sessionPin };
+  }
   if (!getPlatformAdminBridge()) {
     // No Electron bridge (web view / Replit preview): fall back to the
     // in-memory session PIN that the admin entered via the unlock modal.
     // Sent under X-Platform-Admin-Pin so the server matches it against
     // PLATFORM_ADMIN_PIN.
-    const pin = getSessionSecret();
-    return pin ? { header: PLATFORM_ADMIN_HEADER_PIN, value: pin } : null;
+    return null;
   }
   // Electron desktop: prefer the long PLATFORM_ADMIN_SECRET saved in the
   // OS keychain. If none is saved yet, fall back to the session PIN the
@@ -223,8 +290,7 @@ async function getPlatformAdminSecretForRequest(): Promise<PlatformAdminCred | n
   // same lightweight PIN flow as the web build.
   const value = platformAdminCacheLoaded ? platformAdminSecretCache : await loadPlatformAdminSecret();
   if (value) return { header: PLATFORM_ADMIN_HEADER_SECRET, value };
-  const pin = getSessionSecret();
-  return pin ? { header: PLATFORM_ADMIN_HEADER_PIN, value: pin } : null;
+  return null;
 }
 
 export function clearPlatformAdminSecretCache(): void {
@@ -558,7 +624,12 @@ export async function authedFetch(
   const makeRequest = () => {
     const token = _tokens?.accessToken;
     return fetch(url, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(providerOrganizationId
+          ? { "x-provider-organization-id": providerOrganizationId }
+          : {}),
+      },
       signal,
     });
   };
@@ -570,8 +641,42 @@ export async function authedFetch(
   return resp;
 }
 
+/**
+ * Authenticated binary-download fetch that keeps the Response body untouched.
+ * Callers can stream it to a browser file handle when supported instead of
+ * first materializing the whole response as an ArrayBuffer.
+ */
+export async function apiFetchDownloadResponse(
+  path: string,
+  options: RequestInit = {},
+  retried = false,
+): Promise<Response> {
+  const headers = new Headers(options.headers);
+  const token = _tokens?.accessToken;
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (providerOrganizationId && !headers.has("x-provider-organization-id")) {
+    headers.set("x-provider-organization-id", providerOrganizationId);
+  }
+  if (
+    isAdminApiPath(path) &&
+    !headers.has(PLATFORM_ADMIN_HEADER_SECRET) &&
+    !headers.has(PLATFORM_ADMIN_HEADER_PIN)
+  ) {
+    const cred = await getPlatformAdminSecretForRequest();
+    if (cred) headers.set(cred.header, cred.value);
+  }
+  const response = await fetchWithRetry(apiUrl(path), { ...options, headers });
+  if (response.status === 401 && !retried && _tokens?.refreshToken) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) return apiFetchDownloadResponse(path, options, true);
+  }
+  return response;
+}
+
 type ElectronMediaBridge = {
-  fetchAuthenticated: (url: string) => Promise<{
+  fetchAuthenticated: (url: string, headers?: Record<string, string>) => Promise<{
     ok: boolean;
     status: number;
     mimeType?: string;
@@ -611,7 +716,8 @@ export async function authedMediaFetch(
 ): Promise<Response> {
   const bridge = getMediaBridge();
   if (bridge) {
-    const fetchViaBridge = () => bridge.fetchAuthenticated(url);
+    const fetchViaBridge = () => bridge.fetchAuthenticated(url, providerOrganizationId
+      ? { "x-provider-organization-id": providerOrganizationId } : undefined);
     let result = await fetchViaBridge();
     if (signal?.aborted) {
       throw new DOMException("Aborted", "AbortError");
@@ -709,6 +815,9 @@ export async function apiFetch<T = unknown>(
     ...authHeader(),
     ...(options.headers as Record<string, string> | undefined),
   };
+  if (providerOrganizationId && !headers["x-provider-organization-id"]) {
+    headers["x-provider-organization-id"] = providerOrganizationId;
+  }
   if (options.body && !(options.body instanceof FormData) && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
@@ -722,6 +831,11 @@ export async function apiFetch<T = unknown>(
   }
   const url = apiUrl(path);
   const res = await fetchWithRetry(url, { ...options, headers });
+  if (import.meta.env.DEV && path === "/analyze-prescription") {
+    // Numeric stages only. Transfer/round-trip remains client wall time minus
+    // server time; it must not be mislabeled as model execution.
+    console.debug("AI Reader server stages", { serverTiming: res.headers.get("Server-Timing") });
+  }
 
   if (res.status === 401 && !retried && _tokens?.refreshToken) {
     const refreshed = await refreshAccessToken();
@@ -777,6 +891,19 @@ export async function apiFetch<T = unknown>(
 }
 
 /**
+ * Authenticated multipart helper. Keeping this separate makes it explicit that
+ * callers must not set a JSON content type (the browser supplies the boundary).
+ * It retains apiFetch's provider header and 401 refresh behavior.
+ */
+export function apiFetchFormData<T = unknown>(
+  path: string,
+  formData: FormData,
+  options: Omit<RequestInit, "method" | "body"> = {},
+): Promise<T> {
+  return apiFetch<T>(path, { ...options, method: "POST", body: formData });
+}
+
+/**
  * Like apiFetch but returns an ArrayBuffer instead of parsed JSON. Use for
  * binary download endpoints (e.g. the backup generate endpoint). Handles
  * bearer-token auth, platform-admin headers, and a single 401-refresh retry
@@ -827,8 +954,66 @@ export async function apiFetchArrayBuffer(
     throw new ApiError(msg, res.status);
   }
 
-  const buffer = await res.arrayBuffer();
+  // Old installers/browser downloads cannot allocate a multi-GB ArrayBuffer.
+  // Fail explicitly instead of crashing; current Desktop streams to disk.
+  const buffer = path.startsWith("/admin/backup/generate") && res.body
+    ? await readBoundedBackupBuffer(res)
+    : await res.arrayBuffer();
   return { buffer, headers: res.headers };
+}
+
+export async function readBoundedBackupBuffer(response: Response): Promise<ArrayBuffer> {
+  const reader = response.body!.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 256 * 1024 * 1024) {
+        throw new Error("Backup failed during browser/legacy download: this full archive is too large to hold in memory. Use the latest LabTrax Desktop and choose a backup folder to stream it directly to disk.");
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return bytes.buffer;
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export async function apiDownloadBackupToFolder(
+  folderPath: string,
+  source: "manual" | "scheduler" = "scheduler",
+  retried = false,
+): Promise<import("./local-backup-execution").LocalBackupSaved> {
+  const bridge = (window as unknown as { electronAPI?: {
+    downloadBackupToFolder?: (request: { url: string; folderPath: string; headers: Record<string, string> }) =>
+      Promise<{ ok: boolean; status?: number; error?: string; fileName?: string; path?: string; sizeBytes?: number; downloadRunId?: string }>;
+  } }).electronAPI?.downloadBackupToFolder;
+  if (!bridge) throw new Error("Install the latest LabTrax Desktop to stream large backups directly to disk.");
+  const headers: Record<string, string> = { ...authHeader() };
+  const credential = await getPlatformAdminSecretForRequest();
+  if (credential) headers[credential.header] = credential.value;
+  const result = await bridge({
+    url: apiUrl(`/admin/backup/generate?deferRecord=1${source === "manual" ? "&source=manual" : ""}`),
+    folderPath, headers,
+  });
+  if (result.status === 401 && !retried && _tokens?.refreshToken && await refreshAccessToken()) {
+    return apiDownloadBackupToFolder(folderPath, source, true);
+  }
+  if (!result.ok || !result.fileName || !result.path || !Number.isSafeInteger(result.sizeBytes)) {
+    const error = new ApiError(result.error ?? "The desktop could not verify the completed backup file.", result.status ?? 0);
+    error.downloadRunId = result.downloadRunId;
+    throw error;
+  }
+  return { fileName: result.fileName, path: result.path, sizeBytes: result.sizeBytes!, downloadRunId: result.downloadRunId };
 }
 
 export interface UploadWithProgressOptions {
@@ -1141,17 +1326,8 @@ export async function login(username: string, password: string, rememberMe = tru
       }),
     });
   } catch {
-    // Surface the URL the renderer tried to reach so a tech-support
-    // screenshot is enough to diagnose the problem. An empty origin means
-    // the installer was built without VITE_API_BASE_URL and the request
-    // resolved against the `app://labtrax` renderer origin (which can't
-    // serve /api/...) — that needs a fresh build, not a network retry.
-    const origin = getApiOrigin();
-    const detail = origin
-      ? ` (tried ${origin}/api/auth/login)`
-      : " (this installer was built without an API server URL — please reinstall the latest LabTrax Desktop)";
     throw new ApiError(
-      `Can't reach the LabTrax server. Check your internet connection and try again.${detail}`,
+      `Can't reach the LabTrax server. Check your internet connection and try again.${unreachableDetail("/auth/login")}`,
       0,
     );
   }
@@ -1178,6 +1354,8 @@ export async function login(username: string, password: string, rememberMe = tru
 }
 
 export interface RegisterPayload {
+  providerPlan?: import("@workspace/api-client-react").ProviderSignupTier;
+  reuseSubscriptionCard?: boolean;
   username: string;
   password: string;
   email: string;
@@ -1188,11 +1366,14 @@ export interface RegisterPayload {
   practiceName?: string;
   doctorName?: string;
   practiceAddress?: string;
+  /** Structured organization address for new lab/practice creation. */
+  address?: { line1: string; city: string; state: string; zip: string };
   practicePhone?: string;
   phoneContactName?: string;
   role?: "user" | "admin";
   accountNumber?: string;
   joinOrganizationId?: string;
+  partnerLabSelections?: string[];
   createOrganization?: boolean;
   claimProvider?: { labId: string; accountNumber: string };
 }
@@ -1213,12 +1394,8 @@ export async function register(payload: RegisterPayload): Promise<RegisterResult
       body: JSON.stringify({ ...payload, clientType: "desktop" }),
     });
   } catch {
-    const origin = getApiOrigin();
-    const detail = origin
-      ? ` (tried ${origin}/api/auth/register)`
-      : " (this installer was built without an API server URL — please reinstall the latest LabTrax Desktop)";
     throw new ApiError(
-      `Can't reach the LabTrax server. Check your internet connection and try again.${detail}`,
+      `Can't reach the LabTrax server. Check your internet connection and try again.${unreachableDetail("/auth/register")}`,
       0,
     );
   }
@@ -1245,6 +1422,7 @@ export async function register(payload: RegisterPayload): Promise<RegisterResult
 
 export interface LabGroup {
   organizationId: string;
+  selectionKey?: string;
   practiceName: string;
   username: string;
   practiceAddress: string;
@@ -1260,6 +1438,22 @@ export async function fetchLabGroups(): Promise<LabGroup[]> {
 }
 
 export interface LabLookupResult {
+  /** Encrypted, short-lived join reference for public signup (not an org ID). */
+  id: string;
+  selectionKey?: string;
+  displayName: string;
+  city: string | null;
+  state: string | null;
+}
+
+export async function lookupLabs(query: string): Promise<LabLookupResult[]> {
+  const r = await fetch(apiUrl(`/labs/lookup?q=${encodeURIComponent(query)}`));
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(body?.error || "Lab lookup failed", r.status);
+  return Array.isArray(body?.labs) ? (body.labs as LabLookupResult[]) : [];
+}
+
+export interface PracticeLookupResult {
   id: string;
   name: string;
   displayName: string;
@@ -1268,13 +1462,16 @@ export interface LabLookupResult {
   state: string | null;
   zip: string | null;
   phone: string | null;
+  parentLabName: string | null;
 }
 
-export async function lookupLabs(query: string): Promise<LabLookupResult[]> {
-  const r = await fetch(apiUrl(`/labs/lookup?q=${encodeURIComponent(query)}`));
+// Public practice search used by the signup wizard's "join an existing
+// practice" flow (provider counterpart of lookupLabs).
+export async function lookupPractices(query: string): Promise<PracticeLookupResult[]> {
+  const r = await fetch(apiUrl(`/practices/lookup?q=${encodeURIComponent(query)}`));
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new ApiError(body?.error || "Lab lookup failed", r.status);
-  return Array.isArray(body?.labs) ? (body.labs as LabLookupResult[]) : [];
+  if (!r.ok) throw new ApiError(body?.error || "Practice lookup failed", r.status);
+  return Array.isArray(body?.practices) ? (body.practices as PracticeLookupResult[]) : [];
 }
 
 export async function sendEmailVerificationCode(email: string): Promise<{ demoCode?: string }> {
@@ -1334,7 +1531,14 @@ export async function checkUsernameAvailable(username: string): Promise<boolean>
   return !!body?.available;
 }
 
+const SHARED_TEST_EMAIL = "shared-test@example.com";
+
+export function isSharedTestEmail(email: string): boolean {
+  return email.trim().toLowerCase() === SHARED_TEST_EMAIL;
+}
+
 export async function checkEmailAvailable(email: string): Promise<boolean> {
+  if (isSharedTestEmail(email)) return true;
   const r = await fetch(apiUrl(`/auth/check-email?email=${encodeURIComponent(email)}`), {
     method: "GET",
   });
@@ -1352,6 +1556,7 @@ export async function logout(): Promise<void> {
     /* swallow */
   }
   persistTokens(null);
+  providerOrganizationId = null;
   // Drop the in-memory platform-admin secret on logout so a follow-up sign-in
   // by a different user doesn't carry the previous user's elevated header.
   // The encrypted blob on disk is preserved.

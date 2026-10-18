@@ -1,14 +1,23 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { setupMessengerWebSocket } from "./lib/messenger-ws";
 import { scheduleVendorLinkBackfillIfNeeded } from "./lib/vendor-link-backfill";
 import { scheduleLabInboxStorageRepair } from "./lib/lab-inbox-storage-repair";
+import { scheduleExpectedDeliveryDateBackfillIfNeeded } from "./lib/expected-delivery-date-backfill";
+import { scheduleRemovableRestorationCollapseBackfillIfNeeded } from "./lib/removable-restoration-collapse-backfill";
 import { ensureDbConstraints } from "./lib/db-constraints";
+import { migrateDraftInvoicesToOpen } from "./lib/migrate-draft-invoices";
+import { migrateInvoiceIssuedAt } from "./lib/migrate-invoice-issued-at";
 import {
   ensureLegacyCaseMediaTable,
   backfillLegacyCaseMedia,
-  startDailyOrphanedMediaCleanup,
 } from "./lib/case-media";
+import {
+  ensureLabCaseProjection,
+  scheduleLabCaseProjectionBackfillIfNeeded,
+} from "./lib/lab-case-projection";
+import { attachCaseEventsWebSocketServer } from "./lib/case-events-ws";
+import { scheduleRecentCaseInvoiceRepair } from "./lib/ai-intake-invoice-repair";
+import { registerHistoricalStartupJobs } from "./lib/startup-maintenance";
 
 const rawPort = process.env["PORT"];
 
@@ -61,9 +70,59 @@ const server = app.listen(port, (err) => {
 
   process.stderr.write(`[startup] server listening on port ${port}\n`);
   logger.info({ port }, "Server listening");
-  scheduleVendorLinkBackfillIfNeeded();
-  scheduleLabInboxStorageRepair();
-  startDailyOrphanedMediaCleanup();
+  attachCaseEventsWebSocketServer(server);
+  const historicalMaintenance = registerHistoricalStartupJobs([
+    { name: "vendor transaction linking", schedule: scheduleVendorLinkBackfillIfNeeded },
+    { name: "lab inbox storage normalization", schedule: scheduleLabInboxStorageRepair },
+    { name: "expected delivery date clearing", schedule: scheduleExpectedDeliveryDateBackfillIfNeeded },
+    { name: "removable restoration collapse", schedule: scheduleRemovableRestorationCollapseBackfillIfNeeded },
+    { name: "recent case invoice reconstruction", schedule: scheduleRecentCaseInvoiceRepair },
+    {
+      name: "legacy draft invoice conversion",
+      schedule: () => {
+        void migrateDraftInvoicesToOpen().catch((err) => {
+          process.stderr.write(
+            `[startup] draft-invoice migration failed (server still running): ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          );
+          logger.error({ err }, "migrate-draft-invoices failed");
+        });
+      },
+    },
+    {
+      name: "historical invoice issue-date fill",
+      schedule: () => {
+        void migrateInvoiceIssuedAt().catch((err) => {
+          process.stderr.write(
+            `[startup] invoice issued_at migration failed (server still running): ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          );
+          logger.error({ err }, "migrate-invoice-issued-at failed");
+        });
+      },
+    },
+    {
+      name: "legacy case media ledger repair and trash restoration",
+      schedule: () => {
+        void backfillLegacyCaseMedia().catch((err) => {
+          process.stderr.write(
+            `[startup] legacy_case_media backfill failed (server still running): ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          );
+          logger.error({ err }, "legacy_case_media backfill failed");
+        });
+      },
+    },
+  ]);
+  if (historicalMaintenance.deferred.length > 0) {
+    logger.warn(
+      { jobs: historicalMaintenance.deferred, nodeEnv: process.env.NODE_ENV ?? null },
+      "Historical startup maintenance deferred; production and ambiguous environments do not rewrite existing records or media",
+    );
+  }
 
   // Fire-and-forget DB constraint installation. Logs loudly on failure
   // but does NOT crash the process — the app worked for months without
@@ -81,29 +140,48 @@ const server = app.listen(port, (err) => {
     );
   });
 
-  // Fire-and-forget: ensure the legacy_case_media ledger table exists, then
-  // backfill it from existing lab_cases and recover any legacy media files a
-  // prior orphan-cleanup moved to .trash/. Restores blank legacy-case photos
-  // on deploy with no manual migration. Never gates the listener or crashes.
-  ensureLegacyCaseMediaTable()
-    .then(() => backfillLegacyCaseMedia())
-    .then((r) =>
-      logger.info(r, "legacy_case_media: ensure + backfill complete"),
-    )
+  // Fire-and-forget: install the legacy-case list projection (columns,
+  // trigger, list indexes) and then backfill rows written before it existed.
+  // Both lists fall back to parsing `case_data` for any row without a current
+  // projection, so a failure here costs speed, never correctness.
+  ensureLabCaseProjection()
+    .then((installed) => {
+      logger.info(
+        { installed },
+        installed
+          ? "lab_cases projection: installed current columns, triggers and indexes"
+          : "lab_cases projection: database already has current or newer rules",
+      );
+      scheduleLabCaseProjectionBackfillIfNeeded();
+    })
     .catch((err) => {
       process.stderr.write(
-        `[startup] legacy_case_media ensure/backfill failed (server still running): ${
+        `[startup] lab_cases projection setup failed (server still running): ${
           err instanceof Error ? err.message : String(err)
         }\n`,
       );
       logger.error(
         { err },
-        "legacy_case_media ensure/backfill failed — legacy-case photos may remain blank until next successful run",
+        "lab_cases projection setup failed — case lists still work but fall back to parsing case_data",
+      );
+    });
+
+  // This additive table/index setup is safe to run during startup. The
+  // historical backfill and trash restoration are separately deferred above.
+  ensureLegacyCaseMediaTable()
+    .then(() => logger.info("legacy_case_media: additive table/index setup complete"))
+    .catch((err) => {
+      process.stderr.write(
+        `[startup] legacy_case_media additive table/index setup failed (server still running): ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+      logger.error(
+        { err },
+        "legacy_case_media additive setup failed — the existing media references and files were not changed",
       );
     });
 });
-
-setupMessengerWebSocket(server);
 
 function shutdown(signal: string) {
   logger.info({ signal }, "Received shutdown signal, closing server");

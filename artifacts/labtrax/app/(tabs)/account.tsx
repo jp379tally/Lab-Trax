@@ -8,17 +8,23 @@ import {
   Alert,
   Switch,
   Image,
+  ActivityIndicator,
 } from "react-native";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/lib/auth-context";
+import { useCreatorAccess } from "@/lib/creator";
 import { useMe } from "@/lib/auth-me";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { SettingsSection, SettingsRow } from "@/components/settings/SettingsRow";
+import { MyPermissionsCard } from "@/components/settings/MyPermissionsCard";
 import { resilientFetch } from "@/lib/query-client";
+import { useProfilePhotoUpload } from "@/lib/use-profile-photo-upload";
+import { useProfilePhoto } from "@/lib/use-profile-photo";
+import { useInAppNotifications } from "@/lib/in-app-notifications";
 import { isBackupOverdue } from "../settings/backup";
 
 function push(path: string) {
@@ -29,16 +35,39 @@ export default function AccountScreen() {
   const insets = useSafeAreaInsets();
   const { colors, isDark, setMode } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const { currentUser, userType, logout, profilePicUri } = useAuth();
-  const me = useMe();
+  const { currentUser, userType, logout } = useAuth();
+  const me = useMe(true);
+  const notifications = useInAppNotifications();
 
   const user = me.data?.user as any;
+  const { photoUrl, onPhotoError } = useProfilePhoto(user);
+  const { pickAndUploadPhoto, isUploading: isPhotoUploading } = useProfilePhotoUpload(user?.id);
   const fullName = [user?.firstName, user?.lastName].filter(Boolean).join(" ");
   const displayName = fullName || currentUser || "Account";
   const displayRole = user?.role || userType || "user";
   const avatarLetter = displayName.charAt(0).toUpperCase() || "A";
 
   const isAdmin = (user?.role === "admin") || (userType === "master_admin");
+    const isCreator = useCreatorAccess().data?.isCreator === true;
+  const isLabMember = (me.data?.memberships as any[] | undefined)?.some(
+    (m: any) => m.organization?.type === "lab" || m.organization?.type === "dental_lab",
+  ) ?? false;
+  const isProviderAdmin = (me.data?.memberships as any[] | undefined)?.some(
+    (m: any) =>
+      m.organization?.type === "provider" &&
+      (m.role === "owner" || m.role === "admin"),
+  ) ?? false;
+  const isProvider = (me.data?.memberships as any[] | undefined)?.some(
+    (m: any) =>
+      m.status === "active" &&
+      (m.organization?.type ?? "").toLowerCase() === "provider",
+  ) ?? false;
+  const hasSharedAccountUpdate = notifications.items.some(
+    (item) =>
+      !item.readAt &&
+      (item.type === "provider_account_change_requested" ||
+        item.type === "provider_account_change_decided"),
+  );
 
   const backupOverdueQuery = useQuery({
     queryKey: ["admin", "backup-overdue-status"],
@@ -71,28 +100,44 @@ export default function AccountScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* Profile HUD */}
-        <Pressable
-          style={[styles.profileCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-          onPress={() => push("/settings/profile")}
-        >
-          {profilePicUri ? (
-            <Image source={{ uri: profilePicUri }} style={styles.avatar} />
-          ) : (
-            <View style={[styles.avatar, { backgroundColor: colors.tint + "20" }]}>
-              <Text style={[styles.avatarText, { color: colors.tint }]}>{avatarLetter}</Text>
+        <View style={[styles.profileCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <Pressable
+            onPress={pickAndUploadPhoto}
+            disabled={isPhotoUploading}
+            style={styles.avatarWrap}
+            accessibilityLabel="Change profile photo"
+          >
+            {photoUrl ? (
+              <Image key={photoUrl} source={{ uri: photoUrl }} style={styles.avatar} onError={onPhotoError} />
+            ) : (
+              <View style={[styles.avatar, { backgroundColor: colors.tint + "20" }]}>
+                <Text style={[styles.avatarText, { color: colors.tint }]}>{avatarLetter}</Text>
+              </View>
+            )}
+            <View style={[styles.avatarBadge, { backgroundColor: colors.tint, borderColor: colors.surface }]}>
+              {isPhotoUploading ? (
+                <ActivityIndicator size={9} color="#fff" />
+              ) : (
+                <Ionicons name="camera" size={11} color="#fff" />
+              )}
             </View>
-          )}
-          <View style={styles.profileInfo}>
-            <Text style={[styles.profileName, { color: colors.text }]} numberOfLines={1}>
-              {displayName}
-            </Text>
-            <Text style={[styles.profileRole, { color: colors.textSecondary }]} numberOfLines={1}>
-              {user?.email ? `${user.email} · ` : ""}
-              <Text style={{ textTransform: "capitalize" }}>{displayRole}</Text>
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
-        </Pressable>
+          </Pressable>
+          <Pressable
+            style={styles.profileInfoRow}
+            onPress={() => push("/settings/profile")}
+          >
+            <View style={styles.profileInfo}>
+              <Text style={[styles.profileName, { color: colors.text }]} numberOfLines={1}>
+                {displayName}
+              </Text>
+              <Text style={[styles.profileRole, { color: colors.textSecondary }]} numberOfLines={1}>
+                {user?.email ? `${user.email} · ` : ""}
+                <Text style={{ textTransform: "capitalize" }}>{displayRole}</Text>
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
+          </Pressable>
+        </View>
 
         {/* Personal section */}
         <SettingsSection title="Personal">
@@ -139,8 +184,56 @@ export default function AccountScreen() {
             title="Notifications"
             subtitle="Choose what you're notified about"
             onPress={() => push("/settings/notifications")}
+            badge={hasSharedAccountUpdate}
+          />
+          {isProvider && (
+            <SettingsRow
+              icon="card-outline"
+              iconColor="#0F766E"
+              iconBg="#0F766E20"
+              title="Billing"
+              subtitle="Shared card, auto-pay, and lab payments"
+              onPress={() => push("/settings/provider-billing")}
+              testID="provider-billing-row"
+              badge={hasSharedAccountUpdate}
+            />
+          )}
+          {user?.userType === "provider" && (
+            <SettingsRow
+              icon="options-outline"
+              iconColor="#0EA5E9"
+              iconBg="#0EA5E920"
+              title="Doctor Preferences"
+              subtitle="Fabrication and case-question preferences"
+              onPress={() => push("/settings/doctor-preferences")}
+            />
+          )}
+          {(isLabMember || isProviderAdmin) && (
+            <SettingsRow
+              icon="bookmark-outline"
+              iconColor="#8B5CF6"
+              iconBg="#8B5CF620"
+              title={isLabMember ? "Lab Preferences" : "Note Templates"}
+              subtitle={
+                isLabMember
+                  ? "Quick reference note templates & default turnaround"
+                  : "Manage your practice's quick reference note templates"
+              }
+              onPress={() => push("/settings/lab-preferences")}
+            />
+          )}
+          <SettingsRow
+            icon="calendar-outline"
+            iconColor="#10b981"
+            iconBg="#10b98120"
+            title="Vacation & Time Off"
+            subtitle="View balance and submit requests"
+            onPress={() => push("/settings/vacation")}
           />
         </SettingsSection>
+
+        {/* My Permissions — non-owner/non-admin lab members only */}
+        <MyPermissionsCard />
 
         {/* Appearance */}
         <SettingsSection title="Appearance">
@@ -213,14 +306,6 @@ export default function AccountScreen() {
               onPress={() => push("/settings/mobile-app")}
             />
             <SettingsRow
-              icon="card-outline"
-              iconColor="#F59E0B"
-              iconBg="#F59E0B20"
-              title="Subscriptions"
-              subtitle="Organization billing and subscription status"
-              onPress={() => push("/settings/subscriptions")}
-            />
-            <SettingsRow
               icon="shield-outline"
               iconColor="#EF4444"
               iconBg="#EF444420"
@@ -241,6 +326,20 @@ export default function AccountScreen() {
             />
           </SettingsSection>
         )}
+
+        {isCreator && (
+          <SettingsSection title="Creator">
+            <SettingsRow
+              icon="diamond-outline"
+              iconColor="#F59E0B"
+              iconBg="#F59E0B20"
+              title="Creator Dashboard"
+              subtitle="Revenue, feedback inbox, and subscriptions"
+              onPress={() => push("/settings/creator")}
+            />
+          </SettingsSection>
+        )}
+
 
         {/* About */}
         <SettingsSection title="About">
@@ -299,6 +398,9 @@ function makeStyles(c: ThemeColors) {
       borderRadius: Radius.lg,
       borderWidth: StyleSheet.hairlineWidth,
     },
+    avatarWrap: {
+      position: "relative",
+    },
     avatar: {
       width: 52,
       height: 52,
@@ -307,6 +409,23 @@ function makeStyles(c: ThemeColors) {
       justifyContent: "center",
     },
     avatarText: { ...Typography.h2 },
+    avatarBadge: {
+      position: "absolute",
+      bottom: -2,
+      right: -2,
+      width: 20,
+      height: 20,
+      borderRadius: Radius.full,
+      borderWidth: 2,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    profileInfoRow: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.md,
+    },
     profileInfo: { flex: 1 },
     profileName: { ...Typography.h3 },
     profileRole: { ...Typography.caption, marginTop: 2 },

@@ -3,9 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "codegen": "orval --config ./orval.config.ts && pnpm -w run typecheck:libs"
+    "generate:remake-reason-enum": "node --experimental-strip-types ./generate-remake-reason-enum.mjs",
+    "codegen": "pnpm run generate:remake-reason-enum && orval --config ./orval.config.ts && node ./fix-zod-constant-order.mjs && pnpm --filter @workspace/scripts run check-generated-api-exports -- --write-fingerprint && pnpm -w run typecheck:libs"
   },
   "devDependencies": {
-    "orval": "^8.5.2"
+    "orval": "8.22.0"
   }
 }

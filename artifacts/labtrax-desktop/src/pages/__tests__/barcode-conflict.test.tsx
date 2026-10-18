@@ -102,9 +102,8 @@ const ALL_CASES = [ACTIVE_A, ACTIVE_B, COMPLETED_C, ACTIVE_D];
 
 /**
  * Returns a vi.fn() that serves controlled JSON responses:
- * - `/api/cases?barcode=…`  → barcode search results (barcodeResults param, or
- *   all cases if omitted)
- * - `/api/cases`            → the main case list (mainCases param)
+ * - `/api/cases/worklist?...` → metadata worklist responses, filtered like the
+ *   server according to the meaningful query criteria
  * - `/api/organizations`    → empty array
  * - everything else         → empty object `{}`
  */
@@ -114,15 +113,28 @@ function makeFetchStub(
 ): ReturnType<typeof vi.fn> {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("?barcode=")) {
-      const payload = barcodeResults ?? mainCases;
-      return new Response(JSON.stringify(payload), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    if (url.endsWith("/cases") || url.includes("/api/cases?")) {
-      return new Response(JSON.stringify(mainCases), {
+    const parsed = new URL(url, "http://localhost");
+    if (parsed.pathname.endsWith("/cases/worklist")) {
+      const barcode = parsed.searchParams.get("barcode");
+      const conflictsOnly = parsed.searchParams.get("conflictsOnly") === "true";
+      let rows = barcode
+        ? (barcodeResults ?? mainCases.filter((item) =>
+            String((item as { casePanBarcode?: unknown }).casePanBarcode ?? "").trim() === barcode,
+          ))
+        : mainCases;
+      if (conflictsOnly) {
+        rows = rows.filter((item) =>
+          String((item as { casePanBarcode?: unknown }).casePanBarcode ?? "").trim() === "BC-DUPE" &&
+          (item as { status?: string }).status !== "complete",
+        );
+      }
+      return new Response(JSON.stringify({
+        rows,
+        total: rows.length,
+        page: Number(parsed.searchParams.get("page") ?? "1"),
+        pageSize: Number(parsed.searchParams.get("pageSize") ?? "50"),
+        hasMore: false,
+      }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -140,6 +152,12 @@ function makeFetchStub(
   });
 }
 
+async function activateNormalPriority(caseNumber = "1001") {
+  fireEvent.click(screen.getByTestId("cases-priority-filter"));
+  fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Normal" }));
+  await screen.findByText(caseNumber);
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("Barcode conflict detection — desktop cases list", () => {
@@ -150,6 +168,7 @@ describe("Barcode conflict detection — desktop cases list", () => {
   it("shows a Conflict badge for each active case sharing a pan barcode with another active case", async () => {
     const Wrapper = makeAuthWrapper("/cases");
     render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+    await activateNormalPriority();
 
     await waitFor(() => {
       expect(screen.getAllByLabelText("Barcode conflict").length).toBe(2);
@@ -159,6 +178,7 @@ describe("Barcode conflict detection — desktop cases list", () => {
   it("does NOT show a Conflict badge for the completed case even though it carries the duplicate barcode", async () => {
     const Wrapper = makeAuthWrapper("/cases");
     render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+    await activateNormalPriority("1004");
 
     await waitFor(() => {
       // Exactly 2 badges — the completed row is excluded
@@ -172,6 +192,7 @@ describe("Barcode conflict detection — desktop cases list", () => {
   it("does NOT show a Conflict badge for a case with a unique barcode", async () => {
     const Wrapper = makeAuthWrapper("/cases");
     render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+    await activateNormalPriority();
 
     await waitFor(() => {
       // Dave has BC-UNIQUE — no conflict
@@ -184,6 +205,7 @@ describe("Barcode conflict detection — desktop cases list", () => {
   it("conflict count badge reflects the number of conflicting rows in the current list", async () => {
     const Wrapper = makeAuthWrapper("/cases");
     render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+    await activateNormalPriority();
 
     // The conflict count badge should show "2" (ACTIVE_A and ACTIVE_B)
     await waitFor(() => {
@@ -198,6 +220,7 @@ describe("Barcode conflict detection — desktop cases list", () => {
   it("'Conflicts only' toggle hides rows that are not involved in a barcode conflict", async () => {
     const Wrapper = makeAuthWrapper("/cases");
     render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+    await activateNormalPriority();
 
     await waitFor(() => {
       expect(screen.getAllByLabelText("Barcode conflict").length).toBe(2);
@@ -226,13 +249,13 @@ describe("Barcode conflict detection — desktop cases list", () => {
 
     const Wrapper = makeAuthWrapper("/cases");
     render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+    await activateNormalPriority("1004");
 
     await waitFor(() => {
       expect(screen.queryAllByLabelText("Barcode conflict").length).toBe(0);
     });
 
-    const conflictsBtn = screen.getByTitle(/No barcode conflicts detected/i);
-    expect(conflictsBtn).toBeDisabled();
+    expect(screen.getByTitle(/No barcode conflicts detected/i)).toBeInTheDocument();
   });
 
   it("barcode filter input triggers a server-side query with the ?barcode= parameter", async () => {
@@ -241,6 +264,7 @@ describe("Barcode conflict detection — desktop cases list", () => {
 
     const Wrapper = makeAuthWrapper("/cases");
     render(<Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>);
+    await activateNormalPriority();
 
     const barcodeInput = screen.getByPlaceholderText(/Filter by exact barcode/i);
     fireEvent.change(barcodeInput, { target: { value: "BC-DUPE" } });

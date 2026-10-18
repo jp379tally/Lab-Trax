@@ -1,24 +1,44 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Building2, ChevronDown, ChevronRight, DollarSign, GitMerge, Loader2, Mail, MailX, Plus, Search, Send, Stethoscope, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
+import { Archive, ArchiveRestore, AtSign, Building2, Check, ChevronDown, ChevronRight, DollarSign, GitMerge, Loader2, Mail, MailX, Pencil, Phone, Plus, Search, Send, Star, Stethoscope, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
 import {
   getListUnassignedDoctorsQueryKey,
   useListUnassignedDoctors,
 } from "@workspace/api-client-react";
+import type {
+  SharedProviderAccountChange,
+  SharedProviderAccountData,
+  SharedProviderContactChanges,
+} from "@workspace/api-client-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
-import { formatMoney, formatPhone, relativeTime } from "@/lib/format";
+import type { DoctorEmailEntry, DoctorEmailLabel, DoctorPhoneEntry, DoctorPhoneType, DoctorProfile, Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
+import { formatDate, formatDateTime, formatMoney, formatPhone, relativeTime } from "@/lib/format";
 import { ColumnTotal } from "@/components/ColumnTotal";
+import { formatAccountNumberForDisplay } from "@workspace/account-number";
 
 import { DEFAULT_PRICE_KEYS, priceKeyLabel } from "@/lib/pricing-keys";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { RemoveDoctorDialog } from "@/components/RemoveDoctorDialog";
+import {
+  DoctorMatchNotice,
+  useDoctorMatchPreview,
+  type DoctorMatchRow,
+} from "@/components/DoctorMatchWarning";
 import { toast } from "@/hooks/use-toast";
 import {
   DETAIL_TABS,
   type DetailTab,
   InvoicesTab,
   StatementsTab,
+  CustomerStatementChargesTab,
   CardOnFileTab,
 } from "@/components/customer-detail-tabs";
 
@@ -67,9 +87,21 @@ interface PracticeInvite {
   emailDelivery?: PracticeInviteEmailDelivery;
 }
 
+/**
+ * Message shown when the mail server rejected the SMTP login (reason
+ * `auth_failed`) — actionable, unlike the generic "failed to send".
+ */
+export const SMTP_AUTH_FAILED_MESSAGE =
+  "Email provider rejected the login — update the SMTP credentials in Secrets.";
+
 /** Human-readable label for a failed/skipped invite email delivery. */
-function practiceInviteDeliveryProblem(inv: PracticeInvite): string | null {
+export function practiceInviteDeliveryProblem(
+  inv: Pick<PracticeInvite, "lastEmailStatus" | "lastEmailError">
+): string | null {
   if (inv.lastEmailStatus === "failed") {
+    if (inv.lastEmailError === "auth_failed") {
+      return SMTP_AUTH_FAILED_MESSAGE;
+    }
     return "Invite email failed to send";
   }
   if (inv.lastEmailStatus === "skipped") {
@@ -102,8 +134,8 @@ export function resolvePracticeLabDupThreshold(
 // Normalize a practice name before similarity scoring. In addition to the
 // common-word stripping, this removes import-specific noise so brand-prefixed /
 // code-suffixed duplicates (e.g. an iTero import named
-// "Heartland Dental - Family Dentistry at SouthWood [565]") cluster with their
-// manually-created twin ("Family Dentistry at SouthWood"):
+// "Sample Dental Group - Riverbend Family Dental [101]") cluster with their
+// manually-created twin ("Riverbend Family Dental"):
 //   - a leading brand/lab prefix terminated by " - "
 //   - trailing bracketed code(s) like "[565]"
 // Kept in sync with `_normalizePracticeForSim` in the API server cases route.
@@ -300,13 +332,18 @@ export default function PracticesPage() {
         "/organizations?includeArchived=true&includeLabPractices=true"
       ),
   });
-  const casesQuery = useQuery({
-    queryKey: ["cases"],
-    queryFn: () => apiFetch<LabCase[]>("/cases"),
-  });
-  const invoicesQuery = useQuery({
-    queryKey: ["invoices"],
-    queryFn: () => apiFetch<Invoice[]>("/invoices"),
+  const summaryQuery = useQuery({
+    queryKey: ["customer-center-summary"],
+    queryFn: () => apiFetch<Array<{
+      providerOrganizationId: string;
+      caseCount: number;
+      openBalance: number;
+      totalBilled: number;
+      invoiceCount: number;
+      allPaid: boolean;
+      allDeposited: boolean;
+      anyOverdue: boolean;
+    }>>("/cases/customer-center-summary"),
   });
 
   const [search, setSearch] = useState("");
@@ -391,26 +428,13 @@ export default function PracticesPage() {
   const adminLabOrgIdsSet = useMemo(() => new Set(adminLabOrgIds), [adminLabOrgIds]);
 
   const orgs = orgsQuery.data ?? [];
-  const cases = casesQuery.data ?? [];
-  const invoices = invoicesQuery.data ?? [];
-
-  const stats = useMemo(() => {
-    const map = new Map<string, { caseCount: number; openBalance: number; totalBilled: number }>();
-    for (const c of cases) {
-      const id = c.providerOrganizationId;
-      const cur = map.get(id) ?? { caseCount: 0, openBalance: 0, totalBilled: 0 };
-      cur.caseCount += 1;
-      map.set(id, cur);
-    }
-    for (const inv of invoices) {
-      const id = inv.providerOrganizationId;
-      const cur = map.get(id) ?? { caseCount: 0, openBalance: 0, totalBilled: 0 };
-      cur.totalBilled += Number(inv.total ?? 0);
-      cur.openBalance += Number(inv.balanceDue ?? 0);
-      map.set(id, cur);
-    }
-    return map;
-  }, [cases, invoices]);
+  const stats = useMemo(
+    () => new Map((summaryQuery.data ?? []).map((summary) => [
+      summary.providerOrganizationId,
+      summary,
+    ])),
+    [summaryQuery.data],
+  );
 
   const archivedCount = useMemo(
     () => orgs.filter((o) => !!o.deletedAt).length,
@@ -491,7 +515,7 @@ export default function PracticesPage() {
     });
   };
 
-  const isLoading = orgsQuery.isLoading;
+  const isLoading = orgsQuery.isLoading || summaryQuery.isLoading;
   const error = orgsQuery.error as Error | null;
 
   return (
@@ -773,7 +797,7 @@ export default function PracticesPage() {
                   Billed
                   <ColumnTotal
                     values={filtered.map((o) => stats.get(o.id)?.totalBilled ?? 0)}
-                    loading={isLoading || invoicesQuery.isLoading}
+                    loading={isLoading || summaryQuery.isLoading}
                     testId="column-total-billed"
                   />
                 </th>
@@ -781,7 +805,7 @@ export default function PracticesPage() {
                   Open balance
                   <ColumnTotal
                     values={filtered.map((o) => stats.get(o.id)?.openBalance ?? 0)}
-                    loading={isLoading || invoicesQuery.isLoading}
+                    loading={isLoading || summaryQuery.isLoading}
                     testId="column-total-open-balance"
                   />
                 </th>
@@ -809,7 +833,7 @@ export default function PracticesPage() {
                 </tr>
               )}
               {filtered.map((o) => {
-                const s = stats.get(o.id) ?? { caseCount: 0, openBalance: 0, totalBilled: 0 };
+                const s = stats.get(o.id) ?? { caseCount: 0, openBalance: 0, totalBilled: 0, invoiceCount: 0, allPaid: true, allDeposited: true, anyOverdue: false };
                 return (
                   <tr
                     key={o.id}
@@ -858,7 +882,17 @@ export default function PracticesPage() {
                       {[o.city, o.state].filter(Boolean).join(", ") || "—"}
                     </td>
                     <td className="py-3 text-right tabular-nums">{s.caseCount}</td>
-                    <td className="py-3 text-right tabular-nums">{formatMoney(s.totalBilled)}</td>
+                    <td className="py-3 text-right tabular-nums">
+                      {s.invoiceCount > 0 && s.allPaid && s.allDeposited ? (
+                        <span className="text-success font-medium">Paid</span>
+                      ) : s.invoiceCount > 0 && s.allPaid ? (
+                        <span className="text-warning font-medium">{formatMoney(s.totalBilled)}</span>
+                      ) : s.anyOverdue ? (
+                        <span className="text-destructive font-medium">{formatMoney(s.totalBilled)}</span>
+                      ) : (
+                        formatMoney(s.totalBilled)
+                      )}
+                    </td>
                     <td className="px-5 py-3 text-right tabular-nums">
                       {s.openBalance > 0 ? (
                         <span className="text-warning font-medium">{formatMoney(s.openBalance)}</span>
@@ -990,6 +1024,12 @@ interface NewDoctorRow {
   lastName: string;
   email: string;
   phone: string;
+  phoneType: DoctorPhoneType;
+  /**
+   * Accounts the pre-submit check offered for this row that the admin
+   * explicitly called a different person (Task #4398).
+   */
+  distinctFromUserIds: string[];
 }
 
 interface CreatedDoctor {
@@ -998,6 +1038,29 @@ interface CreatedDoctor {
   lastName: string | null;
   email: string | null;
   platformAccountNumber: string | null;
+}
+
+/**
+ * A doctor who already had a provider account: the server attached that
+ * account to the practice instead of minting a second one (Task #4372).
+ * `matchedOn` says which identity signal matched.
+ */
+interface ReusedDoctor extends CreatedDoctor {
+  index: number;
+  matchedOn: "email" | "phone" | "name";
+}
+
+interface AddDoctorsResponse {
+  created: CreatedDoctor[];
+  reused: ReusedDoctor[];
+  skipped: { index: number; reason: string }[];
+}
+
+/** Account number for display — the placeholder keeps the copy readable. */
+function formatAccountNumber(n: string | null | undefined): string {
+  return n && n.trim()
+    ? `#${formatAccountNumberForDisplay(n.trim()).replace(/^#/, "")}`
+    : "on file";
 }
 
 export function AddPracticeDialog({
@@ -1029,10 +1092,9 @@ export function AddPracticeDialog({
     parentLabOrganizationId: adminLabOrgIds[0] ?? "",
   });
   const [doctors, setDoctors] = useState<NewDoctorRow[]>([]);
-  const [doctorResults, setDoctorResults] = useState<{
-    created: CreatedDoctor[];
-    skipped: { index: number; reason: string }[];
-  } | null>(null);
+  const [doctorResults, setDoctorResults] = useState<AddDoctorsResponse | null>(
+    null,
+  );
   const [creatingDoctors, setCreatingDoctors] = useState(false);
   // Once the practice itself is created, lock the practice form and switch
   // the CTA to "retry doctors" so a second submit can't create a duplicate
@@ -1040,14 +1102,45 @@ export function AddPracticeDialog({
   const [createdOrgId, setCreatedOrgId] = useState<string | null>(null);
 
   function addDoctorRow() {
-    setDoctors((rows) => [...rows, { firstName: "", lastName: "", email: "", phone: "" }]);
+    setDoctors((rows) => [
+      ...rows,
+      {
+        firstName: "",
+        lastName: "",
+        email: "",
+        phone: "",
+        phoneType: "main",
+        distinctFromUserIds: [],
+      },
+    ]);
   }
-  function updateDoctorRow(idx: number, key: keyof NewDoctorRow, value: string) {
+  function updateDoctorRow(idx: number, key: "firstName" | "lastName" | "email" | "phone" | "phoneType", value: string) {
     setDoctors((rows) => rows.map((r, i) => (i === idx ? { ...r, [key]: value } : r)));
+  }
+  function setDoctorRowDistinct(idx: number, userId: string | null) {
+    setDoctors((rows) =>
+      rows.map((r, i) => {
+        if (i !== idx) return r;
+        if (userId === null) return { ...r, distinctFromUserIds: [] };
+        if (r.distinctFromUserIds.includes(userId)) return r;
+        return { ...r, distinctFromUserIds: [...r.distinctFromUserIds, userId] };
+      }),
+    );
   }
   function removeDoctorRow(idx: number) {
     setDoctors((rows) => rows.filter((_, i) => i !== idx));
   }
+
+  // Pre-submit check for every doctor row. The practice itself may not exist
+  // yet, so the preview is scoped to the parent lab — which is the scope the
+  // server's resolver matches on anyway.
+  const {
+    matchByIndex: doctorMatches,
+    emailConflictRows: doctorEmailConflicts,
+    isChecking: checkingDoctors,
+  } = useDoctorMatchPreview(fields.parentLabOrganizationId || null, doctors, {
+    enabled: !doctorResults,
+  });
 
   const orgsQuery = useQuery({
     queryKey: ["organizations"],
@@ -1143,14 +1236,17 @@ export function AddPracticeDialog({
   });
 
   async function submitDoctors(orgId: string) {
-    const validDoctors = doctors
-      .map((d) => ({
-        firstName: d.firstName.trim(),
-        lastName: d.lastName.trim(),
-        email: d.email.trim(),
-        phone: d.phone.trim(),
-      }))
-      .filter((d) => d.firstName.length > 0);
+    const rowsWithType = doctors.map((d) => ({
+      firstName: d.firstName.trim(),
+      lastName: d.lastName.trim(),
+      email: d.email.trim(),
+      phone: d.phone.trim(),
+      phoneType: d.phoneType || "main",
+      // Matches the admin dismissed in the pre-submit check — the server
+      // skips exactly those accounts when it resolves this row.
+      distinctFromUserIds: d.distinctFromUserIds,
+    }));
+    const validDoctors = rowsWithType.filter((d) => d.firstName.length > 0);
     if (validDoctors.length === 0) {
       if (onNavigateToPractice) {
         onNavigateToPractice(orgId);
@@ -1162,14 +1258,45 @@ export function AddPracticeDialog({
     setCreatingDoctors(true);
     setError(null);
     try {
-      const result = await apiFetch<{
-        created: CreatedDoctor[];
-        skipped: { index: number; reason: string }[];
-      }>(`/organizations/${orgId}/doctors`, {
+      const result = await apiFetch<AddDoctorsResponse>(`/organizations/${orgId}/doctors`, {
         method: "POST",
         body: JSON.stringify({ doctors: validDoctors }),
       });
       setDoctorResults(result);
+      // Persist phone type info for each created doctor that has a phone.
+      const labOrgId = fields.parentLabOrganizationId;
+      if (labOrgId && result.created.length > 0) {
+        // Map created doctors back to their original rows by index. Rows the
+        // server skipped, and rows it matched to an account the doctor
+        // already had, are not part of `created`.
+        const nonSkippedRows = validDoctors.filter(
+          (_, i) =>
+            !result.skipped.some((s) => s.index === i) &&
+            !(result.reused ?? []).some((r) => r.index === i),
+        );
+        await Promise.allSettled(
+          result.created.map((createdDoc, ci) => {
+            const row = nonSkippedRows[ci];
+            if (!row?.phone) return Promise.resolve();
+            const doctorName = [row.firstName, row.lastName]
+              .filter(Boolean)
+              .join(" ");
+            if (!doctorName) return Promise.resolve();
+            return apiFetch(`/organizations/${labOrgId}/doctors/profile`, {
+              method: "PUT",
+              body: JSON.stringify({
+                doctorName,
+                providerOrgId: orgId,
+                phones: [{ phoneNumber: row.phone, label: row.phoneType, isPrimary: true }],
+                emails: [],
+                preferences: "",
+              }),
+            }).catch(() => {
+              // Non-fatal: profile save failure doesn't block doctor creation.
+            });
+          }),
+        );
+      }
     } catch (err: any) {
       setError(
         (err?.message || "Practice was created, but adding doctors failed.") +
@@ -1325,7 +1452,7 @@ export function AddPracticeDialog({
                 placeholder="Leave blank to auto-generate"
               />
               <div className="text-[11px] text-muted-foreground mt-1">
-                Must be unique within your lab. Leave blank to let LabTrax pick one.
+                Must be unique within your lab. Leave blank to let LabTrax pick one. Semicolon-separated values are aliases for this same practice; use Provider Portal Access on an existing customer profile to grant access to another practice.
               </div>
             </FormField>
           </section>
@@ -1391,16 +1518,27 @@ export function AddPracticeDialog({
                         placeholder="optional"
                       />
                     </div>
-                    <div className="col-span-2">
+                    <div className="col-span-3">
                       <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
                         Phone
                       </label>
-                      <input
-                        value={d.phone}
-                        onChange={(e) => updateDoctorRow(idx, "phone", formatPhone(e.target.value))}
-                        className={inputCls}
-                        placeholder="000-000-0000"
-                      />
+                      <div className="flex gap-1.5">
+                        <input
+                          value={d.phone}
+                          onChange={(e) => updateDoctorRow(idx, "phone", formatPhone(e.target.value))}
+                          className={inputCls + " flex-1"}
+                          placeholder="000-000-0000"
+                        />
+                        <select
+                          value={d.phoneType}
+                          onChange={(e) => updateDoctorRow(idx, "phoneType", e.target.value as DoctorPhoneType)}
+                          className="h-9 px-1.5 rounded-md bg-background border border-input text-xs"
+                        >
+                          <option value="main">Main</option>
+                          <option value="mobile">Mobile</option>
+                          <option value="other">Other</option>
+                        </select>
+                      </div>
                     </div>
                     <div className="col-span-1 flex items-end justify-end h-full pt-4">
                       <button
@@ -1411,6 +1549,23 @@ export function AddPracticeDialog({
                       >
                         <Trash2 size={14} />
                       </button>
+                    </div>
+                    <div className="col-span-12">
+                      <DoctorMatchNotice
+                        match={doctorMatches.get(idx)}
+                        dismissedCount={d.distinctFromUserIds.length}
+                        emailConflict={doctorEmailConflicts.has(idx)}
+                        checking={
+                          checkingDoctors &&
+                          !!(d.firstName.trim() || d.lastName.trim() ||
+                            d.email.trim() || d.phone.trim())
+                        }
+                        compact
+                        onMarkDistinct={(userId) =>
+                          setDoctorRowDistinct(idx, userId)
+                        }
+                        onUndoDistinct={() => setDoctorRowDistinct(idx, null)}
+                      />
                     </div>
                   </div>
                 ))}
@@ -1429,11 +1584,42 @@ export function AddPracticeDialog({
                       {d.email ? <span className="text-muted-foreground"> · {d.email}</span> : null}
                     </span>
                     <span className="font-mono text-xs bg-primary/10 text-primary rounded px-2 py-0.5">
-                      {d.platformAccountNumber || "—"}
+                       {d.platformAccountNumber
+                         ? formatAccountNumberForDisplay(d.platformAccountNumber)
+                         : "—"}
                     </span>
                   </li>
                 ))}
               </ul>
+              {(doctorResults.reused ?? []).length > 0 && (
+                <div className="mt-3">
+                  <div className="text-sm font-semibold mb-2">
+                    Already had an account — attached here
+                  </div>
+                  <ul className="space-y-1 text-sm">
+                    {(doctorResults.reused ?? []).map((d) => (
+                      <li
+                        key={d.id}
+                        className="flex items-center justify-between bg-muted/40 rounded px-3 py-2"
+                      >
+                        <span>
+                          {[d.firstName, d.lastName].filter(Boolean).join(" ") ||
+                            "Doctor"}
+                          <span className="text-muted-foreground">
+                            {" "}
+                            · existing account reused
+                          </span>
+                        </span>
+                        <span className="font-mono text-xs bg-primary/10 text-primary rounded px-2 py-0.5">
+                           {d.platformAccountNumber
+                             ? formatAccountNumberForDisplay(d.platformAccountNumber)
+                             : "—"}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {doctorResults.skipped.length > 0 && (
                 <div className="mt-2 text-xs text-amber-600 dark:text-amber-400">
                   {doctorResults.skipped.length} doctor(s) skipped:
@@ -1477,6 +1663,10 @@ export function AddPracticeDialog({
                 disabled={
                   createMutation.isPending ||
                   creatingDoctors ||
+                  // Never let the practice + doctors be submitted while a
+                  // duplicate check is still in flight: the admin would
+                  // attach an existing account without seeing the warning.
+                  checkingDoctors ||
                   (!createdOrgId && !isFormValid)
                 }
                 className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
@@ -1485,9 +1675,11 @@ export function AddPracticeDialog({
                   ? "Creating practice…"
                   : creatingDoctors
                     ? "Adding doctors…"
-                    : createdOrgId
-                      ? "Retry adding doctors"
-                      : "Create practice"}
+                    : checkingDoctors
+                      ? "Checking doctors…"
+                      : createdOrgId
+                        ? "Retry adding doctors"
+                        : "Create practice"}
               </button>
             </>
           )}
@@ -1587,15 +1779,9 @@ function PracticeStatementsSection({ org }: { org: Organization }) {
                   <time
                     className="text-xs text-muted-foreground shrink-0 tabular-nums"
                     dateTime={dateStr ?? undefined}
-                    title={date ? date.toLocaleString() : undefined}
+                    title={dateStr ? formatDateTime(dateStr) : undefined}
                   >
-                    {date
-                      ? date.toLocaleDateString(undefined, {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                        })
-                      : "—"}
+                    {formatDate(dateStr)}
                   </time>
                 </div>
 
@@ -1663,6 +1849,12 @@ export function PracticeEditor({
     statementEmailOptOut: org.statementEmailOptOut ?? false,
   });
 
+  // Additional emails state
+  const [showAddEmail, setShowAddEmail] = useState(false);
+  const [newEmailAddr, setNewEmailAddr] = useState("");
+  const [newEmailType, setNewEmailType] = useState<"billing" | "correspondence">("billing");
+  const [addEmailError, setAddEmailError] = useState<string | null>(null);
+
   const detailQuery = useQuery({
     queryKey: ["organization", org.id],
     queryFn: () => apiFetch<Organization>(`/organizations/${org.id}`),
@@ -1681,46 +1873,166 @@ export function PracticeEditor({
     queryFn: () => apiFetch<MeResponse>("/auth/me"),
   });
 
+  const sharedAccountQuery = useQuery({
+    queryKey: [
+      "shared-provider-account",
+      org.parentLabOrganizationId,
+      org.id,
+    ],
+    queryFn: () =>
+      apiFetch<SharedProviderAccountData>(
+        `/organizations/shared-accounts?labOrganizationId=${encodeURIComponent(org.parentLabOrganizationId ?? "")}&providerOrganizationId=${encodeURIComponent(org.id)}`,
+      ),
+    enabled:
+      org.type === "provider" &&
+      Boolean(org.parentLabOrganizationId) &&
+      !org.deletedAt,
+  });
+
   useEffect(() => {
     const d = detailQuery.data;
     if (!d) return;
+    const shared = sharedAccountQuery.data?.contact;
     setFields({
-      name: d.name || "",
-      displayName: d.displayName || "",
-      billingEmail: d.billingEmail || "",
-      phone: d.phone || "",
-      addressLine1: d.addressLine1 || "",
-      addressLine2: d.addressLine2 || "",
-      city: d.city || "",
-      state: d.state || "",
-      zip: d.zip || "",
+      name: shared?.name ?? d.name ?? "",
+      displayName: shared?.displayName ?? d.displayName ?? "",
+      billingEmail: shared?.billingEmail ?? d.billingEmail ?? "",
+      phone: shared?.phone ?? d.phone ?? "",
+      addressLine1: shared?.addressLine1 ?? d.addressLine1 ?? "",
+      addressLine2: shared?.addressLine2 ?? d.addressLine2 ?? "",
+      city: shared?.city ?? d.city ?? "",
+      state: shared?.state ?? d.state ?? "",
+      zip: shared?.zip ?? d.zip ?? "",
       isActive: d.isActive ?? true,
       accountNumber: d.accountNumber || "",
       statementEmailOptOut: d.statementEmailOptOut ?? false,
     });
-  }, [detailQuery.data]);
+  }, [detailQuery.data, sharedAccountQuery.data]);
 
   const saveMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       // Only send `accountNumber` for provider practices that already have a
       // parent lab — the server rejects it otherwise. For other orgs we drop
       // it from the payload entirely.
       const { accountNumber, ...rest } = fields;
-      const payload =
-        org.type === "provider" && org.parentLabOrganizationId
-          ? { ...rest, accountNumber }
-          : rest;
+      const sharedAccount = sharedAccountQuery.data;
+      if (org.type === "provider" && org.parentLabOrganizationId && sharedAccount) {
+        const contactFields = {
+          name: rest.name,
+          displayName: rest.displayName,
+          billingEmail: rest.billingEmail,
+          phone: rest.phone,
+          addressLine1: rest.addressLine1,
+          addressLine2: rest.addressLine2,
+          city: rest.city,
+          state: rest.state,
+          zip: rest.zip,
+        };
+        const changes: SharedProviderContactChanges = {};
+        for (const field of Object.keys(contactFields) as Array<
+          keyof typeof contactFields
+        >) {
+          const next = contactFields[field].trim() || null;
+          if (next !== sharedAccount.contact[field]) {
+            if (field === "name") changes.name = next ?? "";
+            else changes[field] = next;
+          }
+        }
+        await apiFetch<Organization>(`/organizations/${org.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            accountNumber,
+            isActive: rest.isActive,
+            statementEmailOptOut: rest.statementEmailOptOut,
+          }),
+        });
+        if (Object.keys(changes).length > 0) {
+          await apiFetch(
+            "/organizations/shared-accounts/profile-change-requests",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                ...sharedAccount.relationship,
+                clientRequestId:
+                  typeof crypto !== "undefined" && "randomUUID" in crypto
+                    ? crypto.randomUUID()
+                    : `lab-profile-${Date.now()}`,
+                changes,
+              }),
+            },
+          );
+        }
+        return;
+      }
       return apiFetch<Organization>(`/organizations/${org.id}`, {
         method: "PATCH",
-        body: JSON.stringify(payload),
+        body: JSON.stringify(rest),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
       queryClient.invalidateQueries({ queryKey: ["organization", org.id] });
+      queryClient.invalidateQueries({
+        queryKey: ["shared-provider-account"],
+      });
       onClose();
     },
     onError: (err: Error) => setError(err.message || "Save failed."),
+  });
+
+  const decideSharedChangeMutation = useMutation({
+    mutationFn: ({
+      request,
+      decision,
+    }: {
+      request: SharedProviderAccountChange;
+      decision: "approve" | "reject";
+    }) =>
+      apiFetch(
+        `/organizations/shared-accounts/profile-change-requests/${encodeURIComponent(request.id)}/${decision}`,
+        { method: "POST" },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+      queryClient.invalidateQueries({ queryKey: ["organization", org.id] });
+      queryClient.invalidateQueries({
+        queryKey: ["shared-provider-account"],
+      });
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Could not review that contact update.");
+      void sharedAccountQuery.refetch();
+    },
+  });
+
+  const addEmailMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ id: string; email: string; type: string }>(
+        `/organizations/${org.id}/additional-emails`,
+        {
+          method: "POST",
+          body: JSON.stringify({ email: newEmailAddr.trim(), type: newEmailType }),
+        }
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["organization", org.id] });
+      setShowAddEmail(false);
+      setNewEmailAddr("");
+      setNewEmailType("billing");
+      setAddEmailError(null);
+    },
+    onError: (err: Error) => setAddEmailError(err.message || "Failed to save email."),
+  });
+
+  const removeEmailMutation = useMutation({
+    mutationFn: (emailId: string) =>
+      apiFetch(`/organizations/${org.id}/additional-emails/${emailId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["organization", org.id] });
+    },
+    onError: (err: Error) => setError(err.message || "Failed to remove email."),
   });
 
   const liveOrg = detailQuery.data ?? org;
@@ -1891,6 +2203,11 @@ export function PracticeEditor({
             <StatementsTab selected={liveOrg} labOrgId={labOrgId} />
           </div>
         )}
+        {detailTab === "charges" && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <CustomerStatementChargesTab selected={liveOrg} labOrgId={labOrgId} />
+          </div>
+        )}
         {detailTab === "card" && (
           <div className="flex-1 min-h-0 overflow-hidden">
             <CardOnFileTab practice={liveOrg} labOrgId={labOrgId} />
@@ -1919,6 +2236,101 @@ export function PracticeEditor({
             />
           )}
 
+          {org.type === "provider" && org.parentLabOrganizationId && (
+            <section className="rounded-lg border border-border bg-secondary/20 p-4 space-y-3">
+              <div>
+                <div className="text-sm font-semibold">
+                  Shared account synchronization
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Contact edits are sent to the practice for approval. Card
+                  replacement and auto-pay changes are synchronized separately
+                  and are never approval-gated.
+                </p>
+              </div>
+              {sharedAccountQuery.isLoading && (
+                <div className="text-xs text-muted-foreground">
+                  <Loader2 size={13} className="mr-1 inline animate-spin" />
+                  Loading shared account…
+                </div>
+              )}
+              {sharedAccountQuery.isError && (
+                <div className="text-xs text-destructive">
+                  {(sharedAccountQuery.error as Error).message}
+                </div>
+              )}
+              {(sharedAccountQuery.data?.profileChangeRequests ?? []).map(
+                (request) => {
+                  const fromProvider =
+                    request.requestedByOrganizationId ===
+                    request.providerOrganizationId;
+                  return (
+                    <div
+                      key={request.id}
+                      className="rounded-md border border-border bg-card px-3 py-2 text-xs"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">
+                          {fromProvider ? "Practice proposed" : "Lab proposed"} ·{" "}
+                          {request.status}
+                        </span>
+                        {fromProvider && request.status === "pending" && (
+                          <span className="flex gap-1">
+                            <button
+                              type="button"
+                              disabled={decideSharedChangeMutation.isPending}
+                              onClick={() =>
+                                decideSharedChangeMutation.mutate({
+                                  request,
+                                  decision: "approve",
+                                })
+                              }
+                              className="rounded border border-border px-2 py-1 font-medium"
+                            >
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              disabled={decideSharedChangeMutation.isPending}
+                              onClick={() =>
+                                decideSharedChangeMutation.mutate({
+                                  request,
+                                  decision: "reject",
+                                })
+                              }
+                              className="rounded border border-border px-2 py-1 font-medium"
+                            >
+                              Reject
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-muted-foreground">
+                        {Object.entries(request.changes)
+                          .map(
+                            ([field, value]) =>
+                              `${field}: ${value || "blank"}`,
+                          )
+                          .join(" · ")}
+                      </div>
+                    </div>
+                  );
+                },
+              )}
+              {sharedAccountQuery.data?.profileChangeRequests.some(
+                (request) =>
+                  request.status === "pending" &&
+                  request.requestedByOrganizationId ===
+                    request.labOrganizationId,
+              ) && (
+                <div className="text-xs text-warning">
+                  The lab's latest contact changes are awaiting practice
+                  approval. Existing approved values remain active meanwhile.
+                </div>
+              )}
+            </section>
+          )}
+
           <section className="grid grid-cols-2 gap-4">
             <FormField label="Legal name">
               <input value={fields.name} onChange={(e) => update("name", e.target.value)} className={inputCls} />
@@ -1932,6 +2344,118 @@ export function PracticeEditor({
             <FormField label="Phone">
               <input value={fields.phone} onChange={(e) => update("phone", formatPhone(e.target.value))} className={inputCls} placeholder="000-000-0000" />
             </FormField>
+            {org.type === "provider" && (
+              <div className="col-span-2 space-y-2">
+                <div className="text-sm font-medium text-foreground">Additional emails</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Billing-tagged addresses are CC'd on statement and invoice emails.
+                </div>
+                {(detailQuery.data?.additionalEmails ?? []).map((ae) => (
+                  <div key={ae.id} className="flex items-center gap-2 text-sm py-0.5">
+                    <span className="flex-1 truncate">{ae.email}</span>
+                    <span
+                      className={`shrink-0 text-[11px] px-2 py-0.5 rounded-full font-medium ${
+                        ae.type === "billing"
+                          ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                          : "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
+                      }`}
+                    >
+                      {ae.type === "billing" ? "Billing" : "Correspondence"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!confirm(`Remove ${ae.email}?`)) return;
+                        removeEmailMutation.mutate(ae.id);
+                      }}
+                      disabled={removeEmailMutation.isPending}
+                      className="shrink-0 text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+                      aria-label={`Remove ${ae.email}`}
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+                {showAddEmail ? (
+                  <div className="border border-border rounded-md p-3 space-y-3 bg-secondary/30">
+                    <div>
+                      <label className="text-[11px] font-medium text-muted-foreground mb-1 block">
+                        Email address
+                      </label>
+                      <input
+                        type="email"
+                        value={newEmailAddr}
+                        onChange={(e) => setNewEmailAddr(e.target.value)}
+                        className={inputCls}
+                        placeholder="name@example.com"
+                        autoFocus
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-medium text-muted-foreground mb-1 block">
+                        Type
+                      </label>
+                      <div className="flex items-center gap-4 text-sm">
+                        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                          <input
+                            type="radio"
+                            name={`new-email-type-${org.id}`}
+                            value="billing"
+                            checked={newEmailType === "billing"}
+                            onChange={() => setNewEmailType("billing")}
+                          />
+                          Billing email
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                          <input
+                            type="radio"
+                            name={`new-email-type-${org.id}`}
+                            value="correspondence"
+                            checked={newEmailType === "correspondence"}
+                            onChange={() => setNewEmailType("correspondence")}
+                          />
+                          General correspondence
+                        </label>
+                      </div>
+                    </div>
+                    {addEmailError && (
+                      <div className="text-xs text-destructive">{addEmailError}</div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => addEmailMutation.mutate()}
+                        disabled={addEmailMutation.isPending || !newEmailAddr.trim()}
+                        className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60"
+                      >
+                        {addEmailMutation.isPending ? "Saving…" : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAddEmail(false);
+                          setNewEmailAddr("");
+                          setNewEmailType("billing");
+                          setAddEmailError(null);
+                        }}
+                        className="h-8 px-3 rounded-md text-xs font-medium border border-border hover:bg-secondary"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowAddEmail(true)}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+                  >
+                    <Plus size={13} />
+                    Add new email
+                  </button>
+                )}
+              </div>
+            )}
             <FormField label="Address line 1" full>
               <input value={fields.addressLine1} onChange={(e) => update("addressLine1", e.target.value)} className={inputCls} />
             </FormField>
@@ -1984,7 +2508,7 @@ export function PracticeEditor({
                 />
                 <div className="text-[11px] text-muted-foreground mt-1">
                   Share this with the practice so they can claim their existing
-                  cases when signing up. Must be unique within your lab.
+                  cases when signing up. Must be unique within your lab. Semicolon-separated values are aliases for this same practice; use Provider Portal Access below to grant the linked provider login access to another practice.
                 </div>
               </FormField>
             )}
@@ -2060,9 +2584,31 @@ function AddDoctorToPracticeDialog({
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [phoneType, setPhoneType] = useState<DoctorPhoneType>("main");
+  // Accounts the admin was shown and explicitly called a different person
+  // (Task #4398). Sent with the add call so the server's resolver skips them.
+  const [distinctFromUserIds, setDistinctFromUserIds] = useState<string[]>([]);
 
   const [selectedUserId, setSelectedUserId] = useState("");
   const [search, setSearch] = useState("");
+
+  // Pre-submit check: does this doctor already have an account? Reuses the
+  // server-side resolver the add call itself runs.
+  const matchRows = useMemo<DoctorMatchRow[]>(
+    () => [{ firstName, lastName, email, phone, distinctFromUserIds }],
+    [firstName, lastName, email, phone, distinctFromUserIds],
+  );
+  const { matchByIndex, emailConflictRows, isChecking } = useDoctorMatchPreview(
+    org.id,
+    matchRows,
+    { enabled: mode === "new" },
+  );
+  const pendingMatch = mode === "new" ? matchByIndex.get(0) : undefined;
+  const pendingEmailConflict = mode === "new" && emailConflictRows.has(0);
+  // Submitting while the check is still running would attach an existing
+  // account before the admin ever saw the warning — the exact thing this
+  // check exists to prevent.
+  const awaitingMatchCheck = mode === "new" && isChecking;
 
   const eligibleQuery = useQuery({
     queryKey: ["organization", org.id, "eligible-doctors"],
@@ -2092,10 +2638,7 @@ function AddDoctorToPracticeDialog({
 
   const createMutation = useMutation({
     mutationFn: () =>
-      apiFetch<{
-        created: Array<{ firstName?: string | null; lastName?: string | null; email?: string | null }>;
-        skipped: Array<{ index: number; reason: string }>;
-      }>(`/organizations/${org.id}/doctors`, {
+      apiFetch<AddDoctorsResponse>(`/organizations/${org.id}/doctors`, {
         method: "POST",
         body: JSON.stringify({
           doctors: [
@@ -2104,24 +2647,50 @@ function AddDoctorToPracticeDialog({
               lastName: lastName.trim(),
               email: email.trim() || undefined,
               phone: phone.trim() || undefined,
+              distinctFromUserIds,
             },
           ],
         }),
       }),
-    onSuccess: (res) => {
+    onSuccess: async (res) => {
       const skipped = res.skipped?.[0];
       if (skipped) {
         setError(skipped.reason || "Could not add doctor.");
         return;
       }
-      const d = res.created?.[0];
+      // A doctor who already has an account is attached here and reported as
+      // reused — never a second account with a second account number.
+      const reusedDoctor = res.reused?.[0];
+      const d = reusedDoctor ?? res.created?.[0];
       const name = [d?.firstName, d?.lastName].filter(Boolean).join(" ") || "Doctor";
-      setSuccess(`${name} added to ${org.displayName || org.name}.`);
+      setSuccess(
+        reusedDoctor
+          ? `${name} already has account ${formatAccountNumber(reusedDoctor.platformAccountNumber)} — attached to ${org.displayName || org.name}.`
+          : `${name} added to ${org.displayName || org.name}.`,
+      );
       setError(null);
+      // Persist the phone type if a phone was provided.
+      const trimmedPhone = phone.trim();
+      if (trimmedPhone && org.parentLabOrganizationId) {
+        await apiFetch(`/organizations/${org.parentLabOrganizationId}/doctors/profile`, {
+          method: "PUT",
+          body: JSON.stringify({
+            doctorName: name,
+            providerOrgId: org.id,
+            phones: [{ phoneNumber: trimmedPhone, label: phoneType, isPrimary: true }],
+            emails: [],
+            preferences: "",
+          }),
+        }).catch(() => {
+          // Non-fatal: profile save failure doesn't block doctor creation.
+        });
+      }
       setFirstName("");
       setLastName("");
       setEmail("");
       setPhone("");
+      setPhoneType("main");
+      setDistinctFromUserIds([]);
       invalidateAll();
     },
     onError: (err: Error) => setError(err.message || "Could not add doctor."),
@@ -2155,6 +2724,8 @@ function AddDoctorToPracticeDialog({
       apiFetch<{
         firstName?: string | null;
         lastName?: string | null;
+        platformAccountNumber?: string | null;
+        createdNewAccount?: boolean;
         casesMoved: number;
         invoicesMoved: number;
       }>(`/organizations/${org.id}/doctors/adopt`, {
@@ -2170,7 +2741,13 @@ function AddDoctorToPracticeDialog({
         res.casesMoved > 0
           ? ` · ${res.casesMoved} case${res.casesMoved === 1 ? "" : "s"} moved`
           : "";
-      setSuccess(`${name} added to ${org.displayName || org.name}.${movedNote}`);
+      // A case-history name that resolves to an account the doctor already
+      // has is attached, not duplicated (Task #4372).
+      setSuccess(
+        res.createdNewAccount === false
+          ? `${name} already has account ${formatAccountNumber(res.platformAccountNumber)} — attached to ${org.displayName || org.name}.${movedNote}`
+          : `${name} added to ${org.displayName || org.name}.${movedNote}`,
+      );
       setError(null);
       setSelectedUserId("");
       invalidateAll();
@@ -2188,7 +2765,10 @@ function AddDoctorToPracticeDialog({
         name.includes(q) ||
         (u.email ?? "").toLowerCase().includes(q) ||
         (u.username ?? "").toLowerCase().includes(q) ||
-        (u.platformAccountNumber ?? "").toLowerCase().includes(q)
+        (u.platformAccountNumber ?? "").toLowerCase().includes(q) ||
+        (u.platformAccountNumber
+          ? formatAccountNumberForDisplay(u.platformAccountNumber).toLowerCase().includes(q)
+          : false)
       );
     });
   }, [eligible, search]);
@@ -2325,16 +2905,42 @@ function AddDoctorToPracticeDialog({
                 />
               </FormField>
               <FormField label="Phone" full>
-                <input
-                  value={phone}
-                  onChange={(e) => setPhone(formatPhone(e.target.value))}
-                  className={inputCls}
-                  placeholder="000-000-0000"
-                />
+                <div className="flex gap-1.5">
+                  <input
+                    value={phone}
+                    onChange={(e) => setPhone(formatPhone(e.target.value))}
+                    className={inputCls + " flex-1"}
+                    placeholder="000-000-0000"
+                  />
+                  <select
+                    value={phoneType}
+                    onChange={(e) => setPhoneType(e.target.value as DoctorPhoneType)}
+                    className="h-9 px-1.5 rounded-md bg-background border border-input text-xs"
+                  >
+                    <option value="main">Main</option>
+                    <option value="mobile">Mobile</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
               </FormField>
+              <div className="col-span-2">
+                <DoctorMatchNotice
+                  match={pendingMatch}
+                  dismissedCount={distinctFromUserIds.length}
+                  emailConflict={pendingEmailConflict}
+                  checking={isChecking}
+                  onMarkDistinct={(userId) =>
+                    setDistinctFromUserIds((ids) =>
+                      ids.includes(userId) ? ids : [...ids, userId],
+                    )
+                  }
+                  onUndoDistinct={() => setDistinctFromUserIds([])}
+                />
+              </div>
               <div className="col-span-2 text-[11px] text-muted-foreground">
-                Creates a new doctor account at this practice. They'll receive
-                their own platform account number.
+                {pendingMatch
+                  ? "This doctor already has an account — it will be attached to this practice instead of creating a second one."
+                  : "Creates a new doctor account at this practice. They'll receive their own platform account number."}
               </div>
             </div>
           ) : (
@@ -2402,7 +3008,7 @@ function AddDoctorToPracticeDialog({
                           )}
                           {!u.virtual && u.platformAccountNumber && (
                             <span className="text-[10px] font-mono bg-primary/10 text-primary rounded px-1.5 py-0.5 shrink-0">
-                              {u.platformAccountNumber}
+                              {formatAccountNumberForDisplay(u.platformAccountNumber)}
                             </span>
                           )}
                         </div>
@@ -2429,7 +3035,7 @@ function AddDoctorToPracticeDialog({
               </div>
               <div className="text-[11px] text-muted-foreground">
                 {eligible.some((u) => u.virtual)
-                  ? "Doctors with accounts can be linked instantly. Doctors from case history will get a new account created."
+                  ? "Doctors with accounts can be linked instantly. A doctor from case history reuses the account they already have — a new account is only created when they have none."
                   : "Links any existing doctor on the platform to this practice without creating a duplicate account."}
               </div>
             </div>
@@ -2448,13 +3054,22 @@ function AddDoctorToPracticeDialog({
             type="submit"
             disabled={
               submitting ||
+              awaitingMatchCheck ||
               (mode === "new" ? !firstName.trim() : !selectedUserId)
             }
             className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
           >
-            {submitting && <Loader2 size={14} className="animate-spin" />}
+            {(submitting || awaitingMatchCheck) && (
+              <Loader2 size={14} className="animate-spin" />
+            )}
             {mode === "new"
-              ? "Add doctor"
+              ? // Say what the submit will actually do, so attaching an
+                // existing account is a deliberate choice (Task #4398).
+                awaitingMatchCheck
+                ? "Checking…"
+                : pendingMatch
+                ? "Attach to existing account"
+                : "Add doctor"
               : eligible.find((u) => u.id === selectedUserId)?.virtual
                 ? "Create & link doctor"
                 : "Link doctor"}
@@ -2533,7 +3148,9 @@ function MembershipSection({ org, members, membersLoading, currentUserId }: Memb
         setActionError(
           delivery.status === "skipped"
             ? `Invite saved, but ${invite.email} has opted out of invite emails.`
-            : `Invite saved, but the email to ${invite.email} could not be sent. Use resend to try again.`
+            : delivery.reason === "auth_failed"
+              ? `Invite saved, but the email to ${invite.email} was not sent. ${SMTP_AUTH_FAILED_MESSAGE}`
+              : `Invite saved, but the email to ${invite.email} could not be sent. Use resend to try again.`
         );
       } else {
         setActionError(null);
@@ -2586,9 +3203,24 @@ function MembershipSection({ org, members, membersLoading, currentUserId }: Memb
   const resendInviteMutation = useMutation({
     mutationFn: (inviteId: string) =>
       apiFetch<PracticeInvite>(`/organizations/invites/${inviteId}/resend`, { method: "POST" }),
+    // Resend is non-fatal: it returns 200 with an `emailDelivery` outcome even
+    // when the email fails or is skipped. Read that outcome and render a
+    // truthful state instead of claiming the invite was resent.
     onSuccess: (invite) => {
-      setActionError(null);
-      setInviteSuccess(`Invite resent to ${invite.email}.`);
+      const delivery = invite.emailDelivery;
+      if (delivery && !delivery.sent) {
+        setInviteSuccess(null);
+        setActionError(
+          delivery.status === "skipped"
+            ? `Invite link refreshed, but ${invite.email} has opted out of invite emails.`
+            : delivery.reason === "auth_failed"
+              ? `Invite link refreshed, but the email to ${invite.email} was not sent. ${SMTP_AUTH_FAILED_MESSAGE}`
+              : `Invite link refreshed, but the email to ${invite.email} could not be sent.`
+        );
+      } else {
+        setActionError(null);
+        setInviteSuccess(`Invite resent to ${invite.email}.`);
+      }
       queryClient.invalidateQueries({ queryKey: inviteKey });
     },
     onError: (err: Error) => {
@@ -2745,7 +3377,7 @@ function MembershipSection({ org, members, membersLoading, currentUserId }: Memb
                           className="text-xs text-destructive truncate"
                           title={
                             inv.lastEmailAttemptAt
-                              ? `Last attempt: ${new Date(inv.lastEmailAttemptAt).toLocaleString()}`
+                              ? `Last attempt: ${formatDateTime(inv.lastEmailAttemptAt)}`
                               : undefined
                           }
                         >
@@ -3237,6 +3869,7 @@ interface PracticeTiersResponse {
 interface MergedDoctor {
   displayName: string;
   accountNumber: string | null;
+  userId: string | null;
 }
 
 export function PracticeDoctorsSection({
@@ -3373,7 +4006,7 @@ export function PracticeDoctorsSection({
   // Merge all sources: registered accounts → case history → existing overrides.
   // Priority: registered name wins over case-string; account number shown when available.
   const doctorsList = useMemo<MergedDoctor[]>(() => {
-    const map = new Map<string, MergedDoctor>(); // lower → entry
+    const map = new Map<string, MergedDoctor>();
 
     // 1. Registered doctor accounts (have platform account numbers).
     // Exclude these ONLY by userId — never by name. A doctor with an active
@@ -3385,9 +4018,13 @@ export function PracticeDoctorsSection({
       const name = [d.firstName, d.lastName].filter(Boolean).join(" ").trim() || d.username;
       if (!name) continue;
       activeRegisteredNames.add(normalizeDoctorName(name));
-      const k = name.toLowerCase();
+      const k = `user:${d.id}`;
       if (!map.has(k)) {
-        map.set(k, { displayName: name, accountNumber: d.platformAccountNumber ?? null });
+        map.set(k, {
+          displayName: name,
+          accountNumber: d.platformAccountNumber ?? null,
+          userId: d.id,
+        });
       }
     }
 
@@ -3404,8 +4041,11 @@ export function PracticeDoctorsSection({
       if (c.providerOrganizationId !== providerOrg.id) continue;
       const name = (c.doctorName || "").trim();
       if (!name || isExcludedNameOnly(name)) continue;
-      const k = name.toLowerCase();
-      if (!map.has(k)) map.set(k, { displayName: name, accountNumber: null });
+      if (activeRegisteredNames.has(normalizeDoctorName(name))) continue;
+      const k = `name:${name.toLowerCase()}`;
+      if (!map.has(k)) {
+        map.set(k, { displayName: name, accountNumber: null, userId: null });
+      }
     }
 
     // 3. Existing pricing overrides linked to this practice
@@ -3413,8 +4053,11 @@ export function PracticeDoctorsSection({
       if (o.providerOrganizationId !== providerOrg.id) continue;
       const name = (o.doctorName || "").trim();
       if (!name || isExcludedNameOnly(name)) continue;
-      const k = name.toLowerCase();
-      if (!map.has(k)) map.set(k, { displayName: name, accountNumber: null });
+      if (activeRegisteredNames.has(normalizeDoctorName(name))) continue;
+      const k = `name:${name.toLowerCase()}`;
+      if (!map.has(k)) {
+        map.set(k, { displayName: name, accountNumber: null, userId: null });
+      }
     }
 
     return Array.from(map.values()).sort((a, b) =>
@@ -3473,7 +4116,7 @@ export function PracticeDoctorsSection({
 
       {labOrganizationId && !isLoading && doctorsList.length > 0 && (
         <div className="border border-border rounded-md divide-y divide-border">
-          {doctorsList.map(({ displayName, accountNumber }) => {
+          {doctorsList.map(({ displayName, accountNumber, userId }) => {
             const existing =
               allOverrides.find(
                 (o) =>
@@ -3481,9 +4124,10 @@ export function PracticeDoctorsSection({
               ) ?? null;
             return (
               <DoctorPricingRow
-                key={displayName}
+                key={`${userId ?? "name"}:${displayName}`}
                 doctorName={displayName}
                 accountNumber={accountNumber}
+                userId={userId}
                 providerOrg={providerOrg}
                 labOrganizationId={labOrganizationId}
                 tiers={tiers}
@@ -3505,9 +4149,814 @@ export function PracticeDoctorsSection({
   );
 }
 
+// ── Doctor profile sub-components ────────────────────────────────────────────
+
+export function PhoneEntryRow({
+  entry,
+  index,
+  onChange,
+  onRemove,
+  onTogglePrimary,
+  disabled,
+  showPrimary = true,
+  showRemove = true,
+}: {
+  entry: DoctorPhoneEntry;
+  index: number;
+  onChange: (idx: number, patch: Partial<DoctorPhoneEntry>) => void;
+  onRemove?: (idx: number) => void;
+  onTogglePrimary?: (idx: number) => void;
+  disabled?: boolean;
+  showPrimary?: boolean;
+  showRemove?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        type="tel"
+        value={entry.number}
+        onChange={(e) => onChange(index, { number: formatPhone(e.target.value) })}
+        placeholder="000-000-0000"
+        className="h-8 flex-1 min-w-0 px-2 rounded-md bg-background border border-input text-xs"
+        disabled={disabled}
+      />
+      <select
+        value={entry.type}
+        onChange={(e) => onChange(index, { type: e.target.value as DoctorPhoneType })}
+        className="h-8 px-1.5 rounded-md bg-background border border-input text-xs shrink-0"
+        disabled={disabled}
+      >
+        <option value="main">Main</option>
+        <option value="mobile">Mobile</option>
+        <option value="other">Other</option>
+      </select>
+      {showPrimary && (
+        <button
+          type="button"
+          onClick={() => onTogglePrimary?.(index)}
+          title={entry.primary ? "Primary number" : "Set as primary"}
+          className={`h-8 w-8 rounded-md border flex items-center justify-center shrink-0 ${
+            entry.primary
+              ? "border-amber-400 text-amber-400"
+              : "border-border text-muted-foreground hover:text-amber-400"
+          }`}
+          disabled={disabled}
+        >
+          <Star size={12} fill={entry.primary ? "currentColor" : "none"} />
+        </button>
+      )}
+      {showRemove && (
+        <button
+          type="button"
+          onClick={() => onRemove?.(index)}
+          className="h-8 w-8 rounded-md border border-border flex items-center justify-center text-muted-foreground hover:text-destructive hover:border-destructive shrink-0"
+          disabled={disabled}
+        >
+          <X size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function EmailEntryRow({
+  entry,
+  index,
+  onChange,
+  onRemove,
+  onTogglePrimary,
+  disabled,
+}: {
+  entry: DoctorEmailEntry;
+  index: number;
+  onChange: (idx: number, patch: Partial<DoctorEmailEntry>) => void;
+  onRemove: (idx: number) => void;
+  onTogglePrimary: (idx: number) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        type="email"
+        value={entry.address}
+        onChange={(e) => onChange(index, { address: e.target.value })}
+        placeholder="doctor@practice.com"
+        className="h-8 flex-1 min-w-0 px-2 rounded-md bg-background border border-input text-xs"
+        disabled={disabled}
+      />
+      <select
+        value={entry.label}
+        onChange={(e) => onChange(index, { label: e.target.value as DoctorEmailLabel })}
+        className="h-8 px-1.5 rounded-md bg-background border border-input text-xs shrink-0"
+        disabled={disabled}
+      >
+        <option value="general">General</option>
+        <option value="invoicing">Invoicing</option>
+        <option value="other">Other</option>
+      </select>
+      <button
+        type="button"
+        onClick={() => onTogglePrimary(index)}
+        title={entry.primary ? "Primary address" : "Set as primary"}
+        className={`h-8 w-8 rounded-md border flex items-center justify-center shrink-0 ${
+          entry.primary
+            ? "border-amber-400 text-amber-400"
+            : "border-border text-muted-foreground hover:text-amber-400"
+        }`}
+        disabled={disabled}
+      >
+        <Star size={12} fill={entry.primary ? "currentColor" : "none"} />
+      </button>
+      <button
+        type="button"
+        onClick={() => onRemove(index)}
+        className="h-8 w-8 rounded-md border border-border flex items-center justify-center text-muted-foreground hover:text-destructive hover:border-destructive shrink-0"
+        disabled={disabled}
+      >
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
+interface DoctorPracticeAssignment {
+  practiceOrganizationId: string;
+  practiceName: string;
+  accountNumber: string | null;
+  membershipId: string | null;
+  status: "active" | "available";
+  assigned: boolean;
+}
+
+interface DoctorPracticeAssignmentsResponse {
+  userId: string;
+  providerOrgId: string;
+  assignments: DoctorPracticeAssignment[];
+}
+
+export function DoctorProfilePanel({
+  labOrgId,
+  providerOrgId,
+  userId,
+  doctorName,
+  isAdmin,
+}: {
+  labOrgId: string;
+  providerOrgId: string;
+  userId?: string | null;
+  doctorName: string;
+  isAdmin: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const profileKey = ["doctor-profile", labOrgId, providerOrgId, doctorName];
+
+  const profileQuery = useQuery<DoctorProfile>({
+    queryKey: profileKey,
+    queryFn: () =>
+      apiFetch<DoctorProfile>(
+        `/organizations/${labOrgId}/doctors/profile?${new URLSearchParams({
+          doctorName,
+          providerOrgId,
+        }).toString()}`,
+      ),
+    retry: false,
+  });
+  const assignmentsKey = [
+    "doctor-practice-assignments",
+    labOrgId,
+    providerOrgId,
+    userId,
+  ];
+  const assignmentsQuery = useQuery<DoctorPracticeAssignmentsResponse>({
+    queryKey: assignmentsKey,
+    queryFn: () =>
+      apiFetch<DoctorPracticeAssignmentsResponse>(
+        `/organizations/${labOrgId}/doctors/assignments?${new URLSearchParams({
+          providerOrgId,
+          userId: userId!,
+        }).toString()}`,
+      ),
+    enabled: isAdmin && !!userId,
+    retry: false,
+  });
+
+  const [phones, setPhones] = useState<DoctorPhoneEntry[]>([]);
+  const [emails, setEmails] = useState<DoctorEmailEntry[]>([]);
+  const [preferences, setPreferences] = useState("");
+  const [seeded, setSeeded] = useState(false);
+  const [baseline, setBaseline] = useState<{
+    phones: DoctorPhoneEntry[];
+    emails: DoctorEmailEntry[];
+    preferences: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!seeded && profileQuery.data) {
+      const raw = profileQuery.data as unknown as {
+        phones?: Array<{ phoneNumber?: string; label?: string; isPrimary?: boolean }>;
+        emails?: Array<{ email?: string; label?: string; isPrimary?: boolean }>;
+        preferences?: string | null;
+      };
+      const seededPhones = (raw.phones ?? []).map((p) => ({
+        number: p.phoneNumber ?? "",
+        type: (p.label ?? "main") as DoctorPhoneType,
+        primary: !!p.isPrimary,
+      }));
+      const seededEmails = (raw.emails ?? []).map((e) => ({
+        address: e.email ?? "",
+        label: (e.label ?? "general") as DoctorEmailLabel,
+        primary: !!e.isPrimary,
+      }));
+      const seededPrefs = raw.preferences ?? "";
+      setPhones(seededPhones);
+      setEmails(seededEmails);
+      setPreferences(seededPrefs);
+      setBaseline({ phones: seededPhones, emails: seededEmails, preferences: seededPrefs });
+      setSeeded(true);
+    }
+  }, [profileQuery.data, seeded]);
+
+  const isDirty = useMemo(() => {
+    if (!baseline) return false;
+    if (preferences !== baseline.preferences) return true;
+    if (phones.length !== baseline.phones.length) return true;
+    if (emails.length !== baseline.emails.length) return true;
+    for (let i = 0; i < phones.length; i++) {
+      const a = phones[i];
+      const b = baseline.phones[i];
+      if (a.number !== b.number || a.type !== b.type || a.primary !== b.primary) return true;
+    }
+    for (let i = 0; i < emails.length; i++) {
+      const a = emails[i];
+      const b = baseline.emails[i];
+      if (a.address !== b.address || a.label !== b.label || a.primary !== b.primary) return true;
+    }
+    return false;
+  }, [phones, emails, preferences, baseline]);
+
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState(doctorName);
+  const [renameConfirmOpen, setRenameConfirmOpen] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [selectedPracticeIds, setSelectedPracticeIds] = useState<string[]>([]);
+  const [assignmentBaseline, setAssignmentBaseline] = useState<string[]>([]);
+  const [assignmentsSeeded, setAssignmentsSeeded] = useState(false);
+  const [assignmentConfirmOpen, setAssignmentConfirmOpen] = useState(false);
+
+  useEffect(() => {
+    if (!assignmentsSeeded && assignmentsQuery.data) {
+      const ids = assignmentsQuery.data.assignments
+        .filter((assignment) => assignment.assigned)
+        .map((assignment) => assignment.practiceOrganizationId);
+      setSelectedPracticeIds(ids);
+      setAssignmentBaseline(ids);
+      setAssignmentsSeeded(true);
+    }
+  }, [assignmentsQuery.data, assignmentsSeeded]);
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/organizations/${labOrgId}/doctors/profile`, {
+        method: "PUT",
+        body: JSON.stringify({
+          doctorName,
+          providerOrgId,
+          phones: phones.map((p) => ({
+            phoneNumber: p.number,
+            label: p.type,
+            isPrimary: p.primary,
+          })),
+          emails: emails.map((e) => ({
+            email: e.address,
+            label: e.label,
+            isPrimary: e.primary,
+          })),
+          preferences,
+        }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: profileKey });
+      setBaseline({ phones, emails, preferences });
+      setSeeded(false);
+      toast({ title: "Profile saved", duration: 3000 });
+    },
+    onError: (e: Error) => {
+      toast({
+        title: "Could not save profile",
+        description: e.message,
+        variant: "destructive",
+        duration: 4000,
+      });
+    },
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/organizations/${labOrgId}/doctors/rename`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          doctorName,
+          newName: newName.trim(),
+          providerOrgId,
+        }),
+      }),
+    onSuccess: () => {
+      setRenameConfirmOpen(false);
+      setEditingName(false);
+      setRenameError(null);
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+      queryClient.invalidateQueries({ queryKey: ["cases"] });
+      queryClient.invalidateQueries({ queryKey: ["pricing-overrides"] });
+      toast({
+        title: "Doctor renamed",
+        description: `Now shown as "${newName.trim()}"`,
+        duration: 4000,
+      });
+    },
+    onError: (e: Error) => {
+      setRenameError(e.message || "Could not rename doctor.");
+    },
+  });
+
+  const assignmentMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<DoctorPracticeAssignmentsResponse>(
+        `/organizations/${labOrgId}/doctors/assignments`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            providerOrgId,
+            userId,
+            practiceOrganizationIds: selectedPracticeIds,
+          }),
+        },
+      ),
+    onSuccess: (data) => {
+      const ids = data.assignments
+        .filter((assignment) => assignment.assigned)
+        .map((assignment) => assignment.practiceOrganizationId);
+      setSelectedPracticeIds(ids);
+      setAssignmentBaseline(ids);
+      setAssignmentConfirmOpen(false);
+      queryClient.setQueryData(assignmentsKey, data);
+      queryClient.invalidateQueries({
+        queryKey: ["organization", providerOrgId, "members"],
+      });
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+      toast({ title: "Practice assignments saved", duration: 3000 });
+    },
+    onError: (e: Error) => {
+      toast({
+        title: "Could not save practice assignments",
+        description: e.message,
+        variant: "destructive",
+        duration: 5000,
+      });
+    },
+  });
+
+  const assignmentRows = assignmentsQuery.data?.assignments ?? [];
+  const selectedPracticeSet = new Set(selectedPracticeIds);
+  const baselinePracticeSet = new Set(assignmentBaseline);
+  const assignmentsDirty =
+    selectedPracticeIds.length !== assignmentBaseline.length ||
+    selectedPracticeIds.some((id) => !baselinePracticeSet.has(id));
+  const removedAssignments = assignmentRows.filter(
+    (assignment) =>
+      baselinePracticeSet.has(assignment.practiceOrganizationId) &&
+      !selectedPracticeSet.has(assignment.practiceOrganizationId),
+  );
+  const assignedAccountNumberSummary = assignmentRows
+    .filter((assignment) =>
+      selectedPracticeSet.has(assignment.practiceOrganizationId),
+    )
+    .flatMap((assignment) =>
+      (assignment.accountNumber ?? "")
+        .split(";")
+        .map((segment) => segment.trim())
+        .filter(Boolean),
+    )
+    .join("; ");
+
+  function saveAssignments() {
+    if (removedAssignments.length > 0) {
+      setAssignmentConfirmOpen(true);
+    } else {
+      assignmentMutation.mutate();
+    }
+  }
+
+  function addPhone() {
+    setPhones((p) => [
+      ...p,
+      { number: "", type: "main" as DoctorPhoneType, primary: p.length === 0 },
+    ]);
+  }
+  function updatePhone(idx: number, patch: Partial<DoctorPhoneEntry>) {
+    setPhones((p) => p.map((e, i) => (i === idx ? { ...e, ...patch } : e)));
+  }
+  function removePhone(idx: number) {
+    setPhones((p) => {
+      const next = p.filter((_, i) => i !== idx);
+      if (p[idx]?.primary && next.length > 0) next[0] = { ...next[0], primary: true };
+      return next;
+    });
+  }
+  function togglePhonePrimary(idx: number) {
+    setPhones((p) => p.map((e, i) => ({ ...e, primary: i === idx })));
+  }
+
+  function addEmail() {
+    setEmails((e) => [
+      ...e,
+      { address: "", label: "general" as DoctorEmailLabel, primary: e.length === 0 },
+    ]);
+  }
+  function updateEmail(idx: number, patch: Partial<DoctorEmailEntry>) {
+    setEmails((e) => e.map((entry, i) => (i === idx ? { ...entry, ...patch } : entry)));
+  }
+  function removeEmail(idx: number) {
+    setEmails((e) => {
+      const next = e.filter((_, i) => i !== idx);
+      if (e[idx]?.primary && next.length > 0) next[0] = { ...next[0], primary: true };
+      return next;
+    });
+  }
+  function toggleEmailPrimary(idx: number) {
+    setEmails((e) => e.map((entry, i) => ({ ...entry, primary: i === idx })));
+  }
+
+  const phoneErrors = phones.map((p) =>
+    !p.number.trim()
+      ? "Phone number required"
+      : p.number.trim().replace(/\D/g, "").length < 7
+        ? "Invalid phone number"
+        : null,
+  );
+  const emailErrors = emails.map((em) =>
+    !em.address.trim()
+      ? "Email required"
+      : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em.address.trim())
+        ? "Invalid email"
+        : null,
+  );
+  const hasErrors = phoneErrors.some(Boolean) || emailErrors.some(Boolean);
+
+  if (profileQuery.isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+        <Loader2 size={13} className="animate-spin" /> Loading profile…
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 py-1">
+      {/* Name */}
+      <div className="space-y-1.5">
+        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+          <Stethoscope size={11} /> Name
+        </div>
+        {editingName ? (
+          <div className="flex items-center gap-2">
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              className="h-8 flex-1 px-2 rounded-md bg-background border border-input text-xs"
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (!newName.trim() || newName.trim() === doctorName) {
+                  setEditingName(false);
+                  return;
+                }
+                setRenameConfirmOpen(true);
+              }}
+              className="h-8 px-2 rounded-md bg-primary text-primary-foreground text-xs font-medium inline-flex items-center gap-1 shrink-0"
+            >
+              <Check size={12} /> Save
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingName(false);
+                setNewName(doctorName);
+                setRenameError(null);
+              }}
+              className="h-8 px-2 rounded-md border border-border text-xs inline-flex items-center gap-1 shrink-0"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium flex-1">{doctorName}</span>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingName(true);
+                  setNewName(doctorName);
+                }}
+                className="h-7 px-2 rounded-md border border-border text-xs inline-flex items-center gap-1 hover:bg-secondary text-muted-foreground shrink-0"
+              >
+                <Pencil size={11} /> Edit name
+              </button>
+            )}
+          </div>
+        )}
+        {renameError && (
+          <div className="text-xs text-destructive">{renameError}</div>
+        )}
+      </div>
+
+      {isAdmin && userId && (
+        <div className="space-y-2">
+          <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+            <Building2 size={11} /> Provider Portal Access
+          </div>
+          {assignmentsQuery.isLoading ? (
+            <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+              <Loader2 size={12} className="animate-spin" />
+              Loading assignments…
+            </div>
+          ) : assignmentsQuery.error ? (
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {(assignmentsQuery.error as Error).message ||
+                "Could not load practice assignments."}
+            </div>
+          ) : (
+            <>
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid="assigned-account-number-summary"
+              >
+                {assignedAccountNumberSummary ||
+                  "No practice account numbers assigned"}
+              </p>
+              <div className="max-h-44 overflow-y-auto rounded-md border border-border divide-y divide-border">
+                {assignmentRows.map((assignment) => (
+                  <label
+                    key={assignment.practiceOrganizationId}
+                    className="flex items-center gap-2 px-3 py-2 text-xs hover:bg-secondary/40 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedPracticeSet.has(
+                        assignment.practiceOrganizationId,
+                      )}
+                      onChange={() => {
+                        setSelectedPracticeIds((current) =>
+                          current.includes(assignment.practiceOrganizationId)
+                            ? current.filter(
+                                (id) =>
+                                  id !== assignment.practiceOrganizationId,
+                              )
+                            : [...current, assignment.practiceOrganizationId],
+                        );
+                      }}
+                      disabled={
+                        assignmentMutation.isPending ||
+                        assignment.practiceOrganizationId === providerOrgId
+                      }
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {assignment.practiceName}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {assignment.accountNumber || "No account number"}
+                    </span>
+                    {assignment.practiceOrganizationId === providerOrgId && (
+                      <span className="text-[10px] text-muted-foreground">
+                        Customer account
+                      </span>
+                    )}
+                  </label>
+                ))}
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                {assignmentsDirty && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPracticeIds(assignmentBaseline)}
+                    className="h-7 px-2 rounded-md border border-border text-xs"
+                    disabled={assignmentMutation.isPending}
+                  >
+                    Cancel
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={saveAssignments}
+                  disabled={
+                    !assignmentsDirty || assignmentMutation.isPending
+                  }
+                  className="h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium inline-flex items-center gap-1.5 disabled:opacity-60"
+                >
+                  {assignmentMutation.isPending && (
+                    <Loader2 size={11} className="animate-spin" />
+                  )}
+                  Save assignments
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Phones */}
+      <div className="space-y-1.5">
+        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+          <Phone size={11} /> Phone numbers
+        </div>
+        <div className="space-y-1.5">
+          {phones.map((entry, idx) => (
+            <div key={idx}>
+              <PhoneEntryRow
+                entry={entry}
+                index={idx}
+                onChange={updatePhone}
+                onRemove={removePhone}
+                onTogglePrimary={togglePhonePrimary}
+                disabled={saveMutation.isPending}
+              />
+              {phoneErrors[idx] && (
+                <div className="text-[11px] text-destructive mt-0.5">
+                  {phoneErrors[idx]}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={addPhone}
+          className="h-7 px-2 rounded-md border border-dashed border-border text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+          disabled={saveMutation.isPending}
+        >
+          <Plus size={11} /> Add phone
+        </button>
+      </div>
+
+      {/* Emails */}
+      <div className="space-y-1.5">
+        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+          <AtSign size={11} /> Email addresses
+        </div>
+        <div className="space-y-1.5">
+          {emails.map((entry, idx) => (
+            <div key={idx}>
+              <EmailEntryRow
+                entry={entry}
+                index={idx}
+                onChange={updateEmail}
+                onRemove={removeEmail}
+                onTogglePrimary={toggleEmailPrimary}
+                disabled={saveMutation.isPending}
+              />
+              {emailErrors[idx] && (
+                <div className="text-[11px] text-destructive mt-0.5">
+                  {emailErrors[idx]}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={addEmail}
+          className="h-7 px-2 rounded-md border border-dashed border-border text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+          disabled={saveMutation.isPending}
+        >
+          <Plus size={11} /> Add email
+        </button>
+      </div>
+
+      {/* Preferences */}
+      <div className="space-y-1.5">
+        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+          Preferences
+        </div>
+        <textarea
+          value={preferences}
+          onChange={(e) => setPreferences(e.target.value)}
+          placeholder="e.g. Prefers ½ mm out of occlusion, prefers to be texted if questions"
+          rows={3}
+          className="w-full px-2 py-1.5 rounded-md bg-background border border-input text-xs resize-none"
+          disabled={saveMutation.isPending}
+        />
+      </div>
+
+      <div className="flex items-center justify-end gap-3">
+        {isDirty && !saveMutation.isPending && (
+          <span className="text-[11px] text-warning font-medium flex items-center gap-1">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-warning" />
+            Unsaved profile changes
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => saveMutation.mutate()}
+          disabled={saveMutation.isPending || hasErrors}
+          className="h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium inline-flex items-center gap-1.5 hover:bg-primary/90 disabled:opacity-60"
+        >
+          {saveMutation.isPending && (
+            <Loader2 size={11} className="animate-spin" />
+          )}
+          Save profile
+        </button>
+      </div>
+
+      {/* Rename confirmation */}
+      <AlertDialog
+        open={renameConfirmOpen}
+        onOpenChange={(o) => {
+          if (!o) setRenameConfirmOpen(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rename doctor?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Renaming <strong>{doctorName}</strong> to{" "}
+              <strong>{newName.trim()}</strong> will update the doctor name on
+              all existing cases and pricing overrides for this doctor at this
+              practice. This cannot be undone automatically.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <button
+              type="button"
+              onClick={() => setRenameConfirmOpen(false)}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-secondary"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => renameMutation.mutate()}
+              disabled={renameMutation.isPending}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60 gap-1.5"
+            >
+              {renameMutation.isPending && (
+                <Loader2 size={13} className="animate-spin" />
+              )}
+              Rename
+            </button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={assignmentConfirmOpen}
+        onOpenChange={setAssignmentConfirmOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove practice access?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This provider login will immediately lose access to{" "}
+              {removedAssignments
+                .map((assignment) => assignment.practiceName)
+                .join(", ")}
+              . Cases, invoices, statements, pricing, and billing history will
+              stay with their original practices.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <button
+              type="button"
+              onClick={() => setAssignmentConfirmOpen(false)}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-secondary"
+            >
+              Keep access
+            </button>
+            <button
+              type="button"
+              onClick={() => assignmentMutation.mutate()}
+              disabled={assignmentMutation.isPending}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-60 gap-1.5"
+            >
+              {assignmentMutation.isPending && (
+                <Loader2 size={13} className="animate-spin" />
+              )}
+              Remove access and save
+            </button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 function DoctorPricingRow({
   doctorName,
   accountNumber,
+  userId,
   providerOrg,
   labOrganizationId,
   tiers,
@@ -3519,6 +4968,7 @@ function DoctorPricingRow({
 }: {
   doctorName: string;
   accountNumber?: string | null;
+  userId?: string | null;
   providerOrg: Organization;
   labOrganizationId: string;
   tiers: PracticePricingTier[];
@@ -3541,6 +4991,7 @@ function DoctorPricingRow({
       ? `Tier: practice default (${practiceDefaultTierName})`
       : "Tier: practice default (no tier set)";
   const [open, setOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [tierName, setTierName] = useState<string>(existing?.tierName ?? "");
   const [prices, setPrices] = useState<Record<string, string>>(() =>
@@ -3553,6 +5004,8 @@ function DoctorPricingRow({
     Record<string, string>
   >(() => discountMapToStrings(existing?.discountPercents));
   const [error, setError] = useState<string | null>(null);
+  // Repricing dialog state: null = closed; number = count shown in dialog.
+  const [pendingRepricingCount, setPendingRepricingCount] = useState<number | null>(null);
 
   // If the cached override changes (e.g. after another save), reset state.
   useEffect(() => {
@@ -3622,7 +5075,7 @@ function DoctorPricingRow({
     );
 
   const saveMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (repriceDraftInvoices: boolean) => {
       const payload: Record<string, unknown> = {
         labOrganizationId,
         doctorName: doctorName.trim(),
@@ -3632,6 +5085,7 @@ function DoctorPricingRow({
         prices: nextPrices,
         defaultDiscountPercent: defaultDiscountNum,
         discountPercents: nextDiscountPercents,
+        repriceDraftInvoices,
       };
       if (existing) {
         return apiFetch<PracticePricingOverride>(
@@ -3661,6 +5115,27 @@ function DoctorPricingRow({
     },
   });
 
+  // Pre-save hook: check whether any open invoices exist for this doctor.
+  // If so, show the repricing confirmation dialog.
+  async function handleSaveClick() {
+    try {
+      const params = new URLSearchParams({
+        doctorName,
+        labOrganizationId,
+      });
+      const result = await apiFetch<{ count: number }>(
+        `/pricing/overrides/pending-repricing-count?${params.toString()}`
+      );
+      if (result.count > 0) {
+        setPendingRepricingCount(result.count);
+        return; // dialog will handle the actual save
+      }
+    } catch {
+      // Count fetch failed — proceed without the dialog (non-fatal).
+    }
+    saveMutation.mutate(false);
+  }
+
   const tierMissing =
     !!existing?.tierName &&
     !tiers.some(
@@ -3673,18 +5148,35 @@ function DoctorPricingRow({
         <div className="min-w-0 flex-1">
           <div className="font-medium truncate">{doctorName}</div>
           <div className="text-[11px] text-muted-foreground truncate">
-            {accountNumber && <span className="mr-1">#{accountNumber} ·</span>}
+            {accountNumber && (
+              <span className="mr-1">
+                #{formatAccountNumberForDisplay(accountNumber).replace(/^#/, "")} ·
+              </span>
+            )}
             {summaryBits.join(" · ")}
           </div>
         </div>
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => { setOpen((v) => !v); setProfileOpen(false); }}
           className="h-8 px-3 rounded-md border border-input bg-background text-xs font-medium hover:bg-secondary inline-flex items-center gap-1.5 shrink-0"
           aria-expanded={open}
         >
           {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           Adjust pricing
+        </button>
+        <button
+          type="button"
+          onClick={() => { setProfileOpen((v) => !v); setOpen(false); }}
+          className={`h-8 px-3 rounded-md border text-xs font-medium inline-flex items-center gap-1.5 shrink-0 ${
+            profileOpen
+              ? "border-primary/60 bg-primary/10 text-primary"
+              : "border-input bg-background hover:bg-secondary"
+          }`}
+          aria-expanded={profileOpen}
+        >
+          {profileOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          Profile
         </button>
         {canRemove && (
           <button
@@ -3707,6 +5199,20 @@ function DoctorPricingRow({
           doctorName={doctorName}
           onClose={() => setRemoveOpen(false)}
         />
+      )}
+
+      {profileOpen && (
+        <div className="pl-2 border-l-2 border-primary/30 ml-2 pt-1 pb-2">
+          <div className="pl-3">
+            <DoctorProfilePanel
+              labOrgId={labOrganizationId}
+              providerOrgId={providerOrg.id}
+              userId={userId}
+              doctorName={doctorName}
+              isAdmin={!readOnly && !!canRemove}
+            />
+          </div>
+        </div>
       )}
 
       {open && (
@@ -3929,8 +5435,9 @@ function DoctorPricingRow({
               <div className="flex justify-end">
                 <button
                   type="button"
-                  onClick={() => saveMutation.mutate()}
+                  onClick={handleSaveClick}
                   disabled={saveMutation.isPending}
+                  data-testid="save-pricing-btn"
                   className="h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
                 >
                   {saveMutation.isPending && (
@@ -3940,6 +5447,47 @@ function DoctorPricingRow({
                 </button>
               </div>
             )}
+
+            <AlertDialog
+              open={pendingRepricingCount !== null}
+              onOpenChange={(o) => { if (!o) setPendingRepricingCount(null); }}
+            >
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Update open invoices?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {pendingRepricingCount === 1
+                      ? "There is 1 open invoice for this doctor."
+                      : `There are ${pendingRepricingCount} open invoices for this doctor.`}{" "}
+                    Apply the new pricing to {pendingRepricingCount === 1 ? "it" : "them"} now?
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <button
+                    type="button"
+                    data-testid="repricing-no-btn"
+                    onClick={() => {
+                      setPendingRepricingCount(null);
+                      saveMutation.mutate(false);
+                    }}
+                    className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-secondary"
+                  >
+                    No, keep as-is
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="repricing-yes-btn"
+                    onClick={() => {
+                      setPendingRepricingCount(null);
+                      saveMutation.mutate(true);
+                    }}
+                    className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    Yes, update invoices
+                  </button>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         </div>
       )}

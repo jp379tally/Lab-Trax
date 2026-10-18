@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { CalendarDays } from "lucide-react";
 
 export type DateRangePresetKey =
   | "today"
@@ -84,11 +85,21 @@ function toInputDate(iso: string): string {
   return `${yr}-${mo}-${da}`;
 }
 
+/** Renders an ISO string as zero-padded "MM/DD/YYYY" for human-facing labels. */
+function toDisplayDate(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${mo}/${da}/${d.getFullYear()}`;
+}
+
 export function rangeLabel(range: DateRange): string {
   const presetLabel =
     PRESETS.find((p) => p.key === range.preset)?.label ?? "Custom";
-  const fromS = toInputDate(range.from);
-  const toS = toInputDate(range.to);
+  const fromS = toDisplayDate(range.from);
+  const toS = toDisplayDate(range.to);
   return `${presetLabel} (${fromS} → ${toS})`;
 }
 
@@ -128,11 +139,14 @@ export function DateRangePicker({ value, onChange }: Props) {
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 rounded-lg border border-border/70 bg-card p-1.5 shadow-sm">
+      <CalendarDays size={15} className="ml-1 shrink-0 text-muted-foreground" aria-hidden="true" />
       <select
         value={value.preset}
         onChange={(e) => applyPreset(e.target.value as DateRangePresetKey)}
-        className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+        data-testid="date-range-preset"
+        aria-label="Date range preset"
+        className="reports-date-control h-8 min-w-0 max-w-full rounded-md border border-transparent bg-transparent px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {PRESETS.map((p) => (
           <option key={p.key} value={p.key}>
@@ -147,7 +161,8 @@ export function DateRangePicker({ value, onChange }: Props) {
             value={customFrom}
             onChange={(e) => setCustomFrom(e.target.value)}
             onBlur={applyCustom}
-            className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+            aria-label="Start date"
+            className="reports-date-control h-8 min-w-0 max-w-full rounded-md border border-transparent bg-transparent px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           <span className="text-xs text-muted-foreground">to</span>
           <input
@@ -155,7 +170,8 @@ export function DateRangePicker({ value, onChange }: Props) {
             value={customTo}
             onChange={(e) => setCustomTo(e.target.value)}
             onBlur={applyCustom}
-            className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+            aria-label="End date"
+            className="reports-date-control h-8 min-w-0 max-w-full rounded-md border border-transparent bg-transparent px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         </>
       )}

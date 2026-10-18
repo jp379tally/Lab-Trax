@@ -22,7 +22,16 @@ import {
   type UpdateInvoiceInputItemsItem,
 } from "@workspace/api-client-react";
 import { queryClient, resilientFetch } from "@/lib/query-client";
+import { refreshCaseFinanceQueries } from "@/lib/refresh-case-finance";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
+import { useMe, canAdminAnyLab } from "@/lib/auth-me";
+import { formatMoney } from "@/lib/format";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+  useDismissKeyboardOnTap,
+} from "@/components/ui/DismissKeyboardView";
+import { filterItemsByName } from "@workspace/item-name-match";
 
 // useLocalSearchParams values are `string | string[]` — coerce to a single value.
 function firstParam(value: string | string[] | undefined): string | undefined {
@@ -32,7 +41,6 @@ function firstParam(value: string | string[] | undefined): string | undefined {
 
 // ── Status options (mirror desktop invoice statuses) ──────────────────────────
 const STATUS_OPTIONS: { value: NonNullable<UpdateInvoiceInput["status"]>; label: string }[] = [
-  { value: "draft", label: "Draft" },
   { value: "open", label: "Open" },
   { value: "partially_paid", label: "Partial" },
   { value: "paid", label: "Paid" },
@@ -58,6 +66,7 @@ interface RawLineItem {
   description?: string | null;
   quantity?: number | string | null;
   unitPrice?: number | string | null;
+  isDiscount?: boolean | null;
   subItems?: RawSubItem[] | null;
 }
 
@@ -67,6 +76,7 @@ interface DraftLine {
   description: string;
   quantity: string;
   unitPrice: string;
+  isDiscount: boolean;
   tooth: string;
   // Carried through untouched so the server doesn't hard-delete nested rows.
   subItems: RawSubItem[];
@@ -81,12 +91,18 @@ interface BillableItem {
   id: string;
   name: string;
   unitPrice: string | null;
+  priceKey?: string | null;
+  isDiscount?: boolean;
 }
 
 type InvoiceRecord = {
   id?: string;
   invoiceNumber?: string | null;
   status?: string | null;
+  tax?: number | string | null;
+  discount?: number | string | null;
+  total?: number | string | null;
+  balanceDue?: number | string | null;
   notes?: string | null;
   labOrganizationId?: string | null;
   frozen?: boolean | null;
@@ -121,28 +137,69 @@ function num(value: number | string | null | undefined, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function draftLineTotal(line: DraftLine): number {
+  const magnitude = num(line.quantity, 0) * num(line.unitPrice, 0);
+  const mainItemTotal = line.isDiscount ? -Math.abs(magnitude) : magnitude;
+  const subItemTotal = line.subItems.reduce(
+    (sum, sub) => sum + num(sub.quantity, 0) * num(sub.unitPrice, 0),
+    0,
+  );
+  return mainItemTotal + subItemTotal;
+}
+
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}/${dd}/${d.getFullYear()}`;
+}
+
 export default function InvoiceEditorScreen() {
   const { colors } = useTheme();
   const params = useLocalSearchParams<{ id?: string | string[] }>();
   const invoiceId = firstParam(params.id) ?? null;
+  const me = useMe().data;
+  const isAdminOrOwner = canAdminAnyLab(me);
 
   const invoiceQuery = useInvoice(invoiceId);
   const invoice = (invoiceQuery.data ?? null) as InvoiceRecord | null;
   const updateInvoice = useUpdateInvoice();
 
   const [invoiceNumber, setInvoiceNumber] = useState("");
-  const [status, setStatus] = useState<NonNullable<UpdateInvoiceInput["status"]>>("draft");
+  const [status, setStatus] = useState<NonNullable<UpdateInvoiceInput["status"]>>("open");
   const [teeth, setTeeth] = useState("");
   const [shade, setShade] = useState("");
   const [billTo, setBillTo] = useState("");
   const [notes, setNotes] = useState("");
+  const [tax, setTax] = useState("0");
+  const [discount, setDiscount] = useState("0");
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
   // Billable items fetched from the lab's items list (vendorType=item).
   const [billableItems, setBillableItems] = useState<BillableItem[]>([]);
+  const [discountCatalogItems, setDiscountCatalogItems] = useState<BillableItem[]>([]);
+  const discountPriceKeys = new Set(
+    discountCatalogItems
+      .map((item) => item.priceKey)
+      .filter((key): key is string => !!key),
+  );
+  const pickableBillableItems = billableItems.filter(
+    (item) => !item.priceKey || !discountPriceKeys.has(item.priceKey),
+  );
+  // Tier-resolved prices for each billable item, keyed by item name (display label).
+  // Populated from /api/pricing/resolve-items when the invoice has a linked caseId.
+  const [resolvedPrices, setResolvedPrices] = useState<Record<string, number>>({});
   const [pickerVisible, setPickerVisible] = useState(false);
+  // null  → picker is being used to ADD a new line
+  // >= 0  → picker is being used to UPDATE description of the line at that index
+  const [pickerLineIdx, setPickerLineIdx] = useState<number | null>(null);
+  // Line indexes that the user has explicitly switched to free-text edit mode
+  // (after choosing "Custom item" from the picker for an existing line).
+  const [descEditLineIdxes, setDescEditLineIdxes] = useState<ReadonlySet<number>>(new Set());
 
   // Prefill the form once the invoice loads.
   useEffect(() => {
@@ -155,12 +212,14 @@ export default function InvoiceEditorScreen() {
 
     setInvoiceNumber(invoice.invoiceNumber ?? "");
     setStatus(
-      (STATUS_OPTIONS.find((o) => o.value === invoice.status)?.value ?? "draft"),
+      (STATUS_OPTIONS.find((o) => o.value === invoice.status)?.value ?? "open"),
     );
     setTeeth(typeof meta.teeth === "string" ? meta.teeth : "");
     setShade(typeof meta.shade === "string" ? meta.shade : "");
     setBillTo(typeof meta.billTo === "string" ? meta.billTo : "");
     setNotes(invoice.notes ?? "");
+    setTax(String(num(invoice.tax)));
+    setDiscount(String(num(invoice.discount)));
     setLines(
       raw.map((it, idx) => {
         const subItems = Array.isArray(it.subItems) ? it.subItems : [];
@@ -171,7 +230,10 @@ export default function InvoiceEditorScreen() {
           id: it.id ?? null,
           description: it.description ?? "",
           quantity: String(Math.max(0, Math.round(num(it.quantity, 1)))),
-          unitPrice: String(num(it.unitPrice, 0)),
+          unitPrice: String(
+            it.isDiscount ? Math.abs(num(it.unitPrice, 0)) : num(it.unitPrice, 0),
+          ),
+          isDiscount: !!it.isDiscount,
           tooth:
             it.toothLabel != null && it.toothLabel !== ""
               ? it.toothLabel
@@ -188,6 +250,57 @@ export default function InvoiceEditorScreen() {
     );
     setHydrated(true);
   }, [invoice, hydrated]);
+
+  // Fetch tier-resolved prices once the invoice's linked caseId is known.
+  // When there is no caseId (standalone invoice, or invoice not yet loaded),
+  // clear any stale map so pricing from a previous invoice can't bleed through.
+  useEffect(() => {
+    const caseId = invoice?.caseId;
+    if (!caseId) {
+      setResolvedPrices({});
+      return;
+    }
+    let cancelled = false;
+    resilientFetch(`/api/pricing/resolve-items?caseId=${encodeURIComponent(caseId)}`)
+      .then((res) => res.json())
+      .then((data: unknown) => {
+        if (cancelled) return;
+        // Server wraps the response in ok() → { ok: true, data: { items: [...] } }
+        const payload =
+          data !== null && typeof data === "object"
+            ? (data as Record<string, unknown>)
+            : {};
+        const inner =
+          payload.data !== null && typeof payload.data === "object"
+            ? (payload.data as Record<string, unknown>)
+            : payload;
+        const items = Array.isArray(inner.items) ? inner.items : [];
+        const map: Record<string, number> = {};
+        for (const item of items) {
+          const it = item as Record<string, unknown>;
+          const label = typeof it.label === "string" ? it.label : null;
+          const price =
+            typeof it.unitPrice === "number"
+              ? it.unitPrice
+              : parseFloat(String(it.unitPrice ?? ""));
+          // Accept 0 as a valid resolved price (no-charge / default fallback);
+          // only reject non-finite values (NaN, Infinity).
+          if (label && Number.isFinite(price)) {
+            map[label] = price;
+          }
+        }
+        setResolvedPrices(map);
+      })
+      .catch(() => {
+        // On error keep the existing map empty — do not fall through to stale
+        // pricing from a previous invoice. The empty state causes resolveItemPrice
+        // to fall back to raw item.unitPrice, which is the safe default.
+        setResolvedPrices({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [invoice?.caseId]);
 
   // Fetch billable items once labOrganizationId is known.
   useEffect(() => {
@@ -218,16 +331,72 @@ export default function InvoiceEditorScreen() {
     };
   }, [invoice?.labOrganizationId]);
 
+  // Explicit discounts come from the lab pricing catalog, not the vendor
+  // item list, and are available even when this invoice has no linked case.
+  useEffect(() => {
+    const labOrgId = invoice?.labOrganizationId;
+    if (!labOrgId) {
+      setDiscountCatalogItems([]);
+      return;
+    }
+    let cancelled = false;
+    const query = new URLSearchParams({ labOrganizationId: labOrgId });
+    if (invoice?.caseId) query.set("caseId", invoice.caseId);
+    resilientFetch(`/api/pricing/discount-items?${query.toString()}`)
+      .then((res) => res.json())
+      .then((data: unknown) => {
+        if (cancelled) return;
+        const payload =
+          data !== null && typeof data === "object"
+            ? (data as Record<string, unknown>)
+            : {};
+        const inner =
+          payload.data !== null && typeof payload.data === "object"
+            ? (payload.data as Record<string, unknown>)
+            : payload;
+        const items = Array.isArray(inner.items) ? inner.items : [];
+        setDiscountCatalogItems(
+          items.map((item) => {
+            const row = item as Record<string, unknown>;
+            return {
+              id: `discount:${String(row.key ?? row.label)}`,
+              name: String(row.label ?? ""),
+              unitPrice: String(row.unitPrice ?? ""),
+              priceKey: String(row.key ?? ""),
+              isDiscount: true,
+            };
+          }),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setDiscountCatalogItems([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [invoice?.labOrganizationId, invoice?.caseId]);
+
   function updateLine(idx: number, patch: Partial<DraftLine>) {
     setLines((prev) => prev.map((l, i) => (i === idx ? { ...l, ...patch } : l)));
   }
 
-  function addLine(item?: BillableItem) {
-    let prefillPrice = "";
-    if (item?.unitPrice != null) {
+  // Returns the best available price string for a billable item:
+  // tier-resolved price → raw unitPrice → existingPrice (fallback for existing lines) → "".
+  function resolveItemPrice(item: BillableItem, existingPrice?: string): string {
+    const tierPrice = item.isDiscount ? undefined : resolvedPrices[item.name];
+    if (tierPrice !== undefined) return String(tierPrice);
+    if (item.unitPrice != null) {
       const n = parseFloat(item.unitPrice);
-      prefillPrice = Number.isFinite(n) ? String(n) : "";
+      if (Number.isFinite(n)) return String(n);
     }
+    // When updating an existing line and no item price is available, preserve
+    // whatever the user already had rather than blanking the field.
+    if (existingPrice !== undefined) return existingPrice;
+    return "";
+  }
+
+  function addLine(item?: BillableItem) {
+    const prefillPrice = item ? resolveItemPrice(item) : "";
     setLines((prev) => [
       ...prev,
       {
@@ -235,6 +404,24 @@ export default function InvoiceEditorScreen() {
         description: item?.name ?? "",
         quantity: "1",
         unitPrice: prefillPrice,
+        isDiscount: !!item?.isDiscount,
+        tooth: "",
+        subItems: [],
+        metaLabel: "",
+        metaSubLabels: [],
+      },
+    ]);
+  }
+
+  function addDiscountLine() {
+    setLines((prev) => [
+      ...prev,
+      {
+        id: null,
+        description: "",
+        quantity: "1",
+        unitPrice: "",
+        isDiscount: true,
         tooth: "",
         subItems: [],
         metaLabel: "",
@@ -245,11 +432,18 @@ export default function InvoiceEditorScreen() {
 
   // Opens the picker when items exist; otherwise adds a blank line immediately.
   function handleAddLine() {
-    if (billableItems.length > 0) {
+    if (pickableBillableItems.length > 0 || discountCatalogItems.length > 0) {
+      setPickerLineIdx(null); // null = adding a new line
       setPickerVisible(true);
     } else {
       addLine();
     }
+  }
+
+  // Opens the picker to change the description of an existing line.
+  function openPickerForLine(idx: number) {
+    setPickerLineIdx(idx);
+    setPickerVisible(true);
   }
 
   function removeLine(idx: number) {
@@ -257,17 +451,23 @@ export default function InvoiceEditorScreen() {
   }
 
   const subtotal = useMemo(
-    () =>
-      lines.reduce((sum, l) => {
-        const lineTotal = num(l.quantity, 0) * num(l.unitPrice, 0);
-        const subTotal = l.subItems.reduce(
-          (s, sub) => s + num(sub.quantity, 0) * num(sub.unitPrice, 0),
-          0,
-        );
-        return sum + lineTotal + subTotal;
-      }, 0),
+    () => lines.reduce((sum, line) => sum + draftLineTotal(line), 0),
     [lines],
   );
+  const credits = Math.max(
+    0,
+    num(readMeta(invoice).credits as number | string | null | undefined, 0),
+  );
+  const displayedTotal =
+    subtotal +
+    num(tax, 0) -
+    num(discount, 0) -
+    credits;
+  const paidAmount =
+    invoice?.total != null && invoice.balanceDue != null
+      ? num(invoice.total, 0) - num(invoice.balanceDue, 0)
+      : 0;
+  const displayedAmountDue = displayedTotal - paidAmount;
 
   async function handleSave() {
     // Legacy mobile-created invoices surface with a `mobile:`-prefixed id and no
@@ -283,6 +483,25 @@ export default function InvoiceEditorScreen() {
       Alert.alert("Description required", "Every line item needs a description.");
       return;
     }
+    const invalidPrice = lines.some((line) => {
+      const values = [line.unitPrice, ...line.subItems.map((sub) => String(sub.unitPrice ?? ""))];
+      return values.some((value) => value.trim() === "" || !Number.isFinite(Number(value)) || Number(value) < 0);
+    });
+    if (lines.some((line) => line.isDiscount && Number(line.unitPrice) <= 0)) {
+      Alert.alert("Valid discount required", "Discount amounts must be greater than 0.");
+      return;
+    }
+    if (invalidPrice) {
+      Alert.alert(
+        "Valid price required",
+        "Every line item needs a valid price. Enter 0 for a no-charge item.",
+      );
+      return;
+    }
+    if ([tax, discount].some((value) => !Number.isFinite(Number(value)) || Number(value) < 0)) {
+      Alert.alert("Valid amount required", "Tax and discount must be valid, non-negative amounts.");
+      return;
+    }
 
     // (D) Spread the existing displayMetadata so credits / patientName /
     // caseNotes survive — the server derives the invoice total from meta.credits.
@@ -290,6 +509,11 @@ export default function InvoiceEditorScreen() {
     const existingMeta = readMeta(invoice);
     const displayMetadata: Record<string, unknown> = {
       ...existingMeta,
+      ...(existingMeta.legacyChargesNeedsReview === true ? {
+        legacyChargesNeedsReview: false,
+        reviewedCharges: true,
+        reviewedChargesNeedsReview: false,
+      } : {}),
       teeth: teeth.trim(),
       shade: shade.trim(),
       billTo: billTo.trim(),
@@ -310,7 +534,8 @@ export default function InvoiceEditorScreen() {
       toothNumber: parseToothNumber(l.tooth),
       description: l.description.trim(),
       quantity: Math.max(0, Math.round(num(l.quantity, 1))),
-      unitPrice: num(l.unitPrice, 0),
+      unitPrice: l.isDiscount ? -Math.abs(Number(l.unitPrice)) : Number(l.unitPrice),
+      isDiscount: l.isDiscount,
       sortOrder: idx,
       // (C) Round-trip sub-items untouched so the server doesn't hard-delete them.
       subItems: l.subItems.map((sub, sidx) => ({
@@ -318,7 +543,7 @@ export default function InvoiceEditorScreen() {
         toothNumber: sub.toothNumber ?? null,
         description: (sub.description ?? "").trim(),
         quantity: num(sub.quantity, 0),
-        unitPrice: num(sub.unitPrice, 0),
+        unitPrice: Number(sub.unitPrice),
         sortOrder: sub.sortOrder ?? sidx,
       })),
     }));
@@ -331,20 +556,27 @@ export default function InvoiceEditorScreen() {
           invoiceNumber: invoiceNumber.trim(),
           status,
           notes: notes.trim() || null,
+          tax: Number(tax),
+          discount: Number(discount),
           displayMetadata,
           items,
         },
       });
-      await queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      router.back();
     } catch (e) {
       Alert.alert(
         "Couldn't save invoice",
         e instanceof Error ? e.message : "Please try again.",
       );
+      return;
     } finally {
       setSaving(false);
     }
+    // The API write is committed. A failed refetch must never turn it into
+    // a retryable "save failed" state or drop the editor's successful exit.
+    void refreshCaseFinanceQueries(queryClient).catch(() => {
+      Alert.alert("Invoice saved", "Some totals could not refresh. Reopen the report to retry.");
+    });
+    router.back();
   }
 
   const styles = makeStyles(colors);
@@ -356,6 +588,7 @@ export default function InvoiceEditorScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={["top", "bottom"]}>
+      <DismissKeyboardView style={styles.flex} testID="invoice-editor-keyboard-dismiss">
       <View style={styles.header}>
         <Pressable
           onPress={() => router.back()}
@@ -419,10 +652,20 @@ export default function InvoiceEditorScreen() {
           style={{ flex: 1 }}
         >
           <ScrollView
+            testID="invoice-editor-scroll"
+            horizontal={false}
             style={styles.body}
             contentContainerStyle={styles.bodyContent}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={scrollKeyboardDismissMode}
           >
+            {readMeta(invoice).legacyChargesNeedsReview === true && (
+              <View style={styles.frozenBanner} testID="invoice-editor-legacy-review-warning">
+                <Text accessibilityRole="alert" style={styles.frozenBannerText}>
+                  Legacy charges need review. Some charges have missing ownership information. Charges and totals have been left unchanged. Check each charge against the case, remove any obsolete charges, then save to confirm your review.
+                </Text>
+              </View>
+            )}
             {/* ── Frozen banner ── */}
             {invoice.frozen && (
               <View style={styles.frozenBanner} testID="invoice-editor-frozen-banner">
@@ -431,9 +674,7 @@ export default function InvoiceEditorScreen() {
                   <Text style={styles.frozenBannerText}>
                     {invoice.caseDeletedNote ?? "Invoice is frozen — the linked case was deleted."}
                     {invoice.linkedCaseNumber ? ` — Case ${invoice.linkedCaseNumber}` : ""}
-                    {invoice.caseDeletedAt
-                      ? ` · ${new Date(invoice.caseDeletedAt).toLocaleDateString()}`
-                      : ""}
+                    {invoice.caseDeletedAt ? ` · ${fmtDate(invoice.caseDeletedAt)}` : ""}
                     {" "}This invoice cannot be edited.
                   </Text>
                   {invoice.caseId && (
@@ -541,6 +782,8 @@ export default function InvoiceEditorScreen() {
                 placeholderTextColor={colors.textTertiary}
                 multiline
                 numberOfLines={4}
+                autoCorrect={true}
+                spellCheck={true}
                 autoCapitalize="sentences"
                 textAlignVertical="top"
                 testID="invoice-editor-notes"
@@ -551,15 +794,25 @@ export default function InvoiceEditorScreen() {
             <View style={styles.card}>
               <View style={styles.cardHeaderRow}>
                 <Text style={styles.cardHeading}>Line items</Text>
-                <Pressable
-                  onPress={handleAddLine}
-                  style={styles.addBtn}
-                  hitSlop={8}
-                  testID="invoice-editor-add-line"
-                >
-                  <Ionicons name="add" size={18} color={colors.tint} />
-                  <Text style={styles.addBtnText}>Add</Text>
-                </Pressable>
+                <View style={styles.cardHeaderActions}>
+                  <Pressable
+                    onPress={addDiscountLine}
+                    style={styles.addBtn}
+                    hitSlop={8}
+                    testID="invoice-editor-add-discount"
+                  >
+                    <Text style={styles.addBtnText}>Add discount</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={handleAddLine}
+                    style={styles.addBtn}
+                    hitSlop={8}
+                    testID="invoice-editor-add-line"
+                  >
+                    <Ionicons name="add" size={18} color={colors.tint} />
+                    <Text style={styles.addBtnText}>Add</Text>
+                  </Pressable>
+                </View>
               </View>
 
               {lines.length === 0 ? (
@@ -568,7 +821,9 @@ export default function InvoiceEditorScreen() {
                 lines.map((line, idx) => (
                   <View key={line.id ?? `new-${idx}`} style={styles.lineCard} testID={`invoice-editor-line-${idx}`}>
                     <View style={styles.lineHeaderRow}>
-                      <Text style={styles.lineIndex}>Item {idx + 1}</Text>
+                      <Text style={styles.lineIndex}>
+                        {line.isDiscount ? "Discount" : `Item ${idx + 1}`}
+                      </Text>
                       <Pressable
                         onPress={() => removeLine(idx)}
                         hitSlop={8}
@@ -577,16 +832,45 @@ export default function InvoiceEditorScreen() {
                         <Ionicons name="trash-outline" size={18} color={colors.error} />
                       </Pressable>
                     </View>
-                    <TextInput
-                      value={line.description}
-                      onChangeText={(t) => updateLine(idx, { description: t })}
-                      style={styles.input}
-                      placeholder="Description"
-                      placeholderTextColor={colors.textTertiary}
-                      autoCapitalize="sentences"
-                      testID={`invoice-editor-line-desc-${idx}`}
-                    />
-                    <View style={styles.lineFieldsRow}>
+                    {line.metaLabel ? (
+                      <Text style={styles.miniLabel}>Item: {line.metaLabel}</Text>
+                    ) : null}
+                    {(billableItems.length > 0 || discountCatalogItems.length > 0) && !descEditLineIdxes.has(idx) ? (
+                      <Pressable
+                        style={[styles.input, styles.descPickerTrigger]}
+                        onPress={() => openPickerForLine(idx)}
+                        testID={`invoice-editor-line-desc-${idx}`}
+                        accessibilityLabel={`Description for item ${idx + 1}`}
+                      >
+                        <Text
+                          style={line.description ? styles.descPickerValue : styles.descPickerPlaceholder}
+                          numberOfLines={1}
+                        >
+                          {line.description || "Description"}
+                        </Text>
+                        <Ionicons name="chevron-down-outline" size={16} color={colors.textTertiary} />
+                      </Pressable>
+                    ) : (
+                      <TextInput
+                        value={line.description}
+                        onChangeText={(t) => updateLine(idx, { description: t })}
+                        style={styles.input}
+                        placeholder="Description"
+                        placeholderTextColor={colors.textTertiary}
+                        autoCorrect={true}
+                        spellCheck={true}
+                        autoCapitalize="sentences"
+                        autoFocus={descEditLineIdxes.has(idx)}
+                        testID={`invoice-editor-line-desc-${idx}`}
+                      />
+                    )}
+                    {line.isDiscount && (
+                      <Text style={styles.discountBadge}>DISCOUNT</Text>
+                    )}
+                    <View
+                      style={styles.lineFieldsRow}
+                      testID={`invoice-editor-line-fields-${idx}`}
+                    >
                       <View style={styles.lineFieldThird}>
                         <Text style={styles.miniLabel}>Tooth</Text>
                         <TextInput
@@ -597,6 +881,7 @@ export default function InvoiceEditorScreen() {
                           placeholderTextColor={colors.textTertiary}
                           autoCapitalize="none"
                           testID={`invoice-editor-line-tooth-${idx}`}
+                          accessibilityLabel={`Tooth for item ${idx + 1}`}
                         />
                       </View>
                       <View style={styles.lineFieldThird}>
@@ -609,12 +894,20 @@ export default function InvoiceEditorScreen() {
                           placeholder="1"
                           placeholderTextColor={colors.textTertiary}
                           testID={`invoice-editor-line-qty-${idx}`}
+                          accessibilityLabel={`Quantity for item ${idx + 1}`}
                         />
                       </View>
-                      <View style={styles.lineFieldThird}>
-                        <Text style={styles.miniLabel}>Unit price</Text>
+                      <View
+                        style={[styles.lineFieldThird, styles.linePriceField]}
+                        testID={`invoice-editor-line-price-field-${idx}`}
+                      >
+                        <Text style={styles.miniLabel}>
+                          {line.isDiscount ? "Discount amount" : "Unit price"}
+                        </Text>
                         <View style={[styles.input, styles.priceInputWrap]}>
-                          <Text style={styles.priceDollar}>$</Text>
+                          <Text style={styles.priceDollar}>
+                            {line.isDiscount ? "−$" : "$"}
+                          </Text>
                           <TextInput
                             value={line.unitPrice}
                             onChangeText={(t) => updateLine(idx, { unitPrice: t })}
@@ -623,6 +916,11 @@ export default function InvoiceEditorScreen() {
                             placeholder="0.00"
                             placeholderTextColor={colors.textTertiary}
                             testID={`invoice-editor-line-price-${idx}`}
+                            accessibilityLabel={
+                              line.isDiscount
+                                ? `Discount amount for item ${idx + 1}`
+                                : `Unit price for item ${idx + 1}`
+                            }
                           />
                         </View>
                       </View>
@@ -633,18 +931,60 @@ export default function InvoiceEditorScreen() {
                         {line.subItems.length === 1 ? "" : "s"} (edit on desktop)
                       </Text>
                     ) : null}
+                    <Text
+                      style={styles.lineAmount}
+                      testID={`invoice-editor-line-total-${idx}`}
+                    >
+                      {formatMoney(draftLineTotal(line))}
+                    </Text>
                   </View>
                 ))
               )}
 
               <View style={styles.subtotalRow}>
                 <Text style={styles.subtotalLabel}>Subtotal</Text>
-                <Text style={styles.subtotalValue}>
-                  $
-                  {subtotal.toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}
+                <Text style={styles.subtotalValue} testID="invoice-editor-subtotal">
+                  {formatMoney(subtotal)}
+                </Text>
+              </View>
+              <View style={styles.amountRow}>
+                <Text style={styles.subtotalLabel}>Tax</Text>
+                <TextInput
+                  accessibilityLabel="Tax amount"
+                  testID="invoice-editor-tax"
+                  style={[styles.input, styles.amountInput]}
+                  keyboardType="decimal-pad"
+                  value={tax}
+                  onChangeText={setTax}
+                />
+              </View>
+              <View style={styles.amountRow}>
+                <Text style={styles.subtotalLabel}>Discount</Text>
+                <TextInput
+                  accessibilityLabel="Discount amount"
+                  testID="invoice-editor-discount"
+                  style={[styles.input, styles.amountInput]}
+                  keyboardType="decimal-pad"
+                  value={discount}
+                  onChangeText={setDiscount}
+                />
+              </View>
+              {credits > 0 && (
+                <View style={styles.amountRow}>
+                  <Text style={styles.subtotalLabel}>Credits applied</Text>
+                  <Text style={styles.subtotalValue}>{`−${formatMoney(credits)}`}</Text>
+                </View>
+              )}
+              <View style={styles.subtotalRow}>
+                <Text style={styles.subtotalLabel}>Total</Text>
+                <Text style={styles.subtotalValue} testID="invoice-editor-total">
+                  {formatMoney(displayedTotal)}
+                </Text>
+              </View>
+              <View style={styles.subtotalRow}>
+                <Text style={styles.subtotalLabel}>Amount due</Text>
+                <Text style={styles.subtotalValue} testID="invoice-editor-amount-due">
+                  {formatMoney(displayedAmountDue)}
                 </Text>
               </View>
             </View>
@@ -652,19 +992,52 @@ export default function InvoiceEditorScreen() {
 
           <ItemPickerSheet
             visible={pickerVisible}
-            items={billableItems}
+            items={[...pickableBillableItems, ...discountCatalogItems]}
+            resolvedPrices={resolvedPrices}
+            isAdminOrOwner={isAdminOrOwner}
             onSelect={(item) => {
               setPickerVisible(false);
-              if (item) {
-                addLine(item);
+              if (pickerLineIdx === null) {
+                // Adding a new line via the "+ Add" button.
+                if (item) {
+                  addLine(item);
+                } else {
+                  addLine(); // "Custom item" → blank new line
+                }
               } else {
-                addLine();
+                // Updating the description of an existing line.
+                if (item) {
+                  updateLine(pickerLineIdx, {
+                    description: item.name,
+                    isDiscount: !!item.isDiscount,
+                    // Pass the current line price as a last-resort fallback so
+                    // switching descriptions never silently blanks the price.
+                    unitPrice: resolveItemPrice(item, lines[pickerLineIdx]?.unitPrice),
+                  });
+                } else {
+                  // "Custom item" → switch this line to free-text edit mode.
+                  const editIdx = pickerLineIdx;
+                  setDescEditLineIdxes((prev) => {
+                    const next = new Set(prev);
+                    next.add(editIdx);
+                    return next;
+                  });
+                }
+                setPickerLineIdx(null);
               }
+            }}
+            onAddNew={(typedName) => {
+              setPickerVisible(false);
+              const params = new URLSearchParams();
+              params.set("addItem", "1");
+              if (typedName) params.set("name", typedName);
+              router.push((`/manage/pricing?${params.toString()}`) as any);
             }}
             onClose={() => setPickerVisible(false)}
           />
         </KeyboardAvoidingView>
       )}
+      </DismissKeyboardView>
     </SafeAreaView>
   );
 }
@@ -674,21 +1047,29 @@ export default function InvoiceEditorScreen() {
 interface ItemPickerSheetProps {
   visible: boolean;
   items: BillableItem[];
+  /** Tier-resolved prices keyed by item name. When present, shown instead of raw unitPrice. */
+  resolvedPrices?: Record<string, number>;
+  isAdminOrOwner?: boolean;
   onSelect: (item: BillableItem | null) => void;
+  onAddNew?: (typedName: string) => void;
   onClose: () => void;
 }
 
-function ItemPickerSheet({ visible, items, onSelect, onClose }: ItemPickerSheetProps) {
+function ItemPickerSheet({ visible, items, resolvedPrices, isAdminOrOwner, onSelect, onAddNew, onClose }: ItemPickerSheetProps) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const [search, setSearch] = useState("");
   const styles = useMemo(() => makePickerStyles(colors), [colors]);
+  // The sheet body already swallows taps so they never reach the closing
+  // backdrop, so it also carries the keyboard dismissal for this sheet.
+  const dismissKeyboard = useDismissKeyboardOnTap();
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((it) => it.name.toLowerCase().includes(q));
-  }, [items, search]);
+  // Punctuation/spacing-insensitive, ranked matching so "ema" finds
+  // "E.max Crown" and "3 unit" finds "3-Unit Bridge".
+  const filtered = useMemo(
+    () => filterItemsByName(items, search.trim()),
+    [items, search],
+  );
 
   // Reset search when sheet opens.
   useEffect(() => {
@@ -704,7 +1085,8 @@ function ItemPickerSheet({ visible, items, onSelect, onClose }: ItemPickerSheetP
         <Pressable style={styles.backdrop} onPress={onClose}>
           <Pressable
             style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}
-            onPress={() => undefined}
+            onPress={dismissKeyboard}
+            testID="item-picker-keyboard-dismiss"
           >
             <View style={styles.grabber} />
             <Text style={styles.title}>Select item</Text>
@@ -726,6 +1108,7 @@ function ItemPickerSheet({ visible, items, onSelect, onClose }: ItemPickerSheetP
               style={styles.list}
               contentContainerStyle={styles.listContent}
               keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={scrollKeyboardDismissMode}
             >
               {/* Custom item always appears first */}
               <Pressable
@@ -745,9 +1128,19 @@ function ItemPickerSheet({ visible, items, onSelect, onClose }: ItemPickerSheetP
               {items.length > 0 && <View style={styles.divider} />}
 
               {filtered.map((item) => {
+                // Prefer tier-resolved price; fall back to raw unitPrice.
+                const resolvedAmount = item.isDiscount
+                  ? undefined
+                  : resolvedPrices?.[item.name];
+                const displayAmount =
+                  resolvedAmount !== undefined
+                    ? resolvedAmount
+                    : item.unitPrice != null
+                      ? parseFloat(item.unitPrice)
+                      : null;
                 const price =
-                  item.unitPrice != null
-                    ? `$${parseFloat(item.unitPrice).toLocaleString(undefined, {
+                  displayAmount !== null && Number.isFinite(displayAmount as number)
+                    ? `${item.isDiscount ? "−" : ""}$${Math.abs(displayAmount as number).toLocaleString(undefined, {
                         minimumFractionDigits: 2,
                         maximumFractionDigits: 2,
                       })}`
@@ -760,7 +1153,12 @@ function ItemPickerSheet({ visible, items, onSelect, onClose }: ItemPickerSheetP
                     testID={`item-picker-${item.id}`}
                   >
                     <View style={styles.rowBody}>
-                      <Text style={styles.rowName}>{item.name}</Text>
+                      <View style={styles.pickerNameRow}>
+                        <Text style={styles.rowName}>{item.name}</Text>
+                        {item.isDiscount && (
+                          <Text style={styles.discountPickerBadge}>Discount</Text>
+                        )}
+                      </View>
                       {price != null && <Text style={styles.rowPrice}>{price}</Text>}
                     </View>
                     <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
@@ -770,6 +1168,28 @@ function ItemPickerSheet({ visible, items, onSelect, onClose }: ItemPickerSheetP
 
               {search.trim().length > 0 && filtered.length === 0 && (
                 <Text style={styles.emptyText}>No matching items</Text>
+              )}
+
+              {/* "Add New Billable Item" shortcut — admins/owners only */}
+              {isAdminOrOwner && onAddNew && (
+                <>
+                  <View style={styles.divider} />
+                  <Pressable
+                    style={styles.row}
+                    onPress={() => onAddNew(search.trim())}
+                    testID="item-picker-add-new"
+                  >
+                    <View style={styles.rowIconWrap}>
+                      <Ionicons name="add-circle-outline" size={18} color={colors.tint} />
+                    </View>
+                    <View style={styles.rowBody}>
+                      <Text style={[styles.rowName, { color: colors.tint }]}>
+                        Add New Billable Item
+                      </Text>
+                      <Text style={styles.rowPrice}>Go to Pricing to create it</Text>
+                    </View>
+                  </Pressable>
+                </>
               )}
             </ScrollView>
           </Pressable>
@@ -797,6 +1217,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function makeStyles(colors: ThemeColors) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.backgroundSolid },
+    flex: { flex: 1 },
     header: {
       flexDirection: "row",
       alignItems: "center",
@@ -837,6 +1258,7 @@ function makeStyles(colors: ThemeColors) {
       alignItems: "center",
       justifyContent: "space-between",
     },
+    cardHeaderActions: { flexDirection: "row", alignItems: "center", gap: 14 },
     cardHeading: { fontSize: 15, fontWeight: "700", color: colors.text },
     field: { gap: 6 },
     fieldLabel: { fontSize: 13, fontWeight: "600", color: colors.textSecondary },
@@ -869,6 +1291,7 @@ function makeStyles(colors: ThemeColors) {
     },
     priceInput: {
       flex: 1,
+      minWidth: 0,
       fontSize: 15,
       color: colors.text,
       paddingVertical: 9,
@@ -887,6 +1310,14 @@ function makeStyles(colors: ThemeColors) {
     statusChipTextActive: { color: colors.textInverse },
     addBtn: { flexDirection: "row", alignItems: "center", gap: 2 },
     addBtnText: { fontSize: 14, fontWeight: "600", color: colors.tint },
+    // Description field shown as a tappable picker trigger when billable items exist.
+    descPickerTrigger: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    descPickerValue: { flex: 1, minWidth: 0, fontSize: 15, color: colors.text },
+    descPickerPlaceholder: { flex: 1, minWidth: 0, fontSize: 15, color: colors.textTertiary },
     emptyHint: { fontSize: 14, color: colors.textTertiary, paddingVertical: 8 },
     lineCard: {
       borderWidth: StyleSheet.hairlineWidth,
@@ -902,19 +1333,49 @@ function makeStyles(colors: ThemeColors) {
       justifyContent: "space-between",
     },
     lineIndex: { fontSize: 13, fontWeight: "700", color: colors.textSecondary },
-    lineFieldsRow: { flexDirection: "row", gap: 6 },
-    lineFieldThird: { flex: 1 },
+    discountBadge: {
+      alignSelf: "flex-start",
+      color: colors.error,
+      backgroundColor: colors.error + "18",
+      borderRadius: 5,
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      fontSize: 10,
+      fontWeight: "700",
+      letterSpacing: 0.4,
+    },
+    lineAmount: {
+      alignSelf: "flex-end",
+      flexShrink: 1,
+      color: colors.textSecondary,
+      fontSize: 12,
+      fontWeight: "600",
+      textAlign: "right",
+    },
+    lineFieldsRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+    lineFieldThird: { flexGrow: 1, flexBasis: 80, minWidth: 80 },
+    linePriceField: { flexBasis: 132, minWidth: 132 },
+    amountRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    amountInput: { flexBasis: 132, flexShrink: 1, minWidth: 0, textAlign: "right" },
     subItemsNote: { fontSize: 12, color: colors.textTertiary, fontStyle: "italic" },
     subtotalRow: {
       flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 8,
       alignItems: "center",
       justifyContent: "space-between",
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: colors.border,
       paddingTop: 12,
     },
-    subtotalLabel: { fontSize: 14, fontWeight: "600", color: colors.textSecondary },
-    subtotalValue: { fontSize: 16, fontWeight: "700", color: colors.text },
+    subtotalLabel: { flexShrink: 1, fontSize: 14, fontWeight: "600", color: colors.textSecondary },
+    subtotalValue: { flexShrink: 1, fontSize: 16, fontWeight: "700", color: colors.text, textAlign: "right" },
     center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 12 },
     errorTitle: { fontSize: 16, fontWeight: "600", color: colors.text, textAlign: "center" },
     loadingHint: { fontSize: 13, color: colors.textSecondary, textAlign: "center", marginTop: 4 },
@@ -1008,7 +1469,14 @@ function makePickerStyles(colors: ThemeColors) {
       alignItems: "center",
     },
     rowBody: { flex: 1 },
+    pickerNameRow: { flexDirection: "row", alignItems: "center", gap: 6 },
     rowName: { fontSize: 15, fontWeight: "600", color: colors.text },
+    discountPickerBadge: {
+      color: colors.error,
+      fontSize: 10,
+      fontWeight: "700",
+      textTransform: "uppercase",
+    },
     rowPrice: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
     emptyText: {
       fontSize: 14,

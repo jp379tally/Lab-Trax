@@ -371,10 +371,33 @@ async function refreshAccessTokenViaCookie(): Promise<boolean> {
   }
 }
 
+// ── Active provider practice ───────────────────────────────────────────────
+// Provider-portal endpoints are tenant-scoped: the server resolves which
+// practice a provider request belongs to from the `x-provider-organization-id`
+// header (see requireSelectedProviderOrganization on the API). The desktop
+// client keeps the active practice in a module-level slot in its api layer and
+// stamps it onto every request; mobile mirrors that here so the JSON path
+// (resilientFetch) and the multipart/XHR upload paths cannot drift apart.
+//
+// Keep this as a module-level value rather than React state: uploads and
+// background syncs fire outside the component tree and still must be scoped.
+let _providerOrganizationId: string | null = null;
+
+export function setProviderOrganizationId(id: string | null): void {
+  _providerOrganizationId = id;
+}
+
+export function getProviderOrganizationId(): string | null {
+  return _providerOrganizationId;
+}
+
 function injectAuthHeaders(options?: RequestInit): RequestInit {
   const headers = new Headers(options?.headers || {});
   if (_accessToken) {
     headers.set("Authorization", `Bearer ${_accessToken}`);
+  }
+  if (_providerOrganizationId && !headers.has("x-provider-organization-id")) {
+    headers.set("x-provider-organization-id", _providerOrganizationId);
   }
   if (Platform.OS !== "web") {
     headers.set("x-labtrax-client", "mobile/2");
@@ -460,6 +483,7 @@ async function resilientFetch(
       return res;
     }
     const fallbackUrl = getApiUrlWithoutPort();
+    if (options?.signal?.aborted) return res;
     if (fallbackUrl && fallbackUrl !== primaryUrl) {
       try {
         const fallbackFullUrl = new URL(path, fallbackUrl).toString();
@@ -473,6 +497,9 @@ async function resilientFetch(
     cachedBaseUrl = primaryUrl;
     return res;
   } catch (primaryError) {
+    // An aborted AI analysis must not silently start a second request at the
+    // fallback host after the reader has released its wait state.
+    if (options?.signal?.aborted) throw primaryError;
     const fallbackUrl = getApiUrlWithoutPort();
     if (fallbackUrl && fallbackUrl !== primaryUrl) {
       try {
@@ -486,10 +513,30 @@ async function resilientFetch(
   }
 }
 
-async function throwIfResNotOk(res: Response) {
+function responseErrorFallback(res: Response): string {
+  return res.statusText || "Request failed. Please try again.";
+}
+
+export async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      throw new Error(responseErrorFallback(res));
+    }
+    if (body && typeof body === "object") {
+      const record = body as Record<string, unknown>;
+      const message = record.message;
+      if (typeof message === "string" && message.trim()) {
+        throw new Error(message);
+      }
+      const error = record.error;
+      if (typeof error === "string" && error.trim()) {
+        throw new Error(error);
+      }
+    }
+    throw new Error(responseErrorFallback(res));
   }
 }
 
@@ -529,6 +576,13 @@ export type MediaUploadResult = {
 function buildUploadHeaders(token: string | null): Record<string, string> {
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  // Multipart uploads bypass resilientFetch, so the active-practice header has
+  // to be stamped here too — otherwise a provider upload would be resolved
+  // against whatever practice the server last recorded instead of the one the
+  // portal is currently showing.
+  if (_providerOrganizationId) {
+    headers["x-provider-organization-id"] = _providerOrganizationId;
+  }
   if (Platform.OS === "web") {
     const csrf = getCsrfToken();
     if (csrf) headers["x-csrf-token"] = csrf;
@@ -629,7 +683,7 @@ export async function uploadCaseMedia(
 // (PDFs, photos) are never dropped by the Replit proxy's ~20 MB single-shot
 // limit. Falls back cleanly if the session cannot be created.
 export type ChunkedUploadResult =
-  | { ok: true; url: string; filename?: string }
+  | { ok: true; url: string; filename?: string; fileSize: number }
   | { ok: false; status?: number; error?: string };
 
 // Extracts the bare stored filename from a public media URL like
@@ -693,6 +747,9 @@ function sendBinaryPatch(
     xhr.open("PATCH", url);
     if (Platform.OS === "web") xhr.withCredentials = true;
     if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    if (_providerOrganizationId) {
+      xhr.setRequestHeader("x-provider-organization-id", _providerOrganizationId);
+    }
     if (Platform.OS === "web") {
       const csrf = getCsrfToken();
       if (csrf) xhr.setRequestHeader("x-csrf-token", csrf);
@@ -748,6 +805,7 @@ export async function chunkedUploadCaseMedia(
   fileName: string,
   mimeType: string,
   onProgress?: (fraction: number) => void,
+  knownFileSize?: number,
 ): Promise<ChunkedUploadResult> {
   // Use the shared ensureHydrated() singleton instead of an ad hoc guard.
   if (Platform.OS !== "web") {
@@ -757,35 +815,36 @@ export async function chunkedUploadCaseMedia(
     }
   }
 
-  // Resolve the file to either a Blob (web) or a decoded ArrayBuffer (native)
+  // Resolve the file to either a Blob (web) or a file size (native, read chunk-by-chunk)
   let fileBlob: Blob | null = null;
-  let fullBuffer: ArrayBuffer | null = null;
-  let fileSize = 0;
+  let fileSize = knownFileSize ?? 0;
+  // Native data: URI — decode the base64 payload once up-front (these are
+  // always small; only camera captures ever produce data: URIs).
+  let dataUriBuffer: ArrayBuffer | null = null;
 
   if (Platform.OS === "web") {
     const resp = await globalThis.fetch(fileUri);
     fileBlob = await resp.blob();
     fileSize = fileBlob.size;
-  } else {
-    // Native: read entire file as base64, decode to ArrayBuffer once
-    let rawB64 = "";
-    if (fileUri.startsWith("data:")) {
-      const idx = fileUri.indexOf(",");
-      rawB64 = idx >= 0 ? fileUri.slice(idx + 1) : fileUri;
-    } else {
-      // Dynamic import avoids bundling issues on web; use /legacy to avoid
-      // the deprecation warning on the new expo-file-system API.
-      const FS = await import("expo-file-system/legacy");
-      rawB64 = await (FS as any).readAsStringAsync(fileUri, {
-        encoding: "base64",
-      });
+  } else if (fileUri.startsWith("data:")) {
+    // data: URI — decode once (camera captures only; always small)
+    const idx = fileUri.indexOf(",");
+    const rawB64 = idx >= 0 ? fileUri.slice(idx + 1) : fileUri;
+    dataUriBuffer = base64ToArrayBuffer(rawB64);
+    fileSize = dataUriBuffer.byteLength;
+  } else if (!knownFileSize) {
+    // Native file URI — get size via getInfoAsync; read chunk-by-chunk below
+    // to avoid loading the whole file into memory before the first byte is sent.
+    const FS = await import("expo-file-system/legacy");
+    const info = await (FS as any).getInfoAsync(fileUri, { size: true });
+    if (!info.exists || typeof info.size !== "number") {
+      return { ok: false, error: "Could not determine file size" };
     }
-    fullBuffer = base64ToArrayBuffer(rawB64);
-    fileSize = fullBuffer.byteLength;
+    fileSize = info.size as number;
   }
 
   if (fileSize <= 0) {
-    return { ok: false, error: "Could not determine file size" };
+    return { ok: false, error: "Could not determine file size (empty file)" };
   }
 
   // Resume an in-flight session for this exact file if one is still alive on
@@ -847,14 +906,34 @@ export async function chunkedUploadCaseMedia(
   // retries were exhausted, so we bail but KEEP the session cached so a later
   // call can resume from the server's offset rather than restarting.
   try {
+    // Lazily import FS once for the chunk loop (native file URI path only).
+    // This avoids a dynamic import inside a hot loop while still keeping the
+    // import tree-shakeable on web.
+    let FS: any = null;
+    if (Platform.OS !== "web" && !dataUriBuffer) {
+      FS = await import("expo-file-system/legacy");
+    }
+
     while (uploadedBytes < fileSize) {
       const chunkSize = Math.min(CHUNKED_UPLOAD_CHUNK_SIZE, fileSize - uploadedBytes);
       let chunkBuffer: ArrayBuffer;
 
       if (fileBlob) {
+        // Web: slice the Blob directly (no memory copy until now)
         chunkBuffer = await fileBlob.slice(uploadedBytes, uploadedBytes + chunkSize).arrayBuffer();
+      } else if (dataUriBuffer) {
+        // Native data: URI — already fully decoded (always small)
+        chunkBuffer = dataUriBuffer.slice(uploadedBytes, uploadedBytes + chunkSize);
       } else {
-        chunkBuffer = fullBuffer!.slice(uploadedBytes, uploadedBytes + chunkSize);
+        // Native file URI — read only this chunk from disk.
+        // readAsStringAsync with position+length avoids loading the whole
+        // file into memory: only ~1 MB is decoded per iteration.
+        const chunkB64: string = await (FS as any).readAsStringAsync(fileUri, {
+          encoding: "base64",
+          position: uploadedBytes,
+          length: chunkSize,
+        });
+        chunkBuffer = base64ToArrayBuffer(chunkB64);
       }
 
       const patchResult = await sendChunkWithRetry(patchUrl, chunkBuffer, uploadedBytes);
@@ -885,6 +964,7 @@ export async function chunkedUploadCaseMedia(
             typeof patchBody.filename === "string" && patchBody.filename
               ? (patchBody.filename as string)
               : undefined,
+          fileSize,
         };
       }
 
@@ -989,8 +1069,28 @@ export function fireWithRetry(
 // (b) a Bearer token getter with SecureStore hydration (native has no session cookie),
 // (c) a token refresher so 401 responses transparently retry after a token refresh.
 // Called at module init so hooks are ready before any component mounts.
-import { setBaseUrl, setAuthTokenGetter, setAuthRefresher } from "@workspace/api-client-react";
+import {
+  setBaseUrl,
+  setAuthTokenGetter,
+  setAuthRefresher,
+  setRequestHeadersProvider,
+} from "@workspace/api-client-react";
 setBaseUrl(getApiUrl().replace(/\/+$/, ""));
+
+// Active practice: generated hooks hit the same tenant-scoped endpoints as
+// resilientFetch (GET /cases/provider among them), which reject a provider
+// request that does not say which practice it belongs to once the provider is
+// linked to more than one. Stamping it here keeps the generated path, the JSON
+// path, and the XHR upload path scoped to the same practice.
+setRequestHeadersProvider(() => {
+  const headers: Record<string, string> = {};
+  if (_providerOrganizationId) headers["x-provider-organization-id"] = _providerOrganizationId;
+  // Expo web uses cookie auth. Generated hooks need the same CSRF protection
+  // as resilientFetch, including after login/refresh changes the cookie.
+  const csrf = Platform.OS === "web" ? getCsrfToken() : null;
+  if (csrf) headers["x-csrf-token"] = csrf;
+  return Object.keys(headers).length ? headers : null;
+});
 
 // Auth getter: use the shared ensureHydrated() singleton so all callers
 // (resilientFetch, XHR uploads, and generated hooks) queue behind the same

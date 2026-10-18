@@ -8,12 +8,16 @@ import router from "./routes";
 import { corsOptions } from "./lib/cors";
 import { requireCsrf } from "./middlewares/csrf";
 import { logger } from "./lib/logger";
+import { requestPerformance, recordBodyParsing } from "./middlewares/request-performance";
+import { isDbUnavailable } from "./lib/db-unavailable";
 import { HttpError } from "./lib/http";
 import { startStatementScheduler } from "./lib/statements";
 import { startDailyOrphanedMediaCleanup } from "./lib/case-media";
 import { restartScheduledBackupJob } from "./lib/backup";
 import { startBillingJobs } from "./lib/billing-jobs";
 import { startInviteEmailRetryScheduler } from "./lib/invite-email-retry";
+import { startSupportReportScheduler } from "./lib/support-report-outbox";
+import { startJoinRequestNotificationScheduler } from "./lib/join-request-notifications";
 import { logStripeAccountOwnership } from "./lib/stripeClient";
 import { handleStripeWebhook } from "./routes/billing";
 import {
@@ -31,9 +35,17 @@ import { db } from "@workspace/db";
 import { cases as casesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { notDeleted } from "./lib/soft-delete";
+import {
+  MONITORED_SERVICE_ROOTS,
+  serviceRootHealth,
+} from "./lib/service-root-health";
 
 const app: Express = express();
 app.set("trust proxy", 1);
+
+// Replit monitors each declared artifact path at its exact root. Keep those
+// routing probes healthy while preserving 404s for unknown nested routes.
+app.get(MONITORED_SERVICE_ROOTS, serviceRootHealth);
 
 // Profile photos are public (not sensitive) — serve directly without auth.
 app.use(
@@ -42,6 +54,29 @@ app.use(
     maxAge: "7d",
     fallthrough: false,
   }),
+);
+// With `fallthrough: false`, a missing file (e.g. a profilePhotoUrl whose
+// file was never durably persisted — see uploads/profile-photos in
+// backup.ts) makes express.static/send forward an http-errors-style Error
+// via next(err) with statusCode 404, but with the raw filesystem message
+// ("ENOENT: no such file or directory, stat '...'"). Left unhandled, that
+// error falls through to the generic 500 handler below, which logs it as an
+// "Unhandled API error" and returns a 500 for what is really a 404. Convert
+// it to a clean JSON 404 here instead, without leaking the server file path.
+app.use(
+  "/uploads/profile-photos",
+  (err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    const statusCode =
+      err && typeof err === "object" && "statusCode" in err
+        ? Number((err as { statusCode?: unknown }).statusCode)
+        : NaN;
+    const isMissingFile =
+      statusCode === 404 || (err as { code?: unknown } | undefined)?.code === "ENOENT";
+    if (isMissingFile) {
+      return res.status(404).json({ ok: false, message: "Profile photo not found." });
+    }
+    return next(err);
+  },
 );
 
 // Redirect legacy unauthenticated case-media URLs to the authenticated API
@@ -419,16 +454,23 @@ app.use(
   }),
 );
 app.use(cors(corsOptions));
+app.use(requestPerformance);
 app.use(cookieParser());
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: true, limit: "12mb" }));
+app.use(recordBodyParsing);
 
 app.use("/api", requireCsrf, router);
 
 startStatementScheduler();
+// This is a recurring time-based maintenance job, not a startup repair. Its
+// first cleanup remains scheduled for the next configured hour; startup does
+// not run or recover a cleanup immediately.
 startDailyOrphanedMediaCleanup();
 startBillingJobs();
 startInviteEmailRetryScheduler();
+startSupportReportScheduler();
+startJoinRequestNotificationScheduler();
 logStripeAccountOwnership().catch((err: unknown) => {
   logger.warn({ err }, "[stripe] Stripe account ownership check failed at startup");
 });
@@ -437,6 +479,8 @@ logStripeAccountOwnership().catch((err: unknown) => {
 restartScheduledBackupJob().catch((err: unknown) => {
   logger.warn({ err }, "[backup] Failed to restore recurring backup schedule at startup");
 });
+// (That call also starts off-site protection: a verified OneDrive copy every
+// fifteen minutes plus a watchdog that alarms when those copies stop.)
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof ZodError) {
@@ -452,13 +496,9 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   // pg pool exhaustion surfaces as a generic Error when connectionTimeoutMillis
   // is exceeded. Map it to 503 so clients know to retry rather than treating
   // it as a permanent server error (500).
-  if (
-    err instanceof Error &&
-    /timeout.*connect|checkout.*timed|Client.*timed|ETIMEDOUT/i.test(
-      err.message
-    )
-  ) {
-    logger.warn({ err }, "DB connection pool timeout — returning 503");
+  if (isDbUnavailable(err)) {
+    logger.warn("DB connection pool timeout — returning 503");
+    res.setHeader("Retry-After", "3");
     return res.status(503).json({
       ok: false,
       message: "Service temporarily unavailable — please retry in a moment.",

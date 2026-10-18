@@ -146,7 +146,7 @@ describe("AiChatPanel — load earlier messages", () => {
     });
 
     // Welcome message stays pinned at the very top (rendered before older rows).
-    const welcomeNode = screen.getAllByText(/Maynard/i)[0]!;
+    const welcomeNode = screen.getAllByText(/LabTrax Assistant/i)[0]!;
     const olderNode = screen.getByText("older question");
     expect(
       welcomeNode.compareDocumentPosition(olderNode) &

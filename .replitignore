@@ -12,6 +12,10 @@
 # Agent/local working files — not needed at runtime.
 .local
 
+# Repository history and LFS object cache — required in the workspace, but not
+# by the running application. This directory alone can exceed the image limit.
+.git
+
 # Expo dev cache — not needed at runtime.
 .expo
 .cache
@@ -22,7 +26,17 @@ electron-dist
 
 # Heavy static assets uploaded to the project — not needed at runtime.
 attached_assets
+artifacts/labtrax/attached_assets
+artifacts/api-server/uploads
+artifacts/labtrax-desktop/electron-dist
+artifacts/**/.metro-cache
+artifacts/**/node_modules/.cache
 logs
+generated-artifacts
+
+# Operator screenshot contains account details; not an application asset.
+attached_assets/image_1791832841904.png
+attached_assets/image_1791833262991.png
 
 # Packaged binaries / archives — not needed at runtime.
 *.zip

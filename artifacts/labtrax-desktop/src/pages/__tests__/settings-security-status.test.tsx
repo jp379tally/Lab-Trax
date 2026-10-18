@@ -66,7 +66,6 @@ const NO_PHONE_USER = {
 
 function renderWithUser(user: Record<string, unknown>) {
   const Wrapper = makeAuthWrapper("/settings", {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     user: user as any,
     status: "authed",
     restoreStatus: "ok",

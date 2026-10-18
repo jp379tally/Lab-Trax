@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -13,11 +13,12 @@ import {
   pricingOverrides,
   pricingTiers,
   users,
+  vendors,
 } from "@workspace/db";
 import { writeAuditLog } from "../lib/audit";
 import { notDeleted, softDeleteById } from "../lib/soft-delete";
 import { HttpError, ok } from "../lib/http";
-import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
+import { ADMIN_ROLES, requireAnyRole, requireCapability, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 import {
@@ -26,10 +27,16 @@ import {
   fetchLabItemLabels,
   generateUniqueItemKey,
   resolveAllPricesForContext,
+  resolveDiscountItemsForContext,
   resolveServerPrice,
   saveLabItemLabels,
+  type ResolvedItemRow,
 } from "../lib/pricing";
-import { requoteDoctorDraftInvoices } from "../lib/invoice-sync";
+import { countDoctorDraftInvoices, requoteDoctorDraftInvoices } from "../lib/invoice-sync";
+import {
+  ensureVendorTypesSeeded,
+  listVendorTypes,
+} from "../lib/vendor-types-seed";
 
 const router = Router();
 router.use(requireAuth);
@@ -147,6 +154,36 @@ function sanitizeDiscountPercent(
  * organization (matches `GET /invoices/:invoiceId`).
  */
 router.get(
+  "/discount-items",
+  asyncHandler(async (req, res) => {
+    const labOrganizationId = String(req.query.labOrganizationId ?? "").trim();
+    if (!labOrganizationId) {
+      throw new HttpError(400, "labOrganizationId is required.");
+    }
+    const labId = await resolveLabIdForMember(req, labOrganizationId);
+    const caseId = String(req.query.caseId ?? "").trim();
+    let context: {
+      labOrganizationId: string;
+      doctorName?: string | null;
+      providerOrganizationId?: string | null;
+    } = { labOrganizationId: labId };
+    if (caseId) {
+      const kase = await db.query.cases.findFirst({
+        where: and(eq(cases.id, caseId), eq(cases.labOrganizationId, labId)),
+      });
+      if (!kase) throw new HttpError(404, "Case not found in this lab.");
+      context = {
+        labOrganizationId: labId,
+        doctorName: kase.doctorName,
+        providerOrganizationId: kase.providerOrganizationId,
+      };
+    }
+    const items = await resolveDiscountItemsForContext(context);
+    return ok(res, { items });
+  }),
+);
+
+router.get(
   "/resolve-items",
   asyncHandler(async (req, res) => {
     const caseId = String(req.query.caseId ?? "").trim();
@@ -222,7 +259,9 @@ router.post(
       })
       .parse(req.body);
     const labId = await resolveLabId(req, input.labOrganizationId);
-    await requireAnyRole((req as any).auth.userId, labId, ADMIN_ROLES);
+    // manage_pricing capability: owners and admins pass implicitly; non-admin
+    // team members may also manage pricing if they hold an explicit capability grant.
+    await requireCapability((req as any).auth.userId, labId, "manage_pricing");
 
     const existing = await db.query.pricingTiers.findFirst({
       where: and(
@@ -436,6 +475,30 @@ router.get(
   })
 );
 
+// Returns the number of open/draft unpaid invoices that would be repriced if
+// the admin saves a pricing override for this doctor. Admin/owner only.
+router.get(
+  "/overrides/pending-repricing-count",
+  asyncHandler(async (req, res) => {
+    const labId = await resolveLabId(
+      req,
+      req.query.labOrganizationId as string | undefined,
+    );
+    await requireAnyRole((req as any).auth.userId, labId, ADMIN_ROLES);
+
+    const doctorName = String(req.query.doctorName ?? "").trim();
+    if (!doctorName) {
+      return ok(res, { count: 0 });
+    }
+
+    const count = await countDoctorDraftInvoices({
+      labOrganizationId: labId,
+      doctorName,
+    });
+    return ok(res, { count });
+  })
+);
+
 router.post(
   "/overrides",
   asyncHandler(async (req, res) => {
@@ -455,12 +518,12 @@ router.post(
           .optional(),
         discountPercents: discountPercentsSchema.optional(),
         notes: z.string().max(500).nullable().optional(),
+        repriceDraftInvoices: z.boolean().optional().default(false),
       })
       .parse(req.body);
 
     const labId = await resolveLabId(req, input.labOrganizationId);
     await requireAnyRole((req as any).auth.userId, labId, ADMIN_ROLES);
-
     const existing = await db.query.pricingOverrides.findFirst({
       where: and(
         eq(pricingOverrides.labOrganizationId, labId),
@@ -512,16 +575,17 @@ router.post(
       afterJson: created,
     });
 
-    // Re-price the doctor's existing draft/open unpaid invoices so the new
-    // override takes effect immediately. Errors here are non-fatal — they must
-    // not prevent the 201 from reaching the client.
-    try {
-      await requoteDoctorDraftInvoices({
-        labOrganizationId: labId,
-        doctorName: created.doctorName,
-        actorUserId: (req as any).auth.userId,
-      });
-    } catch { /* non-fatal */ }
+    // Only re-price existing draft/open invoices when the caller explicitly
+    // requests it (i.e. the admin confirmed the dialog).
+    if (input.repriceDraftInvoices) {
+      try {
+        await requoteDoctorDraftInvoices({
+          labOrganizationId: labId,
+          doctorName: created.doctorName,
+          actorUserId: (req as any).auth.userId,
+        });
+      } catch { /* non-fatal */ }
+    }
 
     return ok(
       res,
@@ -564,6 +628,7 @@ router.patch(
           .optional(),
         discountPercents: discountPercentsSchema.optional(),
         notes: z.string().max(500).nullable().optional(),
+        repriceDraftInvoices: z.boolean().optional().default(false),
       })
       .parse(req.body);
     const row = await db.query.pricingOverrides.findFirst({
@@ -611,15 +676,17 @@ router.patch(
       afterJson: updated,
     });
 
-    // Re-price the doctor's existing draft/open unpaid invoices so the edited
-    // override takes effect immediately. Errors here are non-fatal.
-    try {
-      await requoteDoctorDraftInvoices({
-        labOrganizationId: row.labOrganizationId,
-        doctorName: updated.doctorName,
-        actorUserId: (req as any).auth.userId,
-      });
-    } catch { /* non-fatal */ }
+    // Only re-price existing draft/open invoices when the caller explicitly
+    // requests it (i.e. the admin confirmed the dialog).
+    if (input.repriceDraftInvoices) {
+      try {
+        await requoteDoctorDraftInvoices({
+          labOrganizationId: row.labOrganizationId,
+          doctorName: updated.doctorName,
+          actorUserId: (req as any).auth.userId,
+        });
+      } catch { /* non-fatal */ }
+    }
 
     return ok(res, {
       id: updated.id,
@@ -984,6 +1051,160 @@ router.get(
   }),
 );
 
+/**
+ * List every active billable item with the effective price for a case that has
+ * not been created yet. Unlike the finance vendors endpoint, this never uses a
+ * vendor's generic unitPrice: prices come exclusively from the canonical
+ * doctor/practice pricing resolver used by invoice creation.
+ */
+router.get(
+  "/pre-create-items",
+  asyncHandler(async (req, res) => {
+    const input = z
+      .object({
+        labOrganizationId: z.string().min(1),
+        providerOrganizationId: z.string().min(1).optional(),
+        doctorName: z.string().max(120).optional(),
+      })
+      .parse(req.query);
+    const labId = await resolveLabId(req, input.labOrganizationId);
+    await requireAnyRole((req as any).auth.userId, labId, ADMIN_ROLES);
+    if (input.providerOrganizationId) {
+      const provider = await db.query.organizations.findFirst({
+        where: and(
+          eq(organizations.id, input.providerOrganizationId),
+          eq(organizations.type, "provider"),
+        ),
+        columns: { parentLabOrganizationId: true },
+      });
+      const connection =
+        provider?.parentLabOrganizationId === labId
+          ? null
+          : await db.query.organizationConnections.findFirst({
+              where: and(
+                eq(organizationConnections.labOrganizationId, labId),
+                eq(
+                  organizationConnections.providerOrganizationId,
+                  input.providerOrganizationId,
+                ),
+              ),
+              columns: { id: true },
+            });
+      if (!provider || (provider.parentLabOrganizationId !== labId && !connection)) {
+        throw new HttpError(400, "Practice is not linked to the requested lab.");
+      }
+    }
+
+    await ensureVendorTypesSeeded(labId);
+    const itemType = (await listVendorTypes(labId)).find(
+      (type) => type.builtinKind === "item",
+    );
+    const activeItems = await db
+      .select({
+        id: vendors.id,
+        name: vendors.name,
+        priceKey: vendors.priceKey,
+      })
+      .from(vendors)
+      .where(
+        and(
+          eq(vendors.labOrganizationId, labId),
+          eq(vendors.isActive, true),
+          isNull(vendors.deletedAt),
+          itemType
+            ? or(
+                eq(vendors.vendorTypeId, itemType.id),
+                and(isNull(vendors.vendorTypeId), eq(vendors.vendorType, "item")),
+              )
+            : eq(vendors.vendorType, "item"),
+        ),
+      )
+      .orderBy(asc(vendors.name));
+
+    const discountCatalogRows = await db.query.labItemLabels.findMany({
+      where: and(
+        eq(labItemLabels.labOrganizationId, labId),
+        eq(labItemLabels.isDiscount, true),
+      ),
+      columns: { priceKey: true, label: true },
+    });
+    const discountKeys = new Set(discountCatalogRows.map((row) => row.priceKey));
+    const discountNames = new Set(
+      discountCatalogRows.map((row) => row.label.trim().toLowerCase()),
+    );
+
+    const resolved = await resolveAllPricesForContext({
+      labOrganizationId: labId,
+      providerOrganizationId: input.providerOrganizationId,
+      doctorName: input.doctorName?.trim() || undefined,
+    });
+    const byLabel = new Map<string, ResolvedItemRow[]>();
+    for (const item of resolved) {
+      const normalizedLabel = item.label.trim().toLowerCase();
+      byLabel.set(normalizedLabel, [...(byLabel.get(normalizedLabel) ?? []), item]);
+    }
+    const byKey = new Map(resolved.map((item) => [item.key, item]));
+
+    const priceKeyBackfills: Array<{ id: string; priceKey: string }> = [];
+    const items = activeItems
+      .filter(
+        (item) =>
+          !discountKeys.has(item.priceKey ?? "") &&
+          !discountNames.has(item.name.trim().toLowerCase()),
+      )
+      .map((item) => {
+      const normalizedName = item.name.trim().toLowerCase();
+      const labelCandidates = byLabel.get(normalizedName) ?? [];
+      const matchedKey =
+        item.priceKey ??
+        (labelCandidates.length === 1 ? labelCandidates[0]!.key : null);
+      if (!item.priceKey && matchedKey) {
+        priceKeyBackfills.push({ id: item.id, priceKey: matchedKey });
+      }
+      const price = matchedKey ? (byKey.get(matchedKey) ?? null) : null;
+        return {
+          id: item.id,
+          priceKey: matchedKey,
+          name: item.name,
+          unitPrice: price?.unitPrice ?? 0,
+          source: price?.source ?? null,
+          sourceId: price?.sourceId ?? null,
+          sourceName: price?.sourceName ?? null,
+        };
+      });
+    await Promise.all(
+      priceKeyBackfills.map(({ id, priceKey }) =>
+        db
+          .update(vendors)
+          .set({ priceKey })
+          .where(
+            and(
+              eq(vendors.id, id),
+              eq(vendors.labOrganizationId, labId),
+              isNull(vendors.priceKey),
+            ),
+          ),
+      ),
+    );
+
+    // Catalog rows (the lab's priced item keys — e.g. the Emax/lithium
+    // disilicate crown) so an intake picker can offer material-style entries
+    // even when the lab has no matching billable-item vendor row. Same
+    // resolver, so the price precedence is identical to the billable items
+    // above.
+    const catalogItems = resolved.map((item) => ({
+      key: item.key,
+      label: item.label,
+      unitPrice: item.unitPrice,
+      source: item.source,
+      sourceId: item.sourceId,
+      sourceName: item.sourceName,
+    }));
+
+    return ok(res, { items, catalogItems });
+  }),
+);
+
 // ---- Item Labels ----
 
 /**
@@ -1012,7 +1233,20 @@ router.get(
       if (!(k in merged)) merged[k] = v;
     }
 
-    return ok(res, { labOrganizationId: labId, labels: merged });
+    const discountKeys = (
+      await db.query.labItemLabels.findMany({
+        where: and(
+          eq(labItemLabels.labOrganizationId, labId),
+          eq(labItemLabels.isDiscount, true),
+        ),
+        columns: { priceKey: true },
+      })
+    ).map((row) => row.priceKey);
+    return ok(res, {
+      labOrganizationId: labId,
+      labels: merged,
+      discountKeys,
+    });
   })
 );
 
@@ -1051,7 +1285,16 @@ router.put(
       if (!(k in merged)) merged[k] = v;
     }
 
-    return ok(res, { labOrganizationId: labId, labels: merged });
+    const discountKeys = (
+      await db.query.labItemLabels.findMany({
+        where: and(
+          eq(labItemLabels.labOrganizationId, labId),
+          eq(labItemLabels.isDiscount, true),
+        ),
+        columns: { priceKey: true },
+      })
+    ).map((row) => row.priceKey);
+    return ok(res, { labOrganizationId: labId, labels: merged, discountKeys });
   })
 );
 
@@ -1073,7 +1316,8 @@ router.post(
         labOrganizationId: z.string().optional(),
         name: z.string().trim().min(1).max(80),
         description: z.string().trim().max(500).nullable().optional(),
-        price: z.coerce.number().min(0),
+        price: z.coerce.number().positive(),
+        isDiscount: z.boolean().default(false),
         tierIds: z.array(z.string().min(1)).min(1),
       })
       .parse(req.body);
@@ -1124,10 +1368,21 @@ router.post(
     // Persist the label + description for the new key.
     await db
       .insert(labItemLabels)
-      .values({ labOrganizationId: labId, priceKey, label: name, description })
+      .values({
+        labOrganizationId: labId,
+        priceKey,
+        label: name,
+        description,
+        isDiscount: input.isDiscount,
+      })
       .onConflictDoUpdate({
         target: [labItemLabels.labOrganizationId, labItemLabels.priceKey],
-        set: { label: name, description, updatedAt: new Date() },
+        set: {
+          label: name,
+          description,
+          isDiscount: input.isDiscount,
+          updatedAt: new Date(),
+        },
       });
 
     // Write the price into each selected tier, recording an audit entry per
@@ -1163,6 +1418,7 @@ router.post(
         name,
         description,
         price: input.price,
+        isDiscount: input.isDiscount,
         tierIds,
         updatedTiers: selectedTiers.length,
       },

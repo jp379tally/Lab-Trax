@@ -132,15 +132,89 @@ describe("coerceCasePrintTemplate — v2 round-trip", () => {
     expect(imgEl?.opacity).toBe(0.8);
   });
 
+  it("round-trips a v2 template containing a gingivialShade element", () => {
+    const template = {
+      version: 2 as const,
+      elements: [
+        ...DEFAULT_CASE_PRINT_TEMPLATE.elements,
+      ],
+    };
+    // Enable the gingivialShade element (it defaults to invisible)
+    const gsEl = template.elements.find((e) => e.kind === "gingivialShade");
+    expect(gsEl).toBeDefined();
+    if (gsEl) gsEl.visible = true;
+
+    const parsed = casePrintTemplateSchema.safeParse(template);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      const roundTripped = parsed.data.elements.find((e) => e.kind === "gingivialShade");
+      expect(roundTripped).toBeDefined();
+      expect(roundTripped?.visible).toBe(true);
+      expect(roundTripped?.kind).toBe("gingivialShade");
+    }
+  });
+
+  it("accepts an opt-in providerPreferences element without adding one to defaults", () => {
+    const template = {
+      version: 2 as const,
+      elements: [
+        ...DEFAULT_CASE_PRINT_TEMPLATE.elements,
+        {
+          id: "provider-preferences-1",
+          kind: "providerPreferences" as const,
+          x: 418,
+          y: 246,
+          w: 350,
+          h: 80,
+          visible: true,
+          fontFamily: "Helvetica, Arial, sans-serif",
+          fontSize: 10,
+          bold: false,
+          italic: false,
+          align: "left" as const,
+        },
+      ],
+    };
+
+    expect(coerceCasePrintTemplate(template).elements).toContainEqual(
+      expect.objectContaining({ kind: "providerPreferences" }),
+    );
+    expect(
+      DEFAULT_CASE_PRINT_TEMPLATE.elements.some(
+        (element) => element.kind === "providerPreferences",
+      ),
+    ).toBe(false);
+  });
+
+  it("continues to accept legacy doctorInfo showPreferences data", () => {
+    const template = {
+      version: 2 as const,
+      elements: [
+        {
+          id: "doctor-info-1",
+          kind: "doctorInfo" as const,
+          x: 418,
+          y: 166,
+          w: 350,
+          h: 80,
+          visible: true,
+          showPreferences: true,
+        },
+      ],
+    };
+
+    expect(casePrintTemplateSchema.safeParse(template).success).toBe(true);
+  });
+
   it("casePrintTemplateSchema rejects version !== 2", () => {
     const bad = { version: 1, elements: [] };
     expect(casePrintTemplateSchema.safeParse(bad).success).toBe(false);
   });
 
-  it("casePrintTemplateSchema rejects elements exceeding 40 items", () => {
+  it("casePrintTemplateSchema rejects elements exceeding 100 items", () => {
     const tooMany = {
       version: 2,
-      elements: Array.from({ length: 41 }, (_, i) => ({
+      elements: Array.from({ length: 101 }, (_, i) => ({
         id: `el-${i}`,
         kind: "caseNumber",
         x: 0,
@@ -538,12 +612,12 @@ describe("DEFAULT_CASE_PRINT_TEMPLATE integrity", () => {
     expect(casePrintTemplateSchema.safeParse(DEFAULT_CASE_PRINT_TEMPLATE).success).toBe(true);
   });
 
-  it("contains all 12 expected built-in element kinds", () => {
+  it("contains all 14 expected built-in element kinds", () => {
     const kinds = DEFAULT_CASE_PRINT_TEMPLATE.elements.map((e) => e.kind);
     for (const k of [
       "caseNumber", "patient", "doctor", "dueDate", "priority",
-      "restorativeType", "teeth", "material", "shade", "rxNotes",
-      "toothChart", "barcode",
+      "restorativeType", "teeth", "material", "shade", "gingivialShade",
+      "rxNotes", "remakeNotes", "toothChart", "barcode",
     ]) {
       expect(kinds).toContain(k);
     }
@@ -562,9 +636,15 @@ describe("DEFAULT_CASE_PRINT_TEMPLATE integrity", () => {
     }
   });
 
-  it("has all elements visible by default", () => {
+  it("has all elements visible by default (remakeNotes is the exception — hidden until enabled)", () => {
     for (const el of DEFAULT_CASE_PRINT_TEMPLATE.elements) {
-      expect(el.visible).toBe(true);
+      if (el.kind === "remakeNotes") {
+        // remakeNotes is intentionally hidden by default: it is only relevant for
+        // remake cases and should not appear on every lab slip until the user enables it.
+        expect(el.visible).toBe(false);
+      } else {
+        expect(el.visible).toBe(true);
+      }
     }
   });
 });

@@ -106,8 +106,10 @@ maybe("Organizations CRUD (db integration)", () => {
     const {
       db,
       auditLogs,
+      practiceStatements,
       invoices,
       cases: casesTable,
+      organizationInvites,
       userSessions,
       organizationMemberships,
       organizations,
@@ -116,6 +118,9 @@ maybe("Organizations CRUD (db integration)", () => {
     const allOrgIds = createdOrgIds;
     if (allOrgIds.length) {
       await db.delete(auditLogs).where(inArray(auditLogs.organizationId, allOrgIds));
+      await db
+        .delete(practiceStatements)
+        .where(inArray(practiceStatements.labOrganizationId, allOrgIds));
       await db.delete(invoices).where(inArray(invoices.labOrganizationId, allOrgIds));
       await db.delete(casesTable).where(inArray(casesTable.labOrganizationId, allOrgIds));
       await db.delete(organizationMemberships).where(
@@ -127,6 +132,9 @@ maybe("Organizations CRUD (db integration)", () => {
     }
     const allUserIds = [ownerId, providerUserId];
     await db.delete(auditLogs).where(inArray(auditLogs.userId, allUserIds));
+    await db.delete(organizationInvites).where(
+      inArray(organizationInvites.invitedByUserId, allUserIds)
+    );
     await db.delete(userSessions).where(inArray(userSessions.userId, allUserIds));
     await db.delete(organizationMemberships).where(
       inArray(organizationMemberships.userId, allUserIds)
@@ -304,6 +312,20 @@ maybe("Organizations CRUD (db integration)", () => {
     createdOrgIds.push(r.body.data.id);
   });
 
+  it("rejects provider-preference printing when creating a provider practice", async () => {
+    const { access, labId } = await makeOwnerLab();
+    const r = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        ...practiceBody(rid("PrintPrefsProvider"), labId),
+        printProviderPreferencesOnLabSlips: true,
+      });
+
+    expect(r.status).toBe(400);
+    expect(r.body.message).toMatch(/lab organizations/i);
+  });
+
   it("rejects a duplicate practice name in the same lab with 409 and surfaces the conflicting org", async () => {
     const { access, labId } = await makeOwnerLab();
     const name = rid("DupPractice");
@@ -343,6 +365,314 @@ maybe("Organizations CRUD (db integration)", () => {
     expect(r.status).toBe(400);
   });
 
+  it("manages one provider login across multiple practice accounts safely", async () => {
+    const { access, labId } = await makeOwnerLab();
+    const first = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        ...practiceBody(rid("AssignmentPracticeA"), labId),
+        accountNumber: rid("ACC_A"),
+      });
+    const secondAccount = rid("ACC_B");
+    const second = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        ...practiceBody(rid("AssignmentPracticeB"), labId),
+        accountNumber: secondAccount,
+      });
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    createdOrgIds.push(first.body.data.id, second.body.data.id);
+
+    const {
+      db,
+      cases: casesTable,
+      organizationMemberships,
+      organizations,
+      practiceStatements,
+    } = dbMod as any;
+    await db.insert(organizationMemberships).values({
+      labId: first.body.data.id,
+      userId: providerUserId,
+      role: "user",
+      status: "active",
+      approvedByUserId: ownerId,
+      joinedAt: new Date(),
+    });
+
+    const assignBoth = await request(appMod.default)
+      .put(`/api/organizations/${labId}/doctors/assignments`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        providerOrgId: first.body.data.id,
+        userId: providerUserId,
+        practiceOrganizationIds: [first.body.data.id, second.body.data.id],
+      });
+    expect(assignBoth.status).toBe(200);
+    expect(
+      assignBoth.body.data.assignments
+        .filter((a: any) => a.assigned)
+        .map((a: any) => a.accountNumber),
+    ).toEqual(expect.arrayContaining([
+      first.body.data.accountNumber,
+      second.body.data.accountNumber,
+    ]));
+
+    const removeOwnPractice = await request(appMod.default)
+      .put(`/api/organizations/${labId}/doctors/assignments`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        providerOrgId: first.body.data.id,
+        userId: providerUserId,
+        practiceOrganizationIds: [second.body.data.id],
+      });
+    expect(removeOwnPractice.status).toBe(400);
+    expect(removeOwnPractice.body.details?.code).toBe(
+      "SOURCE_PRACTICE_REQUIRED",
+    );
+
+    const secondMembershipBefore = await db.query.organizationMemberships.findFirst({
+      where: and(
+        eq(organizationMemberships.labId, second.body.data.id),
+        eq(organizationMemberships.userId, providerUserId),
+        isNull(organizationMemberships.deletedAt),
+      ),
+    });
+    expect(secondMembershipBefore?.status).toBe("active");
+
+    const removeSecond = await request(appMod.default)
+      .put(`/api/organizations/${labId}/doctors/assignments`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        providerOrgId: first.body.data.id,
+        userId: providerUserId,
+        practiceOrganizationIds: [first.body.data.id],
+      });
+    expect(removeSecond.status).toBe(200);
+    expect(
+      removeSecond.body.data.assignments.find(
+        (a: any) => a.practiceOrganizationId === second.body.data.id,
+      )?.assigned,
+    ).toBe(false);
+
+    const restoreSecond = await request(appMod.default)
+      .put(`/api/organizations/${labId}/doctors/assignments`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        providerOrgId: first.body.data.id,
+        userId: providerUserId,
+        practiceOrganizationIds: [first.body.data.id, second.body.data.id],
+      });
+    expect(restoreSecond.status).toBe(200);
+    const secondMembershipAfter = await db.query.organizationMemberships.findFirst({
+      where: and(
+        eq(organizationMemberships.labId, second.body.data.id),
+        eq(organizationMemberships.userId, providerUserId),
+        isNull(organizationMemberships.deletedAt),
+      ),
+    });
+    expect(secondMembershipAfter?.id).toBe(secondMembershipBefore?.id);
+    expect(secondMembershipAfter?.status).toBe("active");
+
+    const { access: providerAccess } = await makeSession(providerUserId);
+    const unauthorizedGet = await request(appMod.default)
+      .get(
+        `/api/organizations/${labId}/doctors/assignments?providerOrgId=${first.body.data.id}&userId=${providerUserId}`,
+      )
+      .set("Authorization", `Bearer ${providerAccess}`);
+    expect(unauthorizedGet.status).toBe(403);
+    const unauthorizedPut = await request(appMod.default)
+      .put(`/api/organizations/${labId}/doctors/assignments`)
+      .set("Authorization", `Bearer ${providerAccess}`)
+      .send({
+        providerOrgId: first.body.data.id,
+        userId: providerUserId,
+        practiceOrganizationIds: [first.body.data.id],
+      });
+    expect(unauthorizedPut.status).toBe(403);
+
+    const caseIds = [rid("case_a"), rid("case_b")];
+    await db.insert(casesTable).values([
+      {
+        id: caseIds[0],
+        caseNumber: rid("CASE_A"),
+        labOrganizationId: labId,
+        providerOrganizationId: first.body.data.id,
+        patientFirstName: "A",
+        patientLastName: "Patient",
+        doctorName: "Assignment Doctor",
+        createdByUserId: ownerId,
+      },
+      {
+        id: caseIds[1],
+        caseNumber: rid("CASE_B"),
+        labOrganizationId: labId,
+        providerOrganizationId: second.body.data.id,
+        patientFirstName: "B",
+        patientLastName: "Patient",
+        doctorName: "Assignment Doctor",
+        createdByUserId: ownerId,
+      },
+    ]);
+    await db.insert(practiceStatements).values([
+      {
+        labOrganizationId: labId,
+        providerOrganizationId: first.body.data.id,
+        periodStart: new Date("2026-01-01T00:00:00Z"),
+        periodEnd: new Date("2026-01-31T00:00:00Z"),
+        createdByUserId: ownerId,
+      },
+      {
+        labOrganizationId: labId,
+        providerOrganizationId: second.body.data.id,
+        periodStart: new Date("2026-02-01T00:00:00Z"),
+        periodEnd: new Date("2026-02-28T00:00:00Z"),
+        createdByUserId: ownerId,
+      },
+    ]);
+    const unselectedProviderCases = await request(appMod.default)
+      .get("/api/cases/provider")
+      .set("Authorization", `Bearer ${providerAccess}`);
+    expect(unselectedProviderCases.status).toBe(409);
+    expect(unselectedProviderCases.body.details?.code).toBe(
+      "PROVIDER_ORGANIZATION_REQUIRED",
+    );
+
+    const firstProviderCases = await request(appMod.default)
+      .get("/api/cases/provider")
+      .set("Authorization", `Bearer ${providerAccess}`)
+      .set("x-provider-organization-id", first.body.data.id);
+    expect(firstProviderCases.status).toBe(200);
+    expect(
+      firstProviderCases.body.data
+        .filter((row: any) => caseIds.includes(row.id))
+        .map((row: any) => row.providerOrganizationId),
+    ).toEqual([first.body.data.id]);
+
+    const secondProviderCases = await request(appMod.default)
+      .get("/api/cases/provider")
+      .set("Authorization", `Bearer ${providerAccess}`)
+      .set("x-provider-organization-id", second.body.data.id);
+    expect(secondProviderCases.status).toBe(200);
+    expect(
+      secondProviderCases.body.data
+        .filter((row: any) => caseIds.includes(row.id))
+        .map((row: any) => row.providerOrganizationId),
+    ).toEqual([second.body.data.id]);
+
+    const firstProviderStatements = await request(appMod.default)
+      .get("/api/provider/statements")
+      .set("Authorization", `Bearer ${providerAccess}`)
+      .set("x-provider-organization-id", first.body.data.id);
+    expect(firstProviderStatements.status).toBe(200);
+    expect(
+      firstProviderStatements.body.data
+        .filter((row: any) =>
+          [first.body.data.id, second.body.data.id].includes(
+            row.providerOrganizationId,
+          ),
+        )
+        .map((row: any) => row.providerOrganizationId),
+    ).toEqual([first.body.data.id]);
+
+    const secondProviderStatements = await request(appMod.default)
+      .get("/api/provider/statements")
+      .set("Authorization", `Bearer ${providerAccess}`)
+      .set("x-provider-organization-id", second.body.data.id);
+    expect(secondProviderStatements.status).toBe(200);
+    expect(
+      secondProviderStatements.body.data
+        .filter((row: any) =>
+          [first.body.data.id, second.body.data.id].includes(
+            row.providerOrganizationId,
+          ),
+        )
+        .map((row: any) => row.providerOrganizationId),
+    ).toEqual([second.body.data.id]);
+
+    const unknown = await request(appMod.default)
+      .put(`/api/organizations/${labId}/doctors/assignments`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        providerOrgId: first.body.data.id,
+        userId: providerUserId,
+        practiceOrganizationIds: [first.body.data.id, rid("missing")],
+      });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.details?.code).toBe("UNKNOWN_PRACTICE");
+
+    const otherLab = await makeOwnerLab();
+    const foreign = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${otherLab.access}`)
+      .send(practiceBody(rid("ForeignPractice"), otherLab.labId));
+    expect(foreign.status).toBe(201);
+    createdOrgIds.push(foreign.body.data.id);
+    const crossLab = await request(appMod.default)
+      .put(`/api/organizations/${labId}/doctors/assignments`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        providerOrgId: first.body.data.id,
+        userId: providerUserId,
+        practiceOrganizationIds: [first.body.data.id, foreign.body.data.id],
+      });
+    expect(crossLab.status).toBe(400);
+    expect(crossLab.body.details?.code).toBe("PRACTICE_OUTSIDE_LAB");
+
+    const archived = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(practiceBody(rid("ArchivedPractice"), labId));
+    expect(archived.status).toBe(201);
+    createdOrgIds.push(archived.body.data.id);
+    await db
+      .update(organizations)
+      .set({ deletedAt: new Date(), deletedByUserId: ownerId })
+      .where(eq(organizations.id, archived.body.data.id));
+    const archivedSelection = await request(appMod.default)
+      .put(`/api/organizations/${labId}/doctors/assignments`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        providerOrgId: first.body.data.id,
+        userId: providerUserId,
+        practiceOrganizationIds: [first.body.data.id, archived.body.data.id],
+      });
+    expect(archivedSelection.status).toBe(400);
+    expect(archivedSelection.body.details?.code).toBe("ARCHIVED_PRACTICE");
+
+    // Practice creation already rejects overlapping account-number segments.
+    // Insert a legacy/corrupt row directly so the assignment endpoint's
+    // defensive validation is covered without weakening creation safeguards.
+    const duplicateSegmentId = rid("duplicate_segment_practice");
+    await db.insert(organizations).values({
+      id: duplicateSegmentId,
+      type: "provider",
+      name: rid("DuplicateSegmentPractice"),
+      parentLabOrganizationId: labId,
+      accountNumber: `${secondAccount}; ${rid("ALT")}`,
+      createdByUserId: ownerId,
+    });
+    createdOrgIds.push(duplicateSegmentId);
+    const duplicateSelection = await request(appMod.default)
+      .put(`/api/organizations/${labId}/doctors/assignments`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        providerOrgId: first.body.data.id,
+        userId: providerUserId,
+        practiceOrganizationIds: [
+          first.body.data.id,
+          second.body.data.id,
+          duplicateSegmentId,
+        ],
+      });
+    expect(duplicateSelection.status).toBe(409);
+    expect(duplicateSelection.body.details?.code).toBe(
+      "DUPLICATE_ACCOUNT_NUMBER",
+    );
+  });
+
   // ── GET /api/organizations/:id ────────────────────────────────────────────
 
   it("GET /api/organizations/:id returns the org", async () => {
@@ -374,6 +704,24 @@ maybe("Organizations CRUD (db integration)", () => {
   });
 
   // ── PATCH /api/organizations/:id ──────────────────────────────────────────
+
+  it("PATCH rejects provider-preference printing on a provider practice", async () => {
+    const { access, labId } = await makeOwnerLab();
+    const practice = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(practiceBody(rid("PatchPrintPrefsProvider"), labId));
+    expect(practice.status).toBe(201);
+    createdOrgIds.push(practice.body.data.id);
+
+    const patch = await request(appMod.default)
+      .patch(`/api/organizations/${practice.body.data.id}`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ printProviderPreferencesOnLabSlips: true });
+
+    expect(patch.status).toBe(400);
+    expect(patch.body.message).toMatch(/lab organizations/i);
+  });
 
   it("PATCH /api/organizations/:id updates displayName", async () => {
     const { access } = await makeSession(ownerId);
@@ -1081,6 +1429,48 @@ maybe("Organizations CRUD (db integration)", () => {
 
   // ── PATCH /memberships/:id — role change ──────────────────────────────────
 
+  it.each(["lab", "provider"])("requires confirmed handoff for Owner assignment in a %s, including legacy invitations", async (type) => {
+    const { db, organizations, organizationMemberships, organizationInvites, users } = dbMod;
+    const orgId = rid("OwnerGate");
+    const membershipId = rid("OwnerGateMember");
+    await db.insert(organizations).values({ id: orgId, type, name: orgId, createdByUserId: ownerId });
+    createdOrgIds.push(orgId);
+    await db.insert(organizationMemberships).values([
+      { labId: orgId, userId: ownerId, role: "owner", status: "active" },
+      { id: membershipId, labId: orgId, userId: providerUserId, role: "user", status: "active" },
+    ]);
+    const email = `${providerUserId}@test.local`;
+    await db.update(users).set({ email }).where(eq(users.id, providerUserId));
+    const { access } = await makeSession(ownerId);
+    const promote = await request(appMod.default)
+      .patch(`/api/organizations/memberships/${membershipId}`)
+      .set("Authorization", `Bearer ${access}`).send({ role: "owner" });
+    expect(promote.status).toBe(400);
+    expect(JSON.stringify(promote.body)).toMatch(/confirmed ownership transfer/);
+    const invite = await request(appMod.default)
+      .post(`/api/organizations/${orgId}/invites`)
+      .set("Authorization", `Bearer ${access}`).send({ email, roleToAssign: "owner" });
+    expect(invite.status).toBe(400);
+    expect(await db.select().from(organizationInvites).where(eq(organizationInvites.labId, orgId))).toHaveLength(0);
+
+    const token = rid("LegacyOwnerInvite");
+    const [legacyInvite] = await db.insert(organizationInvites).values({
+      labId: orgId, email, roleToAssign: "owner", token, status: "pending",
+      invitedByUserId: ownerId, expiresAt: new Date(Date.now() + 86_400_000),
+    }).returning();
+    const recipient = await makeSession(providerUserId);
+    const accept = await request(appMod.default)
+      .post(`/api/organizations/invites/${token}/accept`)
+      .set("Authorization", `Bearer ${recipient.access}`).send({});
+    expect(accept.status).toBe(400);
+    expect(JSON.stringify(accept.body)).toMatch(/confirmed transfer/);
+    const members = await db.select().from(organizationMemberships).where(eq(organizationMemberships.labId, orgId));
+    expect(members.find((m) => m.userId === ownerId)?.role).toBe("owner");
+    expect(members.find((m) => m.userId === providerUserId)?.role).toBe("user");
+    const [unchangedInvite] = await db.select().from(organizationInvites).where(eq(organizationInvites.id, legacyInvite.id));
+    expect(unchangedInvite.status).toBe("pending");
+  });
+
   it("PATCH /api/organizations/memberships/:id — admin changes a member's role", async () => {
     const { access } = await makeSession(ownerId);
     const { db, users, organizationMemberships } = dbMod as any;
@@ -1716,69 +2106,302 @@ maybe("Organizations CRUD (db integration)", () => {
       expect(msg).toMatch(/account number/i);
     });
 
-    // ── (5h) Platform account number collision → retried with null, creation succeeds ─
-    // When the platform-account-number allocator picks a sequence slot that
-    // collides with an existing org's platform account number in the DB
-    // (organizations_platform_account_number_unique), the insert catch block must
-    // retry with platformAccountNumber = null so the org is still created (201).
+    // ── (5h) Platform account number issuance ────────────────────────────────
 
-    it("(5h) platform account number collision is retried with null and creation succeeds", async () => {
+    it("(5h) new practices receive the Luhn-checked platform format", async () => {
       const { access } = await makeSession(aiOwnerId);
-      const { db, organizations: orgsTable, auditLogs } = dbMod as any;
+      const r = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("NumberedPractice"),
+          displayName: "Numbered Practice",
+          parentLabOrganizationId: aiLabId,
+        });
 
-      const year = new Date().getUTCFullYear();
-      const yy = String(year).slice(-2);
+      expect(
+        r.status,
+        `Expected 201 for numbered practice, got ${r.status}: ${JSON.stringify(r.body)}`
+      ).toBe(201);
+      expect(r.body.data.platformAccountNumber).toMatch(/^7\d{11}$/);
+      aiProviderIds.push(r.body.data.id);
+    });
 
-      // Ensure the sequence row exists and read the next_seq value we will
-      // collide with. We use a very large offset (9000000) to avoid stepping on
-      // any numbers other tests generate naturally.
-      const offsetSeq = 9_000_000 + Math.floor(Math.random() * 1000);
-      await db.execute(sql`
-        INSERT INTO platform_account_sequences (year, entity_type, next_seq, updated_at)
-        VALUES (${year}, 'org', ${offsetSeq}, now())
-        ON CONFLICT (year, entity_type) DO UPDATE SET next_seq = ${offsetSeq}, updated_at = now()
-      `);
+    // ── (5i–5m) Multi-segment account numbers ────────────────────────────────
+    // Regression guard for Task #3643: practices may store a semicolon-
+    // separated list of account numbers. Each segment is individually unique
+    // per lab. The claim flow accepts any segment.
 
-      // Derive the platform account number the allocator will generate next.
-      // Using displayName "XX" gives deriveAccountNameParts → {first:"X", last:"X"}.
-      const collisionAcctNum = `${offsetSeq}${yy}XX`;
+    it("(5i) semicolon-separated account number saves and round-trips as-is", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const seg1 = `MSA-${randomBytes(3).toString("hex").toUpperCase()}`;
+      const seg2 = `MSB-${randomBytes(3).toString("hex").toUpperCase()}`;
+      const multiAcct = `${seg1}; ${seg2}`;
 
-      // Pre-insert a blocking org with that platform account number so the
-      // first insert attempt by the API will hit the unique constraint.
-      const blockingOrgId = `test-pan-block-${randomBytes(4).toString("hex")}`;
-      await db.insert(orgsTable).values({
-        id: blockingOrgId,
-        type: "provider",
-        name: `PanBlocker_${randomBytes(4).toString("hex")}`,
-        platformAccountNumber: collisionAcctNum,
-        createdByUserId: aiOwnerId,
+      const r = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("MultiAcctPractice"),
+          accountNumber: multiAcct,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(r.status, `create multi-segment: ${JSON.stringify(r.body)}`).toBe(201);
+      expect(r.body.data.accountNumber).toBe(multiAcct);
+      aiProviderIds.push(r.body.data.id);
+    });
+
+    it("(5j) a segment from a multi-value list collides with another practice's existing segment", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const shared = `COLL-${randomBytes(3).toString("hex").toUpperCase()}`;
+      const other = `UNIQ-${randomBytes(3).toString("hex").toUpperCase()}`;
+
+      // First practice owns `shared` as its only segment.
+      const first = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("CollFirst"),
+          accountNumber: shared,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(first.status).toBe(201);
+      aiProviderIds.push(first.body.data.id);
+
+      // Second practice tries to include `shared` as a second segment.
+      const second = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("CollSecond"),
+          accountNumber: `${other}; ${shared}`,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(second.status).toBe(409);
+      const msg: string = second.body.message ?? second.body.error ?? "";
+      expect(msg).toMatch(/account number/i);
+    });
+
+    it("(5k) provider claim succeeds when the submitted number matches a secondary segment", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const primarySeg = `PRI-${randomBytes(3).toString("hex").toUpperCase()}`;
+      const secondarySeg = `SEC-${randomBytes(3).toString("hex").toUpperCase()}`;
+
+      // Create the practice with two segments.
+      const create = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("ClaimSecondary"),
+          accountNumber: `${primarySeg}; ${secondarySeg}`,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(create.status, `create: ${JSON.stringify(create.body)}`).toBe(201);
+      aiProviderIds.push(create.body.data.id);
+
+      // Register a new provider user claiming via the SECONDARY segment.
+      const claimEmail = `claim-sec-${randomBytes(4).toString("hex")}@test-labtrax.invalid`;
+      const claimUsername = `cs${randomBytes(4).toString("hex")}`; // 10 chars, within 3-12 limit
+      const claim = await request(appMod.default)
+        .post("/api/auth/register")
+        .send({
+          username: claimUsername,
+          email: claimEmail,
+          password: "ClaimTest123!",
+          userType: "provider",
+          claimProvider: {
+            labId: aiLabId,
+            accountNumber: secondarySeg,
+          },
+        });
+      // Registration accepts the practice lookup and records an administrator-
+      // reviewed join request; the account number does not grant membership.
+      expect(
+        [200, 201],
+        `claim via secondary segment: ${JSON.stringify(claim.body)}`
+      ).toContain(claim.status);
+
+      // Clean up the created user.
+      const { db: testDb, users: usersTable, organizationMemberships: memberships } = dbMod as any;
+      const createdUser = await testDb.query.users.findFirst({
+        where: eq((dbMod as any).users.email, claimEmail),
+        columns: { id: true },
+      });
+      if (createdUser) {
+        await testDb.delete(memberships).where(eq(memberships.userId, createdUser.id));
+        await testDb.delete(usersTable).where(eq(usersTable.id, createdUser.id));
+      }
+    });
+
+    it("(5l) duplicate segments within one submitted list are rejected (400)", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const seg = `DUP-${randomBytes(3).toString("hex").toUpperCase()}`;
+
+      const r = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("DupSegPractice"),
+          accountNumber: `${seg}; ${seg}`,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(r.status).toBe(400);
+      const msg: string = r.body.message ?? r.body.error ?? "";
+      expect(msg).toMatch(/duplicate/i);
+    });
+
+    it("(5n) custom account number: legacy index constraint returns 409, not 500 and not a silent substitute", async () => {
+      // Exercises the transitional catch branch for
+      // `organizations_parent_lab_account_number_unique` with a custom input.
+      // The old DB index covered all rows (including soft-deleted), so the
+      // application-level check (which excludes soft-deleted) could approve a
+      // number that the index then rejects. The fix must surface 409 for custom
+      // numbers — not 500, and never silently create the org with a different number.
+      //
+      // The legacy index cannot be recreated reliably on a shared dev DB (other
+      // tests have left rows that would cause duplicate-key errors on index creation).
+      // Instead we simulate the constraint by making db.transaction throw the exact
+      // pg error the old index would have produced.
+      const { access } = await makeSession(aiOwnerId);
+      const customAcct = `LGX-${randomBytes(3).toString("hex").toUpperCase()}`;
+
+      // Build a synthetic constraint error matching what pg would produce.
+      const constraintErr = Object.assign(
+        new Error("duplicate key value violates unique constraint"),
+        {
+          code: "23505",
+          constraint: "organizations_parent_lab_account_number_unique",
+        }
+      );
+
+      const { db: testDb } = dbMod as any;
+      // Platform allocation and the organization insert now share the single
+      // transaction opened by insertWithAccountNumberLock. Make that transaction
+      // throw the synthetic constraint error the legacy index would produce.
+      const origTransaction = testDb.transaction.bind(testDb);
+      let txCallCount = 0;
+      const txSpy = vi.spyOn(testDb, "transaction").mockImplementation(function (...args: any[]) {
+        txCallCount++;
+        if (txCallCount === 1) {
+          throw constraintErr;
+        }
+        return origTransaction(...args);
       });
 
       try {
-        // Creating a new org must succeed despite the collision: the catch block
-        // retries with platformAccountNumber = null.
         const r = await request(appMod.default)
           .post("/api/organizations")
           .set("Authorization", `Bearer ${access}`)
           .send({
             type: "provider",
-            name: rid("PanCollisionPractice"),
-            displayName: "XX",
+            name: rid("LegacyIndexTest"),
+            accountNumber: customAcct,
             parentLabOrganizationId: aiLabId,
           });
-
         expect(
           r.status,
-          `Expected 201 after platform account number collision retry, got ${r.status}: ${JSON.stringify(r.body)}`
-        ).toBe(201);
-        // The created org should have null platformAccountNumber (the retry path).
-        expect(r.body.data.platformAccountNumber).toBeNull();
-        aiProviderIds.push(r.body.data.id);
+          `expected 409 (custom account number conflict), got ${r.status}: ${JSON.stringify(r.body)}`
+        ).toBe(409);
+        const msg: string = r.body.message ?? r.body.error ?? "";
+        expect(msg).toMatch(/account number/i);
+        // No org should have been created (transaction never committed).
+        expect(r.body.data?.id, "no org id on a 409 response").toBeUndefined();
       } finally {
-        // Clean up the blocking org.
-        await db.delete(auditLogs).where(eq(auditLogs.organizationId, blockingOrgId));
-        await db.delete(orgsTable).where(eq(orgsTable.id, blockingOrgId));
+        txSpy.mockRestore();
       }
+    });
+
+    it("(5m) PATCH updates account number to a multi-segment value; old segment becomes free", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const oldSeg = `OLD-${randomBytes(3).toString("hex").toUpperCase()}`;
+      const newSeg1 = `NEW1-${randomBytes(3).toString("hex").toUpperCase()}`;
+      const newSeg2 = `NEW2-${randomBytes(3).toString("hex").toUpperCase()}`;
+
+      // Create with a single segment.
+      const create = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("PatchMultiAcct"),
+          accountNumber: oldSeg,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(create.status).toBe(201);
+      const orgId: string = create.body.data.id;
+      aiProviderIds.push(orgId);
+
+      // PATCH to a two-segment value.
+      const patch = await request(appMod.default)
+        .patch(`/api/organizations/${orgId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ accountNumber: `${newSeg1}; ${newSeg2}` });
+      expect(patch.status, `patch: ${JSON.stringify(patch.body)}`).toBe(200);
+      expect(patch.body.data.accountNumber).toBe(`${newSeg1}; ${newSeg2}`);
+
+      // Old segment must now be free — another practice can claim it.
+      const other = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("ReclaimOldSeg"),
+          accountNumber: oldSeg,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(other.status, `reclaim old segment: ${JSON.stringify(other.body)}`).toBe(201);
+      aiProviderIds.push(other.body.data.id);
+    });
+
+    it("(5n) PATCH retains existing segment while appending a new one", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const existingSeg = `EXIST-${randomBytes(3).toString("hex").toUpperCase()}`;
+      const newSeg = `NEW-${randomBytes(3).toString("hex").toUpperCase()}`;
+
+      // Create with a single segment.
+      const create = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("RetainAndExtend"),
+          accountNumber: existingSeg,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(create.status).toBe(201);
+      const orgId: string = create.body.data.id;
+      aiProviderIds.push(orgId);
+
+      // PATCH to retain the existing segment and append a new one.
+      const patch = await request(appMod.default)
+        .patch(`/api/organizations/${orgId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ accountNumber: `${existingSeg}; ${newSeg}` });
+      expect(patch.status, `patch: ${JSON.stringify(patch.body)}`).toBe(200);
+      expect(patch.body.data.accountNumber).toBe(`${existingSeg}; ${newSeg}`);
+
+      // New segment must now be taken — another practice cannot claim it.
+      const conflict = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("ClaimNewSeg"),
+          accountNumber: newSeg,
+          parentLabOrganizationId: aiLabId,
+        });
+      expect(
+        conflict.status,
+        `conflict on new seg: ${JSON.stringify(conflict.body)}`
+      ).toBe(409);
+      const conflictMsg: string = conflict.body.message ?? conflict.body.error ?? "";
+      expect(conflictMsg).toContain(newSeg);
     });
 
     // ── (6) Field validation: name required ─────────────────────────────────
@@ -1962,7 +2585,7 @@ maybe("Organizations CRUD (db integration)", () => {
           notes: "Patient has ceramic preference.",
           restorations: [
             {
-              toothNumber: "",
+              toothNumber: "8",
               restorationType: "Crown",
               material: "Zirconia",
               shade: "A2",

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, GripVertical, History, Layers, Loader2, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, GripVertical, History, Loader2, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 import { formatDate, formatMoney, formatPhone } from "@/lib/format";
@@ -40,7 +40,10 @@ function SortTh({
   );
 }
 
+// The server still stores "item" vendors (created from the invoice editor), so
+// the wire type keeps all three. Only vendor/employee are listed on this page.
 type VendorType = "vendor" | "employee" | "item";
+type ListedVendorType = "vendor" | "employee";
 
 interface Vendor {
   id: string;
@@ -68,10 +71,11 @@ interface Category {
   isArchived: boolean;
 }
 
-const TYPE_TABS: { key: VendorType; label: string }[] = [
+// Billable Items are no longer managed here — reusable invoice items are
+// created from the invoice editor and live in Pricing Tiers.
+const TYPE_TABS: { key: ListedVendorType; label: string }[] = [
   { key: "vendor", label: "Vendors" },
   { key: "employee", label: "Employees" },
-  { key: "item", label: "Billable Items" },
 ];
 
 const TYPE_BADGE: Record<VendorType, string> = {
@@ -98,7 +102,7 @@ const KIND_LABEL: Record<string, string> = {
   transfer: "Transfer",
 };
 
-type Tab = VendorType | "categories" | "locations";
+type Tab = ListedVendorType | "categories" | "locations";
 
 interface Location {
   id: string;
@@ -119,7 +123,7 @@ interface LocationForm {
 
 interface VendorForm {
   name: string;
-  vendorType: VendorType;
+  vendorType: ListedVendorType;
   address: string;
   city: string;
   state: string;
@@ -128,8 +132,6 @@ interface VendorForm {
   email: string;
   website: string;
   notes: string;
-  unitPrice: string;
-  itemCategory: string;
   isActive: boolean;
 }
 
@@ -143,7 +145,7 @@ interface CategoryForm {
 
 const emptyLocationForm = (): LocationForm => ({
   name: "",
-  status: "received",
+  status: "",
   isActive: true,
 });
 
@@ -175,7 +177,7 @@ function stageLabelFor(value: string | null | undefined): string {
   );
 }
 
-const emptyVendorForm = (type: VendorType = "vendor"): VendorForm => ({
+const emptyVendorForm = (type: ListedVendorType = "vendor"): VendorForm => ({
   name: "",
   vendorType: type,
   address: "",
@@ -186,8 +188,6 @@ const emptyVendorForm = (type: VendorType = "vendor"): VendorForm => ({
   email: "",
   website: "",
   notes: "",
-  unitPrice: "",
-  itemCategory: "",
   isActive: true,
 });
 
@@ -244,8 +244,6 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   const [locationForm, setLocationForm] = useState<LocationForm>(emptyLocationForm());
   const [txnsVendor, setTxnsVendor] = useState<Vendor | null>(null);
   const [showImportDialog, setShowImportDialog] = useState(false);
-  const [confirmDeactivateItem, setConfirmDeactivateItem] = useState<Vendor | null>(null);
-  const [confirmDeleteItem, setConfirmDeleteItem] = useState<Vendor | null>(null);
   const [confirmDeleteLocation, setConfirmDeleteLocation] = useState<Location | null>(null);
 
   const vendorsQuery = useQuery({
@@ -284,10 +282,16 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     const params = new URLSearchParams(window.location.search);
     const vendorId = params.get("vendor");
     if (!vendorId || vendorId === autoOpenedVendorId) return;
+    // Wait for the vendor list to load before deciding anything.
     const v = allVendors.find((x) => x.id === vendorId);
     if (!v) return;
-    setActiveTab(v.vendorType as Tab);
-    openEditVendor(v);
+    // "item" vendors are managed in Pricing Tiers and have no tab here any
+    // more, so an old link to one just drops the param instead of opening
+    // the wrong record.
+    if (v.vendorType === "vendor" || v.vendorType === "employee") {
+      setActiveTab(v.vendorType);
+      openEditVendor(v);
+    }
     setAutoOpenedVendorId(vendorId);
     const url = new URL(window.location.href);
     url.searchParams.delete("vendor");
@@ -321,8 +325,8 @@ function ListsContent({ organizationId }: { organizationId: string }) {
           email: form.email.trim() || null,
           website: form.website.trim() || null,
           notes: form.notes.trim() || null,
-          unitPrice: form.vendorType === "item" ? (form.unitPrice.trim() || null) : null,
-          itemCategory: form.vendorType === "item" ? (form.itemCategory.trim() || null) : null,
+          unitPrice: null,
+          itemCategory: null,
           isActive: form.isActive,
         }),
       }),
@@ -347,57 +351,14 @@ function ListsContent({ organizationId }: { organizationId: string }) {
           email: form.email.trim() || null,
           website: form.website.trim() || null,
           notes: form.notes.trim() || null,
-          unitPrice: form.vendorType === "item" ? (form.unitPrice.trim() || null) : null,
-          itemCategory: form.vendorType === "item" ? (form.itemCategory.trim() || null) : null,
+          unitPrice: null,
+          itemCategory: null,
           isActive: form.isActive,
         }),
       }),
     onSuccess: () => {
       closeDrawer();
       invalidateVendors();
-    },
-  });
-
-  const deactivateItemMut = useMutation({
-    mutationFn: (v: Vendor) =>
-      apiFetch(`/finance/vendors/${v.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          name: v.name,
-          vendorType: v.vendorType,
-          address: v.address,
-          city: v.city,
-          state: v.state,
-          zip: v.zip,
-          phone: v.phone,
-          email: v.email,
-          website: v.website,
-          notes: v.notes,
-          isActive: false,
-        }),
-      }),
-    onSuccess: (_data, v) => {
-      setConfirmDeactivateItem(null);
-      invalidateVendors();
-      toast.success(`"${v.name}" deactivated`);
-    },
-    onError: () => {
-      toast.error("Failed to deactivate item");
-    },
-  });
-
-  const deleteItemMut = useMutation({
-    mutationFn: (v: Vendor) =>
-      apiFetch(`/finance/vendors/${v.id}?hard=true`, {
-        method: "DELETE",
-      }),
-    onSuccess: (_data, v) => {
-      setConfirmDeleteItem(null);
-      invalidateVendors();
-      toast.success(`"${v.name}" deleted`);
-    },
-    onError: () => {
-      toast.error("Failed to delete item");
     },
   });
 
@@ -455,7 +416,6 @@ function ListsContent({ organizationId }: { organizationId: string }) {
           name: form.name.trim(),
           status: form.status,
           isActive: form.isActive,
-
         }),
       }),
     onSuccess: () => {
@@ -476,7 +436,6 @@ function ListsContent({ organizationId }: { organizationId: string }) {
           name: form.name.trim(),
           status: form.status,
           isActive: form.isActive,
-
         }),
       }),
     onSuccess: () => {
@@ -541,7 +500,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     }
   }
 
-  function openAddVendor(type: VendorType) {
+  function openAddVendor(type: ListedVendorType) {
     setDrawerVendor(null);
     setDrawerCategory(null);
     setVendorForm(emptyVendorForm(type));
@@ -553,7 +512,8 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     setDrawerCategory(null);
     setVendorForm({
       name: v.name,
-      vendorType: v.vendorType,
+      // Only vendor/employee rows are reachable from this page's tables.
+      vendorType: v.vendorType === "employee" ? "employee" : "vendor",
       address: v.address ?? "",
       city: v.city ?? "",
       state: v.state ?? "",
@@ -562,8 +522,6 @@ function ListsContent({ organizationId }: { organizationId: string }) {
       email: v.email ?? "",
       website: v.website ?? "",
       notes: v.notes ?? "",
-      unitPrice: v.unitPrice ?? "",
-      itemCategory: v.itemCategory ?? "",
       isActive: v.isActive,
     });
     setShowDrawer(true);
@@ -616,10 +574,9 @@ function ListsContent({ organizationId }: { organizationId: string }) {
 
   const isCategoriesTab = activeTab === "categories";
   const isLocationsTab = activeTab === "locations";
-  const isItemTab = activeTab === "item";
 
   const filteredVendors = allVendors
-    .filter((v) => v.vendorType === (activeTab as VendorType))
+    .filter((v) => v.vendorType === (activeTab as ListedVendorType))
     .filter(
       (v) =>
         !search.trim() ||
@@ -639,14 +596,12 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   const filteredLocations = allLocations.filter(
     (loc) =>
       !search.trim() ||
-      loc.name.toLowerCase().includes(search.toLowerCase()) ||
-      stageLabelFor(loc.status).toLowerCase().includes(search.toLowerCase())
+      loc.name.toLowerCase().includes(search.toLowerCase())
   );
 
   const tabCounts: Record<Tab, number> = {
     vendor: allVendors.filter((v) => v.vendorType === "vendor").length,
     employee: allVendors.filter((v) => v.vendorType === "employee").length,
-    item: allVendors.filter((v) => v.vendorType === "item").length,
     categories: allCategories.length,
     locations: allLocations.length,
   };
@@ -677,14 +632,13 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     (updateLocationMut.error instanceof Error ? updateLocationMut.error.message : null);
 
   function handleExportCsv() {
-    const type = activeTab as VendorType;
+    const type = activeTab as ListedVendorType;
     const rows = allVendors.filter((v) => v.vendorType === type && v.isActive);
-    const isItem = type === "item";
-    const headers = ["Name", "Phone", "Email", "Address", "City", "State", "Zip", "Website", "Notes", ...(isItem ? ["Unit Price"] : [])];
+    const headers = ["Name", "Phone", "Email", "Address", "City", "State", "Zip", "Website", "Notes"];
     const csvLines = [
       headers.join(","),
       ...rows.map((v) =>
-        [v.name, v.phone ?? "", v.email ?? "", v.address ?? "", v.city ?? "", v.state ?? "", v.zip ?? "", v.website ?? "", v.notes ?? "", ...(isItem ? [v.unitPrice ?? ""] : [])]
+        [v.name, v.phone ?? "", v.email ?? "", v.address ?? "", v.city ?? "", v.state ?? "", v.zip ?? "", v.website ?? "", v.notes ?? ""]
           .map((val) => `"${String(val).replace(/"/g, '""')}"`)
           .join(",")
       ),
@@ -706,7 +660,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Lists</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Manage vendors, employees, billable items, transaction categories, and lab locations used across the register.
+          Manage vendors, employees, transaction categories, and lab locations used across the register.
         </p>
       </div>
 
@@ -751,12 +705,12 @@ function ListsContent({ organizationId }: { organizationId: string }) {
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={`Search ${isLocationsTab ? "locations" : isCategoriesTab ? "categories" : TYPE_LABEL[activeTab as VendorType].toLowerCase() + "s"}…`}
+              placeholder={`Search ${isLocationsTab ? "locations" : isCategoriesTab ? "categories" : TYPE_LABEL[activeTab as ListedVendorType].toLowerCase() + "s"}…`}
               className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
             />
           </div>
           <div className="flex-1" />
-          {!isCategoriesTab && !isLocationsTab && !isItemTab && (
+          {!isCategoriesTab && !isLocationsTab && (
             <>
               <button
                 type="button"
@@ -767,35 +721,31 @@ function ListsContent({ organizationId }: { organizationId: string }) {
                 <Download size={14} />
                 Export CSV
               </button>
-              {(activeTab === "vendor" || activeTab === "employee") && (
-                <button
-                  type="button"
-                  onClick={() => setShowImportDialog(true)}
-                  title="Import CSV"
-                  className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
-                >
-                  <Upload size={14} />
-                  Import CSV
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setShowImportDialog(true)}
+                title="Import CSV"
+                className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
+              >
+                <Upload size={14} />
+                Import CSV
+              </button>
             </>
           )}
-          {!isItemTab && (
-            <button
-              type="button"
-              onClick={() =>
-                isLocationsTab
-                  ? openAddLocation()
-                  : isCategoriesTab
-                    ? openAddCategory()
-                    : openAddVendor(activeTab as VendorType)
-              }
-              className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
-            >
-              <Plus size={14} />
-              Add {isLocationsTab ? "Location" : isCategoriesTab ? "Category" : TYPE_LABEL[activeTab as VendorType]}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() =>
+              isLocationsTab
+                ? openAddLocation()
+                : isCategoriesTab
+                  ? openAddCategory()
+                  : openAddVendor(activeTab as ListedVendorType)
+            }
+            className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
+          >
+            <Plus size={14} />
+            Add {isLocationsTab ? "Location" : isCategoriesTab ? "Category" : TYPE_LABEL[activeTab as ListedVendorType]}
+          </button>
         </div>
 
         {isLocationsTab ? (
@@ -818,34 +768,13 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             search={search}
             onEdit={openEditCategory}
           />
-        ) : isItemTab ? (
-          <div className="px-8 py-16 text-center">
-            <Layers size={32} className="inline-block text-muted-foreground/40 mb-4" />
-            <h3 className="text-base font-semibold mb-2">
-              Billable items have moved to Pricing Tiers
-            </h3>
-            <p className="text-sm text-muted-foreground max-w-md mx-auto leading-relaxed">
-              New reusable invoice items are now created directly from the invoice editor and saved
-              into your pricing tiers. Go to <strong>Settings → Pricing Tiers</strong> to view and
-              manage all items.
-            </p>
-            {tabCounts["item"] > 0 && (
-              <p className="text-xs text-muted-foreground mt-3">
-                {tabCounts["item"]} existing item
-                {tabCounts["item"] !== 1 ? "s remain" : " remains"} stored here for reference.
-              </p>
-            )}
-          </div>
         ) : (
           <VendorsTable
             vendors={filteredVendors}
             isLoading={vendorsQuery.isLoading}
             search={search}
-            typeLabel={TYPE_LABEL[activeTab as VendorType]}
-            vendorType={activeTab as VendorType}
+            typeLabel={TYPE_LABEL[activeTab as ListedVendorType]}
             onEdit={openEditVendor}
-            onDeactivate={undefined}
-            onDelete={undefined}
           />
         )}
       </div>
@@ -858,7 +787,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
         />
       )}
 
-      {showImportDialog && (activeTab === "vendor" || activeTab === "employee" || activeTab === "item") && (
+      {showImportDialog && (activeTab === "vendor" || activeTab === "employee") && (
         <ImportCsvDialog
           organizationId={organizationId}
           vendorType={activeTab}
@@ -866,94 +795,10 @@ function ListsContent({ organizationId }: { organizationId: string }) {
           onSuccess={(count) => {
             setShowImportDialog(false);
             invalidateVendors();
-            const typeLabel = TYPE_LABEL[activeTab as VendorType];
+            const typeLabel = TYPE_LABEL[activeTab];
             toast.success(`${count} ${typeLabel.toLowerCase()}${count !== 1 ? "s" : ""} imported successfully`);
           }}
         />
-      )}
-
-      {confirmDeactivateItem && (
-        <>
-          <div
-            className="fixed inset-0 z-50 bg-foreground/30"
-            onClick={() => setConfirmDeactivateItem(null)}
-          />
-          <div className="fixed z-50 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[360px] bg-card border border-border rounded-xl shadow-2xl flex flex-col">
-            <div className="px-5 pt-5 pb-4">
-              <h3 className="text-sm font-semibold mb-1">Deactivate Billable Item?</h3>
-              <p className="text-sm text-muted-foreground">
-                <span className="font-medium text-foreground">"{confirmDeactivateItem.name}"</span> will be
-                marked inactive and hidden from case and invoice forms. You can re-activate it later by editing
-                it in this list.
-              </p>
-            </div>
-            <div className="flex justify-end gap-2 px-5 pb-4">
-              <button
-                type="button"
-                onClick={() => setConfirmDeactivateItem(null)}
-                disabled={deactivateItemMut.isPending}
-                className="h-9 px-4 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 disabled:opacity-60"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => deactivateItemMut.mutate(confirmDeactivateItem)}
-                disabled={deactivateItemMut.isPending}
-                className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center gap-1.5"
-              >
-                {deactivateItemMut.isPending ? (
-                  <Loader2 size={13} className="animate-spin" />
-                ) : (
-                  <Ban size={13} />
-                )}
-                Deactivate
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-
-      {confirmDeleteItem && (
-        <>
-          <div
-            className="fixed inset-0 z-50 bg-foreground/30"
-            onClick={() => setConfirmDeleteItem(null)}
-          />
-          <div className="fixed z-50 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[360px] bg-card border border-border rounded-xl shadow-2xl flex flex-col">
-            <div className="px-5 pt-5 pb-4">
-              <h3 className="text-sm font-semibold mb-1">Delete Billable Item?</h3>
-              <p className="text-sm text-muted-foreground">
-                <span className="font-medium text-foreground">"{confirmDeleteItem.name}"</span> will be
-                permanently removed from this list. Existing cases and invoices that already reference it are
-                not affected. This cannot be undone from the app.
-              </p>
-            </div>
-            <div className="flex justify-end gap-2 px-5 pb-4">
-              <button
-                type="button"
-                onClick={() => setConfirmDeleteItem(null)}
-                disabled={deleteItemMut.isPending}
-                className="h-9 px-4 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 disabled:opacity-60"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => deleteItemMut.mutate(confirmDeleteItem)}
-                disabled={deleteItemMut.isPending}
-                className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center gap-1.5"
-              >
-                {deleteItemMut.isPending ? (
-                  <Loader2 size={13} className="animate-spin" />
-                ) : (
-                  <Trash2 size={13} />
-                )}
-                Delete
-              </button>
-            </div>
-          </div>
-        </>
       )}
 
       {confirmDeleteLocation && (
@@ -1044,10 +889,6 @@ function ListsContent({ organizationId }: { organizationId: string }) {
                   form={vendorForm}
                   onChange={setVendorForm}
                   error={vendorError}
-                  existingItemNames={allVendors
-                    .filter((v) => v.vendorType === "item" && v.isActive)
-                    .map((v) => v.name)
-                    .sort((a, b) => a.localeCompare(b))}
                 />
               )}
             </div>
@@ -1066,7 +907,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
                   onClick={() =>
                     updateLocationMut.mutate({ id: drawerLocation.id, form: locationForm })
                   }
-                  disabled={!locationForm.name.trim() || !locationForm.status.trim() || isLocationPending}
+                  disabled={!locationForm.name.trim() || !locationForm.status || isLocationPending}
                   className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
                 >
                   {isLocationPending && <Loader2 size={13} className="animate-spin" />}
@@ -1077,7 +918,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
                 <button
                   type="button"
                   onClick={() => createLocationMut.mutate(locationForm)}
-                  disabled={!locationForm.name.trim() || !locationForm.status.trim() || isLocationPending}
+                  disabled={!locationForm.name.trim() || !locationForm.status || isLocationPending}
                   className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
                 >
                   {isLocationPending && <Loader2 size={13} className="animate-spin" />}
@@ -1258,21 +1099,14 @@ function VendorsTable({
   isLoading,
   search,
   typeLabel,
-  vendorType,
   onEdit,
-  onDeactivate,
-  onDelete,
 }: {
   vendors: Vendor[];
   isLoading: boolean;
   search: string;
   typeLabel: string;
-  vendorType: VendorType;
   onEdit: (v: Vendor) => void;
-  onDeactivate?: (v: Vendor) => void;
-  onDelete?: (v: Vendor) => void;
 }) {
-  const isItem = vendorType === "item";
   const [sortKey, setSortKey] = useState<keyof Vendor>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
@@ -1309,15 +1143,9 @@ function VendorsTable({
       <thead className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
         <tr>
           <SortTh label="Name" sortKey="name" active={sortKey === "name"} dir={sortDir} onClick={handleSort} className="px-4" />
-          {isItem ? (
-            <SortTh label="Price" sortKey="unitPrice" active={sortKey === "unitPrice"} dir={sortDir} onClick={handleSort} className="w-28" />
-          ) : (
-            <>
-              <SortTh label="Phone" sortKey="phone" active={sortKey === "phone"} dir={sortDir} onClick={handleSort} />
-              <SortTh label="Email" sortKey="email" active={sortKey === "email"} dir={sortDir} onClick={handleSort} />
-              <SortTh label="City" sortKey="city" active={sortKey === "city"} dir={sortDir} onClick={handleSort} />
-            </>
-          )}
+          <SortTh label="Phone" sortKey="phone" active={sortKey === "phone"} dir={sortDir} onClick={handleSort} />
+          <SortTh label="Email" sortKey="email" active={sortKey === "email"} dir={sortDir} onClick={handleSort} />
+          <SortTh label="City" sortKey="city" active={sortKey === "city"} dir={sortDir} onClick={handleSort} />
           <SortTh label="Type" sortKey="vendorType" active={sortKey === "vendorType"} dir={sortDir} onClick={handleSort} className="w-28" />
           <th className="text-center font-medium px-3 py-2 w-20">Active</th>
           <th className="px-2 py-2 w-16" />
@@ -1337,23 +1165,15 @@ function VendorsTable({
                 </span>
               )}
             </td>
-            {isItem ? (
-              <td className="px-3 py-2.5 text-muted-foreground text-xs tabular-nums">
-                {v.unitPrice != null ? formatMoney(parseFloat(v.unitPrice)) : "—"}
-              </td>
-            ) : (
-              <>
-                <td className="px-3 py-2.5 text-muted-foreground text-xs">
-                  {v.phone ? formatPhone(v.phone) : "—"}
-                </td>
-                <td className="px-3 py-2.5 text-muted-foreground text-xs truncate max-w-[180px]">
-                  {v.email || "—"}
-                </td>
-                <td className="px-3 py-2.5 text-muted-foreground text-xs">
-                  {v.city || "—"}
-                </td>
-              </>
-            )}
+            <td className="px-3 py-2.5 text-muted-foreground text-xs">
+              {v.phone ? formatPhone(v.phone) : "—"}
+            </td>
+            <td className="px-3 py-2.5 text-muted-foreground text-xs truncate max-w-[180px]">
+              {v.email || "—"}
+            </td>
+            <td className="px-3 py-2.5 text-muted-foreground text-xs">
+              {v.city || "—"}
+            </td>
             <td className="px-3 py-2.5">
               <span
                 className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE[v.vendorType]}`}
@@ -1368,17 +1188,6 @@ function VendorsTable({
             </td>
             <td className="px-2 py-2.5 text-right">
               <div className="flex items-center justify-end gap-1">
-                {onDeactivate && v.isActive && (
-                  <button
-                    type="button"
-                    onClick={() => onDeactivate(v)}
-                    className="h-7 w-7 rounded-md hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive"
-                    aria-label="Deactivate"
-                    title="Deactivate"
-                  >
-                    <Ban size={13} />
-                  </button>
-                )}
                 <button
                   type="button"
                   onClick={() => onEdit(v)}
@@ -1387,17 +1196,6 @@ function VendorsTable({
                 >
                   <Pencil size={13} />
                 </button>
-                {onDelete && (
-                  <button
-                    type="button"
-                    onClick={() => onDelete(v)}
-                    className="h-7 w-7 rounded-md hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive"
-                    aria-label="Delete"
-                    title="Delete permanently"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                )}
               </div>
             </td>
           </tr>
@@ -1497,7 +1295,7 @@ function LocationsTable({
         <tr>
           {isDraggable && <th className="px-2 py-2 w-8" />}
           <th className="text-left font-medium px-4 py-2">Name</th>
-          <th className="text-left font-medium px-3 py-2 w-32">Code</th>
+          <th className="text-left font-medium px-3 py-2 w-36">Stage</th>
           <th className="text-center font-medium px-3 py-2 w-20">Active</th>
           <th className="px-2 py-2 w-20" />
         </tr>
@@ -1528,7 +1326,15 @@ function LocationsTable({
                 </td>
               )}
               <td className="px-4 py-2.5 font-medium">{loc.name}</td>
-              <td className="px-3 py-2.5 text-xs text-muted-foreground">{stageLabelFor(loc.status)}</td>
+              <td className="px-3 py-2.5 text-muted-foreground">
+                {loc.status ? (
+                  stageLabelFor(loc.status)
+                ) : (
+                  <span className="text-amber-600 dark:text-amber-400" title="No workflow stage set — moving a case here won't advance its status.">
+                    Not set
+                  </span>
+                )}
+              </td>
               <td className="px-3 py-2.5 text-center">
                 {toggleActivePendingId === loc.id ? (
                   <Loader2 size={13} className="animate-spin text-muted-foreground inline-block" />
@@ -1605,17 +1411,22 @@ function LocationFormFields({
           value={form.status}
           onChange={(e) => set({ status: e.target.value })}
         >
-          {STAGE_OPTIONS.map((s) => (
-            <option key={s.value} value={s.value}>
-              {s.label}
+          <option value="" disabled>
+            Select a stage…
+          </option>
+          {STAGE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
             </option>
           ))}
         </select>
-        <p className="text-[11px] text-muted-foreground mt-0.5">
-          Cases moved to this station are set to this workflow stage.
+        <p className="text-xs text-muted-foreground mt-1">
+          Cases moved to this station are set to this stage. Without a stage, a
+          station silently defaults to "Received" — moving a case there won't
+          advance its status.
         </p>
       </FieldRow>
-      <FieldRow label="Status">
+      <FieldRow label="Active">
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -1658,23 +1469,12 @@ function VendorFormFields({
   form,
   onChange,
   error,
-  existingItemNames = [],
 }: {
   form: VendorForm;
   onChange: (f: VendorForm) => void;
   error: string | null;
-  existingItemNames?: string[];
 }) {
   const set = (patch: Partial<VendorForm>) => onChange({ ...form, ...patch });
-  const isItem = form.vendorType === "item";
-
-  // For billable-item forms: track whether the user is picking an existing name or entering a new one
-  const [itemNameMode, setItemNameMode] = useState<"pick" | "add_new">(() => {
-    if (!isItem) return "pick";
-    if (!form.name) return "pick";
-    if (existingItemNames.includes(form.name)) return "pick";
-    return "add_new";
-  });
 
   const ActiveToggle = (
     <div className="flex items-center gap-2">
@@ -1695,94 +1495,6 @@ function VendorFormFields({
     </div>
   );
 
-  if (isItem) {
-    return (
-      <div className="space-y-4">
-        {error && (
-          <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</p>
-        )}
-        <FieldRow label="Item *">
-          {itemNameMode === "pick" ? (
-            <select
-              autoFocus
-              value={form.name}
-              onChange={(e) => {
-                if (e.target.value === "__add_new__") {
-                  setItemNameMode("add_new");
-                  set({ name: "" });
-                } else {
-                  set({ name: e.target.value });
-                }
-              }}
-              className={inputCls}
-            >
-              <option value="">— Select a billable item —</option>
-              {existingItemNames.map((n) => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-              <option value="__add_new__">+ Add New</option>
-            </select>
-          ) : (
-            <div className="flex gap-2">
-              <input
-                autoFocus
-                value={form.name}
-                onChange={(e) => set({ name: e.target.value })}
-                placeholder="New billable item name"
-                className={`${inputCls} flex-1`}
-              />
-              {existingItemNames.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => { setItemNameMode("pick"); set({ name: "" }); }}
-                  className="h-9 px-3 rounded-md bg-secondary text-sm hover:bg-secondary/80 whitespace-nowrap"
-                >
-                  Pick existing
-                </button>
-              )}
-            </div>
-          )}
-        </FieldRow>
-        <FieldRow label="Type">
-          <select
-            value={form.itemCategory}
-            onChange={(e) => set({ itemCategory: e.target.value })}
-            className={inputCls}
-          >
-            <option value="">— Select a type —</option>
-            <option value="Restorative">Restorative</option>
-            <option value="Removable">Removable</option>
-            <option value="Appliance">Appliance</option>
-          </select>
-        </FieldRow>
-        <FieldRow label="Unit Price">
-          <div className="relative">
-            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-sm select-none">$</span>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={form.unitPrice}
-              onChange={(e) => set({ unitPrice: e.target.value })}
-              placeholder="0.00"
-              className={`${inputCls} pl-6`}
-            />
-          </div>
-        </FieldRow>
-        <FieldRow label="Notes">
-          <textarea
-            value={form.notes}
-            onChange={(e) => set({ notes: e.target.value })}
-            placeholder="Internal notes…"
-            rows={3}
-            className={textareaCls}
-          />
-        </FieldRow>
-        {ActiveToggle}
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-4">
       {error && (
@@ -1800,12 +1512,11 @@ function VendorFormFields({
       <FieldRow label="Type">
         <select
           value={form.vendorType}
-          onChange={(e) => set({ vendorType: e.target.value as VendorType })}
+          onChange={(e) => set({ vendorType: e.target.value as ListedVendorType })}
           className={inputCls}
         >
           <option value="vendor">Vendor</option>
           <option value="employee">Employee</option>
-          <option value="item">Billable Item</option>
         </select>
       </FieldRow>
       <FieldRow label="Phone">
@@ -2252,16 +1963,7 @@ const VENDOR_FIELDS: { key: string; label: string; required: boolean }[] = [
   { key: "notes", label: "Notes", required: false },
 ];
 
-const ITEM_FIELDS: { key: string; label: string; required: boolean }[] = [
-  ...VENDOR_FIELDS,
-  { key: "unitPrice", label: "Unit Price", required: false },
-];
-
-function getFieldsForType(vendorType: VendorType) {
-  return vendorType === "item" ? ITEM_FIELDS : VENDOR_FIELDS;
-}
-
-function autoDetectMapping(headers: string[], vendorType: VendorType): Record<string, number> {
+function autoDetectMapping(headers: string[]): Record<string, number> {
   const mapping: Record<string, number> = {};
   const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
   const aliases: Record<string, string[]> = {
@@ -2274,9 +1976,8 @@ function autoDetectMapping(headers: string[], vendorType: VendorType): Record<st
     zip: ["zip", "zipcode", "postalcode", "postal"],
     website: ["website", "url", "web", "homepage", "site"],
     notes: ["notes", "note", "comments", "comment", "description", "memo"],
-    unitPrice: ["unitprice", "price", "cost", "unitcost", "rate", "amount", "unitamount", "priceeach", "costeach"],
   };
-  for (const field of getFieldsForType(vendorType)) {
+  for (const field of VENDOR_FIELDS) {
     const fieldAliases = aliases[field.key] ?? [field.key];
     const idx = headers.findIndex((h) => fieldAliases.includes(normalize(h)));
     if (idx !== -1) mapping[field.key] = idx;
@@ -2295,7 +1996,7 @@ function ImportCsvDialog({
   onSuccess,
 }: {
   organizationId: string;
-  vendorType: VendorType;
+  vendorType: ListedVendorType;
   onClose: () => void;
   onSuccess: (count: number) => void;
 }) {
@@ -2323,7 +2024,7 @@ function ImportCsvDialog({
       }
       setCsvHeaders(headers);
       setCsvRows(rows.filter((r) => r.some((c) => c.trim())));
-      setMapping(autoDetectMapping(headers, vendorType));
+      setMapping(autoDetectMapping(headers));
       setImportError(null);
       setStep("mapping");
     };
@@ -2371,9 +2072,6 @@ function ImportCsvDialog({
           website: getMappedValue(row, "website") || null,
           notes: getMappedValue(row, "notes") || null,
         };
-        if (vendorType === "item") {
-          record.unitPrice = getMappedValue(row, "unitPrice") || null;
-        }
         return record;
       })
       .filter(Boolean) as Array<{ name: string } & Record<string, string | null>>;
@@ -2388,9 +2086,7 @@ function ImportCsvDialog({
       const endpoint =
         vendorType === "employee"
           ? "/finance/employees/import"
-          : vendorType === "item"
-            ? "/finance/items/import"
-            : "/finance/vendors/import";
+          : "/finance/vendors/import";
       const result = await apiFetch<{ imported: number; skipped: number }>(endpoint, {
         method: "POST",
         body: JSON.stringify({ organizationId, records }),
@@ -2488,7 +2184,7 @@ function ImportCsvDialog({
                       </tr>
                     </thead>
                     <tbody>
-                      {getFieldsForType(vendorType).map((field) => {
+                      {VENDOR_FIELDS.map((field) => {
                         const colIdx = mapping[field.key] ?? -1;
                         const preview = previewRows[0] ? (colIdx >= 0 ? previewRows[0][colIdx] ?? "" : "") : "";
                         return (
@@ -2528,7 +2224,7 @@ function ImportCsvDialog({
                       <table className="w-full text-xs">
                         <thead className="bg-secondary/40">
                           <tr>
-                            {getFieldsForType(vendorType).filter((f) => mapping[f.key] !== undefined && (mapping[f.key] as number) >= 0).map((f) => (
+                            {VENDOR_FIELDS.filter((f) => mapping[f.key] !== undefined && (mapping[f.key] as number) >= 0).map((f) => (
                               <th key={f.key} className="text-left font-medium px-3 py-1.5 text-muted-foreground whitespace-nowrap">{f.label}</th>
                             ))}
                           </tr>
@@ -2536,7 +2232,7 @@ function ImportCsvDialog({
                         <tbody>
                           {previewRows.map((row, ri) => (
                             <tr key={ri} className="border-t border-border">
-                              {getFieldsForType(vendorType).filter((f) => mapping[f.key] !== undefined && (mapping[f.key] as number) >= 0).map((f) => (
+                              {VENDOR_FIELDS.filter((f) => mapping[f.key] !== undefined && (mapping[f.key] as number) >= 0).map((f) => (
                                 <td key={f.key} className="px-3 py-1.5 text-muted-foreground truncate max-w-[150px]">
                                   {getMappedValue(row, f.key) || <span className="opacity-40">—</span>}
                                 </td>

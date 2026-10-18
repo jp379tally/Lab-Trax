@@ -17,9 +17,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Typography, Radius } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+} from "@/components/ui/DismissKeyboardView";
 import { getJson } from "@/lib/read-api";
 import { useMe, primaryLabOrgId } from "@/lib/auth-me";
 import { formatMoney } from "@/lib/format";
+import { normalizeItemName } from "@workspace/item-name-match";
 
 const OPEN_STATUSES = new Set([
   "received",
@@ -135,12 +140,12 @@ export default function AccountsScreen() {
   }, [casesQuery.data, invoicesQuery.data]);
 
   const practices = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = normalizeItemName(search);
     return (orgsQuery.data ?? [])
       .filter((o) => o.type === "provider" && !o.deletedAt)
       .filter((o) => {
         if (!q) return true;
-        return (o.displayName || o.name).toLowerCase().includes(q);
+        return normalizeItemName(o.displayName || o.name).includes(q);
       })
       .sort((a, b) =>
         (a.displayName || a.name).localeCompare(b.displayName || b.name),
@@ -165,7 +170,10 @@ export default function AccountsScreen() {
 
   if (!labOrgId) {
     return (
-      <View style={[styles.container, { paddingTop: insets.top + Spacing.lg }]}>
+      <DismissKeyboardView
+        style={[styles.container, { paddingTop: insets.top + Spacing.lg }]}
+        testID="accounts-keyboard-dismiss"
+      >
         <View style={styles.header}>
           <Pressable onPress={() => router.back()} hitSlop={8} style={styles.backBtn}>
             <Ionicons name="chevron-back" size={24} color={colors.text} />
@@ -181,12 +189,15 @@ export default function AccountsScreen() {
             Accounts are scoped to a lab. This view is available to lab members.
           </Text>
         </View>
-      </View>
+      </DismissKeyboardView>
     );
   }
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <DismissKeyboardView
+      style={[styles.container, { paddingTop: insets.top }]}
+      testID="accounts-keyboard-dismiss"
+    >
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} hitSlop={8} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
@@ -225,6 +236,8 @@ export default function AccountsScreen() {
         </View>
       ) : (
         <FlatList
+          keyboardDismissMode={scrollKeyboardDismissMode}
+          keyboardShouldPersistTaps="handled"
           data={practices}
           keyExtractor={(o) => o.id}
           contentContainerStyle={[
@@ -316,7 +329,7 @@ export default function AccountsScreen() {
           }}
         />
       )}
-    </View>
+    </DismissKeyboardView>
   );
 }
 

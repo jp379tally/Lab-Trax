@@ -284,6 +284,40 @@ maybe("POST /api/admin/cleanup/pre-cutoff-cases (db integration)", () => {
     expect(rows.legacy[preLegacyId].deletedAt).toBeNull();
   });
 
+  it("rolls back canonical case deletion when a linked invoice freeze audit fails", async () => {
+    const { pool } = dbMod as any;
+    const triggerName = `fail_pre_cutoff_freeze_${randomBytes(8).toString("hex")}`;
+    const functionName = `${triggerName}_fn`;
+
+    try {
+      await pool.query(`
+        CREATE FUNCTION ${functionName}() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.action = 'invoice_frozen_case_deleted'
+             AND NEW.entity_id = '${linkedPostInvoiceId}' THEN
+            RAISE EXCEPTION 'injected pre-cutoff freeze audit failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER ${triggerName}
+          BEFORE INSERT ON audit_logs
+          FOR EACH ROW EXECUTE FUNCTION ${functionName}();
+      `);
+
+      const res = await adminPost({ dryRun: false, confirm: "DELETE_PRE_JUNE_2026" });
+      expect(res.status).toBe(500);
+
+      const rows = await fetchRows();
+      expect(rows.cases[preCaseId].deletedAt).toBeNull();
+      expect(rows.invoices[linkedPostInvoiceId].frozen).toBe(false);
+      expect(Number(rows.invoices[linkedPostInvoiceId].balanceDue)).toBe(100);
+    } finally {
+      await pool.query(`DROP TRIGGER IF EXISTS ${triggerName} ON audit_logs`);
+      await pool.query(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    }
+  });
+
   it("live run soft-deletes pre-cutoff rows, keeps boundary/post rows, freezes linked invoices", async () => {
     const res = await adminPost({ dryRun: false, confirm: "DELETE_PRE_JUNE_2026" });
     expect(res.status).toBe(200);

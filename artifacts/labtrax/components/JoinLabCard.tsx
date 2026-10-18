@@ -13,6 +13,7 @@ import { useTheme } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch, apiRequest } from "@/lib/query-client";
 import { ME_QUERY_KEY } from "@/lib/auth-me";
+import { DismissKeyboardView } from "@/components/ui/DismissKeyboardView";
 
 interface LabLookupResult {
   id: string;
@@ -33,6 +34,7 @@ interface MyJoinRequest {
     id: string;
     name: string;
     displayName?: string | null;
+    type?: string | null;
   } | null;
 }
 
@@ -130,10 +132,11 @@ export function JoinLabCard() {
   });
 
   if (approvedRequest) {
+    const isPractice = approvedRequest.organization?.type === "provider";
     const labName =
       approvedRequest.organization?.displayName ||
       approvedRequest.organization?.name ||
-      "the lab";
+      (isPractice ? "the practice" : "the lab");
     return (
       <View style={styles.center}>
         <Ionicons name="checkmark-circle-outline" size={48} color={colors.success} />
@@ -167,10 +170,11 @@ export function JoinLabCard() {
   }
 
   if (pendingRequest) {
+    const isPractice = pendingRequest.organization?.type === "provider";
     const labName =
       pendingRequest.organization?.displayName ||
       pendingRequest.organization?.name ||
-      "the lab";
+      (isPractice ? "the practice" : "the lab");
     return (
       <View style={styles.center}>
         <Ionicons name="time-outline" size={48} color={colors.warning} />
@@ -192,8 +196,9 @@ export function JoinLabCard() {
             },
           ]}
         >
-          Your request to join {labName} has been sent. You'll get access as soon
-          as a lab admin approves it.
+          {isPractice
+            ? `Your request to join ${labName} has been sent. You'll get access as soon as a practice admin (or its lab) approves it.`
+            : `Your request to join ${labName} has been sent. You'll get access as soon as a lab admin approves it.`}
         </Text>
         <Pressable
           onPress={() => cancelRequestMutation.mutate(pendingRequest.id)}
@@ -212,10 +217,11 @@ export function JoinLabCard() {
   }
 
   if (declinedRequest) {
+    const isPractice = declinedRequest.organization?.type === "provider";
     const labName =
       declinedRequest.organization?.displayName ||
       declinedRequest.organization?.name ||
-      "the lab";
+      (isPractice ? "the practice" : "the lab");
     return (
       <View style={styles.center}>
         <Ionicons name="close-circle-outline" size={48} color={colors.error} />
@@ -237,8 +243,9 @@ export function JoinLabCard() {
             },
           ]}
         >
-          Your request to join {labName} was declined. You can search for another
-          lab to join, or wait for a lab admin to invite you.
+          {isPractice
+            ? `Your request to join ${labName} was declined. You can search for another lab or practice to join, or wait for an invite.`
+            : `Your request to join ${labName} was declined. You can search for another lab to join, or wait for a lab admin to invite you.`}
         </Text>
         <Pressable
           onPress={() => cancelRequestMutation.mutate(declinedRequest.id)}
@@ -257,7 +264,10 @@ export function JoinLabCard() {
   }
 
   return (
-    <View style={styles.container}>
+    <DismissKeyboardView
+      style={styles.container}
+      testID="join-lab-card-keyboard-dismiss"
+    >
       <View style={styles.center}>
         <Ionicons name="time-outline" size={48} color={colors.tint} />
         <Text
@@ -402,7 +412,7 @@ export function JoinLabCard() {
           })}
         </View>
       )}
-    </View>
+    </DismissKeyboardView>
   );
 }
 

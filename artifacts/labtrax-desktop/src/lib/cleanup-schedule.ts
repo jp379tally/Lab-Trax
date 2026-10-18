@@ -17,10 +17,8 @@ export function formatNextCleanupTime(hourUtc: number): string {
   const timeStr = next.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   if (next.toLocaleDateString() === now.toLocaleDateString()) return `today at ${timeStr}`;
   if (next.toLocaleDateString() === tomorrow.toLocaleDateString()) return `tomorrow at ${timeStr}`;
-  return next.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const mm = String(next.getMonth() + 1).padStart(2, "0");
+  const dd = String(next.getDate()).padStart(2, "0");
+  const dateStr = `${mm}/${dd}/${next.getFullYear()}`;
+  return `${dateStr} at ${timeStr}`;
 }

@@ -66,6 +66,12 @@ const ALLOWED_MIME: Record<string, string> = {
   "image/gif": "gif",
 };
 
+/**
+ * Stored logo extensions in serving order. The logo URL does not record the
+ * extension, so readers (including lab backups) consult every one of these.
+ */
+export const LAB_LOGO_EXTENSIONS: readonly string[] = [...new Set(Object.values(ALLOWED_MIME))];
+
 export function isAllowedLogoMime(mime: string): boolean {
   return Object.prototype.hasOwnProperty.call(ALLOWED_MIME, mime);
 }
@@ -153,6 +159,39 @@ export interface LabLogoStream {
  * The caller is responsible for setting cache + content-type headers
  * (we provide the content type here from the stored object's metadata).
  */
+export interface LabLogoAsset {
+  content: Buffer;
+  contentType: string;
+}
+
+/**
+ * Read the lab logo into memory for consumers that need a self-contained
+ * asset, such as an inline MIME email attachment. Storage failures are
+ * intentionally treated as a missing logo so they never block delivery.
+ */
+export async function readLabLogoAsset(
+  orgId: string,
+): Promise<LabLogoAsset | null> {
+  try {
+    const result = await openLabLogoStream(orgId);
+    if (!result) return null;
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      result.stream.on("data", (chunk: Buffer | string) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      result.stream.on("end", resolve);
+      result.stream.on("error", reject);
+    });
+    return {
+      content: Buffer.concat(chunks),
+      contentType: result.contentType,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ─── Invoice-template extra images (signatures, stamps, etc.) ───────────────
 // Stored under <PRIVATE_OBJECT_DIR>/invoice-template-images/<orgId>/<id>.<ext>
 // Each org may upload multiple supplementary images that the invoice editor
@@ -340,7 +379,7 @@ export async function openLabLogoStream(
   orgId: string,
 ): Promise<LabLogoStream | null> {
   if (!process.env.PRIVATE_OBJECT_DIR) return null;
-  for (const ext of Object.values(ALLOWED_MIME)) {
+  for (const ext of LAB_LOGO_EXTENSIONS) {
     const f = getLogoFile(orgId, ext);
     const [exists] = await f.exists();
     if (!exists) continue;

@@ -4,25 +4,29 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 const {
-  getAuthedMediaUri,
+  acquireAuthedMediaUri,
+  release,
   shareAsync,
   isAvailableAsync,
   copyAsync,
   getInfoAsync,
   makeDirectoryAsync,
   deleteAsync,
+  readDirectoryAsync,
 } = vi.hoisted(() => ({
-  getAuthedMediaUri: vi.fn(),
+  acquireAuthedMediaUri: vi.fn(),
+  release: vi.fn(),
   shareAsync: vi.fn(),
   isAvailableAsync: vi.fn(),
   copyAsync: vi.fn(),
   getInfoAsync: vi.fn(),
   makeDirectoryAsync: vi.fn(),
   deleteAsync: vi.fn(),
+  readDirectoryAsync: vi.fn(),
 }));
 
 vi.mock("@/lib/authed-media-cache", () => ({
-  getAuthedMediaUri,
+  acquireAuthedMediaUri,
   refreshAuthedMediaUri: vi.fn(),
 }));
 
@@ -37,12 +41,15 @@ vi.mock("expo-file-system/legacy", () => ({
   makeDirectoryAsync,
   copyAsync,
   deleteAsync,
+  readDirectoryAsync,
 }));
 
 import {
   openAttachment,
   downloadAttachmentToLocalFile,
   shareLocalFile,
+  clearProtectedShareCache,
+  pruneProtectedShareCache,
 } from "@/lib/open-attachment";
 
 const URL = "/api/cases/c1/attachments/a1/file";
@@ -51,18 +58,19 @@ const CACHED_NO_EXT = "file:///cache/labtrax-media/_api_cases_c1_attachments_a1_
 
 beforeEach(() => {
   vi.clearAllMocks();
-  getAuthedMediaUri.mockResolvedValue(CACHED_NO_EXT);
+  acquireAuthedMediaUri.mockResolvedValue({ uri: CACHED_NO_EXT, release });
   isAvailableAsync.mockResolvedValue(true);
   getInfoAsync.mockResolvedValue({ exists: false });
   makeDirectoryAsync.mockResolvedValue(undefined);
   deleteAsync.mockResolvedValue(undefined);
   copyAsync.mockResolvedValue(undefined);
+  readDirectoryAsync.mockResolvedValue([]);
   shareAsync.mockResolvedValue(undefined);
 });
 
 describe("openAttachment", () => {
   it("returns 'error' and never shares when the download fails", async () => {
-    getAuthedMediaUri.mockResolvedValue(null);
+    acquireAuthedMediaUri.mockResolvedValue(null);
     const result = await openAttachment({
       url: URL,
       fileName: "x.pdf",
@@ -100,28 +108,23 @@ describe("openAttachment", () => {
     expect(opts).toMatchObject({ mimeType: "application/pdf", UTI: "com.adobe.pdf" });
   });
 
-  it("deletes any stale copy before copying (iOS copyAsync rejects on an existing dest)", async () => {
+  it("deletes its leased extension copy after one-shot sharing completes", async () => {
     await openAttachment({
       url: URL,
       fileName: "report.pdf",
       fileType: "application/pdf",
     });
-    expect(deleteAsync).toHaveBeenCalledTimes(1);
-    const [deletedDest, deleteOpts] = deleteAsync.mock.calls[0] as [
-      string,
-      Record<string, unknown>,
-    ];
     const copyArg = copyAsync.mock.calls[0][0] as { to: string };
-    expect(deletedDest).toBe(copyArg.to);
-    expect(deleteOpts).toMatchObject({ idempotent: true });
-    // Delete must run *before* the copy.
-    expect(deleteAsync.mock.invocationCallOrder[0]).toBeLessThan(
-      copyAsync.mock.invocationCallOrder[0],
-    );
+    await vi.waitFor(() => {
+      expect(deleteAsync).toHaveBeenCalledWith(copyArg.to, { idempotent: true });
+    });
   });
 
   it("does not copy when the cached file already carries the extension", async () => {
-    getAuthedMediaUri.mockResolvedValue("file:///cache/labtrax-media/report.pdf");
+    acquireAuthedMediaUri.mockResolvedValue({
+      uri: "file:///cache/labtrax-media/report.pdf",
+      release,
+    });
     const result = await openAttachment({
       url: URL,
       fileName: "report.pdf",
@@ -166,16 +169,16 @@ describe("downloadAttachmentToLocalFile (in-app viewer)", () => {
       fileType: "application/pdf",
     });
     expect(uri).not.toBeNull();
-    expect(uri!.toLowerCase().endsWith(".pdf")).toBe(true);
-    // Delete-before-copy applies here too.
-    expect(deleteAsync.mock.invocationCallOrder[0]).toBeLessThan(
-      copyAsync.mock.invocationCallOrder[0],
-    );
+    expect(uri!.uri.toLowerCase().endsWith(".pdf")).toBe(true);
+    uri!.release();
+    await vi.waitFor(() => {
+      expect(deleteAsync).toHaveBeenCalledWith(uri!.uri, { idempotent: true });
+    });
     expect(shareAsync).not.toHaveBeenCalled();
   });
 
   it("returns null when the download fails", async () => {
-    getAuthedMediaUri.mockResolvedValue(null);
+    acquireAuthedMediaUri.mockResolvedValue(null);
     const uri = await downloadAttachmentToLocalFile({
       url: URL,
       fileName: "x.pdf",
@@ -192,6 +195,57 @@ describe("downloadAttachmentToLocalFile (in-app viewer)", () => {
       fileType: "application/pdf",
     });
     expect(uri).toBeNull();
+  });
+
+  it("transfers the source lease when the cached file already has the extension", async () => {
+    const sourceUri = "file:///cache/labtrax-media/report.pdf";
+    acquireAuthedMediaUri.mockResolvedValue({ uri: sourceUri, release });
+
+    const acquired = await downloadAttachmentToLocalFile({
+      url: URL,
+      fileName: "report.pdf",
+    });
+
+    expect(acquired?.uri).toBe(sourceUri);
+    expect(release).not.toHaveBeenCalled();
+    acquired?.release();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses distinct leased paths for same-named protected attachments", async () => {
+    const first = await downloadAttachmentToLocalFile({
+      url: "/api/cases/c1/attachments/a1/file",
+      fileName: "report.pdf",
+    });
+    const second = await downloadAttachmentToLocalFile({
+      url: "/api/cases/c2/attachments/a2/file",
+      fileName: "report.pdf",
+    });
+
+    expect(first?.uri).not.toBe(second?.uri);
+    first?.release();
+    second?.release();
+  });
+
+  it("does not prune a share copy while its lease is active", async () => {
+    const acquired = await downloadAttachmentToLocalFile({
+      url: URL,
+      fileName: "report.pdf",
+    });
+    expect(acquired).not.toBeNull();
+    const entry = acquired!.uri.split("/").pop()!;
+    getInfoAsync.mockResolvedValue({
+      exists: true,
+      modificationTime: 1,
+      size: 1,
+    });
+    readDirectoryAsync.mockResolvedValue([entry]);
+    deleteAsync.mockClear();
+
+    await pruneProtectedShareCache(24 * 60 * 60 * 1000 + 2_000);
+    expect(deleteAsync).not.toHaveBeenCalledWith(acquired!.uri, expect.anything());
+
+    acquired!.release();
   });
 });
 
@@ -219,5 +273,15 @@ describe("shareLocalFile (explicit Share action)", () => {
     });
     expect(result).toBe("unavailable");
     expect(shareAsync).not.toHaveBeenCalled();
+  });
+});
+
+describe("protected share cache cleanup", () => {
+  it("removes all extension-bearing protected copies on logout cleanup", async () => {
+    await clearProtectedShareCache();
+
+    expect(deleteAsync).toHaveBeenCalledWith("file:///cache/labtrax-share/", {
+      idempotent: true,
+    });
   });
 });

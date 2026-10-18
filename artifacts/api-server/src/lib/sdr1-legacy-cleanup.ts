@@ -1,109 +1,29 @@
-/**
- * SDR1 legacy open-invoice cleanup — matching logic.
- *
- * Background: the SDR1 lab's open-invoices list showed ~66 bad records
- * (INV-26-1…51 era, Apr–Jun 2026) that are synthesized at read time from
- * still-active legacy `lab_cases` blobs carrying an embedded `invoiceId`.
- * The canonical INV-26-1…51 invoices were already voided + soft-deleted;
- * the lab's legitimate invoices are INV-26-101+ (July 2026 onward).
- *
- * This module holds the structured target list (patient names supplied by
- * the lab owner) and the pure classification logic so it can be unit-tested
- * without a database. Matching is by patient name + the legacy era date
- * window — NEVER by invoice/case number alone, because the legacy numbers
- * (26-1…26-51) were re-used by legitimate canonical cases with different
- * patients.
- *
- * Fail-closed rules:
- *  - A row whose patient name is not on the target list is never matched.
- *  - A target-named row whose blob date is missing, unparseable, or outside
- *    the legacy era window is classified `ambiguous` and never deleted.
- */
+import {
+  assertRecoveryDataAvailable,
+  legacyCleanupConfiguration,
+  RECOVERY_LAB_ID,
+} from "./recovery-billing-scope";
 
-/** SDR1 production lab organization id. */
-export const SDR1_ORG_ID = "fe67257e-5cc5-4489-afc9-62afb5b9829c";
+/** Runtime-only values are loaded from the private, validated support config. */
+export const SDR1_ORG_ID = RECOVERY_LAB_ID;
+export const SDR1_CLEANUP_CONFIRM = legacyCleanupConfiguration.confirmationPhrase;
+export const SDR1_ERA_START_MS = legacyCleanupConfiguration.eraStartMs;
+export const SDR1_ERA_END_MS = legacyCleanupConfiguration.eraEndMs;
+export const SDR1_TARGET_PATIENTS = legacyCleanupConfiguration.targetPatients;
 
-/** Confirm phrase required for a live (non-dry-run) cleanup. */
-export const SDR1_CLEANUP_CONFIRM = "DELETE_SDR1_LEGACY_OPEN_INVOICES";
+export function assertSdr1CleanupDataAvailable(): void {
+  assertRecoveryDataAvailable();
+}
+
+export type Sdr1CleanupConfiguration = {
+  eraStartMs: number;
+  eraEndMs: number;
+  targetPatients: readonly string[];
+};
 
 /**
- * Legacy era window (UTC). The bad records were created Apr 4 – Jun 2 2026;
- * the window is padded to whole months but ends before July 2026, when the
- * lab's legitimate canonical invoices (INV-26-101+) begin.
- */
-export const SDR1_ERA_START_MS = Date.parse("2026-03-01T00:00:00.000Z");
-export const SDR1_ERA_END_MS = Date.parse("2026-07-01T00:00:00.000Z");
-
-/**
- * Target patient list as supplied by the lab owner (attached build brief).
- * Names appear in mixed formats ("First Last", "Last/First"); comparison is
- * order-insensitive token matching, so "Fisher/Fred" also matches blob rows
- * stored as "Fisher, Fred" or "Fred Fisher".
- */
-export const SDR1_TARGET_PATIENTS: readonly string[] = [
-  "Donald Wayne",
-  "Debra Hudson",
-  "Mike Smith",
-  "John David Doe",
-  "Lynn Lanier",
-  "Erica Luggery",
-  "Sherri Minns",
-  "Patrick Simmons",
-  "Lisa Belcher",
-  "Derrius Thomas",
-  "Lajuan Williany",
-  "Hiram Dodd",
-  "James Wacksman",
-  "William McMillan",
-  "Greg Salyer",
-  "Tara Manning",
-  "Joel Dotel",
-  "Shamari Feaster",
-  "Pam Mcgoff",
-  "Marlene Watson",
-  "Emilia Sangalang",
-  "Stephanie Sunderman-Barnes",
-  "Susan Reyna",
-  "Karrington Simmons",
-  "Angela Worrell",
-  "Corinne Strickland",
-  "Melinda Jeudi",
-  "Mary Barkley Myers",
-  "Elizabeth Peters",
-  "Fisher/Fred",
-  "Slayton/Cathy",
-  "Patricia Kirton",
-  "Glenn Hosken",
-  "Mcneil/Norma",
-  "Cooper/Boysie",
-  "Ramsden/Christopher",
-  "Jane Doe",
-  "Phipps/Angelina",
-  "Kidder/Daniel",
-  "Ohhh Crumbs",
-  "Zurko/Cindee",
-  "William Harrell",
-  "Greg Beaumont",
-  "Zapata/Yilder",
-  "Adkinson/Lori",
-  "Kessling/MaryAnn",
-  "Kevin Smith",
-  "James Alford",
-  "Jihad Brown",
-  "Bradley Lewis",
-  "Sally Test",
-  "Shellie Camp",
-  "Liane York",
-  "Robyn Blevins",
-  "John Toe",
-  "Jack McLeod",
-  "George Braswell",
-];
-
-/**
- * Normalize a patient name into a sorted token list: lowercase, separators
- * (comma, slash, hyphen, parens, whitespace) collapsed, empty tokens dropped.
- * "Zapata, Yilder (Mark)" → ["mark","yilder","zapata"].
+ * Normalize a patient name into sorted tokens. Punctuation and whitespace are
+ * separators; matching remains exact on all target tokens.
  */
 export function normalizeNameTokens(name: string): string[] {
   return name
@@ -115,11 +35,8 @@ export function normalizeNameTokens(name: string): string[] {
 }
 
 /**
- * True when a blob patient name matches a target-list name.
- * All target tokens must be present in the blob name, and the blob may carry
- * at most ONE extra token (covers nicknames/annotations such as
- * "Zapata, Yilder (Mark)" vs target "Zapata/Yilder") — anything looser risks
- * matching a different patient who merely shares a surname.
+ * Match a target only when every target token is present and there is at most
+ * one additional token. This avoids treating a shared surname as identity.
  */
 export function namesMatch(blobName: string, targetName: string): boolean {
   const blob = normalizeNameTokens(blobName);
@@ -127,13 +44,16 @@ export function namesMatch(blobName: string, targetName: string): boolean {
   if (target.length === 0 || blob.length === 0) return false;
   if (blob.length - target.length > 1) return false;
   const blobSet = new Set(blob);
-  return target.every((t) => blobSet.has(t));
+  return target.every((token) => blobSet.has(token));
 }
 
-/** Find the target-list entry a blob name matches, or null. */
-export function findMatchingTarget(blobName: string | null | undefined): string | null {
+/** Find a configured target, or null when the name is not a safe match. */
+export function findMatchingTarget(
+  blobName: string | null | undefined,
+  targetPatients: readonly string[] = SDR1_TARGET_PATIENTS,
+): string | null {
   if (!blobName || typeof blobName !== "string" || !blobName.trim()) return null;
-  for (const target of SDR1_TARGET_PATIENTS) {
+  for (const target of targetPatients) {
     if (namesMatch(blobName, target)) return target;
   }
   return null;
@@ -143,16 +63,15 @@ export function findMatchingTarget(blobName: string | null | undefined): string 
 export function parseLegacyTimestampMs(raw: unknown): number | null {
   if (raw == null) return null;
   if (typeof raw === "number" && Number.isFinite(raw)) {
-    // Epoch-milliseconds; reject implausibly small values (epoch-seconds or
-    // garbage) instead of guessing.
+    // Epoch-milliseconds; reject implausibly small values instead of guessing.
     return raw > 10_000_000_000 ? raw : null;
   }
   if (typeof raw === "string") {
     const trimmed = raw.trim();
     if (!trimmed) return null;
     if (/^\d{12,}$/.test(trimmed)) return Number(trimmed);
-    const t = Date.parse(trimmed);
-    return Number.isNaN(t) ? null : t;
+    const timestamp = Date.parse(trimmed);
+    return Number.isNaN(timestamp) ? null : timestamp;
   }
   return null;
 }
@@ -174,24 +93,20 @@ export type ClassifiedLegacyRow = {
 };
 
 export type Sdr1Classification = {
-  /** Target-named rows inside the legacy era window — safe to soft-delete. */
   matched: ClassifiedLegacyRow[];
-  /**
-   * Target-named rows that FAILED a safety check (unparseable blob, missing/
-   * unparseable date, or date outside the era window). Never deleted.
-   */
   ambiguous: ClassifiedLegacyRow[];
-  /** Active rows whose patient name is not on the target list. Never deleted. */
   nonTarget: ClassifiedLegacyRow[];
-  /** Target names with zero active rows (already cleaned or never present). */
   unmatchedTargets: string[];
 };
 
 /**
- * Classify active legacy rows against the SDR1 target list.
- * Pure function — callers pass the already-org-scoped active rows.
+ * Pure classification over already organization-scoped rows. Production
+ * callers must first assert that the private identity configuration loaded.
  */
-export function classifySdr1LegacyRows(rows: LegacyRowInput[]): Sdr1Classification {
+export function classifySdr1LegacyRows(
+  rows: LegacyRowInput[],
+  configuration: Sdr1CleanupConfiguration = legacyCleanupConfiguration,
+): Sdr1Classification {
   const matched: ClassifiedLegacyRow[] = [];
   const ambiguous: ClassifiedLegacyRow[] = [];
   const nonTarget: ClassifiedLegacyRow[] = [];
@@ -210,7 +125,6 @@ export function classifySdr1LegacyRows(rows: LegacyRowInput[]): Sdr1Classificati
     }
 
     if (!parsed) {
-      // Malformed blob → never deleted; surfaced as ambiguous for review.
       ambiguous.push({
         id: row.id,
         patientName: null,
@@ -233,8 +147,7 @@ export function classifySdr1LegacyRows(rows: LegacyRowInput[]): Sdr1Classificati
         ? parsed.invoiceId.trim()
         : null;
     const createdAtMs = parseLegacyTimestampMs(parsed.createdAt);
-
-    const matchedTarget = findMatchingTarget(patientName);
+    const matchedTarget = findMatchingTarget(patientName, configuration.targetPatients);
     const base = { id: row.id, patientName, caseNumber, invoiceRef, createdAtMs };
 
     if (!matchedTarget) {
@@ -247,7 +160,7 @@ export function classifySdr1LegacyRows(rows: LegacyRowInput[]): Sdr1Classificati
       ambiguous.push({ ...base, matchedTarget, reason: "missing_or_unparseable_created_at" });
       continue;
     }
-    if (createdAtMs < SDR1_ERA_START_MS || createdAtMs >= SDR1_ERA_END_MS) {
+    if (createdAtMs < configuration.eraStartMs || createdAtMs >= configuration.eraEndMs) {
       ambiguous.push({ ...base, matchedTarget, reason: "created_at_outside_legacy_era" });
       continue;
     }
@@ -255,6 +168,6 @@ export function classifySdr1LegacyRows(rows: LegacyRowInput[]): Sdr1Classificati
     matched.push({ ...base, matchedTarget, reason: "target_name_in_legacy_era" });
   }
 
-  const unmatchedTargets = SDR1_TARGET_PATIENTS.filter((t) => !seenTargets.has(t));
+  const unmatchedTargets = configuration.targetPatients.filter((target) => !seenTargets.has(target));
   return { matched, ambiguous, nonTarget, unmatchedTargets };
 }

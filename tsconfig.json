@@ -17,6 +17,24 @@
     },
     {
       "path": "./lib/ai-knowledge"
+    },
+    {
+      "path": "./lib/case-taxonomy"
+    },
+    {
+      "path": "./lib/item-name-match"
+    },
+    {
+      "path": "./lib/account-number"
+    },
+    {
+      "path": "./lib/calendar-date"
+    },
+    {
+      "path": "./lib/provider-case-format"
+    },
+    {
+      "path": "./lib/legacy-case-media-contract"
     }
   ]
 }

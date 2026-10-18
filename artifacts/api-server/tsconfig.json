@@ -12,6 +12,18 @@
     },
     {
       "path": "../../lib/api-zod"
+    },
+    {
+      "path": "../../lib/api-client-react"
+    },
+    {
+      "path": "../../lib/case-taxonomy"
+    },
+    {
+      "path": "../../lib/account-number"
+    },
+    {
+      "path": "../../lib/legacy-case-media-contract"
     }
   ]
 }

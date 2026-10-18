@@ -1,16 +1,18 @@
 name: Auto-tag Desktop release on merge to main
 
-# Manually-triggered helper that bumps the patch version in
-# artifacts/labtrax-desktop/package.json, commits the bump back to main, and
-# pushes a new `vX.Y.Z` tag marking the release point. Building + signing +
-# publishing the installer is done by the `Release` workflow
-# (.github/workflows/release.yml), which is now workflow_dispatch-only and must
-# be started manually — the tag this workflow pushes no longer auto-triggers it.
+# Keeps the Electron desktop installer in lock-step with the web app: every
+# desktop-relevant push to `main` bumps the patch version in
+# artifacts/labtrax-desktop/package.json, commits the bump back to main, pushes
+# a new `vX.Y.Z` tag marking the release point, and then calls the `Release`
+# workflow (.github/workflows/release.yml) with that tag to build, sign,
+# notarize, and publish the Windows + macOS installers.
 #
 # Why a separate workflow (vs. modifying release.yml directly)?
 #  - release.yml is already complex (build-number allocation, signing,
 #    notarization, atomic publish). Keeping the tag/version bump out of band
-#    lets us reason about each concern in isolation.
+#    lets us reason about each concern in isolation. release.yml is invoked as
+#    a reusable workflow (`workflow_call`), so it also stays independently
+#    runnable via workflow_dispatch for reruns of an existing tag.
 #
 # Why pushes need BUILD_BOT_TOKEN:
 #  - The bump commit + tag must be pushed to a branch that may have protection
@@ -18,35 +20,68 @@ name: Auto-tag Desktop release on merge to main
 #    bypass branch protection) already configured in the repo and reused here.
 
 on:
-  # Manual trigger only. Auto-tagging on every push was disabled because:
-  #  1. The bot commits it pushed back to GitHub main diverged from Replit's
-  #     history (Replit is the source of truth), requiring a force-push to
-  #     resync after every activation.
-  #  2. release.yml fired automatically and failed loudly (no signing secrets
-  #     configured), flooding the inbox with GitHub Actions failure emails.
-  # To stamp a new desktop release point: run this workflow manually from the
-  # GitHub Actions tab. It bumps the version and pushes the `v*` tag; then run
-  # the `Release` workflow manually to actually build, sign, and publish.
+  # Automatic path: any merge to main that can affect the desktop build.
+  #
+  # paths-ignore is the cheap first filter — it keeps runs from even starting
+  # for mobile-only / docs-only / sandbox-only merges. The "Determine whether
+  # changes are desktop-relevant" step below re-checks the same rule against
+  # the diff since the last release tag, because (a) path filters don't apply
+  # to workflow_dispatch at all, and (b) a push may bundle several commits.
+  # Keep the two lists in sync.
+  push:
+    branches: [main]
+    paths-ignore:
+      - "artifacts/labtrax/**"
+      - "artifacts/mockup-sandbox/**"
+      - "docs/**"
+      - ".local/**"
+      - "attached_assets/**"
+      - "**/*.md"
+
+  # Manual path: stamp a release point on demand (e.g. after a merge that was
+  # skipped, or to re-cut a release). Path filters do not apply here — the
+  # scope step below is what prevents a pointless desktop release.
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  # Serialize tag bumps on main so two near-simultaneous merges can't both
-  # try to allocate the same vX.Y.Z. Don't cancel in flight — we always
-  # want every queued merge to get its own tag.
+  # Serialize tag bumps on main so two near-simultaneous merges can't both try
+  # to allocate the same vX.Y.Z. Don't cancel in flight: this run now owns the
+  # whole build/sign/publish chain, and killing it half-way would leave a tag on
+  # origin with no installer behind it. A burst of merges therefore coalesces —
+  # the in-flight release finishes, and the newest queued run picks up
+  # everything that landed while it was busy (the scope step diffs against the
+  # last v* tag, not against a single push).
   group: auto-tag-desktop-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   tag:
     runs-on: ubuntu-latest
+    # Opt-out AND loop guard.
+    #
     # Opt-out: include `[skip desktop-release]` (or the standard `[skip ci]`)
     # in the merge commit subject/body to suppress the auto-release.
+    #
+    # Loop guard: the bump commit this job pushes back to main is
+    # `chore(desktop): release vX.Y.Z [skip ci]`, and it touches
+    # artifacts/labtrax-desktop/package.json — a path that is deliberately NOT
+    # in paths-ignore, so the push trigger would otherwise fire again. The
+    # `[skip ci]` marker stops that: GitHub itself suppresses the push event for
+    # `[skip ci]` commits, and this `if` is the belt-and-braces second check.
+    # The same applies to release.yml's `chore: bump desktop build number …
+    # [skip ci]` commit. On workflow_dispatch there is no head_commit, so
+    # `contains(null, …)` is false and the job runs normally.
     if: >-
       !contains(github.event.head_commit.message, '[skip desktop-release]')
       && !contains(github.event.head_commit.message, '[skip ci]')
+    outputs:
+      # Non-empty only when a brand-new tag was created and pushed. The
+      # `release` job below keys off this so an already-tagged version (or a
+      # non-desktop-relevant push) doesn't kick off a build.
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,13 +89,16 @@ jobs:
           # See "Why pushes need BUILD_BOT_TOKEN" at the top of this file.
           token: ${{ secrets.BUILD_BOT_TOKEN || github.token }}
 
-      # Defensive guard: this workflow is workflow_dispatch-only, so GitHub's
-      # path filters (paths/paths-ignore) do not apply. Compute the set of files
-      # changed since the last release and decide whether any of them can affect
-      # the desktop build. Mobile-only changes (artifacts/labtrax/**), docs, and
-      # the mockup sandbox must NOT cut a desktop release. The diff base is the
-      # latest v* tag (the last release point); if no tag exists, fall back to
-      # the previous commit. No `secrets` are referenced in this step.
+      # Defensive guard. On workflow_dispatch GitHub's path filters
+      # (paths/paths-ignore) do not apply at all, and on push they only look at
+      # the files in that push — not at everything accumulated since the last
+      # release. So compute the set of files changed since the last release and
+      # decide whether any of them can affect the desktop build. Mobile-only
+      # changes (artifacts/labtrax/**), docs, markdown, attached assets, and the
+      # mockup sandbox must NOT cut a desktop release. Keep this list in sync
+      # with the `paths-ignore` block at the top of the file. The diff base is
+      # the latest v* tag (the last release point); if no tag exists, fall back
+      # to the previous commit. No `secrets` are referenced in this step.
       - name: Determine whether changes are desktop-relevant
         id: scope
         shell: bash
@@ -95,7 +133,7 @@ jobs:
           # paths known NOT to affect the desktop build. Desktop-relevant roots
           # include artifacts/labtrax-desktop/**, artifacts/api-server/**, lib/**
           # and anything not explicitly excluded below.
-          NON_DESKTOP_REGEX='^(artifacts/labtrax/|artifacts/mockup-sandbox/|docs/|\.local/)'
+          NON_DESKTOP_REGEX='^(artifacts/labtrax/|artifacts/mockup-sandbox/|docs/|\.local/|attached_assets/)|\.md$'
           RELEVANT="false"
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
@@ -157,11 +195,60 @@ jobs:
           git tag -a "${TAG}" -m "LabTrax Desktop ${TAG}"
 
           # Push the bump first, then the tag. Order matters: when the Release
-          # workflow is later run against this tag, it checks out the tag's tree
-          # and reads package.json from it, so the tag must point at a commit
-          # whose package.json carries the new version.
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          # workflow runs against this tag, it checks out the tag's tree and
+          # reads package.json from it, so the tag must point at a commit whose
+          # package.json carries the new version.
+          #
+          # Now that this workflow runs automatically on push, `main` can move
+          # underneath us (a merge landing while we build the bump, or
+          # release.yml's build-number commit from a previous run). Rebase and
+          # retry rather than failing the whole release on a lost race. The tag
+          # is (re-)created after the rebase so it always points at the commit
+          # that actually landed on main.
+          BRANCH="${GITHUB_REF_NAME}"
+          pushed=false
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${BRANCH}"; then
+              pushed=true
+              break
+            fi
+            echo "::warning::Push attempt ${attempt} to ${BRANCH} failed — rebasing onto origin/${BRANCH} and retrying…"
+            git fetch origin "${BRANCH}"
+            git rebase "origin/${BRANCH}"
+            git tag -f -a "${TAG}" -m "LabTrax Desktop ${TAG}"
+            sleep "$attempt"
+          done
+          if [[ "$pushed" != "true" ]]; then
+            echo "::error::Could not push the version bump to ${BRANCH} after 3 attempts — no tag was created and no release was started. Check branch protection rules or BUILD_BOT_TOKEN."
+            exit 1
+          fi
           git push origin "${TAG}"
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "::notice::Created and pushed ${TAG} — run the Release workflow manually to build and publish."
+          echo "::notice::Created and pushed ${TAG} — the Release workflow will now build, sign, and publish it."
+
+  # ── Build, sign, and publish ─────────────────────────────────────────────────
+  # Calls .github/workflows/release.yml as a reusable workflow with the tag the
+  # job above just created. This is what closes the gap the desktop installer
+  # used to fall into: previously an operator had to notice the new tag and
+  # start `Release` by hand, so the Electron build drifted behind the web app.
+  #
+  #  • `needs: tag` — never runs before the tag exists on origin.
+  #  • `if: needs.tag.outputs.tag != ''` — the tag output is only set when a
+  #    brand-new tag was pushed, so an already-tagged version or a
+  #    non-desktop-relevant push resolves to a skipped (not failed) job.
+  #  • `secrets: inherit` — release.yml reads the signing, notarization, and
+  #    publish secrets directly from `secrets.*`; without this they'd all be
+  #    empty and the "Require signing secrets" guards would fail the build.
+  #
+  # A failure here fails this workflow run, so the standard GitHub Actions
+  # failure notification fires with a link to the failing job. The tag stays on
+  # origin, so the release can be retried by dispatching `Release` manually with
+  # that same tag — the next merge is not blocked either way.
+  release:
+    needs: [tag]
+    if: ${{ needs.tag.outputs.tag != '' }}
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+    secrets: inherit

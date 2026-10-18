@@ -29,7 +29,17 @@ export default defineConfig({
     // ("Timeout waiting for worker to respond") disappear once fork count is
     // bounded.
     pool: "forks",
-    maxWorkers: 2,
+    // DOM-heavy suites must not compete with another fork: query/debounce
+    // assertions otherwise fail nondeterministically under the release load.
+    maxWorkers: 1,
     minWorkers: 1,
+    // The heavy jsdom files (whole-page renders driven through waitFor) can
+    // starve past vitest's 5s default when two workers share the container at
+    // merge time — a different file goes red on each gate run and every one of
+    // them passes in isolation. Give every test a wider budget so scheduling
+    // delay can't fail the gate; a genuine regression still fails fast on its
+    // assertion rather than on the clock.
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
   },
 });

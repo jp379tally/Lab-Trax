@@ -65,7 +65,6 @@ async function renderDeletedCasesPanel() {
       username: "admin",
       role: "admin",
       userType: "lab",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
     status: "authed",
     restoreStatus: "ok",

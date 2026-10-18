@@ -2,39 +2,76 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Router, type Request, type Response } from "express";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import {
+  IMPLANT_RETENTIONS,
+  IMPLANT_MANUFACTURERS,
+  IMPLANT_FIELDS,
+  deriveCaseHierarchy,
+  encodeRestorationSubtype,
+  parseConnectorState,
+  validateToothConnectors,
+  expandToothAssignmentIdentifiers,
+  withPonticConnectorSuggestions,
+  serializeConnectorState,
+  updateConnectorChoices,
+  normalizeLegacyDesktopConnectorEcho,
+} from "@workspace/case-taxonomy";
+import { and, asc, count, desc, eq, getTableColumns, gte, ilike, inArray, isNotNull, isNull, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import {
+  UpdateCaseRestorationHierarchy200Response,
+  UpdateCaseRestorationHierarchyBody,
+  GetCasesOverview200Response,
+  GetCasesOverviewQueryParams,
+  ListCaseSavedViewsQueryParams,
+  ListCaseSavedViews200Response,
+  CreateCaseSavedViewBody,
+  CreateCaseSavedView201Response,
+  RenameCaseSavedViewParams,
+  RenameCaseSavedViewBody,
+  RenameCaseSavedView200Response,
+  DeleteCaseSavedViewParams,
+  DeleteCaseSavedViewQueryParams,
+} from "@workspace/api-zod";
 import { db } from "@workspace/db";
 import {
   auditLogs,
   caseAttachments,
   caseEvents,
+  caseExceptions,
   caseLocations,
   caseNotes,
   caseRestorations,
   caseSubmissionQueue,
+  bankTransactionInvoices,
+  caseSavedViews,
   cases,
+  doctorProfiles,
   invoiceLineItems,
   invoices,
   iteroImportedOrders,
   iteroImportSessions,
   labCases,
+  labLocations,
   legacyCaseMedia,
   notifications,
   organizationConnections,
   organizationMemberships,
   organizations,
   systemSettings,
+  scanJobs,
   users,
 } from "@workspace/db";
 import multer from "multer";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import OpenAI from "openai";
 import AdmZip from "adm-zip";
-import { writeAuditLog } from "../lib/audit";
-import { resolveCaseDueDate } from "../lib/case-due-date";
+import { writeAuditLog, writeAuditLogTx } from "../lib/audit";
+import { isValidDueTime, resolveCaseDueDate } from "../lib/case-due-date";
+import { getCasesOverview } from "../lib/cases-overview";
+import caseDoctorReassignmentRouter from "./case-doctor-reassignment";
 import { calculateLineTotal, sumMoney } from "../lib/case";
-import { syncInvoiceFromRestorations, buildGroupedLineItemsForInvoice, toInvoiceLineItemValues } from "../lib/invoice-sync";
+import { syncInvoiceFromRestorations, syncInvoiceFromRestorationsDetailed, buildGroupedLineItemsForInvoice, toInvoiceLineItemValues, insertGroupedLineItemsWithChildren, sumGroupedLineItemsTotal } from "../lib/invoice-sync";
 import {
   addAlloyChargeToCase,
   removeAlloyChargeFromCase,
@@ -43,6 +80,17 @@ import {
   setRestorationPriceForCase,
 } from "../lib/alloy-charge";
 import { invoiceDueDate } from "../lib/invoice-due-date";
+import { formatNumericDate } from "../lib/date-format";
+import {
+  calendarDateToUtcNoon,
+  isValidCalendarDate,
+} from "@workspace/calendar-date";
+import {
+  REMAKE_REASON_KEYS,
+  CUSTOM_REMAKE_REASON_MAX_LENGTH,
+  getRemakeReason,
+  type RemakeReasonKey,
+} from "@workspace/case-taxonomy";
 import {
   classifyMatch,
   splitDisplayName,
@@ -51,23 +99,66 @@ import {
 import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
 import { softDeleteLegacyCases } from "../lib/legacy-case-delete.js";
 import { convertPdfBufferToImageDataUrls } from "../lib/pdf-to-images";
+import { boundedOperation } from "../lib/bounded-operation";
 import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
 import {
   openCaseMediaObjectStream,
   writeCaseMediaToObjectStorage,
 } from "../lib/case-media-object-storage";
-import { HttpError, ok, wrapDbError } from "../lib/http";
+import { extractPgConstraintName, HttpError, ok, wrapDbError } from "../lib/http";
+import { pairPlyTextures } from "../lib/ply-texture";
+import { pageRows, parsePagination } from "../lib/pagination";
+import { broadcastCaseUpdated, issueCaseWsTicket } from "../lib/case-events-ws";
+import {
+  canonicalStatusToLegacy,
+  legacyStatusToCanonical,
+} from "../lib/case-status";
+
+function isSafeArchiveEntryName(name: string): boolean {
+  if (!name || name.includes("\0") || name.startsWith("/") || name.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(name)) {
+    return false;
+  }
+  return !name.split(/[\\/]+/).some((part) => part === "..");
+}
+
+import {
+  buildArrayLegacyRow,
+  buildWorklistLegacyRow,
+  buildWorklistUnreadableLegacyRow,
+  legacyCaseBlobColumns,
+  legacyCaseListColumns,
+  legacyDoctorNameSql,
+  legacyUtcCalendarDate,
+  legacyWorklistCandidateSql,
+  resolveLegacyProjection,
+  unprojectedLegacyProbeSql,
+  type LegacyCaseListRow,
+} from "../lib/legacy-case-list";
+import {
+  acquireCaseLocationStatusLock,
+  LOCATABLE_CASE_STATUSES,
+  resolveLocatedCaseStatus,
+} from "../lib/case-location-status";
 import {
   buildLineItemDescription,
   fetchLabItemLabels,
-  materialToPriceKey,
   normalizeMaterialName,
   resolveAllPricesForContext,
   resolveItemLabelFromMap,
   resolveServerPriceWithSource,
   type ResolvedItemRow,
 } from "../lib/pricing";
-import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
+import { resolveRestorationPriceKey } from "../lib/restoration-pricing";
+import { ARCH_VALUES, archLabel, isArchApplicable, normalizeArch, type Arch } from "../lib/arch-billing";
+import { isPfmOrFcmMaterial, isPfzMaterial, LAYERED_PORCELAIN_DESCRIPTION, LAYERED_PORCELAIN_SURCHARGE } from "../lib/material-mapping";
+import { classifyCase, classifyLegacyCase, normalizeCaseHierarchy } from "../lib/case-category";
+import { mapAiRemovableSubtype, isAmbiguousRemovableSubtype } from "../lib/ai-removable-subtype.js";
+import { ADMIN_ROLES, BILLING_ROLES, hasCapability, requireAnyRole, requireCapability, requireMembership } from "../lib/rbac";
+import {
+  fetchActiveExceptionForCase,
+  fetchActiveExceptionsForCaseIds,
+  INTERNAL_EXCEPTION_HISTORY_EVENT_TYPES,
+} from "./case-exceptions";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth, requireVerifiedAccount } from "../middlewares/auth";
 import {
@@ -81,7 +172,21 @@ import {
   verifyCode,
 } from "../lib/verification.js";
 import { normalizePhoneE164 } from "../lib/account-link-sms.js";
+import {
+  formatDoctorPreferences,
+  type DoctorPreferences,
+} from "../lib/doctor-preferences";
 import { getEffectiveAdminPinAsync } from "../lib/admin-pin.js";
+import { deliverInAppNotification } from "../lib/in-app-notifications";
+import {
+  linkedProviderHasCapability,
+  assertProviderOrganizationCapability,
+  requireLinkedProviderCapability,
+} from "../lib/provider-capabilities";
+import {
+  getActiveProviderOrganizations,
+  requireSelectedProviderOrganization,
+} from "../lib/provider-selection";
 
 // ---------------------------------------------------------------------------
 // Doctor-name fuzzy-matching helpers. Shared with the doctors route (duplicate
@@ -90,19 +195,28 @@ import { getEffectiveAdminPinAsync } from "../lib/admin-pin.js";
 // Aliased to the historical names to keep existing call sites unchanged.
 // ---------------------------------------------------------------------------
 import {
+  normalizeDoctorForCompare,
   normalizeDoctorForCompare as _normalizeDoctorForSim,
   doctorNameSimilarity as _bigramSimilarity,
   resolveLabDupThreshold,
 } from "../lib/doctor-similarity.js";
+import { resolveDoctorName } from "../lib/doctor-resolve";
+import { ensureDoctorProfileIdentity } from "../lib/doctor-profile-identity";
+import { CaseInvoiceConflictError, insertOrResolveAiIntakeInvoice } from "../lib/ai-intake-invoice";
+import {
+  appendRxNoteEntry,
+  listRxNoteEntries,
+  saveActiveRxNote,
+} from "../lib/rx-note-history";
 
 // ---------------------------------------------------------------------------
 // Practice-name normalization for similarity matching.
 //
 // iTero (and other brand-aggregator) imports produce practice names with a
 // leading brand/lab prefix and a trailing bracketed code, e.g.
-//   "Heartland Dental - Family Dentistry at SouthWood [565]"
+//   "Sample Dental Group - Riverbend Family Dental [101]"
 // while the same practice created manually is just
-//   "Family Dentistry at SouthWood".
+//   "Riverbend Family Dental".
 // Stripping the brand prefix (everything up to and including the first " - ")
 // and any trailing bracketed code(s) before bigram scoring lets the importer
 // link to the existing practice instead of spawning a duplicate. Kept in sync
@@ -192,8 +306,55 @@ export async function _findProviderOrgByPracticeName(
 }
 
 const router = Router();
+const implantInputFields = {
+  implantRetention: z.enum(IMPLANT_RETENTIONS).nullable().optional(),
+  implantManufacturer: z.enum(IMPLANT_MANUFACTURERS).nullable().optional(),
+  implantPlatformNotes: z.string().max(10000).nullable().optional(),
+};
+function implantValues(row: Record<string, any>) {
+  return Object.fromEntries(IMPLANT_FIELDS.map((key) => [key, row[key] ?? null]));
+}
+
+async function expandPersistedBothArchRows(tx: any, caseId: string): Promise<void> {
+  const rows = await tx.query.caseRestorations.findMany({
+    where: and(eq(caseRestorations.caseId, caseId), eq(caseRestorations.arch, "upper_lower")),
+  });
+  for (const row of rows) {
+    await tx.update(caseRestorations).set({ arch: "upper" }).where(eq(caseRestorations.id, row.id));
+    await tx.insert(caseRestorations).values({
+      caseId: row.caseId,
+      toothNumber: row.toothNumber,
+      restorationType: row.restorationType,
+      restorationSubtype: row.restorationSubtype,
+      ...implantValues(row),
+      arch: "lower",
+      material: row.material,
+      shade: row.shade,
+      notes: row.notes,
+      quantity: row.quantity,
+      unitPrice: row.unitPrice,
+      priceSource: row.priceSource,
+      priceSourceId: row.priceSourceId,
+      priceSourceName: row.priceSourceName,
+      priceKey: row.priceKey,
+    });
+  }
+}
 router.use(requireAuth);
 router.use(requireVerifiedAccount);
+router.use(asyncHandler(async (req, _res, next) => {
+  if ((req as any).user?.userType === "provider") {
+    const org = await requireSelectedProviderOrganization(
+      (req as any).auth.userId as string,
+      req.header("x-provider-organization-id"),
+    );
+    (req as any).providerOrganizationId = org.id;
+  }
+  next();
+}));
+// A provider plan gates only provider subjects; all lab/admin case routes
+// preserve their existing role authorization. Basic/Standard get only reads.
+router.use(caseDoctorReassignmentRouter);
 
 // Derive the set of doctor names that "belong" to a given (lab, provider)
 // org pair so legacy `lab_cases` rows (which only carry a free-form
@@ -334,6 +495,514 @@ export async function resolveRemakeOriginal(
   };
 }
 
+/**
+ * Traverse the remakeOfCaseId chain upward from directParentId until we reach
+ * the root case (remake_of_case_id IS NULL). Returns {id, caseNumber} of that
+ * root. If directParentId itself has no remake_of_case_id it IS the root.
+ *
+ * Must be called with the same db/tx that holds the advisory lock when used
+ * inside a transaction, so the root read is consistent with the count.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function resolveRemakeRootCanonical(
+  directParentId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dbOrTx: any,
+): Promise<{ id: string; caseNumber: string }> {
+  const result = await dbOrTx.execute(sql`
+    WITH RECURSIVE remake_chain AS (
+      SELECT id, case_number, remake_of_case_id
+      FROM cases
+      WHERE id = ${directParentId} AND deleted_at IS NULL
+      UNION ALL
+      SELECT c.id, c.case_number, c.remake_of_case_id
+      FROM cases c
+      INNER JOIN remake_chain rc ON c.id = rc.remake_of_case_id
+      WHERE c.deleted_at IS NULL
+    )
+    SELECT id, case_number AS "caseNumber"
+    FROM remake_chain
+    WHERE remake_of_case_id IS NULL
+    LIMIT 1
+  `);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = (result as any).rows as Array<{ id: string; caseNumber: string }>;
+  if (!rows[0]) {
+    throw new HttpError(
+      500,
+      `Could not resolve remake root for case ${directParentId}.`,
+    );
+  }
+  return { id: rows[0].id, caseNumber: rows[0].caseNumber };
+}
+
+/**
+ * Count all non-deleted cases that are descendants of rootId at any depth
+ * (direct remakes + remakes-of-remakes + …). Used to compute the next suffix
+ * letter for a new remake so that chains always grow from the root number.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function countAllRemakeDescendants(
+  rootId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dbOrTx: any,
+): Promise<number> {
+  const result = await dbOrTx.execute(sql`
+    WITH RECURSIVE remake_tree AS (
+      SELECT id
+      FROM cases
+      WHERE remake_of_case_id = ${rootId} AND deleted_at IS NULL
+      UNION ALL
+      SELECT c.id
+      FROM cases c
+      INNER JOIN remake_tree rt ON c.remake_of_case_id = rt.id
+      WHERE c.deleted_at IS NULL
+    )
+    SELECT count(*)::int AS cnt FROM remake_tree
+  `);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = (result as any).rows as Array<{ cnt: number }>;
+  return Number(rows[0]?.cnt ?? 0);
+}
+
+/**
+ * Mutate a legacy case JSON blob while holding its row lock for the complete
+ * read/modify/write sequence. `lab_cases.caseData` is text, so a plain
+ * transaction at Read Committed does not prevent another writer from reading
+ * the old blob and replacing a newly appended history item.
+ */
+async function mutateLegacyCaseDataWithLock(
+  caseId: string,
+  mutate: (data: Record<string, any>, tx: any) => void | Promise<void>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dbOrTx?: any,
+  serializeLocationStatus = false,
+): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const apply = async (tx: any) => {
+    if (serializeLocationStatus) {
+      await acquireCaseLocationStatusLock(tx);
+    }
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${caseId}))`);
+    const [row] = await tx
+      .select({ caseData: labCases.caseData })
+      .from(labCases)
+      .where(eq(labCases.id, caseId))
+      .for("update");
+    if (!row) throw new HttpError(404, "Case not found.");
+
+    let data: Record<string, any> = {};
+    try {
+      const parsed =
+        typeof row.caseData === "string"
+          ? JSON.parse(row.caseData)
+          : row.caseData;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        data = { ...parsed };
+      }
+    } catch {
+      // Keep the existing route behavior for malformed historical blobs.
+    }
+    await mutate(data, tx);
+    await tx
+      .update(labCases)
+      .set({ caseData: JSON.stringify(data), updatedAt: new Date() })
+      .where(eq(labCases.id, caseId));
+  };
+
+  if (dbOrTx) {
+    await apply(dbOrTx);
+  } else {
+    await db.transaction(apply);
+  }
+}
+
+type PhysicalLocationSnapshot = {
+  id: string | null;
+  code: string | null;
+  name: string | null;
+};
+
+type LegacyLocationHistoryEntry = {
+  id: string;
+  previous: PhysicalLocationSnapshot;
+  destination: PhysicalLocationSnapshot;
+  movedAt: string;
+  movedByUserId: string;
+  actorInitials: string;
+};
+
+function parseLegacyLocationHistory(data: Record<string, any>): LegacyLocationHistoryEntry[] {
+  if (!Array.isArray(data.locationHistory)) return [];
+  return data.locationHistory
+    .filter((entry: any): entry is LegacyLocationHistoryEntry => {
+      return Boolean(
+        entry &&
+          typeof entry === "object" &&
+          typeof entry.id === "string" &&
+          entry.previous &&
+          typeof entry.previous === "object" &&
+          entry.destination &&
+          typeof entry.destination === "object" &&
+          typeof entry.movedAt === "string" &&
+          Number.isFinite(Date.parse(entry.movedAt)) &&
+          typeof entry.movedByUserId === "string" &&
+          typeof entry.actorInitials === "string",
+      );
+    })
+    .sort((a, b) => Date.parse(a.movedAt) - Date.parse(b.movedAt));
+}
+
+async function updateLegacyCaseWithLocationHistory(input: {
+  caseId: string;
+  labOrganizationId: string;
+  labLocationId?: string | null;
+  actorUserId: string;
+  actorInitials: string;
+  mutate: (data: Record<string, any>, tx: any) => void | Promise<void>;
+  canonicalUpdates?: Record<string, unknown>;
+  recordCanonicalStatusChanges?: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dbOrTx?: any;
+}) {
+  await mutateLegacyCaseDataWithLock(
+    input.caseId,
+    async (data, tx) => {
+      const currentId =
+        typeof data.labLocationId === "string" && data.labLocationId
+          ? data.labLocationId
+          : null;
+      let destination: PhysicalLocationSnapshot | undefined;
+      if (input.labLocationId !== undefined) {
+        if (input.labLocationId === null) {
+          destination = { id: null, code: null, name: null };
+        } else {
+          const [row] = await tx
+            .select({
+              id: labLocations.id,
+              code: labLocations.code,
+              name: labLocations.name,
+            })
+            .from(labLocations)
+            .where(
+              and(
+                eq(labLocations.id, input.labLocationId),
+                eq(labLocations.labOrganizationId, input.labOrganizationId),
+              ),
+            )
+            .limit(1);
+          if (!row) {
+            throw new HttpError(400, "labLocationId does not belong to this lab.");
+          }
+          destination = row;
+        }
+      }
+
+      let previous: PhysicalLocationSnapshot = {
+        id: currentId,
+        code: null,
+        name: null,
+      };
+      if (currentId) {
+        const [row] = await tx
+          .select({
+            id: labLocations.id,
+            code: labLocations.code,
+            name: labLocations.name,
+          })
+          .from(labLocations)
+          .where(
+            and(
+              eq(labLocations.id, currentId),
+              eq(labLocations.labOrganizationId, input.labOrganizationId),
+            ),
+          )
+          .limit(1);
+        if (row) previous = row;
+      }
+
+      await input.mutate(data, tx);
+      const updatedId =
+        typeof data.labLocationId === "string" && data.labLocationId
+          ? data.labLocationId
+          : null;
+      if (updatedId !== currentId) {
+        if (!destination || destination.id !== updatedId) {
+          if (updatedId === null) {
+            destination = { id: null, code: null, name: null };
+          } else {
+            const [row] = await tx
+              .select({
+                id: labLocations.id,
+                code: labLocations.code,
+                name: labLocations.name,
+              })
+              .from(labLocations)
+              .where(
+                and(
+                  eq(labLocations.id, updatedId),
+                  eq(labLocations.labOrganizationId, input.labOrganizationId),
+                ),
+              )
+              .limit(1);
+            if (!row) {
+              throw new HttpError(400, "labLocationId does not belong to this lab.");
+            }
+            destination = row;
+          }
+        }
+        const history = parseLegacyLocationHistory(data);
+        const lastMovedAt = history.length
+          ? Date.parse(history[history.length - 1]!.movedAt)
+          : 0;
+        const movedAt = new Date(Math.max(Date.now(), lastMovedAt + 1));
+        history.push({
+          id: randomUUID(),
+          previous,
+          destination: destination!,
+          movedAt: movedAt.toISOString(),
+          movedByUserId: input.actorUserId,
+          actorInitials: input.actorInitials,
+        });
+        data.locationHistory = history;
+      }
+
+      // Promotion and legacy mutation share the advisory lock above. If this
+      // request resolved the legacy route just before another request promoted
+      // the case, mirror the mutation into the canonical row before releasing
+      // the lock so neither representation becomes stale.
+      if (input.canonicalUpdates) {
+        const [canonical] = await tx
+          .select({ id: cases.id })
+          .from(cases)
+          .where(and(eq(cases.id, input.caseId), notDeleted(cases)))
+          .limit(1);
+        if (canonical) {
+          await updateCanonicalCasesWithLocationHistory({
+            caseIds: [canonical.id],
+            labOrganizationId: input.labOrganizationId,
+            updates: input.canonicalUpdates,
+            labLocationId: input.labLocationId,
+            actorUserId: input.actorUserId,
+            actorInitials: input.actorInitials,
+            recordStatusChanges: input.recordCanonicalStatusChanges,
+            dbOrTx: tx,
+          });
+        }
+      }
+    },
+    input.dbOrTx,
+    true,
+  );
+}
+
+async function insertCaseLocationHistory(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tx: any,
+  input: {
+    caseId: string;
+    actorUserId: string;
+    actorOrganizationId: string;
+    actorInitials: string;
+    previous: PhysicalLocationSnapshot;
+    destination: PhysicalLocationSnapshot;
+    movedAt: Date;
+    notes?: string | null;
+  },
+) {
+  if (_testHooks.locationHistoryWriteHook) {
+    await _testHooks.locationHistoryWriteHook();
+  }
+  const destinationCode = input.destination.code ?? "unassigned";
+  const destinationName = input.destination.name ?? "Unassigned";
+  const [location] = await tx
+    .insert(caseLocations)
+    .values({
+      caseId: input.caseId,
+      locationCode: destinationCode,
+      locationName: destinationName,
+      movedByUserId: input.actorUserId,
+      movedAt: input.movedAt,
+      notes: input.notes ?? null,
+    })
+    .returning();
+
+  await tx.insert(caseEvents).values({
+    caseId: input.caseId,
+    eventType: "location_changed",
+    actorUserId: input.actorUserId,
+    actorOrganizationId: input.actorOrganizationId,
+    actorInitials: input.actorInitials,
+    occurredAt: input.movedAt,
+    metadataJson: {
+      locationId: location.id,
+      labLocationId: input.destination.id,
+      locationCode: destinationCode,
+      locationName: destinationName,
+      previousLabLocationId: input.previous.id,
+      previousLocationCode: input.previous.code,
+      previousLocationName: input.previous.name,
+      fromLocationId: input.previous.id,
+      fromLocation: input.previous.name,
+      toLocationId: input.destination.id,
+      toLocation: destinationName,
+    },
+  });
+
+  return location;
+}
+
+async function updateCanonicalCasesWithLocationHistory(input: {
+  caseIds: string[];
+  labOrganizationId: string;
+  updates: Record<string, unknown>;
+  labLocationId?: string | null;
+  actorUserId: string;
+  actorInitials: string;
+  locationHistoryNotes?: string | null;
+  recordStatusChanges?: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dbOrTx?: any;
+}) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const apply = async (tx: any) => {
+    await acquireCaseLocationStatusLock(tx);
+    const orderedIds = [...input.caseIds].sort();
+    const lockedCases: Array<{
+      id: string;
+      status: string;
+      labLocationId: string | null;
+    }> = await tx
+      .select({
+        id: cases.id,
+        status: cases.status,
+        labLocationId: cases.labLocationId,
+      })
+      .from(cases)
+      .where(
+        and(
+          inArray(cases.id, orderedIds),
+          eq(cases.labOrganizationId, input.labOrganizationId),
+          notDeleted(cases),
+        ),
+      )
+      .orderBy(asc(cases.id))
+      .for("update");
+
+    if (lockedCases.length !== orderedIds.length) {
+      throw new HttpError(404, "One or more cases were not found.");
+    }
+
+    let destination: PhysicalLocationSnapshot | undefined;
+    if (input.labLocationId !== undefined) {
+      if (input.labLocationId === null) {
+        destination = { id: null, code: null, name: null };
+      } else {
+        const [row] = await tx
+          .select({
+            id: labLocations.id,
+            code: labLocations.code,
+            name: labLocations.name,
+          })
+          .from(labLocations)
+          .where(
+            and(
+              eq(labLocations.id, input.labLocationId),
+              eq(labLocations.labOrganizationId, input.labOrganizationId),
+            ),
+          )
+          .limit(1);
+        if (!row) {
+          throw new HttpError(400, "labLocationId does not belong to this lab.");
+        }
+        destination = row;
+      }
+    }
+
+    const previousLocationIds: string[] = Array.from(
+      new Set(
+        lockedCases
+          .map((row) => row.labLocationId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    );
+    const previousRows: Array<{
+      id: string;
+      code: string;
+      name: string;
+    }> = previousLocationIds.length
+      ? await tx
+          .select({
+            id: labLocations.id,
+            code: labLocations.code,
+            name: labLocations.name,
+          })
+          .from(labLocations)
+          .where(inArray(labLocations.id, previousLocationIds))
+      : [];
+    const previousById = new Map(
+      previousRows.map((row): [string, PhysicalLocationSnapshot] => [row.id, row]),
+    );
+    const movedAt = new Date();
+    const updatedRows: Array<typeof cases.$inferSelect> = [];
+
+    for (const current of lockedCases) {
+      const [updated] = await tx
+        .update(cases)
+        .set(input.updates)
+        .where(eq(cases.id, current.id))
+        .returning();
+      if (!updated) throw new HttpError(404, "Case not found.");
+      updatedRows.push(updated);
+
+      if (input.recordStatusChanges) {
+        const nextStatus = input.updates.status;
+        if (typeof nextStatus === "string" && nextStatus !== current.status) {
+          await tx.insert(caseEvents).values({
+            caseId: current.id,
+            eventType: "status_changed",
+            actorUserId: input.actorUserId,
+            actorOrganizationId: input.labOrganizationId,
+            actorInitials: input.actorInitials,
+            occurredAt: movedAt,
+            metadataJson: {
+              fromStatus: current.status,
+              toStatus: nextStatus,
+            },
+          });
+        }
+      }
+
+      if (updated.labLocationId !== current.labLocationId) {
+        const nextDestination =
+          updated.labLocationId === null
+            ? { id: null, code: null, name: null }
+            : destination!;
+        const previous =
+          (current.labLocationId && previousById.get(current.labLocationId)) || {
+            id: current.labLocationId ?? null,
+            code: null,
+            name: null,
+          };
+        await insertCaseLocationHistory(tx, {
+          caseId: current.id,
+          actorUserId: input.actorUserId,
+          actorOrganizationId: input.labOrganizationId,
+          actorInitials: input.actorInitials,
+          previous,
+          destination: nextDestination,
+          movedAt,
+          notes: input.locationHistoryNotes,
+        });
+      }
+    }
+
+    return updatedRows;
+  };
+
+  return input.dbOrTx ? apply(input.dbOrTx) : db.transaction(apply);
+}
+
 // Append a reciprocal "remade_by" history record on the original case
 // being remade. Canonical originals get a `case_events` row; legacy
 // originals get an entry pushed onto their `caseData.activityLog` JSON
@@ -346,12 +1015,17 @@ async function writeReciprocalRemadeBy(
   reason: string | null,
   charged: boolean | null,
   actor: { userId: string; orgId: string; initials: string },
+  // Optional transaction handle so callers holding a transaction can make the
+  // reciprocal write atomic with the rest of the remake side effects.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dbOrTx?: any,
 ): Promise<void> {
   const note = `Case ${newCase.caseNumber} created as a remake of this case${
     reason ? ` (reason: ${reason})` : ""
   }, charged: ${charged === true ? "yes" : charged === false ? "no" : "unspecified"}`;
+  const writer = dbOrTx ?? db;
   if (original.kind === "canonical") {
-    await db.insert(caseEvents).values({
+    await writer.insert(caseEvents).values({
       caseId: original.id,
       eventType: "remade_by",
       actorUserId: actor.userId,
@@ -369,28 +1043,320 @@ async function writeReciprocalRemadeBy(
     }));
     return;
   }
-  // Legacy original: append to activityLog and persist.
-  const data =
-    original.caseData && typeof original.caseData === "object"
-      ? { ...original.caseData }
-      : {};
-  if (!Array.isArray(data.activityLog)) data.activityLog = [];
-  data.activityLog.push({
-    type: "remade_by",
-    timestamp: Date.now(),
-    user: actor.initials,
-    description: note,
-    metadata: {
-      remakeCaseId: newCase.id,
-      remakeCaseNumber: newCase.caseNumber,
+  // Legacy original: append to activityLog and persist under a row lock. Do
+  // not use the older `original.caseData` snapshot supplied by the picker.
+  await mutateLegacyCaseDataWithLock(original.id, (data) => {
+    if (!Array.isArray(data.activityLog)) data.activityLog = [];
+    data.activityLog.push({
+      type: "remade_by",
+      timestamp: Date.now(),
+      user: actor.initials,
+      description: note,
+      metadata: {
+        remakeCaseId: newCase.id,
+        remakeCaseNumber: newCase.caseNumber,
+        remakeReason: reason,
+        remakeCharged: charged,
+      },
+    });
+  }, dbOrTx);
+}
+
+// Structured remake-questionnaire fields accepted by `linkExistingCaseAsRemake`.
+// Kept as a plain interface (rather than importing the `RemakeReasonKey` type
+// alias declared later in this file) so this helper has no ordering
+// dependency on where it's defined relative to its callers.
+interface RemakeLinkInput {
+  remakeOfCaseId: string;
+  remakeReason: string;
+  // Nullable: the create-flow questionnaire allows "unspecified" charged
+  // state, while the link flows always send an explicit boolean.
+  remakeCharged: boolean | null;
+  remakeReasonKey?: string;
+  remakeShadeLightness?: "light" | "dark";
+  remakeShadePrescribed?: string;
+  remakeShadeProvided?: string;
+  remakeMaterialPrescribed?: string;
+  remakeMaterialProvided?: string;
+  remakeReturnedToLab?: boolean;
+  remakeCategory?: "crown_bridge" | "removable";
+  remakeNotes?: string;
+}
+
+/**
+ * Link an existing case as a remake of another case, regardless of the
+ * case's AI-import/review status. This powers
+ * `PATCH /:caseId/mark-as-remake` (the Invoice Editor's "Mark as remake"
+ * action, usable on any case).
+ *
+ * Encapsulates the full side-effect bundle:
+ *  - resolves the chosen original (canonical or legacy, tenant-scoped),
+ *  - atomically assigns the next remake-suffix case number (advisory lock +
+ *    descendant count + UPDATE, all in one transaction, so no concurrent
+ *    remake can claim the same suffix letter),
+ *  - saves the questionnaire fields onto `found`,
+ *  - writes forward (`remake_of`) and backward (`remade_by`) case-history
+ *    events on both cases,
+ *  - zeros out an existing open invoice for a no-charge remake, and
+ *  - writes a `case_remake_linked` audit log entry.
+ *
+ */
+async function linkExistingCaseAsRemake(
+  req: Request,
+  found: typeof cases.$inferSelect,
+  input: RemakeLinkInput,
+  actor: { userId: string; initials: string },
+): Promise<{
+  updated: typeof cases.$inferSelect;
+  remakeOriginal: NonNullable<Awaited<ReturnType<typeof resolveRemakeOriginal>>>;
+}> {
+  const validatedReason = validateCustomRemakeReason(
+    input.remakeReasonKey,
+    input.remakeReason,
+  );
+  if (validatedReason !== null) input.remakeReason = validatedReason;
+  if (input.remakeOfCaseId === found.id) {
+    throw new HttpError(400, "A case cannot be a remake of itself.");
+  }
+  if (found.remakeOfCaseId) {
+    throw new HttpError(400, "This case is already linked as a remake.");
+  }
+  const remakeOriginal = await resolveRemakeOriginal(
+    input.remakeOfCaseId,
+    found.labOrganizationId,
+    found.providerOrganizationId,
+    found.doctorName,
+  );
+  if (!remakeOriginal) {
+    throw new HttpError(
+      404,
+      "Original case for remake not found in this lab.",
+    );
+  }
+
+  // Everything with side effects — suffix assignment, case UPDATE, both
+  // history events, and no-charge invoice zeroing — runs in ONE transaction
+  // so a mid-flow failure can never leave a dangling `remade_by` event or
+  // invoice mutation without the corresponding linked remake case.
+  const updated = await db.transaction(async (tx) =>
+    linkCaseAsRemakeCore(tx, found, remakeOriginal, input, actor),
+  );
+
+  // Audit log after commit: writeAuditLog never throws (it swallows and
+  // logs failures), so it can't strand partially-committed state.
+  await writeRemakeLinkedAudit(req, found, updated);
+
+  return { updated, remakeOriginal };
+}
+
+/**
+ * Transactional core shared by `linkExistingCaseAsRemake` (link an existing
+ * case) and `createRemakeCaseAndLink` (create a new case, then link). Runs
+ * entirely on the caller's transaction:
+ *  - advisory lock on the remake root + descendant count + suffix-letter
+ *    assignment + case UPDATE,
+ *  - forward `remake_of` event on the case being linked,
+ *  - backward `remade_by` event on the original (canonical row or legacy
+ *    activityLog blob),
+ *  - no-charge invoice zeroing (existing open invoice, if any).
+ */
+async function linkCaseAsRemakeCore(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tx: any,
+  found: typeof cases.$inferSelect,
+  remakeOriginal: NonNullable<Awaited<ReturnType<typeof resolveRemakeOriginal>>>,
+  input: RemakeLinkInput,
+  actor: { userId: string; initials: string },
+): Promise<typeof cases.$inferSelect> {
+  const setFields: Record<string, unknown> = {
+    remakeOfCaseId: remakeOriginal.id,
+    remakeReason: input.remakeReason ?? null,
+    remakeCharged: input.remakeCharged ?? null,
+    remakeReasonKey: input.remakeReasonKey ?? null,
+    remakeShadeLightness: input.remakeShadeLightness ?? null,
+    remakeShadePrescribed: input.remakeShadePrescribed ?? null,
+    remakeShadeProvided: input.remakeShadeProvided ?? null,
+    remakeMaterialPrescribed: input.remakeMaterialPrescribed ?? null,
+    remakeMaterialProvided: input.remakeMaterialProvided ?? null,
+    remakeReturnedToLab: input.remakeReturnedToLab ?? null,
+    remakeCategory: input.remakeCategory ?? null,
+    remakeNotes: input.remakeNotes ?? null,
+    updatedAt: new Date(),
+  };
+
+  // Suffix computation + case UPDATE must be atomic: acquire the advisory
+  // lock on the root, count all descendants, compute the suffix letter, and
+  // UPDATE in the same transaction so no concurrent remake can claim the
+  // same letter between our count and write.
+  const remakeRoot =
+    remakeOriginal.kind === "canonical"
+      ? await resolveRemakeRootCanonical(remakeOriginal.id, tx)
+      : { id: remakeOriginal.id, caseNumber: remakeOriginal.caseNumber };
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(1742068800, hashtext(${remakeRoot.id}))`,
+  );
+  const existingCount = await countAllRemakeDescendants(remakeRoot.id, tx);
+  if (existingCount > 23) {
+    throw new HttpError(
+      409,
+      `Too many remakes of case ${remakeRoot.caseNumber} (maximum 24).`,
+    );
+  }
+  const suffixLetter = String.fromCharCode(66 + existingCount);
+  const newCaseNumber = `${remakeRoot.caseNumber}${suffixLetter}`;
+  const [updated] = await tx
+    .update(cases)
+    .set({ ...setFields, caseNumber: newCaseNumber })
+    .where(eq(cases.id, found.id))
+    .returning();
+
+  const reason = input.remakeReason ?? null;
+  const charged = input.remakeCharged ?? null;
+  await tx.insert(caseEvents).values({
+    caseId: found.id,
+    eventType: "remake_of",
+    actorUserId: actor.userId,
+    actorOrganizationId: found.labOrganizationId,
+    actorInitials: actor.initials,
+    metadataJson: {
+      originalCaseId: remakeOriginal.id,
+      originalCaseNumber: remakeOriginal.caseNumber,
+      originalCaseKind: remakeOriginal.kind,
       remakeReason: reason,
       remakeCharged: charged,
+      note: `Marked as remake of ${remakeOriginal.kind === "legacy" ? "legacy " : ""}case ${remakeOriginal.caseNumber}${reason ? ` (reason: ${reason})` : ""}`,
+    },
+  }).catch((err: unknown): never => wrapDbError(err, {
+    fallback: "Failed to record remake_of event.",
+  }));
+  await writeReciprocalRemadeBy(
+    remakeOriginal,
+    { id: found.id, caseNumber: updated.caseNumber },
+    reason,
+    charged,
+    {
+      userId: actor.userId,
+      orgId: found.labOrganizationId,
+      initials: actor.initials,
+    },
+    tx,
+  );
+
+  // For no-charge remakes, zero out any existing open invoice and append a
+  // note. We deliberately don't void/delete it — the invoice row stays so
+  // the audit trail is intact.
+  if (charged === false) {
+    const openInvoice = await tx.query.invoices.findFirst({
+      where: and(
+        eq(invoices.caseId, found.id),
+        eq(invoices.status, "open"),
+      ),
+    });
+    if (openInvoice) {
+      await tx
+        .update(invoiceLineItems)
+        .set({ unitPrice: "0.00", lineTotal: "0.00" })
+        .where(eq(invoiceLineItems.invoiceId, openInvoice.id));
+      await tx
+        .update(invoices)
+        .set({
+          subtotal: "0.00",
+          total: "0.00",
+          balanceDue: "0.00",
+          notes: `No-charge remake of case ${remakeOriginal.caseNumber}${reason ? ` — reason: ${reason}` : ""}`,
+          updatedByUserId: actor.userId,
+        })
+        .where(eq(invoices.id, openInvoice.id));
+    }
+  }
+
+  return updated;
+}
+
+/**
+ * Shared `case_remake_linked` audit entry for both link surfaces and the
+ * create-then-link flow. `before` carries the pre-link snapshot values.
+ */
+async function writeRemakeLinkedAudit(
+  req: Request,
+  before: { needsAiReview: boolean | null; remakeOfCaseId: string | null },
+  updated: typeof cases.$inferSelect,
+): Promise<void> {
+  await writeAuditLog({
+    req,
+    organizationId: updated.labOrganizationId,
+    action: "case_remake_linked",
+    entityType: "case",
+    entityId: updated.id,
+    beforeJson: {
+      needsAiReview: before.needsAiReview,
+      remakeOfCaseId: before.remakeOfCaseId,
+    },
+    afterJson: {
+      needsAiReview: updated.needsAiReview,
+      remakeOfCaseId: updated.remakeOfCaseId,
+      remakeReason: updated.remakeReason,
+      remakeCharged: updated.remakeCharged,
     },
   });
-  await db
-    .update(labCases)
-    .set({ caseData: JSON.stringify(data), updatedAt: new Date() })
-    .where(eq(labCases.id, original.id));
+}
+
+/**
+ * Create a brand-new case and immediately link it as a remake of an existing
+ * case, reusing `linkExistingCaseAsRemake` for the entire shared side-effect
+ * bundle: transactional suffix assignment (advisory lock + descendant count),
+ * forward (`remake_of`) / backward (`remade_by`) history events, no-charge
+ * invoice zeroing, and the `case_remake_linked` audit-log entry. This is the
+ * create-flow counterpart used by `POST /cases/:id/remake`, so all three
+ * remake surfaces (New Case dialog, case-detail "Create Remake", Invoice
+ * Editor "Mark as remake") share one implementation and cannot silently
+ * drift apart.
+ *
+ * The new-case INSERT and the entire link side-effect bundle run in ONE
+ * transaction (the insert uses a unique placeholder case number that
+ * `linkCaseAsRemakeCore` immediately replaces with the real suffixed
+ * number), so a failure at any point rolls back everything — no orphan
+ * case, no dangling `remade_by` event on the original, no stray invoice
+ * mutation.
+ */
+async function createRemakeCaseAndLink(
+  req: Request,
+  newCaseValues: Omit<typeof cases.$inferInsert, "caseNumber">,
+  input: RemakeLinkInput,
+  actor: { userId: string; initials: string },
+): Promise<typeof cases.$inferSelect> {
+  const remakeOriginal = await resolveRemakeOriginal(
+    input.remakeOfCaseId,
+    newCaseValues.labOrganizationId as string,
+    (newCaseValues.providerOrganizationId as string | null) ?? null,
+    (newCaseValues.doctorName as string | null) ?? null,
+  );
+  if (!remakeOriginal) {
+    throw new HttpError(404, "Original case for remake not found in this lab.");
+  }
+
+  const placeholderNumber = `RMK-PENDING-${randomBytes(8).toString("hex")}`;
+  const updated = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(cases)
+      .values({
+        ...newCaseValues,
+        caseNumber: placeholderNumber,
+      } as typeof cases.$inferInsert)
+      .returning();
+    return linkCaseAsRemakeCore(tx, created, remakeOriginal, input, actor);
+  }).catch((err: unknown): never => {
+    if (err instanceof HttpError) throw err;
+    return wrapDbError(err, { fallback: "Failed to create remake case." });
+  });
+
+  // Audit after commit — writeAuditLog never throws.
+  await writeRemakeLinkedAudit(
+    req,
+    { needsAiReview: updated.needsAiReview, remakeOfCaseId: null },
+    updated,
+  );
+  return updated;
 }
 
 // Canonical authenticated file-download route.
@@ -459,6 +1425,10 @@ router.get(
           where: and(
             eq(caseAttachments.id, resolvedAttId),
             isNull(caseAttachments.deletedAt),
+            or(
+              eq(caseAttachments.caseId, caseId),
+              eq(caseAttachments.labCaseId, caseId),
+            ),
           ),
         });
         if (!resolvedAtt?.storageKey) throw new HttpError(404, "File not found.");
@@ -486,15 +1456,59 @@ router.get(
     try {
       canonicalAccess = await assertCaseAccessWithMemberships(userId, caseId);
     } catch (e: any) {
-      if (e.statusCode !== 404) throw e;
+      if (e.statusCode === 403) {
+        // assertCaseAccessWithMemberships checks DIRECT membership only.
+        // Linked-provider users (whose own provider org is connected to the
+        // case's provider org via organizationConnections) are authorized by
+        // the provider portal via getProviderOrgIdsForUserAndLinks. Try that
+        // expanded check before propagating the 403.
+        const selectedProvider = (req as any).user?.userType === "provider"
+          ? await requireSelectedProviderOrganization(
+              userId, req.header("x-provider-organization-id"))
+          : null;
+        const { providerOrgIds } = selectedProvider
+          ? { providerOrgIds: [selectedProvider.id] }
+          : await getProviderOrgIdsForUserAndLinks(userId);
+        if (providerOrgIds.length > 0) {
+          const linkedCase = await db.query.cases.findFirst({
+            where: and(eq(cases.id, caseId), notDeleted(cases)),
+          });
+          if (
+            linkedCase?.providerOrganizationId &&
+            providerOrgIds.includes(linkedCase.providerOrganizationId)
+          ) {
+            // Grant read-only (non-lab) access — visibility filter below will
+            // block internal_lab_only attachments exactly as for direct providers.
+            canonicalAccess = {
+              case: linkedCase,
+              labMembership: null,
+              providerMembership: null,
+            };
+          }
+        }
+        if (!canonicalAccess) throw e;
+      } else if (e.statusCode !== 404) {
+        throw e;
+      }
     }
 
     if (canonicalAccess) {
+      // A provider caller may have direct memberships in several practices.
+      // Direct case access must still honor the server-resolved active
+      // practice; otherwise selecting A could fetch B media.
+      if (
+        (req as any).user?.userType === "provider" &&
+        canonicalAccess.case.providerOrganizationId !==
+          (req as any).providerOrganizationId
+      ) {
+        throw new HttpError(403, "You do not have access to this file.");
+      }
       isLabMember = !!canonicalAccess.labMembership;
       attachment = await db.query.caseAttachments.findFirst({
         where: and(
           eq(caseAttachments.id, attachmentId),
           eq(caseAttachments.caseId, caseId),
+            isNull(caseAttachments.deletedAt),
         ),
       });
       // Fallback: case was promoted from mobile; attachment was created against
@@ -504,6 +1518,7 @@ router.get(
           where: and(
             eq(caseAttachments.id, attachmentId),
             eq(caseAttachments.labCaseId, caseId),
+            isNull(caseAttachments.deletedAt),
           ),
         });
       }
@@ -523,6 +1538,7 @@ router.get(
         where: and(
           eq(caseAttachments.id, attachmentId),
           eq(caseAttachments.labCaseId, caseId),
+          isNull(caseAttachments.deletedAt),
         ),
       });
     }
@@ -540,6 +1556,17 @@ router.get(
       throw new HttpError(404, "File not found.");
     }
 
+    // Legacy media has a first-writer-wins tenant binding independent of any
+    // attachment rows that may reference its filename. A fabricated row on an
+    // accessible case must not take precedence over that ownership record.
+    const legacyBinding = await db.query.legacyCaseMedia.findFirst({
+      where: eq(legacyCaseMedia.fileName, filename),
+    });
+    if (legacyBinding) {
+      await serveLegacyCaseMediaFile(req, res, filename, legacyBinding);
+      return;
+    }
+
     const resolvedPath = path.resolve(caseMediaDir, filename);
     if (
       resolvedPath === caseMediaDir ||
@@ -548,20 +1575,57 @@ router.get(
       throw new HttpError(400, "Invalid file path.");
     }
 
+    // Determine safe Content-Type and disposition for serving. Images, PDFs,
+    // and browser-native videos are served inline unless download=1 is explicit.
+    // Other recognized video formats retain their real MIME type while using an
+    // attachment disposition. We validate the
+    // stored fileType against a safe set rather than trusting whatever the
+    // client originally declared — this protects against legacy rows that may
+    // have been stored before the server-side allowlist existed.
+    const INLINE_MIMES = new Set([
+      "image/jpeg", "image/png", "image/gif", "image/webp",
+      "image/heic", "image/heif",
+      "application/pdf",
+      // Browser-native video types that can be previewed inline.
+      // Non-streamable formats (e.g. video/quicktime MOV) are intentionally
+      // excluded and will continue to force a download.
+      "video/mp4", "video/webm",
+    ]);
+    const storedMime = (attachment.fileType ?? "application/octet-stream")
+      .split(";")[0]!.trim().toLowerCase();
+    const VIDEO_MIMES = new Set([
+      "video/mp4", "video/webm", "video/ogg", "video/quicktime", "video/x-m4v",
+    ]);
+    const MODEL_MIMES = new Set(["model/ply", "model/stl"]);
+    const explicitDownload = req.query["download"] === "1";
+    const serveInline = INLINE_MIMES.has(storedMime) && !explicitDownload;
+    const safeContentType = INLINE_MIMES.has(storedMime) || VIDEO_MIMES.has(storedMime) || MODEL_MIMES.has(storedMime)
+      ? storedMime
+      : "application/octet-stream";
+    const originalName = String(attachment.fileName ?? filename)
+      .replace(/[\r\n"]/g, "_");
+    const asciiName = originalName.replace(/[^\x20-\x7e]/g, "_");
+    const dispositionType = serveInline ? "inline" : "attachment";
+    const safeDisposition =
+      `${dispositionType}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(originalName)}`;
+
+    // X-Content-Type-Options: nosniff prevents browsers from sniffing away
+    // from the declared content type even when served as octet-stream.
+    res.setHeader("X-Content-Type-Options", "nosniff");
+
     if (!fs.existsSync(resolvedPath)) {
-      const objStream = await openCaseMediaObjectStream(filename, attachment.fileType ?? undefined);
+      const objStream = await openCaseMediaObjectStream(filename, safeContentType);
       if (!objStream) {
         throw new HttpError(404, "File not found.");
       }
-      res.setHeader("Content-Type", objStream.contentType);
-      res.setHeader(
-        "Content-Disposition",
-        `inline; filename="${encodeURIComponent(attachment.fileName ?? filename)}"`,
-      );
+      res.setHeader("Content-Type", safeContentType);
+      res.setHeader("Content-Disposition", safeDisposition);
       objStream.stream.pipe(res);
       return;
     }
 
+    res.setHeader("Content-Type", safeContentType);
+    res.setHeader("Content-Disposition", safeDisposition);
     return res.sendFile(resolvedPath);
   })
 );
@@ -611,13 +1675,24 @@ router.get(
       throw new HttpError(404, "Attachment not found.");
     }
 
+    // Legacy media has a first-writer-wins tenant binding independent of any
+    // attachment rows that may reference its filename. Never let a fabricated
+    // row take precedence over that ownership record.
+    const legacyBinding = await db.query.legacyCaseMedia.findFirst({
+      where: eq(legacyCaseMedia.fileName, filename),
+    });
+    if (legacyBinding) {
+      await serveLegacyCaseMediaFile(req, res, filename, legacyBinding, true);
+      return;
+    }
+
     // No canonical attachment row: this is a legacy mobile-case file. Legacy
     // cases live in `lab_cases` and cannot have `case_attachments` rows (FK to
     // cases.id), so the only authoritative tenant binding is the
     // `legacy_case_media` ledger. Authorize against that binding (NOT against
     // any case the caller can craft), then serve from disk / .trash / storage.
     if (matching.length === 0) {
-      await serveLegacyCaseMediaFile(req, res, filename);
+      await serveLegacyCaseMediaFile(req, res, filename, undefined, true);
       return;
     }
 
@@ -660,16 +1735,16 @@ router.get(
       throw new HttpError(400, "Invalid file path.");
     }
 
+    setDownloadOnlyMediaHeaders(res, attachment.fileName ?? resolvedFilename);
+
     if (!fs.existsSync(resolvedPath)) {
-      const objStream = await openCaseMediaObjectStream(resolvedFilename, attachment.fileType ?? undefined);
+      const objStream = await openCaseMediaObjectStream(
+        resolvedFilename,
+        "application/octet-stream",
+      );
       if (!objStream) {
         throw new HttpError(404, "File not found.");
       }
-      res.setHeader("Content-Type", objStream.contentType);
-      res.setHeader(
-        "Content-Disposition",
-        `inline; filename="${encodeURIComponent(attachment.fileName ?? resolvedFilename)}"`,
-      );
       objStream.stream.pipe(res);
       return;
     }
@@ -687,6 +1762,7 @@ async function streamCaseMediaFile(
   res: Response,
   filename: string,
   fileType?: string,
+  downloadOnly = false,
 ): Promise<boolean> {
   const resolvedPath = path.resolve(caseMediaDir, filename);
   if (
@@ -694,6 +1770,9 @@ async function streamCaseMediaFile(
     !resolvedPath.startsWith(caseMediaDir + path.sep)
   ) {
     return false;
+  }
+  if (downloadOnly) {
+    setDownloadOnlyMediaHeaders(res, filename);
   }
   if (fs.existsSync(resolvedPath)) {
     res.sendFile(resolvedPath);
@@ -722,13 +1801,26 @@ async function streamCaseMediaFile(
   // Last resort: object storage (large files / autoscale-wiped local disk).
   const objStream = await openCaseMediaObjectStream(filename, fileType);
   if (!objStream) return false;
-  res.setHeader("Content-Type", objStream.contentType);
-  res.setHeader(
-    "Content-Disposition",
-    `inline; filename="${encodeURIComponent(filename)}"`,
-  );
+  if (!downloadOnly) {
+    res.setHeader("Content-Type", objStream.contentType);
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(filename)}"`,
+    );
+  }
   objStream.stream.pipe(res);
   return true;
+}
+
+function setDownloadOnlyMediaHeaders(res: Response, filename: string): void {
+  const safeName = String(filename || "download").replace(/[\r\n"]/g, "_");
+  const asciiName = safeName.replace(/[^\x20-\x7e]/g, "_");
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
+  );
+  res.setHeader("X-Content-Type-Options", "nosniff");
 }
 
 // Serve a media file referenced by a LEGACY mobile case (a row in `lab_cases`,
@@ -741,12 +1833,16 @@ async function serveLegacyCaseMediaFile(
   req: Request,
   res: Response,
   filename: string,
+  knownBinding?: typeof legacyCaseMedia.$inferSelect,
+  downloadOnly = false,
 ): Promise<void> {
   const userId = (req as any).auth.userId as string;
 
-  const binding = await db.query.legacyCaseMedia.findFirst({
-    where: eq(legacyCaseMedia.fileName, filename),
-  });
+  const binding =
+    knownBinding ??
+    (await db.query.legacyCaseMedia.findFirst({
+      where: eq(legacyCaseMedia.fileName, filename),
+    }));
   if (!binding) {
     throw new HttpError(404, "File not found.");
   }
@@ -763,7 +1859,7 @@ async function serveLegacyCaseMediaFile(
 
   // The ledger key IS the validated basename. Serve from the durable storage
   // chain (disk → .trash → object storage).
-  if (!(await streamCaseMediaFile(res, filename))) {
+  if (!(await streamCaseMediaFile(res, filename, undefined, downloadOnly))) {
     throw new HttpError(404, "File not found.");
   }
 }
@@ -771,6 +1867,20 @@ async function serveLegacyCaseMediaFile(
 async function assertCaseAccess(userId: string, caseId: string) {
   const access = await assertCaseAccessWithMemberships(userId, caseId);
   return access.case;
+}
+
+/**
+ * Bump `cases.updatedAt` for a canonical case so it rises to the top of
+ * "Recent cases" after any meaningful sub-resource mutation (notes,
+ * attachments, location changes, restorations, submissions, alloy charges,
+ * pricing updates, etc.).
+ */
+async function touchCase(caseId: string): Promise<void> {
+  await db
+    .update(cases)
+    .set({ updatedAt: new Date() })
+    .where(eq(cases.id, caseId));
+  broadcastCaseUpdated(caseId);
 }
 
 async function fetchUserActiveLabIds(userId: string): Promise<string[]> {
@@ -793,22 +1903,6 @@ async function fetchUserActiveLabIds(userId: string): Promise<string[]> {
   return Array.from(ids);
 }
 
-const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
-  INTAKE: "received",
-  DESIGN: "in_design",
-  SCAN: "scan",
-  MILLING: "in_milling",
-  POST_MILL: "post_mill",
-  SINTERING_FURNACE: "sintering_furnace",
-  MODEL_ROOM: "model_room",
-  PORCELAIN: "in_porcelain",
-  QC_CHECK: "qc",
-  COMPLETE: "complete",
-  DELIVERY: "shipped",
-  ON_HOLD: "on_hold",
-  REMAKE: "remake",
-};
-
 /**
  * Auto-promote a mobile `lab_cases` row to a canonical `cases` row so that
  * desktop users can add/edit/delete restorations on mobile-originated cases.
@@ -824,19 +1918,26 @@ const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
  * have no external provider — it satisfies the NOT-NULL FK and can be
  * corrected later via the case edit form.
  */
-async function promoteLabCaseToCanonical(
+async function promoteLabCaseToCanonicalLocked(
   userId: string,
   labCaseId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tx: any,
 ): Promise<any> {
   // Already promoted? Return the existing canonical row.
-  const existing = await db.query.cases.findFirst({
+  const existing = await tx.query.cases.findFirst({
     where: and(eq(cases.id, labCaseId), notDeleted(cases)),
   });
   if (existing) return existing;
 
-  const legacyRow = await db.query.labCases.findFirst({
-    where: and(eq(labCases.id, labCaseId), isNull(labCases.deletedAt)),
-  });
+  const [legacyRow] = await tx
+    .select({
+      ...getTableColumns(labCases),
+      updatedAt: sql<string | null>`${labCases.updatedAt}::text`,
+    })
+    .from(labCases)
+    .where(and(eq(labCases.id, labCaseId), isNull(labCases.deletedAt)))
+    .for("update");
   if (!legacyRow) throw new HttpError(404, "Case not found.");
 
   const labIds = await fetchUserActiveLabIds(userId);
@@ -855,8 +1956,27 @@ async function promoteLabCaseToCanonical(
     parsed = {};
   }
 
-  const mobileStatus = String(parsed?.status ?? "INTAKE").toUpperCase();
-  const desktopStatus = MOBILE_TO_DESKTOP_STATUS[mobileStatus] ?? "received";
+  const legacyDesktopStatus = legacyStatusToCanonical(parsed?.status);
+  const legacyLabLocationId =
+    typeof parsed?.labLocationId === "string" && parsed.labLocationId
+      ? parsed.labLocationId
+      : null;
+  // A legacy JSON blob is client-controlled. Preserve its saved station only
+  // when it belongs to the case's own lab; lab_locations has a global FK, so
+  // copying an arbitrary id would otherwise create a cross-lab association.
+  const [savedLocation] = legacyLabLocationId
+    ? await tx
+        .select({ id: labLocations.id, status: labLocations.status })
+        .from(labLocations)
+        .where(
+          and(
+            eq(labLocations.id, legacyLabLocationId),
+            eq(labLocations.labOrganizationId, orgId),
+          ),
+        )
+        .limit(1)
+    : [];
+  const desktopStatus = savedLocation?.status ?? legacyDesktopStatus;
   const split = splitDisplayName(parsed?.patientName ?? "");
   const firstName =
     ((parsed?.patientFirstName ?? split.first ?? "") as string).trim() ||
@@ -869,13 +1989,13 @@ async function promoteLabCaseToCanonical(
   // caseNumber has a global unique index; fall back to "<number>-m" or the
   // lab_cases id itself when the raw number is already taken by another case.
   let resolvedCaseNumber = rawCaseNumber;
-  const numConflict = await db.query.cases.findFirst({
+  const numConflict = await tx.query.cases.findFirst({
     where: eq(cases.caseNumber, rawCaseNumber),
     columns: { id: true },
   });
   if (numConflict) {
     const fallback = `${rawCaseNumber}-m`;
-    const fallbackConflict = await db.query.cases.findFirst({
+    const fallbackConflict = await tx.query.cases.findFirst({
       where: eq(cases.caseNumber, fallback),
       columns: { id: true },
     });
@@ -893,30 +2013,10 @@ async function promoteLabCaseToCanonical(
     return null;
   };
   const dueDateMs = toMs(parsed?.dueDate);
-  const receivedAtMs = legacyRow.updatedAt
-    ? new Date(legacyRow.updatedAt).getTime()
-    : Date.now();
+  const receivedAt =
+    legacyUtcCalendarDate(legacyRow.updatedAt) ??
+    new Date().toISOString().slice(0, 10);
 
-  const [promoted] = await db
-    .insert(cases)
-    .values({
-      id: labCaseId,
-      caseNumber: resolvedCaseNumber,
-      labOrganizationId: orgId,
-      providerOrganizationId: orgId,
-      patientFirstName: firstName,
-      patientLastName: lastName,
-      doctorName: (parsed?.doctorName as string | undefined) ?? "",
-      status: desktopStatus,
-      priority: parsed?.isRush ? "rush" : "normal",
-      dueDate: dueDateMs ? new Date(dueDateMs) : null,
-      receivedAt: new Date(receivedAtMs),
-      createdByUserId: legacyRow.ownerId ?? userId,
-    })
-    .returning();
-
-  // Copy blob restorations to caseRestorations so the Restorations tab shows
-  // the teeth that were already entered on mobile.
   const teeth: Array<{ num: string; type?: string }> = [];
   if (Array.isArray(parsed?.toothMap)) {
     for (const t of parsed.toothMap) {
@@ -927,8 +2027,36 @@ async function promoteLabCaseToCanonical(
       if (n != null) teeth.push({ num: String(n) });
     }
   }
+  const legacyLocationHistory = parseLegacyLocationHistory(parsed);
+  const [promoted] = await tx
+    .insert(cases)
+    .values({
+        id: labCaseId,
+        caseNumber: resolvedCaseNumber,
+        labOrganizationId: orgId,
+        providerOrganizationId: orgId,
+        patientFirstName: firstName,
+        patientLastName: lastName,
+        doctorName: (parsed?.doctorName as string | undefined) ?? "",
+        status: desktopStatus,
+        priority: parsed?.isRush ? "rush" : "normal",
+        dueDate: dueDateMs ? new Date(dueDateMs) : null,
+        labLocationId: savedLocation?.id ?? null,
+        receivedAt,
+        createdByUserId: legacyRow.ownerId ?? userId,
+        rxNotes:
+          typeof parsed?.rxNotes === "string"
+            ? parsed.rxNotes
+            : typeof parsed?.caseNotes === "string"
+              ? parsed.caseNotes
+              : null,
+    })
+    .returning();
+
+  // Copy blob restorations to caseRestorations so the Restorations tab shows
+  // the teeth that were already entered on mobile.
   if (teeth.length > 0) {
-    await db.insert(caseRestorations).values(
+    await tx.insert(caseRestorations).values(
       teeth.map((t) => ({
         caseId: promoted.id,
         toothNumber: t.num,
@@ -938,11 +2066,40 @@ async function promoteLabCaseToCanonical(
         shade: (parsed?.shade as string | undefined) ?? null,
       })),
     ).catch((err: unknown): never => wrapDbError(err, {
-      fallback: "Failed to copy restorations from legacy case.",
+        fallback: "Failed to copy restorations from legacy case.",
     }));
   }
 
+  // Promotion is the one-way bridge from append-only blob history into the
+  // canonical timeline. It runs in the same transaction as case creation, so
+  // a retry cannot duplicate a partially copied move sequence.
+  for (const entry of legacyLocationHistory) {
+    await insertCaseLocationHistory(tx, {
+      caseId: promoted.id,
+      actorUserId: entry.movedByUserId,
+      actorOrganizationId: orgId,
+      actorInitials: entry.actorInitials,
+      previous: entry.previous,
+      destination: entry.destination,
+      movedAt: new Date(entry.movedAt),
+    });
+  }
+
   return promoted;
+}
+
+async function promoteLabCaseToCanonical(
+  userId: string,
+  labCaseId: string,
+): Promise<any> {
+  return db.transaction(async (tx) => {
+    await acquireCaseLocationStatusLock(tx);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${labCaseId}))`);
+    if (_testHooks.promotionLockedHook) {
+      await _testHooks.promotionLockedHook();
+    }
+    return promoteLabCaseToCanonicalLocked(userId, labCaseId, tx);
+  });
 }
 
 /**
@@ -1008,9 +2165,21 @@ async function tryProjectLegacyCaseForDesktop(
     parsed?.patientFirstName ?? split.first ?? parsed?.patientInitials ?? "";
   const lastName = parsed?.patientLastName ?? split.last ?? "";
   const labOrgId = legacyRow.organizationId ?? parsed?.organizationId ?? "";
-  const mobileStatus = String(parsed?.status ?? "INTAKE").toUpperCase();
-  const desktopStatus =
-    MOBILE_TO_DESKTOP_STATUS[mobileStatus] ?? "received";
+  const desktopStatus = legacyStatusToCanonical(parsed?.status);
+  const labLocationId =
+    typeof parsed?.labLocationId === "string" && parsed.labLocationId
+      ? parsed.labLocationId
+      : null;
+  const savedLocation = labLocationId
+    ? await db.query.labLocations.findFirst({
+        where: and(
+          eq(labLocations.id, labLocationId),
+          eq(labLocations.labOrganizationId, labOrgId),
+        ),
+        columns: { name: true },
+      })
+    : null;
+  const legacyLocationHistory = parseLegacyLocationHistory(parsed);
   const toMs = (v: unknown, fallback: number): number => {
     if (v === null || v === undefined || v === "") return fallback;
     const n = typeof v === "number" ? v : Number(v);
@@ -1155,9 +2324,25 @@ async function tryProjectLegacyCaseForDesktop(
       metadata.description = e.description;
       if (eventType === "note_added") metadata.noteText = e.description;
     }
+    if (typeof e.noteText === "string" && e.noteText) {
+      metadata.noteText = e.noteText;
+      if (!metadata.description) metadata.description = e.noteText;
+    }
+    if (typeof e.authorName === "string" && e.authorName) {
+      metadata.authorName = e.authorName;
+    }
+    if (
+      e.internalException === true ||
+      (INTERNAL_EXCEPTION_HISTORY_EVENT_TYPES as readonly string[]).includes(
+        eventType,
+      )
+    ) {
+      metadata.internalException = true;
+      metadata.visibility = "internal_lab_only";
+    }
     if (e.station) {
       metadata.toStatus =
-        MOBILE_TO_DESKTOP_STATUS[String(e.station).toUpperCase()] ?? e.station;
+        legacyStatusToCanonical(e.station, String(e.station));
       metadata.mobileStation = e.station;
     }
     if (e.user) metadata.user = e.user;
@@ -1172,6 +2357,9 @@ async function tryProjectLegacyCaseForDesktop(
     // Surface the attachment category ("outgoing" case photos) so both
     // clients can label the event without a second lookup.
     if (typeof e.category === "string" && e.category) metadata.category = e.category;
+    if (typeof e.attachmentId === "string" && e.attachmentId) {
+      metadata.attachmentId = e.attachmentId;
+    }
     if (typeof e.fileType === "string" && e.fileType) {
       metadata.fileType = e.fileType;
     } else if (mediaKind === "photo") {
@@ -1186,9 +2374,37 @@ async function tryProjectLegacyCaseForDesktop(
       actorUserId: null,
       actorOrganizationId: labOrgId || null,
       actorInitials: typeof e.user === "string" ? e.user.slice(0, 2) : null,
+      actorName: typeof e.authorName === "string" ? e.authorName : null,
       metadataJson: metadata,
       occurredAt: occurredISO,
       createdAt: occurredISO,
+    });
+  }
+  for (const entry of legacyLocationHistory) {
+    const destinationCode = entry.destination.code ?? "unassigned";
+    const destinationName = entry.destination.name ?? "Unassigned";
+    events.push({
+      id: `legacy-location-event-${entry.id}`,
+      caseId: legacyRow.id,
+      eventType: "location_changed",
+      actorUserId: entry.movedByUserId,
+      actorOrganizationId: labOrgId || null,
+      actorInitials: entry.actorInitials,
+      metadataJson: {
+        locationId: entry.id,
+        labLocationId: entry.destination.id,
+        locationCode: destinationCode,
+        locationName: destinationName,
+        previousLabLocationId: entry.previous.id,
+        previousLocationCode: entry.previous.code,
+        previousLocationName: entry.previous.name,
+        fromLocationId: entry.previous.id,
+        fromLocation: entry.previous.name,
+        toLocationId: entry.destination.id,
+        toLocation: destinationName,
+      },
+      occurredAt: entry.movedAt,
+      createdAt: entry.movedAt,
     });
   }
 
@@ -1318,6 +2534,21 @@ async function tryProjectLegacyCaseForDesktop(
       uploaderName: null,
     });
   }
+  const legacyAttachmentNoteById = new Map(
+    dbAttachments
+      .filter((a) => !!a.note)
+      .map((a) => [a.id, a.note as string]),
+  );
+  for (const event of events) {
+    if (event.eventType !== "attachment_added") continue;
+    const metadata = event.metadataJson as Record<string, unknown>;
+    const attachmentId =
+      typeof metadata.attachmentId === "string" ? metadata.attachmentId : null;
+    if (!attachmentId) continue;
+    const currentNote = legacyAttachmentNoteById.get(attachmentId);
+    if (currentNote) metadata.note = currentNote;
+    else delete metadata.note;
+  }
 
   // Status history: synthesize from the createdAt + any station_change
   // events so the Overview timeline ribbon has content.
@@ -1337,7 +2568,6 @@ async function tryProjectLegacyCaseForDesktop(
     on_hold: "On Hold",
     remake: "Remake",
     cancelled: "Cancelled",
-    draft: "Draft",
   };
   const statusHistory: Array<{ status: string; label: string; occurredAt: string }> = [
     { status: "received", label: STATUS_LABELS["received"]!, occurredAt: createdISO },
@@ -1365,7 +2595,8 @@ async function tryProjectLegacyCaseForDesktop(
     id: legacyRow.id,
     caseNumber: String(parsed?.caseNumber ?? legacyRow.id),
     labOrganizationId: labOrgId,
-    providerOrganizationId: "",
+    // Preserve an explicit saved association; never infer one from a name.
+    providerOrganizationId: typeof parsed?.providerOrganizationId === "string" ? parsed.providerOrganizationId : "",
     patientFirstName: firstName,
     patientLastName: lastName,
     externalPatientId: null,
@@ -1393,23 +2624,50 @@ async function tryProjectLegacyCaseForDesktop(
     suggestedProviderOrgId: null,
     suggestedPracticeName: null,
     casePanBarcode: parsed?.assignedBarcode ?? null,
+    labLocationId: savedLocation ? labLocationId : null,
+    labLocationName: savedLocation?.name ?? null,
+    step: parsed?.step ?? null,
+    stepShade: parsed?.stepShade ?? null,
     caseNotes: notesText || null,
+    // Custom-shade tracking fields (Task #3631) — read from the JSON blob
+    // so they round-trip correctly for cases that haven't been promoted to
+    // the canonical cases table yet.
+    isCustomShade: parsed?.isCustomShade === true,
+    customShadeTechnician: parsed?.customShadeTechnician ?? null,
+    customShadePicturesAvailable: parsed?.customShadePicturesAvailable === true,
+    customShadeVideoAvailable: parsed?.customShadeVideoAvailable === true,
     restorations,
     notes: notesOut,
     attachments,
-    events,
+    events: sanitizeNoteEventsFor(events, isLabMember),
     originalCaseEvents: [],
     remakeChildrenEvents: [],
-    locations: [],
+    locations: legacyLocationHistory.map((entry) => ({
+      id: entry.id,
+      caseId: legacyRow.id,
+      locationCode: entry.destination.code ?? "unassigned",
+      locationName: entry.destination.name ?? "Unassigned",
+      movedByUserId: entry.movedByUserId,
+      movedAt: entry.movedAt,
+      notes: null,
+    })),
     remakeOriginal: null,
     remakeChildren: [],
     viewerIsLabMember: isLabMember,
+    viewerCanUploadAttachments: isLabMember,
+    viewerCanPostNotes: true,
     viewerCanManageAttachments: isLabMember,
     statusHistory,
+    // Legacy/mobile cases carry exceptions under their lab_cases id. Exception
+    // content is lab-internal, so it is withheld from any non-lab viewer —
+    // same rule as the canonical detail route.
+    activeException: isLabMember
+      ? await fetchActiveExceptionForCase(legacyRow.id)
+      : null,
   };
 }
 
-async function assertCaseAccessWithMemberships(userId: string, caseId: string) {
+export async function assertCaseAccessWithMemberships(userId: string, caseId: string) {
   const found = await db.query.cases.findFirst({
     where: and(eq(cases.id, caseId), notDeleted(cases)),
   });
@@ -1424,8 +2682,56 @@ async function assertCaseAccessWithMemberships(userId: string, caseId: string) {
   ).catch(() => null);
   if (!labMembership && !providerMembership)
     throw new HttpError(403, "You do not have access to this case.");
+  // Shared case routes retain lab-side access for mixed identities. Only an
+  // access decision made solely through the case's provider org is subject to
+  // that exact org's provider plan.
+  if (providerMembership && !labMembership && found.providerOrganizationId) {
+    await assertProviderOrganizationCapability(
+      found.providerOrganizationId,
+      "case_read",
+    );
+    if (
+      CLOSED_CASE_STATUSES.includes(
+        found.status as (typeof CLOSED_CASE_STATUSES)[number],
+      )
+    ) {
+      try {
+        await assertProviderOrganizationCapability(
+          found.providerOrganizationId,
+          "provider_portal",
+        );
+      } catch {
+        throw new HttpError(
+          403,
+          "Your provider plan only includes active cases.",
+        );
+      }
+    }
+  }
   return { case: found, labMembership, providerMembership };
 }
+
+/**
+ * POST /cases/:caseId/ws-ticket
+ *
+ * Mints a single-use, short-lived ticket that authorizes ONE WebSocket
+ * connection to the real-time case-updates channel
+ * (case-events-ws.ts's WS_PATH) for this case. The caller must already be
+ * authenticated via the normal bearer/cookie auth on this router and have
+ * case access — the same tenant check the REST case routes use. Deliberately
+ * does not accept the raw access token over the WebSocket query string; see
+ * case-events-ws.ts's design notes for why.
+ */
+router.post(
+  "/:caseId/ws-ticket",
+  asyncHandler(async (req: Request, res: Response) => {
+    const caseId = String(req.params["caseId"] ?? "");
+    const userId = (req as any).auth.userId as string;
+    await assertCaseAccessWithMemberships(userId, caseId);
+    const ticket = issueCaseWsTicket(userId, caseId);
+    return ok(res, { ticket });
+  }),
+);
 
 /**
  * Reject a barcode that is already assigned to another active (non-deleted,
@@ -1520,12 +2826,63 @@ export function rethrowBarcodeConflict(err: unknown, barcode: string): never {
  */
 export const _testHooks: {
   barcodeWriteHook: (() => Promise<void>) | undefined;
-} = { barcodeWriteHook: undefined };
+  locationHistoryWriteHook: (() => Promise<void>) | undefined;
+  promotionLockedHook: (() => Promise<void>) | undefined;
+} = {
+  barcodeWriteHook: undefined,
+  locationHistoryWriteHook: undefined,
+  promotionLockedHook: undefined,
+};
 
 const ATTACHMENT_VISIBILITIES = [
   "shared_with_provider",
   "internal_lab_only",
 ] as const;
+
+/**
+ * Validate an optional `caseExceptionId` supplied when registering an
+ * attachment.
+ *
+ * Returns the id when it names an ACTIVE exception belonging to this exact
+ * case identity (canonical or legacy) AND the uploader is an active member of
+ * the exception's own lab.
+ *
+ * The membership check is NOT redundant with the caller's case-access check.
+ * The attachment routes admit providers through a provider-organization
+ * fallback, so "can attach to this case" is strictly weaker than "may take
+ * part in this lab's internal exception". Without this gate a provider could
+ * push arbitrary content into a lab exception it cannot even read.
+ */
+async function resolveAttachmentExceptionId(
+  caseExceptionId: string | undefined,
+  caseIdentity: string,
+  userId: string,
+): Promise<string | null> {
+  if (!caseExceptionId) return null;
+  const row = await db.query.caseExceptions.findFirst({
+    where: eq(caseExceptions.id, caseExceptionId),
+  });
+  if (!row || row.status !== "active") {
+    throw new HttpError(404, "Exception not found.");
+  }
+  if (row.caseId !== caseIdentity && row.labCaseId !== caseIdentity) {
+    throw new HttpError(400, "Exception does not belong to this case.");
+  }
+  const membership = await db.query.organizationMemberships.findFirst({
+    where: and(
+      eq(organizationMemberships.userId, userId),
+      eq(organizationMemberships.labId, row.labOrganizationId),
+      eq(organizationMemberships.status, "active"),
+    ),
+  });
+  if (!membership) {
+    throw new HttpError(
+      403,
+      "Only members of this lab can add exception attachments.",
+    );
+  }
+  return row.id;
+}
 
 function visibleAttachmentsFor(
   attachments: any[],
@@ -1537,13 +2894,96 @@ function visibleAttachmentsFor(
   );
 }
 
+/**
+ * Do not trust a persisted texture pointer as an authorization grant. Lists
+ * only expose a pointer when the texture is live, belongs to the same case
+ * identity, and is visible to this caller.
+ */
+async function sanitizeTextureAttachmentLinks(
+  attachments: any[],
+  caseId: string,
+  isLabMember: boolean,
+): Promise<any[]> {
+  const ids = Array.from(new Set(
+    attachments.map((a) => a.textureAttachmentId).filter((id): id is string => typeof id === "string" && id.length > 0),
+  ));
+  if (!ids.length) return attachments;
+  const textures = await db.query.caseAttachments.findMany({
+    where: and(inArray(caseAttachments.id, ids), isNull(caseAttachments.deletedAt)),
+  });
+  const valid = new Set(textures
+    .filter((texture: any) =>
+      (texture.caseId === caseId || texture.labCaseId === caseId) &&
+      (isLabMember || texture.visibility !== "internal_lab_only"),
+    )
+    .map((texture: any) => texture.id));
+  return attachments.map((attachment) =>
+    valid.has(attachment.textureAttachmentId)
+      ? attachment
+      : { ...attachment, textureAttachmentId: null },
+  );
+}
+
+async function enrichScanAttachments(attachments: any[]): Promise<any[]> {
+  const scanJobIds = Array.from(new Set(
+    attachments
+      .map((attachment) => String(attachment.id ?? "").match(/^scan-(.+)-(ply|stl)$/)?.[1])
+      .filter((id): id is string => Boolean(id)),
+  ));
+  if (!scanJobIds.length) return attachments;
+  const jobs = await db
+    .select({ id: scanJobs.id, manifestJson: scanJobs.manifestJson, qualityJson: scanJobs.qualityJson })
+    .from(scanJobs)
+    .where(inArray(scanJobs.id, scanJobIds));
+  const byId = new Map(jobs.map((job: any) => [job.id, job]));
+  return attachments.map((attachment) => {
+    const jobId = String(attachment.id ?? "").match(/^scan-(.+)-(ply|stl)$/)?.[1];
+    const job = jobId ? byId.get(jobId) : undefined;
+    if (!job) return attachment;
+    const quality = job.qualityJson && typeof job.qualityJson === "object" ? job.qualityJson : {};
+    const manifest = job.manifestJson && typeof job.manifestJson === "object" ? job.manifestJson : {};
+    const objectCondition =
+      manifest.objectCondition === "simple-matte" ||
+      manifest.objectCondition === "dental-complex" ||
+      manifest.objectCondition === "reflective-or-translucent"
+        ? manifest.objectCondition
+        : null;
+    const range = quality.estimatedErrorRangeMm;
+    const estimatedErrorRangeMm =
+      range &&
+      typeof range === "object" &&
+      typeof range.min === "number" &&
+      Number.isFinite(range.min) &&
+      typeof range.max === "number" &&
+      Number.isFinite(range.max) &&
+      range.min >= 0 &&
+      range.max >= range.min
+        ? { min: range.min, max: range.max }
+        : null;
+    return {
+      ...attachment,
+      scanAccuracy: {
+        objectCondition,
+        // A range is meaningful only when the scan condition was verified.
+        // Invalid or legacy values stay explicitly unmeasured rather than
+        // being rendered as a fabricated measurement.
+        estimatedErrorRangeMm: objectCondition ? estimatedErrorRangeMm : null,
+        accuracyProfile: quality.accuracyProfile ?? null,
+        disclaimer: quality.disclaimer ?? null,
+      },
+    };
+  });
+}
+
 // Notes carry the same `internal_lab_only` / `shared_with_provider` visibility
 // as attachments. Non-lab viewers (providers / read-only users) must never
 // receive internal lab-only note bodies, so the notes payload is filtered the
 // same way `visibleAttachmentsFor` filters attachments.
 function visibleNotesFor(notes: any[], isLabMember: boolean): any[] {
   if (isLabMember) return notes;
-  return notes.filter((n: any) => n.visibility !== "internal_lab_only");
+  // Provider/practice viewers get an explicit allow-list. Historical rows with
+  // a missing or future visibility value are not safe to expose by default.
+  return notes.filter((n: any) => n.visibility === "shared_with_provider");
 }
 
 // `note_added` history events embed the note body (`noteText`) in their
@@ -1552,15 +2992,173 @@ function visibleNotesFor(notes: any[], isLabMember: boolean): any[] {
 // case-detail payload can never leak an internal note's text through raw event
 // metadata. The event itself (and its visibility label) is preserved; only the
 // withheld body fields are removed.
+// Event types that describe the lab's internal exception workflow. Providers
+// have no part in it, so the events are dropped entirely rather than
+// field-sanitized — that way a metadata field added later can't leak by
+// default.
+const INTERNAL_EXCEPTION_EVENT_TYPES = new Set<string>(
+  INTERNAL_EXCEPTION_HISTORY_EVENT_TYPES,
+);
+
+// Attachment lifecycle events that name a file. Every one of them is
+// provider-visible, so each must be stripped when the attachment is exception
+// evidence. Kept as one list so a new attachment event type is handled here
+// rather than being forgotten.
+const ATTACHMENT_EVENT_TYPES = new Set([
+  "case_attachment_added",
+  "case_attachment_deleted",
+]);
+
+// Identifying/free-text fields that must never survive redaction on an
+// exception-linked attachment event.
+function stripExceptionAttachmentMetadata(
+  metadataJson: unknown,
+): Record<string, unknown> {
+  const meta = (metadataJson ?? {}) as Record<string, unknown>;
+  const {
+    fileName: _fileName,
+    note: _note,
+    description: _description,
+    storageKey: _storageKey,
+    ...rest
+  } = meta;
+  return rest;
+}
+
+/**
+ * True when an event describes an attachment that belongs to a case
+ * exception. Attachment rows are soft-deleted, so a deletion event can't be
+ * resolved back to its row reliably — the marker therefore travels in the
+ * event metadata itself, written at every site that emits one.
+ */
+function isExceptionAttachmentEvent(ev: any): boolean {
+  return (
+    ATTACHMENT_EVENT_TYPES.has(ev?.eventType) &&
+    Boolean((ev?.metadataJson as any)?.caseExceptionId)
+  );
+}
+
+function isInternalExceptionEvent(ev: any): boolean {
+  return (
+    INTERNAL_EXCEPTION_EVENT_TYPES.has(ev?.eventType) ||
+    Boolean((ev?.metadataJson as any)?.internalException)
+  );
+}
+
 function sanitizeNoteEventsFor(events: any[], isLabMember: boolean): any[] {
   if (isLabMember) return events;
-  return events.map((ev: any) => {
+  return events
+    .filter((ev: any) => !isInternalExceptionEvent(ev))
+    .map((ev: any) => {
+    // Exception evidence is lab-internal. The write paths already omit the
+    // file name, but the note is re-attached downstream from the live
+    // attachment row, so the strip has to happen here — after that
+    // enrichment and on every attachment event type, not just "added".
+    if (isExceptionAttachmentEvent(ev)) {
+      return { ...ev, metadataJson: stripExceptionAttachmentMetadata(ev.metadataJson) };
+    }
     if (ev?.eventType !== "note_added") return ev;
     const meta = (ev.metadataJson ?? {}) as Record<string, unknown>;
     if (meta.visibility !== "internal_lab_only") return ev;
     const { noteText: _noteText, note: _note, description: _description, ...rest } = meta;
     return { ...ev, metadataJson: rest };
   });
+}
+
+// Stable string keys for the 18 structured remake reasons.
+// Keys are grouped: crown_bridge category first, then removable.
+// Never rename or remove a key — existing DB rows reference them.
+export type { RemakeReasonKey };
+
+/**
+ * `other` is a structured reason category, but its display value remains the
+ * caller's trimmed free-text explanation so existing timelines and invoices
+ * continue to show a useful human-readable reason.
+ */
+export function validateCustomRemakeReason(
+  reasonKey: string | null | undefined,
+  reason: string | null | undefined,
+): string | null {
+  if (reasonKey !== "other") return reason == null ? null : reason;
+  const trimmed = typeof reason === "string" ? reason.trim() : "";
+  if (!trimmed) {
+    throw new HttpError(
+      400,
+      'remakeReason is required and cannot be blank when remakeReasonKey is "other".',
+    );
+  }
+  if (trimmed.length > CUSTOM_REMAKE_REASON_MAX_LENGTH) {
+    throw new HttpError(
+      400,
+      `remakeReason must be at most ${CUSTOM_REMAKE_REASON_MAX_LENGTH} characters when remakeReasonKey is "other".`,
+    );
+  }
+  return trimmed;
+}
+
+// ── Category sets — used for auto-inference when caller omits remakeCategory ─
+/** Infer `remakeCategory` from the reason key when the caller omits it. */
+function inferRemakeCategory(
+  key: string | null | undefined,
+): "crown_bridge" | "removable" | null {
+  return getRemakeReason(key)?.category ?? null;
+}
+
+const calendarDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD");
+function parseCalendarDate(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (!isValidCalendarDate(value)) {
+    throw new HttpError(400, "receivedAt is not a valid calendar date.");
+  }
+  return value;
+}
+
+const reviewedInvoiceChildSchema = z.object({
+  description: z.string().min(1),
+  quantity: z.coerce.number().int().positive(),
+  unitPrice: z.coerce.number().min(0),
+});
+const reviewedInvoiceLinesSchema = z.array(z.object({
+  description: z.string().min(1),
+  quantity: z.coerce.number().int().positive(),
+  unitPrice: z.coerce.number().min(0),
+  catalogItemKey: z.string().min(1).nullable().optional(),
+  subItems: z.array(reviewedInvoiceChildSchema).optional(),
+})).optional();
+
+const multipartReviewedInvoiceLines = z.preprocess((value) => {
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value); } catch { return value; }
+}, reviewedInvoiceLinesSchema);
+
+function reviewedLinesToInvoiceItems(
+  lines: Array<{ description: string; quantity: number; unitPrice: number; catalogItemKey?: string | null; subItems?: Array<{ description: string; quantity: number; unitPrice: number }> }>,
+  invoiceId: string,
+) {
+  return lines.map((line, sortOrder) => ({
+    invoiceId,
+    caseRestorationId: null,
+    toothNumber: null,
+    toothLabel: null,
+    description: line.description,
+    sourceType: "manual" as const,
+    sourceKey: line.catalogItemKey ? `catalog:${line.catalogItemKey}` : undefined,
+    quantity: line.quantity,
+    unitPrice: line.unitPrice.toFixed(2),
+    lineTotal: (line.quantity * line.unitPrice).toFixed(2),
+    sortOrder,
+    catalogItemKey: line.catalogItemKey ?? null,
+    catalogItemLabel: line.description,
+    missingCatalogItem: false,
+    childItems: (line.subItems ?? []).map((child) => ({
+      caseRestorationId: null,
+      sourceType: "manual" as const,
+      description: child.description,
+      quantity: child.quantity,
+      unitPrice: child.unitPrice.toFixed(2),
+      lineTotal: (child.quantity * child.unitPrice).toFixed(2),
+    })),
+  }));
 }
 
 const createCaseSchema = z.object({
@@ -1588,7 +3186,15 @@ const createCaseSchema = z.object({
     ])
     .default("received"),
   priority: z.enum(["normal", "rush"]).default("normal"),
+  // Client-provided intake timestamp.  This is the timestamp the case was
+  // received, not the database insertion time (important for imports and
+  // today's sales/worklist reporting).
+  receivedAt: calendarDate.optional(),
   dueDate: z.string().optional(),
+  bridgeConnectors: z.string().max(1024).optional(),
+  dueTime: z
+    .union([z.string().refine(isValidDueTime, "Invalid due time"), z.null()])
+    .optional(),
   restorations: z
     .array(
       z.object({
@@ -1597,6 +3203,12 @@ const createCaseSchema = z.object({
         // (mirrors the iTero import fallback at ~line 6950).
         toothNumber: z.string(),
         restorationType: z.string().min(1),
+        assignmentProvenance: z.object({
+          origin: z.enum(["manual", "ai_explicit"]),
+          roleEvidence: z.string().max(2000).optional(),
+          manualFields: z.array(z.enum(["role", "product", "shade"])).max(3),
+        }).optional(),
+        ...implantInputFields,
         material: z.string().optional(),
         shade: z.string().optional(),
         notes: z.string().optional(),
@@ -1608,6 +3220,11 @@ const createCaseSchema = z.object({
         // which made inline "no charge" edits in the draft-invoice preview
         // impossible to honour. Defaults to undefined → unchanged behaviour.
         priceOverridden: z.boolean().optional(),
+        // Encoded taxonomy key: "<caseType>/<subtype>" or
+        // "<caseType>/<subtype>/<materialSubtype>" (from @workspace/case-taxonomy).
+        // Optional — old clients omit it; when present it is stored verbatim.
+        restorationSubtype: z.string().optional(),
+        arch: z.enum(ARCH_VALUES).nullable().optional(),
       })
     )
     .optional(),
@@ -1618,13 +3235,20 @@ const createCaseSchema = z.object({
   remakeOfCaseId: z.string().optional(),
   remakeReason: z.string().min(1).max(2000).optional(),
   remakeCharged: z.boolean().optional(),
-  // Optional case-level note inserted alongside the case. Used by the
-  // dashboard drag-drop AI flow to forward the prescription's free-text
-  // notes ("Old shade A2, new shade B1", "Patient grinds at night",
-  // etc.) so they land in case_notes BEFORE the auto-invoice block runs
-  // and pre-populates `displayMetadataJson.caseNotes` from them.
-  // Visibility defaults to shared_with_provider so the doctor sees the
-  // note on their end too.
+  // Structured remake questionnaire fields.
+  remakeReasonKey: z.enum(REMAKE_REASON_KEYS).optional(),
+  remakeShadeLightness: z.enum(["light", "dark"]).optional(),
+  remakeShadePrescribed: z.string().max(200).optional(),
+  remakeShadeProvided: z.string().max(200).optional(),
+  remakeMaterialPrescribed: z.string().max(200).optional(),
+  remakeMaterialProvided: z.string().max(200).optional(),
+  remakeReturnedToLab: z.boolean().optional(),
+  remakeCategory: z.enum(["crown_bridge", "removable"]).optional(),
+  // Free-text technician notes for the remake (admin/owner only).
+  remakeNotes: z.string().max(2000).optional(),
+  // Prescription text is stored in the dated Rx history, not case_notes.
+  rxNotes: z.string().min(1).max(10_000).optional(),
+  // Authored case notes remain in the general case-notes timeline.
   notes: z.string().min(1).max(8000).optional(),
   // Optional barcode to assign to the case pan at creation time.
   // Empty strings are treated as omitted (no barcode assigned).
@@ -1632,12 +3256,32 @@ const createCaseSchema = z.object({
   // Top-level shade extracted from the Rx (stored directly on the case row so
   // it's visible in the overview even when no tooth indices were identified).
   shade: z.string().optional(),
+  // Gingival/tissue shade for removable cases (e.g. "Medium Pink"). Only set
+  // when the AI or the user identifies it from the Rx. Omitting the field is
+  // the same as passing null — no value is stored.
+  gingivialShade: z.string().max(200).nullable().optional(),
   // When true, bypass the pre-create duplicate-doctor confirmation checkpoint.
   // The server normally rejects a create whose doctorName strongly resembles an
   // existing doctor in the same practice with a structured 409 listing the
   // candidate matches; the client re-submits with this flag once the user has
   // explicitly chosen "add a new doctor". Defaults to undefined → check runs.
   confirmNewDoctor: z.boolean().optional(),
+  // Lab workflow step for removable cases. Carried forward from the AI Rx
+  // reader when the AI infers it; users can also set it from the confirmation
+  // screen before creating the case. Only the four known enum values are
+  // accepted; anything else is rejected with a 400 (Zod strips unknown values
+  // from the request before it reaches this schema so an unrecognized string
+  // simply fails the .enum() check and returns a validation error).
+  step: z
+    .enum(["custom_tray", "rims_and_plates", "wax_setup", "process"])
+    .nullable()
+    .optional(),
+  // Admin/owner only. When present and non-empty, these lines are used verbatim
+  // as the invoice's initial line items in place of the auto-pricing engine.
+  // The server silently ignores this field for non-admin/owner callers so an
+  // inadvertent client send never causes a 400. Each line must have a non-empty
+  // description, a positive integer quantity, and a non-negative unit price.
+  invoiceOverrideLines: reviewedInvoiceLinesSchema,
 }).refine(
   // caseNumber is required for non-remake cases; server assigns it for remakes.
   (v) => !!v.remakeOfCaseId || (typeof v.caseNumber === "string" && v.caseNumber.trim().length > 0),
@@ -1932,12 +3576,11 @@ router.get(
             ),
           )
       : [];
-    // Build a per-case invoice map, preferring non-draft invoices over drafts.
+    // Build a per-case invoice map.
     const invoiceMap = new Map<string, { total: string; status: string }>();
     for (const row of invoiceRows) {
       if (!row.caseId) continue;
-      const existing = invoiceMap.get(row.caseId);
-      if (!existing || (existing.status === "draft" && row.status !== "draft")) {
+      if (!invoiceMap.has(row.caseId)) {
         invoiceMap.set(row.caseId, { total: row.total ?? "0.00", status: row.status });
       }
     }
@@ -2371,19 +4014,26 @@ router.get(
       throw new HttpError(404, "Original case not found.");
     }
     await requireMembership((req as any).auth.userId, original.labOrganizationId);
-    const [countRow] = await db
-      .select({ cnt: sql<number>`count(*)::int` })
-      .from(cases)
-      .where(and(eq(cases.remakeOfCaseId, original.id), notDeleted(cases)));
-    const existingCount = countRow?.cnt ?? 0;
-    if (existingCount > 23) {
-      throw new HttpError(
-        409,
-        `Too many remakes of case ${original.caseNumber} (maximum 24).`,
+    // Resolve the chain root so remakes-of-remakes produce the correct suffix
+    // (e.g. remaking "26-334B" yields "26-334C", not "26-334BB").
+    // Advisory lock on root serialises concurrent preview + create requests so
+    // the returned preview matches what the actual create will assign.
+    const previewResult = await db.transaction(async (tx) => {
+      const root = await resolveRemakeRootCanonical(original.id, tx);
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(1742068800, hashtext(${root.id}))`,
       );
-    }
-    const suffixLetter = String.fromCharCode(66 + existingCount);
-    return ok(res, { caseNumber: `${original.caseNumber}${suffixLetter}` });
+      const existingCount = await countAllRemakeDescendants(root.id, tx);
+      if (existingCount > 23) {
+        throw new HttpError(
+          409,
+          `Too many remakes of case ${root.caseNumber} (maximum 24).`,
+        );
+      }
+      const suffixLetter = String.fromCharCode(66 + existingCount);
+      return { caseNumber: `${root.caseNumber}${suffixLetter}` };
+    });
+    return ok(res, previewResult);
   })
 );
 
@@ -2406,7 +4056,11 @@ router.post(
     // whose cases were all created in the mobile app does not 404.
     const [canonicalMatches, legacyMatches] = await Promise.all([
       db
-        .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
+        .select({
+          id: cases.id,
+          labOrganizationId: cases.labOrganizationId,
+          caseNumber: cases.caseNumber,
+        })
         .from(cases)
         .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases))),
       db
@@ -2490,6 +4144,7 @@ router.post(
           .where(inArray(cases.id, idChunk));
       }
     });
+    for (const id of ids) broadcastCaseUpdated(id);
 
     await writeAuditLog({
       userId,
@@ -2511,27 +4166,11 @@ router.post(
   })
 );
 
-const VALID_BULK_STATUSES = [
-  "received",
-  "in_design",
-  "scan",
-  "in_milling",
-  "post_mill",
-  "sintering_furnace",
-  "model_room",
-  "in_porcelain",
-  "qc",
-  "complete",
-  "shipped",
-  "delivered",
-  "on_hold",
-  "remake",
-  "cancelled",
-] as const;
-
 const bulkStatusSchema = z.object({
   caseIds: z.array(z.string().min(1)).min(1).max(500),
-  status: z.enum(VALID_BULK_STATUSES),
+  status: z.enum(LOCATABLE_CASE_STATUSES),
+  /** Optional station id (lab_locations.id) to persist alongside the status. */
+  labLocationId: z.string().nullable().optional(),
 });
 
 router.post(
@@ -2546,7 +4185,12 @@ router.post(
     // labs whose cases were all created in the mobile app do not 404.
     const [canonicalMatches, legacyMatches] = await Promise.all([
       db
-        .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
+        .select({
+          id: cases.id,
+          labOrganizationId: cases.labOrganizationId,
+          caseNumber: cases.caseNumber,
+          labLocationId: cases.labLocationId,
+        })
         .from(cases)
         .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases))),
       db
@@ -2583,63 +4227,109 @@ router.post(
       throw new HttpError(403, "Some cases do not belong to your lab.");
     }
 
-    // Map canonical status values to the uppercase legacy blob format used by
-    // mobile-originated lab_cases rows. Mirrors the same map in the PATCH handler.
-    const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
-      received: "INTAKE",
-      in_design: "DESIGN",
-      scan: "SCAN",
-      in_milling: "MILLING",
-      post_mill: "POST_MILL",
-      sintering_furnace: "SINTERING_FURNACE",
-      model_room: "MODEL_ROOM",
-      in_porcelain: "PORCELAIN",
-      qc: "QC",
-      complete: "COMPLETE",
-      shipped: "SHIP",
-      delivered: "COMPLETE",
-      on_hold: "HOLD",
-      remake: "REMAKE",
-      cancelled: "CANCELLED",
-    };
-
-    const legacyMobileStatus =
-      DESKTOP_TO_MOBILE_STATUS[input.status] ?? input.status.toUpperCase();
-
-    // Update legacy (lab_cases) rows by writing into their JSON blob.
+    // Validate the saved station before either canonical or legacy updates so
+    // a batch cannot partially write a status before rejecting a foreign
+    // location id.
+    let effectiveStatus = input.status;
+    if (input.labLocationId !== undefined && input.labLocationId !== null) {
+      const locRow = await db.query.labLocations.findFirst({
+        where: and(
+          eq(labLocations.id, input.labLocationId),
+          eq(labLocations.labOrganizationId, labOrganizationId),
+        ),
+      });
+      effectiveStatus = resolveLocatedCaseStatus({
+        labOrganizationId,
+        labLocationId: input.labLocationId,
+        location: locRow,
+      });
+    }
     const updatedLegacyIds: string[] = [];
-    if (legacyMatches.length > 0) {
-      await Promise.all(
-        legacyMatches.map(async (row) => {
-          let parsed: Record<string, unknown> = {};
-          try { parsed = JSON.parse(row.caseData); } catch { /* ignore */ }
-          parsed.status = legacyMobileStatus;
-          if (input.status === "complete") parsed.assignedBarcode = null;
-          await db
-            .update(labCases)
-            .set({ caseData: JSON.stringify(parsed), updatedAt: new Date() })
-            .where(eq(labCases.id, row.id));
-          updatedLegacyIds.push(row.id);
-        })
-      );
-    }
-
     const canonicalIds = canonicalMatches.map((c) => c.id);
-
-    if (canonicalIds.length > 0) {
+    await db.transaction(async (tx) => {
+      await acquireCaseLocationStatusLock(tx);
+      if (input.labLocationId !== undefined && input.labLocationId !== null) {
+        const [lockedLocation] = await tx
+          .select()
+          .from(labLocations)
+          .where(
+            and(
+              eq(labLocations.id, input.labLocationId),
+              eq(labLocations.labOrganizationId, labOrganizationId),
+            ),
+          )
+          .for("update");
+        effectiveStatus = resolveLocatedCaseStatus({
+          labOrganizationId,
+          labLocationId: input.labLocationId,
+          location: lockedLocation,
+        });
+      }
+      const legacyMobileStatus = canonicalStatusToLegacy(effectiveStatus);
       const canonicalSet: Record<string, unknown> = {
-        status: input.status,
+        status: effectiveStatus,
         updatedAt: new Date(),
+        ...(input.labLocationId !== undefined
+          ? { labLocationId: input.labLocationId }
+          : {
+              labLocationId: sql`case
+                when ${cases.labLocationId} is null then null
+                when exists (
+                  select 1 from ${labLocations}
+                  where ${labLocations.id} = ${cases.labLocationId}
+                    and ${labLocations.labOrganizationId} = ${labOrganizationId}
+                    and ${labLocations.status} = ${effectiveStatus}
+                ) then ${cases.labLocationId}
+                else null
+              end`,
+            }),
       };
-      // When locating to Complete, free the pan barcode atomically.
-      if (input.status === "complete") canonicalSet.casePanBarcode = null;
-      await db
-        .update(cases)
-        .set(canonicalSet)
-        .where(inArray(cases.id, canonicalIds));
-    }
+      if (effectiveStatus === "complete") canonicalSet.casePanBarcode = null;
+      for (const row of [...legacyMatches].sort((a, b) => a.id.localeCompare(b.id))) {
+        await updateLegacyCaseWithLocationHistory({
+          caseId: row.id,
+          labOrganizationId,
+          labLocationId: input.labLocationId,
+          actorUserId: userId,
+          actorInitials: (req as any).user?.initials || "SYS",
+          mutate: async (parsed, lockedTx) => {
+            parsed.status = legacyMobileStatus;
+            if (effectiveStatus === "complete") parsed.assignedBarcode = null;
+            if (input.labLocationId !== undefined) {
+              parsed.labLocationId = input.labLocationId;
+            } else if (typeof parsed.labLocationId === "string") {
+              const currentLocation = await lockedTx.query.labLocations.findFirst({
+                where: and(
+                  eq(labLocations.id, parsed.labLocationId),
+                  eq(labLocations.labOrganizationId, labOrganizationId),
+                ),
+              });
+              if (currentLocation?.status !== effectiveStatus) {
+                parsed.labLocationId = null;
+              }
+            }
+          },
+          canonicalUpdates: canonicalSet,
+          dbOrTx: tx,
+        });
+        updatedLegacyIds.push(row.id);
+      }
 
-    const allUpdatedIds = [...canonicalIds, ...updatedLegacyIds];
+      if (canonicalIds.length > 0) {
+        await updateCanonicalCasesWithLocationHistory({
+          caseIds: canonicalIds,
+          labOrganizationId,
+          updates: canonicalSet,
+          labLocationId: input.labLocationId,
+          actorUserId: userId,
+          actorInitials: (req as any).user?.initials || "SYS",
+          dbOrTx: tx,
+        });
+      }
+    });
+
+    const allUpdatedIds = Array.from(new Set([...canonicalIds, ...updatedLegacyIds]));
+    for (const id of allUpdatedIds) broadcastCaseUpdated(id);
 
     await writeAuditLog({
       userId,
@@ -2650,7 +4340,7 @@ router.post(
       metadataJson: {
         caseIds: allUpdatedIds,
         caseNumbers: canonicalMatches.map((c) => c.caseNumber),
-        status: input.status,
+        status: effectiveStatus,
         count: allUpdatedIds.length,
         legacyCount: updatedLegacyIds.length,
       },
@@ -3170,12 +4860,14 @@ export async function freezeInvoicesForDeletedCases(params: {
   labOrganizationId: string;
   deletingUserId: string | null;
   caseNumberById?: Map<string, string | null | undefined>;
+  tx?: any;
 }): Promise<number> {
-  const { req, caseIds, labOrganizationId, deletingUserId, caseNumberById } =
+  const { req, caseIds, labOrganizationId, deletingUserId, caseNumberById, tx } =
     params;
   if (caseIds.length === 0) return 0;
 
-  const linkedInvoices = await db
+  const executor = tx ?? db;
+  const linkedInvoices = (await executor
     .select()
     .from(invoices)
     .where(
@@ -3192,7 +4884,12 @@ export async function freezeInvoicesForDeletedCases(params: {
         eq(invoices.frozen, false),
         isNull(invoices.deletedAt),
       ),
-    );
+    )
+    // Keep the read order deliberately opposite the advisory-lock order below.
+    // Besides making the lock discipline explicit, this ensures concurrency
+    // regressions cannot pass accidentally because PostgreSQL happened to
+    // return rows in ascending id order.
+    .orderBy(desc(invoices.id))) as (typeof invoices.$inferSelect)[];
 
   if (linkedInvoices.length === 0) return 0;
 
@@ -3201,9 +4898,13 @@ export async function freezeInvoicesForDeletedCases(params: {
   // platform-admin secret path has no user row (deletingUserId === null), so
   // skip the lookup entirely there.
   const actorUser = deletingUserId
-    ? await db.query.users.findFirst({
-        where: eq(users.id, deletingUserId),
-      })
+    ? (
+        await executor
+          .select()
+          .from(users)
+          .where(eq(users.id, deletingUserId))
+          .limit(1)
+      )[0]
     : undefined;
   const derivedInitials = (() => {
     const first = String(actorUser?.firstName ?? "").trim();
@@ -3215,49 +4916,72 @@ export async function freezeInvoicesForDeletedCases(params: {
   const freezeNote = `Case Deleted by ${derivedInitials}`;
   const freezeAt = new Date();
 
-  await db
-    .update(invoices)
-    .set({
-      frozen: true,
-      balanceDue: "0.00",
-      caseDeletedAt: freezeAt,
-      caseDeletedByUserId: deletingUserId,
-      caseDeletedNote: freezeNote,
-      updatedByUserId: deletingUserId,
-    } as any)
-    .where(
-      and(
-        inArray(
-          invoices.id,
-          linkedInvoices.map((inv) => inv.id),
+  const freezeInTransaction = async (freezeTx: any) => {
+    // Date repair uses this same per-invoice advisory lock. Lock in stable order
+    // so a concurrent repair either completes before freezing or observes the
+    // frozen row and aborts.
+    for (const invoiceId of linkedInvoices.map((inv) => inv.id).sort()) {
+      await freezeTx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoiceId}))`);
+    }
+    const updatedInvoices = await freezeTx
+      .update(invoices)
+      .set({
+        frozen: true,
+        balanceDue: "0.00",
+        caseDeletedAt: freezeAt,
+        caseDeletedByUserId: deletingUserId,
+        caseDeletedNote: freezeNote,
+        updatedByUserId: deletingUserId,
+      } as any)
+      .where(
+        and(
+          inArray(
+            invoices.id,
+            linkedInvoices.map((inv) => inv.id),
+          ),
+          // Re-assert tenant scoping on the write itself (defense-in-depth).
+          eq(invoices.labOrganizationId, labOrganizationId),
+          eq(invoices.frozen, false),
+          isNull(invoices.deletedAt),
         ),
-        // Re-assert tenant scoping on the write itself (defense-in-depth).
-        eq(invoices.labOrganizationId, labOrganizationId),
-        isNull(invoices.deletedAt),
-      ),
+      )
+      .returning({ id: invoices.id });
+
+    const updatedInvoiceIds = new Set(
+      updatedInvoices.map((inv: { id: string }) => inv.id),
+    );
+    const actuallyFrozenInvoices = linkedInvoices.filter((inv) =>
+      updatedInvoiceIds.has(inv.id),
     );
 
-  // Write one audit log entry per invoice.
-  for (const inv of linkedInvoices) {
-    await writeAuditLog({
-      req,
-      userId: deletingUserId,
-      organizationId: labOrganizationId,
-      action: "invoice_frozen_case_deleted",
-      entityType: "invoice",
-      entityId: inv.id,
-      beforeJson: inv,
-      metadataJson: {
-        caseId: inv.caseId,
-        caseNumber: inv.caseId
-          ? (caseNumberById?.get(inv.caseId) ?? null)
-          : null,
-        frozenNote: freezeNote,
-      },
-    });
-  }
+    // The freeze and its audit history are one state change: if any audit insert
+    // fails, roll back every invoice update rather than committing an
+    // unaudited frozen invoice.
+    for (const inv of actuallyFrozenInvoices) {
+      await writeAuditLogTx(freezeTx, {
+        req,
+        userId: deletingUserId,
+        organizationId: labOrganizationId,
+        action: "invoice_frozen_case_deleted",
+        entityType: "invoice",
+        entityId: inv.id,
+        beforeJson: inv,
+        metadataJson: {
+          caseId: inv.caseId,
+          caseNumber: inv.caseId
+            ? (caseNumberById?.get(inv.caseId) ?? null)
+            : null,
+          frozenNote: freezeNote,
+        },
+      });
+    }
 
-  return linkedInvoices.length;
+    return actuallyFrozenInvoices.length;
+  };
+
+  return tx
+    ? await freezeInTransaction(tx)
+    : await db.transaction(freezeInTransaction);
 }
 
 // ─── Bulk delete (admin only, soft-delete) ────────────────────────────────────
@@ -3317,8 +5041,9 @@ router.post(
       throw new HttpError(422, "Case has no associated organization.");
     }
 
-    // Admin-only — owners and admins may bulk-delete cases.
-    await requireAnyRole(userId, labOrganizationId, ADMIN_ROLES);
+    // delete_cases capability: owners and admins pass implicitly; non-admin
+    // team members may also bulk-delete if they hold an explicit capability grant.
+    await requireCapability(userId, labOrganizationId, "delete_cases");
 
     // ── Security gate: require delete-session token + emailed OTP ──────────
     // Callers must first complete POST /cases/delete-initiate (validates
@@ -3384,36 +5109,36 @@ router.post(
       throw new HttpError(403, "Some cases do not belong to your lab.");
     }
 
-    // Soft-delete canonical cases (one audit entry per case).
-    for (const c of canonicalMatches) {
-      await softDeleteById({
-        table: cases,
-        id: c.id,
-        actorUserId: userId,
-        req,
-        organizationId: labOrganizationId,
-        entityType: "case",
-        beforeJson: c,
-        metadataJson: {
-          caseNumber: c.caseNumber,
-          patientName: [c.patientFirstName, c.patientLastName].filter(Boolean).join(" "),
-        },
-      });
-    }
+    await db.transaction(async (tx) => {
+      // Canonical case deletion and linked invoice freezing are one state
+      // transition. A failed freeze audit must roll back the case deletion too.
+      for (const c of canonicalMatches) {
+        await softDeleteById({
+          table: cases,
+          id: c.id,
+          actorUserId: userId,
+          req,
+          organizationId: labOrganizationId,
+          entityType: "case",
+          beforeJson: c,
+          metadataJson: {
+            caseNumber: c.caseNumber,
+            patientName: [c.patientFirstName, c.patientLastName].filter(Boolean).join(" "),
+          },
+          tx,
+        });
+      }
 
-    // Cascade-freeze every invoice linked to the deleted canonical cases so the
-    // billing records are preserved permanently (never deleted) but stop
-    // contributing to open balances. Mirrors the single-case DELETE path —
-    // without this, bulk-deleting cases left their invoices with live balances.
-    // (Legacy lab_cases never carry invoices, so only canonical ids are passed.)
-    await freezeInvoicesForDeletedCases({
-      req,
-      caseIds: canonicalMatches.map((c) => c.id),
-      labOrganizationId,
-      deletingUserId: userId,
-      caseNumberById: new Map(
-        canonicalMatches.map((c) => [c.id, c.caseNumber]),
-      ),
+      await freezeInvoicesForDeletedCases({
+        req,
+        caseIds: canonicalMatches.map((c) => c.id),
+        labOrganizationId,
+        deletingUserId: userId,
+        caseNumberById: new Map(
+          canonicalMatches.map((c) => [c.id, c.caseNumber]),
+        ),
+        tx,
+      });
     });
 
     // Soft-delete legacy mobile cases (lab_cases). They store their payload in
@@ -3437,6 +5162,7 @@ router.post(
     }
 
     const deletedCount = canonicalMatches.length + legacyDeletedCount;
+    for (const c of canonicalMatches) broadcastCaseUpdated(c.id, "deleted");
 
     await writeAuditLog({
       userId,
@@ -3504,10 +5230,40 @@ router.post(
     return Promise.race([
       (async () => {
     const input = createCaseSchema.parse(req.body);
-    await requireMembership(
+    const assignedTeeth = new Set<string>();
+    for (const row of input.restorations ?? []) {
+      if (!/^(crown|pontic)$/i.test(row.restorationType)) continue;
+      if (!/^(?:[1-9]|[12]\d|3[0-2]|[A-T])$/i.test(row.toothNumber.trim()) ||
+          row.quantity !== 1 || !row.material?.trim()) {
+        throw new HttpError(400, "Each crown or pontic needs one tooth, one unit, and a catalog material.");
+      }
+      const tooth = row.toothNumber.trim().toUpperCase();
+      if (assignedTeeth.has(tooth)) throw new HttpError(400, `Tooth #${tooth} is assigned more than once.`);
+      assignedTeeth.add(tooth);
+    }
+    if (input.bridgeConnectors !== undefined) {
+      const connectorCheck = validateToothConnectors(input.bridgeConnectors, input.restorations ?? []);
+      if (!connectorCheck.valid) throw new HttpError(400, connectorCheck.errors.join(" "));
+    }
+    input.bridgeConnectors = serializeConnectorState(withPonticConnectorSuggestions(input.bridgeConnectors, input.restorations ?? []));
+    for (const restoration of input.restorations ?? []) {
+      if (isArchApplicable(restoration.restorationType, restoration.restorationSubtype) &&
+          !normalizeArch(restoration.arch)) {
+        throw new HttpError(
+          400,
+          "Arch is required for Removable and Ortho restorations (Upper, Lower, or Upper + Lower).",
+        );
+      }
+    }
+    validateCustomRemakeReason(input.remakeReasonKey, input.remakeReason);
+    if (input.remakeReasonKey === "other") {
+      input.remakeReason = input.remakeReason!.trim();
+    }
+    const membership = await requireMembership(
       (req as any).auth.userId,
       input.labOrganizationId
     );
+    const callerIsAdminOrOwner = ["owner", "admin"].includes(membership.role as string);
 
     // Barcode uniqueness check — reject duplicate barcodes across active cases
     // in the same lab. Barcodes are strictly unique per lab for active cases;
@@ -3568,6 +5324,9 @@ router.post(
     // When no date is supplied the turnaround is used as a fallback (existing
     // behaviour). This is also the enforcement path for iTero auto-imports.
     const suppliedDueDate: Date | null = input.dueDate ? new Date(input.dueDate) : null;
+    if (input.dueTime != null && !input.dueDate) {
+      throw new HttpError(400, "Cannot set a due time without a due date.");
+    }
     const dueDateLabOrg = await db.query.organizations.findFirst({
       where: eq(organizations.id, input.labOrganizationId),
       columns: { defaultCaseDueDays: true, capCaseDueToDefault: true },
@@ -3594,40 +5353,40 @@ router.post(
       try {
       let resolvedCaseNumber: string;
       if (remakeOriginal) {
-        // Acquire a transaction-scoped advisory lock keyed on the original case
+        // Resolve the chain root so that remakes-of-remakes produce the
+        // correct suffix letter and case-number base. E.g. remaking "26-334B"
+        // yields "26-334C", not "26-334BB". Legacy originals are always the
+        // root (they have no remakeOfCaseId), so no traversal is needed.
+        const remakeRoot =
+          remakeOriginal.kind === "canonical"
+            ? await resolveRemakeRootCanonical(remakeOriginal.id, tx)
+            : { id: remakeOriginal.id, caseNumber: remakeOriginal.caseNumber };
+
+        // Acquire a transaction-scoped advisory lock keyed on the ROOT case
         // ID.  pg_advisory_xact_lock blocks until any other holder releases at
-        // transaction end, so two concurrent remake creates for the same
-        // original (whether canonical or legacy lab_cases) serialise here
-        // instead of both reading the same count and colliding on suffix letter.
-        // hashtext() folds the UUID string into the int4 space expected by the
-        // two-arg form; the constant first arg namespaces it away from any
-        // other advisory lock usage in the app.
+        // transaction end, so two concurrent remake creates for any node in
+        // the same tree serialise here instead of colliding on the suffix
+        // letter. hashtext() folds the UUID string into the int4 space
+        // expected by the two-arg form; the constant first arg namespaces it
+        // away from any other advisory lock usage in the app.
         await tx.execute(
-          sql`SELECT pg_advisory_xact_lock(1742068800, hashtext(${remakeOriginal.id}))`,
+          sql`SELECT pg_advisory_xact_lock(1742068800, hashtext(${remakeRoot.id}))`,
         );
 
-        // Count non-deleted remakes already pointing at the same original.
-        const [countRow] = await tx
-          .select({ cnt: sql<number>`count(*)::int` })
-          .from(cases)
-          .where(
-            and(
-              eq(cases.remakeOfCaseId, remakeOriginal.id),
-              notDeleted(cases),
-            ),
-          );
-        const existingCount = countRow?.cnt ?? 0;
+        // Count ALL non-deleted descendants of the root at any depth so the
+        // suffix increments correctly even when remaking a non-root node.
+        const existingCount = await countAllRemakeDescendants(remakeRoot.id, tx);
         // 0 → 'B', 1 → 'C', 2 → 'D', … up to 'Z' (24 remakes, charCode 90).
         // Reject gracefully if the limit is exceeded rather than silently
         // producing a non-letter character.
         if (existingCount > 23) {
           throw new HttpError(
             409,
-            `Too many remakes of case ${remakeOriginal.caseNumber} (maximum 24).`,
+            `Too many remakes of case ${remakeRoot.caseNumber} (maximum 24).`,
           );
         }
         const suffixLetter = String.fromCharCode(66 + existingCount);
-        resolvedCaseNumber = `${remakeOriginal.caseNumber}${suffixLetter}`;
+        resolvedCaseNumber = `${remakeRoot.caseNumber}${suffixLetter}`;
       } else {
         // Non-remake: client supplies the case number (validated above).
         resolvedCaseNumber = input.caseNumber!;
@@ -3645,23 +5404,50 @@ router.post(
           doctorName: input.doctorName,
           status: input.status,
           priority: input.priority,
+          receivedAt: parseCalendarDate(input.receivedAt),
           dueDate: resolvedDueDate,
-          expectedDeliveryDate: (() => {
-            const d = new Date();
-            d.setDate(d.getDate() + 7);
-            return d;
-          })(),
+          dueTime: input.dueDate ? input.dueTime ?? null : null,
+          expectedDeliveryDate: suppliedDueDate
+            ? null
+            : (() => {
+                const d = new Date();
+                d.setDate(d.getDate() + (dueDateLabOrg?.defaultCaseDueDays ?? 7));
+                return d;
+              })(),
           createdByUserId: (req as any).auth.userId,
           remakeOfCaseId: remakeOriginal?.id ?? null,
           remakeReason: remakeOriginal ? input.remakeReason ?? null : null,
-          remakeCharged: remakeOriginal
-            ? input.remakeCharged ?? null
+          remakeCharged: remakeOriginal ? input.remakeCharged ?? null : null,
+          remakeReasonKey: remakeOriginal ? input.remakeReasonKey ?? null : null,
+          remakeShadeLightness: remakeOriginal ? input.remakeShadeLightness ?? null : null,
+          remakeShadePrescribed: remakeOriginal ? input.remakeShadePrescribed ?? null : null,
+          remakeShadeProvided: remakeOriginal ? input.remakeShadeProvided ?? null : null,
+          remakeMaterialPrescribed: remakeOriginal ? input.remakeMaterialPrescribed ?? null : null,
+          remakeMaterialProvided: remakeOriginal ? input.remakeMaterialProvided ?? null : null,
+          remakeReturnedToLab: remakeOriginal ? input.remakeReturnedToLab ?? null : null,
+          remakeCategory: remakeOriginal
+            ? (input.remakeCategory ?? inferRemakeCategory(input.remakeReasonKey) ?? null)
             : null,
+          remakeNotes: remakeOriginal ? input.remakeNotes ?? null : null,
           casePanBarcode: input.casePanBarcode ?? null,
           shade: input.shade ?? null,
-          rxNotes: input.notes?.trim() || null,
+          gingivialShade: input.gingivialShade?.trim() || null,
+          step: input.step ?? null,
+          rxNotes: input.rxNotes?.trim() ? input.rxNotes : null,
+          bridgeConnectors: input.bridgeConnectors || null,
         })
         .returning();
+
+      if (input.rxNotes?.trim()) {
+        await appendRxNoteEntry(tx, {
+          caseId: created.id,
+          submissionId: `case-intake:${created.id}`,
+          noteText: input.rxNotes,
+          provenance: "case_intake",
+          scannedAt: created.createdAt,
+          preserveCurrentAsLegacy: false,
+        });
+      }
 
       // Write remake cross-link events INSIDE the transaction so they are
       // atomic with case creation.
@@ -3768,7 +5554,12 @@ router.post(
           let priceSourceName: string | null = null;
           let priceKey: string | null = null;
           if (!userSupplied) {
-            const key = materialToPriceKey(r.material, r.restorationType);
+            const key = await resolveRestorationPriceKey({
+              labOrganizationId: input.labOrganizationId,
+              material: r.material,
+              restorationType: r.restorationType,
+              restorationSubtype: r.restorationSubtype,
+            });
             if (key !== null && batchPriceMap.has(key)) {
               // Standard key — use the batch result as authoritative.
               // batchHit.unitPrice may be 0 (no price configured), which is correct.
@@ -3790,7 +5581,8 @@ router.post(
                   providerOrganizationId: input.providerOrganizationId,
                 },
                 r.material,
-                r.restorationType
+                r.restorationType,
+                r.restorationSubtype,
               );
               if (fallback) {
                 unit = fallback.amount;
@@ -3801,22 +5593,35 @@ router.post(
               }
             }
           }
-          return {
+          const normalizedArch = normalizeArch(r.arch);
+          const base = {
             caseId: createdCase.id,
             toothNumber: r.toothNumber,
+            ...implantValues(r),
             restorationType: r.restorationType,
+            restorationSubtype: r.restorationSubtype ?? null,
+            arch: normalizedArch,
             material: r.material ?? null,
             shade: r.shade ?? null,
             notes: r.notes ?? null,
             quantity: r.quantity,
+            assignmentProvenance: /^(crown|pontic)$/i.test(r.restorationType)
+              ? r.assignmentProvenance ?? { origin: "manual", manualFields: ["role", "product", "shade"] } : null,
             unitPrice: unit.toFixed(2),
             priceSource,
             priceSourceId,
             priceSourceName,
             priceKey,
           };
+          if (normalizedArch === "upper_lower") {
+            return [
+              { ...base, arch: "upper" as Arch },
+              { ...base, arch: "lower" as Arch },
+            ];
+          }
+          return [base];
         })
-      );
+      ).then((rows) => rows.flat());
       await db.insert(caseRestorations).values(resolved)
         .catch((err: unknown): never => wrapDbError(err, {
           fallback: "Failed to save case restorations.",
@@ -3881,43 +5686,8 @@ router.post(
     const noChargeRemake =
       !!remakeOriginal && input.remakeCharged === false;
 
-    // Fire all independent post-insert work concurrently:
-    //   • case_created timeline event
-    //   • audit log write
-    //   • auto-invoice generation
-    // (Remake cross-link events are now written atomically inside the
-    // main transaction above, so they no longer appear here.)
-    // None of these depend on each other's result, so running them in
-    // parallel cuts the perceived latency of the "Creating case…" spinner
-    // roughly in half compared to the previous sequential chain.
-    await Promise.all([
-      // ── timeline event ────────────────────────────────────────────────
-      db.insert(caseEvents).values({
-        caseId: createdCase.id,
-        eventType: "case_created",
-        actorUserId: (req as any).auth.userId,
-        actorOrganizationId: input.labOrganizationId,
-        actorInitials: user?.initials || "SYS",
-        metadataJson: {
-          patientFirstName: input.patientFirstName,
-          patientLastName: input.patientLastName,
-          restorations: input.restorations?.length || 0,
-        },
-      }).catch((err: unknown): never => wrapDbError(err, {
-        fallback: "Failed to record case_created timeline event.",
-      })),
-
-      // ── audit log ─────────────────────────────────────────────────────
-      writeAuditLog({
-        req,
-        organizationId: input.labOrganizationId,
-        action: "case_created",
-        entityType: "case",
-        entityId: createdCase.id,
-        afterJson: createdCase,
-      }),
-
-      // ── auto-invoice generation ────────────────────────────────────────
+    // Persist the invoice before any independent post-create work. On an
+    // invoice failure compensation cannot race a timeline/audit writer.
       // Auto-generate an invoice for every new case so the History tab
       // shows the invoice and the Invoice tab is immediately editable.
       // The invoice is created in "open" status (not "draft") so it shows
@@ -3928,20 +5698,27 @@ router.post(
       // tooth list, shade, and case notes pulled from the case + its
       // restorations so the Invoice tab doesn't show empty fields the
       // user has to copy over by hand.
-      (async () => {
+      await (async () => {
         try {
+          await db.transaction(async (tx) => {
+          // The case is already committed; the invoice header, lines and
+          // totals must commit together or not at all.
+          const [alreadyLinked] = await tx.select().from(invoices).where(
+            and(eq(invoices.caseId, createdCase.id), eq(invoices.labOrganizationId, createdCase.labOrganizationId), isNull(invoices.deletedAt)),
+          ).for("update");
+          if (alreadyLinked) return;
           // Fetch restorations, provider org, and case notes in parallel —
           // all three are independent reads against different tables.
           const [restorationsForInvoice, providerOrgRow, caseLevelNotes] =
             await Promise.all([
-              db.query.caseRestorations.findMany({
+               tx.query.caseRestorations.findMany({
                 where: eq(caseRestorations.caseId, createdCase.id),
               }),
-              db.query.organizations.findFirst({
+               tx.query.organizations.findFirst({
                 where: eq(organizations.id, createdCase.providerOrganizationId),
               }),
-              db.query.caseNotes.findMany({
-                where: eq(caseNotes.caseId, createdCase.id),
+               tx.query.caseNotes.findMany({
+                 where: and(eq(caseNotes.caseId, createdCase.id), eq(caseNotes.visibility, "shared_with_provider")),
               }),
             ]);
 
@@ -4005,28 +5782,31 @@ router.post(
             caseNotes: caseNotesText,
             credits: 0,
           };
+           const doctorIdentity = await ensureDoctorProfileIdentity(tx, {
+            labOrganizationId: createdCase.labOrganizationId,
+            providerOrganizationId: createdCase.providerOrganizationId ?? null,
+            doctorName: billToName,
+          });
 
-          const [newInvoice] = await db
-            .insert(invoices)
-            .values({
+           const newInvoice = await insertOrResolveAiIntakeInvoice(tx, {
               invoiceNumber,
               caseId: createdCase.id,
               labOrganizationId: createdCase.labOrganizationId,
               providerOrganizationId: createdCase.providerOrganizationId,
+              doctorIdentity,
               // Always create the invoice as "open" (active, awaiting
               // payment) — never "draft". Even an empty / unpriced auto-
               // invoice should appear on the open-balance worklist so the
               // lab knows it needs to be filled in and sent.
               status: "open",
-              issuedAt: new Date(),
+              issuedAt: calendarDateToUtcNoon(createdCase.receivedAt),
               dueAt: invoiceDueDate(new Date()),
               displayMetadataJson: displayMetadata,
               createdByUserId: (req as any).auth.userId,
               updatedByUserId: (req as any).auth.userId,
               ...(noChargeNote ? { notes: noChargeNote } : {}),
-            })
-            .onConflictDoNothing()
-            .returning();
+             }, createdCase.id, createdCase.labOrganizationId);
+           if (!newInvoice.newlyCreated) return;
           if (newInvoice) {
             const lineItemsMeta: Array<{
               item: string;
@@ -4034,19 +5814,44 @@ router.post(
               catalogItemKey: string | null;
               missingCatalogItem: boolean;
             }> = [];
-            if (hasLines) {
+            // Admin/owner callers may supply explicit line items that bypass
+            // the auto-pricing engine entirely. We honour them only when the
+            // caller is admin/owner AND the field is present AND it is NOT a
+            // no-charge remake (those must be zeroed by the server for
+            // auditability — we cannot trust client-supplied $0 lines).
+            const useOverrideLines =
+              callerIsAdminOrOwner &&
+              Array.isArray(input.invoiceOverrideLines) &&
+              !noChargeRemake;
+            if (useOverrideLines) {
+              const explicitLines = input.invoiceOverrideLines!;
+              const reviewedItems = reviewedLinesToInvoiceItems(explicitLines, newInvoice.id);
+              lineItemsMeta.push(...reviewedItems.map((line) => ({
+                item: line.catalogItemLabel,
+                description: line.description,
+                catalogItemKey: line.catalogItemKey,
+                missingCatalogItem: false,
+                subItems: line.childItems.map((child) => ({ item: child.description, description: child.description })),
+              })));
+              await insertGroupedLineItemsWithChildren(tx, reviewedItems);
+            } else if (hasLines) {
               // Batch-fetch all custom labels for this lab in one query so
               // the per-restoration label resolution below is N×0 DB calls
               // instead of the previous N×1 pattern.
               const labLabelMap = await fetchLabItemLabels(
                 createdCase.labOrganizationId,
               );
-              await db.insert(invoiceLineItems).values(
-                billableRestorations.map((r, idx) => {
-                  const catalogItemKey = materialToPriceKey(r.material, r.restorationType);
+               const parentLineRowsA = await tx.insert(invoiceLineItems).values(
+                await Promise.all(billableRestorations.map(async (r, idx) => {
+                  const catalogItemKey = await resolveRestorationPriceKey({
+                    labOrganizationId: createdCase.labOrganizationId,
+                    material: r.material,
+                    restorationType: r.restorationType,
+                    restorationSubtype: r.restorationSubtype,
+                  });
                   const pk = catalogItemKey ?? r.restorationType;
                   const baseLabel = resolveItemLabelFromMap(labLabelMap, pk);
-                  const baseDesc = buildLineItemDescription(r.toothNumber, baseLabel);
+                   const baseDesc = `${buildLineItemDescription(r.toothNumber, baseLabel)}${r.arch ? ` - ${archLabel(r.arch as Arch)}` : ""}`;
                   const effectiveUnitPrice = noChargeRemake ? "0.00" : r.unitPrice;
                   lineItemsMeta.push({
                     item: baseLabel,
@@ -4057,35 +5862,61 @@ router.post(
                   return {
                     invoiceId: newInvoice.id,
                     caseRestorationId: r.id,
+                    sourceType: "restoration",
+                    sourceKey: `restoration:${r.id}`,
+                    sourceRestorationIdsJson: [r.id],
                     description: noChargeRemake
                       ? `${baseDesc} (no-charge remake)`
                       : baseDesc,
-                    quantity: r.quantity,
+                     quantity: r.arch ? 1 : r.quantity,
                     unitPrice: effectiveUnitPrice,
                     lineTotal: noChargeRemake
                       ? "0.00"
-                      : calculateLineTotal(r.quantity, r.unitPrice),
+                       : calculateLineTotal(r.arch ? 1 : r.quantity, r.unitPrice),
                     sortOrder: idx,
                   };
-                }),
-              );
+                })),
+              ).returning({ id: invoiceLineItems.id, sortOrder: invoiceLineItems.sortOrder });
+              // Insert Layered Porcelain ($37) child sub-items for PFZ restorations.
+              const pfzChildRowsA = [];
+              for (const [idx, r] of billableRestorations.entries()) {
+                if (!isPfzMaterial(r.material) || noChargeRemake) continue;
+                const parent = parentLineRowsA.find((p) => p.sortOrder === idx);
+                if (!parent) continue;
+                pfzChildRowsA.push({
+                  invoiceId: newInvoice.id,
+                  parentLineItemId: parent.id,
+                  sourceType: "restoration",
+                  sourceKey: `synthetic:restoration:${r.id}:${LAYERED_PORCELAIN_DESCRIPTION.toLowerCase()}`,
+                  sourceRestorationIdsJson: [],
+                  description: LAYERED_PORCELAIN_DESCRIPTION,
+                  quantity: 1,
+                  unitPrice: LAYERED_PORCELAIN_SURCHARGE,
+                  lineTotal: LAYERED_PORCELAIN_SURCHARGE,
+                  sortOrder: 0,
+                });
+              }
+              if (pfzChildRowsA.length > 0) {
+                 await tx.insert(invoiceLineItems).values(pfzChildRowsA);
+              }
             }
-            const items = await db.query.invoiceLineItems.findMany({
+             const items = await tx.query.invoiceLineItems.findMany({
               where: eq(invoiceLineItems.invoiceId, newInvoice.id),
             });
             const subtotal = sumMoney(items.map((it) => it.lineTotal));
-            const [finalized] = await db
+             const [finalized] = await tx
               .update(invoices)
               .set({
                 subtotal,
                 total: subtotal,
                 balanceDue: subtotal,
                 updatedByUserId: (req as any).auth.userId,
-                displayMetadataJson: { ...displayMetadata, lineItems: lineItemsMeta },
+                displayMetadataJson: { ...displayMetadata, lineItems: lineItemsMeta, ...(useOverrideLines ? { reviewedCharges: true } : {}) },
               })
               .where(eq(invoices.id, newInvoice.id))
               .returning();
-            await db.insert(caseEvents).values({
+             if (!finalized) throw new Error("Invoice finalization returned no row.");
+             await tx.insert(caseEvents).values({
               caseId: createdCase.id,
               eventType: "invoice_generated",
               actorUserId: (req as any).auth.userId,
@@ -4098,16 +5929,81 @@ router.post(
               },
             });
           }
+          });
         } catch (err) {
-          // Auto-invoice failure should not block case creation. The user
-          // can hit "Generate invoice" manually from the Invoice tab.
-          req.log?.warn?.(
+          req.log?.error?.(
             { err, caseId: createdCase.id },
             "auto invoice generation on case create failed",
           );
+           // The invoice transaction rolled back. Never delete a concurrently
+           // linked invoice or a case that another writer has since completed.
+          try {
+            await db.transaction(async (cleanupTx) => {
+               const [linked] = await cleanupTx.select({ id: invoices.id }).from(invoices)
+                 .where(eq(invoices.caseId, createdCase.id)).for("update");
+               if (linked) throw new Error("Case gained a linked invoice during cleanup.");
+              await cleanupTx
+                .delete(cases)
+                .where(eq(cases.id, createdCase.id));
+            });
+          } catch (cleanupErr) {
+            req.log?.error?.(
+               { err: cleanupErr, caseId: createdCase.id },
+              "failed to compensate incomplete case invoice creation",
+            );
+            throw new HttpError(
+              500,
+              "Case invoice creation failed and automatic cleanup could not complete; contact support before retrying.",
+            );
+          }
+           throw new HttpError(err instanceof CaseInvoiceConflictError ? 409 : 500,
+             err instanceof CaseInvoiceConflictError ? err.message : "Case invoice could not be persisted; please retry.");
         }
-      })(),
+      })();
+    await Promise.all([
+      db.insert(caseEvents).values({
+        caseId: createdCase.id,
+        eventType: "case_created",
+        actorUserId: (req as any).auth.userId,
+        actorOrganizationId: input.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          patientFirstName: input.patientFirstName,
+          patientLastName: input.patientLastName,
+          restorations: input.restorations?.length || 0,
+        },
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record case_created timeline event.",
+      })),
+      writeAuditLog({
+        req,
+        organizationId: input.labOrganizationId,
+        action: "case_created",
+        entityType: "case",
+        entityId: createdCase.id,
+        afterJson: createdCase,
+      }),
     ]);
+
+    await deliverInAppNotification({
+      labOrganizationId: createdCase.labOrganizationId,
+      category: input.priority === "rush" ? "rush_case" : "new_case",
+      type: input.priority === "rush" ? "rush_case_created" : "case_created",
+      title:
+        input.priority === "rush"
+          ? `Rush case: ${createdCase.caseNumber}`
+          : `New case: ${createdCase.caseNumber}`,
+      body: `Case ${createdCase.caseNumber} for ${[
+        createdCase.patientFirstName,
+        createdCase.patientLastName,
+      ]
+        .filter(Boolean)
+        .join(" ") || "a patient"} was created.`,
+      dataJson: {
+        caseId: createdCase.id,
+        caseNumber: createdCase.caseNumber,
+      },
+    });
 
     return ok(
       res,
@@ -4120,6 +6016,396 @@ router.post(
       timeoutSignal,
     ]);
   })
+);
+
+// ---------------------------------------------------------------------------
+// POST /cases/:id/remake
+// Creates a new case that is a remake of an existing case. Pre-populates
+// patient, doctor, practice, and restoration fields from the original and
+// writes reciprocal history events (remake_of on the new case, remade_by on
+// the original). Accepts the structured remake questionnaire payload.
+// Admin/owner only.
+// ---------------------------------------------------------------------------
+router.post(
+  "/:id/remake",
+  asyncHandler(async (req, res) => {
+    const caseId = String(req.params["id"] ?? "");
+    const userId = (req as any).auth.userId as string;
+    const user = (req as any).user;
+    const actorInitials: string = user?.initials || "SYS";
+
+    // Verify the case exists
+    const originalCase = await db.query.cases.findFirst({
+      where: and(eq(cases.id, caseId), notDeleted(cases)),
+    });
+    if (!originalCase) throw new HttpError(404, "Case not found.");
+
+    // Admin/owner gate: only lab members with admin or owner role may create remakes
+    await requireAnyRole(userId, originalCase.labOrganizationId, ADMIN_ROLES);
+
+    // Validate the remake questionnaire body
+    const remakeBodySchema = z.object({
+      remakeReasonKey: z.enum(REMAKE_REASON_KEYS),
+      remakeReason: z.string().min(1).max(2000),
+      remakeCharged: z.boolean().nullable().default(null),
+      remakeShadeLightness: z.enum(["light", "dark"]).optional(),
+      remakeShadePrescribed: z.string().max(200).optional(),
+      remakeShadeProvided: z.string().max(200).optional(),
+      remakeMaterialPrescribed: z.string().max(200).optional(),
+      remakeMaterialProvided: z.string().max(200).optional(),
+      remakeReturnedToLab: z.boolean().optional(),
+      remakeCategory: z.enum(["crown_bridge", "removable"]).optional(),
+      remakeNotes: z.string().max(2000).optional(),
+      dueDate: z.string().optional(),
+      dueTime: z
+        .union([z.string().refine(isValidDueTime, "Invalid due time"), z.null()])
+        .optional(),
+    });
+    const input = remakeBodySchema.parse(req.body);
+
+    // dueTime is only valid when dueDate is also supplied
+    if (input.dueTime != null && !input.dueDate) {
+      throw new HttpError(400, "Cannot set a due time without a due date.");
+    }
+
+    // Resolve due date — use caller-supplied date when provided, otherwise
+    // inherit from the original case; always apply the lab-level cap.
+    const dueDateOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, originalCase.labOrganizationId),
+      columns: { defaultCaseDueDays: true, capCaseDueToDefault: true },
+    });
+    const suppliedDueDate: Date | null = input.dueDate ? new Date(input.dueDate) : null;
+    const resolvedDueDate = resolveCaseDueDate(
+      suppliedDueDate ?? (originalCase.dueDate ? new Date(originalCase.dueDate) : null),
+      new Date(),
+      dueDateOrg?.defaultCaseDueDays,
+      dueDateOrg?.capCaseDueToDefault,
+    );
+
+    // Create the remake case and link it via the same shared function that
+    // powers PATCH /:caseId/mark-as-remake
+    // (`linkExistingCaseAsRemake`), so suffix assignment, history events,
+    // invoice zeroing, and audit logging cannot drift between the three
+    // remake surfaces. Root resolution ensures remaking a non-root node
+    // (e.g. "26-334B") yields "26-334C" rather than "26-334BB".
+    const resolvedCategory =
+      input.remakeCategory ?? inferRemakeCategory(input.remakeReasonKey) ?? null;
+    const createdCase = await createRemakeCaseAndLink(
+      req,
+      {
+        labOrganizationId: originalCase.labOrganizationId,
+        providerOrganizationId: originalCase.providerOrganizationId,
+        patientFirstName: originalCase.patientFirstName,
+        patientLastName: originalCase.patientLastName,
+        doctorName: originalCase.doctorName,
+        status: "received",
+        priority: "normal",
+        dueDate: resolvedDueDate,
+        dueTime: input.dueDate ? (input.dueTime ?? null) : null,
+        createdByUserId: userId,
+      },
+      {
+        remakeOfCaseId: caseId,
+        remakeReason: input.remakeReason,
+        remakeCharged: input.remakeCharged ?? null,
+        remakeReasonKey: input.remakeReasonKey,
+        remakeShadeLightness: input.remakeShadeLightness,
+        remakeShadePrescribed: input.remakeShadePrescribed,
+        remakeShadeProvided: input.remakeShadeProvided,
+        remakeMaterialPrescribed: input.remakeMaterialPrescribed,
+        remakeMaterialProvided: input.remakeMaterialProvided,
+        remakeReturnedToLab: input.remakeReturnedToLab,
+        remakeCategory: resolvedCategory ?? undefined,
+        remakeNotes: input.remakeNotes,
+      },
+      { userId, initials: actorInitials },
+    );
+
+    await deliverInAppNotification({
+      labOrganizationId: createdCase.labOrganizationId,
+      category: createdCase.priority === "rush" ? "rush_case" : "new_case",
+      type: createdCase.priority === "rush" ? "rush_case_created" : "case_created",
+      title:
+        createdCase.priority === "rush"
+          ? `Rush case: ${createdCase.caseNumber}`
+          : `New case: ${createdCase.caseNumber}`,
+      body: `Remake case ${createdCase.caseNumber} was created.`,
+      dataJson: {
+        caseId: createdCase.id,
+        caseNumber: createdCase.caseNumber,
+      },
+    });
+
+    // Clone restorations from the original, re-pricing any with zero unit price
+    const originalRestorations = await db.query.caseRestorations.findMany({
+      where: eq(caseRestorations.caseId, caseId),
+    });
+
+    if (originalRestorations.length > 0) {
+      const needsAutoPrice = originalRestorations.some(
+        (r) => Number(r.unitPrice ?? 0) <= 0,
+      );
+      const batchPriceMap = new Map<string, ResolvedItemRow>();
+      if (needsAutoPrice) {
+        const allPrices = await resolveAllPricesForContext({
+          labOrganizationId: originalCase.labOrganizationId,
+          doctorName: originalCase.doctorName,
+          providerOrganizationId: originalCase.providerOrganizationId,
+        });
+        for (const p of allPrices) batchPriceMap.set(p.key, p);
+      }
+
+      const restorationRows = await Promise.all(originalRestorations.map(async (r) => {
+        let unit = Number(r.unitPrice ?? 0);
+        let priceSource: string | null = null;
+        let priceSourceId: string | null = null;
+        let priceSourceName: string | null = null;
+        let priceKey: string | null = null;
+
+        if (unit <= 0 && needsAutoPrice) {
+          const key = await resolveRestorationPriceKey({
+            labOrganizationId: originalCase.labOrganizationId,
+            material: r.material,
+            restorationType: r.restorationType,
+            restorationSubtype: r.restorationSubtype,
+          });
+          if (key !== null && batchPriceMap.has(key)) {
+            const hit = batchPriceMap.get(key)!;
+            if (hit.source !== null && hit.unitPrice > 0) {
+              unit = hit.unitPrice;
+              priceSource = hit.source;
+              priceSourceId = hit.sourceId;
+              priceSourceName = hit.sourceName;
+              priceKey = hit.key;
+            }
+          }
+        } else if (unit > 0) {
+          priceSource = "manual";
+        }
+
+        return {
+          caseId: createdCase.id,
+          toothNumber: r.toothNumber,
+          ...implantValues(r),
+          restorationSubtype: r.restorationSubtype,
+          restorationType: r.restorationType,
+          material: r.material ?? null,
+          shade: r.shade ?? null,
+          notes: r.notes ?? null,
+          quantity: r.quantity,
+          unitPrice: unit.toFixed(2),
+          priceSource,
+          priceSourceId,
+          priceSourceName,
+          priceKey,
+        };
+      }));
+
+      await db
+        .insert(caseRestorations)
+        .values(restorationRows)
+        .catch((err: unknown): never =>
+          wrapDbError(err, { fallback: "Failed to clone restorations for remake." }),
+        );
+    }
+
+    // Best-effort background tasks: case_created event, audit log, auto-invoice
+    void (async () => {
+      try {
+        await Promise.all([
+          db.insert(caseEvents).values({
+            caseId: createdCase.id,
+            eventType: "case_created",
+            actorUserId: userId,
+            actorOrganizationId: originalCase.labOrganizationId,
+            actorInitials,
+            metadataJson: { via: "remake_from_detail", originalCaseId: caseId },
+          }),
+          writeAuditLog({
+            userId,
+            organizationId: originalCase.labOrganizationId,
+            action: "case.remake_created",
+            entityType: "case",
+            entityId: createdCase.id,
+            metadataJson: {
+              originalCaseId: caseId,
+              originalCaseNumber: originalCase.caseNumber,
+              newCaseNumber: createdCase.caseNumber,
+            },
+          }),
+        ]);
+      } catch (err) {
+        req.log.warn(
+          { err, caseId: createdCase.id },
+          "remake case_created event/audit failed",
+        );
+      }
+
+      // Auto-invoice (best-effort, mirrors POST /cases pattern)
+      try {
+        const noChargeRemake = input.remakeCharged === false;
+        const [providerOrgRow, remakeRestorations] = await Promise.all([
+          db.query.organizations.findFirst({
+            where: eq(organizations.id, originalCase.providerOrganizationId ?? ""),
+          }),
+          db.query.caseRestorations.findMany({
+            where: eq(caseRestorations.caseId, createdCase.id),
+          }),
+        ]);
+
+        const billableRestorations = remakeRestorations.filter(
+          (r) => !/^missing$/i.test(r.restorationType ?? ""),
+        );
+        const hasLines = billableRestorations.length > 0;
+        const invoiceNumber = `INV-${createdCase.caseNumber}`;
+        const noChargeNote = noChargeRemake
+          ? `No-charge remake of case ${originalCase.caseNumber}${input.remakeReason ? ` — reason: ${input.remakeReason}` : ""}`
+          : null;
+
+        const patientDisplayName =
+          `${originalCase.patientFirstName ?? ""} ${originalCase.patientLastName ?? ""}`.trim();
+        const billToName = providerOrgRow?.displayName || providerOrgRow?.name || "";
+        const teethList = Array.from(
+          new Set(
+            billableRestorations.map((r) => (r.toothNumber || "").trim()).filter(Boolean),
+          ),
+        ).join(", ");
+        const shadeList = Array.from(
+          new Set(
+            billableRestorations.map((r) => (r.shade || "").trim()).filter(Boolean),
+          ),
+        ).join(", ");
+        const materialList = Array.from(
+          new Set(
+            billableRestorations.map((r) => (r.material || "").trim()).filter(Boolean),
+          ),
+        ).join(", ");
+
+        const displayMetadata = {
+          patientName: patientDisplayName,
+          billTo: billToName,
+          teeth: teethList,
+          shade: shadeList,
+          material: materialList,
+          caseNotes: "",
+          credits: 0,
+        };
+        const doctorIdentity = await ensureDoctorProfileIdentity(db, {
+          labOrganizationId: createdCase.labOrganizationId,
+          providerOrganizationId: createdCase.providerOrganizationId ?? null,
+          doctorName: billToName,
+        });
+
+        const [newInvoice] = await db
+          .insert(invoices)
+          .values({
+            invoiceNumber,
+            caseId: createdCase.id,
+            labOrganizationId: createdCase.labOrganizationId,
+            providerOrganizationId: createdCase.providerOrganizationId,
+            doctorIdentity,
+            status: "open",
+            issuedAt: calendarDateToUtcNoon(createdCase.receivedAt),
+            dueAt: invoiceDueDate(new Date()),
+            displayMetadataJson: displayMetadata,
+            createdByUserId: userId,
+            updatedByUserId: userId,
+            ...(noChargeNote ? { notes: noChargeNote } : {}),
+          })
+          .onConflictDoNothing()
+          .returning();
+
+        if (newInvoice && hasLines) {
+          const labLabelMap = await fetchLabItemLabels(createdCase.labOrganizationId);
+          const parentLineRowsB = await db.insert(invoiceLineItems).values(
+            await Promise.all(billableRestorations.map(async (r, idx) => {
+              const catalogItemKey = await resolveRestorationPriceKey({
+                labOrganizationId: createdCase.labOrganizationId,
+                material: r.material,
+                restorationType: r.restorationType,
+                restorationSubtype: r.restorationSubtype,
+              });
+              const pk = catalogItemKey ?? r.restorationType;
+              const baseLabel = resolveItemLabelFromMap(labLabelMap, pk);
+              const baseDesc = buildLineItemDescription(r.toothNumber, baseLabel);
+              const effectiveUnitPrice = noChargeRemake ? "0.00" : r.unitPrice;
+              return {
+                invoiceId: newInvoice.id,
+                caseRestorationId: r.id,
+                sourceType: "restoration",
+                sourceKey: `restoration:${r.id}`,
+                sourceRestorationIdsJson: [r.id],
+                description: noChargeRemake
+                  ? `${baseDesc} (no-charge remake)`
+                  : baseDesc,
+                quantity: r.quantity,
+                unitPrice: effectiveUnitPrice,
+                lineTotal: noChargeRemake
+                  ? "0.00"
+                  : calculateLineTotal(r.quantity, r.unitPrice),
+                sortOrder: idx,
+              };
+            })),
+          ).returning({ id: invoiceLineItems.id, sortOrder: invoiceLineItems.sortOrder });
+          // Insert Layered Porcelain ($37) child sub-items for PFZ restorations.
+          const pfzChildRowsB = [];
+          for (const [idx, r] of billableRestorations.entries()) {
+            if (!isPfzMaterial(r.material) || noChargeRemake) continue;
+            const parent = parentLineRowsB.find((p) => p.sortOrder === idx);
+            if (!parent) continue;
+            pfzChildRowsB.push({
+              invoiceId: newInvoice.id,
+              parentLineItemId: parent.id,
+              sourceType: "restoration",
+              sourceKey: `synthetic:restoration:${r.id}:${LAYERED_PORCELAIN_DESCRIPTION.toLowerCase()}`,
+              sourceRestorationIdsJson: [],
+              description: LAYERED_PORCELAIN_DESCRIPTION,
+              quantity: 1,
+              unitPrice: LAYERED_PORCELAIN_SURCHARGE,
+              lineTotal: LAYERED_PORCELAIN_SURCHARGE,
+              sortOrder: 0,
+            });
+          }
+          if (pfzChildRowsB.length > 0) {
+            await db.insert(invoiceLineItems).values(pfzChildRowsB);
+          }
+
+          const lineItems = await db.query.invoiceLineItems.findMany({
+            where: eq(invoiceLineItems.invoiceId, newInvoice.id),
+          });
+          const subtotal = sumMoney(lineItems.map((it) => it.lineTotal));
+          await db
+            .update(invoices)
+            .set({ subtotal, total: subtotal, balanceDue: subtotal, updatedByUserId: userId })
+            .where(eq(invoices.id, newInvoice.id));
+        }
+
+        if (newInvoice) {
+          await db.insert(caseEvents).values({
+            caseId: createdCase.id,
+            eventType: "invoice_generated",
+            actorUserId: userId,
+            actorOrganizationId: createdCase.labOrganizationId,
+            actorInitials,
+            metadataJson: {
+              invoiceId: newInvoice.id,
+              invoiceNumber: newInvoice.invoiceNumber,
+              empty: !hasLines,
+            },
+          });
+        }
+      } catch (err) {
+        req.log.warn(
+          { err, caseId: createdCase.id },
+          "auto-invoice for remake case failed (best-effort)",
+        );
+      }
+    })();
+
+    broadcastCaseUpdated(originalCase.id, "remade");
+    broadcastCaseUpdated(createdCase.id);
+    return ok(res, { id: createdCase.id, caseNumber: createdCase.caseNumber }, 201);
+  }),
 );
 
 // ---------------------------------------------------------------------------
@@ -4145,6 +6431,7 @@ router.get(
     const authorizedOrgIds = new Set<string>(directMembershipOrgIds);
     const callerUser = await db.query.users.findFirst({
       where: eq(users.id, callerId),
+      columns: { userType: true },
     });
     if (callerUser?.userType === "provider") {
       const { providerOrgIds } =
@@ -4155,7 +6442,14 @@ router.get(
     const membershipOrgIds = Array.from(authorizedOrgIds);
     if (!membershipOrgIds.length) return ok(res, []);
 
-    const [canonicalRows, mobileRows] = await Promise.all([
+    // Legacy (mobile) names come from the projection the `lab_cases` trigger
+    // keeps in step with `case_data`, so the common path reads short columns
+    // instead of every blob in the caller's labs. Only the rows the
+    // projection cannot answer arrive as blobs to parse here, and both kinds
+    // come back from one statement so a row crossing between them cannot be
+    // missed — see legacyDoctorNameSql, and the parity, shape and
+    // single-snapshot guards in cases-doctor-names-projection.test.ts.
+    const [canonicalRows, legacyResult] = await Promise.all([
       db
         .selectDistinct({ doctorName: cases.doctorName })
         .from(cases)
@@ -4170,29 +6464,29 @@ router.get(
             ne(cases.doctorName, "")
           )
         ),
-      db
-        .select({ caseData: labCases.caseData })
-        .from(labCases)
-        .where(
-          and(
-            isNull(labCases.deletedAt),
-            inArray(labCases.organizationId, membershipOrgIds)
-          )
-        ),
+      db.execute(legacyDoctorNameSql({ organizationIds: membershipOrgIds })),
     ]);
+    const legacyRows = (((legacyResult as { rows?: unknown[] }).rows ??
+      legacyResult) ?? []) as Array<{
+      kind: "name" | "blob";
+      value: string | null;
+    }>;
 
     const nameSet = new Set<string>();
     for (const row of canonicalRows) {
       const n = (row.doctorName ?? "").trim();
       if (n) nameSet.add(n);
     }
-    for (const mr of mobileRows) {
+    for (const row of legacyRows) {
+      if (row.kind === "name") {
+        const n = String(row.value ?? "").trim();
+        if (n) nameSet.add(n);
+        continue;
+      }
       try {
         const parsed =
-          typeof mr.caseData === "string"
-            ? JSON.parse(mr.caseData)
-            : mr.caseData;
-        const n = String(parsed?.doctorName ?? "").trim();
+          typeof row.value === "string" ? JSON.parse(row.value) : row.value;
+        const n = String((parsed as any)?.doctorName ?? "").trim();
         if (n) nameSet.add(n);
       } catch {
         // skip malformed rows
@@ -4231,6 +6525,7 @@ router.get(
     const authorizedOrgIds = new Set<string>(directMembershipOrgIds);
     const callerUser = await db.query.users.findFirst({
       where: eq(users.id, callerId),
+      columns: { userType: true },
     });
     if (callerUser?.userType === "provider") {
       const { providerOrgIds } =
@@ -4310,6 +6605,7 @@ router.get(
     const authorizedOrgIds = new Set<string>(directMembershipOrgIds);
     const callerUser = await db.query.users.findFirst({
       where: eq(users.id, callerId),
+      columns: { userType: true },
     });
     if (callerUser?.userType === "provider") {
       const { providerOrgIds } =
@@ -4407,10 +6703,679 @@ router.get(
   })
 );
 
+/**
+ * Statuses that take a case out of the lab's active workload. These make up the
+ * large historical tail of a lab's `cases` table, so list endpoints keep them
+ * bounded to the most-recent window. Every other status counts as "open" and is
+ * always returned in full (see OPEN_CASE_SAFETY_LIMIT).
+ */
+const CLOSED_CASE_STATUSES = ["complete", "delivered", "cancelled"] as const;
+
+/** Bound on the most-recent-first window of cases regardless of status. */
+const RECENT_CASE_LIMIT = 500;
+
+/**
+ * Generous safety bound on the always-included open-case query. Labs carry far
+ * fewer open cases than total cases (hundreds, not thousands), so this exists
+ * only so a pathological tenant cannot produce an unbounded response.
+ */
+const OPEN_CASE_SAFETY_LIMIT = 5000;
+
+const caseListColumns = {
+  id: true,
+  caseNumber: true,
+  labOrganizationId: true,
+  providerOrganizationId: true,
+  patientFirstName: true,
+  patientLastName: true,
+  externalPatientId: true,
+  doctorName: true,
+  status: true,
+  priority: true,
+  dueDate: true,
+  dueTime: true,
+  expectedDeliveryDate: true,
+  receivedAt: true,
+  createdByUserId: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+  deletedByUserId: true,
+  needsAiReview: true,
+  aiImportSource: true,
+  remakeOfCaseId: true,
+  remakeReason: true,
+  remakeCharged: true,
+  remakeReasonKey: true,
+  remakeShadeLightness: true,
+  remakeShadePrescribed: true,
+  remakeShadeProvided: true,
+  remakeMaterialPrescribed: true,
+  remakeMaterialProvided: true,
+  remakeReturnedToLab: true,
+  remakeCategory: true,
+  remakeNotes: true,
+  suggestedDoctorName: true,
+  suggestedProviderOrgId: true,
+  casePanBarcode: true,
+  bridgeConnectors: true,
+  deliveryDateProposalDate: true,
+  deliveryDateProposalNote: true,
+  rxNotes: true,
+  shade: true,
+  step: true,
+  stepShade: true,
+  gingivialShade: true,
+  isCustomShade: true,
+  customShadeTechnician: true,
+  customShadePicturesAvailable: true,
+  customShadeVideoAvailable: true,
+  labLocationId: true,
+} as const;
+
+const caseListRestorationColumns = {
+  implantRetention: true,
+  implantManufacturer: true,
+  implantPlatformNotes: true,
+  id: true,
+  caseId: true,
+  toothNumber: true,
+  restorationType: true,
+  restorationSubtype: true,
+  material: true,
+  shade: true,
+  notes: true,
+  quantity: true,
+  unitPrice: true,
+  priceSource: true,
+  priceSourceId: true,
+  priceSourceName: true,
+  priceKey: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+/** SQL predicate matching cases that are still part of the active workload. */
+const openCaseStatusFilter = notInArray(cases.status, [...CLOSED_CASE_STATUSES]);
+
+/**
+ * Merges the bounded most-recent window with the always-included open-case
+ * window, de-duplicating by case id (the two queries overlap for recent open
+ * cases) and restoring the newest-first ordering clients expect.
+ *
+ * Runs before enrichment so merged-in older rows get identical treatment
+ * (restorations, invoice totals, provider account numbers, station names).
+ */
+function mergeCaseRowsNewestFirst<T extends { id: string; createdAt?: unknown }>(
+  ...groups: T[][]
+): T[] {
+  const byId = new Map<string, T>();
+  for (const group of groups) {
+    for (const row of group) {
+      if (!byId.has(row.id)) byId.set(row.id, row);
+    }
+  }
+  const createdAtMs = (row: T) => {
+    const value = row.createdAt;
+    if (!value) return 0;
+    const ms = new Date(value as string | Date).getTime();
+    return Number.isNaN(ms) ? 0 : ms;
+  };
+  return Array.from(byId.values()).sort((a, b) => createdAtMs(b) - createdAtMs(a));
+}
+
+type WorklistContext = {
+  membershipOrgIds: string[];
+  billingLabOrgIds: string[];
+  callerLabOrgSet: Set<string>;
+  includeRestorations: boolean;
+};
+
+/**
+ * The desktop worklist has a deliberately separate read path from the legacy
+ * array endpoint.  Its first query projects only sortable/filterable candidate
+ * fields, unifies both storage generations, de-duplicates them, and applies
+ * LIMIT/OFFSET before any object restoration or display enrichment.
+ */
+async function getCasesWorklist(req: Request, context: WorklistContext) {
+  const values = (name: string) =>
+    (Array.isArray(req.query[name]) ? req.query[name] : String(req.query[name] ?? "").split(","))
+      .flatMap((value) => String(value).split(","))
+      .map((value) => value.trim())
+      .filter(Boolean);
+  const search = String(req.query.search ?? "").trim().toLowerCase();
+  const barcode = String(req.query.barcode ?? "").trim();
+  const statuses = values("status").map((value) => value.toLowerCase());
+  const priorities = values("priority").map((value) => value.toLowerCase());
+  const categories = values("caseType").concat(values("category")).map((value) => value.toLowerCase());
+  const taxonomyTypes = values("taxonomyType").map((value) => value.toLowerCase());
+  const caseIds = values("caseId").concat(values("caseIds"));
+  const conflictsOnly = ["true", "1"].includes(String(req.query.conflictsOnly ?? "").toLowerCase());
+  const doctorName = String(req.query.doctorName ?? "").trim().toLowerCase();
+  const providerOrganizationId = String(req.query.providerOrganizationId ?? "").trim();
+  const openOnly = ["true", "1"].includes(String(req.query.openOnly ?? "").toLowerCase());
+  const overdueOnly = ["true", "1"].includes(String(req.query.overdueOnly ?? "").toLowerCase());
+  const overdueLocalDate = String(req.query.localDate ?? "").trim();
+  const overdueDate = new Date(`${overdueLocalDate}T00:00:00.000Z`);
+  const validOverdueDate =
+    /^\d{4}-\d{2}-\d{2}$/.test(overdueLocalDate) &&
+    Number.isFinite(overdueDate.getTime()) &&
+    overdueDate.toISOString().slice(0, 10) === overdueLocalDate;
+  if (overdueOnly && !validOverdueDate) {
+    throw new HttpError(400, "A valid local date is required for the overdue filter.");
+  }
+  // New worklist calendar ranges are based on receipt. Keep the explicit
+  // created-date range for older clients; Today uses receivedStart/End.
+  const createdStart = String(req.query.createdStart ?? "").trim();
+  const createdEnd = String(req.query.createdEnd ?? "").trim();
+  const receivedStart = String(req.query.receivedStart ?? "").trim();
+  const receivedEnd = String(req.query.receivedEnd ?? "").trim();
+  const dueStart = String(req.query.dueStart ?? "").trim();
+  const dueEnd = String(req.query.dueEnd ?? "").trim();
+
+  if ((createdStart && !createdEnd) || (!createdStart && createdEnd) ||
+    (receivedStart && !receivedEnd) || (!receivedStart && receivedEnd) ||
+    (dueStart && !dueEnd) || (!dueStart && dueEnd)) {
+    throw new HttpError(400, "Both start and end are required for a bounded date range.");
+  }
+  if (
+    (createdStart && !/^\d{4}-\d{2}-\d{2}$/.test(createdStart)) ||
+    (createdEnd && !/^\d{4}-\d{2}-\d{2}$/.test(createdEnd)) ||
+    (receivedStart && !/^\d{4}-\d{2}-\d{2}$/.test(receivedStart)) ||
+    (receivedEnd && !/^\d{4}-\d{2}-\d{2}$/.test(receivedEnd)) ||
+    (dueStart && !/^\d{4}-\d{2}-\d{2}$/.test(dueStart)) ||
+    (dueEnd && !/^\d{4}-\d{2}-\d{2}$/.test(dueEnd))
+  ) {
+    throw new HttpError(400, "Invalid received date.");
+  }
+  const createdStartDate = createdStart ? new Date(`${createdStart}T00:00:00`) : null;
+  const createdEndExclusive = createdEnd ? new Date(`${createdEnd}T00:00:00`) : null;
+  const dueStartDate = dueStart ? new Date(`${dueStart}T00:00:00`) : null;
+  const dueEndExclusive = dueEnd ? new Date(`${dueEnd}T00:00:00`) : null;
+  if (createdEndExclusive) createdEndExclusive.setDate(createdEndExclusive.getDate() + 1);
+  if (dueEndExclusive) dueEndExclusive.setDate(dueEndExclusive.getDate() + 1);
+  if ((receivedStart && receivedEnd && receivedStart > receivedEnd) ||
+    (createdStartDate && createdEndExclusive && createdStartDate >= createdEndExclusive) ||
+    (dueStartDate && dueEndExclusive && dueStartDate >= dueEndExclusive)) {
+    throw new HttpError(400, "Date range end must not be before the start date.");
+  }
+
+  const parsedPage = Number.parseInt(String(req.query.page ?? "1"), 10) || 1;
+  if (parsedPage < 1 || parsedPage > 200) throw new HttpError(400, "Page must be between 1 and 200.");
+  const page = parsedPage;
+  const pageSize = Math.max(1, Math.min(Number.parseInt(String(req.query.pageSize ?? "50"), 10) || 50, 100));
+  const offset = (page - 1) * pageSize;
+  const requestedSort = String(req.query.sortKey ?? "createdAt");
+  const sortKey = ["createdAt", "caseNumber", "doctorName", "status", "dueDate", "totalPrice"].includes(requestedSort)
+    ? requestedSort
+    : "createdAt";
+  const sortDir = String(req.query.sortDir ?? "desc").toLowerCase() === "asc" ? "asc" : "desc";
+  if (!context.membershipOrgIds.length) {
+    return { rows: [], total: 0, salesTotal: "0.00", page, pageSize, hasMore: false };
+  }
+
+  const list = (items: string[]) => sql.join(items.map((item) => sql`${item}`), sql`, `);
+  const canonicalSearchDocument = sql`lower(
+    coalesce(c.case_number, '') || ' ' ||
+    coalesce(c.patient_first_name, '') || ' ' ||
+    coalesce(c.patient_last_name, '') || ' ' ||
+    coalesce(c.doctor_name, '') || ' ' ||
+    coalesce(c.case_pan_barcode, '')
+  )`;
+  const filters = [
+    ...(search ? [sql`(
+      lower(coalesce(case_number, '')) like ${`%${search}%`} or
+      lower(coalesce(patient_first_name, '')) like ${`%${search}%`} or
+      lower(coalesce(patient_last_name, '')) like ${`%${search}%`} or
+      lower(coalesce(patient_first_name, '') || ' ' || coalesce(patient_last_name, '')) like ${`%${search}%`} or
+      lower(coalesce(doctor_name, '')) like ${`%${search}%`} or
+      lower(coalesce(barcode, '')) like ${`%${search}%`}
+    )`] : []),
+    ...(barcode ? [sql`barcode = ${barcode}`] : []),
+    ...(statuses.length ? [sql`lower(status) in (${list(statuses)})`] : []),
+    ...(priorities.length ? [sql`lower(priority) in (${list(priorities)})`] : []),
+    ...(categories.length ? [sql`category in (${list(categories)})`] : []),
+    ...(taxonomyTypes.length ? [sql`taxonomy_type in (${list(taxonomyTypes)})`] : []),
+    ...(caseIds.length ? [sql`id in (${list(caseIds)})`] : []),
+    ...(doctorName ? [sql`lower(trim(doctor_name)) = ${doctorName}`] : []),
+    ...(providerOrganizationId ? [sql`provider_organization_id = ${providerOrganizationId}`] : []),
+    ...(openOnly ? [sql`lower(status) not in ('complete','delivered','cancelled')`] : []),
+    ...(overdueOnly ? [sql`lower(status) not in ('complete','delivered','cancelled') and due_day < ${overdueLocalDate}::date`] : []),
+    ...(receivedStart ? [sql`received_at >= ${receivedStart}`] : []),
+    ...(receivedEnd ? [sql`received_at <= ${receivedEnd}`] : []),
+    ...(createdStartDate ? [sql`created_at >= ${createdStartDate}`] : []),
+    ...(createdEndExclusive ? [sql`created_at < ${createdEndExclusive}`] : []),
+    ...(dueStartDate ? [sql`due_date >= ${dueStartDate}`] : []),
+    ...(dueEndExclusive ? [sql`due_date < ${dueEndExclusive}`] : []),
+    ...(conflictsOnly ? [sql`conflict_count > 1 and lower(status) not in ('complete','delivered','cancelled')`] : []),
+  ];
+  const whereSql = filters.length ? sql`where ${sql.join(filters, sql` and `)}` : sql``;
+  // Push cheap canonical predicates into the source scan as well as retaining
+  // the identical post-union predicate below. This avoids enriching rows that
+  // can be rejected using indexed columns.
+  const canonicalPushdown = conflictsOnly ? [] : [
+    ...(search ? [sql`${canonicalSearchDocument} like ${`%${search}%`}`] : []),
+    ...(barcode ? [sql`c.case_pan_barcode = ${barcode}`] : []),
+    ...(statuses.length ? [sql`lower(c.status) in (${list(statuses)})`] : []),
+    ...(priorities.length ? [sql`lower(c.priority) in (${list(priorities)})`] : []),
+    ...(caseIds.length ? [sql`c.id in (${list(caseIds)})`] : []),
+    ...(doctorName ? [sql`lower(trim(c.doctor_name)) = ${doctorName}`] : []),
+    ...(providerOrganizationId ? [sql`c.provider_organization_id = ${providerOrganizationId}`] : []),
+    ...(openOnly ? [sql`lower(c.status) not in ('complete','delivered','cancelled')`] : []),
+    ...(overdueOnly ? [sql`lower(c.status) not in ('complete','delivered','cancelled') and (coalesce(c.due_date, c.expected_delivery_date) at time zone 'UTC')::date < ${overdueLocalDate}::date`] : []),
+    ...(receivedStart ? [sql`c.received_at >= ${receivedStart}`] : []),
+    ...(receivedEnd ? [sql`c.received_at <= ${receivedEnd}`] : []),
+    ...(createdStartDate ? [sql`c.created_at >= ${createdStartDate}`] : []),
+    ...(createdEndExclusive ? [sql`c.created_at < ${createdEndExclusive}`] : []),
+    ...(dueStartDate ? [sql`c.due_date >= ${dueStartDate}`] : []),
+    ...(dueEndExclusive ? [sql`c.due_date < ${dueEndExclusive}`] : []),
+  ];
+  const canonicalPushdownSql = canonicalPushdown.length
+    ? sql`and ${sql.join(canonicalPushdown, sql` and `)}`
+    : sql``;
+  // Legacy projected rows use their compact trigram-indexed identity document
+  // for source pushdown. The post-union predicate remains authoritative and
+  // preserves the established per-field matching semantics.
+  const sortColumn: Record<string, ReturnType<typeof sql>> = {
+    createdAt: sql`created_at`,
+    caseNumber: sql`lower(case_number)`,
+    doctorName: sql`lower(doctor_name)`,
+    status: sql`lower(status)`,
+    dueDate: sql`due_date`,
+    totalPrice: sql`total_price`,
+  };
+  const direction = sortDir === "asc" ? sql`asc` : sql`desc`;
+  const invoicePrice = context.billingLabOrgIds.length
+    ? sql`case when c.lab_organization_id in (${list(context.billingLabOrgIds)}) then coalesce((
+        select i.total from invoices i
+        where i.case_id = c.id
+          and i.lab_organization_id = c.lab_organization_id
+          and i.status <> 'void'
+          and i.deleted_at is null
+        order by i.created_at desc
+        limit 1
+      ), rs.total_price, 0) else coalesce(rs.total_price, 0) end`
+    : sql`coalesce(rs.total_price, 0)`;
+
+  // Legacy candidates come from the projected columns the `lab_cases` trigger
+  // maintains, so this query never touches `case_data`. Rows the trigger has
+  // not reached yet are still read the old way, but only when such a row
+  // actually exists in the caller's labs — one indexed probe decides, and in
+  // the normal case the statement below contains no reference to the blob at
+  // all (asserted by cases-worklist-projection.test.ts).
+  const unprojectedProbe = await db.execute(
+    unprojectedLegacyProbeSql(context.membershipOrgIds),
+  );
+  const hasUnprojectedLegacy =
+    (((unprojectedProbe as unknown as { rows?: unknown[] }).rows ??
+      (unprojectedProbe as unknown as unknown[])) as unknown[]).length > 0;
+  const legacyCandidateSql = hasUnprojectedLegacy
+    ? sql`${legacyWorklistCandidateSql({
+        organizationIds: context.membershipOrgIds,
+        mode: "projected",
+        search: conflictsOnly ? undefined : search,
+      })}
+      union all
+      ${legacyWorklistCandidateSql({ organizationIds: context.membershipOrgIds, mode: "unprojected" })}`
+    : legacyWorklistCandidateSql({
+        organizationIds: context.membershipOrgIds,
+        mode: "projected",
+        search: conflictsOnly ? undefined : search,
+      });
+  const legacyConflictSourceSql = hasUnprojectedLegacy
+    ? sql`${legacyWorklistCandidateSql({
+        organizationIds: context.membershipOrgIds,
+        mode: "projected",
+      })}
+      union all
+      ${legacyWorklistCandidateSql({
+        organizationIds: context.membershipOrgIds,
+        mode: "unprojected",
+      })}`
+    : legacyWorklistCandidateSql({
+        organizationIds: context.membershipOrgIds,
+        mode: "projected",
+      });
+
+  const result = await db.execute(sql`
+    with restoration_summary as (
+      select cr.case_id,
+        coalesce(sum(case when lower(coalesce(cr.restoration_type, '')) = 'missing' then 0
+          else cr.quantity * cr.unit_price end), 0) as total_price,
+        case
+          when bool_or(lower(coalesce(cr.restoration_type, '') || ' ' || coalesce(cr.material, '') || ' ' || coalesce(cr.restoration_subtype, ''))
+            ~ '(implant|abutment|screw[- ]?retained|all[- ]?on[- ]?(4|6|x))') then 'implants'
+          when bool_or(lower(coalesce(cr.material, '')) ~ '(zirconia|bruxzir|brux|zirc|(^|[^a-z])zr([^a-z]|$)|bzr|pfz)') then 'zirconia'
+          when bool_or(lower(coalesce(cr.restoration_type, '') || ' ' || coalesce(cr.material, '') || ' ' || coalesce(cr.restoration_subtype, ''))
+            ~ '(crown|bridge|veneer|inlay|onlay|maryland|pontic|coping|lithium disilicate|(^|[^a-z])pfm([^a-z]|$)|gold|full cast|cast metal|semi precious)') then 'crown_bridge'
+          when bool_or(lower(coalesce(cr.restoration_type, '') || ' ' || coalesce(cr.material, '') || ' ' || coalesce(cr.restoration_subtype, ''))
+            ~ '(denture|partial|flipper|flexible|valplast|removable)') then 'removable'
+          when bool_or(trim(coalesce(cr.restoration_type, '') || coalesce(cr.material, '') || coalesce(cr.restoration_subtype, '')) <> '') then 'other'
+          else 'uncategorized'
+        end as category,
+        case
+          when split_part(coalesce((array_agg(cr.restoration_subtype order by cr.created_at, cr.id))[1], ''), '/', 1)
+            in ('restorative', 'removable', 'ortho')
+            then split_part((array_agg(cr.restoration_subtype order by cr.created_at, cr.id))[1], '/', 1)
+          when lower(coalesce((array_agg(cr.restoration_type order by cr.created_at, cr.id))[1], ''))
+            ~ '(denture|partial|flipper|flexible|valplast|removable)' then 'removable'
+          when lower(coalesce((array_agg(cr.restoration_type order by cr.created_at, cr.id))[1], ''))
+            ~ '(night.?guard|retainer|splint|bleach.?tray|hawley|space.?maintainer|ortho|appliance)' then 'ortho'
+          else 'restorative'
+        end as taxonomy_type
+      from case_restorations cr
+      join cases c_scope on c_scope.id = cr.case_id
+      where c_scope.deleted_at is null
+        and (c_scope.lab_organization_id in (${list(context.membershipOrgIds)})
+          or c_scope.provider_organization_id in (${list(context.membershipOrgIds)}))
+      group by cr.case_id
+    ),
+    canonical as (
+      select c.id, 0 as source_rank, 'canonical'::text as source,
+        c.lab_organization_id, c.provider_organization_id, c.case_number,
+        c.patient_first_name, c.patient_last_name, c.doctor_name,
+        lower(c.status) as status, lower(c.priority) as priority,
+         c.case_pan_barcode as barcode, c.created_at, c.received_at, c.due_date,
+        case when c.remake_of_case_id is not null and c.remake_charged is false
+          then 0 else ${invoicePrice}::numeric end as total_price,
+        coalesce(rs.category, 'uncategorized') as category,
+        rs.taxonomy_type as taxonomy_type,
+        (coalesce(c.due_date, c.expected_delivery_date) at time zone 'UTC')::date as due_day
+      from cases c left join restoration_summary rs on rs.case_id = c.id
+      where c.deleted_at is null
+        and (c.lab_organization_id in (${list(context.membershipOrgIds)})
+          or c.provider_organization_id in (${list(context.membershipOrgIds)}))
+         ${canonicalPushdownSql}
+    ),
+    legacy as (
+      select legacy_source.*,
+        (legacy_source.due_date at time zone 'UTC')::date as due_day
+      from (${legacyCandidateSql}) legacy_source
+    ),
+    deduplicated as (
+      select * from (
+        select u.*, row_number() over (partition by id order by source_rank) as id_rank
+        from (select * from canonical union all select * from legacy) u
+      ) ranked where id_rank = 1
+    ),
+    conflict_keys as (
+      select distinct lab_organization_id, barcode
+      from deduplicated
+      where barcode is not null and trim(barcode) <> ''
+    ),
+    barcode_conflict_counts as (
+      select conflict_rows.lab_organization_id, conflict_rows.barcode,
+        count(*)::integer as conflict_count
+      from (
+        select c.lab_organization_id, c.case_pan_barcode as barcode
+        from cases c
+        join conflict_keys keys
+          on keys.lab_organization_id = c.lab_organization_id
+          and keys.barcode = c.case_pan_barcode
+        where c.deleted_at is null
+          and (c.lab_organization_id in (${list(context.membershipOrgIds)})
+            or c.provider_organization_id in (${list(context.membershipOrgIds)}))
+          and lower(c.status) not in ('complete','delivered','cancelled')
+        union all
+        select legacy_conflict_source.lab_organization_id, legacy_conflict_source.barcode
+        from (${legacyConflictSourceSql}) legacy_conflict_source
+        join conflict_keys keys
+          on keys.lab_organization_id = legacy_conflict_source.lab_organization_id
+          and keys.barcode = legacy_conflict_source.barcode
+        where legacy_conflict_source.barcode is not null
+          and trim(legacy_conflict_source.barcode) <> ''
+          and lower(legacy_conflict_source.status) not in ('complete','delivered','cancelled')
+      ) conflict_rows
+      group by conflict_rows.lab_organization_id, conflict_rows.barcode
+    ),
+    with_conflicts as (
+      select d.*, coalesce(conflicts.conflict_count, 0) as conflict_count
+      from deduplicated d
+      left join barcode_conflict_counts conflicts
+        on conflicts.lab_organization_id = d.lab_organization_id
+        and conflicts.barcode = d.barcode
+    ),
+    filtered as (select * from with_conflicts ${whereSql}),
+    page_rows as (
+      select id, source, source_rank, total_price, conflict_count,
+        row_number() over (order by ${sortColumn[sortKey]!} ${direction} nulls last, id asc) as page_order
+      from filtered
+      order by ${sortColumn[sortKey]!} ${direction} nulls last, id asc
+      limit ${pageSize} offset ${offset}
+    ),
+    totals as (
+      select count(*)::integer as total,
+        coalesce(sum(total_price), 0)::numeric as sales_total
+      from filtered
+    )
+    select p.id, p.source, p.total_price, p.conflict_count, t.total, t.sales_total
+    from totals t left join page_rows p on true
+    order by p.page_order
+  `);
+  const queryRows = ((result as unknown as { rows?: any[] }).rows ?? result) as any[];
+  const total = Number(queryRows[0]?.total ?? 0);
+  const salesTotal = Number(queryRows[0]?.sales_total ?? 0).toFixed(2);
+  const pageCandidates = queryRows.filter((row) => row.id);
+  const projectedPriceById = new Map(
+    pageCandidates.map((row) => [String(row.id), Number(row.total_price ?? 0).toFixed(2)]),
+  );
+  const canonicalIds = pageCandidates.filter((row) => row.source === "canonical").map((row) => String(row.id));
+  const legacyIds = pageCandidates.filter((row) => row.source === "legacy").map((row) => String(row.id));
+  const [canonicalRows, legacyRows, restorations] = await Promise.all([
+    canonicalIds.length ? db.query.cases.findMany({ where: inArray(cases.id, canonicalIds), columns: caseListColumns }) : [],
+    legacyIds.length ? db.select(legacyCaseListColumns).from(labCases).where(inArray(labCases.id, legacyIds)) : [],
+    canonicalIds.length ? db.query.caseRestorations.findMany({
+      where: inArray(caseRestorations.caseId, canonicalIds),
+      columns: caseListRestorationColumns,
+    }) : [],
+  ]);
+  const restorationMap = new Map<string, any[]>();
+  for (const restoration of restorations) {
+    const items = restorationMap.get(restoration.caseId) ?? [];
+    items.push(restoration);
+    restorationMap.set(restoration.caseId, items);
+  }
+  const rowsById = new Map<string, any>();
+  for (const row of canonicalRows as any[]) {
+    const items = restorationMap.get(row.id) ?? [];
+    const billable = items.filter((item) => !/^missing$/i.test(item.restorationType ?? ""));
+    const restorationPrice = billable.reduce((sum, item) => sum + Number(item.quantity ?? 0) * Number(item.unitPrice ?? 0), 0);
+    rowsById.set(row.id, {
+      ...row,
+      remakeNotes: context.callerLabOrgSet.has(row.labOrganizationId) ? row.remakeNotes ?? null : null,
+      caseNotes: row.rxNotes ?? null,
+      restorationCount: billable.length,
+      restorationTypes: Array.from(new Set(billable.map((item) => item.restorationType).filter(Boolean))).join(", ") || null,
+      restorationMaterials: Array.from(new Set(billable.map((item) => item.material).filter(Boolean))).join(", ") || null,
+      firstRestorationSubtype: billable[0]?.restorationSubtype ?? null,
+      teeth: billable.map((item) => item.toothNumber).filter(Boolean).join(", ") || null,
+      totalPrice: projectedPriceById.get(row.id) ?? restorationPrice.toFixed(2),
+      ...(context.includeRestorations ? { restorations: items } : {}),
+    });
+  }
+  // Legacy rows are built from the projected summary the trigger keeps in
+  // step with `case_data`. Only rows whose projection is missing or outdated
+  // still have their blob fetched and parsed here.
+  const legacyProjections = (legacyRows as LegacyCaseListRow[]).map((row) => ({
+    row,
+    resolved: resolveLegacyProjection(row),
+  }));
+  const unprojectedLegacyIds = legacyProjections
+    .filter((entry) => entry.resolved.status === "unprojected")
+    .map((entry) => String(entry.row.id));
+  const legacyBlobRows = unprojectedLegacyIds.length
+    ? await db.select(legacyCaseBlobColumns).from(labCases).where(inArray(labCases.id, unprojectedLegacyIds))
+    : [];
+  const legacyBlobById = new Map(
+    (legacyBlobRows as { id: string; caseData: string }[]).map((row) => [String(row.id), row.caseData]),
+  );
+  for (const { row, resolved } of legacyProjections) {
+    const price = projectedPriceById.get(String(row.id));
+    if (resolved.status === "ready") {
+      rowsById.set(row.id, buildWorklistLegacyRow(row, resolved.parsed, price));
+      continue;
+    }
+    // A blob that parses to JSON null threw on property access before, and
+    // still resolves to the same unreadable-row shape.
+    if (resolved.status === "json-null") {
+      rowsById.set(row.id, buildWorklistUnreadableLegacyRow(row));
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(legacyBlobById.get(String(row.id)) ?? "");
+      rowsById.set(row.id, buildWorklistLegacyRow(row, parsed, price));
+    } catch {
+      rowsById.set(row.id, buildWorklistUnreadableLegacyRow(row));
+    }
+  }
+  const orderedRows = pageCandidates
+    .map((candidate) => {
+      const row = rowsById.get(String(candidate.id));
+      return row
+        ? { ...row, hasBarcodeConflict: Number(candidate.conflict_count ?? 0) > 1 }
+        : null;
+    })
+    .filter(Boolean);
+
+  // All remaining lookups are strictly page-ID bounded.
+  const providerIds = Array.from(new Set(orderedRows.map((row) => row.providerOrganizationId).filter(Boolean))) as string[];
+  const locationIds = Array.from(new Set(orderedRows.map((row) => row.labLocationId).filter(Boolean))) as string[];
+  const labVisibleIds = orderedRows.filter((row) => context.callerLabOrgSet.has(row.labOrganizationId)).map((row) => String(row.id));
+  const [providerRows, locationRows, exceptions] = await Promise.all([
+    providerIds.length
+      ? db.select({ id: organizations.id, accountNumber: organizations.accountNumber }).from(organizations).where(inArray(organizations.id, providerIds))
+      : [],
+    locationIds.length
+      ? db.select({ id: labLocations.id, name: labLocations.name, labOrganizationId: labLocations.labOrganizationId })
+          .from(labLocations).where(inArray(labLocations.id, locationIds))
+      : [],
+    labVisibleIds.length ? fetchActiveExceptionsForCaseIds(labVisibleIds) : new Map(),
+  ]);
+  const providerMap = new Map((providerRows as any[]).map((row) => [row.id, row.accountNumber ?? null]));
+  const locationMap = new Map((locationRows as any[]).map((row) => [`${row.labOrganizationId}:${row.id}`, row.name]));
+  for (const row of orderedRows) {
+    row.providerAccountNumber = providerMap.get(row.providerOrganizationId) ?? null;
+    const locationName = row.labLocationId ? locationMap.get(`${row.labOrganizationId}:${row.labLocationId}`) : null;
+    row.labLocationId = locationName ? row.labLocationId : null;
+    row.labLocationName = locationName ?? null;
+    row.activeException = context.callerLabOrgSet.has(row.labOrganizationId) ? exceptions.get(String(row.id)) ?? null : null;
+    row.hasActiveException = row.activeException !== null;
+  }
+  return { rows: orderedRows, total, salesTotal, page, pageSize, hasMore: offset + orderedRows.length < total };
+}
+
 router.get(
-  "/",
+  "/customer-center-summary",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const memberships = await db.query.organizationMemberships.findMany({
+      where: and(
+        eq(organizationMemberships.userId, callerId),
+        eq(organizationMemberships.status, "active"),
+        isNull(organizationMemberships.deletedAt),
+      ),
+      columns: { labId: true },
+    });
+    const authorizedIds = new Set(memberships.map((membership) => membership.labId));
+    const caller = await db.query.users.findFirst({
+      where: eq(users.id, callerId),
+      columns: { userType: true },
+    });
+    if (caller?.userType === "provider") {
+      const linked = await getProviderOrgIdsForUserAndLinks(callerId);
+      linked.providerOrgIds.forEach((id) => authorizedIds.add(id));
+    }
+    const scope = Array.from(authorizedIds);
+    if (scope.length === 0) return ok(res, []);
+
+    const [caseRows, invoiceRows] = await Promise.all([
+      db
+        .select({ providerOrganizationId: cases.providerOrganizationId })
+        .from(cases)
+        .where(and(
+          isNull(cases.deletedAt),
+          or(
+            inArray(cases.labOrganizationId, scope),
+            inArray(cases.providerOrganizationId, scope),
+          ),
+        )),
+      db
+        .select({
+          id: invoices.id,
+          providerOrganizationId: invoices.providerOrganizationId,
+          total: invoices.total,
+          balanceDue: invoices.balanceDue,
+          status: invoices.status,
+        })
+        .from(invoices)
+        .where(and(
+          isNull(invoices.deletedAt),
+          or(
+            inArray(invoices.labOrganizationId, scope),
+            inArray(invoices.providerOrganizationId, scope),
+          ),
+        )),
+    ]);
+    const depositedRows = invoiceRows.length
+      ? await db
+          .select({ invoiceId: bankTransactionInvoices.invoiceId })
+          .from(bankTransactionInvoices)
+          .where(inArray(
+            bankTransactionInvoices.invoiceId,
+            invoiceRows.map((invoice) => invoice.id),
+          ))
+      : [];
+    const depositedIds = new Set(depositedRows.map((row) => row.invoiceId));
+    type Summary = {
+      caseCount: number;
+      openBalance: number;
+      totalBilled: number;
+      invoiceCount: number;
+      allPaid: boolean;
+      allDeposited: boolean;
+      anyOverdue: boolean;
+    };
+    const empty = (): Summary => ({
+      caseCount: 0,
+      openBalance: 0,
+      totalBilled: 0,
+      invoiceCount: 0,
+      allPaid: true,
+      allDeposited: true,
+      anyOverdue: false,
+    });
+    const byPractice = new Map<string, Summary>();
+    for (const row of caseRows) {
+      if (!row.providerOrganizationId) continue;
+      const stats = byPractice.get(row.providerOrganizationId) ?? empty();
+      stats.caseCount += 1;
+      byPractice.set(row.providerOrganizationId, stats);
+    }
+    for (const invoice of invoiceRows) {
+      if (!invoice.providerOrganizationId) continue;
+      const stats = byPractice.get(invoice.providerOrganizationId) ?? empty();
+      stats.totalBilled += Number(invoice.total ?? 0);
+      stats.openBalance += Number(invoice.balanceDue ?? 0);
+      if (invoice.status !== "void") {
+        stats.invoiceCount += 1;
+        if (invoice.status !== "paid") stats.allPaid = false;
+        if (!depositedIds.has(invoice.id)) stats.allDeposited = false;
+        if (invoice.status === "overdue") stats.anyOverdue = true;
+      }
+      byPractice.set(invoice.providerOrganizationId, stats);
+    }
+    return ok(res, Array.from(byPractice, ([providerOrganizationId, stats]) => ({
+      providerOrganizationId,
+      ...stats,
+    })));
+  }),
+);
+
+router.get(
+  ["/", "/worklist", "/overview"],
   asyncHandler(async (req, res) => {
     const organizationId = req.query.organizationId as string | undefined;
+    const isWorklistRequest = req.path.endsWith("/worklist");
     const include = String(req.query.include ?? "")
       .split(",")
       .map((s) => s.trim())
@@ -4422,18 +7387,31 @@ router.get(
     // direct active memberships plus, for provider users, every cross-lab
     // linked-doctor provider org (Task #320). This is the isolation boundary —
     // a case is only ever returned when its lab or provider org is in this set.
-    const directMembershipOrgIds = (
-      await db.query.organizationMemberships.findMany({
-        where: and(
-          eq(organizationMemberships.userId, callerId),
-          eq(organizationMemberships.status, "active"),
-          isNull(organizationMemberships.deletedAt)
-        ),
-      })
-    ).map((m: any) => m.labId as string);
+    const directMemberships = await db.query.organizationMemberships.findMany({
+      where: and(
+        eq(organizationMemberships.userId, callerId),
+        eq(organizationMemberships.status, "active"),
+        isNull(organizationMemberships.deletedAt)
+      ),
+      columns: {
+        labId: true,
+        role: true,
+      },
+    });
+    const directMembershipOrgIds = directMemberships.map((m: any) => m.labId as string);
+    // Invoice totals are visible only for labs where the caller has a billing
+    // role. Provider-linked access to another lab's cases is not billing access.
+    const billingLabOrgIds = directMemberships
+      .filter((m: any) => BILLING_ROLES.includes(m.role))
+      .map((m: any) => m.labId as string);
+    const billingLabOrgSet = new Set(billingLabOrgIds);
+    // Lab org IDs the caller has direct membership in — used to decide whether
+    // to surface lab-internal fields (e.g. remakeNotes) vs redact for providers.
+    const callerLabOrgSet = new Set<string>(directMembershipOrgIds);
     const authorizedOrgIds = new Set<string>(directMembershipOrgIds);
     const callerUser = await db.query.users.findFirst({
       where: eq(users.id, callerId),
+      columns: { userType: true },
     });
     if (callerUser?.userType === "provider") {
       const { providerOrgIds } =
@@ -4455,45 +7433,183 @@ router.get(
       membershipOrgIds = Array.from(authorizedOrgIds);
     }
 
-    // Status map: mobile legacy → desktop format.
-    // Must stay in sync with the module-level MOBILE_TO_DESKTOP_STATUS used by
-    // tryProjectLegacyCaseForDesktop — a divergence here causes the list view to
-    // show a different location than the detail view for the same case.
-    const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
-      INTAKE: "received",
-      DESIGN: "in_design",
-      SCAN: "scan",
-      MILLING: "in_milling",
-      POST_MILL: "post_mill",
-      SINTERING_FURNACE: "sintering_furnace",
-      MODEL_ROOM: "model_room",
-      PORCELAIN: "in_porcelain",
-      QC_CHECK: "qc",
-      COMPLETE: "complete",
-      DELIVERY: "shipped",
-      ON_HOLD: "on_hold",
-      REMAKE: "remake",
-    };
+    if (req.path.endsWith("/overview")) {
+      const parsed = GetCasesOverviewQueryParams.safeParse(req.query);
+      if (!parsed.success || !isValidCalendarDate(parsed.data.localDate)) {
+        throw new HttpError(400, "A valid localDate (YYYY-MM-DD) and localTime (HH:mm) are required.");
+      }
+      const counts = await getCasesOverview(membershipOrgIds, parsed.data.localDate, parsed.data.localTime);
+      return ok(res, GetCasesOverview200Response.parse({ data: counts }).data);
+    }
 
-    const [rows, mobileRows] = await Promise.all([
+    if (isWorklistRequest) {
+      return ok(res, await getCasesWorklist(req, {
+        membershipOrgIds,
+        billingLabOrgIds,
+        callerLabOrgSet,
+        includeRestorations,
+      }));
+    }
+
+    // Keep the legacy array endpoint's historical response by default. The
+    // shared parser makes limit/offset opt-in and rejects malformed values
+    // instead of silently falling back to an unpaged response.
+    const pagination = parsePagination(req.query);
+
+    const queryValues = (name: string) =>
+      (Array.isArray(req.query[name]) ? req.query[name] : String(req.query[name] ?? "").split(","))
+        .flatMap((value) => String(value).split(","))
+        .map((value) => value.trim())
+        .filter(Boolean);
+    // A list is deliberately an on-demand worklist.  Do this after auth/org
+    // validation so a broad request cannot be used to probe tenant membership.
+    const rawSearch = String(req.query.search ?? "").trim().toLowerCase();
+    const rawBarcode = String(req.query.barcode ?? "").trim();
+    const statuses = queryValues("status").map((value) => value.toLowerCase());
+    const priorities = queryValues("priority").map((value) => value.toLowerCase());
+    const categories = queryValues("caseType").concat(queryValues("category")).map((value) => value.toLowerCase());
+    const importedCaseIds = queryValues("caseId").concat(queryValues("caseIds"));
+    const conflictsOnly = ["true", "1"].includes(String(req.query.conflictsOnly ?? "").toLowerCase());
+    const createdStart = String(req.query.createdStart ?? "").trim();
+    const createdEnd = String(req.query.createdEnd ?? "").trim();
+    const rawDoctorName = String(req.query.doctorName ?? "").trim().toLowerCase();
+    const rawProviderOrgId = String(req.query.providerOrganizationId ?? "").trim();
+    const rawOpenOnly = String(req.query.openOnly ?? "").trim().toLowerCase();
+    if (isWorklistRequest && ((createdStart && !createdEnd) || (!createdStart && createdEnd))) {
+      throw new HttpError(400, "Both createdStart and createdEnd are required for a bounded created-date range.");
+    }
+    if (isWorklistRequest &&
+      (createdStart && !/^\d{4}-\d{2}-\d{2}$/.test(createdStart)) ||
+      (createdEnd && !/^\d{4}-\d{2}-\d{2}$/.test(createdEnd))
+    ) {
+      throw new HttpError(400, "Invalid created date.");
+    }
+    const requestedPage = Number.parseInt(String(req.query.page ?? "1"), 10) || 1;
+    if (isWorklistRequest && (requestedPage < 1 || requestedPage > 200)) {
+      throw new HttpError(400, "Page must be between 1 and 200.");
+    }
+    const page = Math.max(1, Math.min(requestedPage, 200));
+    const pageSize = Math.max(1, Math.min(Number.parseInt(String(req.query.pageSize ?? "50"), 10) || 50, 100));
+    // Candidate retrieval is bounded even for a high requested page. This is a
+    // deliberate offset-pagination ceiling; clients needing deeper history must
+    // refine criteria instead of turning the list into an unbounded export.
+    const candidateLimit = Math.min(page * pageSize, 20_000);
+    const sortKey = String(req.query.sortKey ?? "createdAt");
+    const sortDir = String(req.query.sortDir ?? "desc").toLowerCase() === "asc" ? "asc" : "desc";
+
+    // Tenant + not-deleted scoping shared by every canonical branch below, so
+    // the always-open query can never widen the isolation boundary.
+    const canonicalScope = and(
+      or(
+        inArray(cases.labOrganizationId, membershipOrgIds),
+        inArray(cases.providerOrganizationId, membershipOrgIds)
+      ),
+      notDeleted(cases)
+    );
+    // The dedicated worklist must narrow canonical rows in SQL before any
+    // projection/enrichment.  Legacy blobs are handled below after projection,
+    // but their candidate query remains tenant-scoped and bounded by paging.
+    const canonicalWorklistPredicates = isWorklistRequest
+      ? [
+          ...(rawBarcode ? [eq(cases.casePanBarcode, rawBarcode)] : []),
+          ...(statuses.length ? [inArray(cases.status, statuses)] : []),
+          ...(priorities.length ? [inArray(cases.priority, priorities)] : []),
+          ...(importedCaseIds.length ? [inArray(cases.id, importedCaseIds)] : []),
+          ...(createdStart ? [gte(cases.createdAt, new Date(`${createdStart}T00:00:00`))] : []),
+          ...(createdEnd ? [lte(cases.createdAt, new Date(`${createdEnd}T23:59:59.999`))] : []),
+          ...(categories.length
+            ? [sql`exists (select 1 from case_restorations worklist_cr
+                 where worklist_cr.case_id = ${cases.id}
+                 and (${sql.raw(categories.map((category) => {
+                   if (category === "implants") return "(lower(coalesce(worklist_cr.restoration_type, '')) like '%implant%' or lower(coalesce(worklist_cr.restoration_type, '')) like '%abutment%')";
+                   if (category === "removable") return "lower(coalesce(worklist_cr.restoration_type, '')) ~ '(denture|partial|flipper|flexible|valplast|removable)'";
+                   if (category === "zirconia") return "lower(coalesce(worklist_cr.material, '')) ~ '(zirconia|bruxzir|brux|zirc|pfz)'";
+                   if (category === "crown_bridge") return "lower(coalesce(worklist_cr.restoration_type, '') || ' ' || coalesce(worklist_cr.material, '')) ~ '(crown|bridge|veneer|inlay|onlay|maryland|pontic|coping|pfm|lithium)'";
+                   return "(coalesce(worklist_cr.restoration_type, '') <> '' or coalesce(worklist_cr.material, '') <> '')";
+                 }).join(" or "))}) )`]
+            : []),
+          ...(conflictsOnly
+            ? [sql`exists (select 1 from cases worklist_conflict
+                 where worklist_conflict.lab_organization_id = ${cases.labOrganizationId}
+                   and worklist_conflict.case_pan_barcode = ${cases.casePanBarcode}
+                   and worklist_conflict.id <> ${cases.id}
+                   and worklist_conflict.deleted_at is null
+                   and lower(worklist_conflict.status) not in ('complete', 'delivered', 'cancelled'))`]
+            : []),
+        ]
+      : [];
+    // Counts are scalar DB queries, separate from bounded candidate retrieval.
+    // They deliberately run before enrichment, which is reserved for rows that
+    // actually reach the page response.
+    const worklistCounts = isWorklistRequest
+      ? await Promise.all([
+          db.select({ total: count() }).from(cases).where(and(
+            canonicalScope,
+            ...canonicalWorklistPredicates,
+            ...(rawSearch ? [or(
+              ilike(cases.caseNumber, `%${rawSearch}%`),
+              ilike(cases.patientFirstName, `%${rawSearch}%`),
+              ilike(cases.patientLastName, `%${rawSearch}%`),
+              ilike(cases.doctorName, `%${rawSearch}%`),
+              ilike(cases.casePanBarcode, `%${rawSearch}%`),
+            )] : []),
+          )),
+          db.select({ total: count() }).from(labCases).where(and(
+            isNull(labCases.deletedAt),
+            inArray(labCases.organizationId, membershipOrgIds),
+            ...(rawSearch ? [ilike(labCases.caseData, `%${rawSearch}%`)] : []),
+            ...(rawBarcode ? [ilike(labCases.caseData, `%"assignedBarcode":"${rawBarcode}"%`)] : []),
+            ...(importedCaseIds.length ? [inArray(labCases.id, importedCaseIds)] : []),
+          )),
+        ])
+      : null;
+
+    const [recentRows, openRows, mobileRows] = await Promise.all([
       membershipOrgIds.length
-        ? db.query.cases.findMany({
-            where: and(
-              or(
-                inArray(cases.labOrganizationId, membershipOrgIds),
-                inArray(cases.providerOrganizationId, membershipOrgIds)
+        ? pagination.active
+          ? db.query.cases.findMany({
+              where: canonicalScope,
+              orderBy: [desc(cases.createdAt)],
+              columns: caseListColumns,
+            })
+          : rawSearch
+          ? db.query.cases.findMany({
+              where: and(
+                canonicalScope,
+                or(
+                  ilike(cases.caseNumber, `%${rawSearch}%`),
+                  ilike(cases.patientFirstName, `%${rawSearch}%`),
+                  ilike(cases.patientLastName, `%${rawSearch}%`),
+                  sql`lower(${cases.patientFirstName} || ' ' || ${cases.patientLastName}) like ${'%' + rawSearch + '%'}`,
+                  ilike(cases.doctorName, `%${rawSearch}%`),
+                  ilike(cases.casePanBarcode, `%${rawSearch}%`),
+                )
               ),
-              notDeleted(cases)
-            ),
+              orderBy: [desc(cases.createdAt)],
+              columns: caseListColumns,
+            })
+          : db.query.cases.findMany({
+              where: canonicalScope,
+              orderBy: [desc(cases.createdAt)],
+              limit: RECENT_CASE_LIMIT,
+              columns: caseListColumns,
+            })
+        : Promise.resolve([]),
+      // Every OPEN case, however old. The most-recent window above silently
+      // hid open cases for high-volume labs (a case due today could sit past
+      // the 500th row by recency and never reach the dashboard). Completed /
+      // delivered / cancelled cases stay bounded by the window above.
+      membershipOrgIds.length && !rawSearch && !pagination.active
+        ? db.query.cases.findMany({
+            where: and(canonicalScope, openCaseStatusFilter),
             orderBy: [desc(cases.createdAt)],
-            // Cap at 500 most-recent cases to bound query duration and release
-            // the DB connection sooner, reducing pool pressure on concurrent POSTs.
-            limit: 500,
+            limit: OPEN_CASE_SAFETY_LIMIT,
+            columns: caseListColumns,
           })
         : Promise.resolve([]),
       membershipOrgIds.length
         ? db
-            .select()
+            .select(legacyCaseListColumns)
             .from(labCases)
             .where(
               and(
@@ -4504,18 +7620,60 @@ router.get(
         : Promise.resolve([]),
     ]);
 
+    const rows = mergeCaseRowsNewestFirst(recentRows as any[], openRows as any[]);
+
     const caseIds = rows.map((r: any) => r.id);
-    const restorations = caseIds.length
-      ? await db.query.caseRestorations.findMany({
-          where: inArray(caseRestorations.caseId, caseIds),
-        })
-      : [];
+    const [restorations, invoiceRows] = await Promise.all([
+      caseIds.length
+        ? db.query.caseRestorations.findMany({
+            where: inArray(caseRestorations.caseId, caseIds),
+            columns: caseListRestorationColumns,
+          })
+        : Promise.resolve([]),
+      // Batch-fetch invoice totals only for billing callers so the Price
+      // column reflects manually-edited invoice line items rather than the
+      // restoration-sum (which may lag after an invoice is edited in the editor).
+      billingLabOrgIds.length && caseIds.length
+        ? db
+            .select({ caseId: invoices.caseId, total: invoices.total })
+            .from(invoices)
+            .where(and(
+              inArray(invoices.caseId, caseIds),
+              inArray(invoices.labOrganizationId, billingLabOrgIds),
+              isNull(invoices.deletedAt),
+              sql`${invoices.status} <> 'void'`,
+            ))
+            .orderBy(desc(invoices.createdAt))
+        : Promise.resolve([]),
+    ]);
     const byCase = new Map<string, typeof restorations>();
     for (const r of restorations) {
       const list = byCase.get(r.caseId) ?? [];
       list.push(r);
       byCase.set(r.caseId, list);
     }
+    // Keep the newest non-void invoice per case, matching the worklist query.
+    const invoiceTotalMap = new Map<string, string>();
+    for (const inv of invoiceRows as { caseId: string | null; total: string | null }[]) {
+      if (inv.caseId && inv.total != null && !invoiceTotalMap.has(inv.caseId)) {
+        invoiceTotalMap.set(inv.caseId, inv.total);
+      }
+    }
+    // Batch-fetch provider org account numbers so clients can display them
+    // next to doctor names without an extra round-trip per case.
+    const uniqueProvOrgIds = Array.from(
+      new Set(rows.map((r: any) => r.providerOrganizationId).filter(Boolean))
+    ) as string[];
+    const provOrgAccountRows = uniqueProvOrgIds.length
+      ? await db
+          .select({ id: organizations.id, accountNumber: organizations.accountNumber })
+          .from(organizations)
+          .where(inArray(organizations.id, uniqueProvOrgIds))
+      : [];
+    const orgAccountMap = new Map(
+      provOrgAccountRows.map((o) => [o.id, o.accountNumber ?? null])
+    );
+
     const enriched: any[] = rows.map((row: any) => {
       const items = byCase.get(row.id) ?? [];
       // Exclude "missing" markers from display metadata — they are clinical
@@ -4529,87 +7687,166 @@ router.get(
       const materials = Array.from(
         new Set(billableItems.map((i: any) => i.material).filter(Boolean))
       ).join(", ");
-      const price = billableItems.reduce(
+      const restorationPrice = billableItems.reduce(
         (sum: number, i: any) =>
           sum + Number(i.quantity ?? 0) * Number(i.unitPrice ?? 0),
         0
       );
+      // For lab billing callers: use the live invoice total so manually-edited
+      // invoice lines are reflected immediately. Fall back to restoration-sum
+      // if no invoice has been created yet.
+      const invoiceTotal = invoiceTotalMap.get(row.id);
+      const totalPrice =
+        billingLabOrgSet.has(row.labOrganizationId) && invoiceTotal != null
+          ? Number(invoiceTotal).toFixed(2)
+          : restorationPrice.toFixed(2);
       return {
         ...row,
+        // remakeNotes is lab-member-only — redact for provider/practice callers.
+        remakeNotes: callerLabOrgSet.has(row.labOrganizationId) ? (row.remakeNotes ?? null) : null,
         caseNotes: (row as any).rxNotes ?? null,
         restorationCount: billableItems.length,
         restorationTypes: types || null,
         restorationMaterials: materials || null,
+        // The encoded subtype of the first restoration — used by the desktop
+        // case-list type filter to categorise the case via deriveCaseHierarchy.
+        firstRestorationSubtype: billableItems[0]?.restorationSubtype ?? null,
         teeth: teeth || null,
-        totalPrice: price.toFixed(2),
+        totalPrice,
+        providerAccountNumber: orgAccountMap.get(row.providerOrganizationId) ?? null,
         ...(includeRestorations ? { restorations: items } : {}),
       };
     });
 
     // Bridge mobile cases into the desktop list so users see everything
-    // regardless of which platform they used to create the case.
+    // regardless of which platform they used to create the case. Their
+    // display values come from the projection the `lab_cases` trigger keeps
+    // in step with `case_data`; only rows it has not reached yet have their
+    // blob fetched and parsed here, so the common path never loads a blob.
     const desktopIdSet = new Set(rows.map((r: any) => r.id));
-    for (const mr of mobileRows) {
-      if (desktopIdSet.has(mr.id)) continue;
+    const bridgeRows = (mobileRows as LegacyCaseListRow[])
+      .filter((mr) => !desktopIdSet.has(mr.id))
+      .map((mr) => ({ mr, resolved: resolveLegacyProjection(mr) }));
+    const unprojectedBridgeIds = bridgeRows
+      .filter((entry) => entry.resolved.status === "unprojected")
+      .map((entry) => String(entry.mr.id));
+    const bridgeBlobRows = unprojectedBridgeIds.length
+      ? await db.select(legacyCaseBlobColumns).from(labCases).where(inArray(labCases.id, unprojectedBridgeIds))
+      : [];
+    const bridgeBlobById = new Map(
+      (bridgeBlobRows as { id: string; caseData: string }[]).map((row) => [String(row.id), row.caseData]),
+    );
+    for (const { mr, resolved } of bridgeRows) {
+      // Anything that is not a JSON object or array was skipped before
+      // (`!parsed || typeof parsed !== "object"`) and still is.
+      if (resolved.status === "json-null") continue;
+      if (resolved.status === "ready") {
+        if (!resolved.objectLike) continue;
+        enriched.push(buildArrayLegacyRow(mr, resolved.parsed, { paginationActive: pagination.active }));
+        continue;
+      }
       try {
-        const parsed = typeof mr.caseData === "string" ? JSON.parse(mr.caseData) : mr.caseData;
+        const raw = bridgeBlobById.get(String(mr.id));
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
         if (!parsed || typeof parsed !== "object") continue;
-        const patientName = String(parsed.patientName ?? "");
-        const spaceIdx = patientName.indexOf(" ");
-        const firstName = spaceIdx >= 0 ? patientName.slice(0, spaceIdx) : patientName;
-        const lastName = spaceIdx >= 0 ? patientName.slice(spaceIdx + 1) : "";
-        const rawStatus = String(parsed.status ?? "INTAKE").toUpperCase();
-        const desktopStatus = MOBILE_TO_DESKTOP_STATUS[rawStatus] ?? "received";
-        const createdAt = parsed.createdAt
-          ? new Date(Number(parsed.createdAt)).toISOString()
-          : new Date().toISOString();
-        const updatedAt = parsed.updatedAt
-          ? new Date(Number(parsed.updatedAt)).toISOString()
-          : createdAt;
-        // Synthesize a received timestamp for legacy/mobile cases (no real
-        // received_at column). Mirror the desktop-promotion path, which uses
-        // the row's updatedAt as the received date, and fall back to the
-        // created date so the desktop date-range filter never silently drops
-        // a case that lacks an explicit received timestamp.
-        const receivedAt = mr.updatedAt
-          ? new Date(mr.updatedAt).toISOString()
-          : updatedAt ?? createdAt;
-        enriched.push({
-          id: mr.id,
-          caseNumber: String(parsed.caseNumber ?? ""),
-          labOrganizationId: mr.organizationId ?? null,
-          providerOrganizationId: null,
-          patientFirstName: firstName,
-          patientLastName: lastName,
-          doctorName: String(parsed.doctorName ?? ""),
-          status: desktopStatus,
-          priority: parsed.isRush ? "rush" : "normal",
-          dueDate: parsed.dueDate ?? null,
-          createdByUserId: mr.ownerId,
-          createdAt,
-          updatedAt,
-          receivedAt,
-          restorationCount: 0,
-          restorationTypes: parsed.caseType ?? null,
-          restorationMaterials: parsed.material ?? null,
-          teeth: parsed.toothIndices ?? null,
-          totalPrice: parsed.price != null ? String(parsed.price) : "0.00",
-          casePanBarcode: parsed.assignedBarcode ?? null,
-          _source: "mobile",
-        });
+        enriched.push(buildArrayLegacyRow(mr, parsed, { paginationActive: pagination.active }));
       } catch {
         // skip malformed rows
       }
     }
 
-    // Apply optional query filters (search, status, barcode, doctorName, providerOrganizationId, openOnly)
-    const rawSearch = String(req.query.search ?? "").trim().toLowerCase();
-    const rawStatus = String(req.query.status ?? "").trim().toLowerCase();
-    const rawBarcode = String(req.query.barcode ?? "").trim();
-    const rawDoctorName = String(req.query.doctorName ?? "").trim().toLowerCase();
-    const rawProviderOrgId = String(req.query.providerOrganizationId ?? "").trim();
-    const rawOpenOnly = String(req.query.openOnly ?? "").trim().toLowerCase();
+    // Batch-resolve station names for any case that has a labLocationId set.
+    // Runs after the mobile row bridge so legacy rows with a stored labLocationId
+    // are included in the lookup alongside canonical rows.
+    const uniqueLocationIds = Array.from(
+      new Set(
+        enriched
+          .map((r: any) => r.labLocationId)
+          .filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
+      )
+    );
+    if (uniqueLocationIds.length > 0) {
+      const locationNameRows = await db
+        .select({
+          id: labLocations.id,
+          name: labLocations.name,
+          labOrganizationId: labLocations.labOrganizationId,
+        })
+        .from(labLocations)
+        .where(inArray(labLocations.id, uniqueLocationIds));
+      const locationNameMap = new Map(
+        locationNameRows.map((l) => [
+          `${l.labOrganizationId}:${l.id}`,
+          l.name,
+        ]),
+      );
+      for (const row of enriched) {
+        const savedLocationName = row.labLocationId
+          ? locationNameMap.get(
+              `${row.labOrganizationId}:${row.labLocationId}`,
+            )
+          : null;
+        // Never expose a station ID from another lab. This also keeps malformed
+        // historical blobs from making the list and detail disagree.
+        row.labLocationId = savedLocationName ? row.labLocationId : null;
+        row.labLocationName = savedLocationName ?? null;
+      }
+    }
 
+    // Decorate rows with their active exception so list surfaces can show the
+    // flag without a second call. Exception content (issue text, who flagged
+    // it, when) is LAB-INTERNAL: a provider can be authorized to see a case
+    // through its provider organization, so gate per row on direct active
+    // membership in that row's own lab — the same rule `remakeNotes` uses
+    // above and the canonical detail route uses below. Provider-visible rows
+    // get an explicit `null` / `false` rather than an omitted field, so the
+    // clients can't mistake redaction for "not loaded yet".
+    {
+      const labVisibleIds = enriched
+        .filter((r: any) => callerLabOrgSet.has(r.labOrganizationId))
+        .map((r: any) => String(r.id));
+      const activeExceptions =
+        labVisibleIds.length > 0
+          ? await fetchActiveExceptionsForCaseIds(labVisibleIds)
+          : new Map();
+      for (const row of enriched) {
+        const summary = callerLabOrgSet.has(row.labOrganizationId)
+          ? (activeExceptions.get(String(row.id)) ?? null)
+          : null;
+        row.activeException = summary;
+        row.hasActiveException = summary !== null;
+      }
+    }
+
+    // Every filter is evaluated over the complete authorized canonical + legacy
+    // set before the page slice. This is intentionally after legacy projection:
+    // mobile blobs do not have SQL columns for all worklist predicates.
+    const parseCalendarBound = (value: string, end: boolean) => {
+      if (!value) return null;
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(value)
+        ? new Date(`${value}T00:00:00`)
+        : new Date(value);
+      if (Number.isNaN(date.getTime())) throw new HttpError(400, "Invalid created date.");
+      if (end && /^\d{4}-\d{2}-\d{2}$/.test(value)) date.setDate(date.getDate() + 1);
+      return date;
+    };
+    const createdStartDate = isWorklistRequest ? parseCalendarBound(createdStart, false) : null;
+    const createdEndDate = isWorklistRequest ? parseCalendarBound(createdEnd, true) : null;
+    if (createdStartDate && createdEndDate && createdStartDate >= createdEndDate) {
+      throw new HttpError(400, "Created end date must not be before the start date.");
+    }
+    const conflictCounts = new Map<string, number>();
+    for (const c of enriched) {
+      const barcode = String(c.casePanBarcode ?? "").trim();
+      if (barcode && !CLOSED_CASE_STATUSES.includes(String(c.status ?? "").toLowerCase() as any)) {
+        const key = `${c.labOrganizationId ?? ""}:${barcode}`;
+        conflictCounts.set(key, (conflictCounts.get(key) ?? 0) + 1);
+      }
+    }
+    const hasConflict = (c: any) => {
+      const barcode = String(c.casePanBarcode ?? "").trim();
+      return !!barcode && (conflictCounts.get(`${c.labOrganizationId ?? ""}:${barcode}`) ?? 0) > 1;
+    };
     let filtered = enriched;
     if (rawSearch) {
       filtered = filtered.filter((c) => {
@@ -4618,11 +7855,14 @@ router.get(
         const dr = String(c.doctorName ?? "").toLowerCase();
         const cn = String(c.caseNumber ?? "").toLowerCase();
         const pb = String(c.casePanBarcode ?? "").toLowerCase();
-        return fn.includes(rawSearch) || ln.includes(rawSearch) || dr.includes(rawSearch) || cn.includes(rawSearch) || pb.includes(rawSearch);
+        // Also match "First Last" as a combined string so full-name searches
+        // like "John Smith" are consistent with the SQL predicate above.
+        const fullName = `${fn} ${ln}`;
+        return fn.includes(rawSearch) || ln.includes(rawSearch) || fullName.includes(rawSearch) || dr.includes(rawSearch) || cn.includes(rawSearch) || pb.includes(rawSearch);
       });
     }
-    if (rawStatus) {
-      filtered = filtered.filter((c) => String(c.status ?? "").toLowerCase() === rawStatus);
+    if (statuses.length) {
+      filtered = filtered.filter((c) => statuses.includes(String(c.status ?? "").toLowerCase()));
     }
     if (rawBarcode) {
       filtered = filtered.filter((c) => String(c.casePanBarcode ?? "") === rawBarcode);
@@ -4634,13 +7874,190 @@ router.get(
       filtered = filtered.filter((c) => String(c.providerOrganizationId ?? "") === rawProviderOrgId);
     }
     if (rawOpenOnly === "true" || rawOpenOnly === "1") {
-      const OPEN_SET = new Set(["received","in_design","in_milling","in_porcelain","qc","on_hold","remake"]);
-      filtered = filtered.filter((c) => OPEN_SET.has(String(c.status ?? "").toLowerCase()));
+      filtered = filtered.filter(
+        (c) =>
+          !CLOSED_CASE_STATUSES.includes(
+            String(c.status ?? "").toLowerCase() as (typeof CLOSED_CASE_STATUSES)[number],
+          ),
+      );
+    }
+    if (isWorklistRequest && priorities.length) {
+      filtered = filtered.filter((c) => priorities.includes(String(c.priority ?? "").toLowerCase()));
+    }
+    if (isWorklistRequest && importedCaseIds.length) {
+      const wanted = new Set(importedCaseIds);
+      filtered = filtered.filter((c) => wanted.has(String(c.id)));
+    }
+    if (isWorklistRequest && categories.length) {
+      filtered = filtered.filter((c) => {
+        const category = c._source === "mobile"
+          ? classifyLegacyCase({
+              caseType: c.restorationTypes,
+              material: c.restorationMaterials,
+              restorationSubtype: c.firstRestorationSubtype,
+            })
+          : classifyCase(byCase.get(c.id) ?? []);
+        return categories.includes(category);
+      });
+    }
+    if (isWorklistRequest && (createdStartDate || createdEndDate)) {
+      filtered = filtered.filter((c) => {
+        const date = new Date(c.createdAt);
+        return !Number.isNaN(date.getTime()) &&
+          (!createdStartDate || date >= createdStartDate) &&
+          (!createdEndDate || date < createdEndDate);
+      });
+    }
+    if (isWorklistRequest && conflictsOnly) filtered = filtered.filter(hasConflict);
+    const compare = (a: any, b: any) => {
+      let av: any;
+      let bv: any;
+      if (sortKey === "totalPrice") { av = Number(a.totalPrice ?? 0); bv = Number(b.totalPrice ?? 0); }
+      else if (sortKey === "dueDate") { av = `${a.dueDate ?? "9999-99-99"} ${a.dueTime ?? ""}`; bv = `${b.dueDate ?? "9999-99-99"} ${b.dueTime ?? ""}`; }
+      else { av = String(a[sortKey] ?? ""); bv = String(b[sortKey] ?? ""); }
+      const primary = typeof av === "number" ? av - bv : String(av).localeCompare(String(b));
+      if (primary) return sortDir === "asc" ? primary : -primary;
+      return String(a.id).localeCompare(String(b.id));
+    };
+    if (isWorklistRequest) filtered.sort(compare);
+    // `/cases` is a long-standing shared/mobile endpoint and deliberately
+    // retains its array contract unless pagination is explicitly requested.
+    // Pagination is applied only after filtering and all row enrichment.
+    if (!pagination.active) return ok(res, filtered);
+    const newestFirst = [...filtered].sort((a: any, b: any) => {
+      const aTime = new Date(a.createdAt ?? 0).getTime();
+      const bTime = new Date(b.createdAt ?? 0).getTime();
+      const normalizedA = Number.isNaN(aTime) ? 0 : aTime;
+      const normalizedB = Number.isNaN(bTime) ? 0 : bTime;
+      if (normalizedB !== normalizedA) return normalizedB - normalizedA;
+      return String(a.id).localeCompare(String(b.id));
+    });
+    return ok(res, pageRows(newestFirst, pagination));
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared helper: render a short human-readable summary from a caseEvent row.
+// Used by GET /cases/recent so the dashboard can display "Moved to Scanning",
+// "Status → Delivered", etc. without a separate lookup per card.
+// ─────────────────────────────────────────────────────────────────────────────
+function formatRecentEventSummary(
+  eventType: string,
+  meta: Record<string, unknown>,
+): string {
+  switch (eventType) {
+    case "status_changed":
+      return `Status → ${meta["to"] ?? "?"}`;
+    case "location_changed":
+      return `Moved to ${(meta["locationName"] ?? meta["to"] ?? "new location")}`;
+    case "case_created":
+      return "Case created";
+    case "note_added":
+      return "Note added";
+    case "invoice_generated":
+      return "Invoice generated";
+    case "invoice_voided": {
+      const num = meta["invoiceNumber"] ? ` ${meta["invoiceNumber"]}` : "";
+      return `Invoice${num} voided`;
+    }
+    case "restoration_added":
+      return "Restoration added";
+    case "restoration_removed":
+      return "Restoration removed";
+    case "remade_by":
+      return meta["remakeCaseNumber"]
+        ? `Remade by case ${meta["remakeCaseNumber"]}`
+        : "Remade";
+    case "remake_of":
+      return meta["originalCaseNumber"]
+        ? `Remake of case ${meta["originalCaseNumber"]}`
+        : "Remake";
+    case "case_imported_from_itero":
+      return "Imported from iTero";
+    default:
+      return eventType
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /cases/recent
+//
+// Returns up to 6 most recently active non-completed canonical cases for the
+// caller's labs, sorted by updatedAt DESC. Each case is enriched with a
+// latestEvent: { eventType, summary } | null derived from the case_events
+// table (batch-fetched — one extra query for all 6 cases, not N+1).
+//
+// NOTE: declared before "/:caseId" so Express does not shadow the literal path.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get(
+  "/recent",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const labIds = await fetchUserActiveLabIds(callerId);
+    if (labIds.length === 0) return ok(res, []);
+
+    // Top 6 non-completed canonical cases, most recently updated first.
+    const recentRows = await db
+      .select()
+      .from(cases)
+      .where(
+        and(
+          inArray(cases.labOrganizationId, labIds),
+          notDeleted(cases),
+          sql`${cases.status} NOT IN ('delivered', 'cancelled', 'complete')`,
+        ),
+      )
+      .orderBy(desc(cases.updatedAt), desc(cases.createdAt))
+      .limit(6);
+
+    if (recentRows.length === 0) return ok(res, []);
+
+    // Batch-fetch all events for these 6 cases, ordered newest-first.
+    // Reducing in JS (first occurrence per case = latest event) avoids a
+    // DISTINCT ON subquery and keeps the Drizzle ORM call simple.
+    const caseIds = recentRows.map((r: any) => r.id as string);
+    const allEvents = await db
+      .select({
+        caseId: caseEvents.caseId,
+        eventType: caseEvents.eventType,
+        metadataJson: caseEvents.metadataJson,
+        occurredAt: caseEvents.occurredAt,
+      })
+      .from(caseEvents)
+      .where(inArray(caseEvents.caseId, caseIds))
+      .orderBy(desc(caseEvents.occurredAt));
+
+    const eventByCaseId = new Map<
+      string,
+      { eventType: string; metadataJson: Record<string, unknown> }
+    >();
+    for (const row of allEvents) {
+      if (row.caseId && !eventByCaseId.has(row.caseId)) {
+        eventByCaseId.set(row.caseId, {
+          eventType: row.eventType,
+          metadataJson: (row.metadataJson as Record<string, unknown>) ?? {},
+        });
+      }
     }
 
-    if (!filtered.length) return ok(res, []);
-    return ok(res, filtered);
-  })
+    const result = recentRows.map((c: any) => {
+      const event = eventByCaseId.get(c.id) ?? null;
+      const latestEvent = event
+        ? {
+            eventType: event.eventType,
+            summary: formatRecentEventSummary(
+              event.eventType,
+              event.metadataJson,
+            ),
+          }
+        : null;
+      return { ...c, latestEvent };
+    });
+
+    return ok(res, result);
+  }),
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4663,8 +8080,18 @@ router.get(
 // ─────────────────────────────────────────────────────────────────────────────
 router.get(
   "/provider",
+  requireLinkedProviderCapability("case_read"),
   asyncHandler(async (req, res) => {
     const callerId = (req as any).auth.userId as string;
+    const activeProviderOrganizations =
+      await getActiveProviderOrganizations(callerId);
+    if (activeProviderOrganizations.length === 0) return ok(res, []);
+    const selectedProvider = await requireSelectedProviderOrganization(
+      callerId,
+      typeof req.header("x-provider-organization-id") === "string"
+        ? req.header("x-provider-organization-id")
+        : null,
+    );
 
     // The provider org set is derived entirely from the caller's identity and
     // cannot be widened by request input. Empty set ⇒ empty list (a lab user
@@ -4673,21 +8100,62 @@ router.get(
       await getProviderOrgIdsForUserAndLinks(callerId);
     if (providerOrgIds.length === 0) return ok(res, []);
 
-    const rows = await db.query.cases.findMany({
-      where: and(
-        inArray(cases.providerOrganizationId, providerOrgIds),
-        notDeleted(cases)
-      ),
-      orderBy: [desc(cases.createdAt)],
-      limit: 500,
-    });
+    const providerScope = and(
+      eq(cases.providerOrganizationId, selectedProvider.id),
+      notDeleted(cases)
+    );
+
+    // Same guarantee as the lab-scoped list: the bounded most-recent window
+    // plus every open case, so an old open case is never invisible to the
+    // practice it belongs to.
+    const [providerRecentRows, providerOpenRows] = await Promise.all([
+      db.query.cases.findMany({
+        where: providerScope,
+        orderBy: [desc(cases.createdAt)],
+        limit: RECENT_CASE_LIMIT,
+      }),
+      db.query.cases.findMany({
+        where: and(providerScope, openCaseStatusFilter),
+        orderBy: [desc(cases.createdAt)],
+        limit: OPEN_CASE_SAFETY_LIMIT,
+      }),
+    ]);
+    const rows = mergeCaseRowsNewestFirst(
+      providerRecentRows as any[],
+      providerOpenRows as any[]
+    );
 
     const caseIds = rows.map((r: any) => r.id);
-    const restorations = caseIds.length
-      ? await db.query.caseRestorations.findMany({
-          where: inArray(caseRestorations.caseId, caseIds),
-        })
-      : [];
+    const [restorations, openInvoiceRows] = caseIds.length
+      ? await Promise.all([
+          db.query.caseRestorations.findMany({
+            where: inArray(caseRestorations.caseId, caseIds),
+          }),
+          db
+            .select({
+              caseId: invoices.caseId,
+              balanceDue: invoices.balanceDue,
+            })
+            .from(invoices)
+            .where(
+              and(
+                inArray(invoices.caseId, caseIds),
+                // Canonical open-invoice statuses — matches /invoices/open definition
+                inArray(invoices.status, ["open", "partially_paid", "overdue"]),
+                isNull(invoices.deletedAt),
+              )
+            ),
+        ])
+      : [[], [] as { caseId: string | null; balanceDue: string }[]];
+
+    // Sum open invoice balance per case
+    const openInvoiceAmountByCaseId = new Map<string, number>();
+    for (const inv of openInvoiceRows) {
+      if (!inv.caseId) continue;
+      const current = openInvoiceAmountByCaseId.get(inv.caseId) ?? 0;
+      openInvoiceAmountByCaseId.set(inv.caseId, current + parseFloat(inv.balanceDue ?? "0"));
+    }
+
     const byCase = new Map<string, typeof restorations>();
     for (const r of restorations) {
       const list = byCase.get(r.caseId) ?? [];
@@ -4744,6 +8212,8 @@ router.get(
         : null;
       return {
         ...row,
+        // remakeNotes must never reach provider-portal viewers.
+        remakeNotes: null,
         caseNotes: (row as any).rxNotes ?? null,
         restorationCount: billableItems.length,
         restorationTypes: types || null,
@@ -4754,10 +8224,1057 @@ router.get(
         // (multi-lab providers).
         providerAccountNumber: provOrg?.accountNumber ?? null,
         labName: lab ? (lab.displayName || lab.name) : null,
+        openInvoiceAmount: openInvoiceAmountByCaseId.get(row.id) ?? 0,
       };
     });
 
-    return ok(res, enriched);
+    // Basic and Standard retain only the active provider workload. Premium
+    // keeps the complete portal history.
+    const canViewClosedCases = await assertProviderOrganizationCapability(
+      selectedProvider.id,
+      "provider_portal",
+    ).then(() => true).catch(() => false);
+    return ok(
+      res,
+      canViewClosedCases
+        ? enriched
+        : enriched.filter(
+            (row) =>
+              !CLOSED_CASE_STATUSES.includes(
+                row.status as (typeof CLOSED_CASE_STATUSES)[number],
+              ),
+          ),
+    );
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Case-return detection (provider timeline)
+//
+// A case "returns" to the lab when a completion-family status change is
+// directly followed by an intake-family status change. These two families are
+// the exact sets the lab-side case history uses for its "Case returned"
+// divider (labtrax-desktop cases.tsx / labtrax app/case/[id].tsx), so the
+// provider portal flags precisely the same moments the lab does.
+// ─────────────────────────────────────────────────────────────────────────────
+const PROVIDER_RETURN_COMPLETE_STATUSES = new Set(["complete", "delivered", "done"]);
+const PROVIDER_RETURN_INTAKE_STATUSES = new Set(["received", "intake", "new", "pending"]);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /cases/provider/:caseId
+//
+// Provider-portal single-case detail. Returns patient name,
+// caseType / restorationTypes, and notes shared with the provider.
+// Internal lab-only notes are always omitted. The caller must be linked
+// to the case's providerOrganizationId via their own provider org membership.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get(
+  "/provider/:caseId",
+  requireLinkedProviderCapability("case_read"),
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const caseId = req.params.caseId;
+
+    const selectedProvider = await requireSelectedProviderOrganization(
+      callerId, req.header("x-provider-organization-id"),
+    );
+
+    const found = await db.query.cases.findFirst({
+      where: and(eq(cases.id, caseId), notDeleted(cases)),
+    });
+    if (!found) throw new HttpError(404, "Case not found.");
+
+    // Verify the caller's provider orgs include this case's assigned provider
+    if (
+      !found.providerOrganizationId ||
+      found.providerOrganizationId !== selectedProvider.id
+    ) {
+      throw new HttpError(403, "Access denied.");
+    }
+    if (
+      CLOSED_CASE_STATUSES.includes(
+        found.status as (typeof CLOSED_CASE_STATUSES)[number],
+      ) &&
+      !(await assertProviderOrganizationCapability(
+        selectedProvider.id,
+        "provider_portal",
+      ).then(() => true).catch(() => false))
+    ) {
+      throw new HttpError(403, "Your provider plan only includes active cases.");
+    }
+
+    // Remake event types to surface on the provider timeline
+    const PROVIDER_REMAKE_EVENT_TYPES = [
+      "remake_of",
+      "remade_by",
+      "remake_created",
+      "remake_updated",
+      "case_sent_back",
+    ];
+
+    const [restorationRows, noteRows, locationRows, locationEventRows, remakeEventRows, sharedAttachmentRows, noteEventRows, statusEventRows, paymentEventRows, invoiceRow, providerOrgRow] =
+      await Promise.all([
+        db.query.caseRestorations.findMany({
+          where: eq(caseRestorations.caseId, found.id),
+        }),
+        db.query.caseNotes.findMany({
+          where: eq(caseNotes.caseId, found.id),
+          orderBy: [desc(caseNotes.createdAt)],
+        }),
+        // Location history — oldest first, no user columns surfaced to provider
+        db
+          .select({
+            id: caseLocations.id,
+            locationCode: caseLocations.locationCode,
+            locationName: caseLocations.locationName,
+            movedAt: caseLocations.movedAt,
+          })
+          .from(caseLocations)
+          .where(eq(caseLocations.caseId, found.id))
+          .orderBy(asc(caseLocations.movedAt)),
+        // Some older/imported flows recorded a physical move only as a
+        // location_changed event. Newer location-change writes have both a
+        // case_locations row and an event, so the builder below deduplicates
+        // those paired records.
+        db
+          .select({
+            id: caseEvents.id,
+            occurredAt: caseEvents.occurredAt,
+            metadataJson: caseEvents.metadataJson,
+          })
+          .from(caseEvents)
+          .where(
+            and(
+              eq(caseEvents.caseId, found.id),
+              eq(caseEvents.eventType, "location_changed"),
+            ),
+          )
+          .orderBy(asc(caseEvents.occurredAt)),
+        // Remake-related events — oldest first
+        db
+          .select({
+            id: caseEvents.id,
+            eventType: caseEvents.eventType,
+            occurredAt: caseEvents.occurredAt,
+            metadataJson: caseEvents.metadataJson,
+          })
+          .from(caseEvents)
+          .where(
+            and(
+              eq(caseEvents.caseId, found.id),
+              inArray(caseEvents.eventType, PROVIDER_REMAKE_EVENT_TYPES)
+            )
+          )
+          .orderBy(asc(caseEvents.occurredAt)),
+        // All shared_with_provider attachments (images + files), not deleted
+        db.query.caseAttachments.findMany({
+          where: and(
+            eq(caseAttachments.caseId, found.id),
+            eq(caseAttachments.visibility, "shared_with_provider"),
+            isNull(caseAttachments.deletedAt)
+          ),
+          orderBy: [asc(caseAttachments.createdAt)],
+        }),
+        // note_added events — for shared notes in the provider timeline
+        db
+          .select({
+            id: caseEvents.id,
+            occurredAt: caseEvents.occurredAt,
+            metadataJson: caseEvents.metadataJson,
+            actorInitials: caseEvents.actorInitials,
+          })
+          .from(caseEvents)
+          .where(
+            and(
+              eq(caseEvents.caseId, found.id),
+              eq(caseEvents.eventType, "note_added")
+            )
+          )
+          .orderBy(asc(caseEvents.occurredAt)),
+        // status_changed events — lab workflow progress
+        db
+          .select({
+            id: caseEvents.id,
+            occurredAt: caseEvents.occurredAt,
+            metadataJson: caseEvents.metadataJson,
+          })
+          .from(caseEvents)
+          .where(
+            and(
+              eq(caseEvents.caseId, found.id),
+              eq(caseEvents.eventType, "status_changed")
+            )
+          )
+          .orderBy(asc(caseEvents.occurredAt)),
+        // payment_received events — invoice payments
+        db
+          .select({
+            id: caseEvents.id,
+            occurredAt: caseEvents.occurredAt,
+            metadataJson: caseEvents.metadataJson,
+          })
+          .from(caseEvents)
+          .where(
+            and(
+              eq(caseEvents.caseId, found.id),
+              eq(caseEvents.eventType, "payment_received")
+            )
+          )
+          .orderBy(asc(caseEvents.occurredAt)),
+        // Active invoice for this case: not deleted, not void, most recent first.
+        // Multiple invoices can exist for a case (e.g. a replacement after voiding
+        // the original); we take the most-recently-created one that is still active.
+        db
+          .select()
+          .from(invoices)
+          .where(
+            and(
+              eq(invoices.caseId, found.id),
+              eq(invoices.providerOrganizationId, found.providerOrganizationId!),
+              eq(invoices.labOrganizationId, found.labOrganizationId),
+              ne(invoices.status, "void"),
+              isNull(invoices.deletedAt)
+            )
+          )
+          .orderBy(desc(invoices.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        // The caller's own practice — used as the "Practice" line on the
+        // provider prescription view. Access is already gated above.
+        db
+          .select({
+            id: organizations.id,
+            name: organizations.name,
+            displayName: organizations.displayName,
+          })
+          .from(organizations)
+          .where(eq(organizations.id, found.providerOrganizationId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+    // Provider-facing "Lab Notes" must be both explicitly shared and authored
+    // by this case's lab. Provider-authored portal messages use the same
+    // visibility value, but must not be relabeled as lab-authored notes.
+    const providerVisibleNotes = noteRows.filter(
+      (note: any) =>
+        note.visibility === "shared_with_provider" &&
+        note.authorOrganizationId === found.labOrganizationId,
+    );
+    // Do not pass author ids, organization ids, or any other staff identity
+    // fields through the provider response. The note body and timestamp are
+    // the only provider-visible note fields needed by this view.
+    const providerSafeNotes = providerVisibleNotes.map((note: any) => ({
+      id: note.id,
+      noteText: note.noteText,
+      visibility: "shared_with_provider",
+      createdAt: note.createdAt,
+    }));
+
+    const billableItems = restorationRows.filter(
+      (i: any) => !/^missing$/i.test(i.restorationType ?? "")
+    );
+    const restorationTypes = Array.from(
+      new Set(billableItems.map((i: any) => i.restorationType).filter(Boolean))
+    ).join(", ");
+
+    // Provider-safe prescription rows. Only the clinical fields a practice
+    // prescribed are surfaced — pricing columns (unitPrice / priceSource /
+    // priceKey…) and lab-internal restoration notes are deliberately dropped.
+    const providerRestorations = billableItems.map((i: any) => ({
+      id: i.id,
+      toothNumber: i.toothNumber ?? null,
+      restorationType: i.restorationType ?? null,
+      restorationSubtype: i.restorationSubtype ?? null,
+      ...implantValues(i),
+      material: i.material ?? null,
+      shade: i.shade ?? null,
+    }));
+
+    // Build the timeline (locations + remake events + shared photos), sorted oldest → newest
+    function remakeEventLabel(eventType: string, meta: any): string {
+      switch (eventType) {
+        case "remake_of":
+          return meta?.remakeCaseNumber
+            ? `Remake of case ${meta.remakeCaseNumber}`
+            : "Remake created";
+        case "remade_by":
+          return meta?.remakeCaseNumber
+            ? `Remade by case ${meta.remakeCaseNumber}`
+            : "Remade";
+        case "remake_created":
+          return "Remake initiated";
+        case "remake_updated":
+          return "Remake updated";
+        case "case_sent_back":
+          return "Case sent back";
+        default:
+          return String(eventType).replace(/_/g, " ");
+      }
+    }
+
+    const timelineEntries: Array<{
+      type: "location" | "remake" | "photo" | "note" | "file" | "status" | "payment";
+      id: string;
+      label: string;
+      timestamp: string;
+      attachmentId?: string;
+      fileName?: string;
+      fileType?: string;
+      author?: string | null;
+      // Status entries only — the status the case moved away from, and
+      // whether that move means the case came back into the lab. Both are
+      // additive: clients that don't know about them keep working.
+      fromStatus?: string | null;
+      isCaseReturn?: boolean;
+    }> = [];
+
+    const pairedLocationEventIds = new Set<string>();
+    const pairedLocationRowIds = new Set<string>();
+    const locationRowsById = new Map(
+      locationRows.map((location: any) => [String(location.id), location]),
+    );
+
+    // New events carry the authoritative location-row id.
+    for (const event of locationEventRows) {
+      const locationId = String((event.metadataJson as any)?.locationId ?? "");
+      if (locationId && locationRowsById.has(locationId)) {
+        pairedLocationEventIds.add(event.id);
+        pairedLocationRowIds.add(locationId);
+      }
+    }
+
+    const legacyEventMatchesLocation = (event: any, location: any): boolean => {
+      const meta = (event.metadataJson ?? {}) as Record<string, unknown>;
+      if (meta.locationId) return false;
+      const eventName = String(meta.locationName ?? meta.to ?? "").trim();
+      const eventCode = String(meta.locationCode ?? "").trim();
+      const sameLocation =
+        (Boolean(eventCode) &&
+          eventCode === String(location.locationCode ?? "").trim()) ||
+        (Boolean(eventName) &&
+          eventName === String(location.locationName ?? "").trim());
+      const eventTime = new Date(event.occurredAt as Date).getTime();
+      const locationTime = new Date(location.movedAt as Date).getTime();
+      return sameLocation && Math.abs(eventTime - locationTime) <= 60_000;
+    };
+
+    // Legacy events have no row id. Only collapse an unambiguous one-to-one
+    // pair; preserving an extra event is safer than deleting real history.
+    for (const location of locationRows) {
+      if (pairedLocationRowIds.has(String(location.id))) continue;
+      const candidateEvents = locationEventRows.filter(
+        (event: any) =>
+          !pairedLocationEventIds.has(event.id) &&
+          legacyEventMatchesLocation(event, location),
+      );
+      if (candidateEvents.length !== 1) continue;
+      const [candidate] = candidateEvents;
+      const candidateRows = locationRows.filter(
+        (row: any) =>
+          !pairedLocationRowIds.has(String(row.id)) &&
+          legacyEventMatchesLocation(candidate, row),
+      );
+      if (candidateRows.length === 1) {
+        pairedLocationEventIds.add(candidate.id);
+        pairedLocationRowIds.add(String(location.id));
+      }
+    }
+
+    for (const loc of locationRows) {
+      timelineEntries.push({
+        type: "location",
+        id: loc.id,
+        label: loc.locationName,
+        timestamp: (loc.movedAt as Date).toISOString(),
+      });
+    }
+
+    // Preserve location_changed history that has no case_locations row.
+    for (const event of locationEventRows) {
+      if (pairedLocationEventIds.has(event.id)) continue;
+      const meta = (event.metadataJson ?? {}) as Record<string, unknown>;
+      const locationName = String(
+        meta.locationName ?? meta.to ?? "Location changed",
+      ).trim();
+      timelineEntries.push({
+        type: "location",
+        id: event.id,
+        label: locationName || "Location changed",
+        timestamp: (event.occurredAt as Date).toISOString(),
+      });
+    }
+
+    for (const ev of remakeEventRows) {
+      timelineEntries.push({
+        type: "remake",
+        id: ev.id,
+        label: remakeEventLabel(ev.eventType, ev.metadataJson as any),
+        timestamp: (ev.occurredAt as Date).toISOString(),
+      });
+    }
+
+    for (const att of sharedAttachmentRows) {
+      if (String(att.fileType ?? "").startsWith("image/")) {
+        // Image attachments — rendered as inline photo thumbnails
+        timelineEntries.push({
+          type: "photo",
+          id: att.id,
+          label: att.fileName,
+          timestamp: (att.createdAt as Date).toISOString(),
+          attachmentId: att.id,
+          fileName: att.fileName,
+          fileType: att.fileType,
+        });
+      } else {
+        // Non-image file attachments (PDFs, docs, etc.)
+        timelineEntries.push({
+          type: "file",
+          id: att.id,
+          label: att.fileName,
+          timestamp: (att.createdAt as Date).toISOString(),
+          attachmentId: att.id,
+          fileName: att.fileName,
+          fileType: att.fileType,
+        });
+      }
+    }
+
+    // note_added events — only include shared_with_provider ones.
+    // Deny by default: notes whose visibility field is absent, null, or any
+    // value other than "shared_with_provider" (e.g. "internal_lab_only" or a
+    // future type) are silently skipped. This ensures historical/imported events
+    // with missing metadata never inadvertently leak internal text to providers.
+    //
+    // The event's metadataJson is written once, at note-create time, and is
+    // never updated afterward. The backing live row is therefore required and
+    // authoritative; an event without one cannot prove that the note has not
+    // since been deleted or redacted.
+    const liveNoteById = new Map(noteRows.map((n: any) => [n.id, n]));
+    const includedTimelineNoteIds = new Set<string>();
+    for (const ev of noteEventRows) {
+      const meta = (ev.metadataJson ?? {}) as Record<string, unknown>;
+      const noteId = typeof meta.noteId === "string" ? meta.noteId : null;
+      if (!noteId) continue;
+      const liveNote = liveNoteById.get(noteId);
+      // Deleted note, or its visibility no longer shared: withhold the
+      // text regardless of what the event metadata still says.
+      if (
+        !liveNote ||
+        liveNote.visibility !== "shared_with_provider" ||
+        liveNote.authorOrganizationId !== found.labOrganizationId
+      ) {
+        continue;
+      }
+      const noteText = String(liveNote.noteText ?? "").trim();
+      if (!noteText) continue;
+      timelineEntries.push({
+        type: "note",
+        id: ev.id,
+        label: noteText,
+        timestamp: (ev.occurredAt as Date).toISOString(),
+      });
+      includedTimelineNoteIds.add(noteId);
+    }
+
+    // A note can be created by an older path without a corresponding
+    // note_added event. Include the live shared row so the provider still sees
+    // the current lab-shared note exactly once.
+    for (const note of providerSafeNotes) {
+      if (includedTimelineNoteIds.has(note.id) || !note.createdAt) continue;
+      const noteTime = new Date(note.createdAt as Date).toISOString();
+      timelineEntries.push({
+        type: "note",
+        id: note.id,
+        label: note.noteText,
+        timestamp: noteTime,
+      });
+    }
+
+    // status_changed events — lab workflow progress.
+    //
+    // statusEventRows is already ordered oldest → newest, so the previous
+    // row's destination status is the status this entry moved away from.
+    // That chronological pairing is exactly how the lab-side case history
+    // decides a case "returned", so both surfaces flag the same entries.
+    const statusChrono = statusEventRows.map((ev) => {
+      const meta = (ev.metadataJson ?? {}) as Record<string, unknown>;
+      return {
+        ev,
+        meta,
+        toStatus: String(meta.toStatus ?? "").trim(),
+      };
+    });
+    for (let i = 0; i < statusChrono.length; i++) {
+      const { ev, meta, toStatus } = statusChrono[i]!;
+      const prevToStatus = i > 0 ? statusChrono[i - 1]!.toStatus : "";
+      const metaFromStatus = String(meta.fromStatus ?? "").trim();
+      const fromStatus = metaFromStatus || prevToStatus || null;
+      const isCaseReturn =
+        !!prevToStatus &&
+        !!toStatus &&
+        PROVIDER_RETURN_COMPLETE_STATUSES.has(prevToStatus.toLowerCase()) &&
+        PROVIDER_RETURN_INTAKE_STATUSES.has(toStatus.toLowerCase());
+      timelineEntries.push({
+        type: "status",
+        id: ev.id,
+        label: toStatus || "Status changed",
+        timestamp: (ev.occurredAt as Date).toISOString(),
+        fromStatus,
+        isCaseReturn,
+      });
+    }
+
+    // payment_received events
+    for (const ev of paymentEventRows) {
+      const meta = (ev.metadataJson ?? {}) as Record<string, unknown>;
+      const rawAmount = Number(meta.amount);
+      const formattedAmount = !isNaN(rawAmount)
+        ? new Intl.NumberFormat("en-US", {
+            style: "currency",
+            currency: "USD",
+            minimumFractionDigits: 2,
+          }).format(rawAmount)
+        : null;
+      timelineEntries.push({
+        type: "payment",
+        id: ev.id,
+        label: formattedAmount ?? "Payment received",
+        timestamp: (ev.occurredAt as Date).toISOString(),
+      });
+    }
+
+    timelineEntries.sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+
+    // Build invoice lines
+    let invoiceLines: Array<{
+      description: string;
+      quantity: number;
+      unitPrice: string;
+      totalPrice: string;
+    }> = [];
+    let invoiceTotal: string | null = null;
+    let invoiceStatus: string | null = null;
+
+    if (invoiceRow) {
+      invoiceTotal = invoiceRow.total ?? null;
+      invoiceStatus = invoiceRow.status ?? null;
+      const lineRows = await db
+        .select({
+          description: invoiceLineItems.description,
+          quantity: invoiceLineItems.quantity,
+          unitPrice: invoiceLineItems.unitPrice,
+          lineTotal: invoiceLineItems.lineTotal,
+        })
+        .from(invoiceLineItems)
+        .where(
+          and(
+            eq(invoiceLineItems.invoiceId, invoiceRow.id),
+            isNull(invoiceLineItems.parentLineItemId)
+          )
+        )
+        .orderBy(asc(invoiceLineItems.sortOrder));
+
+      invoiceLines = lineRows.map((l) => ({
+        description: l.description,
+        quantity: l.quantity,
+        unitPrice: l.unitPrice ?? "0.00",
+        totalPrice: l.lineTotal ?? "0.00",
+      }));
+    }
+
+    return ok(res, {
+      id: found.id,
+      caseNumber: (found as any).caseNumber,
+      patientFirstName: (found as any).patientFirstName,
+      patientLastName: (found as any).patientLastName,
+      caseType: (found as any).caseType,
+      status: found.status,
+       // Current removable workflow step. This is a clinical workflow value,
+       // not pricing metadata; clients map the stable key to a readable label.
+       step: (found as any).step ?? null,
+      dueDate: (found as any).dueDate,
+      createdAt: found.createdAt,
+      updatedAt: found.updatedAt,
+      labOrganizationId: found.labOrganizationId,
+      providerOrganizationId: found.providerOrganizationId,
+      viewerCanPostNotes: true,
+      viewerQuickReferenceOrganizationId: found.providerOrganizationId,
+      // Prescription header fields for the provider Rx view.
+      doctorName: (found as any).doctorName ?? null,
+      practiceName: providerOrgRow
+        ? providerOrgRow.displayName || providerOrgRow.name || null
+        : null,
+      // Prescription notes remain a separate clinical field. They must never
+      // be relabeled or duplicated as lab-authored shared notes.
+      rxNotes: (found as any).rxNotes ?? null,
+      restorationTypes: restorationTypes || null,
+      restorations: providerRestorations,
+      notes: providerSafeNotes,
+      // remakeNotes are always redacted from provider-portal viewers
+      remakeNotes: null,
+      timeline: timelineEntries,
+      invoiceId: invoiceRow?.id ?? null,
+      invoiceNumber: invoiceRow?.invoiceNumber ?? null,
+      invoiceLines,
+      invoiceTotal,
+      invoiceBalanceDue: invoiceRow?.balanceDue ?? null,
+      invoiceStatus,
+    });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Notification helpers — fire-and-forget, never throw into the response path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Notify every active lab member about provider activity (note or attachment)
+ * on a case, and send one email to the lab's billing address.
+ *
+ * @param caseRow   - the canonical cases row (must have id, caseNumber, labOrganizationId,
+ *                    patientFirstName, patientLastName)
+ * @param type      - notification type: "provider_note_added" | "provider_attachment_added"
+ * @param providerOrgName - display name of the provider practice
+ */
+async function notifyLabMembersOfProviderActivity(
+  caseRow: {
+    id: string;
+    caseNumber: string;
+    labOrganizationId: string;
+    patientFirstName: string | null;
+    patientLastName: string | null;
+  },
+  type: "provider_note_added" | "provider_attachment_added",
+  providerOrgName: string
+): Promise<void> {
+  try {
+    const patientName =
+      [caseRow.patientFirstName, caseRow.patientLastName].filter(Boolean).join(" ") ||
+      "Unknown";
+    const isAttachment = type === "provider_attachment_added";
+    const title = isAttachment
+      ? `New file from ${providerOrgName} on Case #${caseRow.caseNumber}`
+      : `New note from ${providerOrgName} on Case #${caseRow.caseNumber}`;
+    const body = isAttachment
+      ? `${providerOrgName} attached a file to ${patientName}'s case.`
+      : `${providerOrgName} added a note to ${patientName}'s case.`;
+
+    await deliverInAppNotification({
+      labOrganizationId: caseRow.labOrganizationId,
+      category: "doctor_practice_message",
+      type,
+      title,
+      body,
+      dataJson: { caseId: caseRow.id, caseNumber: caseRow.caseNumber },
+    });
+
+    // Email the lab's billing address (gated on providerNoteNotifications preference)
+    const labOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, caseRow.labOrganizationId),
+    });
+    const labBillingEmail = (labOrg as any)?.billingEmail as string | null | undefined;
+    if (labBillingEmail) {
+      const { checkEmailPref } = await import("../lib/email-prefs.js");
+      const allowed = await checkEmailPref(labBillingEmail, "providerNoteNotifications");
+      if (!allowed) return;
+      const { sendMail } = await import("../lib/mail.js");
+      const subject = isAttachment
+        ? `LabTrax: New file from ${providerOrgName} on Case #${caseRow.caseNumber}`
+        : `LabTrax: New note from ${providerOrgName} on Case #${caseRow.caseNumber}`;
+      const action = isAttachment
+        ? `attached a file to`
+        : `added a note to`;
+      await sendMail({
+        to: labBillingEmail,
+        subject,
+        html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+  <div style="background:#4A6CF7;color:white;padding:20px;border-radius:8px 8px 0 0;">
+    <h2 style="margin:0;">LabTrax</h2>
+    <p style="margin:4px 0 0;opacity:.85;">Provider activity on a case</p>
+  </div>
+  <div style="padding:20px;border:1px solid #eee;border-top:none;border-radius:0 0 8px 8px;">
+    <p><strong>${providerOrgName}</strong> ${action} case <strong>#${caseRow.caseNumber}</strong> (patient: ${patientName}).</p>
+    <p style="color:#888;font-size:13px;">Log in to LabTrax to view the full case details.</p>
+  </div>
+</div>`,
+        text: `LabTrax: ${providerOrgName} ${action} case #${caseRow.caseNumber} (${patientName}).`,
+      });
+    }
+  } catch {
+    // Best-effort — never surface into the response.
+  }
+}
+
+/**
+ * Notify every active member of the provider organization about lab activity
+ * (shared note or shared attachment) on a case, and send one email to the
+ * provider's billing address (respecting the caseNoteNotifications preference).
+ *
+ * @param caseRow        - the canonical cases row
+ * @param type           - "shared_note_added" | "shared_attachment_added"
+ * @param labOrgName     - display name of the laboratory
+ */
+async function notifyProviderMembersOfLabActivity(
+  caseRow: {
+    id: string;
+    caseNumber: string;
+    labOrganizationId: string;
+    providerOrganizationId: string;
+    patientFirstName: string | null;
+    patientLastName: string | null;
+  },
+  type: "shared_note_added" | "shared_attachment_added",
+  labOrgName: string
+): Promise<void> {
+  try {
+    const providerMembers = await db
+      .select({ userId: organizationMemberships.userId })
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.labId, caseRow.providerOrganizationId),
+          eq(organizationMemberships.status, "active")
+        )
+      );
+
+    const patientName =
+      [caseRow.patientFirstName, caseRow.patientLastName].filter(Boolean).join(" ") ||
+      "Unknown";
+    const isAttachment = type === "shared_attachment_added";
+    const title = isAttachment
+      ? `New file on Case #${caseRow.caseNumber}`
+      : `New note on Case #${caseRow.caseNumber}`;
+    const body = isAttachment
+      ? `${labOrgName} shared a file on ${patientName}'s case.`
+      : `${labOrgName} shared a note on ${patientName}'s case.`;
+
+    if (providerMembers.length > 0) {
+      const { filterUserIdsByInAppPref } = await import("../lib/in-app-prefs.js");
+      const recipientIds = await filterUserIdsByInAppPref(
+        providerMembers.map((m) => m.userId),
+        "caseNoteNotifications"
+      );
+      if (recipientIds.length > 0) {
+        await db.insert(notifications).values(
+          recipientIds.map((userId) => ({
+            userId,
+            type,
+            title,
+            body,
+            dataJson: { caseId: caseRow.id },
+          }))
+        );
+      }
+    }
+
+    // Email the provider's billing address (respects caseNoteNotifications pref)
+    const providerOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, caseRow.providerOrganizationId),
+    });
+    const providerBillingEmail = (providerOrg as any)?.billingEmail as string | null | undefined;
+    if (providerBillingEmail) {
+      const { checkEmailPref } = await import("../lib/email-prefs.js");
+      const allowed = await checkEmailPref(providerBillingEmail, "caseNoteNotifications");
+      if (allowed) {
+        const { sendMail } = await import("../lib/mail.js");
+        const subject = isAttachment
+          ? `LabTrax: New file on case #${caseRow.caseNumber}`
+          : `LabTrax: New note on case #${caseRow.caseNumber}`;
+        const action = isAttachment ? `shared a file on` : `added a note to`;
+        await sendMail({
+          to: providerBillingEmail,
+          subject,
+          html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+  <div style="background:#4A6CF7;color:white;padding:20px;border-radius:8px 8px 0 0;">
+    <h2 style="margin:0;">LabTrax</h2>
+    <p style="margin:4px 0 0;opacity:.85;">Case update from your lab</p>
+  </div>
+  <div style="padding:20px;border:1px solid #eee;border-top:none;border-radius:0 0 8px 8px;">
+    <p>Your laboratory <strong>${labOrgName}</strong> ${action} case <strong>#${caseRow.caseNumber}</strong> (patient: ${patientName}).</p>
+    <p style="color:#888;font-size:13px;">Log in to LabTrax to view the full case details.</p>
+  </div>
+</div>`,
+          text: `LabTrax: ${labOrgName} ${action} case #${caseRow.caseNumber} (${patientName}).`,
+        });
+      }
+    }
+  } catch {
+    // Best-effort — never surface into the response.
+  }
+}
+
+// POST /cases/provider/:caseId/notes
+//
+// Provider-portal note creation. Forces visibility to "shared_with_provider"
+// so providers can only post notes visible to the lab (never internal ones).
+// The caller must be linked to the case's providerOrganizationId.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post(
+  "/provider/:caseId/notes",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const caseId = req.params.caseId;
+
+    const selectedProvider = await requireSelectedProviderOrganization(
+      callerId, req.header("x-provider-organization-id"),
+    );
+    await assertProviderOrganizationCapability(
+      selectedProvider.id,
+      "provider_portal",
+    );
+
+    const found = await db.query.cases.findFirst({
+      where: and(eq(cases.id, caseId), notDeleted(cases)),
+    });
+    if (!found) throw new HttpError(404, "Case not found.");
+
+    if (
+      !found.providerOrganizationId ||
+      found.providerOrganizationId !== selectedProvider.id
+    ) {
+      throw new HttpError(403, "Access denied.");
+    }
+
+    const input = z
+      .object({ noteText: z.string().min(1).max(5000) })
+      .parse(req.body);
+    const [note] = await db
+      .insert(caseNotes)
+      .values({
+        caseId: found.id,
+        authorUserId: callerId,
+        authorOrganizationId: found.providerOrganizationId,
+        noteText: input.noteText,
+        // Provider notes are always visible to the lab (shared_with_provider)
+        visibility: "shared_with_provider",
+      })
+      .returning()
+      .catch((err: unknown): never =>
+        wrapDbError(err, { fallback: "Failed to save note." })
+      );
+
+    await db
+      .insert(caseEvents)
+      .values({
+        caseId: found.id,
+        eventType: "note_added",
+        actorUserId: callerId,
+        actorOrganizationId: found.providerOrganizationId,
+        actorInitials: (req as any).user?.initials || "PRV",
+        metadataJson: {
+          visibility: "shared_with_provider",
+          noteId: note.id,
+          noteText: input.noteText,
+        },
+      })
+      .catch(() => {
+        /* non-fatal */
+      });
+
+    await touchCase(found.id);
+
+    // Auto-notify all active lab members that the provider added a note.
+    // Fire-and-forget — failure must not affect the 201 response.
+    const providerOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, found.providerOrganizationId),
+    }).catch(() => null);
+    void notifyLabMembersOfProviderActivity(
+      found,
+      "provider_note_added",
+      (providerOrg as any)?.name ?? "Provider"
+    );
+
+    return ok(res, note, 201);
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /cases/provider/:caseId/attachments
+//
+// Provider-portal file attachment endpoint. Accepts a multipart/form-data
+// upload with a single file field named "file". The attachment is written
+// to the case-media directory, mirrored to object storage, and recorded
+// with visibility = "shared_with_provider". The caller must be linked to
+// the case's providerOrganizationId.
+// ─────────────────────────────────────────────────────────────────────────────
+const providerAttachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 /* 20 MB */ },
+});
+
+/**
+ * Pre-auth gate: validates provider ↔ case authorization BEFORE Multer
+ * buffers any bytes into memory. Without this gate an authenticated-but-
+ * unauthorised caller could repeatedly force 20 MB allocations per request.
+ * The verified case row is stashed on `req._verifiedProviderCase` so the main
+ * handler can reuse it without a second DB round-trip.
+ */
+async function providerAttachmentAuthGate(
+  req: any,
+  res: any,
+  next: any
+): Promise<void> {
+  try {
+    const callerId = req.auth?.userId as string | undefined;
+    if (!callerId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+    const caseId = req.params.caseId as string;
+    const selectedProvider = await requireSelectedProviderOrganization(
+      callerId, req.header("x-provider-organization-id"),
+    );
+    await assertProviderOrganizationCapability(
+      selectedProvider.id,
+      "provider_portal",
+    );
+    const found = await db.query.cases.findFirst({
+      where: and(eq(cases.id, caseId), notDeleted(cases)),
+    });
+    if (!found) {
+      res.status(404).json({ ok: false, error: "Case not found." });
+      return;
+    }
+    if (
+      !found.providerOrganizationId ||
+      found.providerOrganizationId !== selectedProvider.id
+    ) {
+      res.status(403).json({ ok: false, error: "Access denied." });
+      return;
+    }
+    // Stash for the main handler to avoid a duplicate DB fetch
+    req._verifiedProviderCase = found;
+    next();
+  } catch (err: unknown) {
+    next(err);
+  }
+}
+
+router.post(
+  "/provider/:caseId/attachments",
+  // Auth gate runs BEFORE Multer: unauthorized callers are rejected before any
+  // bytes are buffered into memory.
+  providerAttachmentAuthGate,
+  providerAttachmentUpload.single("file"),
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const caseId = req.params.caseId;
+
+    // Reuse the pre-verified case from the gate; fall back to a DB fetch only
+    // if somehow the gate did not attach it (e.g. test environments).
+    const found =
+      (req as any)._verifiedProviderCase ??
+      (await db.query.cases.findFirst({
+        where: and(eq(cases.id, caseId), notDeleted(cases)),
+      }));
+    if (!found) throw new HttpError(404, "Case not found.");
+
+    const file = req.file;
+    if (!file) throw new HttpError(400, "No file uploaded.");
+
+    // Server-side MIME allowlist. The client-supplied mimetype is NEVER
+    // trusted as a serving content-type — this list defines the only types
+    // we accept. Anything that can execute as script (text/html, image/svg+xml,
+    // application/javascript, …) is rejected here regardless of the extension
+    // or Accept header the browser sent.
+    const ALLOWED_PROVIDER_MIMES: Record<string, string> = {
+      "image/jpeg": ".jpg",
+      "image/png": ".png",
+      "image/gif": ".gif",
+      "image/webp": ".webp",
+      "image/heic": ".heic",
+      "image/heif": ".heif",
+      "application/pdf": ".pdf",
+      "application/msword": ".doc",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+      "application/vnd.ms-excel": ".xls",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+      "text/plain": ".txt",
+      "text/csv": ".csv",
+    };
+    // Normalise: strip parameters (e.g. "image/jpeg; name=x") and lowercase
+    const declaredMime = (file.mimetype ?? "")
+      .split(";")[0]!
+      .trim()
+      .toLowerCase();
+    if (!ALLOWED_PROVIDER_MIMES[declaredMime]) {
+      throw new HttpError(
+        415,
+        `File type "${declaredMime}" is not allowed. Please upload an image, PDF, or common document format.`
+      );
+    }
+    // Use the allowlisted MIME (not the raw client value) for both storage and
+    // the DB record so the serve path always uses a known-safe content type.
+    const safeMime = declaredMime;
+
+    // Generate a safe storage filename: canonical extension from allowlist
+    const safeExt = ALLOWED_PROVIDER_MIMES[safeMime]!;
+    const storageFilename = `prv-${randomBytes(16).toString("hex")}${safeExt}`;
+    const diskPath = path.resolve(caseMediaDir, storageFilename);
+
+    // Write to disk
+    await fs.promises.writeFile(diskPath, file.buffer);
+
+    // Mirror to object storage (best-effort)
+    writeCaseMediaToObjectStorage(storageFilename, file.buffer, safeMime).catch(
+      (err: unknown) => {
+        req.log?.warn({ err }, "Provider attachment: failed to mirror to object storage");
+      }
+    );
+
+    const [attachment] = await db
+      .insert(caseAttachments)
+      .values({
+        caseId: found.id,
+        uploadedByUserId: callerId,
+        uploadedByOrganizationId: found.providerOrganizationId,
+        fileName: file.originalname || storageFilename,
+        storageKey: storageFilename,
+        fileType: safeMime,
+        visibility: "shared_with_provider",
+      })
+      .returning()
+      .catch((err: unknown): never =>
+        wrapDbError(err, { fallback: "Failed to save attachment." })
+      );
+
+    await db
+      .insert(caseEvents)
+      .values({
+        caseId: found.id,
+        eventType: "case_attachment_added",
+        actorUserId: callerId,
+        actorOrganizationId: found.providerOrganizationId,
+        actorInitials: (req as any).user?.initials || "PRV",
+        metadataJson: {
+          attachmentId: attachment.id,
+          fileName: attachment.fileName,
+          fileType: attachment.fileType,
+          visibility: "shared_with_provider",
+        },
+      })
+      .catch(() => {
+        /* non-fatal */
+      });
+
+    await touchCase(found.id);
+
+    // Auto-notify all active lab members that the provider attached a file.
+    // Fire-and-forget — failure must not affect the 201 response.
+    const providerAttachOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, found.providerOrganizationId!),
+    }).catch(() => null);
+    void notifyLabMembersOfProviderActivity(
+      found,
+      "provider_attachment_added",
+      (providerAttachOrg as any)?.name ?? "Provider"
+    );
+
+    return ok(res, attachment, 201);
   })
 );
 
@@ -4928,8 +9445,7 @@ router.get(
       const spaceIdx = patientName.indexOf(" ");
       const firstName = spaceIdx >= 0 ? patientName.slice(0, spaceIdx) : patientName;
       const lastName = spaceIdx >= 0 ? patientName.slice(spaceIdx + 1) : "";
-      const rawStatus = String(parsed.status ?? "INTAKE").toUpperCase();
-      const desktopStatus = MOBILE_TO_DESKTOP_STATUS[rawStatus] ?? "received";
+      const desktopStatus = legacyStatusToCanonical(parsed.status);
       const createdAt = parsed.createdAt
         ? new Date(Number(parsed.createdAt)).toISOString()
         : new Date().toISOString();
@@ -5014,6 +9530,191 @@ router.get(
       caseNumber: rows[0].caseNumber,
       labOrganizationId: rows[0].labOrganizationId,
     });
+  }),
+);
+
+// /cases/saved-views
+//
+// Named Cases search/status/date filters shared by every member of one lab.
+// Desktop and mobile date snapshots are stored separately because they filter
+// different case date fields.
+//
+// NOTE: must be declared before "/:caseId" so Express does not shadow it.
+const caseSavedViewConflictName = "case_saved_views_lab_name_unique";
+
+function normalizeCaseSavedViewName(name: string): string {
+  const normalized = name.trim();
+  if (!normalized) throw new HttpError(400, "View name cannot be blank.");
+  return normalized;
+}
+
+function validateCaseSavedViewCalendarDates(
+  filters: z.infer<typeof CreateCaseSavedViewBody>["filters"],
+): void {
+  const dates = [
+    filters.desktop?.customStartDate,
+    filters.desktop?.customEndDate,
+    filters.mobile?.createdCustomFrom,
+    filters.mobile?.createdCustomTo,
+    filters.mobile?.dueCustomFrom,
+    filters.mobile?.dueCustomTo,
+  ];
+  if (dates.some((value) => value !== undefined && value !== "" && !isValidCalendarDate(value))) {
+    throw new HttpError(400, "Saved view dates must be valid calendar dates.");
+  }
+}
+
+async function assertCaseSavedViewNameAvailable(
+  labOrganizationId: string,
+  name: string,
+  exceptId?: string,
+): Promise<void> {
+  const predicates = [
+    eq(caseSavedViews.labOrganizationId, labOrganizationId),
+    sql`lower(${caseSavedViews.name}) = lower(${name})`,
+  ];
+  if (exceptId) predicates.push(ne(caseSavedViews.id, exceptId));
+  const [existing] = await db
+    .select({ id: caseSavedViews.id })
+    .from(caseSavedViews)
+    .where(and(...predicates))
+    .limit(1);
+  if (existing) throw new HttpError(409, "A Cases view with this name already exists.");
+}
+
+async function requireCaseSavedViewLab(
+  userId: string,
+  labOrganizationId: string,
+): Promise<void> {
+  await requireMembership(userId, labOrganizationId);
+  const [lab] = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(
+      eq(organizations.id, labOrganizationId),
+      eq(organizations.type, "lab"),
+      notDeleted(organizations),
+    ))
+    .limit(1);
+  if (!lab) throw new HttpError(403, "Saved Cases views are shared within a lab.");
+}
+
+router.get(
+  "/saved-views",
+  asyncHandler(async (req, res) => {
+    const query = ListCaseSavedViewsQueryParams.parse(req.query);
+    await requireCaseSavedViewLab((req as any).auth.userId as string, query.labOrganizationId);
+    const rows = await db
+      .select()
+      .from(caseSavedViews)
+      .where(eq(caseSavedViews.labOrganizationId, query.labOrganizationId))
+      .orderBy(asc(sql`lower(${caseSavedViews.name})`), asc(caseSavedViews.id));
+    return res.json(ListCaseSavedViews200Response.parse({ ok: true, data: rows }));
+  }),
+);
+
+router.post(
+  "/saved-views",
+  asyncHandler(async (req, res) => {
+    const body = CreateCaseSavedViewBody.parse(req.body);
+    validateCaseSavedViewCalendarDates(body.filters);
+    const userId = (req as any).auth.userId as string;
+    await requireCaseSavedViewLab(userId, body.labOrganizationId);
+    const name = normalizeCaseSavedViewName(body.name);
+    await assertCaseSavedViewNameAvailable(body.labOrganizationId, name);
+    try {
+      const [savedView] = await db
+        .insert(caseSavedViews)
+        .values({
+          labOrganizationId: body.labOrganizationId,
+          name,
+          filters: body.filters,
+          createdByUserId: userId,
+        })
+        .returning();
+      if (!savedView) throw new HttpError(500, "The Cases view could not be saved.");
+      return res.status(201).json(
+        CreateCaseSavedView201Response.parse({ ok: true, data: savedView }),
+      );
+    } catch (error) {
+      if (extractPgConstraintName(error) === caseSavedViewConflictName) {
+        throw new HttpError(409, "A Cases view with this name already exists.");
+      }
+      throw error;
+    }
+  }),
+);
+
+router.patch(
+  "/saved-views/:id",
+  asyncHandler(async (req, res) => {
+    const params = RenameCaseSavedViewParams.parse(req.params);
+    const body = RenameCaseSavedViewBody.parse(req.body);
+    if (body.name === undefined && body.filters === undefined) {
+      throw new HttpError(400, "Provide a view name or filters to update.");
+    }
+    if (body.filters) validateCaseSavedViewCalendarDates(body.filters);
+    await requireCaseSavedViewLab(
+      (req as any).auth.userId as string,
+      body.labOrganizationId,
+    );
+    const name = body.name === undefined ? undefined : normalizeCaseSavedViewName(body.name);
+    const [existing] = await db
+      .select({ id: caseSavedViews.id })
+      .from(caseSavedViews)
+      .where(and(
+        eq(caseSavedViews.id, params.id),
+        eq(caseSavedViews.labOrganizationId, body.labOrganizationId),
+      ))
+      .limit(1);
+    if (!existing) throw new HttpError(404, "Cases view not found.");
+    if (name !== undefined) {
+      await assertCaseSavedViewNameAvailable(body.labOrganizationId, name, params.id);
+    }
+    try {
+      const [savedView] = await db
+        .update(caseSavedViews)
+        .set({
+          ...(name === undefined ? {} : { name }),
+          ...(body.filters === undefined ? {} : { filters: body.filters }),
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(caseSavedViews.id, params.id),
+          eq(caseSavedViews.labOrganizationId, body.labOrganizationId),
+        ))
+        .returning();
+      if (!savedView) throw new HttpError(404, "Cases view not found.");
+      return res.json(
+        RenameCaseSavedView200Response.parse({ ok: true, data: savedView }),
+      );
+    } catch (error) {
+      if (extractPgConstraintName(error) === caseSavedViewConflictName) {
+        throw new HttpError(409, "A Cases view with this name already exists.");
+      }
+      throw error;
+    }
+  }),
+);
+
+router.delete(
+  "/saved-views/:id",
+  asyncHandler(async (req, res) => {
+    const params = DeleteCaseSavedViewParams.parse(req.params);
+    const query = DeleteCaseSavedViewQueryParams.parse(req.query);
+    await requireCaseSavedViewLab(
+      (req as any).auth.userId as string,
+      query.labOrganizationId,
+    );
+    const [deleted] = await db
+      .delete(caseSavedViews)
+      .where(and(
+        eq(caseSavedViews.id, params.id),
+        eq(caseSavedViews.labOrganizationId, query.labOrganizationId),
+      ))
+      .returning({ id: caseSavedViews.id });
+    if (!deleted) throw new HttpError(404, "Cases view not found.");
+    return res.sendStatus(204);
   }),
 );
 
@@ -5112,6 +9813,7 @@ router.get(
       throw err;
     }
     const found = access.case;
+    const isLabMember = !!access.labMembership;
     const [restorations, notes, attachments, events, locations] =
       await Promise.all([
         db.query.caseRestorations.findMany({
@@ -5122,7 +9824,13 @@ router.get(
           orderBy: [desc(caseNotes.createdAt)],
         }),
         db.query.caseAttachments.findMany({
-          where: eq(caseAttachments.caseId, found.id),
+          where: and(
+            or(
+              eq(caseAttachments.caseId, found.id),
+              eq(caseAttachments.labCaseId, found.id),
+            ),
+            isNull(caseAttachments.deletedAt),
+          ),
           orderBy: [desc(caseAttachments.createdAt)],
         }),
         db.query.caseEvents.findMany({
@@ -5131,6 +9839,7 @@ router.get(
         }),
         db.query.caseLocations.findMany({
           where: eq(caseLocations.caseId, found.id),
+          orderBy: [asc(caseLocations.movedAt)],
         }),
       ]);
 
@@ -5206,7 +9915,8 @@ router.get(
         null
       );
     };
-    const enrichedAttachments = attachments.map((a: any) => ({
+    const attachmentsWithScanAccuracy = await enrichScanAttachments(attachments);
+    const enrichedAttachments = attachmentsWithScanAccuracy.map((a: any) => ({
       ...a,
       uploaderName: displayNameFor(a.uploadedByUserId),
     }));
@@ -5215,9 +9925,17 @@ router.get(
       authorName: displayNameFor(n.authorUserId),
     }));
 
-    const isLabMember = !!access.labMembership;
     const labRole = access.labMembership?.role as string | undefined;
     const viewerCanUploadAttachments = isLabMember;
+    // Notes have a broader authorization path than uploads: either a lab
+    // member or the case's linked provider may post one. Keep this explicit so
+    // clients never infer note permission from attachment permission.
+    const viewerCanPostNotes = !!(access.labMembership || access.providerMembership);
+    const viewerQuickReferenceOrganizationId = isLabMember
+      ? found.labOrganizationId
+      : access.providerMembership
+        ? found.providerOrganizationId
+        : null;
     const viewerCanManageAttachments =
       isLabMember && !!labRole && (ADMIN_ROLES as string[]).includes(labRole);
 
@@ -5267,6 +9985,38 @@ router.get(
         ),
     ]);
 
+    // Resolve remake locations in one tenant-scoped lookup. Never trust a
+    // location id stored in a legacy blob (or a stale canonical row) without
+    // confirming that it belongs to this case's lab.
+    const remakeLocationIds = Array.from(
+      new Set(
+        [
+          remakeOriginalRow && (remakeOriginalRow as any).labLocationId,
+          ...remakeChildrenRows.map((r: any) => r.labLocationId),
+          ...remakeChildrenLegacyRows.map((r: any) => {
+            try {
+              const parsed = typeof r.caseData === "string" ? JSON.parse(r.caseData) : r.caseData;
+              return parsed?.labLocationId;
+            } catch {
+              return null;
+            }
+          }),
+        ].filter((id): id is string => typeof id === "string" && id.length > 0),
+      ),
+    );
+    const remakeLocationRows = remakeLocationIds.length
+      ? await db
+          .select({ id: labLocations.id, name: labLocations.name })
+          .from(labLocations)
+          .where(
+            and(
+              inArray(labLocations.id, remakeLocationIds),
+              eq(labLocations.labOrganizationId, found.labOrganizationId),
+            ),
+          )
+      : [];
+    const remakeLocationById = new Map(remakeLocationRows.map((r) => [r.id, r]));
+
     // Fetch events from all canonical remake children so the original case
     // view can show a unified timeline with each child's entries labeled by
     // case number (e.g. "26-22B" badge next to the event).
@@ -5288,6 +10038,153 @@ router.get(
           )
         : [];
 
+    // Some invoice corrections live only in the immutable invoice audit log,
+    // while newer payment deletions may also have a case_event. Project the
+    // authoritative audits into every canonical timeline included in the
+    // unified history export (current, original, and remake children), replacing
+    // duplicate payment-deletion case events. Billing audit details remain
+    // lab-only, matching the invoice detail endpoint.
+    if (isLabMember) {
+      const timelines = new Map<string, typeof events>([[found.id, events]]);
+      if (found.remakeOfCaseId) {
+        timelines.set(found.remakeOfCaseId, originalCaseEvents);
+      }
+      for (const child of remakeChildrenEvents) {
+        timelines.set(child.caseId, child.events);
+      }
+      const caseIds = [...timelines.keys()];
+      const correctionRows = await db
+        .select({
+          auditLogId: auditLogs.id,
+          caseId: invoices.caseId,
+          invoiceId: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          userId: auditLogs.userId,
+          beforeJson: auditLogs.beforeJson,
+          afterJson: auditLogs.afterJson,
+          metadataJson: auditLogs.metadataJson,
+          action: auditLogs.action,
+          createdAt: auditLogs.createdAt,
+          actorUsername: users.username,
+          actorFirstName: users.firstName,
+          actorLastName: users.lastName,
+          actorInitials: users.initials,
+        })
+        .from(auditLogs)
+        .innerJoin(invoices, eq(invoices.id, auditLogs.entityId))
+        .leftJoin(users, eq(users.id, auditLogs.userId))
+        .where(
+          and(
+            inArray(invoices.caseId, caseIds),
+            eq(invoices.labOrganizationId, found.labOrganizationId),
+            eq(auditLogs.entityType, "invoice"),
+            inArray(auditLogs.action, [
+              "invoice_dates_repaired",
+              "invoice_payments_deleted",
+              "invoice_doctor_identity_repaired",
+            ]),
+          ),
+        );
+      const paymentAuditInvoiceIds = new Set(
+        correctionRows
+          .filter((row) => row.action === "invoice_payments_deleted")
+          .map((row) => row.invoiceId),
+      );
+      for (const timeline of timelines.values()) {
+        for (let index = timeline.length - 1; index >= 0; index -= 1) {
+          const event = timeline[index] as any;
+          if (
+            event.eventType === "invoice_payments_deleted" &&
+            paymentAuditInvoiceIds.has(event.metadataJson?.invoiceId)
+          ) {
+            timeline.splice(index, 1);
+          }
+        }
+      }
+      for (const correction of correctionRows) {
+        if (!correction.caseId) continue;
+        const target = timelines.get(correction.caseId);
+        if (!target) continue;
+        const before = (correction.beforeJson ?? {}) as Record<string, unknown>;
+        const after = (correction.afterJson ?? {}) as Record<string, unknown>;
+        const metadata = (correction.metadataJson ?? {}) as Record<string, unknown>;
+        const authorName =
+          [correction.actorFirstName, correction.actorLastName]
+            .filter(Boolean)
+            .join(" ")
+            .trim() ||
+          correction.actorUsername ||
+          correction.actorInitials ||
+          "System";
+        const occurredAt =
+          correction.createdAt instanceof Date
+            ? correction.createdAt.toISOString()
+            : new Date(correction.createdAt as any).toISOString();
+        const isPaymentDeletion =
+          correction.action === "invoice_payments_deleted";
+        const isDoctorIdentityRepair =
+          correction.action === "invoice_doctor_identity_repaired";
+        target.push({
+          id: isPaymentDeletion
+            ? `invoice-payment-deletion-${correction.auditLogId}`
+            : isDoctorIdentityRepair
+              ? `invoice-doctor-identity-repair-${correction.auditLogId}`
+            : `invoice-date-repair-${correction.auditLogId}`,
+          caseId: correction.caseId,
+          eventType: correction.action,
+          actorUserId: correction.userId,
+          actorOrganizationId: found.labOrganizationId,
+          actorInitials: correction.actorInitials ?? "SYS",
+          metadataJson: isPaymentDeletion
+            ? {
+                auditLogId: correction.auditLogId,
+                invoiceId: correction.invoiceId,
+                invoiceNumber:
+                  metadata.invoiceNumber ?? correction.invoiceNumber,
+                authorName,
+                deletedCount: metadata.deletedCount ?? null,
+                reversedDepositCount: metadata.reversedDepositCount ?? null,
+                previousStatus: metadata.previousStatus ?? null,
+                synthesized: true,
+                source: "invoice_audit_log",
+              }
+            : isDoctorIdentityRepair
+              ? {
+                  auditLogId: correction.auditLogId,
+                  invoiceId: correction.invoiceId,
+                  invoiceNumber: correction.invoiceNumber,
+                  authorName,
+                  previousDoctorIdentity: before.doctorIdentity ?? null,
+                  previousDoctorDisplayName: before.doctorDisplayName ?? null,
+                  correctedDoctorIdentity: after.doctorIdentity ?? null,
+                  correctedDoctorDisplayName: after.doctorDisplayName ?? null,
+                  synthesized: true,
+                  source: "invoice_audit_log",
+                }
+              : {
+                auditLogId: correction.auditLogId,
+                invoiceId: correction.invoiceId,
+                invoiceNumber: correction.invoiceNumber,
+                authorName,
+                previousIssuedAt: before.issuedAt ?? null,
+                previousDueAt: before.dueAt ?? null,
+                correctedIssuedAt: after.issuedAt ?? null,
+                correctedDueAt: after.dueAt ?? null,
+                synthesized: true,
+                source: "invoice_audit_log",
+              },
+          occurredAt,
+          createdAt: occurredAt,
+        } as any);
+      }
+      for (const timeline of timelines.values()) {
+        timeline.sort(
+          (a: any, b: any) =>
+            new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime(),
+        );
+      }
+    }
+
     let remakeOriginal: {
       id: string;
       caseNumber: string;
@@ -5295,6 +10192,8 @@ router.get(
       patientLastName: string | null;
       status: string | null;
       createdAt: Date | string | null;
+      labLocationId: string | null;
+      labLocationName: string | null;
       kind: "canonical" | "legacy";
     } | null = null;
     if (remakeOriginalRow) {
@@ -5305,6 +10204,11 @@ router.get(
         patientLastName: remakeOriginalRow.patientLastName,
         status: remakeOriginalRow.status,
         createdAt: remakeOriginalRow.createdAt,
+        labLocationId: remakeLocationById.has((remakeOriginalRow as any).labLocationId)
+          ? (remakeOriginalRow as any).labLocationId
+          : null,
+        labLocationName:
+          remakeLocationById.get((remakeOriginalRow as any).labLocationId)?.name ?? null,
         kind: "canonical",
       };
     } else if (
@@ -5317,6 +10221,10 @@ router.get(
       } catch {
         parsed = {};
       }
+      const locationId =
+        typeof parsed?.labLocationId === "string" && parsed.labLocationId
+          ? parsed.labLocationId
+          : null;
       remakeOriginal = {
         id: remakeOriginalLegacyRow.id,
         caseNumber: parsed?.caseNumber ?? remakeOriginalLegacyRow.id,
@@ -5324,6 +10232,8 @@ router.get(
         patientLastName: parsed?.patientLastName ?? null,
         status: parsed?.status ?? null,
         createdAt: parsed?.createdAt ?? remakeOriginalLegacyRow.updatedAt ?? null,
+        labLocationId: locationId && remakeLocationById.has(locationId) ? locationId : null,
+        labLocationName: locationId ? remakeLocationById.get(locationId)?.name ?? null : null,
         kind: "legacy",
       };
     }
@@ -5334,6 +10244,8 @@ router.get(
       patientLastName: string | null;
       status: string | null;
       createdAt: Date | string | null;
+      labLocationId: string | null;
+      labLocationName: string | null;
       remakeReason: string | null;
       remakeCharged: boolean | null;
       kind: "canonical" | "legacy";
@@ -5344,6 +10256,8 @@ router.get(
       patientLastName: r.patientLastName,
       status: r.status,
       createdAt: r.createdAt,
+      labLocationId: remakeLocationById.has(r.labLocationId) ? r.labLocationId : null,
+      labLocationName: remakeLocationById.get(r.labLocationId)?.name ?? null,
       remakeReason: r.remakeReason,
       remakeCharged: r.remakeCharged,
       kind: "canonical",
@@ -5359,6 +10273,10 @@ router.get(
         parsed = {};
       }
       const split = splitDisplayName(parsed?.patientName);
+      const locationId =
+        typeof parsed?.labLocationId === "string" && parsed.labLocationId
+          ? parsed.labLocationId
+          : null;
       remakeChildren.push({
         id: lr.id,
         caseNumber: String(parsed?.caseNumber ?? lr.id),
@@ -5366,6 +10284,8 @@ router.get(
         patientLastName: parsed?.patientLastName ?? split.last ?? null,
         status: parsed?.status ?? null,
         createdAt: parsed?.createdAt ?? lr.updatedAt ?? null,
+        labLocationId: locationId && remakeLocationById.has(locationId) ? locationId : null,
+        labLocationName: locationId ? remakeLocationById.get(locationId)?.name ?? null : null,
         remakeReason:
           typeof parsed?.remakeReason === "string" ? parsed.remakeReason : null,
         remakeCharged:
@@ -5379,15 +10299,96 @@ router.get(
     // Resolve the suggested practice name so the desktop banner can display it
     // without a second round-trip.
     let suggestedPracticeName: string | null = null;
-    if (found.suggestedProviderOrgId) {
-      const suggestedOrg = await db.query.organizations.findFirst({
-        where: eq(organizations.id, found.suggestedProviderOrgId),
-      });
-      suggestedPracticeName = suggestedOrg?.name ?? null;
-    }
+    let labLocationName: string | null = null;
+    const foundLabLocationId = (found as any).labLocationId ?? null;
+    const [suggestedOrgResult, labLocationResult, labOrgForSlip, providerOrg] =
+      await Promise.all([
+        found.suggestedProviderOrgId
+          ? db.query.organizations.findFirst({
+              where: eq(organizations.id, found.suggestedProviderOrgId),
+            })
+          : Promise.resolve(null),
+        foundLabLocationId
+          ? db.query.labLocations.findFirst({
+              where: and(
+                eq(labLocations.id, foundLabLocationId),
+                eq(labLocations.labOrganizationId, found.labOrganizationId),
+              ),
+            })
+          : Promise.resolve(null),
+        db.query.organizations.findFirst({
+          where: eq(organizations.id, found.labOrganizationId),
+          columns: { printProviderPreferencesOnLabSlips: true },
+        }),
+        found.providerOrganizationId
+          ? db.query.organizations.findFirst({
+              where: eq(organizations.id, found.providerOrganizationId),
+            })
+          : Promise.resolve(null),
+      ]);
+    suggestedPracticeName = suggestedOrgResult?.name ?? null;
+    labLocationName = labLocationResult?.name ?? null;
+
+    // Point-lookup for doctor preferences from the doctor_profiles table.
+    // This hits the partial unique index on (labOrganizationId, doctorName,
+    // providerOrganizationId) so it is O(1) regardless of profile count.
+    // Returns null when no profile has been created for this doctor yet.
+    const doctorProfileRow = await db.query.doctorProfiles.findFirst({
+      where: and(
+        eq(doctorProfiles.labOrganizationId, found.labOrganizationId),
+        sql`lower(${doctorProfiles.doctorName}) = lower(${found.doctorName ?? ""})`,
+        found.providerOrganizationId
+          ? eq(doctorProfiles.providerOrganizationId, found.providerOrganizationId)
+          : isNull(doctorProfiles.providerOrganizationId)
+      ),
+      columns: { preferences: true },
+    });
+    const doctorPreferences: string | null = doctorProfileRow?.preferences ?? null;
+
+    // Provider-authored preferences are deliberately resolved from the current
+    // active provider membership for this case's provider organization. They
+    // are not the lab-authored doctor_profiles.preferences above. We use the
+    // existing canonical doctor-name normalization only after scoping the
+    // candidates to this exact provider organization, never another practice.
+    const normalizedCaseDoctorName = normalizeDoctorForCompare(found.doctorName);
+    const providerPreferenceUsers =
+      found.providerOrganizationId && normalizedCaseDoctorName
+        ? await db
+            .select({
+              doctorName: users.doctorName,
+              doctorPreferences: users.doctorPreferences,
+            })
+            .from(organizationMemberships)
+            .innerJoin(users, eq(users.id, organizationMemberships.userId))
+            .where(
+              and(
+                eq(organizationMemberships.labId, found.providerOrganizationId),
+                eq(organizationMemberships.status, "active"),
+                isNull(organizationMemberships.deletedAt),
+                eq(users.isActive, true),
+                eq(users.userType, "provider"),
+              ),
+            )
+        : [];
+    const matchingProviderPreferenceUsers = providerPreferenceUsers.filter(
+      (user) =>
+        normalizeDoctorForCompare(user.doctorName) === normalizedCaseDoctorName,
+    );
+    // Do not leak or arbitrarily select one user's preferences when duplicate
+    // provider-user identities exist in the same practice.
+    const providerPreferenceUser =
+      matchingProviderPreferenceUsers.length === 1
+        ? matchingProviderPreferenceUsers[0]
+        : null;
+    const providerDoctorPreferences: DoctorPreferences | null =
+      providerPreferenceUser
+        ? formatDoctorPreferences(providerPreferenceUser.doctorPreferences)
+        : null;
 
     // Fetch provider org contact details so the desktop print renderer can
     // populate the Doctor Info label block without an extra round-trip.
+    // Also expose the lab-scoped account number so clients can display it
+    // next to the doctor name without an additional lookup.
     let providerOrganizationContact: {
       name?: string | null;
       addressLine1?: string | null;
@@ -5398,22 +10399,19 @@ router.get(
       phone?: string | null;
       billingEmail?: string | null;
     } | null = null;
-    if (found.providerOrganizationId) {
-      const providerOrg = await db.query.organizations.findFirst({
-        where: eq(organizations.id, found.providerOrganizationId),
-      });
-      if (providerOrg) {
-        providerOrganizationContact = {
-          name: (providerOrg as any).name ?? null,
-          addressLine1: (providerOrg as any).addressLine1 ?? null,
-          addressLine2: (providerOrg as any).addressLine2 ?? null,
-          city: (providerOrg as any).city ?? null,
-          state: (providerOrg as any).state ?? null,
-          zip: (providerOrg as any).zip ?? null,
-          phone: (providerOrg as any).phone ?? null,
-          billingEmail: (providerOrg as any).billingEmail ?? null,
-        };
-      }
+    let providerAccountNumber: string | null = null;
+    if (providerOrg) {
+      providerOrganizationContact = {
+        name: (providerOrg as any).name ?? null,
+        addressLine1: (providerOrg as any).addressLine1 ?? null,
+        addressLine2: (providerOrg as any).addressLine2 ?? null,
+        city: (providerOrg as any).city ?? null,
+        state: (providerOrg as any).state ?? null,
+        zip: (providerOrg as any).zip ?? null,
+        phone: (providerOrg as any).phone ?? null,
+        billingEmail: (providerOrg as any).billingEmail ?? null,
+      };
+      providerAccountNumber = (providerOrg as any).accountNumber ?? null;
     }
 
     const STATUS_LABELS: Record<string, string> = {
@@ -5432,10 +10430,13 @@ router.get(
       on_hold: "On Hold",
       remake: "Remake",
       cancelled: "Cancelled",
-      draft: "Draft",
     };
     const statusHistory: Array<{ status: string; label: string; occurredAt: Date }> = [
-      { status: "received", label: STATUS_LABELS["received"] ?? "Received", occurredAt: found.receivedAt },
+      {
+        status: "received",
+        label: STATUS_LABELS["received"] ?? "Received",
+        occurredAt: calendarDateToUtcNoon(found.receivedAt),
+      },
       ...(events as any[])
         .filter((e: any) => e.eventType === "status_changed")
         .sort(
@@ -5450,25 +10451,59 @@ router.get(
         .filter((e): e is { status: string; label: string; occurredAt: Date } => e !== null),
     ];
 
+    const historyCaseIds = Array.from(
+      new Set([
+        found.id,
+        ...(found.remakeOfCaseId ? [found.remakeOfCaseId] : []),
+        ...remakeChildrenRows.map((row) => row.id),
+      ]),
+    );
+    const relatedHistoryAttachments = await db.query.caseAttachments.findMany({
+      where: or(
+        inArray(caseAttachments.caseId, historyCaseIds),
+        inArray(caseAttachments.labCaseId, historyCaseIds),
+      ),
+    });
+
     // Backfill note into case_attachment_added events whose metadataJson
     // predates the note field being stored there. Look up the note from the
     // already-fetched attachments list by attachmentId so we never do extra
     // DB queries and existing history entries gain their notes automatically.
-    const attachmentNoteById = new Map<string, string>();
-    for (const a of enrichedAttachments as any[]) {
-      if (a.id && a.note) attachmentNoteById.set(a.id, a.note);
-    }
+    const historyAttachmentById = new Map<string, any>(
+      relatedHistoryAttachments.map((attachment: any) => [attachment.id, attachment]),
+    );
     const enrichEventsWithNote = (evList: any[]) =>
       evList.map((ev: any) => {
         if (ev.eventType !== "case_attachment_added") return ev;
         const meta = (ev.metadataJson ?? {}) as Record<string, unknown>;
         const attachmentId = typeof meta.attachmentId === "string" ? meta.attachmentId : null;
         if (!attachmentId) return ev;
+        const liveAttachment = historyAttachmentById.get(attachmentId);
+        if (!liveAttachment) {
+          return isLabMember
+            ? ev
+            : {
+                ...ev,
+                metadataJson: stripExceptionAttachmentMetadata(meta),
+              };
+        }
+        if (
+          !isLabMember &&
+          liveAttachment.visibility !== "shared_with_provider"
+        ) {
+          return {
+            ...ev,
+            metadataJson: stripExceptionAttachmentMetadata(meta),
+          };
+        }
         // Always reflect the attachment's current note so edits and clears
         // made after upload show up in history without a stored-metadata
         // rewrite. `attachmentNoteById` only holds attachments that still
         // have a note, so a cleared note resolves to null and is removed.
-        const liveNote = attachmentNoteById.get(attachmentId) ?? null;
+        const liveNote =
+          typeof liveAttachment.note === "string" && liveAttachment.note
+            ? liveAttachment.note
+            : null;
         if ((meta.note ?? null) === liveNote) return ev;
         const nextMeta: Record<string, unknown> = { ...meta };
         if (liveNote) nextMeta.note = liveNote;
@@ -5484,14 +10519,21 @@ router.get(
     // intentional, and rows without any material (nothing to recognize).
     const unrecognizedMaterials = Array.from(
       new Set(
-        (restorations as any[])
-          .filter((r) => {
-            const mat = (r.material ?? "").trim();
-            if (!mat) return false;
-            if (r.priceSource === "manual") return false;
-            return materialToPriceKey(r.material, r.restorationType) === null;
-          })
-          .map((r) => (r.material as string).trim()),
+        (
+          await Promise.all(
+            (restorations as any[]).map(async (r) => {
+              const mat = (r.material ?? "").trim();
+              if (!mat || r.priceSource === "manual") return null;
+              const key = await resolveRestorationPriceKey({
+                labOrganizationId: found.labOrganizationId,
+                material: r.material,
+                restorationType: r.restorationType,
+                restorationSubtype: r.restorationSubtype,
+              });
+              return key === null ? mat : null;
+            }),
+          )
+        ).filter((material): material is string => material !== null),
       ),
     );
 
@@ -5500,15 +10542,132 @@ router.get(
     // `caseNotes` Rx-fallback summary, nor raw `note_added` event metadata.
     const visibleNotes = visibleNotesFor(enrichedNotes, isLabMember);
 
+    // Prescription history follows this case's direct remakeOfCaseId chain
+    // only. Siblings and descendants are deliberately excluded.
+    const rxChainNewestFirst: Array<{
+      id: string;
+      rxNotes: string | null;
+      remakeOfCaseId: string | null;
+      labOrganizationId: string;
+      providerOrganizationId: string | null;
+      legacy?: boolean;
+    }> = [];
+    const visitedRxCaseIds = new Set<string>();
+    let rxCursor: any = found;
+    for (let depth = 0; rxCursor && depth < 25; depth += 1) {
+      if (visitedRxCaseIds.has(rxCursor.id)) break;
+      visitedRxCaseIds.add(rxCursor.id);
+      rxChainNewestFirst.push(rxCursor);
+      const parentId = rxCursor.remakeOfCaseId;
+      if (!parentId) break;
+
+      const parent = await db.query.cases.findFirst({
+        where: and(
+          eq(cases.id, parentId),
+          eq(cases.labOrganizationId, found.labOrganizationId),
+          notDeleted(cases),
+        ),
+      });
+      if (parent) {
+        if (
+          parent.providerOrganizationId !== found.providerOrganizationId &&
+          !isLabMember
+        ) {
+          break;
+        }
+        rxCursor = parent;
+        continue;
+      }
+
+      const legacyParent = await db.query.labCases.findFirst({
+        where: and(
+          eq(labCases.id, parentId),
+          eq(labCases.organizationId, found.labOrganizationId),
+          isNull(labCases.deletedAt),
+        ),
+      });
+      if (!legacyParent || !isLabMember) break;
+      let legacyData: any = {};
+      try {
+        legacyData =
+          typeof legacyParent.caseData === "string"
+            ? JSON.parse(legacyParent.caseData)
+            : legacyParent.caseData ?? {};
+      } catch {
+        legacyData = {};
+      }
+      rxCursor = {
+        id: legacyParent.id,
+        rxNotes:
+          typeof legacyData.rxNotes === "string"
+            ? legacyData.rxNotes
+            : typeof legacyData.caseNotes === "string"
+              ? legacyData.caseNotes
+              : null,
+        remakeOfCaseId:
+          typeof legacyData.remakeOfCaseId === "string"
+            ? legacyData.remakeOfCaseId
+            : null,
+        labOrganizationId: found.labOrganizationId,
+        providerOrganizationId: found.providerOrganizationId,
+        legacy: true,
+      };
+    }
+    const rxChainOldestFirst = rxChainNewestFirst.reverse();
+    const canonicalRxCaseIds = rxChainOldestFirst
+      .filter((row) => !row.legacy)
+      .map((row) => row.id);
+    const persistedRxEntries = await listRxNoteEntries(db, canonicalRxCaseIds);
+    const rxEntriesByCaseId = new Map<string, any[]>();
+    for (const entry of persistedRxEntries) {
+      const group = rxEntriesByCaseId.get(entry.caseId) ?? [];
+      group.push(entry);
+      rxEntriesByCaseId.set(entry.caseId, group);
+    }
+    const rxNoteEntries = rxChainOldestFirst.flatMap((row) => {
+      const persisted = rxEntriesByCaseId.get(row.id);
+      if (persisted?.length) return persisted;
+      const text = (row.rxNotes ?? "").trim();
+      return text
+        ? [{
+            id: `legacy-${row.id}`,
+            caseId: row.id,
+            noteText: text,
+            scannedAt: null,
+            provenance: "legacy",
+          }]
+        : [];
+    });
+
     return ok(res, {
       ...found,
-      caseNotes: (found as any).rxNotes ?? (visibleNotes.length > 0 ? visibleNotes.map((n: any) => n.noteText).join("\n\n") : null),
+      // remakeNotes is visible to all lab members; redact only for provider/practice viewers.
+      remakeNotes: isLabMember ? ((found as any).remakeNotes ?? null) : null,
+      caseNotes: (found as any).rxNotes ?? null,
+      rxNoteEntries,
       suggestedPracticeName,
+      labLocationId: labLocationResult ? foundLabLocationId : null,
+      labLocationName,
       providerOrganizationContact,
+      providerAccountNumber,
+      /** Doctor preferences from the matching doctor_profiles row. Null when
+       *  no profile has been created for this doctor yet. Used by the print
+       *  renderer so it does not need a second round-trip. */
+      doctorPreferences,
+      /** Current, provider-authored structured preferences. Null when the
+       * case's practice has no active provider user. This is intentionally
+       * distinct from the lab-authored `doctorPreferences` above. */
+      providerDoctorPreferences,
+      /** Lab-controlled lab-slip setting. */
+      printProviderPreferencesOnLabSlips:
+        labOrgForSlip?.printProviderPreferencesOnLabSlips ?? false,
       restorations,
       unrecognizedMaterials,
       notes: visibleNotes,
-      attachments: visibleAttachmentsFor(enrichedAttachments, isLabMember),
+      attachments: visibleAttachmentsFor(
+        await sanitizeTextureAttachmentLinks(enrichedAttachments, found.id, isLabMember),
+        isLabMember,
+      ),
       events: sanitizeNoteEventsFor(enrichEventsWithNote(events), isLabMember),
       originalCaseEvents: sanitizeNoteEventsFor(enrichEventsWithNote(originalCaseEvents), isLabMember),
       remakeChildrenEvents: remakeChildrenEvents.map((rc) => ({
@@ -5520,8 +10679,14 @@ router.get(
       remakeChildren,
       viewerIsLabMember: isLabMember,
       viewerCanUploadAttachments,
+      viewerCanPostNotes,
+      viewerQuickReferenceOrganizationId,
       viewerCanManageAttachments,
       statusHistory,
+      // Exception content is lab-internal: providers/practices never see it.
+      activeException: isLabMember
+        ? await fetchActiveExceptionForCase(found.id)
+        : null,
     });
   })
 );
@@ -5540,6 +10705,7 @@ router.get(
 
     const access = await assertCaseAccessWithMemberships(userId, caseId);
     const labOrgId = access.case.labOrganizationId;
+    const isLabMemberForChain = !!access.labMembership;
 
     const MAX_DEPTH = 30;
 
@@ -5572,7 +10738,16 @@ router.get(
       status: string | null;
       remakeReason: string | null;
       remakeCharged: boolean | null;
+      remakeNotes: string | null;
+      remakeShadeLightness: string | null;
+      remakeShadePrescribed: string | null;
+      remakeShadeProvided: string | null;
+      remakeMaterialPrescribed: string | null;
+      remakeMaterialProvided: string | null;
+      remakeReturnedToLab: boolean | null;
       createdAt: Date | string | null;
+      labLocationId: string | null;
+      labLocationName: string | null;
     };
     const chain: ChainEntry[] = [];
     const queue: string[] = [rootId];
@@ -5585,7 +10760,7 @@ router.get(
 
       const row = await db.query.cases.findFirst({
         where: and(eq(cases.id, nextId), notDeleted(cases), eq(cases.labOrganizationId, labOrgId)),
-        columns: { id: true, caseNumber: true, status: true, remakeReason: true, remakeCharged: true, createdAt: true },
+        columns: { id: true, caseNumber: true, status: true, remakeReason: true, remakeCharged: true, remakeNotes: true, remakeShadeLightness: true, remakeShadePrescribed: true, remakeShadeProvided: true, remakeMaterialPrescribed: true, remakeMaterialProvided: true, remakeReturnedToLab: true, createdAt: true, labLocationId: true },
       });
       if (!row) continue;
 
@@ -5595,7 +10770,18 @@ router.get(
         status: row.status ?? null,
         remakeReason: row.remakeReason ?? null,
         remakeCharged: row.remakeCharged ?? null,
+        // remakeNotes and structured questionnaire fields are lab-member-only —
+        // redact for provider/practice viewers.
+        remakeNotes: isLabMemberForChain ? (row.remakeNotes ?? null) : null,
+        remakeShadeLightness: isLabMemberForChain ? (row.remakeShadeLightness ?? null) : null,
+        remakeShadePrescribed: isLabMemberForChain ? (row.remakeShadePrescribed ?? null) : null,
+        remakeShadeProvided: isLabMemberForChain ? (row.remakeShadeProvided ?? null) : null,
+        remakeMaterialPrescribed: isLabMemberForChain ? (row.remakeMaterialPrescribed ?? null) : null,
+        remakeMaterialProvided: isLabMemberForChain ? (row.remakeMaterialProvided ?? null) : null,
+        remakeReturnedToLab: isLabMemberForChain ? (row.remakeReturnedToLab ?? null) : null,
         createdAt: row.createdAt,
+        labLocationId: row.labLocationId ?? null,
+        labLocationName: null,
       });
 
       const children = await db.query.cases.findMany({
@@ -5605,6 +10791,30 @@ router.get(
       });
       for (const child of children) {
         if (!visited.has(child.id)) queue.push(child.id);
+      }
+    }
+
+    const locationIds = Array.from(
+      new Set(chain.map((entry) => entry.labLocationId).filter((id): id is string => Boolean(id))),
+    );
+    if (locationIds.length > 0) {
+      const locationRows = await db
+        .select({ id: labLocations.id, name: labLocations.name })
+        .from(labLocations)
+        .where(
+          and(
+            inArray(labLocations.id, locationIds),
+            eq(labLocations.labOrganizationId, labOrgId),
+          ),
+        );
+      const locationById = new Map(locationRows.map((row) => [row.id, row]));
+      for (const entry of chain) {
+        if (!entry.labLocationId || !locationById.has(entry.labLocationId)) {
+          entry.labLocationId = null;
+          entry.labLocationName = null;
+        } else {
+          entry.labLocationName = locationById.get(entry.labLocationId)?.name ?? null;
+        }
       }
     }
 
@@ -5671,6 +10881,11 @@ router.get(
       });
     }
 
+    attachments = await sanitizeTextureAttachmentLinks(
+      await enrichScanAttachments(attachments),
+      req.params.caseId,
+      isLabMember,
+    );
     const uploaderIds = Array.from(
       new Set(attachments.map((a: any) => a.uploadedByUserId).filter(Boolean))
     );
@@ -5706,23 +10921,47 @@ const updateAttachmentSchema = z
 router.patch(
   "/:caseId/attachments/:attachmentId",
   asyncHandler(async (req, res) => {
-    const found = await assertCaseAccess(
-      (req as any).auth.userId,
-      req.params.caseId
-    );
-    await requireAnyRole(
-      (req as any).auth.userId,
-      found.labOrganizationId,
-      ADMIN_ROLES
-    );
+    const userId = (req as any).auth.userId as string;
     const input = updateAttachmentSchema.parse(req.body);
+    let labOrganizationId: string;
+    let canonicalCaseId: string | null = null;
+    let attachmentCaseFilter;
+    try {
+      const access = await assertCaseAccessWithMemberships(userId, req.params.caseId);
+      if (!access.labMembership) {
+        throw new HttpError(403, "You do not have access to change this attachment.");
+      }
+      labOrganizationId = access.case.labOrganizationId;
+      canonicalCaseId = access.case.id;
+      attachmentCaseFilter = or(
+        eq(caseAttachments.caseId, access.case.id),
+        eq(caseAttachments.labCaseId, access.case.id),
+      );
+    } catch (error: any) {
+      if (error.statusCode !== 404) throw error;
+      const legacyCase = await db.query.labCases.findFirst({
+        where: and(eq(labCases.id, req.params.caseId), isNull(labCases.deletedAt)),
+      });
+      if (!legacyCase?.organizationId) throw new HttpError(404, "Case not found.");
+      await requireMembership(userId, legacyCase.organizationId);
+      labOrganizationId = legacyCase.organizationId;
+      attachmentCaseFilter = eq(caseAttachments.labCaseId, legacyCase.id);
+    }
+
+    if (input.visibility !== undefined) {
+      await requireAnyRole(userId, labOrganizationId, ADMIN_ROLES);
+    }
     const attachment = await db.query.caseAttachments.findFirst({
       where: and(
         eq(caseAttachments.id, req.params.attachmentId),
-        eq(caseAttachments.caseId, found.id)
+        attachmentCaseFilter,
+        isNull(caseAttachments.deletedAt),
       ),
     });
     if (!attachment) throw new HttpError(404, "Attachment not found.");
+    if (input.note !== undefined && attachment.caseExceptionId) {
+      throw new HttpError(400, "Exception attachment notes cannot be changed.");
+    }
 
     const updates: Partial<typeof caseAttachments.$inferInsert> = {};
 
@@ -5730,6 +10969,18 @@ router.patch(
       input.visibility !== undefined &&
       input.visibility !== attachment.visibility
     ) {
+      // Exception evidence is permanently internal. Without this an admin
+      // could flip a forced-internal exception photo to shared and hand the
+      // provider its file, name and note.
+      if (
+        attachment.caseExceptionId &&
+        input.visibility !== "internal_lab_only"
+      ) {
+        throw new HttpError(
+          400,
+          "Exception attachments stay internal to the lab and cannot be shared with the provider.",
+        );
+      }
       updates.visibility = input.visibility;
     }
 
@@ -5756,7 +11007,7 @@ router.patch(
     if (updates.visibility !== undefined) {
       await writeAuditLog({
         req,
-        organizationId: found.labOrganizationId,
+        organizationId: labOrganizationId,
         action: "case_attachment_visibility_changed",
         entityType: "case_attachment",
         entityId: attachment.id,
@@ -5768,7 +11019,7 @@ router.patch(
     if (noteChanged) {
       await writeAuditLog({
         req,
-        organizationId: found.labOrganizationId,
+        organizationId: labOrganizationId,
         action: "case_attachment_note_changed",
         entityType: "case_attachment",
         entityId: attachment.id,
@@ -5777,6 +11028,7 @@ router.patch(
       });
     }
 
+    if (canonicalCaseId) broadcastCaseUpdated(canonicalCaseId);
     return ok(res, updated);
   })
 );
@@ -5812,6 +11064,31 @@ function trashAttachmentFile(
     );
   }
 }
+
+const appendRxScanSchema = z.object({
+  submissionId: z.string().min(8).max(200),
+  notes: z.string().min(1).max(10_000).refine((value) => value.trim().length > 0),
+});
+
+router.post(
+  "/:caseId/rx-note-scans",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const input = appendRxScanSchema.parse(req.body);
+    const access = await assertCaseAccessOrPromote(userId, req.params.caseId);
+    await requireMembership(userId, access.labOrganizationId);
+    const entry = await db.transaction((tx) =>
+      appendRxNoteEntry(tx, {
+        caseId: access.id,
+        submissionId: input.submissionId,
+        noteText: input.notes,
+        provenance: "ai_reader",
+      }),
+    );
+    broadcastCaseUpdated(access.id);
+    return ok(res, entry);
+  }),
+);
 
 router.post(
   "/:caseId/attachments",
@@ -5855,24 +11132,64 @@ router.post(
             .enum(["internal_lab_only", "shared_with_provider"] as const)
             .default("internal_lab_only"),
           note: z.string().max(1000).optional(),
-          category: z.enum(["outgoing"] as const).optional(),
+          submissionId: z.string().min(8).max(200).optional(),
+        category: z.enum(["outgoing", "prescription"] as const).optional(),
+          caseExceptionId: z.string().min(1).optional(),
         })
         .parse(req.body);
 
-      const [legacyAttachment] = await db
+      const legacyExceptionId = await resolveAttachmentExceptionId(
+        legacyInput.caseExceptionId,
+        mobileRow.id,
+        (req as any).auth.userId,
+      );
+      const legacyOrganizationId = mobileRow.organizationId;
+
+      const registered = await db.transaction(async (tx) => {
+        if (legacyInput.submissionId) {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`legacy-case-attachment:${mobileRow.id}:${legacyInput.submissionId}`}))`);
+          const existing = await tx.query.caseAttachments.findFirst({
+            where: and(eq(caseAttachments.labCaseId, mobileRow.id), eq(caseAttachments.submissionId, legacyInput.submissionId)),
+          });
+          if (existing) return { attachment: existing, replayed: true };
+        }
+      const [legacyAttachment] = await tx
         .insert(caseAttachments)
         .values({
           labCaseId: mobileRow.id,
           uploadedByUserId: (req as any).auth.userId,
-          uploadedByOrganizationId: mobileRow.organizationId,
+          uploadedByOrganizationId: legacyOrganizationId,
           fileName: legacyInput.fileName,
           storageKey: legacyInput.storageKey,
           fileType: legacyInput.fileType,
-          visibility: legacyInput.visibility,
+          // Exception evidence is always lab-internal, regardless of what the
+          // client asked for.
+          visibility: legacyExceptionId
+            ? "internal_lab_only"
+            : legacyInput.visibility,
           note: legacyInput.note ?? null,
+          submissionId: legacyInput.submissionId ?? null,
           category: legacyInput.category ?? null,
+          caseExceptionId: legacyExceptionId,
         })
+        .onConflictDoNothing()
         .returning();
+      if (!legacyAttachment) {
+        if (legacyInput.submissionId) {
+          const replay = await tx.query.caseAttachments.findFirst({
+            where: and(
+              eq(caseAttachments.labCaseId, mobileRow.id),
+              eq(caseAttachments.submissionId, legacyInput.submissionId),
+            ),
+          });
+          if (replay) return { attachment: replay, replayed: true };
+        }
+        throw new HttpError(409, "This attachment submission conflicts with an existing file.");
+      }
+        return { attachment: legacyAttachment, replayed: false };
+      });
+      const legacyAttachment = registered.attachment;
+      if (registered.replayed) return ok(res, legacyAttachment);
 
       // Register in legacy_case_media ledger so the file-serving route can
       // authorize the download (first-writer-wins, safe to re-insert).
@@ -5889,44 +11206,26 @@ router.post(
           .onConflictDoNothing();
       }
 
-      // Append an "attachment_added" event to the legacy activityLog so the
-      // mobile History tab reflects attachments added from the desktop.
-      // caseData is stored as a JSON text string (not a jsonb column), so we
-      // must parse it first — typeof would always be "string" otherwise and
-      // every attach would silently reset the activityLog to {}.
-      let legacyCaseData: Record<string, any> = {};
-      if (mobileRow.caseData) {
-        try {
-          const parsed = JSON.parse(mobileRow.caseData as string);
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            legacyCaseData = { ...parsed };
-          }
-        } catch {
-          // malformed JSON — start fresh
+      // Append an attachment event under the same row lock used by exception
+      // history writes so it cannot replace a concurrently added note.
+      await mutateLegacyCaseDataWithLock(mobileRow.id, (legacyCaseData) => {
+        if (!Array.isArray(legacyCaseData.activityLog)) {
+          legacyCaseData.activityLog = [];
         }
-      }
-      if (!Array.isArray(legacyCaseData.activityLog))
-        legacyCaseData.activityLog = [];
-      legacyCaseData.activityLog.push({
-        id: legacyAttachment.id,
-        // Outgoing case photos render as photos (not documents) in the mobile
-        // History tab; keep "document" for every other attachment type.
-        type: legacyInput.category === "outgoing" ? "photo" : "document",
-        timestamp: Date.now(),
-        user: (req as any).user?.initials || "",
-        description: legacyInput.fileName,
-        attachmentId: legacyAttachment.id,
-        fileType: legacyInput.fileType,
-        imageUri: legacyInput.storageKey,
-        ...(legacyInput.category ? { category: legacyInput.category } : {}),
+        legacyCaseData.activityLog.push({
+          id: legacyAttachment.id,
+          // Outgoing case photos render as photos (not documents) in the mobile
+          // History tab; keep "document" for every other attachment type.
+          type: legacyInput.category === "outgoing" ? "photo" : "document",
+          timestamp: Date.now(),
+          user: (req as any).user?.initials || "",
+          description: legacyInput.fileName,
+          attachmentId: legacyAttachment.id,
+          fileType: legacyInput.fileType,
+          imageUri: legacyInput.storageKey,
+          ...(legacyInput.category ? { category: legacyInput.category } : {}),
+        });
       });
-      await db
-        .update(labCases)
-        .set({
-          caseData: JSON.stringify(legacyCaseData),
-          updatedAt: new Date(),
-        })
-        .where(eq(labCases.id, mobileRow.id));
 
       await writeAuditLog({
         req,
@@ -5956,11 +11255,29 @@ router.post(
           .enum(["internal_lab_only", "shared_with_provider"] as const)
           .default("internal_lab_only"),
         note: z.string().max(1000).optional(),
-        category: z.enum(["outgoing"] as const).optional(),
+        submissionId: z.string().min(8).max(200).optional(),
+          category: z.enum(["outgoing", "prescription"] as const).optional(),
+        caseExceptionId: z.string().min(1).optional(),
       })
       .parse(req.body);
 
-    const [attachment] = await db
+    const attachmentExceptionId = await resolveAttachmentExceptionId(
+      input.caseExceptionId,
+      found.id,
+      (req as any).auth.userId,
+    );
+
+    const registered = await db.transaction(async (tx) => {
+      if (input.submissionId) {
+        // Serialize retries even on older databases where schema push did not
+        // install the submission uniqueness index. Never mint duplicate rows.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`case-attachment:${found.id}:${input.submissionId}`}))`);
+        const existing = await tx.query.caseAttachments.findFirst({
+          where: and(eq(caseAttachments.caseId, found.id), eq(caseAttachments.submissionId, input.submissionId)),
+        });
+        if (existing) return { attachment: existing, replayed: true };
+      }
+    const [attachment] = await tx
       .insert(caseAttachments)
       .values({
         caseId: req.params.caseId,
@@ -5969,11 +11286,34 @@ router.post(
         fileName: input.fileName,
         storageKey: input.storageKey,
         fileType: input.fileType,
-        visibility: input.visibility,
+        // Exception evidence is always lab-internal, regardless of what the
+        // client asked for.
+        visibility: attachmentExceptionId
+          ? "internal_lab_only"
+          : input.visibility,
         note: input.note ?? null,
+        submissionId: input.submissionId ?? null,
         category: input.category ?? null,
+        caseExceptionId: attachmentExceptionId,
       })
+      .onConflictDoNothing()
       .returning();
+    if (!attachment) {
+      if (input.submissionId) {
+        const replay = await tx.query.caseAttachments.findFirst({
+          where: and(
+            eq(caseAttachments.caseId, found.id),
+            eq(caseAttachments.submissionId, input.submissionId),
+          ),
+        });
+        if (replay) return { attachment: replay, replayed: true };
+      }
+      throw new HttpError(409, "This attachment submission conflicts with an existing file.");
+    }
+      return { attachment, replayed: false };
+    });
+    const { attachment } = registered;
+    if (registered.replayed) return ok(res, attachment);
 
     const attachmentActor = (req as any).user;
     await db.insert(caseEvents).values({
@@ -5982,14 +11322,24 @@ router.post(
       actorUserId: (req as any).auth.userId,
       actorOrganizationId: orgId,
       actorInitials: attachmentActor?.initials || "SYS",
-      metadataJson: {
-        attachmentId: attachment.id,
-        fileName: attachment.fileName,
-        fileType: attachment.fileType,
-        visibility: attachment.visibility,
-        ...(attachment.note ? { note: attachment.note } : {}),
-        ...(attachment.category ? { category: attachment.category } : {}),
-      },
+      // `case_events` is provider-visible. An exception attachment's file name
+      // and note are lab-internal evidence, so they are withheld here and live
+      // only on the attachment row (forced `internal_lab_only`) and in the
+      // lab-gated exception history.
+      metadataJson: attachmentExceptionId
+        ? {
+            attachmentId: attachment.id,
+            caseExceptionId: attachmentExceptionId,
+            visibility: attachment.visibility,
+          }
+        : {
+            attachmentId: attachment.id,
+            fileName: attachment.fileName,
+            fileType: attachment.fileType,
+            visibility: attachment.visibility,
+            ...(attachment.note ? { note: attachment.note } : {}),
+            ...(attachment.category ? { category: attachment.category } : {}),
+          },
     }).catch((err: unknown): never => wrapDbError(err, {
       fallback: "Failed to record attachment timeline event.",
     }));
@@ -6002,6 +11352,21 @@ router.post(
       entityId: attachment.id,
       afterJson: attachment,
     });
+
+    await touchCase(found.id);
+
+    // Auto-notify provider members when a shared attachment is added by the lab.
+    // Fire-and-forget — failure must not affect the 201 response.
+    if (input.visibility === "shared_with_provider" && found.providerOrganizationId) {
+      const labOrg = await db.query.organizations.findFirst({
+        where: eq(organizations.id, found.labOrganizationId),
+      }).catch(() => null);
+      void notifyProviderMembersOfLabActivity(
+        found as typeof found & { providerOrganizationId: string },
+        "shared_attachment_added",
+        (labOrg as any)?.name ?? "Your lab"
+      );
+    }
 
     return ok(res, attachment, 201);
   })
@@ -6049,14 +11414,23 @@ router.delete(
         actorUserId: userId,
         actorOrganizationId: canonicalFound.labOrganizationId,
         actorInitials: attachmentDeleter?.initials || "SYS",
-        metadataJson: {
-          attachmentId: attachment.id,
-          fileName: attachment.fileName,
-          fileType: attachment.fileType,
-        },
+        // An exception attachment's file name is lab-internal, and this event
+        // is provider-visible. Carry the exception marker so the response
+        // sanitizer can recognise the event after the row is soft-deleted.
+        metadataJson: attachment.caseExceptionId
+          ? {
+              attachmentId: attachment.id,
+              caseExceptionId: attachment.caseExceptionId,
+            }
+          : {
+              attachmentId: attachment.id,
+              fileName: attachment.fileName,
+              fileType: attachment.fileType,
+            },
       }).catch((err: unknown): never => wrapDbError(err, {
         fallback: "Failed to record attachment deletion event.",
       }));
+
     } else {
       // Legacy mobile case — look up attachment by labCaseId, require lab membership.
       const mobileRow = await db.query.labCases.findFirst({
@@ -6087,6 +11461,7 @@ router.delete(
       trashAttachmentFile(req, attachment.storageKey);
     }
 
+    broadcastCaseUpdated(canonicalFound ? canonicalFound.id : req.params.caseId);
     return ok(res, { deleted: true });
   })
 );
@@ -6112,7 +11487,11 @@ const updateCaseSchema = z.object({
     ])
     .optional(),
   priority: z.enum(["normal", "rush"]).optional(),
-  dueDate: z.string().optional(),
+  receivedAt: calendarDate.optional(),
+  dueDate: z.union([z.string(), z.null()]).optional(),
+  dueTime: z
+    .union([z.string().refine(isValidDueTime, "Invalid due time"), z.null()])
+    .optional(),
   doctorName: z.string().optional(),
   patientFirstName: z.string().optional(),
   patientLastName: z.string().optional(),
@@ -6136,12 +11515,58 @@ const updateCaseSchema = z.object({
     .transform((v) => (v === null ? null : v.trim()))
     .optional(),
   rxNotes: z.union([z.string(), z.null()]).optional(),
+  /**
+   * New case number for the case. Admin/owner only. Must be non-empty and
+   * unique across all cases (cases_case_number_unique index enforces this).
+   * Returns 409 if the number is already in use.
+   */
+  caseNumber: z.string().min(1, "Case number cannot be blank.").optional(),
+  // ── Structured remake fields — allow admin/owner corrections after creation ─
+  remakeReasonKey: z.enum(REMAKE_REASON_KEYS).optional(),
+  remakeReason: z.string().max(2000).optional(),
+  remakeCharged: z.boolean().optional().nullable(),
+  remakeShadeLightness: z.enum(["light", "dark"]).optional().nullable(),
+  remakeShadePrescribed: z.string().optional().nullable(),
+  remakeShadeProvided: z.string().optional().nullable(),
+  remakeMaterialPrescribed: z.string().optional().nullable(),
+  remakeMaterialProvided: z.string().optional().nullable(),
+  remakeReturnedToLab: z.boolean().optional().nullable(),
+  remakeCategory: z.enum(["crown_bridge", "removable"]).optional().nullable(),
+  /** Lab workflow step for removable cases. */
+  step: z
+    .enum(["custom_tray", "rims_and_plates", "wax_setup", "process"])
+    .nullable()
+    .optional(),
+  /** Shade for wax_setup step. Cleared server-side when step !== 'wax_setup'. */
+  stepShade: z.string().max(200).nullable().optional(),
+  /** Gingival/base tissue shade for removable cases (AI-extracted; correctable by lab staff). */
+  gingivialShade: z.string().max(200).nullable().optional(),
+  /**
+   * The specific lab_locations row id where the case is physically located.
+   * Written alongside `status` when a locate action is performed so the
+   * station name is authoritative across all platforms. Null clears the
+   * stored station without changing status.
+   */
+  labLocationId: z.string().nullable().optional(),
+  // ── Custom-shade tracking fields (Task #3631) ────────────────────────────
+  /** When true, the shade was taken by a technician (not a standard guide). */
+  isCustomShade: z.boolean().nullable().optional(),
+  /** Name of the technician who recorded the custom shade. */
+  customShadeTechnician: z.string().max(500).nullable().optional(),
+  /** Whether photos of the custom shade are available. */
+  customShadePicturesAvailable: z.boolean().nullable().optional(),
+  /** Whether a video of the custom shade is available. */
+  customShadeVideoAvailable: z.boolean().nullable().optional(),
 });
 
 router.patch(
   "/:caseId",
   asyncHandler(async (req, res) => {
     const input = updateCaseSchema.parse(req.body);
+    validateCustomRemakeReason(input.remakeReasonKey, input.remakeReason);
+    if (input.remakeReasonKey === "other" && input.remakeReason !== undefined) {
+      input.remakeReason = input.remakeReason.trim();
+    }
 
     // Try the canonical cases table first. If not found, fall back to the
     // mobile lab_cases table so desktop users can locate mobile-originated cases.
@@ -6164,98 +11589,283 @@ router.patch(
         ),
       });
       if (!mobileRow) throw new HttpError(404, "Case not found.");
+      if (input.receivedAt !== undefined) {
+        throw new HttpError(
+          400,
+          "Date received can only be edited after this legacy case is promoted.",
+        );
+      }
 
+      let mobileMembership: Awaited<ReturnType<typeof requireMembership>> | null = null;
       if (mobileRow.organizationId) {
-        await requireMembership(
+        mobileMembership = await requireMembership(
           (req as any).auth.userId,
           mobileRow.organizationId
         );
       }
 
-      let parsed: any = {};
-      try { parsed = JSON.parse(mobileRow.caseData); } catch { /* ignore */ }
+      let effectiveLegacyStatus = input.status;
+      if (input.labLocationId !== undefined && input.labLocationId !== null && mobileRow.organizationId) {
+        const locRow = await db.query.labLocations.findFirst({
+          where: and(
+            eq(labLocations.id, input.labLocationId),
+            eq(labLocations.labOrganizationId, mobileRow.organizationId)
+          ),
+        });
+        effectiveLegacyStatus = resolveLocatedCaseStatus({
+          labOrganizationId: mobileRow.organizationId,
+          labLocationId: input.labLocationId,
+          location: locRow,
+        });
+      }
+      // Step/stepShade are admin/owner only — enforce the same role guard as
+      // the canonical branch before touching these fields.
+      if (
+        (input.step !== undefined || input.stepShade !== undefined) &&
+        mobileMembership &&
+        !ADMIN_ROLES.includes(mobileMembership.role as any)
+      ) {
+        throw new HttpError(403, "Only admin or owner members can update the case step.");
+      }
 
-      const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
-        received: "INTAKE",
-        in_design: "DESIGN",
-        scan: "SCAN",
-        in_milling: "MILLING",
-        post_mill: "POST_MILL",
-        sintering_furnace: "SINTERING_FURNACE",
-        model_room: "MODEL_ROOM",
-        in_porcelain: "PORCELAIN",
-        qc: "QC",
-        complete: "COMPLETE",
-        shipped: "SHIP",
-        delivered: "COMPLETE",
-        on_hold: "HOLD",
-        remake: "REMAKE",
-      };
+      const hasLegacyMutation =
+        input.status !== undefined ||
+        input.casePanBarcode !== undefined ||
+        input.doctorName !== undefined ||
+        input.patientFirstName !== undefined ||
+        input.patientLastName !== undefined ||
+        input.priority !== undefined ||
+        input.dueDate !== undefined ||
+        input.step !== undefined ||
+        input.stepShade !== undefined ||
+        input.labLocationId !== undefined ||
+        input.isCustomShade !== undefined ||
+        input.customShadeTechnician !== undefined ||
+        input.customShadePicturesAvailable !== undefined ||
+        input.customShadeVideoAvailable !== undefined;
+      let responseData: Record<string, any> = {};
 
-      let needsUpdate = false;
-
-      if (input.status !== undefined) {
-        parsed.status = DESKTOP_TO_MOBILE_STATUS[input.status] ?? input.status.toUpperCase();
-        if (input.status === "complete") {
-          parsed.assignedBarcode = null;
+      if (hasLegacyMutation) {
+        const canonicalRaceUpdates: Record<string, unknown> = {
+          updatedAt: new Date(),
+        };
+        if (input.labLocationId !== undefined) {
+          canonicalRaceUpdates.labLocationId = input.labLocationId;
         }
-        needsUpdate = true;
-      }
-      if (input.casePanBarcode !== undefined) {
-        parsed.assignedBarcode = input.casePanBarcode;
-        needsUpdate = true;
-      }
-      if (input.doctorName !== undefined) {
-        parsed.doctorName = input.doctorName;
-        needsUpdate = true;
-      }
-      if (input.patientFirstName !== undefined || input.patientLastName !== undefined) {
-        const existingName = String(parsed.patientName ?? "");
-        const spaceIdx = existingName.indexOf(" ");
-        const existingFirst = spaceIdx >= 0 ? existingName.slice(0, spaceIdx) : existingName;
-        const existingLast = spaceIdx >= 0 ? existingName.slice(spaceIdx + 1) : "";
-        const newFirst = input.patientFirstName !== undefined ? input.patientFirstName : existingFirst;
-        const newLast = input.patientLastName !== undefined ? input.patientLastName : existingLast;
-        parsed.patientName = newLast ? `${newFirst} ${newLast}` : newFirst;
-        needsUpdate = true;
-      }
-      if (input.priority !== undefined) {
-        parsed.isRush = input.priority === "rush";
-        needsUpdate = true;
-      }
-      if (input.dueDate !== undefined) {
-        parsed.dueDate = input.dueDate;
-        needsUpdate = true;
-      }
+        await updateLegacyCaseWithLocationHistory({
+          caseId: mobileRow.id,
+          labOrganizationId: mobileRow.organizationId ?? "",
+          labLocationId: input.labLocationId,
+          actorUserId: (req as any).auth.userId,
+          actorInitials: (req as any).user?.initials || "SYS",
+          mutate: async (parsed, tx) => {
+            if (
+              input.labLocationId !== undefined &&
+              input.labLocationId !== null &&
+              mobileRow.organizationId
+            ) {
+              const currentLocation = await tx.query.labLocations.findFirst({
+                where: and(
+                  eq(labLocations.id, input.labLocationId),
+                  eq(labLocations.labOrganizationId, mobileRow.organizationId),
+                ),
+              });
+              effectiveLegacyStatus = resolveLocatedCaseStatus({
+                labOrganizationId: mobileRow.organizationId,
+                labLocationId: input.labLocationId,
+                location: currentLocation,
+              });
+            }
+            if (effectiveLegacyStatus !== undefined) {
+              canonicalRaceUpdates.status = effectiveLegacyStatus;
+              if (effectiveLegacyStatus === "complete") {
+                canonicalRaceUpdates.casePanBarcode = null;
+              }
+            }
 
-      if (needsUpdate) {
-        await db
-          .update(labCases)
-          .set({ caseData: JSON.stringify(parsed), updatedAt: new Date() })
-          .where(eq(labCases.id, mobileRow.id));
-      }
+          if (effectiveLegacyStatus !== undefined) {
+            parsed.status = canonicalStatusToLegacy(effectiveLegacyStatus);
+            if (effectiveLegacyStatus === "complete") {
+              parsed.assignedBarcode = null;
+            }
+          }
+          if (input.casePanBarcode !== undefined) {
+            parsed.assignedBarcode =
+              effectiveLegacyStatus === "complete" ? null : input.casePanBarcode;
+          }
+          if (input.doctorName !== undefined) {
+            parsed.doctorName = input.doctorName;
+          }
+          if (input.patientFirstName !== undefined || input.patientLastName !== undefined) {
+            const existingName = String(parsed.patientName ?? "");
+            const spaceIdx = existingName.indexOf(" ");
+            const existingFirst = spaceIdx >= 0 ? existingName.slice(0, spaceIdx) : existingName;
+            const existingLast = spaceIdx >= 0 ? existingName.slice(spaceIdx + 1) : "";
+            const newFirst = input.patientFirstName !== undefined ? input.patientFirstName : existingFirst;
+            const newLast = input.patientLastName !== undefined ? input.patientLastName : existingLast;
+            parsed.patientName = newLast ? `${newFirst} ${newLast}` : newFirst;
+          }
+          if (input.priority !== undefined) {
+            parsed.isRush = input.priority === "rush";
+          }
+          if (input.dueDate !== undefined) {
+            parsed.dueDate = input.dueDate;
+          }
+          if (input.step !== undefined) {
+            parsed.step = input.step ?? null;
+            if (input.step !== "wax_setup") {
+              parsed.stepShade = null;
+            }
+          }
+          if (input.stepShade !== undefined) {
+            const effectiveStep = input.step !== undefined ? input.step : (parsed.step ?? null);
+            parsed.stepShade = effectiveStep === "wax_setup" ? (input.stepShade ?? null) : null;
+          }
+          if (input.labLocationId !== undefined) {
+            parsed.labLocationId = input.labLocationId ?? null;
+          } else if (
+            effectiveLegacyStatus !== undefined &&
+            typeof parsed.labLocationId === "string"
+          ) {
+            const currentLocation = mobileRow.organizationId
+              ? await tx.query.labLocations.findFirst({
+                  where: and(
+                    eq(labLocations.id, parsed.labLocationId),
+                    eq(labLocations.labOrganizationId, mobileRow.organizationId),
+                  ),
+                })
+              : null;
+            if (currentLocation?.status !== effectiveLegacyStatus) {
+              parsed.labLocationId = null;
+            }
+          }
 
+          // Apply custom-shade sub-fields, then clear them whenever the
+          // effective flag is false.
+          const touchedCustomShade =
+            input.isCustomShade !== undefined ||
+            input.customShadeTechnician !== undefined ||
+            input.customShadePicturesAvailable !== undefined ||
+            input.customShadeVideoAvailable !== undefined;
+          if (input.isCustomShade !== undefined) {
+            parsed.isCustomShade = input.isCustomShade ?? false;
+          }
+          if (input.customShadeTechnician !== undefined) {
+            parsed.customShadeTechnician = input.customShadeTechnician ?? null;
+          }
+          if (input.customShadePicturesAvailable !== undefined) {
+            parsed.customShadePicturesAvailable = input.customShadePicturesAvailable ?? false;
+          }
+          if (input.customShadeVideoAvailable !== undefined) {
+            parsed.customShadeVideoAvailable = input.customShadeVideoAvailable ?? false;
+          }
+          if (touchedCustomShade && parsed.isCustomShade !== true) {
+            parsed.customShadeTechnician = null;
+            parsed.customShadePicturesAvailable = false;
+            parsed.customShadeVideoAvailable = false;
+          }
+            responseData = parsed;
+          },
+          canonicalUpdates: canonicalRaceUpdates,
+          recordCanonicalStatusChanges: true,
+        });
+      } else {
+        try {
+          const parsed = JSON.parse(mobileRow.caseData);
+          if (parsed && typeof parsed === "object") responseData = parsed;
+        } catch {
+          // Keep the current response behavior for malformed historical blobs.
+        }
+      }
       return ok(res, {
         id: mobileRow.id,
-        status: input.status,
-        casePanBarcode: parsed.assignedBarcode ?? null,
+        status:
+          effectiveLegacyStatus === undefined
+            ? legacyStatusToCanonical(responseData.status)
+            : effectiveLegacyStatus,
+        casePanBarcode: responseData.assignedBarcode ?? null,
         _source: "mobile",
       });
     }
 
     // Canonical cases table path.
-    await requireMembership(
+    const membership = await requireMembership(
       (req as any).auth.userId,
       found.labOrganizationId
     );
 
     const updates: any = {};
-    if (input.status !== undefined) updates.status = input.status;
+
+    // Case number changes are admin/owner only.
+    if (input.caseNumber !== undefined) {
+      if (!ADMIN_ROLES.includes(membership.role as any)) {
+        throw new HttpError(403, "Only admin or owner members can change the case number.");
+      }
+      const trimmed = input.caseNumber.trim();
+      if (!trimmed) throw new HttpError(400, "Case number cannot be blank.");
+      if (trimmed !== found.caseNumber) {
+        const existing = await db.query.cases.findFirst({
+          where: and(eq(cases.caseNumber, trimmed), notDeleted(cases)),
+        });
+        if (existing) {
+          throw new HttpError(409, `Case number "${trimmed}" is already in use.`);
+        }
+        updates.caseNumber = trimmed;
+      }
+    }
+
+    let effectiveCanonicalStatus = input.status;
+    if (input.status !== undefined && input.labLocationId === undefined) {
+      updates.labLocationId = sql`case
+        when ${cases.labLocationId} is null then null
+        when exists (
+          select 1 from ${labLocations}
+          where ${labLocations.id} = ${cases.labLocationId}
+            and ${labLocations.labOrganizationId} = ${found.labOrganizationId}
+            and ${labLocations.status} = ${input.status}
+        ) then ${cases.labLocationId}
+        else null
+      end`;
+    }
+    if (input.labLocationId !== undefined) {
+      // Validate the location belongs to this lab before persisting.
+      if (input.labLocationId !== null) {
+        const locRow = await db.query.labLocations.findFirst({
+          where: and(
+            eq(labLocations.id, input.labLocationId),
+            eq(labLocations.labOrganizationId, found.labOrganizationId)
+          ),
+        });
+        effectiveCanonicalStatus = resolveLocatedCaseStatus({
+          labOrganizationId: found.labOrganizationId,
+          labLocationId: input.labLocationId,
+          location: locRow,
+        });
+      }
+      updates.labLocationId = input.labLocationId;
+    }
+    if (effectiveCanonicalStatus !== undefined) updates.status = effectiveCanonicalStatus;
     // When locating to Complete, free the pan barcode atomically.
-    if (input.status === "complete") updates.casePanBarcode = null;
+    if (effectiveCanonicalStatus === "complete") updates.casePanBarcode = null;
     if (input.priority !== undefined) updates.priority = input.priority;
-    if (input.dueDate !== undefined)
-      updates.dueDate = new Date(input.dueDate);
+    if (input.receivedAt !== undefined) {
+      updates.receivedAt = parseCalendarDate(input.receivedAt);
+    }
+    if (input.dueDate !== undefined) {
+      updates.dueDate = input.dueDate === null ? null : new Date(input.dueDate);
+      updates.dueTime =
+        input.dueDate === null
+          ? null
+          : input.dueTime !== undefined
+            ? input.dueTime
+            : found.dueTime;
+      updates.expectedDeliveryDate = null;
+    } else if (input.dueTime !== undefined) {
+      if (input.dueTime !== null && !found.dueDate) {
+        throw new HttpError(400, "Cannot set a due time without a due date.");
+      }
+      updates.dueTime = input.dueTime;
+    }
     if (input.doctorName !== undefined) updates.doctorName = input.doctorName;
     if (input.patientFirstName !== undefined)
       updates.patientFirstName = input.patientFirstName;
@@ -6292,8 +11902,28 @@ router.patch(
       updates.suggestedDoctorName = null;
       updates.suggestedProviderOrgId = null;
     }
-    if (input.bridgeConnectors !== undefined)
-      updates.bridgeConnectors = input.bridgeConnectors || null;
+    if (input.bridgeConnectors !== undefined) {
+      const restorationsForConnectors = await db.query.caseRestorations.findMany({
+        where: eq(caseRestorations.caseId, found.id),
+      });
+      const connectorValue = normalizeLegacyDesktopConnectorEcho(
+        found.bridgeConnectors,
+        input.bridgeConnectors,
+      );
+      const validation = validateToothConnectors(
+        connectorValue,
+        restorationsForConnectors,
+      );
+      const priorErrors = new Set(validateToothConnectors(found.bridgeConnectors, restorationsForConnectors).errors);
+      const newErrors = validation.errors.filter((error) => !priorErrors.has(error));
+      if (newErrors.length) {
+        throw new HttpError(
+          400,
+          `Cannot save tooth connectors: ${newErrors.join(" ")}`,
+        );
+      }
+      updates.bridgeConnectors = connectorValue || null;
+    }
     if (input.casePanBarcode !== undefined) {
       // Non-empty barcode being set or changed — enforce strict uniqueness
       // across active cases in the lab. The cases_barcode_unique_per_lab
@@ -6305,7 +11935,12 @@ router.patch(
       }
       updates.casePanBarcode = newBarcode;
     }
-    if (input.expectedDeliveryDate !== undefined)
+    // A Complete locate/status is authoritative over a contradictory barcode
+    // field included in the same PATCH.
+    if (effectiveCanonicalStatus === "complete") updates.casePanBarcode = null;
+    // Skip expectedDeliveryDate from input when dueDate is also being set —
+    // an explicit due-date edit must always clear the auto-calculated field.
+    if (input.dueDate === undefined && input.expectedDeliveryDate !== undefined)
       updates.expectedDeliveryDate = input.expectedDeliveryDate
         ? new Date(input.expectedDeliveryDate)
         : null;
@@ -6313,7 +11948,116 @@ router.patch(
       updates.deliveryDateProposalDate = null;
       updates.deliveryDateProposalNote = null;
     }
-    if (input.rxNotes !== undefined) updates.rxNotes = input.rxNotes ?? null;
+
+    // ── Custom-shade tracking fields (Task #3631) ────────────────────────────
+    const touchedCanonicalCustomShade =
+      input.isCustomShade !== undefined ||
+      input.customShadeTechnician !== undefined ||
+      input.customShadePicturesAvailable !== undefined ||
+      input.customShadeVideoAvailable !== undefined;
+    if (input.isCustomShade !== undefined)
+      updates.isCustomShade = input.isCustomShade ?? false;
+    // Sub-fields: process from the payload first …
+    if (input.customShadeTechnician !== undefined)
+      updates.customShadeTechnician = input.customShadeTechnician ?? null;
+    if (input.customShadePicturesAvailable !== undefined)
+      updates.customShadePicturesAvailable = input.customShadePicturesAvailable ?? false;
+    if (input.customShadeVideoAvailable !== undefined)
+      updates.customShadeVideoAvailable = input.customShadeVideoAvailable ?? false;
+    // … then enforce the gating invariant. The effective flag after this PATCH
+    // is: the input value (null→false) when the caller supplied it, otherwise
+    // the existing DB value. Whenever any custom-shade field was touched and
+    // the effective flag is not strictly true, sub-fields must be cleared —
+    // this prevents a stale/racing sub-field PATCH from persisting data on a
+    // case whose flag is already false, and keeps canonical & legacy paths
+    // consistent.
+    if (touchedCanonicalCustomShade) {
+      const effectiveFlag =
+        input.isCustomShade !== undefined
+          ? (input.isCustomShade ?? false)
+          : (found.isCustomShade ?? false);
+      if (effectiveFlag !== true) {
+        updates.customShadeTechnician = null;
+        updates.customShadePicturesAvailable = false;
+        updates.customShadeVideoAvailable = false;
+      }
+    }
+
+    // ── Step / wax-setup shade fields (admin/owner only) ─────────────────────
+    const hasStepUpdate = input.step !== undefined || input.stepShade !== undefined;
+    if (hasStepUpdate && !ADMIN_ROLES.includes(membership.role as any)) {
+      throw new HttpError(403, "Only admin or owner members can update the case step.");
+    }
+    if (input.step !== undefined) {
+      updates.step = input.step ?? null;
+      // Server-side invariant: stepShade is only valid for wax_setup.
+      // Whenever step changes away from wax_setup (or is cleared), wipe shade.
+      if (input.step !== "wax_setup") {
+        updates.stepShade = null;
+      }
+    }
+    if (input.stepShade !== undefined) {
+      // Only persist a stepShade value when the resulting step is wax_setup.
+      const effectiveStep =
+        input.step !== undefined ? input.step : (found.step ?? null);
+      if (effectiveStep === "wax_setup") {
+        updates.stepShade = input.stepShade ?? null;
+      } else {
+        updates.stepShade = null;
+      }
+    }
+    if (input.gingivialShade !== undefined) {
+      updates.gingivialShade = input.gingivialShade?.trim() || null;
+    }
+
+    // ── Structured remake fields (admin/owner corrections only) ──────────────
+    const hasRemakeFieldUpdate =
+      input.remakeReasonKey !== undefined ||
+      input.remakeReason !== undefined ||
+      input.remakeCharged !== undefined ||
+      input.remakeShadeLightness !== undefined ||
+      input.remakeShadePrescribed !== undefined ||
+      input.remakeShadeProvided !== undefined ||
+      input.remakeMaterialPrescribed !== undefined ||
+      input.remakeMaterialProvided !== undefined ||
+      input.remakeReturnedToLab !== undefined ||
+      input.remakeCategory !== undefined;
+    if (hasRemakeFieldUpdate) {
+      if (!ADMIN_ROLES.includes(membership.role as any)) {
+        throw new HttpError(
+          403,
+          "Only admin or owner members can update remake reason details."
+        );
+      }
+      if (input.remakeReasonKey !== undefined)
+        updates.remakeReasonKey = input.remakeReasonKey ?? null;
+      if (input.remakeReason !== undefined)
+        updates.remakeReason = input.remakeReason ?? null;
+      if (input.remakeCharged !== undefined)
+        updates.remakeCharged = input.remakeCharged ?? null;
+      if (input.remakeShadeLightness !== undefined)
+        updates.remakeShadeLightness = input.remakeShadeLightness ?? null;
+      if (input.remakeShadePrescribed !== undefined)
+        updates.remakeShadePrescribed = input.remakeShadePrescribed ?? null;
+      if (input.remakeShadeProvided !== undefined)
+        updates.remakeShadeProvided = input.remakeShadeProvided ?? null;
+      if (input.remakeMaterialPrescribed !== undefined)
+        updates.remakeMaterialPrescribed = input.remakeMaterialPrescribed ?? null;
+      if (input.remakeMaterialProvided !== undefined)
+        updates.remakeMaterialProvided = input.remakeMaterialProvided ?? null;
+      if (input.remakeReturnedToLab !== undefined)
+        updates.remakeReturnedToLab = input.remakeReturnedToLab ?? null;
+      if (input.remakeCategory !== undefined)
+        updates.remakeCategory = input.remakeCategory ?? null;
+      // Auto-infer category when a key update omits an explicit category.
+      if (input.remakeReasonKey !== undefined && input.remakeCategory === undefined) {
+        const inferred = inferRemakeCategory(input.remakeReasonKey);
+        if (inferred) updates.remakeCategory = inferred;
+      }
+    }
+
+    // Always bump updatedAt so Recent Cases ordering reflects the latest edit.
+    updates.updatedAt = new Date();
 
     // Test-only TOCTOU barrier: lets concurrent requests that both cleared the
     // pre-check rendezvous here before either write reaches the DB, making the
@@ -6323,11 +12067,106 @@ router.patch(
     }
     let updated: typeof cases.$inferSelect | undefined;
     try {
-      [updated] = await db
-        .update(cases)
-        .set(updates)
-        .where(eq(cases.id, found.id))
-        .returning();
+      updated = await db.transaction(async (tx) => {
+        await acquireCaseLocationStatusLock(tx);
+        if (input.bridgeConnectors !== undefined) {
+          const [locked] = await tx.select({ id: cases.id, bridgeConnectors: cases.bridgeConnectors }).from(cases).where(eq(cases.id, found.id)).for("update");
+          const units = await tx.select().from(caseRestorations).where(eq(caseRestorations.caseId, found.id));
+          const connectorValue = normalizeLegacyDesktopConnectorEcho(
+            locked?.bridgeConnectors,
+            input.bridgeConnectors,
+          );
+          const validation = validateToothConnectors(connectorValue, units);
+          const previousErrors = new Set(validateToothConnectors(locked?.bridgeConnectors, units).errors);
+          const newErrors = validation.errors.filter((error) => !previousErrors.has(error));
+          if (newErrors.length) throw new HttpError(400, `Cannot save tooth connectors: ${newErrors.join(" ")}`);
+          updates.bridgeConnectors = connectorValue || null;
+        }
+        if (input.rxNotes !== undefined) {
+          await saveActiveRxNote(tx, found.id, input.rxNotes ?? null);
+        }
+        if (input.labLocationId !== undefined && input.labLocationId !== null) {
+          const [currentLocation] = await tx
+            .select()
+            .from(labLocations)
+            .where(
+              and(
+                eq(labLocations.id, input.labLocationId),
+                eq(labLocations.labOrganizationId, found.labOrganizationId),
+              ),
+            )
+            .for("update");
+          effectiveCanonicalStatus = resolveLocatedCaseStatus({
+            labOrganizationId: found.labOrganizationId,
+            labLocationId: input.labLocationId,
+            location: currentLocation,
+          });
+          updates.status = effectiveCanonicalStatus;
+          if (effectiveCanonicalStatus === "complete") updates.casePanBarcode = null;
+        }
+         const [row] = await updateCanonicalCasesWithLocationHistory({
+           caseIds: [found.id],
+           labOrganizationId: found.labOrganizationId,
+           updates,
+           labLocationId: input.labLocationId,
+           actorUserId: (req as any).auth.userId,
+           actorInitials: (req as any).user?.initials || "SYS",
+           recordStatusChanges: true,
+           dbOrTx: tx,
+         });
+        if (input.receivedAt !== undefined && updates.receivedAt) {
+          const synchronizedInvoices = await tx
+            .select({
+              id: invoices.id,
+              invoiceNumber: invoices.invoiceNumber,
+              previousIssuedAt: invoices.issuedAt,
+            })
+            .from(invoices)
+            .where(
+              and(
+                eq(invoices.caseId, found.id),
+                isNull(invoices.deletedAt),
+              ),
+            )
+            .for("update");
+
+          if (synchronizedInvoices.length > 0) {
+            await tx
+              .update(invoices)
+              .set({
+                issuedAt: calendarDateToUtcNoon(updates.receivedAt),
+                updatedByUserId: (req as any).auth.userId,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(invoices.caseId, found.id),
+                  isNull(invoices.deletedAt),
+                ),
+              );
+
+            const user = (req as any).user;
+            await tx.insert(caseEvents).values(
+              synchronizedInvoices.map((invoice) => ({
+                caseId: found.id,
+                eventType: "invoice_updated",
+                actorUserId: (req as any).auth.userId,
+                actorOrganizationId: found.labOrganizationId,
+                actorInitials: user?.initials || "SYS",
+                metadataJson: {
+                  invoiceId: invoice.id,
+                  invoiceNumber: invoice.invoiceNumber,
+                  reason: "case_received_date_changed",
+                  previousIssuedAt:
+                    invoice.previousIssuedAt?.toISOString() ?? null,
+                  issuedAt: calendarDateToUtcNoon(updates.receivedAt).toISOString(),
+                },
+              })),
+            );
+          }
+        }
+        return row;
+      });
     } catch (err) {
       // The cases_barcode_unique_per_lab partial index atomically closes the
       // race between the checkBarcodeUniqueness pre-check above and this UPDATE.
@@ -6336,20 +12175,60 @@ router.patch(
       rethrowBarcodeConflict(err, (updates.casePanBarcode as string | null) ?? "");
     }
 
-    if (input.status && input.status !== found.status) {
+    // ── Step change event ────────────────────────────────────────────────────
+    if (input.step !== undefined && input.step !== (found.step ?? null)) {
       const user = (req as any).user;
       await db.insert(caseEvents).values({
         caseId: found.id,
-        eventType: "status_changed",
+        eventType: "step_changed",
         actorUserId: (req as any).auth.userId,
         actorOrganizationId: found.labOrganizationId,
         actorInitials: user?.initials || "SYS",
         metadataJson: {
-          fromStatus: found.status,
-          toStatus: input.status,
+          fromStep: found.step ?? null,
+          toStep: input.step ?? null,
         },
       }).catch((err: unknown): never => wrapDbError(err, {
-        fallback: "Failed to record status change event.",
+        fallback: "Failed to record step change event.",
+      }));
+    }
+
+    // ── Wax-setup shade change event ─────────────────────────────────────────
+    {
+      const newShade = updates.stepShade !== undefined ? updates.stepShade : undefined;
+      const oldShade = found.stepShade ?? null;
+      if (newShade !== undefined && newShade !== oldShade) {
+        const user = (req as any).user;
+        await db.insert(caseEvents).values({
+          caseId: found.id,
+          eventType: "step_shade_changed",
+          actorUserId: (req as any).auth.userId,
+          actorOrganizationId: found.labOrganizationId,
+          actorInitials: user?.initials || "SYS",
+          metadataJson: {
+            fromShade: oldShade,
+            toShade: newShade,
+          },
+        }).catch((err: unknown): never => wrapDbError(err, {
+          fallback: "Failed to record step shade change event.",
+        }));
+      }
+    }
+
+    if (updates.caseNumber && updates.caseNumber !== found.caseNumber) {
+      const user = (req as any).user;
+      await db.insert(caseEvents).values({
+        caseId: found.id,
+        eventType: "case_number_changed",
+        actorUserId: (req as any).auth.userId,
+        actorOrganizationId: found.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          fromCaseNumber: found.caseNumber,
+          toCaseNumber: updates.caseNumber,
+        },
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record case number change event.",
       }));
     }
 
@@ -6401,30 +12280,21 @@ router.patch(
         : undefined,
     });
 
-    // ── Bridge-connector change: re-price affected pontics ──
-    // When the user draws (or redraws) bridge connectors on the tooth chart,
-    // pontics that were previously $0.00 / UNKNOWN SOURCE get corrected to
-    // the same material and tier as their adjacent abutment crowns.
+    // Topology changes affect descriptions/grouping, never the clinical role,
+    // material, or catalog rate of an already-priced unit.
     if (input.bridgeConnectors !== undefined) {
-      const newBridgeConnectorStr = (updates.bridgeConnectors as string | null) ?? null;
-      const allRestorations = await db.query.caseRestorations.findMany({
-        where: eq(caseRestorations.caseId, found.id),
-      });
-      await _repricePonticsInSpans(
-        {
-          id: found.id,
-          labOrganizationId: found.labOrganizationId,
-          doctorName: found.doctorName,
-          providerOrganizationId: found.providerOrganizationId,
-        },
-        allRestorations,
-        newBridgeConnectorStr,
-      );
       await syncInvoiceFromRestorations({
         caseId: found.id,
         actorUserId: (req as any).auth.userId,
       });
     }
+
+    // Broadcast last, after every case_events/audit-log write above has
+    // completed. Pushing earlier let a mobile client refetch the new case
+    // fields (e.g. status) while the accompanying timeline event was not
+    // yet committed, so the case detail screen briefly showed a new status
+    // with a stale timeline until the next poll caught up.
+    broadcastCaseUpdated(found.id);
 
     return ok(res, updated);
   })
@@ -6461,6 +12331,7 @@ router.post(
       })
       .where(eq(cases.id, found.id))
       .returning();
+    broadcastCaseUpdated(found.id);
 
     try {
       const adminMembers = await db
@@ -6475,23 +12346,19 @@ router.post(
         );
 
       if (adminMembers.length > 0) {
-        const dateStr = proposalDate
-          ? proposalDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
-          : null;
+        const dateStr = proposalDate ? formatNumericDate(proposalDate) : null;
         const patientName = `${found.patientFirstName} ${found.patientLastName}`.trim();
-        await db.insert(notifications).values(
-          adminMembers.map((m) => ({
-            userId: m.userId,
-            type: "delivery_date_request",
-            title: "Delivery Date Change Requested",
-            body: dateStr
-              ? `Provider requested ${dateStr} for ${patientName} (Case ${found.caseNumber})`
-              : `Provider requested a delivery date change for ${patientName} (Case ${found.caseNumber})`,
-            dataJson: { caseId: found.id, caseNumber: found.caseNumber },
-          }))
-        ).catch((err: unknown): never => wrapDbError(err, {
-          fallback: "Failed to send delivery date request notifications.",
-        }));
+        await deliverInAppNotification({
+          labOrganizationId: found.labOrganizationId,
+          recipientUserIds: adminMembers.map((member) => member.userId),
+          category: "doctor_practice_message",
+          type: "delivery_date_request",
+          title: "Delivery Date Change Requested",
+          body: dateStr
+            ? `Provider requested ${dateStr} for ${patientName} (Case ${found.caseNumber})`
+            : `Provider requested a delivery date change for ${patientName} (Case ${found.caseNumber})`,
+          dataJson: { caseId: found.id, caseNumber: found.caseNumber },
+        });
       }
     } catch {
       // Best-effort — do not fail the response if notification insert fails.
@@ -6508,38 +12375,44 @@ router.delete(
       (req as any).auth.userId,
       req.params.caseId
     );
-    await requireAnyRole(
+    // delete_cases capability: owners and admins pass implicitly; non-admin
+    // team members may also delete if they hold an explicit capability grant.
+    await requireCapability(
       (req as any).auth.userId,
       found.labOrganizationId,
-      ADMIN_ROLES
+      "delete_cases"
     );
 
     const deletingUserId = (req as any).auth.userId as string;
 
-    await softDeleteById({
-      table: cases,
-      id: found.id,
-      actorUserId: deletingUserId,
-      req,
-      organizationId: found.labOrganizationId,
-      entityType: "case",
-      beforeJson: found,
-      metadataJson: {
-        caseNumber: found.caseNumber,
-        patientName: [found.patientFirstName, found.patientLastName].filter(Boolean).join(" "),
-      },
+    await db.transaction(async (tx) => {
+      await softDeleteById({
+        table: cases,
+        id: found.id,
+        actorUserId: deletingUserId,
+        req,
+        organizationId: found.labOrganizationId,
+        entityType: "case",
+        beforeJson: found,
+        metadataJson: {
+          caseNumber: found.caseNumber,
+          patientName: [found.patientFirstName, found.patientLastName].filter(Boolean).join(" "),
+        },
+        tx,
+      });
+
+      // Keep the case deletion, invoice freeze, and both audit trails atomic.
+      await freezeInvoicesForDeletedCases({
+        req,
+        caseIds: [found.id],
+        labOrganizationId: found.labOrganizationId,
+        deletingUserId,
+        caseNumberById: new Map([[found.id, found.caseNumber]]),
+        tx,
+      });
     });
 
-    // Cascade-freeze every linked invoice so the billing record is preserved
-    // permanently (never deleted) but stops contributing to open balances.
-    await freezeInvoicesForDeletedCases({
-      req,
-      caseIds: [found.id],
-      labOrganizationId: found.labOrganizationId,
-      deletingUserId,
-      caseNumberById: new Map([[found.id, found.caseNumber]]),
-    });
-
+    broadcastCaseUpdated(found.id, "deleted");
     return ok(res, { deleted: true });
   })
 );
@@ -6641,6 +12514,7 @@ router.post(
         }
 
         restored.push(caseId);
+        broadcastCaseUpdated(caseId, "restored");
       } catch (err) {
         const reason =
           err instanceof Error ? err.message : "Unexpected error.";
@@ -6738,6 +12612,7 @@ router.post(
       }
     }
 
+    broadcastCaseUpdated(found.id, "restored");
     return ok(res, { restored: true, unfrozenInvoices: frozenInvoices.length });
   })
 );
@@ -6796,6 +12671,21 @@ router.post(
       fallback: "Failed to record note_added event.",
     }));
 
+    await touchCase(found.id);
+
+    // Auto-notify provider members when a shared note is added by the lab.
+    // Fire-and-forget — failure must not affect the 201 response.
+    if (input.visibility === "shared_with_provider" && found.providerOrganizationId) {
+      const labOrg = await db.query.organizations.findFirst({
+        where: eq(organizations.id, found.labOrganizationId),
+      }).catch(() => null);
+      void notifyProviderMembersOfLabActivity(
+        found as typeof found & { providerOrganizationId: string },
+        "shared_note_added",
+        (labOrg as any)?.name ?? "Your lab"
+      );
+    }
+
     return ok(res, note, 201);
   })
 );
@@ -6817,7 +12707,7 @@ router.post(
     }
 
     const input = z
-      .object({ method: z.enum(["email", "sms"]) })
+      .object({ method: z.enum(["email", "sms", "labtrax_only"]) })
       .parse(req.body);
 
     const note = await db.query.caseNotes.findFirst({
@@ -6835,6 +12725,46 @@ router.post(
       where: eq(organizations.id, found.providerOrganizationId),
     });
     if (!providerOrg) throw new HttpError(404, "Provider organization not found.");
+
+    if (input.method === "labtrax_only") {
+      // Resolve all active members of the provider organization and insert a
+      // notification row for each so the provider sees the bell badge.
+      const providerMembers = await db
+        .select({ userId: organizationMemberships.userId })
+        .from(organizationMemberships)
+        .where(
+          and(
+            eq(organizationMemberships.labId, found.providerOrganizationId),
+            eq(organizationMemberships.status, "active"),
+          ),
+        );
+
+      if (providerMembers.length > 0) {
+        const { filterUserIdsByInAppPref } = await import("../lib/in-app-prefs.js");
+        const recipientIds = await filterUserIdsByInAppPref(
+          providerMembers.map((m) => m.userId),
+          "caseNoteNotifications",
+        );
+        if (recipientIds.length > 0) {
+          const patientName =
+            [found.patientFirstName, found.patientLastName].filter(Boolean).join(" ") ||
+            "Unknown";
+          const noteSnippet = note.noteText.slice(0, 200);
+          await db
+            .insert(notifications)
+            .values(
+              recipientIds.map((userId) => ({
+                userId,
+                type: "shared_note",
+                title: `New note on ${patientName}'s case`,
+                body: noteSnippet,
+                dataJson: { caseId, noteId },
+              })),
+            );
+        }
+      }
+      return ok(res, { ok: true });
+    }
 
     if (input.method === "email") {
       if (!providerOrg.billingEmail) {
@@ -6899,55 +12829,6 @@ router.post(
     }
 
     return ok(res, { ok: true });
-  })
-);
-
-router.post(
-  "/:caseId/location-changes",
-  asyncHandler(async (req, res) => {
-    const found = await assertCaseAccess(
-      (req as any).auth.userId,
-      req.params.caseId
-    );
-    await requireMembership(
-      (req as any).auth.userId,
-      found.labOrganizationId
-    );
-    const input = z
-      .object({
-        locationCode: z.string().min(1),
-        locationName: z.string().min(1),
-        notes: z.string().optional(),
-      })
-      .parse(req.body);
-
-    const [location] = await db
-      .insert(caseLocations)
-      .values({
-        caseId: found.id,
-        locationCode: input.locationCode,
-        locationName: input.locationName,
-        movedByUserId: (req as any).auth.userId,
-        notes: input.notes ?? null,
-      })
-      .returning();
-
-    const user = (req as any).user;
-    await db.insert(caseEvents).values({
-      caseId: found.id,
-      eventType: "location_changed",
-      actorUserId: (req as any).auth.userId,
-      actorOrganizationId: found.labOrganizationId,
-      actorInitials: user?.initials || "SYS",
-      metadataJson: {
-        locationCode: input.locationCode,
-        locationName: input.locationName,
-      },
-    }).catch((err: unknown): never => wrapDbError(err, {
-      fallback: "Failed to record location change event.",
-    }));
-
-    return ok(res, location, 201);
   })
 );
 
@@ -7044,6 +12925,11 @@ router.patch(
     const affectedCaseIds = Array.from(
       new Set(matching.map((r) => r.caseId)),
     );
+    // Broadcast AFTER each case's own invoice sync settles (success or
+    // failure), not before — a socket recipient that refetches the instant
+    // it's notified must see the resynced invoice totals, not the pre-sync
+    // stale ones. Still broadcast on a sync failure: the restoration price
+    // itself already changed even if the invoice resync didn't complete.
     for (const cId of affectedCaseIds) {
       try {
         await syncInvoiceFromRestorations({
@@ -7055,6 +12941,8 @@ router.patch(
           { err, caseId: cId },
           "Failed to sync invoice after bulk restoration pricing update",
         );
+      } finally {
+        broadcastCaseUpdated(cId);
       }
     }
 
@@ -7070,17 +12958,7 @@ router.patch(
 
 /** Parse "13-14,14-15" → Set of normalised "lo-hi" pair keys. */
 function _parseBridgeConnectorStr(value: string | null | undefined): Set<string> {
-  const out = new Set<string>();
-  if (!value) return out;
-  for (const part of value.split(",")) {
-    const [a, b] = part.trim().split("-").map((s) => s.trim());
-    const na = Number(a);
-    const nb = Number(b);
-    if (Number.isFinite(na) && Number.isFinite(nb) && na > 0 && nb > 0) {
-      out.add(na < nb ? `${na}-${nb}` : `${nb}-${na}`);
-    }
-  }
-  return out;
+  return parseConnectorState(value).active;
 }
 
 /** BFS: return all tooth numbers reachable from toothNum via connectors. */
@@ -7124,15 +13002,14 @@ async function _repricePonticsInSpans(
     id: string;
     toothNumber: string;
     restorationType: string;
+    restorationSubtype?: string | null;
     material: string | null;
     priceSource: string | null;
   }>,
-  bridgeConnectorStr: string | null,
+  _bridgeConnectorStr: string | null,
 ): Promise<void> {
-  const connectors = _parseBridgeConnectorStr(bridgeConnectorStr);
-
   const pontics = restorations.filter(
-    (r) => /pontic/i.test(r.restorationType) && r.priceSource !== "manual",
+    (r) => /pontic/i.test(r.restorationType) && !r.priceSource && !!r.material?.trim(),
   );
   if (pontics.length === 0) return;
 
@@ -7140,51 +13017,21 @@ async function _repricePonticsInSpans(
     const ponticTooth = Number(pontic.toothNumber.trim());
     if (!Number.isInteger(ponticTooth) || ponticTooth < 1 || ponticTooth > 32) continue;
 
-    let abutmentMaterial: string | null = null;
-
-    if (connectors.size > 0) {
-      const span = _findBridgeSpan(ponticTooth, connectors);
-      if (span.size > 1) {
-        const abutment = restorations.find(
-          (r) =>
-            span.has(Number(r.toothNumber.trim())) &&
-            !/pontic/i.test(r.restorationType) &&
-            r.material,
-        );
-        abutmentMaterial = abutment?.material ?? null;
-      }
-    }
-
-    if (!abutmentMaterial) {
-      const sorted = restorations
-        .filter((r) => !/pontic/i.test(r.restorationType) && r.material)
-        .map((r) => ({
-          r,
-          dist: Math.abs(Number(r.toothNumber.trim()) - ponticTooth),
-        }))
-        .filter(({ dist }) => dist > 0 && dist <= 3)
-        .sort((a, b) => a.dist - b.dist);
-      abutmentMaterial = sorted[0]?.r.material ?? null;
-    }
-
-    if (!abutmentMaterial) continue;
-
-    const matForPricing = pontic.material || abutmentMaterial;
     const repriced = await resolveServerPriceWithSource(
       {
         labOrganizationId: caseCtx.labOrganizationId,
         doctorName: caseCtx.doctorName,
         providerOrganizationId: caseCtx.providerOrganizationId,
       },
-      matForPricing,
+      pontic.material,
       pontic.restorationType,
+      pontic.restorationSubtype,
     );
 
     if (repriced) {
       await db
         .update(caseRestorations)
         .set({
-          material: pontic.material ?? abutmentMaterial,
           unitPrice: repriced.amount.toFixed(2),
           priceSource: repriced.source,
           priceSourceId: repriced.sourceId,
@@ -7212,59 +13059,42 @@ router.post(
     );
     const input = z
       .object({
-        toothNumber: z.string().min(1),
+        // Empty toothNumber is allowed for removable restoration types
+        // (denture, partial, flipper, flexible/Valplast) where tooth position
+        // is not clinically meaningful. Non-removable types should always
+        // supply a non-empty tooth number, but that constraint is enforced on
+        // the client rather than here to keep server and iTero-import paths
+        // consistent (both already accept empty toothNumber per case-create).
+        toothNumber: z.string(),
         restorationType: z.string().min(1),
         material: z.string().optional(),
         shade: z.string().optional(),
         notes: z.string().optional(),
         quantity: z.coerce.number().int().positive().default(1),
         unitPrice: z.coerce.number().min(0).default(0),
+        restorationSubtype: z.string().optional(),
+        ...implantInputFields,
+        arch: z.enum(ARCH_VALUES).nullable().optional(),
       })
       .parse(req.body);
+    if (isArchApplicable(input.restorationType, input.restorationSubtype) &&
+        !normalizeArch(input.arch)) {
+      throw new HttpError(400, "Arch is required for Removable and Ortho restorations.");
+    }
 
-    // ── Step 1: Infer pontic material from existing bridge-span abutments ──
-    // When a pontic is added without a material, look at the case's existing
-    // restorations that share the same bridge span and use the first non-pontic
-    // abutment's material so the price resolves correctly.
-    // When bridge connectors are not yet drawn, fall back to a ±3-tooth
-    // adjacency search so pontics self-heal even before the connector data
-    // exists on the case.
-    let effectiveMaterial = input.material ?? null;
-    const bridgeConnectorStr = (found as any).bridgeConnectors as string | null ?? null;
-    if (/pontic/i.test(input.restorationType) && !effectiveMaterial) {
-      const ponticTooth = Number(input.toothNumber.trim());
-      if (Number.isInteger(ponticTooth) && ponticTooth >= 1 && ponticTooth <= 32) {
-        const existingRestorations = await db.query.caseRestorations.findMany({
-          where: eq(caseRestorations.caseId, found.id),
-        });
-
-        if (bridgeConnectorStr) {
-          // Path A: bridge connector span lookup.
-          const connectors = _parseBridgeConnectorStr(bridgeConnectorStr);
-          const span = _findBridgeSpan(ponticTooth, connectors);
-          if (span.size > 1) {
-            const abutment = existingRestorations.find((r) => {
-              const rTooth = Number(r.toothNumber.trim());
-              return span.has(rTooth) && !/pontic/i.test(r.restorationType) && r.material;
-            });
-            if (abutment?.material) effectiveMaterial = abutment.material;
-          }
-        }
-
-        // Path B: adjacency fallback (±3 teeth) — runs when bridge connectors
-        // are absent or the span lookup found no abutment with a material.
-        if (!effectiveMaterial) {
-          const candidates = existingRestorations
-            .filter((r) => !/pontic/i.test(r.restorationType) && r.material)
-            .map((r) => ({
-              r,
-              dist: Math.abs(Number(r.toothNumber.trim()) - ponticTooth),
-            }))
-            .filter(({ dist }) => dist > 0 && dist <= 3)
-            .sort((a, b) => a.dist - b.dist);
-          if (candidates[0]?.r.material) effectiveMaterial = candidates[0].r.material;
-        }
+    // A connector or neighboring tooth is never evidence of a unit's material.
+    // Legacy rows remain untouched; new explicit crown/pontic units need a
+    // material selected by the operator.
+    const effectiveMaterial = input.material?.trim() || null;
+    const isExplicitToothUnit = /^(?:crown|pontic)$/i.test(input.restorationType);
+    if (isExplicitToothUnit) {
+      input.toothNumber = input.toothNumber.trim().toUpperCase();
+      if (!/^(?:[1-9]|[12]\d|3[0-2]|[A-T])$/.test(input.toothNumber) || input.quantity !== 1) {
+        throw new HttpError(400, "Assign each crown or pontic to one tooth with one billable unit.");
       }
+    }
+    if (/^(?:crown|pontic)$/i.test(input.restorationType) && !effectiveMaterial) {
+      throw new HttpError(400, "Select a catalog material for this crown or pontic.");
     }
 
     let unit = input.unitPrice;
@@ -7281,7 +13111,8 @@ router.post(
           providerOrganizationId: found.providerOrganizationId,
         },
         effectiveMaterial,
-        input.restorationType
+        input.restorationType,
+        input.restorationSubtype ?? null,
       );
       if (fallback) {
         unit = fallback.amount;
@@ -7292,12 +13123,36 @@ router.post(
       }
     }
 
-    const [restoration] = await db
-      .insert(caseRestorations)
+    const normalizedArch = normalizeArch(input.arch);
+    const { restoration, replayed } = await db.transaction(async (tx) => {
+      const [lockedCase] = await tx.select().from(cases).where(eq(cases.id, found.id)).for("update");
+      const existing = await tx.select().from(caseRestorations).where(eq(caseRestorations.caseId, found.id));
+      if (isExplicitToothUnit) {
+        const duplicate = existing.find((row) => /^(Crown(?:\s*(?:&|and)\s*Bridge)?|Pontic|Bridge|Implant|Veneer|Inlay|Onlay)$/i.test(row.restorationType) && row.priceKey !== "alloy" &&
+          expandToothAssignmentIdentifiers(row.toothNumber).includes(input.toothNumber));
+        if (duplicate) {
+          if (duplicate.toothNumber === input.toothNumber && duplicate.quantity === 1 &&
+              duplicate.restorationType === input.restorationType &&
+              duplicate.material === effectiveMaterial &&
+              (duplicate.shade ?? "") === (input.shade ?? "") &&
+              (duplicate.restorationSubtype ?? "") === (input.restorationSubtype ?? "") &&
+              (!userSupplied || Number(duplicate.unitPrice) === unit)) {
+            return { restoration: duplicate, replayed: true };
+          }
+          throw new HttpError(409, `Tooth #${input.toothNumber} already has an assignment. Edit that assignment rather than adding a second unit.`);
+        }
+        await tx.delete(caseRestorations).where(and(eq(caseRestorations.caseId, found.id),
+          eq(caseRestorations.toothNumber, input.toothNumber), sql`lower(${caseRestorations.restorationType}) = 'missing'`));
+      }
+      const [created] = await tx.insert(caseRestorations)
       .values({
         caseId: found.id,
         toothNumber: input.toothNumber,
+        ...implantValues(input),
         restorationType: input.restorationType,
+        assignmentProvenance: isExplicitToothUnit ? { origin: "manual", manualFields: ["role", "product", "shade"] } : null,
+        restorationSubtype: input.restorationSubtype ?? null,
+        arch: normalizedArch,
         material: effectiveMaterial,
         shade: input.shade ?? null,
         notes: input.notes ?? null,
@@ -7312,9 +13167,15 @@ router.post(
       .catch((err: unknown): never => wrapDbError(err, {
         fallback: "Failed to save restoration. Please try again.",
       }));
+      if (isExplicitToothUnit) {
+        const state = withPonticConnectorSuggestions(lockedCase.bridgeConnectors, [...existing, created], new Set([input.toothNumber]));
+        await tx.update(cases).set({ bridgeConnectors: serializeConnectorState(state) || null }).where(eq(cases.id, found.id));
+      }
+      return { restoration: created, replayed: false };
+    });
 
     const restorationActor = (req as any).user;
-    await db.insert(caseEvents).values({
+    if (!replayed) await db.insert(caseEvents).values({
       caseId: found.id,
       eventType: "restoration_added",
       actorUserId: (req as any).auth.userId,
@@ -7333,31 +13194,7 @@ router.post(
       fallback: "Failed to record restoration_added event.",
     }));
 
-    // ── Step 2: Re-price existing pontics adjacent to the newly inserted
-    // restoration.  Uses `_repricePonticsInSpans`, which tries bridge-connector
-    // span membership first and falls back to a ±3-tooth adjacency search.
-    // This corrects pontics that were added before their abutment existed, and
-    // also handles the case where bridge connectors haven't been drawn yet.
-    {
-      const allOtherRestorations = await db.query.caseRestorations.findMany({
-        where: and(
-          eq(caseRestorations.caseId, found.id),
-          ne(caseRestorations.id, restoration.id),
-        ),
-      });
-      // Include the newly inserted restoration so the helper can use it as
-      // the authoritative abutment material source.
-      await _repricePonticsInSpans(
-        {
-          id: found.id,
-          labOrganizationId: found.labOrganizationId,
-          doctorName: found.doctorName,
-          providerOrganizationId: found.providerOrganizationId,
-        },
-        [...allOtherRestorations, restoration],
-        bridgeConnectorStr,
-      );
-    }
+    // Connections never copy neighboring material or reprice other sources.
 
     // Keep the case's invoice in sync with the restoration set so the
     // user doesn't have to also open the Invoice tab and regenerate by
@@ -7373,7 +13210,11 @@ router.post(
     // restoration automatically appends an "Alloy" line (idempotent) so the
     // alloy charge is never forgotten. Best-effort: a failure here must not
     // fail the restoration write the user just made.
-    if (priceKey === "pfm_crown" || /pfm/i.test(effectiveMaterial ?? "")) {
+    if (
+      priceKey === "pfm_crown" ||
+      /pfm/i.test(effectiveMaterial ?? "") ||
+      isPfmOrFcmMaterial(effectiveMaterial)
+    ) {
       try {
         const labOrg = await db.query.organizations.findFirst({
           where: eq(organizations.id, found.labOrganizationId),
@@ -7397,6 +13238,8 @@ router.post(
         );
       }
     }
+
+    await touchCase(found.id);
 
     return ok(res, restoration, 201);
   })
@@ -7437,6 +13280,8 @@ router.post(
         "No alloy price is configured for this case. Set an alloy price in your fee schedule first."
       );
     }
+
+    await touchCase(found.id);
 
     return ok(res, result, result.added ? 201 : 200);
   })
@@ -7482,6 +13327,8 @@ router.delete(
         },
       });
     }
+
+    await touchCase(found.id);
 
     return ok(res, result);
   })
@@ -7562,6 +13409,8 @@ router.post(
       },
     });
 
+    await touchCase(found.id);
+
     return ok(res, {
       ok: true,
       target: result.target,
@@ -7624,6 +13473,8 @@ router.post(
       },
     });
 
+    await touchCase(found.id);
+
     return ok(res, {
       ok: true,
       target: result.target,
@@ -7652,12 +13503,23 @@ router.delete(
         eq(caseRestorations.caseId, found.id)
       ),
     });
-    if (!restoration) throw new HttpError(404, "Restoration not found.");
-    await db
-      .delete(caseRestorations)
-      .where(eq(caseRestorations.id, restoration.id));
+    if (!restoration) {
+      const deleted = await db.query.caseEvents.findFirst({ where: and(eq(caseEvents.caseId, found.id),
+        eq(caseEvents.eventType, "restoration_deleted"), sql`${caseEvents.metadataJson}->>'restorationId' = ${req.params.restorationId}`) });
+      if (!deleted) throw new HttpError(404, "Restoration not found.");
+      await syncInvoiceFromRestorations({ caseId: found.id, actorUserId: (req as any).auth.userId });
+      broadcastCaseUpdated(found.id);
+      return ok(res, { deleted: true });
+    }
     const restorationDeleter = (req as any).user;
-    await db.insert(caseEvents).values({
+    await db.transaction(async (tx) => {
+      const [lockedCase] = await tx.select().from(cases).where(eq(cases.id, found.id)).for("update");
+      const state = parseConnectorState(lockedCase.bridgeConnectors);
+      const removedTeeth = new Set(expandToothAssignmentIdentifiers(restoration.toothNumber));
+      const remaining = new Set([...state.active].filter((pair) => !pair.split("-").some((tooth) => removedTeeth.has(tooth))));
+      await tx.delete(caseRestorations).where(eq(caseRestorations.id, restoration.id));
+      await tx.update(cases).set({ bridgeConnectors: updateConnectorChoices(state, remaining) || null }).where(eq(cases.id, found.id));
+      await tx.insert(caseEvents).values({
       caseId: found.id,
       eventType: "restoration_deleted",
       actorUserId: (req as any).auth.userId,
@@ -7672,6 +13534,7 @@ router.delete(
     }).catch((err: unknown): never => wrapDbError(err, {
       fallback: "Failed to record restoration_deleted event.",
     }));
+    });
     await writeAuditLog({
       req,
       organizationId: found.labOrganizationId,
@@ -7689,7 +13552,395 @@ router.delete(
       actorUserId: (req as any).auth.userId,
     });
 
+    broadcastCaseUpdated(found.id);
     return ok(res, { deleted: true });
+  })
+);
+
+router.patch(
+  "/:caseId/restorations/hierarchy",
+  asyncHandler(async (req, res) => {
+    const found = await assertCaseAccessOrPromote(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    const membership = await requireMembership(
+      (req as any).auth.userId,
+      found.labOrganizationId
+    );
+
+    const input = UpdateCaseRestorationHierarchyBody.parse(req.body);
+    if (
+      (input.step !== undefined || input.stepShade !== undefined) &&
+      !ADMIN_ROLES.includes(membership.role as any)
+    ) {
+      throw new HttpError(403, "Only admin or owner members can update the case step.");
+    }
+    const actor = (req as any).user;
+    const result = await db.transaction(async (tx) => {
+      const beforeRows = await tx
+        .select()
+        .from(caseRestorations)
+        .where(eq(caseRestorations.caseId, found.id))
+        .for("update");
+
+      const requestedArch =
+        input.arch === undefined ? undefined : normalizeArch(input.arch);
+      if (input.arch != null && !requestedArch) {
+        throw new HttpError(400, "Choose a valid arch.");
+      }
+
+      const allBillableRows = beforeRows.filter(
+        (row) => row.restorationType !== "missing",
+      );
+      const rowSku = (row: typeof allBillableRows[number]) => encodeRestorationSubtype(deriveCaseHierarchy(
+        /^(Crown|Pontic)$/i.test(row.restorationType) ? found.caseType : row.restorationType,
+        row.restorationSubtype, row.material));
+      const unitSkus = new Set(allBillableRows.filter((row) => /^(Crown|Pontic)$/i.test(row.restorationType)).map(rowSku).filter(Boolean));
+      const defaultSku = !found.material && !found.restorationSubtypeOverride && unitSkus.size === 1
+        ? [...unitSkus][0] : encodeRestorationSubtype(deriveCaseHierarchy(
+          found.caseType, found.restorationSubtypeOverride, found.material));
+      const productChanged = encodeRestorationSubtype(deriveCaseHierarchy(
+        input.restorationType, input.restorationSubtype, input.material)) !== defaultSku;
+      const billableRows = allBillableRows.filter((row) => {
+        const sku = rowSku(row);
+        return (!productChanged && /^(Crown|Pontic)$/i.test(row.restorationType)) || !defaultSku || sku === defaultSku ||
+          (!row.restorationSubtype && !row.material && /^(Crown|Pontic)$/i.test(row.restorationType));
+      });
+      const unrelatedRows = allBillableRows.filter((row) => !billableRows.includes(row));
+      const unrelatedTeeth = new Set(unrelatedRows.filter((row) => /^(Crown|Pontic)$/i.test(row.restorationType))
+        .flatMap((row) => expandToothAssignmentIdentifiers(row.toothNumber)));
+      const requestedTeeth =
+        input.toothNumbers === undefined
+          ? null
+          : Array.from(new Set(input.toothNumbers.map((tooth) => tooth.trim())));
+      const targetIsRestorative = deriveCaseHierarchy(input.restorationType, input.restorationSubtype, input.material).caseType === "restorative";
+      if (targetIsRestorative && productChanged && allBillableRows.some((row) => /^(Crown|Pontic)$/i.test(row.restorationType)) &&
+          !billableRows.some((row) => /^(Crown|Pontic)$/i.test(row.restorationType))) {
+        throw new HttpError(400, "These teeth have independent catalog products. Use the tooth chart to change their assignments explicitly.");
+      }
+      if (targetIsRestorative && requestedArch === "upper_lower" && billableRows.some((row) => /^(Crown|Pontic)$/i.test(row.restorationType))) {
+        throw new HttpError(400, "Tooth numbers define the arch of each assignment. A tooth cannot be billed on both arches.");
+      }
+      if (targetIsRestorative && requestedTeeth) {
+        const assigned = new Set(allBillableRows.map((row) => row.toothNumber));
+        if (requestedTeeth.some((tooth) => expandToothAssignmentIdentifiers(tooth).length && !assigned.has(tooth))) {
+          throw new HttpError(400, "Assign an explicit crown or pontic role to new teeth in Restorations before changing their shared product.");
+        }
+      }
+      if (requestedTeeth === null && billableRows.length === 0) {
+        throw new HttpError(400, "Add at least one tooth or arch-level restoration.");
+      }
+      const desiredTeeth =
+        requestedTeeth === null
+          ? null
+          : requestedTeeth.length > 0
+            ? requestedTeeth
+            : [""];
+
+      const pricingCase = await tx.query.cases.findFirst({
+        where: eq(cases.id, found.id),
+      });
+      if (!pricingCase) throw new HttpError(404, "Case not found.");
+      const existingByTooth = new Map<string, typeof billableRows>();
+      for (const row of billableRows) {
+        const group = existingByTooth.get(row.toothNumber) ?? [];
+        group.push(row);
+        existingByTooth.set(row.toothNumber, group);
+      }
+      const retainedIds = new Set<string>(unrelatedRows.map((row) => row.id));
+      const nextEvents: Array<Record<string, unknown>> = [];
+      const priceCache = new Map<string, Awaited<ReturnType<typeof resolveServerPriceWithSource>>>();
+      let updatedCount = 0;
+      let createdCount = 0;
+      let deletedCount = 0;
+      let repricedCount = 0;
+      let manualPriceCount = 0;
+      let unpricedCount = 0;
+
+      const persistLine = async (
+        existing: (typeof billableRows)[number] | null,
+        seed: (typeof billableRows)[number] | null,
+        toothNumber: string,
+        arch: string | null,
+      ) => {
+        const source = existing ?? seed;
+        const preserveProduct = source && !productChanged && /^(Crown|Pontic)$/i.test(source.restorationType);
+        const restorationSubtype = preserveProduct ? source.restorationSubtype : input.restorationSubtype || null;
+        const material = preserveProduct ? source.material : input.material || null;
+        const restorationType = targetIsRestorative && source && expandToothAssignmentIdentifiers(source.toothNumber).length
+          ? source.restorationType : input.restorationType;
+        const hierarchyChanged =
+          !source ||
+          source.restorationType !== restorationType ||
+          (source.restorationSubtype ?? null) !== restorationSubtype ||
+          (source.material ?? null) !== material;
+        const manual = source?.priceSource === "manual";
+        const rowValues: Record<string, unknown> = {
+          caseId: found.id,
+          toothNumber,
+          restorationType,
+          restorationSubtype,
+          material,
+          shade:
+            input.shade === undefined
+              ? source?.shade ?? null
+              : input.shade?.trim() || null,
+          notes: source?.notes ?? null,
+          assignmentProvenance: /^(Crown|Pontic)$/i.test(restorationType)
+            ? { ...source?.assignmentProvenance, origin: source?.assignmentProvenance?.origin ?? "manual",
+                manualFields: Array.from(new Set([...(source?.assignmentProvenance?.manualFields ?? []), "product", ...(input.shade !== undefined ? ["shade"] : [])])) }
+            : null,
+          ...implantValues(source ?? {}),
+          quantity: source?.quantity ?? 1,
+          arch:
+            input.arch === undefined
+              ? source?.arch ?? null
+              : arch,
+          unitPrice: source?.unitPrice ?? "0.00",
+          priceSource: source?.priceSource ?? null,
+          priceSourceId: source?.priceSourceId ?? null,
+          priceSourceName: source?.priceSourceName ?? null,
+          priceKey: source?.priceKey ?? null,
+          updatedAt: new Date(),
+        };
+
+        if (manual && source) {
+          manualPriceCount++;
+        } else if (hierarchyChanged) {
+          const cacheKey = [
+            input.restorationType,
+            input.restorationSubtype || "",
+            input.material || "",
+          ].join("\u0000");
+          let quote = priceCache.get(cacheKey);
+          if (quote === undefined) {
+            quote = await resolveServerPriceWithSource(
+              {
+                labOrganizationId: pricingCase.labOrganizationId,
+                doctorName: pricingCase.doctorName,
+                providerOrganizationId: pricingCase.providerOrganizationId,
+              },
+              input.material || null,
+              input.restorationType,
+              input.restorationSubtype || null,
+            );
+            priceCache.set(cacheKey, quote);
+          }
+          if (quote) {
+            rowValues.unitPrice = quote.amount.toFixed(2);
+            rowValues.priceSource = quote.source;
+            rowValues.priceSourceId = quote.sourceId;
+            rowValues.priceSourceName = quote.sourceName;
+            rowValues.priceKey = quote.key;
+            repricedCount++;
+          } else {
+            rowValues.unitPrice = "0.00";
+            rowValues.priceSource = null;
+            rowValues.priceSourceId = null;
+            rowValues.priceSourceName = null;
+            rowValues.priceKey = null;
+            unpricedCount++;
+          }
+        } else if (
+          !existing &&
+          source &&
+          !source.priceSource &&
+          Number(source.unitPrice) <= 0
+        ) {
+          unpricedCount++;
+        }
+
+        const saved = existing
+          ? (
+              await tx
+                .update(caseRestorations)
+                .set(rowValues)
+                .where(eq(caseRestorations.id, existing.id))
+                .returning()
+            )[0]
+          : (
+              await tx.insert(caseRestorations).values(rowValues as any).returning()
+            )[0];
+        if (!saved) {
+          throw new HttpError(409, "Case restorations changed during this save. Refresh the case and try again.");
+        }
+        if (existing) {
+          retainedIds.add(existing.id);
+          updatedCount++;
+          nextEvents.push({
+            caseId: found.id,
+            eventType: "restoration_updated",
+            actorUserId: (req as any).auth.userId,
+            actorOrganizationId: found.labOrganizationId,
+            actorInitials: actor?.initials || "SYS",
+            metadataJson: { restorationId: existing.id, before: existing, after: saved },
+          });
+        } else {
+          createdCount++;
+          nextEvents.push({
+            caseId: found.id,
+            eventType: "restoration_added",
+            actorUserId: (req as any).auth.userId,
+            actorOrganizationId: found.labOrganizationId,
+            actorInitials: actor?.initials || "SYS",
+            metadataJson: { restorationId: saved.id, after: saved },
+          });
+        }
+        return saved;
+      };
+
+      const checkArch = (arch: string | null) => {
+        if (
+          isArchApplicable(input.restorationType, input.restorationSubtype) &&
+          !normalizeArch(arch)
+        ) {
+          throw new HttpError(400, "Arch is required for Removable and Ortho restorations.");
+        }
+      };
+
+      if (desiredTeeth === null) {
+        for (const old of billableRows) {
+          const nextArch =
+            input.arch === undefined
+              ? normalizeArch(old.arch) ?? null
+              : requestedArch === "upper_lower"
+                ? "upper"
+                : requestedArch ?? null;
+          checkArch(nextArch);
+          const saved = await persistLine(old, old, old.toothNumber, nextArch);
+          if (requestedArch === "upper_lower") {
+            await persistLine(null, saved, old.toothNumber, "lower");
+          }
+        }
+      } else {
+        for (const toothNumber of desiredTeeth) {
+          if (unrelatedTeeth.has(toothNumber)) continue;
+          const oldRows = existingByTooth.get(toothNumber) ?? [];
+          if (requestedArch === "upper_lower") {
+            for (const targetArch of ["upper", "lower"] as const) {
+              const exact = oldRows.find(
+                (row) => row.arch === targetArch && !retainedIds.has(row.id),
+              );
+              const unassigned = oldRows.find(
+                (row) => !row.arch && !retainedIds.has(row.id),
+              );
+              const other = oldRows.find((row) => !retainedIds.has(row.id));
+              const match = exact ?? (targetArch === "upper" ? unassigned : null) ?? null;
+              const seed = match ?? other ?? oldRows[0] ?? null;
+              checkArch(targetArch);
+              await persistLine(match, seed, toothNumber, targetArch);
+            }
+          } else {
+            const targetArch =
+              input.arch === undefined
+                ? undefined
+                : requestedArch;
+            const candidates =
+              targetArch === undefined
+                ? oldRows.filter((row) => !retainedIds.has(row.id))
+                : [
+                    oldRows.find(
+                      (row) => row.arch === targetArch && !retainedIds.has(row.id),
+                    ) ??
+                      oldRows.find((row) => !retainedIds.has(row.id)),
+                  ].filter(Boolean) as typeof oldRows;
+            if (candidates.length === 0) {
+              const archToSave = targetArch ?? null;
+              checkArch(archToSave);
+              await persistLine(null, null, toothNumber, archToSave);
+            } else {
+              for (const old of candidates) {
+                const archToSave =
+                  targetArch === undefined ? normalizeArch(old.arch) : targetArch;
+                checkArch(archToSave);
+                await persistLine(old, old, toothNumber, archToSave);
+              }
+            }
+          }
+        }
+      }
+
+      const droppedRows = billableRows.filter((row) => !retainedIds.has(row.id));
+      if (droppedRows.length > 0) {
+        await tx.delete(caseRestorations).where(
+          inArray(caseRestorations.id, droppedRows.map((row) => row.id)),
+        );
+        deletedCount = droppedRows.length;
+        nextEvents.push(
+          ...droppedRows.map((row) => ({
+            caseId: found.id,
+            eventType: "restoration_deleted",
+            actorUserId: (req as any).auth.userId,
+            actorOrganizationId: found.labOrganizationId,
+            actorInitials: actor?.initials || "SYS",
+            metadataJson: { restorationId: row.id, before: row },
+          })),
+        );
+      }
+      if (nextEvents.length > 0) await tx.insert(caseEvents).values(nextEvents as any);
+
+      if (input.step !== undefined || input.stepShade !== undefined) {
+        const currentCase = await tx.query.cases.findFirst({
+          where: eq(cases.id, found.id),
+        });
+        const nextStep =
+          input.step === undefined ? currentCase?.step ?? null : input.step;
+        await tx
+          .update(cases)
+          .set({
+            step: nextStep,
+            stepShade:
+              nextStep === "wax_setup"
+                ? input.stepShade === undefined
+                  ? currentCase?.stepShade ?? null
+                  : input.stepShade?.trim() || null
+                : null,
+            updatedAt: new Date(),
+          })
+          .where(eq(cases.id, found.id));
+      }
+
+      return {
+        updatedCount,
+        createdCount,
+        deletedCount,
+        repricedCount,
+        manualPriceCount,
+        unpricedCount,
+      };
+    });
+
+    let invoiceResult;
+    try {
+      invoiceResult = await syncInvoiceFromRestorationsDetailed({
+        caseId: found.id,
+        actorUserId: (req as any).auth.userId,
+        createIfMissing: true,
+      });
+    } catch {
+      // The hierarchy transaction has committed. Let the client distinguish
+      // this from a rolled-back save and refresh both case and invoice views.
+      broadcastCaseUpdated(found.id);
+      throw new HttpError(
+        500,
+        "Clinical details were saved, but the invoice could not be synchronized. Review the refreshed case and invoice before retrying."
+      );
+    }
+
+    broadcastCaseUpdated(found.id);
+    return res
+      .status(200)
+      .json(
+        UpdateCaseRestorationHierarchy200Response.parse({
+          ok: true,
+          data: {
+            ...result,
+            invoiceAction: invoiceResult.action,
+            invoiceId: invoiceResult.invoiceId,
+          },
+        })
+      );
   })
 );
 
@@ -7716,40 +13967,199 @@ router.patch(
       .object({
         toothNumber: z.string().min(1).optional(),
         restorationType: z.string().optional(),
-        material: z.string().optional(),
-        shade: z.string().optional(),
-        notes: z.string().optional(),
+        ...implantInputFields,
+        material: z.string().nullable().optional(),
+        shade: z.string().nullable().optional(),
+        notes: z.string().nullable().optional(),
         quantity: z.coerce.number().int().positive().optional(),
         unitPrice: z.coerce.number().min(0).optional(),
+        restorationSubtype: z.string().nullable().optional(),
+        arch: z.enum(ARCH_VALUES).nullable().optional(),
+        // Opt out of mirroring this edit onto a linked upper/lower sibling.
+        // Row-scoped editors (the Lab Slip's per-restoration shade control)
+        // send false so they change exactly the row the user touched.
+        syncLinkedArch: z.boolean().optional(),
       })
       .parse(req.body);
 
     const patchFields: any = {};
+    for (const field of IMPLANT_FIELDS) {
+      if (input[field] !== undefined) patchFields[field] = input[field]?.trim() || null;
+    }
     if (input.toothNumber !== undefined) patchFields.toothNumber = input.toothNumber;
     if (input.restorationType !== undefined) patchFields.restorationType = input.restorationType || null;
     if (input.material !== undefined) patchFields.material = input.material || null;
     if (input.shade !== undefined) patchFields.shade = input.shade || null;
     if (input.notes !== undefined) patchFields.notes = input.notes || null;
     if (input.quantity !== undefined) patchFields.quantity = input.quantity;
+    if (input.restorationSubtype !== undefined) patchFields.restorationSubtype = input.restorationSubtype || null;
+    if (input.arch !== undefined) patchFields.arch = normalizeArch(input.arch);
+    const resultingType = input.restorationType ?? restoration.restorationType;
+    const resultingSubtype = input.restorationSubtype !== undefined
+      ? input.restorationSubtype
+      : restoration.restorationSubtype;
+    if (isArchApplicable(resultingType, resultingSubtype) &&
+        !normalizeArch(input.arch !== undefined ? input.arch : restoration.arch)) {
+      throw new HttpError(400, "Arch is required for Removable and Ortho restorations.");
+    }
     if (input.unitPrice !== undefined) {
       patchFields.unitPrice = input.unitPrice.toFixed(2);
       patchFields.priceSource = "manual";
       patchFields.priceSourceId = null;
       patchFields.priceSourceName = null;
     }
+    if (input.unitPrice === undefined && restoration.priceSource !== "manual" &&
+        ((input.material !== undefined && (input.material || null) !== restoration.material) ||
+         (input.restorationSubtype !== undefined && (input.restorationSubtype || null) !== restoration.restorationSubtype) ||
+         (input.restorationType !== undefined && input.restorationType !== restoration.restorationType))) {
+      const price = await resolveServerPriceWithSource({
+        labOrganizationId: found.labOrganizationId,
+        doctorName: found.doctorName,
+        providerOrganizationId: found.providerOrganizationId,
+      }, input.material !== undefined ? input.material || null : restoration.material,
+      resultingType, resultingSubtype);
+      if (!price && /^(crown|pontic)$/i.test(resultingType)) {
+        throw new HttpError(422, "This material needs a catalog price. Choose a priced product or have an authorized user set its price.");
+      }
+      if (price) {
+        patchFields.unitPrice = price.amount.toFixed(2);
+        patchFields.priceSource = price.source;
+        patchFields.priceSourceId = price.sourceId;
+        patchFields.priceSourceName = price.sourceName;
+        patchFields.priceKey = price.key;
+      }
+    }
 
     if (Object.keys(patchFields).length === 0) {
       return ok(res, restoration);
     }
+    if (/^(crown|pontic)$/i.test(resultingType)) {
+      const manualFields = new Set(restoration.assignmentProvenance?.manualFields ?? []);
+      if (input.restorationType !== undefined || input.toothNumber !== undefined) manualFields.add("role");
+      if (input.material !== undefined || input.restorationSubtype !== undefined) manualFields.add("product");
+      if (input.shade !== undefined) manualFields.add("shade");
+      patchFields.assignmentProvenance = {
+        ...restoration.assignmentProvenance,
+        origin: restoration.assignmentProvenance?.origin ?? "manual",
+        manualFields: [...manualFields],
+      };
+    }
 
-    const [updated] = await db
-      .update(caseRestorations)
+    const [updated] = await db.transaction(async (tx) => {
+      const [lockedCase] = await tx.select().from(cases).where(eq(cases.id, found.id)).for("update");
+      const rows = await tx.select().from(caseRestorations).where(eq(caseRestorations.caseId, found.id));
+      const current = rows.find((row) => row.id === restoration.id);
+      if (!current) throw new HttpError(404, "Restoration not found.");
+      if (patchFields.assignmentProvenance) {
+        patchFields.assignmentProvenance = { ...current.assignmentProvenance, ...patchFields.assignmentProvenance,
+          origin: current.assignmentProvenance?.origin ?? patchFields.assignmentProvenance.origin,
+          manualFields: [...new Set([...(current.assignmentProvenance?.manualFields ?? []), ...patchFields.assignmentProvenance.manualFields])],
+        };
+      }
+      const next = { ...current, ...patchFields };
+      if (/^(crown|pontic)$/i.test(next.restorationType)) {
+        const shapeChanged = input.toothNumber !== undefined || input.restorationType !== undefined || input.quantity !== undefined;
+        const legacyShape = !/^(?:[1-9]|[12]\d|3[0-2]|[A-T])$/i.test(current.toothNumber) || current.quantity !== 1;
+        if ((!legacyShape || shapeChanged) && (!/^(?:[1-9]|[12]\d|3[0-2]|[A-T])$/i.test(next.toothNumber) || next.quantity !== 1 || !next.material?.trim())) {
+          throw new HttpError(400, "Each crown or pontic needs one tooth, one unit, and a catalog material.");
+        }
+        if (rows.some((row) => row.id !== next.id && !/^missing$/i.test(row.restorationType) && row.priceKey !== "alloy" &&
+          expandToothAssignmentIdentifiers(row.toothNumber).includes(next.toothNumber))) {
+          throw new HttpError(409, `Tooth #${next.toothNumber} already has an assignment.`);
+        }
+      }
+      const nextRows = rows.map((row) => row.id === next.id ? next : row);
+      const connectorText = serializeConnectorState(withPonticConnectorSuggestions(lockedCase.bridgeConnectors, nextRows, new Set()));
+      const validation = validateToothConnectors(connectorText, nextRows);
+      const priorErrors = new Set(validateToothConnectors(lockedCase.bridgeConnectors, rows).errors);
+      const newErrors = validation.errors.filter((error) => !priorErrors.has(error));
+      if (newErrors.length) throw new HttpError(400, `${newErrors.join(" ")} Disconnect incompatible units before changing their product.`);
+      await tx.update(cases).set({ bridgeConnectors: connectorText || null }).where(eq(cases.id, found.id));
+      return tx.update(caseRestorations)
       .set(patchFields)
       .where(eq(caseRestorations.id, restoration.id))
       .returning()
       .catch((err: unknown): never => wrapDbError(err, {
         fallback: "Failed to update restoration. Please try again.",
       }));
+    });
+
+    // Upper + Lower is represented by two durable sources. The server owns the
+    // transition so clients update one logical appliance instead of racing two
+    // restoration PATCH requests.
+    const requestedArch =
+      input.arch !== undefined ? normalizeArch(input.arch) : undefined;
+    const sibling = await db.query.caseRestorations.findFirst({
+      where: and(
+        eq(caseRestorations.caseId, found.id),
+        ne(caseRestorations.id, restoration.id),
+        eq(caseRestorations.restorationType, restoration.restorationType),
+        or(
+          eq(caseRestorations.arch, "upper"),
+          eq(caseRestorations.arch, "lower"),
+        ),
+      ),
+    });
+    if (requestedArch === "upper" || requestedArch === "lower") {
+      if (sibling) {
+        await db
+          .delete(caseRestorations)
+          .where(eq(caseRestorations.id, sibling.id));
+      }
+    } else if (requestedArch === "upper_lower") {
+      await db.update(caseRestorations).set({ arch: "upper" }).where(eq(caseRestorations.id, restoration.id));
+      if (sibling) {
+        const shared = {
+          toothNumber: updated.toothNumber,
+          restorationType: updated.restorationType,
+          restorationSubtype: updated.restorationSubtype,
+          arch: "lower" as const,
+          material: updated.material,
+          shade: updated.shade,
+          notes: updated.notes,
+          quantity: 1,
+          unitPrice: updated.unitPrice,
+          priceSource: updated.priceSource,
+          priceSourceId: updated.priceSourceId,
+          priceSourceName: updated.priceSourceName,
+          priceKey: updated.priceKey,
+        };
+        await db
+          .update(caseRestorations)
+          .set(shared)
+          .where(eq(caseRestorations.id, sibling.id));
+      } else {
+        await db.insert(caseRestorations).values({
+          caseId: found.id,
+          toothNumber: updated.toothNumber,
+          ...implantValues(updated),
+          restorationType: updated.restorationType,
+          restorationSubtype: updated.restorationSubtype,
+          arch: "lower",
+          material: updated.material,
+          shade: updated.shade,
+          notes: updated.notes,
+          quantity: 1,
+          unitPrice: updated.unitPrice,
+          priceSource: updated.priceSource,
+          priceSourceId: updated.priceSourceId,
+          priceSourceName: updated.priceSourceName,
+          priceKey: updated.priceKey,
+        });
+      }
+    } else if (sibling && input.syncLinkedArch !== false) {
+      const sharedFields = ["restorationType", "restorationSubtype", "material", "shade", "notes", "unitPrice"];
+      const siblingPatch: Record<string, unknown> = {};
+      for (const field of sharedFields) {
+        if (field in patchFields) siblingPatch[field] = patchFields[field];
+      }
+      if (Object.keys(siblingPatch).length) {
+        await db
+          .update(caseRestorations)
+          .set(siblingPatch)
+          .where(eq(caseRestorations.id, sibling.id));
+      }
+    }
 
     const actor = (req as any).user;
     await db.insert(caseEvents).values({
@@ -7767,11 +14177,16 @@ router.patch(
       fallback: "Failed to record restoration_updated event.",
     }));
 
-    await syncInvoiceFromRestorations({
-      caseId: found.id,
-      actorUserId: (req as any).auth.userId,
-    });
+    // Clinical annotations are independent of charges; don't rebuild an invoice
+    // (or re-quote an old rate) for a metadata-only edit.
+    if (Object.keys(patchFields).some((key) => !(IMPLANT_FIELDS as readonly string[]).includes(key))) {
+      await syncInvoiceFromRestorations({
+        caseId: found.id,
+        actorUserId: (req as any).auth.userId,
+      });
+    }
 
+    broadcastCaseUpdated(found.id);
     return ok(res, updated);
   })
 );
@@ -7860,6 +14275,8 @@ router.patch(
       actorUserId: (req as any).auth.userId,
     });
 
+    await touchCase(found.id);
+
     return ok(res, updated);
   })
 );
@@ -7907,6 +14324,8 @@ router.post(
     }).catch((err: unknown): never => wrapDbError(err, {
       fallback: "Failed to record provider_submission_received event.",
     }));
+
+    await touchCase(found.id);
 
     return ok(res, submission, 201);
   })
@@ -7991,6 +14410,7 @@ router.post(
       fallback: "Failed to record provider_submission_approved event.",
     }));
 
+    broadcastCaseUpdated(submission.caseId);
     return ok(res, approved);
   })
 );
@@ -8039,6 +14459,7 @@ router.post(
       fallback: "Failed to record provider_submission_rejected event.",
     }));
 
+    broadcastCaseUpdated(submission.caseId);
     return ok(res, rejected);
   })
 );
@@ -8093,12 +14514,17 @@ const ITERO_RX_SYSTEM_PROMPT = `You are a dental laboratory prescription reader.
   "patientFirstName": "First",
   "patientLastName": "Last",
   "caseType": "one of EXACTLY: Crown & Bridge, Removable, Appliance, Other",
-  "material": "one of: Zirconia, PFM, Lithium Disilicate, Full Cast, Composite, Acrylic, Resin, Valplast, Flexible, Metal, PMMA, Other",
-  "shade": "shade value like A2 or BL2",
+  "arch": "for Removable or Ortho/full-arch Appliance only: exactly Upper, Lower, or Upper + Lower; null when absent or ambiguous",
+  "removableSubtype": "for Removable caseType only — one of EXACTLY: flipper | partial | denture | repair_partial | repair_denture | repair | null. Use null for all non-Removable cases and when the Rx is unclear about the specific type.",
+  "material": "one of: Zirconia, Porcelain Fused to Zirconia, PFM, Lithium Disilicate, Full Cast, Composite, Acrylic, Resin, Valplast, Flexible, Metal, PMMA, Other",
+  "shade": "global shade value like A2 or BL2 (use when all teeth share the same shade)",
+  "perToothShades": "for flippers only — when individual teeth have different shades in the notes (e.g. \\"shade #3-A4; shade #29-C2\\"), emit { \\"3\\": \\"A4\\", \\"29\\": \\"C2\\" }; null when all teeth share a single shade or the case is not a flipper",
   "teeth": "see rules below — comma-separated Universal numbers (e.g. \\"29,30,31\\") OR an arch token for full-arch removables (\\"Upper\\", \\"Lower\\", \\"U/D\\", \\"U/P\\", \\"L/D\\", \\"L/P\\")",
   "dueDate": "YYYY-MM-DD or null",
   "isRush": false,
-  "notes": "free-text special instructions",
+  "notes": "ONLY the free-text content the doctor actually typed in the 'Notes' section of the document (typically on page 2, labeled 'Notes'). Do NOT include Order number, Procedure, Type, Stage, Gingival shade, or any other structured field here — those are captured in separate fields. If there is no Notes section or it is blank, use null.",
+  "gingivialShade": "for Removable cases only — the gingival/base tissue shade color listed under 'Gingival' in the Denture details (e.g. 'Light Pink', 'Medium Pink', 'Dark Pink'). Use null for all non-Removable cases and when not present.",
+  "stage": "the stage from the 'Denture details' section (e.g. 'Finish Final', 'Wax Setup', 'Custom Tray', 'Rims and Plates'). Use null if not present.",
   "practiceName": "dental practice or office name",
   "restorations": [
     {
@@ -8118,6 +14544,7 @@ iTero-specific field mappings (IMPORTANT — iTero uses different field names th
 - The "Treatment Information" table is the authoritative source for teeth, treatment type, and material. Read every row. The "Tooth No." column gives the Universal tooth number. The "Treatment" column (Crown, Bridge, Veneer, Inlay, Onlay, etc.) determines caseType. The "Material" column gives the material — strip the "Ceramic:" prefix if present (e.g. "Ceramic: Zirconia" → "Zirconia", "Ceramic: E.max" → "Lithium Disilicate", "Ceramic: Lithium Disilicate" → "Lithium Disilicate").
 
 MATERIAL NAMING RULES (apply consistently — output the canonical name on the right):
+- "PFZ", "porcelain fused to zirconia", "Ceramic: PFZ" → "Porcelain Fused to Zirconia" (IMPORTANT: this is DISTINCT from "Zirconia" — always emit "Porcelain Fused to Zirconia" so the lab can charge the layered-porcelain surcharge)
 - "Zirconia", "Zirc", "Zr", "Brux", "BruxZ", "Bruxzir", "BZR", "Ceramic: Zirconia" → "Zirconia"
 - "Emax", "E.max", "lithium disilicate", "lithium silicate" → "Lithium Disilicate" (NEVER output "E.max" — always use "Lithium Disilicate")
 - "PFM", "porcelain fused to metal" → "PFM"
@@ -8144,6 +14571,31 @@ restorations array rules:
 - For a connected bridge span (abutments + pontics), use a dash range: "8-10" and set isBridge: true.
 - Mixed materials produce separate elements: one per (material, type) combination.
 - For Removable / Appliance / Other cases, omit this field or emit an empty array.
+
+Removable subtype classification rules (populate removableSubtype for ALL Removable cases):
+- flipper: notes mention "flipper", OR 1–3 specific teeth are being replaced. IMPORTANT: for flippers, each listed tooth is a SEPARATE physical appliance (a flipper for tooth 3 is a different item from a flipper for tooth 29). Populate perToothShades when the prescription specifies individual shades per tooth (e.g. "shade #3-A4; shade #29-C2" → { "3": "A4", "29": "C2" }). Set shade to null when all shades are captured in perToothShades.
+- partial: notes mention "partial" without full-arch indication, OR 4+ teeth on one arch are listed without "denture".
+- denture: full arch is specified ("Upper", "Lower", or arch token U/D / L/D / U/P / L/P), OR notes say "denture" without "partial".
+- repair_partial: any of — "repair partial", "add tooth to partial", "add tooth to lower/upper partial", "replace tooth on partial", or "repair" + tooth number in a partial context.
+- repair_denture: any of — "repair denture", "add tooth to denture", "repair full denture", "replace tooth on denture", or "repair" + full-arch context.
+- repair: any of "repair", "fix", "add tooth", "replace tooth" with NO indication of whether the appliance is a partial or a full denture (ambiguous — admin must choose).
+- For any repair subtype (repair_partial, repair_denture, repair), set step: null explicitly.
+
+Material-from-notes override rule (CRITICAL):
+- The doctor's typed Notes section is authoritative for material when it specifies one. If the Notes say "flex base", "flexible", or "valplast", set material to "Flexible" or "Valplast" respectively — even if the iTero Type field says "Partial Denture Acrylic". The doctor's written instructions always override the structured Type field for material.
+- Examples: Type="Partial Denture Acrylic" but Notes="flipper #3 and #29 flex base" → material="Flexible". Type="Denture Acrylic" but Notes="valplast partial" → material="Valplast".
+
+Notes field restriction (CRITICAL):
+- The "notes" field must contain ONLY text the doctor personally typed in the "Notes" section (page 2 of the iTero document, labeled "Notes"). This typically includes clinical instructions, special requests, shade callouts per tooth, and material clarifications.
+- Do NOT put any of the following into "notes": Order number, Procedure, Type/material from the Type field, Stage, Gingival shade, Mould, Shade system name, or any other pre-filled iTero structured field. Those are captured in their own JSON fields.
+- If the Notes section is blank or absent, set notes to null.
+
+Stage / step mapping rules:
+- "Finish Final", "Finish", "Final", "Finished", "Process", "Processed", "Complete" → stage = "Finish Final" (use the exact text from the document).
+- "Wax Setup", "Wax Try-In", "Wax Try In", "Wax" → stage = "Wax Setup".
+- "Custom Tray", "Tray" → stage = "Custom Tray".
+- "Rims and Plates", "Rims", "Rim", "Base Plate", "Bite Rim" → stage = "Rims and Plates".
+- If no Stage/Denture details section is visible, set stage to null.
 
 Other rules:
 - If a name appears in "Last, First" form, swap to "First Last" and remove the comma.
@@ -8196,6 +14648,26 @@ function normalizeIteroShade(raw: string | null | undefined): string | null {
     return segments[0] ?? null;
   }
   return trimmed;
+}
+
+/**
+ * Map an iTero Rx stage string to one of the valid case step keys.
+ * Stage and step are the same concept — "Finish Final" means the case
+ * has been processed/finished.
+ *
+ * Valid step values: custom_tray | rims_and_plates | wax_setup | process
+ */
+function normalizeIteroStage(
+  raw: string | null | undefined,
+): "custom_tray" | "rims_and_plates" | "wax_setup" | "process" | null {
+  if (!raw) return null;
+  const v = raw.trim().toLowerCase();
+  if (!v) return null;
+  if (/\b(finish|final|finished|process|processed|complete|completed)\b/.test(v)) return "process";
+  if (/\b(wax|try.?in)\b/.test(v)) return "wax_setup";
+  if (/\b(custom.?tray|tray)\b/.test(v)) return "custom_tray";
+  if (/\b(rim|plate|bite)\b/.test(v)) return "rims_and_plates";
+  return null;
 }
 
 function buildIteroAttachmentUrl(
@@ -8275,27 +14747,37 @@ function isBarcodeConflict(err: unknown): boolean {
   return false;
 }
 
-interface ExtractedRxFields {
+export interface ExtractedRxFields {
   doctorName?: string | null;
   patientFirstName?: string | null;
   patientLastName?: string | null;
   caseType?: string | null;
+  arch?: string | null;
+  /** AI-classified removable subtype for Removable cases. */
+  removableSubtype?: "flipper" | "partial" | "denture" | "repair_partial" | "repair_denture" | "repair" | null;
   material?: string | null;
   shade?: string | null;
   teeth?: string | null;
   dueDate?: string | null;
   isRush?: boolean | null;
+  /** ONLY doctor-typed Notes section text — no structured fields. */
   notes?: string | null;
   practiceName?: string | null;
+  /** Per-tooth shade map for flippers (e.g. { "3": "A4", "29": "C2" }). */
+  perToothShades?: Record<string, string> | null;
   restorations?: Array<{
     teeth: string;
     material: string | null;
     type: string;
     isBridge: boolean;
   }> | null;
+  /** Gingival/base tissue shade for Removable cases (e.g. "Light Pink"). */
+  gingivialShade?: string | null;
+  /** Stage from Denture details (e.g. "Finish Final", "Wax Setup"). Maps to case step. */
+  stage?: string | null;
 }
 
-async function extractRxFieldsFromBuffer(
+export async function extractRxFieldsFromBuffer(
   openai: OpenAI,
   buf: Buffer,
   mimeType: string,
@@ -8332,7 +14814,8 @@ async function extractRxFieldsFromBuffer(
     );
   }
 
-  const resp = await openai.chat.completions.create({
+  const extractionSignal = AbortSignal.timeout(75_000);
+  const resp = await boundedOperation(openai.chat.completions.create({
     model: "gpt-5.4",
     messages: [
       { role: "system", content: ITERO_RX_SYSTEM_PROMPT },
@@ -8351,7 +14834,7 @@ async function extractRxFieldsFromBuffer(
       },
     ],
     max_completion_tokens: 1500,
-  });
+  }, { timeout: 75_000, maxRetries: 0, signal: extractionSignal }), extractionSignal);
   const text = resp.choices?.[0]?.message?.content || "";
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) return {};
@@ -8401,11 +14884,24 @@ async function setIteroAutoLinkSuggestedPractice(
 }
 
 const iteroImportBodySchema = z.object({
+  toothAssignments: z.preprocess((value) => {
+    if (typeof value !== "string") return value;
+    try { return JSON.parse(value); } catch { throw new HttpError(400, "Invalid tooth assignment JSON."); }
+  }, z.array(z.object({
+    toothNumber: z.string().regex(/^(?:[1-9]|[12]\d|3[0-2]|[A-T])$/),
+    restorationType: z.enum(["Crown", "Pontic"]),
+    material: z.string().trim().min(1), shade: z.string().optional(),
+    restorationSubtype: z.string().optional(), quantity: z.literal(1).default(1),
+    unitPrice: z.coerce.number().min(0).optional(),
+    priceOverridden: z.boolean().optional(),
+  })).max(32).optional()),
+  bridgeConnectors: z.string().max(1024).optional(),
   iteroOrderId: z.string().min(1, "iteroOrderId is required"),
   labOrganizationId: z.string().min(1, "labOrganizationId is required"),
   providerOrganizationId: z
     .string()
     .min(1, "providerOrganizationId is required"),
+  receivedAt: calendarDate.optional(),
   // Optional client hints — used as fallbacks when AI fails to extract them.
   // The drop zone pre-extracts these via analyze-prescription (vision API) and
   // sends them so the case is always fully populated even when the server-side
@@ -8419,7 +14915,9 @@ const iteroImportBodySchema = z.object({
   toothIndicesHint: z.string().optional(),
   materialHint: z.string().optional(),
   caseTypeHint: z.string().optional(),
+  archHint: z.string().optional(),
   notesHint: z.string().optional(),
+  invoiceOverrideLines: multipartReviewedInvoiceLines,
   isRushHint: z.string().optional(),
   // Remake metadata. When a user drops an iTero ZIP and chooses "Link as
   // remake" in the duplicate prompt, the desktop client forwards these so the
@@ -8429,6 +14927,23 @@ const iteroImportBodySchema = z.object({
   remakeOfCaseId: z.string().optional(),
   remakeReason: z.string().optional(),
   remakeCharged: z.enum(["true", "false"]).optional(),
+  // Structured remake fields forwarded when the user fills the questionnaire
+  // in the desktop duplicate-detection prompt. FormData coercions below.
+  remakeReasonKey: z.enum(REMAKE_REASON_KEYS).optional(),
+  remakeShadeLightness: z.enum(["light", "dark"]).optional(),
+  remakeShadePrescribed: z.string().optional(),
+  remakeShadeProvided: z.string().optional(),
+  remakeMaterialPrescribed: z.string().optional(),
+  remakeMaterialProvided: z.string().optional(),
+  /** Arrives as FormData string "true"/"false" — coerced in the handler. */
+  remakeReturnedToLab: z.enum(["true", "false"]).optional(),
+  remakeCategory: z.enum(["crown_bridge", "removable"]).optional(),
+  remakeNotes: z.string().max(2000).optional(),
+  // Strict doctor-not-on-file gate (Task #2853). Arrives as a FormData string.
+  // When the scanned doctor is not an exact match and the user explicitly chose
+  // "add new doctor" in the resolution step, the client re-submits with this set
+  // so the server creates the case verbatim instead of re-blocking.
+  confirmNewDoctor: z.enum(["true", "false"]).optional(),
 });
 
 // ── ZIP import config ────────────────────────────────────────────────────────
@@ -8452,6 +14967,7 @@ const iteroZipImportBodySchema = z.object({
   providerOrganizationId: z
     .string()
     .min(1, "providerOrganizationId is required"),
+  receivedAt: calendarDate.optional(),
   doctorNameHint: z.string().optional(),
   patientFirstNameHint: z.string().optional(),
   patientLastNameHint: z.string().optional(),
@@ -8459,8 +14975,10 @@ const iteroZipImportBodySchema = z.object({
   shadeHint: z.string().optional(),
   materialHint: z.string().optional(),
   caseTypeHint: z.string().optional(),
+  archHint: z.string().optional(),
   dueDateHint: z.string().optional(),
   notesHint: z.string().optional(),
+  invoiceOverrideLines: multipartReviewedInvoiceLines,
 });
 
 const EXT_TO_MIME: Record<string, string> = {
@@ -8487,6 +15005,10 @@ router.post(
   asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).auth.userId as string;
     const body = iteroImportBodySchema.parse(req.body ?? {});
+    validateCustomRemakeReason(body.remakeReasonKey, body.remakeReason);
+    if (body.remakeReasonKey === "other" && body.remakeReason !== undefined) {
+      body.remakeReason = body.remakeReason.trim();
+    }
     const batchId = randomBytes(8).toString("hex");
 
     if (!req.file) {
@@ -8495,6 +15017,9 @@ router.post(
 
     // Lab membership is required to create cases for this organization.
     await requireMembership(userId, body.labOrganizationId);
+    if (body.invoiceOverrideLines !== undefined) {
+      await requireAnyRole(userId, body.labOrganizationId, ADMIN_ROLES);
+    }
 
     // Cheap optimistic dedup check so we skip OpenAI calls for already-imported
     // orders. The authoritative dedup is the unique-index claim INSIDE the
@@ -8529,6 +15054,7 @@ router.post(
         return ok(res, {
           deduped: true,
           caseId: preExisting.createdCaseId,
+          caseNumber: liveCase.caseNumber,
           iteroOrderId: preExisting.iteroOrderId,
         });
       }
@@ -8553,7 +15079,7 @@ router.post(
     }
 
     // AI extraction (best-effort — if AI is unconfigured or fails, we still
-    // create a stub case marked needsAiReview=true so the user can fix it).
+    // create a stub case so the user can fix the extracted fields as needed).
     let extracted: ExtractedRxFields = {};
     const openai = getIteroOpenAIClient();
     if (openai) {
@@ -8584,6 +15110,7 @@ router.post(
     if (!extracted.teeth && body.toothIndicesHint) extracted.teeth = body.toothIndicesHint;
     if (!extracted.material && body.materialHint) extracted.material = body.materialHint;
     if (!extracted.caseType && body.caseTypeHint) extracted.caseType = body.caseTypeHint;
+    if (!extracted.arch && body.archHint) extracted.arch = body.archHint;
     if (!extracted.notes && body.notesHint) extracted.notes = body.notesHint;
     // Canonicalize the material name (zirconia / Emax→Lithium Disilicate / PFM
     // rules) BEFORE it is stored and before price resolution, so the lab-slip
@@ -8597,8 +15124,19 @@ router.post(
     const patientLastName =
       (extracted.patientLastName?.trim() || body.patientLastNameHint?.trim() ||
         "Patient");
-    const doctorName =
-      (extracted.doctorName?.trim() || body.doctorNameHint?.trim() ||
+    // The desktop "doctor not on file" resolution step (Task #2853) only sends
+    // confirmNewDoctor="true" AFTER the user explicitly picked an existing
+    // doctor or chose "add new" — and forwards that decision as doctorNameHint.
+    // In that case the human-confirmed identity is authoritative and MUST win
+    // over fresh server-side AI re-extraction of the PDF; otherwise picking an
+    // existing doctor could be silently overridden by the near-miss the re-parse
+    // produced (and then bypass the gate as a brand-new doctor). Outside that
+    // flow, server AI extraction stays authoritative with the hint as fallback.
+    const doctorResolvedByUser =
+      body.confirmNewDoctor === "true" && !!body.doctorNameHint?.trim();
+    const doctorName = doctorResolvedByUser
+      ? body.doctorNameHint!.trim()
+      : (extracted.doctorName?.trim() || body.doctorNameHint?.trim() ||
         "Unknown Doctor");
 
     // ── Suggest an existing doctor when AI name is similar but not exact ──
@@ -8665,21 +15203,50 @@ router.post(
       autoLinkedFromAi = true;
     }
 
-    // ── Duplicate-doctor auto-merge ──────────────────────────────────────────
-    // Auto-import has no human typing a name to confirm, so instead of the
-    // manual create flow's 409 we adopt an existing near-duplicate doctor name
-    // in the effective practice (>= the lab threshold). Runs AFTER the practice
-    // is finalized so "same practice" reflects any AI auto-link above.
-    const {
-      doctorName: effectiveDoctorName,
-      autoMergedFrom: doctorAutoMergedFrom,
-      similarity: doctorAutoMergeSimilarity,
-    } = await resolveIteroDoctorAutoMerge(
-      body.labOrganizationId,
-      effectiveProviderOrgId,
-      doctorName,
-    );
-    // The suggestion banner is redundant once we've already adopted that name.
+    // ── Strict "doctor not on file" gate (Task #2853) ────────────────────────
+    // iTero auto-import previously auto-merged/auto-created doctors. That let a
+    // mis-scanned name silently spawn or absorb a doctor with no human check.
+    // Instead we now apply the SAME strict exact-match rule the mobile AI reader
+    // uses via GET /doctors/resolve-name (both call the shared resolveDoctorName
+    // helper): unless the scanned name EXACTLY matches an existing doctor in the
+    // effective practice — trim + collapse internal whitespace + case-insensitive,
+    // with NO title/name stripping — block creation with a structured 409 so the
+    // client can surface similar doctors + "Add new doctor". Runs AFTER the
+    // practice is finalized so "same practice" reflects any AI auto-link above.
+    //
+    // Skipped for remakes (the doctor is inherited from the original case, not
+    // freshly scanned) and for the "Unknown Doctor" placeholder (already flagged
+    // needsAiReview; there is no real name to confirm). Auto-merge is removed, so
+    // the former auto-merge audit fields stay null.
+    let effectiveDoctorName = doctorName;
+    const doctorAutoMergedFrom: string | null = null;
+    const doctorAutoMergeSimilarity: number | null = null;
+    if (!body.remakeOfCaseId && doctorName !== "Unknown Doctor") {
+      const resolution = await resolveDoctorName(
+        body.labOrganizationId,
+        effectiveProviderOrgId,
+        doctorName,
+      );
+      if (resolution.exactMatch) {
+        // Adopt the stored canonical spelling so pricing/invoice lookups key off
+        // the existing doctor identity.
+        effectiveDoctorName = resolution.exactMatch;
+      } else if (body.confirmNewDoctor !== "true") {
+        throw new HttpError(
+          409,
+          "This scanned doctor is not on file for this practice. Please confirm which doctor this is or add a new doctor.",
+          {
+            code: "DOCTOR_CONFIRMATION_REQUIRED",
+            doctorName: doctorName.trim(),
+            providerOrganizationId: effectiveProviderOrgId,
+            candidates: resolution.similarMatches,
+          },
+        );
+      }
+      // else confirmNewDoctor="true" → create verbatim (effectiveDoctorName
+      // stays the scanned name).
+    }
+    // The suggestion banner is redundant once we've adopted an exact name.
     if (
       suggestedDoctorName &&
       suggestedDoctorName.trim().toLowerCase() ===
@@ -8762,6 +15329,8 @@ router.post(
     let prebuiltRestorations: Array<{
       toothNumber: string;
       restorationType: string;
+      restorationSubtype: string | null;
+      arch?: Arch | null;
       material: string | null;
       shade: string | null;
       unitPrice: string;
@@ -8784,9 +15353,54 @@ router.post(
       extracted.caseType = normalizedCaseType;
     }
 
+    // Derive restorationSubtype from the normalised caseType + material so each
+    // restoration row carries the encoded taxonomy key without a later re-derive.
+    // When the AI returned an explicit removableSubtype, use it as the fast-path
+    // subtype so we store "removable/flippers" etc. instead of guessing from text.
+    const iteroAiRemovableSubtype = mapAiRemovableSubtype(extracted.removableSubtype);
+    const iteroIsAmbiguousRepair = isAmbiguousRemovableSubtype(extracted.removableSubtype);
+    const { restorationSubtype: iteroRestorationSubtype } = normalizeCaseHierarchy({
+      caseType: normalizedCaseType ?? null,
+      material: extracted.material ?? null,
+      subtype: iteroAiRemovableSubtype ?? undefined,
+    });
+    const iteroArchMissing =
+      isArchApplicable(normalizedCaseType, iteroRestorationSubtype) &&
+      !normalizeArch(extracted.arch);
+    const iteroArch = normalizeArch(extracted.arch);
+
     if (teethList.length > 0 && normalizedCaseType) {
-      prebuiltRestorations = await Promise.all(
-        teethList.map(async (toothNumber) => {
+      if (normalizedCaseType === "Removable") {
+        // Flippers: each tooth is a separate physical appliance — one row per tooth.
+        // All other removables (partials, dentures, repairs): collapse to one row.
+        if (iteroAiRemovableSubtype === "flippers") {
+          prebuiltRestorations = await Promise.all(
+            teethList.map(async (toothNumber) => {
+              const toothShade = extracted.perToothShades?.[toothNumber] ?? extracted.shade;
+              const fallback = await resolveServerPriceWithSource(
+                {
+                  labOrganizationId: body.labOrganizationId,
+                  doctorName: effectiveDoctorName,
+                  providerOrganizationId: effectiveProviderOrgId,
+                },
+                extracted.material ?? null,
+                normalizedCaseType
+              );
+              return {
+                toothNumber,
+                restorationType: iteroIsAmbiguousRepair ? "Removable Repair" : normalizedCaseType,
+                restorationSubtype: iteroRestorationSubtype ?? null,
+                material: extracted.material ?? null,
+                shade: normalizeIteroShade(toothShade),
+                unitPrice: (fallback?.amount ?? 0).toFixed(2),
+                priceSource: fallback?.source ?? null,
+                priceSourceId: fallback?.sourceId ?? null,
+                priceSourceName: fallback?.sourceName ?? null,
+                priceKey: fallback?.key ?? null,
+              };
+            })
+          );
+        } else {
           const fallback = await resolveServerPriceWithSource(
             {
               labOrganizationId: body.labOrganizationId,
@@ -8796,9 +15410,10 @@ router.post(
             extracted.material ?? null,
             normalizedCaseType
           );
-          return {
-            toothNumber,
-            restorationType: normalizedCaseType,
+          prebuiltRestorations = [{
+            toothNumber: teethList.join(", "),
+            restorationType: iteroIsAmbiguousRepair ? "Removable Repair" : normalizedCaseType,
+            restorationSubtype: iteroRestorationSubtype ?? null,
             material: extracted.material ?? null,
             shade: normalizeIteroShade(extracted.shade),
             unitPrice: (fallback?.amount ?? 0).toFixed(2),
@@ -8806,16 +15421,43 @@ router.post(
             priceSourceId: fallback?.sourceId ?? null,
             priceSourceName: fallback?.sourceName ?? null,
             priceKey: fallback?.key ?? null,
-          };
-        })
-      );
+          }];
+        }
+      } else {
+        prebuiltRestorations = await Promise.all(
+          teethList.map(async (toothNumber) => {
+            const fallback = await resolveServerPriceWithSource(
+              {
+                labOrganizationId: body.labOrganizationId,
+                doctorName: effectiveDoctorName,
+                providerOrganizationId: effectiveProviderOrgId,
+              },
+              extracted.material ?? null,
+              normalizedCaseType
+            );
+            return {
+              toothNumber,
+              restorationType: iteroIsAmbiguousRepair ? "Removable Repair" : normalizedCaseType,
+              restorationSubtype: iteroRestorationSubtype ?? null,
+              material: extracted.material ?? null,
+              shade: normalizeIteroShade(extracted.shade),
+              unitPrice: (fallback?.amount ?? 0).toFixed(2),
+              priceSource: fallback?.source ?? null,
+              priceSourceId: fallback?.sourceId ?? null,
+              priceSourceName: fallback?.sourceName ?? null,
+              priceKey: fallback?.key ?? null,
+            };
+          })
+        );
+      }
     } else if (normalizedCaseType || extracted.material || extracted.shade) {
       // No specific teeth identified but we have Rx clinical info — create a
       // single summary restoration so the Lab Slip shows type/material/shade.
       // Matches the fallback behaviour in the general Rx-analysis path.
       prebuiltRestorations = [{
         toothNumber: "",
-        restorationType: normalizedCaseType ?? "Other",
+        restorationType: iteroIsAmbiguousRepair ? "Removable Repair" : (normalizedCaseType ?? "Other"),
+        restorationSubtype: iteroRestorationSubtype ?? null,
         material: extracted.material ?? null,
         shade: normalizeIteroShade(extracted.shade),
         unitPrice: "0.00",
@@ -8826,6 +15468,50 @@ router.post(
       }];
     }
 
+    if (body.toothAssignments) {
+      if (new Set(body.toothAssignments.map((unit) => unit.toothNumber)).size !== body.toothAssignments.length) {
+        throw new HttpError(400, "A tooth cannot have two assignments.");
+      }
+      const validation = validateToothConnectors(body.bridgeConnectors, body.toothAssignments);
+      if (!validation.valid) throw new HttpError(400, validation.errors.join(" "));
+      const assignedRestorations = await Promise.all(body.toothAssignments.map(async (unit) => {
+        const price = await resolveServerPriceWithSource({
+          labOrganizationId: body.labOrganizationId, doctorName: effectiveDoctorName,
+          providerOrganizationId: effectiveProviderOrgId,
+        }, unit.material, unit.restorationType, unit.restorationSubtype ?? null);
+        const manualPrice = unit.priceOverridden === true || (unit.unitPrice ?? 0) > 0;
+        return { ...unit, restorationSubtype: unit.restorationSubtype ?? null,
+          shade: unit.shade ?? null, unitPrice: (manualPrice ? unit.unitPrice ?? 0 : price?.amount ?? 0).toFixed(2),
+          priceSource: manualPrice ? "manual" : price?.source ?? null,
+          priceSourceId: manualPrice ? null : price?.sourceId ?? null,
+          priceSourceName: manualPrice ? null : price?.sourceName ?? null,
+          priceKey: price?.key ?? null };
+      }));
+      const assignmentKey = (toothNumber: string | null | undefined) =>
+        (toothNumber ?? "").trim().replace(/^#/, "").toUpperCase();
+      const assignedByTooth = new Map(
+        assignedRestorations.map((restoration) => [
+          assignmentKey(restoration.toothNumber),
+          restoration,
+        ]),
+      );
+      const appliedAssignments = new Set<string>();
+      const mergedRestorations = prebuiltRestorations.flatMap((restoration) => {
+        const toothNumber = assignmentKey(restoration.toothNumber);
+        // A toothless extraction summary is only a fallback. Once explicit
+        // chart rows exist, retain the extracted rows with tooth identities
+        // and let the chart supply the more precise billable rows.
+        if (!toothNumber && assignedByTooth.size > 0) return [];
+        const assigned = assignedByTooth.get(toothNumber);
+        if (!assigned) return [restoration];
+        appliedAssignments.add(toothNumber);
+        return [assigned];
+      });
+      for (const [toothNumber, restoration] of assignedByTooth) {
+        if (!appliedAssignments.has(toothNumber)) mergedRestorations.push(restoration);
+      }
+      prebuiltRestorations = mergedRestorations;
+    }
     const user = (req as any).user;
     const storageKey = buildIteroAttachmentUrl(req, req.file.filename);
 
@@ -8867,14 +15553,17 @@ router.post(
         if (existing?.createdCaseId) {
           const liveCase = await tx.query.cases.findFirst({
             where: and(eq(cases.id, existing.createdCaseId), notDeleted(cases)),
-            columns: { id: true },
+            columns: { id: true, caseNumber: true },
           });
           if (liveCase) {
             await tx
               .update(iteroImportedOrders)
               .set({ lastSeenAt: new Date() })
               .where(eq(iteroImportedOrders.id, existing.id));
-            return { kind: "deduped" as const, existing };
+            return {
+              kind: "deduped" as const,
+              existing: { ...existing, caseNumber: liveCase.caseNumber },
+            };
           }
         }
         throw new HttpError(
@@ -8884,32 +15573,30 @@ router.post(
       }
 
       // For remake imports, compute the next letter suffix (B, C, D, …)
-      // against the original under a transaction-scoped advisory lock so the
-      // count + insert are atomic — mirrors the generic /cases create path.
-      // The suffixed number replaces the generated iTero number entirely.
+      // against the ROOT of the chain under a transaction-scoped advisory lock
+      // so the count + insert are atomic — mirrors the generic /cases create
+      // path. The suffixed number replaces the generated iTero number entirely.
+      // Remaking a non-root node (e.g. "26-334B") yields "26-334C", not "BB".
       let effectiveCaseNumber = caseNumber;
       if (remakeOriginal) {
+        const remakeRoot =
+          remakeOriginal.kind === "canonical"
+            ? await resolveRemakeRootCanonical(remakeOriginal.id, tx)
+            : { id: remakeOriginal.id, caseNumber: remakeOriginal.caseNumber };
+
         await tx.execute(
-          sql`SELECT pg_advisory_xact_lock(1742068800, hashtext(${remakeOriginal.id}))`,
+          sql`SELECT pg_advisory_xact_lock(1742068800, hashtext(${remakeRoot.id}))`,
         );
-        const [countRow] = await tx
-          .select({ cnt: sql<number>`count(*)::int` })
-          .from(cases)
-          .where(
-            and(
-              eq(cases.remakeOfCaseId, remakeOriginal.id),
-              notDeleted(cases),
-            ),
-          );
-        const existingCount = countRow?.cnt ?? 0;
+
+        const existingCount = await countAllRemakeDescendants(remakeRoot.id, tx);
         if (existingCount > 23) {
           throw new HttpError(
             409,
-            `Too many remakes of case ${remakeOriginal.caseNumber} (maximum 24).`,
+            `Too many remakes of case ${remakeRoot.caseNumber} (maximum 24).`,
           );
         }
         const suffixLetter = String.fromCharCode(66 + existingCount);
-        effectiveCaseNumber = `${remakeOriginal.caseNumber}${suffixLetter}`;
+        effectiveCaseNumber = `${remakeRoot.caseNumber}${suffixLetter}`;
       }
 
       const [createdCase] = await tx
@@ -8923,14 +15610,19 @@ router.post(
           doctorName: effectiveDoctorName,
           status: "received",
           priority: extracted.isRush ? "rush" : "normal",
+          receivedAt: parseCalendarDate(body.receivedAt),
           dueDate,
-          expectedDeliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          expectedDeliveryDate: iteroAutoSuppliedDate
+            ? null
+            : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
           createdByUserId: userId,
-          needsAiReview: true,
           aiImportSource: "itero",
+          bridgeConnectors: body.toothAssignments ? serializeConnectorState(withPonticConnectorSuggestions(body.bridgeConnectors, body.toothAssignments)) || null : null,
           externalPatientId: body.iteroOrderId,
           rxNotes: extracted.notes?.trim() || null,
           shade: normalizeIteroShade(extracted.shade),
+          step: normalizeIteroStage(extracted.stage) ?? null,
+          gingivialShade: extracted.gingivialShade?.trim() || null,
           casePanBarcode: barcode,
           suggestedDoctorName,
           // When the per-lab "auto-link suggested practice" setting fired,
@@ -8942,12 +15634,40 @@ router.post(
           remakeOfCaseId: remakeOriginal?.id ?? null,
           remakeReason: remakeOriginal ? body.remakeReason ?? null : null,
           remakeCharged: remakeOriginal ? remakeChargedFlag : null,
+          remakeReasonKey: remakeOriginal ? body.remakeReasonKey ?? null : null,
+          remakeShadeLightness: remakeOriginal ? body.remakeShadeLightness ?? null : null,
+          remakeShadePrescribed: remakeOriginal ? body.remakeShadePrescribed ?? null : null,
+          remakeShadeProvided: remakeOriginal ? body.remakeShadeProvided ?? null : null,
+          remakeMaterialPrescribed: remakeOriginal ? body.remakeMaterialPrescribed ?? null : null,
+          remakeMaterialProvided: remakeOriginal ? body.remakeMaterialProvided ?? null : null,
+          remakeReturnedToLab: remakeOriginal
+            ? body.remakeReturnedToLab === "true"
+              ? true
+              : body.remakeReturnedToLab === "false"
+              ? false
+              : null
+            : null,
+          remakeCategory: remakeOriginal
+            ? (body.remakeCategory ?? inferRemakeCategory(body.remakeReasonKey) ?? null)
+            : null,
+          remakeNotes: remakeOriginal ? body.remakeNotes ?? null : null,
         })
         .returning();
 
       // Write remake cross-link events INSIDE the transaction so they are
       // atomic with case creation. The forward "remake_of" event always
       // goes on the new case; the reciprocal "remade_by" event goes on the
+      if (extracted.notes?.trim()) {
+        await appendRxNoteEntry(tx, {
+          caseId: createdCase.id,
+          submissionId: `itero-import:${createdCase.id}`,
+          noteText: extracted.notes,
+          provenance: "itero_import",
+          scannedAt: createdCase.createdAt,
+          preserveCurrentAsLegacy: false,
+        });
+      }
+
       // original only when it is a canonical case (legacy lab_cases originals
       // get their JSON-blob activityLog patched AFTER commit, since that table
       // can't participate in this Drizzle transaction).
@@ -8992,6 +15712,10 @@ router.post(
             caseId: createdCase.id,
             toothNumber: r.toothNumber,
             restorationType: r.restorationType,
+            restorationSubtype: r.restorationSubtype ?? null,
+            assignmentProvenance: body.toothAssignments && /^(Crown|Pontic)$/.test(r.restorationType)
+              ? { origin: "manual" as const, manualFields: ["role" as const, "product" as const, "shade" as const] } : null,
+            arch: r.arch ?? iteroArch,
             material: r.material,
             shade: r.shade,
             notes: null,
@@ -9003,16 +15727,7 @@ router.post(
             priceKey: r.priceKey,
           }))
         );
-      }
-
-      if (extracted.notes && extracted.notes.trim()) {
-        await tx.insert(caseNotes).values({
-          caseId: createdCase.id,
-          authorUserId: userId,
-          authorOrganizationId: body.labOrganizationId,
-          noteText: `[iTero AI import] ${extracted.notes.trim()}`,
-          visibility: "internal_lab_only",
-        });
+        await expandPersistedBothArchRows(tx, createdCase.id);
       }
 
       const [attachment] = await tx
@@ -9081,7 +15796,7 @@ router.post(
         });
       }
 
-      // ── Auto-create draft invoice from the AI-extracted restorations ──
+      // ── Auto-create invoice from the AI-extracted restorations ──
       // Marked aiGenerated=true so the desktop UI shows a sparkle badge and
       // an "AI-imported — please review" banner that the billing user must
       // acknowledge via PATCH /api/invoices/:id/ai-review. If pricing for
@@ -9125,9 +15840,11 @@ router.post(
           );
         const aiPricingWarning = !hasRestorations
           ? "AI could not extract restorations from this Rx — please add line items and pricing before sending."
-          : fallbackPriced
-            ? "Some line items use default/fallback pricing — please verify before sending."
-            : null;
+          : iteroIsAmbiguousRepair
+            ? "Removable repair type is unclear — please select the correct subtype and verify pricing before sending."
+            : fallbackPriced
+              ? "Some line items use default/fallback pricing — please verify before sending."
+              : null;
 
         // No-charge remake: still create the invoice so it shows in the
         // Invoice tab, but force every line to $0 and attach a note — same
@@ -9135,37 +15852,45 @@ router.post(
         const noChargeNote = noChargeRemake
           ? `No-charge remake of case ${remakeOriginal!.caseNumber}${body.remakeReason ? ` — reason: ${body.remakeReason}` : ""}`
           : null;
+        const doctorIdentity = await ensureDoctorProfileIdentity(tx, {
+          labOrganizationId: createdCase.labOrganizationId,
+          providerOrganizationId: createdCase.providerOrganizationId ?? null,
+          doctorName: createdCase.doctorName,
+        });
 
-        const [autoInvoice] = await tx
-          .insert(invoices)
-          .values({
+        const autoInvoice = await insertOrResolveAiIntakeInvoice(tx, {
             invoiceNumber: `INV-${createdCase.caseNumber}`,
             caseId: createdCase.id,
             labOrganizationId: createdCase.labOrganizationId,
             providerOrganizationId: createdCase.providerOrganizationId,
-            status: "draft",
+            doctorIdentity,
+            status: "open",
             displayMetadataJson,
             aiGenerated: true,
-            aiPricingWarning,
+            aiPricingWarning: iteroArchMissing
+              ? `${aiPricingWarning ? `${aiPricingWarning} ` : ""}Arch is missing — select an arch and verify clinical completeness before sending.`
+              : aiPricingWarning,
+            issuedAt: calendarDateToUtcNoon(createdCase.receivedAt),
             dueAt: invoiceDueDate(new Date()),
             createdByUserId: userId,
             updatedByUserId: userId,
             ...(noChargeNote ? { notes: noChargeNote } : {}),
-          })
-          .onConflictDoNothing()
-          .returning();
+          }, createdCase.id, createdCase.labOrganizationId);
 
-        if (autoInvoice) {
+        if (autoInvoice.newlyCreated) {
           // Batch-fetch all custom labels for this lab in one query so
           // the per-restoration label resolution below is zero DB calls.
           const iteroLabelCache = hasRestorations
             ? await fetchLabItemLabels(createdCase.labOrganizationId)
             : ({} as Record<string, string>);
-          const itemsToInsert = hasRestorations
-            ? buildGroupedLineItemsForInvoice(
+          const itemsToInsert: any[] = body.invoiceOverrideLines
+            ? reviewedLinesToInvoiceItems(body.invoiceOverrideLines, autoInvoice.id)
+            : hasRestorations
+            ? await buildGroupedLineItemsForInvoice(
                 restorationRowsForInvoice as any[],
                 iteroLabelCache,
                 autoInvoice.id,
+                createdCase.labOrganizationId,
                 extracted.restorations,
               )
             : [
@@ -9184,12 +15909,14 @@ router.post(
               ];
           // No-charge remake: zero out every line item (price, total, and a
           // "(no-charge remake)" description suffix) so the invoice rings up
-          // to $0 while the line detail stays visible.
+          // to $0 while the line detail stays visible. Also clear any child
+          // sub-items (e.g. Layered Porcelain) so the whole invoice is $0.
           if (noChargeRemake) {
             for (const it of itemsToInsert) {
               it.description = `${it.description} (no-charge remake)`;
               it.unitPrice = "0.00";
               it.lineTotal = "0.00";
+              it.childItems = [];
             }
           }
           const lineItemsMeta = itemsToInsert.map((it) => ({
@@ -9197,29 +15924,29 @@ router.post(
             description: it.description,
             catalogItemKey: it.catalogItemKey ?? null,
             missingCatalogItem: it.missingCatalogItem ?? false,
+            subItems: (it.childItems ?? []).map((child: any) => ({ item: child.description, description: child.description })),
           }));
-          await tx.insert(invoiceLineItems).values(toInvoiceLineItemValues(itemsToInsert));
-          const subtotal = itemsToInsert
-            .reduce((acc, it) => acc + Number(it.lineTotal), 0)
-            .toFixed(2);
+          await insertGroupedLineItemsWithChildren(tx, itemsToInsert);
+          const subtotal = sumGroupedLineItemsTotal(itemsToInsert);
           await tx
             .update(invoices)
             .set({
               subtotal,
               total: subtotal,
               balanceDue: subtotal,
-              displayMetadataJson: { ...displayMetadataJson, lineItems: lineItemsMeta },
+              displayMetadataJson: { ...displayMetadataJson, lineItems: lineItemsMeta, ...(body.invoiceOverrideLines ? { reviewedCharges: true } : {}) },
             })
             .where(eq(invoices.id, autoInvoice.id));
-          autoInvoiceId = autoInvoice.id;
         }
+        autoInvoiceId = autoInvoice.id;
       } catch (autoErr) {
         // Don't block case creation on a draft-invoice problem; the user
         // can still mint an invoice manually from the case drawer.
-        req.log?.warn(
+        req.log?.error(
           { err: autoErr, caseId: createdCase.id },
           "iTero auto-invoice creation failed",
         );
+        throw new HttpError(500, "iTero case invoice could not be persisted.");
       }
 
       return { kind: "created" as const, createdCase, attachment, autoInvoiceId };
@@ -9287,6 +16014,7 @@ router.post(
         return ok(res, {
           deduped: true,
           caseId: existing.createdCaseId,
+          caseNumber: existing.caseNumber,
           iteroOrderId: existing.iteroOrderId,
         });
       }
@@ -9297,6 +16025,32 @@ router.post(
     }
 
     const { createdCase, attachment } = txResult;
+
+    // Auto-add per-tooth alloy rows for PFM/FCM restorations when the lab
+    // has opted in. Runs after the transaction so syncInvoiceFromRestorations
+    // can rebuild the invoice with the alloy sub-items attached.
+    // pfmOnly prevents a stray N/A alloy row on non-PFM cases.
+    try {
+      const labOrgForAlloy = await db.query.organizations.findFirst({
+        where: eq(organizations.id, createdCase.labOrganizationId),
+        columns: { autoAddAlloyOnPfm: true },
+      });
+      if (labOrgForAlloy?.autoAddAlloyOnPfm) {
+        await addAlloyChargeToCase({
+          caseRow: {
+            id: createdCase.id,
+            labOrganizationId: createdCase.labOrganizationId,
+            providerOrganizationId: createdCase.providerOrganizationId ?? null,
+            doctorName: createdCase.doctorName,
+          },
+          actorUserId: userId,
+          actorInitials: "SYS",
+          pfmOnly: true,
+        });
+      }
+    } catch (alloyErr) {
+      req.log?.warn({ err: alloyErr, caseId: createdCase.id }, "iTero single import: per-tooth alloy auto-add failed (non-fatal)");
+    }
 
     await writeAuditLog({
       req,
@@ -9368,7 +16122,7 @@ router.post(
         //                        (brand-new / unrecognised practice relationship)
         //   normal             — everything resolved as expected
         const isUnknownDoctor =
-          doctorName === "Unknown Doctor" || !extracted.doctorName?.trim();
+          !doctorName?.trim() || doctorName.trim() === "Unknown Doctor";
 
         let isStandInDoctor = false;
         let isUnknownPractice = false;
@@ -9421,30 +16175,30 @@ router.post(
           notifBody = `Case ${createdCase.caseNumber} was imported from iTero with doctor "${doctorName}", who is not in the known provider list. This may be a stand-in — please review before sending.`;
         } else {
           notifTitle = `New iTero case: ${createdCase.caseNumber}`;
-          notifBody = `Case ${createdCase.caseNumber} for ${patientFirstName} ${patientLastName} was auto-imported from iTero and needs your review.`;
+          notifBody = `Case ${createdCase.caseNumber} for ${patientFirstName} ${patientLastName} was imported from iTero.`;
         }
 
-        await db.insert(notifications).values(
-          adminMembers.map((m) => ({
-            userId: m.userId,
-            type: notifType,
-            title: notifTitle,
-            body: notifBody,
-            dataJson: {
-              caseId: createdCase.id,
-              caseNumber: createdCase.caseNumber,
-              iteroOrderId: body.iteroOrderId,
-              labOrganizationId: body.labOrganizationId,
-              alertReason: isUnknownDoctor
-                ? "unknown_doctor"
-                : isUnknownPractice
-                  ? "unknown_practice"
-                  : isStandInDoctor
-                    ? "stand_in_doctor"
-                    : null,
-            },
-          }))
-        );
+        await deliverInAppNotification({
+          labOrganizationId: body.labOrganizationId,
+          recipientUserIds: adminMembers.map((member) => member.userId),
+          category: createdCase.priority === "rush" ? "rush_case" : "new_case",
+          dedupeKey: `itero_case:${createdCase.id}`,
+          type: notifType,
+          title: notifTitle,
+          body: notifBody,
+          dataJson: {
+            caseId: createdCase.id,
+            caseNumber: createdCase.caseNumber,
+            iteroOrderId: body.iteroOrderId,
+            alertReason: isUnknownDoctor
+              ? "unknown_doctor"
+              : isUnknownPractice
+                ? "unknown_practice"
+                : isStandInDoctor
+                  ? "stand_in_doctor"
+                  : null,
+          },
+        });
       }
     } catch (notifErr) {
       req.log?.warn?.(
@@ -9586,7 +16340,7 @@ router.post(
         deduped: false,
         caseId: createdCase.id,
         caseNumber: createdCase.caseNumber,
-        needsAiReview: true,
+        needsAiReview: false,
         attachmentId: attachment?.id,
         extracted,
       },
@@ -9620,6 +16374,55 @@ router.post(
     }
 
     await requireMembership(userId, body.labOrganizationId);
+    if (body.invoiceOverrideLines !== undefined) {
+      await requireAnyRole(userId, body.labOrganizationId, ADMIN_ROLES);
+    }
+
+    if (req.file.filename) {
+      const result = await processOneIteroZipFile(
+        req,
+        req.file,
+        body,
+        userId,
+        (req as any).user,
+        batchId,
+      "single",
+      );
+
+      db.insert(iteroImportSessions).values({
+        labOrganizationId: body.labOrganizationId,
+        importedByUserId: userId,
+        createdCount: result.deduped ? 0 : 1,
+        dedupedCount: result.deduped ? 1 : 0,
+        erroredCount: 0,
+        caseIds: result.deduped ? [] : [result.caseId],
+        batchId,
+      }).catch((err: unknown) => {
+        req.log?.warn({ err }, "iTero zip: failed to write session record (non-fatal)");
+      });
+
+      return ok(
+        res,
+        result.deduped
+          ? {
+              deduped: true,
+              caseId: result.caseId,
+              iteroOrderId: result.iteroOrderId,
+               textureRepair: result.textureRepair,
+            }
+          : {
+              deduped: false,
+              caseId: result.caseId,
+              caseNumber: result.caseNumber,
+              needsAiReview: false,
+              attachmentId: result.attachmentId,
+              iteroOrderId: result.iteroOrderId,
+              extraFilesAttached: result.extraFilesAttached,
+              extraFilesFailed: result.extraFilesFailed,
+            },
+        result.deduped ? 200 : 201,
+      );
+    }
 
     // ── Extract ZIP in memory ────────────────────────────────────────────────
     let rxBuffer: Buffer;
@@ -9638,6 +16441,9 @@ router.post(
       const entries = zip
         .getEntries()
         .filter((e) => !e.isDirectory && e.header.size > 0);
+      if (entries.some((entry) => !isSafeArchiveEntryName(entry.entryName))) {
+        throw new HttpError(400, "ZIP contains an unsafe archive path.");
+      }
 
       if (entries.length > ZIP_MAX_ENTRIES) {
         throw new HttpError(
@@ -9695,10 +16501,14 @@ router.post(
       for (const entry of entries) {
         if (entry === rxEntry) continue;
         const entryName = path.basename(entry.entryName);
+        if (!isSafeArchiveEntryName(entry.entryName)) {
+          throw new HttpError(400, "ZIP contains an unsafe archive path.");
+        }
         if (!entryName) continue;
-        // Only keep .ply scan files — all other entries are discarded.
+        // Keep PLYs and candidate image companions; exact pairing is decided
+        // from the PLY's TextureFile comment after extraction.
         const ext = path.extname(entryName).toLowerCase();
-        if (ext !== ".ply") continue;
+        if (ext !== ".ply" && ![".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"].includes(ext)) continue;
         const entrySize = entry.header.size ?? 0;
         if (entrySize > ZIP_MAX_ENTRY_BYTES) {
           req.log?.warn(
@@ -9739,6 +16549,13 @@ router.post(
         columns: { id: true },
       });
       if (liveCase) {
+        let textureRepair: { repaired: number; attempted: number; reason?: string };
+        try {
+          textureRepair = await repairIteroTextures(req, liveCase.id, otherEntries, userId, body.labOrganizationId);
+        } catch (err) {
+          req.log?.warn({ err, caseId: liveCase.id }, "iTero texture repair failed");
+          textureRepair = { repaired: 0, attempted: 0, reason: "repair_failed" };
+        }
         await db
           .update(iteroImportedOrders)
           .set({ lastSeenAt: new Date() })
@@ -9748,6 +16565,7 @@ router.post(
           caseId: preExisting.createdCaseId,
           iteroOrderId: preExisting.iteroOrderId,
           extraFilesAttached: 0,
+          textureRepair,
         });
       }
       // Stale dedup record — delete it so the transaction can claim a fresh slot.
@@ -9917,6 +16735,7 @@ router.post(
     // Fall back to hint values when AI didn't extract them.
     if (!extracted.shade && body.shadeHint) extracted.shade = body.shadeHint;
     if (!extracted.material && body.materialHint) extracted.material = body.materialHint;
+    if (!extracted.arch && body.archHint) extracted.arch = body.archHint;
     // Canonicalize the material name (zirconia / Emax→Lithium Disilicate / PFM
     // rules) before it is stored and before price resolution.
     extracted.material = normalizeMaterialName(extracted.material) ?? extracted.material;
@@ -9960,9 +16779,27 @@ router.post(
       extracted.caseType = normalizedCaseType;
     }
 
+    // Derive restorationSubtype from the normalised caseType + material so each
+    // restoration row carries the encoded taxonomy key without a later re-derive.
+    // When the AI returned an explicit removableSubtype, use it as the fast-path
+    // subtype so we store "removable/flippers" etc. instead of guessing from text.
+    const zipAiRemovableSubtype = mapAiRemovableSubtype(extracted.removableSubtype);
+    const zipIsAmbiguousRepair = isAmbiguousRemovableSubtype(extracted.removableSubtype);
+    const { restorationSubtype: zipRestorationSubtype } = normalizeCaseHierarchy({
+      caseType: normalizedCaseType ?? null,
+      material: extracted.material ?? null,
+      subtype: zipAiRemovableSubtype ?? undefined,
+    });
+    const zipArchMissing =
+      isArchApplicable(normalizedCaseType, zipRestorationSubtype) &&
+      !normalizeArch(extracted.arch);
+    const zipArch = normalizeArch(extracted.arch);
+
     let prebuiltRestorations: Array<{
       toothNumber: string;
       restorationType: string;
+      restorationSubtype: string | null;
+      arch?: Arch | null;
       material: string | null;
       shade: string | null;
       unitPrice: string;
@@ -9972,8 +16809,37 @@ router.post(
       priceKey: string | null;
     }> = [];
     if (teethList.length > 0 && normalizedCaseType) {
-      prebuiltRestorations = await Promise.all(
-        teethList.map(async (toothNumber) => {
+      if (normalizedCaseType === "Removable") {
+        // Flippers: each tooth is a separate physical appliance — one row per tooth.
+        // All other removables (partials, dentures, repairs): collapse to one row.
+        if (zipAiRemovableSubtype === "flippers") {
+          prebuiltRestorations = await Promise.all(
+            teethList.map(async (toothNumber) => {
+              const toothShade = extracted.perToothShades?.[toothNumber] ?? extracted.shade;
+              const fallback = await resolveServerPriceWithSource(
+                {
+                  labOrganizationId: body.labOrganizationId,
+                  doctorName: effectiveDoctorName,
+                  providerOrganizationId: body.providerOrganizationId,
+                },
+                extracted.material ?? null,
+                normalizedCaseType
+              );
+              return {
+                toothNumber,
+                restorationType: zipIsAmbiguousRepair ? "Removable Repair" : normalizedCaseType,
+                restorationSubtype: zipRestorationSubtype ?? null,
+                material: extracted.material ?? null,
+                shade: normalizeIteroShade(toothShade),
+                unitPrice: (fallback?.amount ?? 0).toFixed(2),
+                priceSource: fallback?.source ?? null,
+                priceSourceId: fallback?.sourceId ?? null,
+                priceSourceName: fallback?.sourceName ?? null,
+                priceKey: fallback?.key ?? null,
+              };
+            })
+          );
+        } else {
           const fallback = await resolveServerPriceWithSource(
             {
               labOrganizationId: body.labOrganizationId,
@@ -9983,9 +16849,10 @@ router.post(
             extracted.material ?? null,
             normalizedCaseType
           );
-          return {
-            toothNumber,
-            restorationType: normalizedCaseType,
+          prebuiltRestorations = [{
+            toothNumber: teethList.join(", "),
+            restorationType: zipIsAmbiguousRepair ? "Removable Repair" : normalizedCaseType,
+            restorationSubtype: zipRestorationSubtype ?? null,
             material: extracted.material ?? null,
             shade: normalizeIteroShade(extracted.shade),
             unitPrice: (fallback?.amount ?? 0).toFixed(2),
@@ -9993,13 +16860,40 @@ router.post(
             priceSourceId: fallback?.sourceId ?? null,
             priceSourceName: fallback?.sourceName ?? null,
             priceKey: fallback?.key ?? null,
-          };
-        })
-      );
+          }];
+        }
+      } else {
+        prebuiltRestorations = await Promise.all(
+          teethList.map(async (toothNumber) => {
+            const fallback = await resolveServerPriceWithSource(
+              {
+                labOrganizationId: body.labOrganizationId,
+                doctorName: effectiveDoctorName,
+                providerOrganizationId: body.providerOrganizationId,
+              },
+              extracted.material ?? null,
+              normalizedCaseType
+            );
+            return {
+              toothNumber,
+              restorationType: zipIsAmbiguousRepair ? "Removable Repair" : normalizedCaseType,
+              restorationSubtype: zipRestorationSubtype ?? null,
+              material: extracted.material ?? null,
+              shade: normalizeIteroShade(extracted.shade),
+              unitPrice: (fallback?.amount ?? 0).toFixed(2),
+              priceSource: fallback?.source ?? null,
+              priceSourceId: fallback?.sourceId ?? null,
+              priceSourceName: fallback?.sourceName ?? null,
+              priceKey: fallback?.key ?? null,
+            };
+          })
+        );
+      }
     } else if (normalizedCaseType || extracted.material || extracted.shade) {
       prebuiltRestorations = [{
         toothNumber: "",
-        restorationType: normalizedCaseType ?? "Other",
+        restorationType: zipIsAmbiguousRepair ? "Removable Repair" : (normalizedCaseType ?? "Other"),
+        restorationSubtype: zipRestorationSubtype ?? null,
         material: extracted.material ?? null,
         shade: normalizeIteroShade(extracted.shade),
         unitPrice: "0.00",
@@ -10041,14 +16935,17 @@ router.post(
         if (existing?.createdCaseId) {
           const liveCase = await tx.query.cases.findFirst({
             where: and(eq(cases.id, existing.createdCaseId), notDeleted(cases)),
-            columns: { id: true },
+            columns: { id: true, caseNumber: true },
           });
           if (liveCase) {
             await tx
               .update(iteroImportedOrders)
               .set({ lastSeenAt: new Date() })
               .where(eq(iteroImportedOrders.id, existing.id));
-            return { kind: "deduped" as const, existing };
+            return {
+              kind: "deduped" as const,
+              existing: { ...existing, caseNumber: liveCase.caseNumber },
+            };
           }
         }
         throw new HttpError(
@@ -10068,14 +16965,18 @@ router.post(
           doctorName: effectiveDoctorName,
           status: "received",
           priority: extracted.isRush ? "rush" : "normal",
+          receivedAt: parseCalendarDate(body.receivedAt),
           dueDate,
-          expectedDeliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          expectedDeliveryDate: iteroZipSuppliedDate
+            ? null
+            : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
           createdByUserId: userId,
-          needsAiReview: true,
           aiImportSource: "itero",
           externalPatientId: iteroOrderId,
           rxNotes: extracted.notes?.trim() || null,
           shade: normalizeIteroShade(extracted.shade),
+          step: normalizeIteroStage(extracted.stage) ?? null,
+          gingivialShade: extracted.gingivialShade?.trim() || null,
           ...({ suggestedDoctorName, suggestedProviderOrgId } as any),
         })
         .returning();
@@ -10086,6 +16987,8 @@ router.post(
             caseId: createdCase.id,
             toothNumber: r.toothNumber,
             restorationType: r.restorationType,
+            restorationSubtype: r.restorationSubtype ?? null,
+            arch: r.arch ?? zipArch,
             material: r.material,
             shade: r.shade,
             notes: null,
@@ -10097,19 +17000,20 @@ router.post(
             priceKey: r.priceKey,
           }))
         );
+        await expandPersistedBothArchRows(tx, createdCase.id);
       }
 
       const zipNoteText = (extracted.notes?.trim() || body.notesHint?.trim()) ?? null;
       if (zipNoteText) {
-        await tx.insert(caseNotes).values({
+        await appendRxNoteEntry(tx, {
           caseId: createdCase.id,
-          authorUserId: userId,
-          authorOrganizationId: body.labOrganizationId,
-          noteText: `[iTero AI import] ${zipNoteText}`,
-          visibility: "internal_lab_only",
+          submissionId: `itero-import:${createdCase.id}`,
+          noteText: zipNoteText,
+          provenance: "itero_import",
+          scannedAt: createdCase.createdAt,
+          preserveCurrentAsLegacy: false,
         });
       }
-
       const [attachment] = await tx
         .insert(caseAttachments)
         .values({
@@ -10162,7 +17066,7 @@ router.post(
         });
       }
 
-      // ── Auto-create draft invoice ──────────────────────────────────────────
+      // ── Auto-create invoice ────────────────────────────────────────────────
       let autoInvoiceId: string | null = null;
       try {
         const restorationRowsForInvoice =
@@ -10200,37 +17104,47 @@ router.post(
           );
         const aiPricingWarning = !hasRestorations
           ? "AI could not extract restorations from this Rx — please add line items and pricing before sending."
-          : fallbackPriced
-            ? "Some line items use default/fallback pricing — please verify before sending."
-            : null;
+          : zipIsAmbiguousRepair
+            ? "Removable repair type is unclear — please select the correct subtype and verify pricing before sending."
+            : fallbackPriced
+              ? "Some line items use default/fallback pricing — please verify before sending."
+              : null;
+        const doctorIdentity = await ensureDoctorProfileIdentity(tx, {
+          labOrganizationId: createdCase.labOrganizationId,
+          providerOrganizationId: createdCase.providerOrganizationId ?? null,
+          doctorName: createdCase.doctorName,
+        });
 
-        const [autoInvoice] = await tx
-          .insert(invoices)
-          .values({
+        const autoInvoice = await insertOrResolveAiIntakeInvoice(tx, {
             invoiceNumber: `INV-${createdCase.caseNumber}`,
             caseId: createdCase.id,
             labOrganizationId: createdCase.labOrganizationId,
             providerOrganizationId: createdCase.providerOrganizationId,
-            status: "draft",
+            doctorIdentity,
+            status: "open",
             displayMetadataJson,
             aiGenerated: true,
-            aiPricingWarning,
+            aiPricingWarning: zipArchMissing
+              ? `${aiPricingWarning ? `${aiPricingWarning} ` : ""}Arch is missing — select an arch and verify clinical completeness before sending.`
+              : aiPricingWarning,
+            issuedAt: calendarDateToUtcNoon(createdCase.receivedAt),
             dueAt: invoiceDueDate(new Date()),
             createdByUserId: userId,
             updatedByUserId: userId,
-          })
-          .onConflictDoNothing()
-          .returning();
+          }, createdCase.id, createdCase.labOrganizationId);
 
-        if (autoInvoice) {
+        if (autoInvoice.newlyCreated) {
           const labelCache = hasRestorations
             ? await fetchLabItemLabels(createdCase.labOrganizationId)
             : ({} as Record<string, string>);
-          const itemsToInsert = hasRestorations
-            ? buildGroupedLineItemsForInvoice(
+          const itemsToInsert: any[] = body.invoiceOverrideLines
+            ? reviewedLinesToInvoiceItems(body.invoiceOverrideLines, autoInvoice.id)
+            : hasRestorations
+            ? await buildGroupedLineItemsForInvoice(
                 restorationRowsForInvoice as any[],
                 labelCache,
                 autoInvoice.id,
+                createdCase.labOrganizationId,
                 extracted.restorations,
               )
             : [
@@ -10252,27 +17166,27 @@ router.post(
             description: it.description,
             catalogItemKey: it.catalogItemKey ?? null,
             missingCatalogItem: it.missingCatalogItem ?? false,
+            subItems: (it.childItems ?? []).map((child: any) => ({ item: child.description, description: child.description })),
           }));
-          await tx.insert(invoiceLineItems).values(toInvoiceLineItemValues(itemsToInsert));
-          const subtotal = itemsToInsert
-            .reduce((acc, it) => acc + Number(it.lineTotal), 0)
-            .toFixed(2);
+          await insertGroupedLineItemsWithChildren(tx, itemsToInsert);
+          const subtotal = sumGroupedLineItemsTotal(itemsToInsert);
           await tx
             .update(invoices)
             .set({
               subtotal,
               total: subtotal,
               balanceDue: subtotal,
-              displayMetadataJson: { ...displayMetadataJson, lineItems: lineItemsMeta },
+              displayMetadataJson: { ...displayMetadataJson, lineItems: lineItemsMeta, ...(body.invoiceOverrideLines ? { reviewedCharges: true } : {}) },
             })
             .where(eq(invoices.id, autoInvoice.id));
-          autoInvoiceId = autoInvoice.id;
         }
+        autoInvoiceId = autoInvoice.id;
       } catch (invoiceErr) {
-        req.log?.warn(
+        req.log?.error(
           { err: invoiceErr, caseId: createdCase.id },
           "iTero ZIP auto-invoice creation failed"
         );
+        throw new HttpError(500, "iTero ZIP case invoice could not be persisted.");
       }
 
       return {
@@ -10303,6 +17217,7 @@ router.post(
         return ok(res, {
           deduped: true,
           caseId: existing.createdCaseId,
+          caseNumber: existing.caseNumber,
           iteroOrderId: existing.iteroOrderId,
           extraFilesAttached: 0,
         });
@@ -10315,10 +17230,41 @@ router.post(
 
     const { createdCase, attachment } = txResult;
 
+    // Auto-add per-tooth alloy rows for PFM/FCM restorations when the lab
+    // has opted in. Runs after the transaction so syncInvoiceFromRestorations
+    // can rebuild the invoice with the alloy sub-items attached.
+    try {
+      const labOrgForAlloy = await db.query.organizations.findFirst({
+        where: eq(organizations.id, createdCase.labOrganizationId),
+        columns: { autoAddAlloyOnPfm: true },
+      });
+      if (labOrgForAlloy?.autoAddAlloyOnPfm) {
+        await addAlloyChargeToCase({
+          caseRow: {
+            id: createdCase.id,
+            labOrganizationId: createdCase.labOrganizationId,
+            providerOrganizationId: createdCase.providerOrganizationId ?? null,
+            doctorName: createdCase.doctorName,
+          },
+          actorUserId: userId,
+          actorInitials: "SYS",
+          pfmOnly: true,
+        });
+      }
+    } catch (alloyErr) {
+      req.log?.warn({ err: alloyErr, caseId: createdCase.id }, "iTero ZIP import: per-tooth alloy auto-add failed (non-fatal)");
+    }
+
     // ── Attach remaining ZIP files (best-effort, outside transaction) ────────
     let extraFilesAttached = 0;
     let extraFilesFailed = 0;
-    for (const entry of otherEntries) {
+    const texturePairs = pairPlyTextures(otherEntries);
+    const pairedTextureNames = new Set(texturePairs.values());
+    const entriesToAttach = otherEntries.filter((entry) =>
+      entry.name.toLowerCase().endsWith(".ply") || pairedTextureNames.has(entry.name),
+    );
+    const attachmentIds = new Map<string, string>();
+    for (const entry of entriesToAttach) {
       try {
         const ext = path.extname(entry.name) || "";
         const safe = path
@@ -10335,7 +17281,7 @@ router.post(
           },
         );
         const storageKey = buildIteroAttachmentUrl(req, diskName);
-        await db.insert(caseAttachments).values({
+        const [saved] = await db.insert(caseAttachments).values({
           caseId: createdCase.id,
           uploadedByUserId: userId,
           uploadedByOrganizationId: body.labOrganizationId,
@@ -10343,7 +17289,8 @@ router.post(
           storageKey,
           fileType: entry.mimeType,
           visibility: "internal_lab_only",
-        });
+        }).returning({ id: caseAttachments.id });
+        attachmentIds.set(entry.name, saved!.id);
         extraFilesAttached++;
       } catch (attachErr) {
         extraFilesFailed++;
@@ -10351,6 +17298,15 @@ router.post(
           { err: attachErr, name: entry.name, caseId: createdCase.id },
           "iTero ZIP: failed to save extra attachment"
         );
+      }
+    }
+    for (const [plyName, textureName] of texturePairs) {
+      const plyId = attachmentIds.get(plyName);
+      const textureId = attachmentIds.get(textureName);
+      if (plyId && textureId) {
+        await db.update(caseAttachments)
+          .set({ textureAttachmentId: textureId })
+          .where(and(eq(caseAttachments.id, plyId), eq(caseAttachments.caseId, createdCase.id)));
       }
     }
 
@@ -10384,7 +17340,7 @@ router.post(
 
       if (adminMembers.length > 0) {
         const isUnknownDoctor =
-          doctorName === "Unknown Doctor" || !extracted.doctorName?.trim();
+          !doctorName?.trim() || doctorName.trim() === "Unknown Doctor";
         let isStandInDoctor = false;
         let isUnknownPractice = false;
 
@@ -10431,24 +17387,24 @@ router.post(
           notifBody = `Case ${createdCase.caseNumber} was imported from an iTero ZIP with doctor "${doctorName}", who is not in the known provider list.`;
         } else {
           notifTitle = `New iTero ZIP case: ${createdCase.caseNumber}`;
-          notifBody = `Case ${createdCase.caseNumber} for ${patientFirstName} ${patientLastName} was imported from an iTero ZIP and needs your review. ${extraFilesAttached} additional file(s) were attached.`;
+          notifBody = `Case ${createdCase.caseNumber} for ${patientFirstName} ${patientLastName} was imported from an iTero ZIP. ${extraFilesAttached} additional file(s) were attached.`;
         }
 
-        await db.insert(notifications).values(
-          adminMembers.map((m) => ({
-            userId: m.userId,
-            type: notifType,
-            title: notifTitle,
-            body: notifBody,
-            dataJson: {
-              caseId: createdCase.id,
-              caseNumber: createdCase.caseNumber,
-              iteroOrderId,
-              labOrganizationId: body.labOrganizationId,
-              extraFilesAttached,
-            },
-          }))
-        );
+        await deliverInAppNotification({
+          labOrganizationId: body.labOrganizationId,
+          recipientUserIds: adminMembers.map((member) => member.userId),
+          category: createdCase.priority === "rush" ? "rush_case" : "new_case",
+          dedupeKey: `itero_case:${createdCase.id}`,
+          type: notifType,
+          title: notifTitle,
+          body: notifBody,
+          dataJson: {
+            caseId: createdCase.id,
+            caseNumber: createdCase.caseNumber,
+            iteroOrderId,
+            extraFilesAttached,
+          },
+        });
       }
     } catch (notifErr) {
       req.log?.warn?.(
@@ -10476,7 +17432,7 @@ router.post(
         deduped: false,
         caseId: createdCase.id,
         caseNumber: createdCase.caseNumber,
-        needsAiReview: true,
+        needsAiReview: false,
         attachmentId: attachment?.id,
         iteroOrderId,
         extraFilesAttached,
@@ -10499,6 +17455,7 @@ interface OneZipResult {
   caseNumber: string;
   deduped: boolean;
   iteroOrderId: string;
+  attachmentId?: string;
   extraFilesAttached: number;
   extraFilesFailed: number;
   /** AI-extracted doctor name from the Rx (may be undefined for deduped cases) */
@@ -10509,15 +17466,94 @@ interface OneZipResult {
   suggestedDoctorName?: string | null;
   /** The providerOrganizationId actually saved on the created case */
   linkedProviderOrgId?: string | null;
+  textureRepair?: { repaired: number; attempted: number; reason?: string };
+}
+
+/** Re-import repair: fill only missing, same-case texture links. */
+async function repairIteroTextures(
+  req: Request,
+  caseId: string,
+  entries: Array<{ name: string; data: Buffer; mimeType: string }>,
+  userId: string,
+  labOrganizationId: string,
+): Promise<{ repaired: number; attempted: number; reason?: string }> {
+  const pairs = pairPlyTextures(entries);
+  let repaired = 0;
+  let attempted = 0;
+  let sawScan = false;
+  for (const [plyName, textureName] of pairs) {
+    const scan = await db.query.caseAttachments.findFirst({
+      where: and(eq(caseAttachments.caseId, caseId), eq(caseAttachments.fileName, plyName), isNull(caseAttachments.deletedAt)),
+    });
+    if (!scan) continue;
+    sawScan = true;
+    if (scan.textureAttachmentId) {
+      const linkedTexture = await db.query.caseAttachments.findFirst({
+        where: and(eq(caseAttachments.id, scan.textureAttachmentId), isNull(caseAttachments.deletedAt)),
+        columns: { id: true },
+      });
+      if (linkedTexture) continue;
+    }
+    const image = entries.find((entry) => entry.name === textureName);
+    if (!image) continue;
+    attempted++;
+    const ext = path.extname(image.name) || ".jpg";
+    const safe = path.basename(image.name, ext).replace(/[^a-zA-Z0-9\-_]+/g, "-").slice(0, 60) || "texture";
+    const diskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${safe}${ext}`;
+    await fs.promises.mkdir(caseMediaDir, { recursive: true });
+    await fs.promises.writeFile(path.join(caseMediaDir, diskName), image.data);
+    writeCaseMediaToObjectStorage(diskName, image.data, image.mimeType).catch((err: unknown) => {
+      req.log?.warn({ err, caseId }, "iTero texture repair: object storage mirror failed");
+    });
+    // Keep the attachment insert and link atomic: a concurrent delete or
+    // relation update must not leave an orphan texture row in the case.
+    await db.transaction(async (tx) => {
+      const [texture] = await tx.insert(caseAttachments).values({
+        caseId, uploadedByUserId: userId, uploadedByOrganizationId: labOrganizationId,
+        fileName: image.name, storageKey: buildIteroAttachmentUrl(req, diskName),
+        fileType: image.mimeType, visibility: "internal_lab_only",
+      }).returning({ id: caseAttachments.id });
+      if (!texture) return;
+      const linked = await tx.update(caseAttachments).set({ textureAttachmentId: texture.id })
+        .where(and(eq(caseAttachments.id, scan.id), eq(caseAttachments.caseId, caseId), isNull(caseAttachments.deletedAt)))
+        .returning({ id: caseAttachments.id });
+      if (linked.length === 0) {
+        throw new HttpError(409, "Scan changed while repairing its texture.");
+      }
+      repaired++;
+    });
+  }
+  return {
+    repaired,
+    attempted,
+    reason: repaired === 0
+      ? (pairs.size === 0 ? "no_matching_texture_reference" : sawScan ? "texture_not_repaired" : "scan_not_found")
+      : undefined,
+  };
 }
 
 async function processOneIteroZipFile(
   req: Request,
   file: Express.Multer.File,
-  body: { labOrganizationId: string; providerOrganizationId: string; doctorNameHint?: string; patientFirstNameHint?: string; patientLastNameHint?: string },
+  body: {
+    labOrganizationId: string;
+    providerOrganizationId: string;
+    receivedAt?: string;
+    invoiceOverrideLines?: Array<{ description: string; quantity: number; unitPrice: number; catalogItemKey?: string | null; subItems?: Array<{ description: string; quantity: number; unitPrice: number }> }>;
+    doctorNameHint?: string;
+    patientFirstNameHint?: string;
+    patientLastNameHint?: string;
+    caseTypeHint?: string;
+    materialHint?: string;
+    shadeHint?: string;
+    toothIndicesHint?: string;
+    dueDateHint?: string;
+    notesHint?: string;
+  },
   userId: string,
   user: any,
   batchId?: string,
+  notificationStyle: "single" | "batch" = "batch",
 ): Promise<OneZipResult> {
   const ZIP_MAX_ENTRIES = 100;
   const ZIP_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
@@ -10534,6 +17570,9 @@ async function processOneIteroZipFile(
   try {
     const zip = new AdmZip(file.path);
     const entries = zip.getEntries().filter((e) => !e.isDirectory && e.header.size > 0);
+    if (entries.some((entry) => !isSafeArchiveEntryName(entry.entryName))) {
+      throw new HttpError(400, "ZIP contains an unsafe archive path.");
+    }
 
     if (entries.length > ZIP_MAX_ENTRIES) {
       throw new HttpError(400, `ZIP contains too many files (${entries.length}). Maximum is ${ZIP_MAX_ENTRIES}.`);
@@ -10568,9 +17607,14 @@ async function processOneIteroZipFile(
     for (const entry of entries) {
       if (entry === rxEntry) continue;
       const entryName = path.basename(entry.entryName);
+      if (!isSafeArchiveEntryName(entry.entryName)) {
+        throw new HttpError(400, "ZIP contains an unsafe archive path.");
+      }
       if (!entryName) continue;
       const ext = path.extname(entryName).toLowerCase();
-      if (ext !== ".ply") continue;
+      // Keep companion images as well; pairPlyTextures below only accepts an
+      // exact TextureFile basename declared by a PLY.
+      if (ext !== ".ply" && ![".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"].includes(ext)) continue;
       const entrySize = entry.header.size ?? 0;
       if (entrySize > ZIP_MAX_ENTRY_BYTES) {
         req.log?.warn({ name: entryName, size: entrySize }, "iTero ZIP batch: skipping oversized .ply entry");
@@ -10594,9 +17638,27 @@ async function processOneIteroZipFile(
     ),
   });
   if (preExisting && preExisting.createdCaseId) {
-    await db.update(iteroImportedOrders).set({ lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, preExisting.id))
-      .catch((err: unknown): never => wrapDbError(err, { fallback: "Failed to update iTero import record." }));
-    return { caseId: preExisting.createdCaseId, caseNumber: preExisting.iteroOrderId, deduped: true, iteroOrderId: preExisting.iteroOrderId, extraFilesAttached: 0, extraFilesFailed: 0, aiDoctorName: null, suggestedProviderOrgId: null, suggestedDoctorName: null, linkedProviderOrgId: null };
+    const liveCase = await db.query.cases.findFirst({
+      where: and(eq(cases.id, preExisting.createdCaseId), notDeleted(cases)),
+      columns: { id: true, caseNumber: true },
+    });
+    if (liveCase) {
+      // A deduped original ZIP is also allowed to repair a missing texture,
+      // without adding a duplicate case or unrelated files.
+      let textureRepair: { repaired: number; attempted: number; reason?: string };
+      try {
+        textureRepair = await repairIteroTextures(req, liveCase.id, otherEntries, userId, body.labOrganizationId);
+      } catch (err) {
+        req.log?.warn({ err, caseId: liveCase.id }, "iTero texture repair failed");
+        textureRepair = { repaired: 0, attempted: 0, reason: "repair_failed" };
+      }
+      await db.update(iteroImportedOrders).set({ lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, preExisting.id))
+        .catch((err: unknown): never => wrapDbError(err, { fallback: "Failed to update iTero import record." }));
+      return { caseId: liveCase.id, caseNumber: liveCase.caseNumber, deduped: true, iteroOrderId: preExisting.iteroOrderId, attachmentId: undefined, extraFilesAttached: 0, extraFilesFailed: 0, aiDoctorName: null, suggestedProviderOrgId: null, suggestedDoctorName: null, linkedProviderOrgId: null, textureRepair };
+    }
+    await db.delete(iteroImportedOrders).where(eq(iteroImportedOrders.id, preExisting.id));
+  } else if (preExisting) {
+    await db.delete(iteroImportedOrders).where(eq(iteroImportedOrders.id, preExisting.id));
   }
 
   // Save Rx file to disk
@@ -10622,6 +17684,14 @@ async function processOneIteroZipFile(
     }
   }
 
+  // Fall back to hint values when AI didn't extract them.
+  if (!extracted.material && body.materialHint) extracted.material = body.materialHint;
+  if (!extracted.shade && body.shadeHint) extracted.shade = body.shadeHint;
+  if (!extracted.teeth && body.toothIndicesHint) extracted.teeth = body.toothIndicesHint;
+  if (!extracted.caseType && body.caseTypeHint) extracted.caseType = body.caseTypeHint;
+  if (!extracted.arch && (body as any).archHint) extracted.arch = (body as any).archHint;
+  if (!extracted.dueDate && body.dueDateHint) extracted.dueDate = body.dueDateHint;
+  if (!extracted.notes && body.notesHint) extracted.notes = body.notesHint;
   // Canonicalize the material name (zirconia / Emax→Lithium Disilicate / PFM
   // rules) before it is stored and before price resolution.
   extracted.material = normalizeMaterialName(extracted.material) ?? extracted.material;
@@ -10646,6 +17716,12 @@ async function processOneIteroZipFile(
       if (sim >= 0.4 && sim > bestSim) { bestSim = sim; bestMatch = g; }
     }
     if (bestMatch) { suggestedDoctorName = bestMatch.doctorName; suggestedProviderOrgId = bestMatch.providerOrganizationId; }
+  }
+  if (!suggestedProviderOrgId && extracted.practiceName?.trim()) {
+    suggestedProviderOrgId = await _findProviderOrgByPracticeName(
+      body.labOrganizationId,
+      extracted.practiceName,
+    );
   }
 
   // Per-lab opt-in: prefer AI-suggested practice over the poller's default
@@ -10688,11 +17764,23 @@ async function processOneIteroZipFile(
     suggestedDoctorName = null;
   }
 
-  let dueDate: Date | null = null;
-  if (extracted.dueDate) {
-    const parsed = new Date(extracted.dueDate);
-    if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
-  }
+  const suppliedDueDate = extracted.dueDate
+    ? new Date(extracted.dueDate)
+    : null;
+  const validSuppliedDueDate =
+    suppliedDueDate && !Number.isNaN(suppliedDueDate.getTime())
+      ? suppliedDueDate
+      : null;
+  const labOrg = await db.query.organizations.findFirst({
+    where: eq(organizations.id, body.labOrganizationId),
+    columns: { defaultCaseDueDays: true, capCaseDueToDefault: true },
+  });
+  const dueDate = resolveCaseDueDate(
+    validSuppliedDueDate,
+    new Date(),
+    labOrg?.defaultCaseDueDays,
+    labOrg?.capCaseDueToDefault,
+  );
 
   const caseNumber = await generateIteroCaseNumber(body.labOrganizationId);
 
@@ -10718,29 +17806,80 @@ async function processOneIteroZipFile(
 
   const normalizedCaseType = extracted.caseType
     ? normalizeIteroCaseType(extracted.caseType)
-    : (teethList.length > 0 || extracted.material || extracted.shade ? "Other" : null);
+    : (body.caseTypeHint
+        ? normalizeIteroCaseType(body.caseTypeHint)
+        : (teethList.length > 0 || extracted.material || extracted.shade ? "Other" : null));
   if (normalizedCaseType) extracted.caseType = normalizedCaseType;
+  const importArch = normalizeArch(extracted.arch);
+
+  // Derive restorationSubtype from the normalised caseType + material so each
+  // restoration row carries the encoded taxonomy key without a later re-derive.
+  // When the AI returned an explicit removableSubtype, use it as the fast-path
+  // subtype so we store "removable/flippers" etc. instead of guessing from text.
+  const autoAiRemovableSubtype = mapAiRemovableSubtype(extracted.removableSubtype);
+  const autoIsAmbiguousRepair = isAmbiguousRemovableSubtype(extracted.removableSubtype);
+  const { restorationSubtype: autoRestorationSubtype } = normalizeCaseHierarchy({
+    caseType: normalizedCaseType ?? null,
+    material: extracted.material ?? null,
+    subtype: autoAiRemovableSubtype ?? undefined,
+  });
+  const importArchMissing =
+    isArchApplicable(normalizedCaseType, autoRestorationSubtype) && !importArch;
 
   let prebuiltRestorations: Array<{
-    toothNumber: string; restorationType: string; material: string | null; shade: string | null;
+    toothNumber: string; restorationType: string; restorationSubtype: string | null; arch?: Arch | null;
+    material: string | null; shade: string | null;
     unitPrice: string; priceSource: string | null; priceSourceId: string | null; priceSourceName: string | null; priceKey: string | null;
   }> = [];
   if (teethList.length > 0 && normalizedCaseType) {
-    prebuiltRestorations = await Promise.all(teethList.map(async (toothNumber) => {
-      const fallback = await resolveServerPriceWithSource(
-        { labOrganizationId: body.labOrganizationId, doctorName: effectiveDoctorName, providerOrganizationId: effectiveProviderOrgId ?? body.providerOrganizationId },
-        extracted.material ?? null, normalizedCaseType,
-      );
-      return {
-        toothNumber, restorationType: normalizedCaseType, material: extracted.material ?? null, shade: normalizeIteroShade(extracted.shade),
-        unitPrice: (fallback?.amount ?? 0).toFixed(2), priceSource: fallback?.source ?? null,
-        priceSourceId: fallback?.sourceId ?? null, priceSourceName: fallback?.sourceName ?? null, priceKey: fallback?.key ?? null,
-      };
-    }));
+    if (normalizedCaseType === "Removable") {
+      // Flippers: each tooth is a separate physical appliance — one row per tooth.
+      // All other removables (partials, dentures, repairs): collapse to one row.
+      if (autoAiRemovableSubtype === "flippers") {
+        prebuiltRestorations = await Promise.all(teethList.map(async (toothNumber) => {
+          const toothShade = extracted.perToothShades?.[toothNumber] ?? extracted.shade;
+          const fallback = await resolveServerPriceWithSource(
+            { labOrganizationId: body.labOrganizationId, doctorName: effectiveDoctorName, providerOrganizationId: effectiveProviderOrgId ?? body.providerOrganizationId },
+            extracted.material ?? null, normalizedCaseType,
+          );
+          return {
+            toothNumber, restorationType: autoIsAmbiguousRepair ? "Removable Repair" : normalizedCaseType, restorationSubtype: autoRestorationSubtype ?? null,
+            material: extracted.material ?? null, shade: normalizeIteroShade(toothShade),
+            unitPrice: (fallback?.amount ?? 0).toFixed(2), priceSource: fallback?.source ?? null,
+            priceSourceId: fallback?.sourceId ?? null, priceSourceName: fallback?.sourceName ?? null, priceKey: fallback?.key ?? null,
+          };
+        }));
+      } else {
+        const fallback = await resolveServerPriceWithSource(
+          { labOrganizationId: body.labOrganizationId, doctorName: effectiveDoctorName, providerOrganizationId: effectiveProviderOrgId ?? body.providerOrganizationId },
+          extracted.material ?? null, normalizedCaseType,
+        );
+        prebuiltRestorations = [{
+          toothNumber: teethList.join(", "), restorationType: autoIsAmbiguousRepair ? "Removable Repair" : normalizedCaseType, restorationSubtype: autoRestorationSubtype ?? null,
+          material: extracted.material ?? null, shade: normalizeIteroShade(extracted.shade),
+          unitPrice: (fallback?.amount ?? 0).toFixed(2), priceSource: fallback?.source ?? null,
+          priceSourceId: fallback?.sourceId ?? null, priceSourceName: fallback?.sourceName ?? null, priceKey: fallback?.key ?? null,
+        }];
+      }
+    } else {
+      prebuiltRestorations = await Promise.all(teethList.map(async (toothNumber) => {
+        const fallback = await resolveServerPriceWithSource(
+          { labOrganizationId: body.labOrganizationId, doctorName: effectiveDoctorName, providerOrganizationId: effectiveProviderOrgId ?? body.providerOrganizationId },
+          extracted.material ?? null, normalizedCaseType,
+        );
+        return {
+          toothNumber, restorationType: autoIsAmbiguousRepair ? "Removable Repair" : normalizedCaseType, restorationSubtype: autoRestorationSubtype ?? null,
+          material: extracted.material ?? null, shade: normalizeIteroShade(extracted.shade),
+          unitPrice: (fallback?.amount ?? 0).toFixed(2), priceSource: fallback?.source ?? null,
+          priceSourceId: fallback?.sourceId ?? null, priceSourceName: fallback?.sourceName ?? null, priceKey: fallback?.key ?? null,
+        };
+      }));
+    }
   } else if (normalizedCaseType || extracted.material || extracted.shade) {
     prebuiltRestorations = [{
       toothNumber: "",
-      restorationType: normalizedCaseType ?? "Other",
+      restorationType: autoIsAmbiguousRepair ? "Removable Repair" : (normalizedCaseType ?? "Other"),
+      restorationSubtype: autoRestorationSubtype ?? null,
       material: extracted.material ?? null,
       shade: normalizeIteroShade(extracted.shade),
       unitPrice: "0.00", priceSource: null, priceSourceId: null, priceSourceName: null, priceKey: null,
@@ -10761,11 +17900,14 @@ async function processOneIteroZipFile(
       if (existing?.createdCaseId) {
         const liveCase = await tx.query.cases.findFirst({
           where: and(eq(cases.id, existing.createdCaseId), notDeleted(cases)),
-          columns: { id: true },
+          columns: { id: true, caseNumber: true },
         });
         if (liveCase) {
           await tx.update(iteroImportedOrders).set({ lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, existing.id));
-          return { kind: "deduped" as const, existing };
+          return {
+            kind: "deduped" as const,
+            existing: { ...existing, caseNumber: liveCase.caseNumber },
+          };
         }
       }
       throw new HttpError(
@@ -10781,11 +17923,14 @@ async function processOneIteroZipFile(
       patientFirstName, patientLastName, doctorName: effectiveDoctorName,
       status: "received",
       priority: extracted.isRush ? "rush" : "normal",
-      dueDate, expectedDeliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      createdByUserId: userId, needsAiReview: true, aiImportSource: "itero",
+      dueDate, expectedDeliveryDate: validSuppliedDueDate ? null : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      createdByUserId: userId, aiImportSource: "itero",
+      receivedAt: parseCalendarDate(body.receivedAt),
       externalPatientId: iteroOrderId,
       rxNotes: extracted.notes?.trim() || null,
       shade: normalizeIteroShade(extracted.shade),
+      step: normalizeIteroStage(extracted.stage) ?? null,
+      gingivialShade: extracted.gingivialShade?.trim() || null,
       ...({
         suggestedDoctorName,
         // Clear the suggestion field once it's been auto-applied so the
@@ -10797,16 +17942,23 @@ async function processOneIteroZipFile(
     if (prebuiltRestorations.length > 0) {
       await tx.insert(caseRestorations).values(prebuiltRestorations.map((r) => ({
         caseId: createdCase.id, toothNumber: r.toothNumber, restorationType: r.restorationType,
+        restorationSubtype: r.restorationSubtype ?? null,
+        arch: r.arch ?? importArch,
         material: r.material, shade: r.shade, notes: null, quantity: 1,
         unitPrice: r.unitPrice, priceSource: r.priceSource, priceSourceId: r.priceSourceId,
         priceSourceName: r.priceSourceName, priceKey: r.priceKey,
       })));
+      await expandPersistedBothArchRows(tx, createdCase.id);
     }
 
     if (extracted.notes && extracted.notes.trim()) {
-      await tx.insert(caseNotes).values({
-        caseId: createdCase.id, authorUserId: userId, authorOrganizationId: body.labOrganizationId,
-        noteText: `[iTero AI import] ${extracted.notes.trim()}`, visibility: "internal_lab_only",
+      await appendRxNoteEntry(tx, {
+        caseId: createdCase.id,
+        submissionId: `itero-import:${createdCase.id}`,
+        noteText: extracted.notes,
+        provenance: "itero_import",
+        scannedAt: createdCase.createdAt,
+        preserveCurrentAsLegacy: false,
       });
     }
 
@@ -10859,7 +18011,7 @@ async function processOneIteroZipFile(
       });
     }
 
-    // Auto-create draft invoice
+    // Auto-create invoice
     let autoInvoiceId: string | null = null;
     try {
       const restorationRowsForInvoice = await tx.query.caseRestorations.findMany({
@@ -10874,25 +18026,40 @@ async function processOneIteroZipFile(
       const fallbackPriced = hasRestorations && prebuiltRestorations.some((r) => r.priceSource === "fallback" || r.priceSource === null);
       const aiPricingWarning = !hasRestorations
         ? "AI could not extract restorations from this Rx — please add line items and pricing before sending."
-        : fallbackPriced ? "Some line items use default/fallback pricing — please verify before sending." : null;
+        : autoIsAmbiguousRepair
+          ? "Removable repair type is unclear — please select the correct subtype and verify pricing before sending."
+          : fallbackPriced ? "Some line items use default/fallback pricing — please verify before sending." : null;
+      const doctorIdentity = await ensureDoctorProfileIdentity(tx, {
+        labOrganizationId: createdCase.labOrganizationId,
+        providerOrganizationId: createdCase.providerOrganizationId ?? null,
+        doctorName: createdCase.doctorName,
+      });
 
-      const [autoInvoice] = await tx.insert(invoices).values({
+      const autoInvoice = await insertOrResolveAiIntakeInvoice(tx, {
         invoiceNumber: `INV-${createdCase.caseNumber}`, caseId: createdCase.id,
         labOrganizationId: createdCase.labOrganizationId, providerOrganizationId: createdCase.providerOrganizationId,
-        status: "draft", displayMetadataJson, aiGenerated: true, aiPricingWarning,
+        doctorIdentity,
+        status: "open", displayMetadataJson, aiGenerated: true,
+        aiPricingWarning: importArchMissing
+          ? `${aiPricingWarning ? `${aiPricingWarning} ` : ""}Arch is missing — select an arch and verify clinical completeness before sending.`
+          : aiPricingWarning,
+        issuedAt: calendarDateToUtcNoon(createdCase.receivedAt),
         dueAt: invoiceDueDate(new Date()),
         createdByUserId: userId, updatedByUserId: userId,
-      }).onConflictDoNothing().returning();
+      }, createdCase.id, createdCase.labOrganizationId);
 
-      if (autoInvoice) {
+      if (autoInvoice.newlyCreated) {
         const labelCache = hasRestorations
           ? await fetchLabItemLabels(createdCase.labOrganizationId)
           : ({} as Record<string, string>);
-        const itemsToInsert = hasRestorations
-          ? buildGroupedLineItemsForInvoice(
+        const itemsToInsert: any[] = body.invoiceOverrideLines
+          ? reviewedLinesToInvoiceItems(body.invoiceOverrideLines, autoInvoice.id)
+          : hasRestorations
+          ? await buildGroupedLineItemsForInvoice(
               restorationRowsForInvoice as any[],
               labelCache,
               autoInvoice.id,
+              createdCase.labOrganizationId,
               extracted.restorations,
             )
           : [{ invoiceId: autoInvoice.id, caseRestorationId: null, toothNumber: null, toothLabel: null, description: "[AI placeholder] Restorations could not be extracted — replace with actual line items.", quantity: 1, unitPrice: "0.00", lineTotal: "0.00", sortOrder: 0 }];
@@ -10901,14 +18068,16 @@ async function processOneIteroZipFile(
           description: it.description,
           catalogItemKey: it.catalogItemKey ?? null,
           missingCatalogItem: it.missingCatalogItem ?? false,
+          subItems: (it.childItems ?? []).map((child: any) => ({ item: child.description, description: child.description })),
         }));
-        await tx.insert(invoiceLineItems).values(toInvoiceLineItemValues(itemsToInsert));
-        const subtotal = itemsToInsert.reduce((acc, it) => acc + Number(it.lineTotal), 0).toFixed(2);
-        await tx.update(invoices).set({ subtotal, total: subtotal, balanceDue: subtotal, displayMetadataJson: { ...displayMetadataJson, lineItems: lineItemsMeta } }).where(eq(invoices.id, autoInvoice.id));
-        autoInvoiceId = autoInvoice.id;
+        await insertGroupedLineItemsWithChildren(tx, itemsToInsert);
+        const subtotal = sumGroupedLineItemsTotal(itemsToInsert);
+        await tx.update(invoices).set({ subtotal, total: subtotal, balanceDue: subtotal, displayMetadataJson: { ...displayMetadataJson, lineItems: lineItemsMeta, ...(body.invoiceOverrideLines ? { reviewedCharges: true } : {}) } }).where(eq(invoices.id, autoInvoice.id));
       }
+      autoInvoiceId = autoInvoice.id;
     } catch (invoiceErr) {
-      req.log?.warn({ err: invoiceErr, caseId: createdCase.id }, "iTero ZIP batch: auto-invoice creation failed");
+      req.log?.error({ err: invoiceErr, caseId: createdCase.id }, "iTero ZIP batch: auto-invoice creation failed");
+      throw new HttpError(500, "iTero ZIP case invoice could not be persisted.");
     }
 
     return { kind: "created" as const, createdCase, attachment, autoInvoiceId };
@@ -10918,17 +18087,57 @@ async function processOneIteroZipFile(
     try { fs.unlinkSync(rxDiskPath); } catch { /* ignore */ }
     const existing = txResult.existing;
     if (existing && existing.createdCaseId) {
-      return { caseId: existing.createdCaseId, caseNumber: existing.iteroOrderId, deduped: true, iteroOrderId: existing.iteroOrderId, extraFilesAttached: 0, extraFilesFailed: 0, aiDoctorName: null, suggestedProviderOrgId: null, suggestedDoctorName: null, linkedProviderOrgId: null };
+      let textureRepair: { repaired: number; attempted: number; reason?: string };
+      try {
+        textureRepair = await repairIteroTextures(req, existing.createdCaseId, otherEntries, userId, body.labOrganizationId);
+      } catch (err) {
+        req.log?.warn({ err, caseId: existing.createdCaseId }, "iTero texture repair failed");
+        textureRepair = { repaired: 0, attempted: 0, reason: "repair_failed" };
+      }
+      return { caseId: existing.createdCaseId, caseNumber: existing.caseNumber, deduped: true, iteroOrderId: existing.iteroOrderId, attachmentId: undefined, extraFilesAttached: 0, extraFilesFailed: 0, aiDoctorName: null, suggestedProviderOrgId: null, suggestedDoctorName: null, linkedProviderOrgId: null, textureRepair };
     }
     throw new HttpError(409, "iTero order is already being imported; retry shortly.");
   }
 
   const { createdCase, attachment } = txResult;
 
-  // Attach .ply files outside transaction (best-effort)
+  // Auto-add per-tooth alloy rows for PFM/FCM restorations when the lab
+  // has opted in. Runs after the transaction so syncInvoiceFromRestorations
+  // can rebuild the invoice with alloy sub-items attached.
+  try {
+    const labOrgForAlloy = await db.query.organizations.findFirst({
+      where: eq(organizations.id, createdCase.labOrganizationId),
+      columns: { autoAddAlloyOnPfm: true },
+    });
+    if (labOrgForAlloy?.autoAddAlloyOnPfm) {
+      await addAlloyChargeToCase({
+        caseRow: {
+          id: createdCase.id,
+          labOrganizationId: createdCase.labOrganizationId,
+          providerOrganizationId: createdCase.providerOrganizationId ?? null,
+          doctorName: createdCase.doctorName,
+        },
+        actorUserId: userId,
+        actorInitials: "SYS",
+        pfmOnly: true,
+      });
+    }
+  } catch (alloyErr) {
+    req.log?.warn({ err: alloyErr, caseId: createdCase.id }, "iTero ZIP batch: per-tooth alloy auto-add failed (non-fatal)");
+  }
+
+  // Attach scans and their declared companion textures outside the case
+  // transaction. A texture is never attached unless a PLY in this same ZIP
+  // references it exactly.
   let extraFilesAttached = 0;
   let extraFilesFailed = 0;
-  for (const entry of otherEntries) {
+  const texturePairs = pairPlyTextures(otherEntries);
+  const pairedTextureNames = new Set(texturePairs.values());
+  const entriesToAttach = otherEntries.filter((entry) =>
+    entry.name.toLowerCase().endsWith(".ply") || pairedTextureNames.has(entry.name),
+  );
+  const attachmentIds = new Map<string, string>();
+  for (const entry of entriesToAttach) {
     try {
       const ext = path.extname(entry.name) || "";
       const safe = path.basename(entry.name, ext).replace(/[^a-zA-Z0-9\-_]+/g, "-").slice(0, 60) || "file";
@@ -10939,14 +18148,25 @@ async function processOneIteroZipFile(
         req.log?.warn({ err, name: entry.name }, "iTero ZIP batch: failed to mirror .ply to object storage");
       });
       const storageKey = buildIteroAttachmentUrl(req, diskName);
-      await db.insert(caseAttachments).values({
+      const [saved] = await db.insert(caseAttachments).values({
         caseId: createdCase.id, uploadedByUserId: userId, uploadedByOrganizationId: body.labOrganizationId,
         fileName: entry.name, storageKey, fileType: entry.mimeType, visibility: "internal_lab_only",
-      });
+      }).returning({ id: caseAttachments.id });
+      attachmentIds.set(entry.name, saved!.id);
       extraFilesAttached++;
     } catch (attachErr) {
       extraFilesFailed++;
       req.log?.warn({ err: attachErr, name: entry.name, caseId: createdCase.id }, "iTero ZIP batch: failed to save .ply attachment");
+    }
+  }
+  // Link only after both attachment rows exist, and guard the update by caseId.
+  for (const [plyName, textureName] of texturePairs) {
+    const plyId = attachmentIds.get(plyName);
+    const textureId = attachmentIds.get(textureName);
+    if (plyId && textureId) {
+      await db.update(caseAttachments)
+        .set({ textureAttachmentId: textureId })
+        .where(and(eq(caseAttachments.id, plyId), eq(caseAttachments.caseId, createdCase.id)));
     }
   }
 
@@ -10957,17 +18177,116 @@ async function processOneIteroZipFile(
     afterJson: { case: createdCase, iteroOrderId, attachmentId: attachment?.id, extraFilesAttached, source: "zip_batch" },
   });
 
+  if (notificationStyle === "single") {
+    try {
+      const adminMembers = await db
+        .select({ userId: organizationMemberships.userId })
+        .from(organizationMemberships)
+        .where(
+          and(
+            eq(organizationMemberships.labId, body.labOrganizationId),
+            eq(organizationMemberships.status, "active"),
+            inArray(organizationMemberships.role, ["owner", "admin"]),
+          ),
+        );
+      if (adminMembers.length > 0) {
+        const isUnknownDoctor =
+          !doctorName.trim() || doctorName === "Unknown Doctor";
+        const priorCaseDoctorRows = await db
+          .selectDistinct({ doctorName: cases.doctorName })
+          .from(cases)
+          .where(
+            and(
+              eq(cases.labOrganizationId, body.labOrganizationId),
+              eq(cases.providerOrganizationId, body.providerOrganizationId),
+              ne(cases.id, createdCase.id),
+              notDeleted(cases),
+            ),
+          );
+        const isUnknownPractice = priorCaseDoctorRows.length === 0;
+        const knownDoctors = new Set(
+          priorCaseDoctorRows
+            .map((row) => row.doctorName.trim().toLowerCase())
+            .filter(Boolean),
+        );
+        const isStandInDoctor =
+          !isUnknownPractice &&
+          !isUnknownDoctor &&
+          knownDoctors.size > 0 &&
+          !knownDoctors.has(doctorName.trim().toLowerCase());
+        const isAlert =
+          isUnknownDoctor || isUnknownPractice || isStandInDoctor;
+        const title = isUnknownDoctor
+          ? "iTero case imported — unknown doctor"
+          : isUnknownPractice
+            ? "iTero case imported — unknown practice"
+            : isStandInDoctor
+              ? "iTero case imported — unrecognised doctor"
+              : `New iTero case: ${createdCase.caseNumber}`;
+        const notificationBody = isUnknownDoctor
+          ? `Case ${createdCase.caseNumber} was auto-imported from iTero but the doctor name could not be identified. Please review and assign the correct provider.`
+          : isUnknownPractice
+            ? `Case ${createdCase.caseNumber} for ${patientFirstName} ${patientLastName} was imported from iTero for a practice with no prior case history. Please verify the provider assignment.`
+            : isStandInDoctor
+              ? `Case ${createdCase.caseNumber} was imported from iTero with doctor "${doctorName}", who is not in the known provider list. This may be a stand-in — please review before sending.`
+              : `Case ${createdCase.caseNumber} for ${patientFirstName} ${patientLastName} was imported from iTero.`;
+        await deliverInAppNotification({
+          labOrganizationId: body.labOrganizationId,
+          recipientUserIds: adminMembers.map((member) => member.userId),
+          category: createdCase.priority === "rush" ? "rush_case" : "new_case",
+          dedupeKey: `itero_case:${createdCase.id}`,
+          type: isAlert ? "alert" : "case_imported_from_itero",
+          title,
+          body: notificationBody,
+          dataJson: {
+            caseId: createdCase.id,
+            caseNumber: createdCase.caseNumber,
+            iteroOrderId,
+            alertReason: isUnknownDoctor
+              ? "unknown_doctor"
+              : isUnknownPractice
+                ? "unknown_practice"
+                : isStandInDoctor
+                  ? "stand_in_doctor"
+                  : null,
+          },
+        });
+      }
+    } catch (notifErr) {
+      req.log?.warn?.(
+        { err: (notifErr as Error)?.message, caseId: createdCase.id },
+        "iTero import: failed to write admin notifications (non-fatal)",
+      );
+    }
+  } else {
+    await deliverInAppNotification({
+      labOrganizationId: body.labOrganizationId,
+      category: createdCase.priority === "rush" ? "rush_case" : "new_case",
+      dedupeKey: `itero_case:${createdCase.id}`,
+      type: "case_imported_from_itero",
+      title: `New iTero ZIP case: ${createdCase.caseNumber}`,
+      body: `Case ${createdCase.caseNumber} was imported from an iTero ZIP.`,
+      dataJson: {
+        caseId: createdCase.id,
+        caseNumber: createdCase.caseNumber,
+        iteroOrderId,
+        extraFilesAttached,
+      },
+    });
+  }
+
   return {
     caseId: createdCase.id,
     caseNumber: createdCase.caseNumber,
     deduped: false,
     iteroOrderId,
+    attachmentId: attachment?.id,
     extraFilesAttached,
     extraFilesFailed,
     aiDoctorName: doctorName !== "Unknown Doctor" ? doctorName : null,
     suggestedProviderOrgId,
     suggestedDoctorName,
-    linkedProviderOrgId: body.providerOrganizationId || null,
+    linkedProviderOrgId: effectiveProviderOrgId,
   };
 }
 
@@ -11000,6 +18319,11 @@ const iteroZipBatchBodySchema = z.object({
   doctorNameHint: z.string().optional(),
   patientFirstNameHint: z.string().optional(),
   patientLastNameHint: z.string().optional(),
+  caseTypeHint: z.string().optional(),
+  archHint: z.string().optional(),
+  materialHint: z.string().optional(),
+  receivedAt: calendarDate.optional(),
+  invoiceOverrideLines: multipartReviewedInvoiceLines,
 });
 
 router.post(
@@ -11019,6 +18343,9 @@ router.post(
     }
 
     await requireMembership(userId, body.labOrganizationId);
+    if (body.invoiceOverrideLines !== undefined) {
+      await requireAnyRole(userId, body.labOrganizationId, ADMIN_ROLES);
+    }
 
     const user = (req as any).user;
 
@@ -11034,6 +18361,7 @@ router.post(
       suggestedProviderOrgId?: string | null;
       suggestedDoctorName?: string | null;
       linkedProviderOrgId?: string | null;
+      textureRepair?: { repaired: number; attempted: number; reason?: string };
     }> = [];
 
     for (const file of files) {
@@ -11050,6 +18378,7 @@ router.post(
           suggestedProviderOrgId: result.suggestedProviderOrgId,
           suggestedDoctorName: result.suggestedDoctorName,
           linkedProviderOrgId: result.linkedProviderOrgId,
+          textureRepair: result.textureRepair,
         });
       } catch (err) {
         // Best-effort cleanup if the helper threw before deleting the temp file.
@@ -11080,169 +18409,54 @@ router.post(
   }),
 );
 
-// Clear the "needs AI review" flag once a human has verified the imported case.
-// Optionally accepts a `remake` payload so the reviewer can link this case as
-// a remake of an earlier one in the same step. Linking writes events on both
-// cases and (for no-charge remakes) zeros out any existing draft invoice.
-const aiReviewBodySchema = z.object({
-  acknowledged: z.boolean().default(true),
-  remake: z
-    .object({
-      remakeOfCaseId: z.string().min(1),
-      remakeReason: z.string().min(1).max(2000),
-      remakeCharged: z.boolean(),
-    })
-    .optional(),
+// Shared shape for the structured remake questionnaire used by
+// PATCH /:caseId/mark-as-remake.
+const remakeLinkBodySchema = z.object({
+  remakeOfCaseId: z.string().min(1),
+  remakeReason: z.string().min(1).max(2000),
+  remakeCharged: z.boolean(),
+  // Structured questionnaire fields (optional for backward compat)
+  remakeReasonKey: z.enum(REMAKE_REASON_KEYS).optional(),
+  remakeShadeLightness: z.enum(["light", "dark"]).optional(),
+  remakeShadePrescribed: z.string().max(200).optional(),
+  remakeShadeProvided: z.string().max(200).optional(),
+  remakeMaterialPrescribed: z.string().max(200).optional(),
+  remakeMaterialProvided: z.string().max(200).optional(),
+  remakeReturnedToLab: z.boolean().optional(),
+  remakeCategory: z.enum(["crown_bridge", "removable"]).optional(),
+  remakeNotes: z.string().max(2000).optional(),
 });
 
+// Link ANY case (regardless of AI-import/review status) as a remake of an
+// earlier case. This powers the Invoice Editor's "Mark as remake" action and
+// reuses the shared linking capability (suffix assignment, questionnaire
+// fields, history events, no-charge invoice zeroing, audit log).
 router.patch(
-  "/:caseId/ai-review",
+  "/:caseId/mark-as-remake",
   asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).auth.userId as string;
     const found = await assertCaseAccess(userId, String(req.params.caseId ?? ""));
     await requireMembership(userId, found.labOrganizationId);
-
-    const input = aiReviewBodySchema.parse(req.body ?? {});
-
-    if (!input.acknowledged && !input.remake) {
-      return ok(res, { caseId: found.id, needsAiReview: found.needsAiReview ?? false });
-    }
-
     const user = (req as any).user;
 
-    // Optional remake link. The original may be either canonical or
-    // legacy — same as POST /cases.
-    let remakeOriginal: Awaited<ReturnType<typeof resolveRemakeOriginal>> = null;
-    if (input.remake) {
-      if (input.remake.remakeOfCaseId === found.id) {
-        throw new HttpError(400, "A case cannot be a remake of itself.");
-      }
-      remakeOriginal = await resolveRemakeOriginal(
-        input.remake.remakeOfCaseId,
-        found.labOrganizationId,
-        found.providerOrganizationId,
-        found.doctorName,
-      );
-      if (!remakeOriginal) {
-        throw new HttpError(
-          404,
-          "Original case for remake not found in this lab.",
-        );
-      }
-    }
-
-    const setFields: Record<string, unknown> = {};
-    if (input.acknowledged) setFields.needsAiReview = false;
-    if (remakeOriginal) {
-      setFields.remakeOfCaseId = remakeOriginal.id;
-      setFields.remakeReason = input.remake?.remakeReason ?? null;
-      setFields.remakeCharged = input.remake?.remakeCharged ?? null;
-    }
-
-    const [updated] = await db
-      .update(cases)
-      .set(setFields)
-      .where(eq(cases.id, found.id))
-      .returning();
-
-    if (input.acknowledged) {
-      await db.insert(caseEvents).values({
-        caseId: found.id,
-        eventType: "ai_review_acknowledged",
-        actorUserId: userId,
-        actorOrganizationId: found.labOrganizationId,
-        actorInitials: user?.initials || "SYS",
-        metadataJson: { aiImportSource: found.aiImportSource ?? null },
-      }).catch((err: unknown): never => wrapDbError(err, {
-        fallback: "Failed to record ai_review_acknowledged event.",
-      }));
-    }
-
-    if (remakeOriginal) {
-      const reason = input.remake?.remakeReason ?? null;
-      const charged = input.remake?.remakeCharged ?? null;
-      await db.insert(caseEvents).values({
-        caseId: found.id,
-        eventType: "remake_of",
-        actorUserId: userId,
-        actorOrganizationId: found.labOrganizationId,
-        actorInitials: user?.initials || "SYS",
-        metadataJson: {
-          originalCaseId: remakeOriginal.id,
-          originalCaseNumber: remakeOriginal.caseNumber,
-          originalCaseKind: remakeOriginal.kind,
-          remakeReason: reason,
-          remakeCharged: charged,
-          note: `Marked as remake of ${remakeOriginal.kind === "legacy" ? "legacy " : ""}case ${remakeOriginal.caseNumber}${reason ? ` (reason: ${reason})` : ""} during AI review`,
-        },
-      }).catch((err: unknown): never => wrapDbError(err, {
-        fallback: "Failed to record remake_of event during AI review.",
-      }));
-      await writeReciprocalRemadeBy(
-        remakeOriginal,
-        { id: found.id, caseNumber: found.caseNumber },
-        reason,
-        charged,
-        {
-          userId,
-          orgId: found.labOrganizationId,
-          initials: user?.initials || "SYS",
-        },
-      );
-
-      // For no-charge remakes, zero out any auto-created draft invoice
-      // and append a note. We deliberately don't void/delete it — the
-      // invoice row stays so the audit trail is intact.
-      if (charged === false) {
-        const draft = await db.query.invoices.findFirst({
-          where: and(
-            eq(invoices.caseId, found.id),
-            eq(invoices.status, "draft"),
-          ),
-        });
-        if (draft) {
-          await db
-            .update(invoiceLineItems)
-            .set({ unitPrice: "0.00", lineTotal: "0.00" })
-            .where(eq(invoiceLineItems.invoiceId, draft.id));
-          await db
-            .update(invoices)
-            .set({
-              subtotal: "0.00",
-              total: "0.00",
-              balanceDue: "0.00",
-              notes: `No-charge remake of case ${remakeOriginal.caseNumber}${reason ? ` — reason: ${reason}` : ""}`,
-              updatedByUserId: userId,
-            })
-            .where(eq(invoices.id, draft.id));
-        }
-      }
-    }
-
-    await writeAuditLog({
+    const input = remakeLinkBodySchema.parse(req.body ?? {});
+    const { updated, remakeOriginal } = await linkExistingCaseAsRemake(
       req,
-      organizationId: found.labOrganizationId,
-      action: remakeOriginal ? "case_remake_linked" : "ai_review_acknowledged",
-      entityType: "case",
-      entityId: found.id,
-      beforeJson: {
-        needsAiReview: found.needsAiReview,
-        remakeOfCaseId: found.remakeOfCaseId,
-      },
-      afterJson: {
-        needsAiReview: updated.needsAiReview,
-        remakeOfCaseId: updated.remakeOfCaseId,
-        remakeReason: updated.remakeReason,
-        remakeCharged: updated.remakeCharged,
-      },
-    });
+      found,
+      input,
+      { userId, initials: user?.initials || "SYS" },
+    );
 
+    broadcastCaseUpdated(updated.id);
+    broadcastCaseUpdated(remakeOriginal.id, "remade");
     return ok(res, {
       caseId: updated.id,
-      needsAiReview: updated.needsAiReview ?? false,
+      caseNumber: updated.caseNumber,
       remakeOfCaseId: updated.remakeOfCaseId ?? null,
       remakeReason: updated.remakeReason ?? null,
       remakeCharged: updated.remakeCharged ?? null,
+      originalCaseId: remakeOriginal.id,
+      originalCaseNumber: remakeOriginal.caseNumber,
     });
   })
 );
@@ -11270,9 +18484,7 @@ router.get(
       q.organizationId,
       BILLING_ROLES,
     );
-    const from = new Date(q.dateFrom);
-    const to = new Date(q.dateTo);
-    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    if (!isValidCalendarDate(q.dateFrom) || !isValidCalendarDate(q.dateTo)) {
       throw new HttpError(400, "Invalid dateFrom/dateTo.");
     }
 
@@ -11289,8 +18501,8 @@ router.get(
         and(
           eq(cases.labOrganizationId, q.organizationId),
           notDeleted(cases),
-          sql`${cases.receivedAt} >= ${from}`,
-          sql`${cases.receivedAt} <= ${to}`,
+          sql`${cases.receivedAt} >= ${q.dateFrom}`,
+          sql`${cases.receivedAt} <= ${q.dateTo}`,
         ),
       )) as Array<{
       caseId: string;
@@ -11351,8 +18563,8 @@ router.get(
       .sort((a, b) => Number(b.revenue) - Number(a.revenue));
 
     return ok(res, {
-      from: from.toISOString(),
-      to: to.toISOString(),
+      from: q.dateFrom,
+      to: q.dateTo,
       items,
       crownsRollup:
         crownCount > 0
@@ -11478,6 +18690,9 @@ router.post(
         try {
           const zip = new AdmZip(file.path);
           const zipEntries = zip.getEntries().filter((e) => !e.isDirectory && e.header.size > 0);
+          if (zipEntries.some((entry) => !isSafeArchiveEntryName(entry.entryName))) {
+            throw new HttpError(400, "ZIP contains an unsafe archive path.");
+          }
 
           if (zipEntries.length > ZIP_MAX_ENTRIES) {
             throw new HttpError(400, `ZIP contains too many files (${zipEntries.length}). Maximum is ${ZIP_MAX_ENTRIES}.`);
@@ -11489,6 +18704,9 @@ router.post(
 
           for (const entry of zipEntries) {
             const entryName = path.basename(entry.entryName);
+            if (!isSafeArchiveEntryName(entry.entryName)) {
+              throw new HttpError(400, "ZIP contains an unsafe archive path.");
+            }
             if (!entryName) continue;
             const ext = path.extname(entryName).toLowerCase();
             if (!GENERIC_BUNDLE_EXTENSIONS.has(ext)) continue;
@@ -11521,6 +18739,8 @@ router.post(
 
         try { fs.mkdirSync(caseMediaDir, { recursive: true }); } catch { /* ignore */ }
 
+        const texturePairs = pairPlyTextures(extractedEntries);
+        const attachmentIds = new Map<string, string>();
         for (const entry of extractedEntries) {
           try {
             const ext = path.extname(entry.name) || "";
@@ -11532,7 +18752,7 @@ router.post(
               req.log?.warn({ err, name: entry.name }, "Generic ZIP bundle: failed to mirror to object storage");
             });
             const storageKey = buildIteroAttachmentUrl(req, diskName);
-            await db.insert(caseAttachments).values({
+            const [saved] = await db.insert(caseAttachments).values({
               caseId: body.caseId,
               uploadedByUserId: userId,
               uploadedByOrganizationId: body.labOrganizationId,
@@ -11540,11 +18760,21 @@ router.post(
               storageKey,
               fileType: entry.mimeType,
               visibility: "internal_lab_only",
-            });
+            }).returning({ id: caseAttachments.id });
+            attachmentIds.set(entry.name, saved!.id);
             attachedCount++;
           } catch (attachErr) {
             failedCount++;
             req.log?.warn({ err: attachErr, name: entry.name, caseId: body.caseId }, "Generic ZIP bundle: failed to save attachment");
+          }
+        }
+        for (const [plyName, textureName] of texturePairs) {
+          const plyId = attachmentIds.get(plyName);
+          const textureId = attachmentIds.get(textureName);
+          if (plyId && textureId) {
+            await db.update(caseAttachments)
+              .set({ textureAttachmentId: textureId })
+              .where(and(eq(caseAttachments.id, plyId), eq(caseAttachments.caseId, body.caseId)));
           }
         }
 
@@ -11583,6 +18813,9 @@ router.post(
       }
     }
 
+    if (results.some((r) => r.status === "attached" && r.attachedCount > 0)) {
+      broadcastCaseUpdated(body.caseId);
+    }
     return ok(res, { results }, 207);
   }),
 );

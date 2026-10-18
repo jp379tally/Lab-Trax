@@ -1,10 +1,10 @@
 /**
  * Guide-box hit-testing helpers for the case-pan barcode scanners.
  *
- * expo-camera reports barcode position in the coordinate space of the
- * CameraView layout (pixels). The caller computes the guide-box rectangle
- * in those same coordinates (from the reticle overlay percentages × the
- * view's measured width/height) and passes it here.
+ * These helpers are engine-agnostic: they operate purely on the
+ * `BarcodeCandidate` shape. Candidate positions and guide boxes are normalized
+ * to 0..1. Candidate positions start in the camera-buffer orientation; the pure
+ * mapping helpers rotate and cover-crop them into the preview orientation.
  *
  * All helpers are pure functions so they can be unit-tested without a device.
  */
@@ -16,12 +16,18 @@ export interface BarcodeCandidate {
     size: { width: number; height: number };
   } | null;
   cornerPoints?: Array<{ x: number; y: number }> | null;
+  sourceFrame?: { width: number; height: number } | null;
 }
 
-/** A rectangle in the camera-view coordinate space (pixels). */
+/** A rectangle normalized to the camera preview (0..1). */
 export interface GuideBox {
   x: number;
   y: number;
+  width: number;
+  height: number;
+}
+
+export interface PreviewSize {
   width: number;
   height: number;
 }
@@ -53,19 +59,79 @@ export function barcodeCenter(
   return null;
 }
 
+function usableSize(size?: PreviewSize | null): size is PreviewSize {
+  return (
+    !!size &&
+    Number.isFinite(size.width) &&
+    Number.isFinite(size.height) &&
+    size.width > 0 &&
+    size.height > 0
+  );
+}
+
+/**
+ * Map a normalized camera-buffer point into the normalized preview.
+ * A landscape sensor feeding a portrait preview is rotated clockwise first.
+ * The Camera's default cover resize is then applied, including cropped edges.
+ */
+export function mapFramePointToPreview(
+  point: { x: number; y: number },
+  sourceFrame?: PreviewSize | null,
+  previewSize?: PreviewSize | null,
+): { x: number; y: number } | null {
+  if (!usableSize(sourceFrame) || !usableSize(previewSize)) return null;
+
+  const rotate =
+    sourceFrame.width > sourceFrame.height &&
+    previewSize.height > previewSize.width;
+  const orientedWidth = rotate ? sourceFrame.height : sourceFrame.width;
+  const orientedHeight = rotate ? sourceFrame.width : sourceFrame.height;
+  const orientedPoint = rotate
+    ? { x: 1 - point.y, y: point.x }
+    : point;
+
+  const scale = Math.max(
+    previewSize.width / orientedWidth,
+    previewSize.height / orientedHeight,
+  );
+  const renderedWidth = orientedWidth * scale;
+  const renderedHeight = orientedHeight * scale;
+  const cropX = (renderedWidth - previewSize.width) / 2;
+  const cropY = (renderedHeight - previewSize.height) / 2;
+
+  return {
+    x:
+      (orientedPoint.x * renderedWidth - cropX) /
+      previewSize.width,
+    y:
+      (orientedPoint.y * renderedHeight - cropY) /
+      previewSize.height,
+  };
+}
+
+export function barcodeCenterInPreview(
+  barcode: BarcodeCandidate,
+  previewSize?: PreviewSize | null,
+): { x: number; y: number } | null {
+  const center = barcodeCenter(barcode);
+  if (!center) return null;
+  return mapFramePointToPreview(center, barcode.sourceFrame, previewSize);
+}
+
 /**
  * Filter `barcodes` to only those whose center falls inside `box`.
  *
- * Barcodes with no usable position data (null center) pass through
- * unconditionally as a graceful fallback so a missing-bounds edge case
- * never silently drops a valid scan.
+ * This gate is advisory: unresolved positions pass through, and if every
+ * positioned candidate is outside the box the original non-empty list is
+ * returned. Geometry must never silently discard decoded data.
  */
 export function filterBarcodesInBox<T extends BarcodeCandidate>(
   barcodes: T[],
   box: GuideBox,
+  previewSize?: PreviewSize | null,
 ): T[] {
-  return barcodes.filter((b) => {
-    const c = barcodeCenter(b);
+  const filtered = barcodes.filter((b) => {
+    const c = barcodeCenterInPreview(b, previewSize);
     if (!c) return true;
     return (
       c.x >= box.x &&
@@ -74,6 +140,7 @@ export function filterBarcodesInBox<T extends BarcodeCandidate>(
       c.y <= box.y + box.height
     );
   });
+  return filtered.length > 0 ? filtered : barcodes;
 }
 
 /**
@@ -88,6 +155,7 @@ export function filterBarcodesInBox<T extends BarcodeCandidate>(
 export function pickClosestToCenter<T extends BarcodeCandidate>(
   barcodes: T[],
   box: GuideBox,
+  previewSize?: PreviewSize | null,
 ): T | null {
   if (barcodes.length === 0) return null;
   if (barcodes.length === 1) return barcodes[0]!;
@@ -99,7 +167,7 @@ export function pickClosestToCenter<T extends BarcodeCandidate>(
   let bestDist = Infinity;
 
   for (const b of barcodes) {
-    const center = barcodeCenter(b);
+    const center = barcodeCenterInPreview(b, previewSize);
     if (!center) {
       if (!best) best = b;
       continue;
@@ -123,32 +191,28 @@ export function pickClosestToCenter<T extends BarcodeCandidate>(
 export function pickBestBarcode<T extends BarcodeCandidate>(
   barcodes: T[],
   box: GuideBox,
+  previewSize?: PreviewSize | null,
 ): T | null {
-  return pickClosestToCenter(filterBarcodesInBox(barcodes, box), box);
+  return pickClosestToCenter(
+    filterBarcodesInBox(barcodes, box, previewSize),
+    box,
+    previewSize,
+  );
 }
 
 /**
- * Compute a GuideBox from the camera-view layout dimensions and the
- * fractional insets used in the reticle overlay style.
- *
- * @param viewWidth  Measured width of the CameraView in layout pixels.
- * @param viewHeight Measured height of the CameraView in layout pixels.
- * @param leftFrac   Fraction from the left edge (e.g. 0.12 for "left: 12%").
- * @param topFrac    Fraction from the top edge.
- * @param rightFrac  Fraction from the right edge (e.g. 0.12 for "right: 12%").
- * @param heightFrac Fraction of the view height (e.g. 0.44 for "height: 44%").
+ * Compute a normalized GuideBox from the reticle overlay percentages.
  */
-export function guideBoxFromLayout(
-  viewWidth: number,
-  viewHeight: number,
+export function guideBoxFromFractions(
   leftFrac: number,
   topFrac: number,
   rightFrac: number,
   heightFrac: number,
 ): GuideBox {
-  const x = viewWidth * leftFrac;
-  const y = viewHeight * topFrac;
-  const width = viewWidth * (1 - leftFrac - rightFrac);
-  const height = viewHeight * heightFrac;
-  return { x, y, width, height };
+  return {
+    x: leftFrac,
+    y: topFrac,
+    width: 1 - leftFrac - rightFrac,
+    height: heightFrac,
+  };
 }

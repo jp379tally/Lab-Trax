@@ -23,7 +23,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
 import express from "express";
-import bodyParser from "body-parser";
 import {
   AGENT_TOOLS,
   TOOL_BY_NAME,
@@ -80,10 +79,10 @@ const createDbChain = (): any => {
   return chain;
 };
 
-vi.mock("@workspace/db", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@workspace/db")>();
+vi.mock("@workspace/db", async () => {
+  const schema = await import("@workspace/db/schema");
   return {
-    ...actual,
+    ...schema,
     db: {
       select: () => createDbChain(),
       insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
@@ -125,7 +124,7 @@ vi.mock("../middlewares/auth", () => ({
 
 function makeApp(userId?: string) {
   const app = express();
-  app.use(bodyParser.json());
+  app.use(express.json());
 
   // Stub auth middleware — sets req.user so requireAuth (mocked above) can gate routes
   app.use((req: any, _res, next) => {
@@ -224,7 +223,7 @@ describe("POST /api/ai-agent", () => {
     const freshRouter = express.Router();
     freshRegister(freshRouter);
     const freshApp = express();
-    freshApp.use(bodyParser.json());
+    freshApp.use(express.json());
     freshApp.use((req: any, _res, next) => {
       req.user = { id: "user-123", userType: "lab" };
       next();
@@ -377,12 +376,13 @@ describe("tool permission boundaries (unit)", () => {
       userId: "user-provider",
       req: {} as any,
       userType: "provider",
+      appSurface: "provider_portal",
       labOrganizationId: null,
       providerOrgIds: ["prov-org-1"],
     };
     await expect(
       tool.execute(
-        { patientFirstName: "Jane", patientLastName: "Doe", doctorName: "Dr. Smith" },
+        { patientFirstName: "Jane", patientLastName: "Doe", doctorName: "Dr. Synthetic063" },
         providerCtx,
       ),
     ).rejects.toThrow(/lab staff|provider/i);

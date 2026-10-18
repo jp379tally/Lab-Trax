@@ -107,13 +107,13 @@ const RX_RESPONSE = {
   practicePhone: "",
 };
 
-// "Blissful Dental Spa" is a lab-managed practice that only appears when the
+// "Synthetic010 Provider010 Alias010" is a lab-managed practice that only appears when the
 // query asks for includeLabPractices=true.
 const ORGS = [
   { id: "lab1", type: "lab", name: "Test Lab" },
   { id: "provA", type: "provider", name: "Maple Dental" },
   { id: "provB", type: "provider", name: "Oak Dental" },
-  { id: "provC", type: "provider", name: "Blissful Dental Spa" },
+  { id: "provC", type: "provider", name: "Synthetic010 Provider010 Alias010" },
 ];
 
 const DROP_ZONE_USER = {
@@ -158,7 +158,7 @@ describe("DashboardDropZone — searchable Practice picker", () => {
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription") return Promise.resolve(RX_RESPONSE);
       if (path.startsWith("/rx-practice-aliases"))
-        return Promise.resolve({ data: { found: false } });
+        return Promise.resolve({ found: false, providerOrganizationId: null });
       return Promise.resolve([]);
     });
   });
@@ -193,7 +193,7 @@ describe("DashboardDropZone — searchable Practice picker", () => {
     await act(async () => {
       fireEvent.click(practiceTrigger());
     });
-    expect(screen.getByText("Blissful Dental Spa")).toBeTruthy();
+    expect(screen.getByText("Synthetic010 Provider010 Alias010")).toBeTruthy();
     expect(screen.getByText("Maple Dental")).toBeTruthy();
     expect(screen.getByText("Oak Dental")).toBeTruthy();
   });
@@ -207,10 +207,10 @@ describe("DashboardDropZone — searchable Practice picker", () => {
 
     const search = screen.getByPlaceholderText("Search practices…");
     await act(async () => {
-      fireEvent.change(search, { target: { value: "bliss" } });
+      fireEvent.change(search, { target: { value: "Synthetic010" } });
     });
 
-    expect(screen.getByText("Blissful Dental Spa")).toBeTruthy();
+    expect(screen.getByText("Synthetic010 Provider010 Alias010")).toBeTruthy();
     expect(screen.queryByText("Maple Dental")).toBeNull();
     expect(screen.queryByText("Oak Dental")).toBeNull();
   });
@@ -222,11 +222,11 @@ describe("DashboardDropZone — searchable Practice picker", () => {
       fireEvent.click(practiceTrigger());
     });
     await act(async () => {
-      fireEvent.click(screen.getByText("Blissful Dental Spa"));
+      fireEvent.click(screen.getByText("Synthetic010 Provider010 Alias010"));
     });
 
     // The trigger now shows the chosen practice (placeholder is gone).
-    expect(practiceTrigger().textContent).toMatch(/blissful dental spa/i);
+    expect(practiceTrigger().textContent).toMatch(/synthetic010 provider010 alias010/i);
     expect(practiceTrigger().textContent).not.toMatch(/select a practice/i);
   });
 });

@@ -183,8 +183,43 @@ export function formatRxTeethLabel(summary: RxSummary): string {
 }
 
 /**
+ * Read-only tooth display for the Lab Slip. Prefer restoration tooth text so
+ * ranges and lab-specific notation remain intact, then fall back to the
+ * legacy case-level value. Empty restoration rows do not imply tooth data.
+ */
+export function formatRxToothNumbers(
+  restorations: ReadonlyArray<CaseRestoration> | undefined | null,
+  legacyTeeth?: string | null,
+): string {
+  const seen = new Set<string>();
+  const teeth: string[] = [];
+  for (const restoration of restorations ?? []) {
+    const tooth = (restoration.toothNumber ?? "").trim();
+    if (!tooth) continue;
+
+    const arch = detectArch(tooth, bucketRestorativeType(restoration.restorationType));
+    const label = arch
+      ? arch === "upper"
+        ? "Upper arch"
+        : arch === "lower"
+          ? "Lower arch"
+          : "Full arch (upper & lower)"
+      : tooth;
+    if (!seen.has(label)) {
+      seen.add(label);
+      teeth.push(label);
+    }
+  }
+
+  if (teeth.length > 0) return teeth.join(", ");
+  return legacyTeeth?.trim() || "—";
+}
+
+/**
  * Per-restoration "tooth — shade" label, e.g. "3 — A2, 14-16 — B1".
- * Falls back to the plain teeth label when no restoration has a shade.
+ * Keeps one entry for every restoration row so a shade can never be
+ * accidentally paired with a different tooth. Falls back to the plain teeth
+ * label when no restoration has a shade.
  */
 export function formatRxTeethWithShades(
   restorations: ReadonlyArray<CaseRestoration> | undefined | null,
@@ -193,33 +228,43 @@ export function formatRxTeethWithShades(
   if (!restorations || restorations.length === 0) return fallback;
   const anyShade = restorations.some((r) => r.shade && r.shade.trim());
   if (!anyShade) return fallback;
-  // If every shaded restoration is full-arch / blank tooth, we can't form a
-  // useful per-tooth label — fall back to the arch label and append the
-  // unique shades so the user still sees them inline.
-  const concreteShadedCount = restorations.filter(
-    (r) => (r.toothNumber || "").trim() && (r.shade || "").trim(),
-  ).length;
-  if (concreteShadedCount === 0) {
+
+  const parts: string[] = [];
+  for (const r of restorations) {
+    const tooth = (r.toothNumber || "").trim();
+    const shade = (r.shade || "").trim();
+    const arch = detectArch(
+      tooth,
+      bucketRestorativeType(r.restorationType),
+    );
+    // Keep full-arch rows readable without treating their raw shorthand
+    // ("U/D", "Upper", etc.) as a tooth number. Empty removable rows use the
+    // existing full-arch fallback label for the same reason.
+    const toothLabel = arch
+      ? arch === "upper"
+        ? "Upper arch"
+        : arch === "lower"
+          ? "Lower arch"
+          : "Full arch (upper & lower)"
+      : tooth;
+    if (!toothLabel) continue;
+    const label = shade ? `${toothLabel} — ${shade}` : toothLabel;
+    parts.push(label);
+  }
+
+  // A shade-only row has no tooth pairing to show. Preserve the existing
+  // case/arch fallback and expose its shade beside it instead of dropping it.
+  if (parts.length === 0) {
     const shades = Array.from(
       new Set(
         restorations
           .map((r) => (r.shade || "").trim())
-          .filter((s) => s.length > 0),
+          .filter(Boolean),
       ),
     );
     return shades.length > 0 ? `${fallback} — ${shades.join(", ")}` : fallback;
   }
-  const parts: string[] = [];
-  const seen = new Set<string>();
-  for (const r of restorations) {
-    const tooth = (r.toothNumber || "").trim();
-    if (!tooth) continue; // arch-level / blank: skip — covered by fallback
-    const shade = (r.shade || "").trim();
-    const label = shade ? `${tooth} — ${shade}` : tooth;
-    if (seen.has(label)) continue;
-    seen.add(label);
-    parts.push(label);
-  }
+
   return parts.join(", ");
 }
 

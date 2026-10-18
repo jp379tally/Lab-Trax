@@ -14,11 +14,14 @@ import {
   useMe,
   canEditAnyLab,
   canAdminAnyLab,
+  canAdminAnyProvider,
   canOwnAnyLab,
   primaryLabOrgId,
   adminLabMemberships,
 } from "@/lib/auth-me";
 import { useDuplicateDoctorClusters } from "@/lib/duplicate-doctors";
+import { useMessengerUnreadCount } from "@/lib/messenger";
+import { useInAppNotifications } from "@/lib/in-app-notifications";
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -35,13 +38,32 @@ interface MenuItem {
   requiresLabMember?: boolean;
   // owner-only — the Sales Forecaster (stricter than requiresAdmin)
   requiresOwner?: boolean;
+  // active owner/admin in either a lab or provider/practice organization
+  requiresSupportAdmin?: boolean;
   // show the pending AI-suggestion count badge (admin-only) on this row
   showAiCandidateBadge?: boolean;
   // show the possible-duplicate doctor count badge (admin-only) on this row
   showDuplicateDoctorBadge?: boolean;
+  // show the unread messenger count badge (any active member) on this row
+  showMessengerBadge?: boolean;
+  showNotificationBadge?: boolean;
 }
 
 const ITEMS: MenuItem[] = [
+  {
+    title: "Notifications",
+    subtitle: "Payment and account alerts",
+    icon: "notifications-outline",
+    route: "/notifications",
+    showNotificationBadge: true,
+  },
+  {
+    title: "Messages",
+    subtitle: "Chat with your lab or providers",
+    icon: "chatbubbles-outline",
+    route: "/messages",
+    showMessengerBadge: true,
+  },
   {
     title: "AI Assistant",
     subtitle: "Ask questions and draft messages",
@@ -105,6 +127,13 @@ const ITEMS: MenuItem[] = [
     showDuplicateDoctorBadge: true,
   },
   {
+    title: "Case Turnaround",
+    subtitle: "Default due days and cap setting for new cases",
+    icon: "timer-outline",
+    route: "/manage/turnaround",
+    requiresAdmin: true,
+  },
+  {
     title: "Deleted Cases",
     subtitle: "View and restore soft-deleted cases",
     icon: "trash-outline",
@@ -119,6 +148,40 @@ const ITEMS: MenuItem[] = [
     requiresLabMember: true,
     showAiCandidateBadge: true,
   },
+  {
+    title: "Revenue Targets",
+    subtitle: "Monthly low and high dollar thresholds for charts",
+    icon: "stats-chart-outline",
+    route: "/manage/revenue-targets",
+    requiresAdmin: true,
+  },
+  {
+    title: "Employee Hours",
+    subtitle: "Vacation requests, balances, and schedules",
+    icon: "calendar-outline",
+    route: "/manage/vacation",
+    requiresAdmin: true,
+  },
+  {
+    title: "Report an Issue",
+    subtitle: "Send screenshots or diagnostic files to LabTrax",
+    icon: "bug-outline",
+    route: "/settings/report-issue",
+    requiresSupportAdmin: true,
+  },
+  {
+    title: "Feedback",
+    subtitle: "Share ideas or problems with LabTrax, with attachments",
+    icon: "chatbubble-ellipses-outline",
+    route: "/settings/report-issue?kind=feedback",
+  },
+  {
+    title: "Permission Outline",
+    subtitle: "Custom permission grants for team members",
+    icon: "shield-checkmark-outline",
+    route: "/manage/permission-outline",
+    requiresOwner: true,
+  },
 ];
 
 export default function MoreMenuScreen() {
@@ -128,6 +191,7 @@ export default function MoreMenuScreen() {
   const meQuery = useMe();
   const canEdit = canEditAnyLab(meQuery.data);
   const canAdmin = canAdminAnyLab(meQuery.data);
+  const canReportSupport = canAdmin || canAdminAnyProvider(meQuery.data);
   const canOwn = canOwnAnyLab(meQuery.data);
   const labOrgId = primaryLabOrgId(meQuery.data);
   const hasLab = !!labOrgId;
@@ -153,12 +217,15 @@ export default function MoreMenuScreen() {
   const candidateCount = canManageLab ? (candidatesQ.data?.data?.length ?? 0) : 0;
 
   const { totalGroups: duplicateDoctorCount } = useDuplicateDoctorClusters();
+  const { total: unreadMessageCount } = useMessengerUnreadCount();
+  const { unreadCount: unreadNotificationCount } = useInAppNotifications();
 
   const visible = ITEMS.filter(
     (item) =>
       (!item.requiresEdit || canEdit) &&
       (!item.requiresAdmin || canAdmin) &&
       (!item.requiresOwner || canOwn) &&
+      (!item.requiresSupportAdmin || canReportSupport) &&
       (!item.requiresLabMember || hasLab),
   );
 
@@ -188,6 +255,16 @@ export default function MoreMenuScreen() {
             {item.showDuplicateDoctorBadge && duplicateDoctorCount > 0 ? (
               <View style={[styles.badge, styles.dupBadge]} testID="duplicate-doctor-badge">
                 <Text style={styles.badgeText}>{duplicateDoctorCount > 99 ? "99+" : duplicateDoctorCount}</Text>
+              </View>
+            ) : null}
+            {item.showMessengerBadge && unreadMessageCount > 0 ? (
+              <View style={[styles.badge, styles.dupBadge]} testID="messenger-unread-badge">
+                <Text style={styles.badgeText}>{unreadMessageCount > 99 ? "99+" : unreadMessageCount}</Text>
+              </View>
+            ) : null}
+            {item.showNotificationBadge && unreadNotificationCount > 0 ? (
+              <View style={[styles.badge, styles.dupBadge]} testID="notification-unread-badge">
+                <Text style={styles.badgeText}>{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</Text>
               </View>
             ) : null}
             <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />

@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -36,6 +37,7 @@ interface AuthContextValue {
   register: (payload: RegisterPayload) => Promise<RegisterResult>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
+  updateProfilePhoto?: (userId: string, url: string | null) => void;
 }
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
@@ -47,8 +49,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<"loading" | "authed" | "anonymous">("loading");
   const [restoreStatus, setRestoreStatus] = useState<AuthRestoreStatus>("empty");
   const [restoreNoticeDismissed, setRestoreNoticeDismissed] = useState(false);
+  const revision = useRef(0);
+
+  const updateProfilePhoto = useCallback((userId: string, url: string | null) => {
+    revision.current++;
+    setUser((current) => current?.id === userId ? { ...current, profilePhotoUrl: url } : current);
+  }, []);
 
   const verify = useCallback(async () => {
+    const requestRevision = revision.current;
     try {
       // Make sure the encrypted-token hydration has finished before we
       // snapshot the restore status — otherwise the very first read can
@@ -56,9 +65,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await waitForTokenHydration();
       setRestoreStatus(getAuthRestoreStatus());
       const me = await fetchMe();
+      if (requestRevision !== revision.current) return;
       setUser(me);
       setStatus("authed");
     } catch {
+      if (requestRevision !== revision.current) return;
       setUser(null);
       setStatus("anonymous");
     }
@@ -87,6 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // React to session being cleared from anywhere (e.g. failed token refresh).
   useEffect(() => {
     return subscribeSession((next) => {
+      revision.current++;
       if (next === null) {
         setUser(null);
         setStatus("anonymous");
@@ -111,6 +123,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    revision.current++;
     await apiLogout();
     setUser(null);
     setStatus("anonymous");
@@ -127,6 +140,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       register,
       logout,
       refresh: verify,
+      updateProfilePhoto,
     }),
     [
       user,
@@ -138,6 +152,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       register,
       logout,
       verify,
+      updateProfilePhoto,
     ],
   );
 

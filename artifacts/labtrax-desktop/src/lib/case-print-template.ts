@@ -3,6 +3,7 @@
 // US Letter page rendered at 96 DPI (816 × 1056 px).
 
 export const PAGE_W = 816;
+import { withImplantElements } from "@workspace/case-taxonomy";
 export const PAGE_H = 1056;
 
 // ── Element model ────────────────────────────────────────────────────────
@@ -13,11 +14,17 @@ export const TEXT_ELEMENT_KINDS = [
   "doctor",
   "dueDate",
   "priority",
+  "step",
   "restorativeType",
   "teeth",
   "material",
   "shade",
+  "gingivialShade",
+  "implantRetention",
+  "implantManufacturer",
+  "implantPlatformNotes",
   "rxNotes",
+  "remakeNotes",
 ] as const;
 export type TextElementKind = (typeof TEXT_ELEMENT_KINDS)[number];
 
@@ -67,13 +74,15 @@ export const INVOICE_ELEMENT_KINDS = [
 ] as const;
 export type InvoiceElementKind = (typeof INVOICE_ELEMENT_KINDS)[number];
 
-// "doctorInfo", "image", and invoice kinds are opt-in elements — NOT in
+// "doctorInfo", "providerPreferences", "image", and invoice kinds are opt-in
+// elements — NOT in
 // BUILTIN_ELEMENT_KINDS so ensureBuiltinElements does not force them into
 // every template.
 export const ELEMENT_KINDS = [
   ...BUILTIN_ELEMENT_KINDS,
   "image",
   "doctorInfo",
+  "providerPreferences",
   ...INVOICE_ELEMENT_KINDS,
 ] as const;
 export type ElementKind = (typeof ELEMENT_KINDS)[number];
@@ -89,6 +98,7 @@ export interface CasePrintElement {
   w: number;
   h: number;
   visible: boolean;
+  page?: number;
   // Typography (text elements)
   fontFamily?: string;
   fontSize?: number;
@@ -121,15 +131,22 @@ export const ELEMENT_LABELS: Record<ElementKind, string> = {
   doctor: "Doctor",
   dueDate: "Due Date",
   priority: "Priority",
+  step: "Step",
   restorativeType: "Restorative Type",
   teeth: "Tooth Number(s)",
   material: "Material",
   shade: "Shade",
+  gingivialShade: "Gingival Shade",
+  implantRetention: "Implant Retention",
+  implantManufacturer: "Implant Manufacturer",
+  implantPlatformNotes: "Implant Platform Notes",
   rxNotes: "Prescription Notes",
+  remakeNotes: "Remake Notes",
   toothChart: "Tooth Chart",
   barcode: "Case Pan Barcode",
   image: "Image",
   doctorInfo: "Doctor Info",
+  providerPreferences: "Provider Preferences",
   invoiceNumber: "Invoice Number",
   invoiceDate: "Invoice Date",
   invoiceStatus: "Invoice Status",
@@ -145,15 +162,22 @@ export const ELEMENT_COLORS: Record<ElementKind, string> = {
   doctor: "rgba(16,185,129,0.16)",
   dueDate: "rgba(20,184,166,0.16)",
   priority: "rgba(20,184,166,0.16)",
+  step: "rgba(20,184,166,0.16)",
   restorativeType: "rgba(168,85,247,0.16)",
   teeth: "rgba(168,85,247,0.16)",
   material: "rgba(168,85,247,0.16)",
   shade: "rgba(168,85,247,0.16)",
+  gingivialShade: "rgba(168,85,247,0.16)",
+  implantRetention: "rgba(168,85,247,0.16)",
+  implantManufacturer: "rgba(168,85,247,0.16)",
+  implantPlatformNotes: "rgba(168,85,247,0.16)",
   rxNotes: "rgba(244,63,94,0.16)",
+  remakeNotes: "rgba(244,63,94,0.10)",
   toothChart: "rgba(234,179,8,0.18)",
   barcode: "rgba(100,116,139,0.18)",
   image: "rgba(0,0,0,0)",
   doctorInfo: "rgba(16,185,129,0.10)",
+  providerPreferences: "rgba(14,116,144,0.12)",
   invoiceNumber: "rgba(251,191,36,0.18)",
   invoiceDate: "rgba(251,191,36,0.18)",
   invoiceStatus: "rgba(251,191,36,0.18)",
@@ -183,10 +207,11 @@ export const DEFAULT_FONT_FAMILY = "Helvetica, Arial, sans-serif";
 
 export function isTextKind(
   kind: ElementKind,
-): kind is TextElementKind | "doctorInfo" | InvoiceScalarKind {
+): kind is TextElementKind | "doctorInfo" | "providerPreferences" | InvoiceScalarKind {
   return (
     (TEXT_ELEMENT_KINDS as readonly string[]).includes(kind) ||
     kind === "doctorInfo" ||
+    kind === "providerPreferences" ||
     (INVOICE_SCALAR_KINDS as readonly string[]).includes(kind)
   );
 }
@@ -269,6 +294,24 @@ export function makeDoctorInfoElement(): CasePrintElement {
   };
 }
 
+/** Provider-owned clinical preferences are a separately opt-in label block. */
+export function makeProviderPreferencesElement(): CasePrintElement {
+  return {
+    id: `providerPreferences-${Date.now()}`,
+    kind: "providerPreferences",
+    x: 418,
+    y: 246,
+    w: 350,
+    h: 80,
+    visible: true,
+    fontFamily: DEFAULT_FONT_FAMILY,
+    fontSize: 10,
+    bold: false,
+    italic: false,
+    align: "left",
+  };
+}
+
 export function makeInvoiceScalarElement(
   kind: InvoiceScalarKind,
   bottomY: number,
@@ -315,13 +358,19 @@ export const DEFAULT_CASE_PRINT_TEMPLATE: CasePrintTemplate = {
     textEl("doctor", 418, 120, 350, 46, 13, false),
     textEl("dueDate", 48, 176, 350, 46, 13, false),
     textEl("priority", 418, 176, 350, 46, 13, false),
+    textEl("step", 418, 334, 350, 46, 13, false),
     textEl("restorativeType", 48, 232, 350, 46, 13, false),
     textEl("teeth", 418, 232, 350, 46, 13, false),
     textEl("material", 48, 288, 350, 46, 13, false),
     textEl("shade", 418, 288, 350, 46, 13, false),
-    graphicEl("toothChart", 48, 352, 720, 300),
-    textEl("rxNotes", 48, 672, 720, 220, 12, false),
-    graphicEl("barcode", 48, 912, 720, 90),
+    { ...textEl("gingivialShade", 48, 334, 350, 46, 13, false), visible: true },
+    graphicEl("toothChart", 48, 596, 720, 160),
+    textEl("rxNotes", 48, 772, 720, 136, 12, false),
+    { ...textEl("remakeNotes", 48, 912, 720, 24, 12, false), visible: false },
+    graphicEl("barcode", 48, 940, 720, 90),
+    textEl("implantRetention", 48, 380, 720, 68, 13, false),
+    textEl("implantManufacturer", 48, 452, 720, 68, 13, false),
+    textEl("implantPlatformNotes", 48, 524, 720, 68, 13, false),
   ],
 };
 
@@ -416,6 +465,31 @@ function coerceElement(raw: unknown): CasePrintElement | null {
     };
   }
 
+  if (k === "providerPreferences") {
+    const fontFamily =
+      typeof o.fontFamily === "string" && o.fontFamily
+        ? o.fontFamily
+        : DEFAULT_FONT_FAMILY;
+    const fontSize = clampNum(o.fontSize, 5, 200, 10);
+    const bold = coerceBool(o.bold, false);
+    const italic = coerceBool(o.italic, false);
+    const align = coerceAlign(o.align);
+    return {
+      id,
+      kind: "providerPreferences",
+      x,
+      y,
+      w,
+      h,
+      visible,
+      fontFamily,
+      fontSize,
+      bold,
+      italic,
+      align,
+    };
+  }
+
   if ((INVOICE_SCALAR_KINDS as readonly string[]).includes(k)) {
     const fontFamily =
       typeof o.fontFamily === "string" && o.fontFamily
@@ -454,7 +528,7 @@ function coerceElement(raw: unknown): CasePrintElement | null {
     const bold = coerceBool(o.bold, false);
     const italic = coerceBool(o.italic, false);
     const align = coerceAlign(o.align);
-    return { id, kind: k as TextElementKind, x, y, w, h, visible, fontFamily, fontSize, bold, italic, align };
+    return { id, kind: k, x, y, w, h, visible, fontFamily, fontSize, bold, italic, align };
   }
 
   // graphic builtin (toothChart, barcode)
@@ -598,6 +672,151 @@ function migrateV1(value: Record<string, unknown>): CasePrintTemplate | null {
 }
 
 /**
+ * Layout-aware migration for templates that pre-date the `gingivialShade`
+ * element. When a v2 template has no `gingivialShade` row, `ensureBuiltinElements`
+ * will backfill it at y=334 (h=46, bottom=380). Any element that was stored at
+ * the prior default y position must be shifted to the new non-overlapping
+ * default so the printed layout remains clean for existing custom templates.
+ *
+ * Only elements sitting at EXACTLY the pre-task default y (and, for height-
+ * sensitive fields, the default h) are shifted — user-customised coordinates
+ * are left untouched.
+ *
+ * Pre-task defaults that conflict with the new layout:
+ *   toothChart  y=352 → 380
+ *   rxNotes     y=672 → 700, h=220 → 180
+ *   remakeNotes y=892 → 880, h=100 → 56
+ *   barcode     y=912 → 940
+ */
+function applyGingivialShadeLayout(
+  elements: CasePrintElement[],
+): CasePrintElement[] {
+  // Nothing to do if this template already has the field.
+  if (elements.some((e) => e.kind === "gingivialShade")) return elements;
+
+  return elements.map((el) => {
+    switch (el.kind) {
+      case "toothChart":
+        return el.y === 352 ? { ...el, y: 380 } : el;
+      case "rxNotes": {
+        let updated: CasePrintElement = el;
+        if (el.y === 672) updated = { ...updated, y: 700 };
+        if (el.h === 220) updated = { ...updated, h: 180 };
+        return updated;
+      }
+      case "remakeNotes": {
+        let updated: CasePrintElement = el;
+        if (el.y === 892) updated = { ...updated, y: 880 };
+        if (el.h === 100) updated = { ...updated, h: 56 };
+        return updated;
+      }
+      case "barcode":
+        return el.y === 912 ? { ...el, y: 940 } : el;
+      default:
+        return el;
+    }
+  });
+}
+
+/**
+ * Cascade resolver run AFTER `ensureBuiltinElements` to guarantee that the
+ * sequential full-width elements (gingivialShade → toothChart → rxNotes →
+ * remakeNotes → barcode) do not overlap one another, regardless of whether the
+ * stored template used v2 coordinates or v1 migrated coordinates.
+ *
+ * Strategy: determine where the shade/material row ends (the maximum bottom
+ * edge of the `shade` and `material` elements), then sweep the sequential
+ * elements in order, pushing each one down to `prevBottom` whenever it starts
+ * above it.
+ *
+ * For v2 templates the shade row ends at y≈334, so gingivialShade and
+ * everything below it is already in the right place after
+ * `applyGingivialShadeLayout`.  For v1 migrated templates the shade row can
+ * end as low as y=480 (four fields stacked in the legacy rxSummary box),
+ * which is why the explicit-y migration is insufficient on its own.
+ *
+ * Side-by-side pairs (patient/doctor, dueDate/priority, etc.) share the same
+ * y and are NOT in the sequential list, so they are never pushed down.
+ */
+function resolveGingivialShadePosition(
+  elements: CasePrintElement[],
+): CasePrintElement[] {
+  // Only track elements in the sequential stack — opt-in kinds like "image"
+  // can appear multiple times and must NOT be de-duped through a shared map.
+  const SEQUENTIAL = new Set([
+    "gingivialShade",
+    "toothChart",
+    "rxNotes",
+    "remakeNotes",
+    "barcode",
+  ] as const);
+
+  const byKind = new Map<string, CasePrintElement>();
+  for (const e of elements) {
+    if (SEQUENTIAL.has(e.kind as "gingivialShade") || e.kind === "step") {
+      byKind.set(e.kind, { ...e });
+    }
+  }
+
+  // A v1-migrated template stacks its Rx fields at full width. The default
+  // Step box lives beside the modern shade field, but would overlap that
+  // legacy stack unless it is moved below the full-width Rx rows first.
+  const stepEl = byKind.get("step");
+  if (stepEl) {
+    const rxBottom = elements
+      .filter(
+        (e) =>
+          ["restorativeType", "teeth", "material", "shade"].includes(e.kind) &&
+          e.x < stepEl.x + stepEl.w &&
+          stepEl.x < e.x + e.w,
+      )
+      .reduce((bottom, e) => Math.max(bottom, e.y + e.h), 0);
+    if (stepEl.y < rxBottom) stepEl.y = rxBottom;
+  }
+
+  // Bottom of the shade row — the natural insertion point for gingivialShade.
+  // In v2 templates shade is at y≈288 (side-by-side with material).
+  // In v1-migrated templates all four Rx fields are stacked, so shade can be
+  // as low as y=440; we take the max bottom of shade AND material to be safe.
+  const shadeEl = elements.find((e) => e.kind === "shade");
+  const materialEl = elements.find((e) => e.kind === "material");
+  const shadeRowBottom = Math.max(
+    shadeEl ? shadeEl.y + shadeEl.h : 0,
+    materialEl ? materialEl.y + materialEl.h : 0,
+  );
+
+  // Push each sequential element down until it starts at or after the
+  // previous one's bottom edge.
+  const sequential = [
+    "gingivialShade",
+    "toothChart",
+    "rxNotes",
+    "remakeNotes",
+    "barcode",
+  ] as const;
+
+  let minY = shadeRowBottom;
+  for (const kind of sequential) {
+    const el = byKind.get(kind);
+    if (!el) continue;
+    if (el.y < minY) el.y = minY;
+    minY = el.y + el.h;
+  }
+
+  // Rebuild in original element order; only substitute sequential entries.
+  return elements.map((e) =>
+    SEQUENTIAL.has(e.kind as "gingivialShade") || e.kind === "step"
+      ? (byKind.get(e.kind) ?? e)
+      : e,
+  );
+}
+
+function hasAllBuiltinElements(elements: CasePrintElement[]): boolean {
+  const kinds = new Set(elements.map((element) => element.kind));
+  return BUILTIN_ELEMENT_KINDS.every((kind) => kinds.has(kind));
+}
+
+/**
  * Ensure every built-in element kind is present (filling any missing one
  * from the default), preserving the canonical built-in order followed by
  * opt-in elements (image, doctorInfo). Keeps the editor robust against
@@ -607,13 +826,14 @@ export function ensureBuiltinElements(
   elements: CasePrintElement[],
 ): CasePrintElement[] {
   const byKind = new Map<string, CasePrintElement>();
-  // Opt-in elements (images, doctorInfo, invoice kinds) allow multiples and
+  // Opt-in elements (images, doctorInfo, providerPreferences, invoice kinds) allow multiples and
   // are preserved as-is rather than forced from the built-in defaults.
   const extras: CasePrintElement[] = [];
-  for (const el of elements) {
+  for (const el of withImplantElements(elements)) {
     if (
       el.kind === "image" ||
       el.kind === "doctorInfo" ||
+      el.kind === "providerPreferences" ||
       (INVOICE_ELEMENT_KINDS as readonly string[]).includes(el.kind)
     ) {
       extras.push(el);
@@ -634,16 +854,34 @@ export function coerceCasePrintTemplate(value: unknown): CasePrintTemplate {
   // v2
   if (o.version === 2 && Array.isArray(o.elements)) {
     const elements = o.elements
-      .map(coerceElement)
+      .map((raw) => {
+        const el = coerceElement(raw);
+        return el && (raw as Record<string, unknown>).page === 2 ? { ...el, page: 2 } : el;
+      })
       .filter((e): e is CasePrintElement => e !== null)
-      .slice(0, 48);
-    return { version: 2, elements: ensureBuiltinElements(elements) };
+      .slice(0, 100);
+
+    // A complete v2 template is authoritative: its coordinates and element
+    // order came from the editor and may intentionally contain overlaps (for
+    // example, Rx Notes placed directly below the tooth fields). Only run the
+    // legacy backfill/cascade for partial templates that are missing newer
+    // built-in fields.
+    if (hasAllBuiltinElements(withImplantElements(elements))) {
+      return { version: 2, elements: withImplantElements(elements) };
+    }
+
+    const ensured = ensureBuiltinElements(applyGingivialShadeLayout(elements));
+    return {
+      version: 2,
+      elements: resolveGingivialShadePosition(ensured).slice(0, 100),
+    };
   }
 
   // v1 → v2
   const migrated = migrateV1(o);
   if (migrated) {
-    return { version: 2, elements: ensureBuiltinElements(migrated.elements) };
+    const ensured = ensureBuiltinElements(applyGingivialShadeLayout(migrated.elements));
+    return { version: 2, elements: resolveGingivialShadePosition(ensured) };
   }
 
   return DEFAULT_CASE_PRINT_TEMPLATE;

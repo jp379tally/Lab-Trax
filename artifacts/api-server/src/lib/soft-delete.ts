@@ -15,7 +15,7 @@ import {
   vendorTypes,
   aiMemory,
 } from "@workspace/db";
-import { writeAuditLog } from "./audit";
+import { writeAuditLog, writeAuditLogTx } from "./audit";
 import type { Request } from "express";
 
 /**
@@ -101,6 +101,8 @@ interface SoftDeleteArgs {
    * entity-specific details (e.g. caseNumber, patientName for cases).
    */
   metadataJson?: Record<string, unknown>;
+  /** Existing transaction when this delete must commit with related writes. */
+  tx?: any;
 }
 
 /**
@@ -112,13 +114,14 @@ interface SoftDeleteArgs {
  */
 export async function softDelete(args: SoftDeleteArgs): Promise<unknown[]> {
   const now = new Date();
-  const result = await (db as any)
+  const executor = args.tx ?? db;
+  const result = await (executor as any)
     .update(args.table)
     .set({ deletedAt: now, deletedByUserId: args.actorUserId ?? null })
     .where(and(args.where, isNull((args.table as any).deletedAt)))
     .returning();
 
-  await writeAuditLog({
+  const auditInput = {
     req: args.req,
     userId: args.actorUserId,
     organizationId: args.organizationId ?? null,
@@ -127,7 +130,12 @@ export async function softDelete(args: SoftDeleteArgs): Promise<unknown[]> {
     entityId: args.entityId ?? null,
     beforeJson: args.beforeJson,
     metadataJson: { rowsAffected: result.length, ...(args.metadataJson ?? {}) },
-  });
+  };
+  if (args.tx) {
+    await writeAuditLogTx(args.tx, auditInput);
+  } else {
+    await writeAuditLog(auditInput);
+  }
 
   return result;
 }
@@ -188,6 +196,7 @@ export async function softDeleteById(args: {
   entityType: string;
   beforeJson?: unknown;
   metadataJson?: Record<string, unknown>;
+  tx?: any;
 }): Promise<unknown[]> {
   return softDelete({
     table: args.table,
@@ -199,6 +208,7 @@ export async function softDeleteById(args: {
     entityId: args.id,
     beforeJson: args.beforeJson,
     metadataJson: args.metadataJson,
+    tx: args.tx,
   });
 }
 

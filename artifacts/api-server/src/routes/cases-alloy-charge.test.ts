@@ -433,7 +433,7 @@ maybe("Alloy surcharge feature (db integration)", () => {
         );
       expect(alloyRows).toHaveLength(1);
 
-      // Second PFM → must NOT add a second alloy line.
+      // Second PFM on a DIFFERENT tooth → must add its own per-tooth alloy row.
       const r2 = await request(appMod.default)
         .post(`/api/cases/${caseId}/restorations`)
         .set("Authorization", `Bearer ${access}`)
@@ -449,7 +449,9 @@ maybe("Alloy surcharge feature (db integration)", () => {
             eq(caseRestorations.priceKey, "alloy"),
           ),
         );
-      expect(alloyRows).toHaveLength(1);
+      // Per-tooth logic: each PFM tooth gets its own alloy row — tooth 8 and
+      // tooth 9 are distinct, so two alloy rows now exist.
+      expect(alloyRows).toHaveLength(2);
     } finally {
       await setAutoAddAlloy(false);
     }

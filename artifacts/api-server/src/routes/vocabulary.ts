@@ -6,6 +6,7 @@ import { cases, caseRestorations, labCases, labVocabulary, organizationMembershi
 import { HttpError, ok } from "../lib/http";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
+import { getTaxonomyTree } from "@workspace/case-taxonomy";
 
 const router = Router();
 router.use(requireAuth);
@@ -48,7 +49,10 @@ const VOCAB_DEFAULTS: Record<string, string[]> = {
 
 export { VOCAB_DEFAULTS };
 
-const VALID_KINDS = ["material", "shade", "restoration_type"] as const;
+/** Kinds that can be written to the `lab_vocabulary` table (mutable). */
+const MUTABLE_KINDS = ["material", "shade", "restoration_type"] as const;
+/** All valid `kind` values for GET (includes read-only static taxonomies). */
+const VALID_KINDS = [...MUTABLE_KINDS, "case_taxonomy"] as const;
 
 async function requireLabMembership(userId: string, labOrganizationId: string) {
   const mem = await db.query.organizationMemberships.findFirst({
@@ -74,11 +78,17 @@ router.get(
   "/",
   asyncHandler(async (req: Request, res: Response) => {
     const kind = String(req.query["kind"] ?? "");
-    const labOrganizationId = String(req.query["labOrganizationId"] ?? "");
     if (!kind) throw new HttpError(400, "kind is required.");
     if (!VALID_KINDS.includes(kind as any)) {
       throw new HttpError(400, `kind must be one of: ${VALID_KINDS.join(", ")}.`);
     }
+
+    // case_taxonomy is a static global vocabulary — no lab scoping needed.
+    if (kind === "case_taxonomy") {
+      return ok(res, getTaxonomyTree());
+    }
+
+    const labOrganizationId = String(req.query["labOrganizationId"] ?? "");
     if (!labOrganizationId) throw new HttpError(400, "labOrganizationId is required.");
 
     const userId = (req as any).auth.userId as string;
@@ -119,7 +129,7 @@ router.get(
 );
 
 const CreateVocabularyInputSchema = z.object({
-  kind: z.enum(VALID_KINDS),
+  kind: z.enum(MUTABLE_KINDS),
   value: z.string().min(1).max(200),
   labOrganizationId: z.string().min(1),
 });

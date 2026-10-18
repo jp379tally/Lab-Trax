@@ -104,10 +104,17 @@ function makeSession(overrides: Partial<StoredSession> & { messages: ChatMsg[] }
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("AiChatPanel — session restore on mount", () => {
+  it("identifies itself as LabTrax Assistant without retired branding", async () => {
+    renderPanel();
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(screen.getAllByText(/LabTrax Assistant/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/retired assistant/i)).toBeNull();
+  });
+
   it("renders the welcome message when there is no stored session", async () => {
     renderPanel();
     await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
-    expect(screen.getAllByText(/Maynard/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/LabTrax Assistant/i).length).toBeGreaterThan(0);
   });
 
   it("restores a plain user message from the stored session", async () => {
@@ -151,7 +158,7 @@ describe("AiChatPanel — session restore on mount", () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
 
     await waitFor(() => {
-      expect(screen.getAllByText(/Maynard/i).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/LabTrax Assistant/i).length).toBeGreaterThan(0);
       expect(screen.getByText("Show rush cases")).toBeTruthy();
     });
   });
@@ -207,6 +214,30 @@ describe("AiChatPanel — session restore on mount", () => {
     });
     // The confirm/cancel buttons of a live pending card must NOT appear.
     expect(screen.queryByText(/^Confirm$/i)).toBeNull();
+  });
+
+  it("does not restore a confirmed action as an indefinitely executing card", async () => {
+    const session = makeSession({
+      messages: [
+        {
+          id: "confirmed-action",
+          role: "assistant",
+          proposedAction: {
+            actionId: "act-confirmed",
+            toolName: "updateCaseStatus",
+            summary: "Set case 1234 to shipped",
+            state: "confirmed",
+          },
+        },
+      ],
+    });
+    writeStoredSessions([session]);
+
+    renderPanel();
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+
+    await waitFor(() => expect(screen.getByText(/Action cancelled/i)).toBeTruthy());
+    expect(screen.queryByText(/Executing/i)).toBeNull();
   });
 });
 
@@ -279,7 +310,7 @@ describe("AiChatPanel — flush on unload (beforeunload / visibilitychange)", ()
     expect(contents).toContain("Rush cases: C-100, C-200");
   });
 
-  it("collapses a pending proposedAction to rejected when flushing on unload", async () => {
+  it("preserves a still-valid pending proposedAction when flushing on unload", async () => {
     const { sanitizeMessagesForStorage } = await import("@/lib/chat-session-storage");
 
     const session = makeSession({
@@ -315,11 +346,11 @@ describe("AiChatPanel — flush on unload (beforeunload / visibilitychange)", ()
     const msgs: ChatMsg[] = parsed.sessions?.[0]?.messages ?? [];
     const actionMsg = msgs.find((m) => m.proposedAction);
     expect(actionMsg).toBeDefined();
-    expect(actionMsg!.proposedAction!.state).toBe("rejected");
+    expect(actionMsg!.proposedAction!.state).toBe("pending");
 
     // Confirm sanitizeMessagesForStorage is what drives this — belt-and-suspenders.
     const sanitized = sanitizeMessagesForStorage(session.messages);
-    expect(sanitized.find((m) => m.proposedAction?.state === "pending")).toBeUndefined();
+    expect(sanitized.find((m) => m.proposedAction?.state === "pending")).toBeDefined();
   });
 
   it("does not write to localStorage on unload when there are no user messages", async () => {
@@ -357,10 +388,9 @@ describe("AiChatPanel — persistSession writes to localStorage correctly", () =
 
   it("restores a full session round-trip: sanitized messages write → reload → correct UI", async () => {
     // This test simulates the full round-trip that happens in production:
-    //   1. persistSession sanitizes messages (pending → rejected) before writing.
+    //   1. persistSession sanitizes messages (valid pending remains pending).
     //   2. The component is re-mounted (reload scenario).
-    //   3. Messages are restored faithfully — the previously-pending action appears
-    //      as "Action cancelled", not as a live interactive card.
+    //   3. Messages are restored faithfully with a live confirmation card.
     const { sanitizeMessagesForStorage } = await import("@/lib/chat-session-storage");
 
     const rawMessages: ChatMsg[] = [
@@ -380,7 +410,7 @@ describe("AiChatPanel — persistSession writes to localStorage correctly", () =
 
     // Step 1 — simulate what persistSession does before writing.
     const sanitized = sanitizeMessagesForStorage(rawMessages);
-    expect(sanitized.find((m) => m.proposedAction?.state === "pending")).toBeUndefined();
+    expect(sanitized.find((m) => m.proposedAction?.state === "pending")).toBeDefined();
 
     // Step 2 — write the sanitized session (as persistSession would).
     const session = makeSession({ messages: sanitized });
@@ -395,11 +425,9 @@ describe("AiChatPanel — persistSession writes to localStorage correctly", () =
       expect(screen.getByText("Please mark INV-999 as paid")).toBeTruthy();
     });
 
-    // The previously-pending action is restored as "Action cancelled" — no
-    // live Confirm/Cancel buttons for an action whose server TTL has expired.
+    // The still-valid action remains interactive after reload.
     await waitFor(() => {
-      expect(screen.getByText(/Action cancelled/i)).toBeTruthy();
-      expect(screen.queryByRole("button", { name: /^Confirm$/i })).toBeNull();
+      expect(screen.getByRole("button", { name: /^Confirm$/i })).toBeTruthy();
     });
   });
 });

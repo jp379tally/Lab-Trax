@@ -38,6 +38,8 @@
 
 import { and, eq, isNull, or } from "drizzle-orm";
 import { db, pool, invoices } from "@workspace/db";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 type Repair = {
   invoiceNumber: string;
@@ -53,29 +55,59 @@ type Repair = {
   targetProviderLabel: string;
 };
 
-// Verified against the production read replica (lab fe67257e). In both rows the
-// display_metadata_json holds the correct patient/billing, while caseId +
-// providerOrganizationId were corrupted by a same-numbered canonical case.
-const REPAIRS: Repair[] = [
-  {
-    invoiceNumber: "INV-26-48",
-    labOrganizationId: "fe67257e-5cc5-4489-afc9-62afb5b9829c",
-    invoiceId: "0d60b053-eed7-4530-b543-8840762d5f37",
-    expectedCaseId: "e5b3e9fc-65ed-4c6e-bf47-ac35ec921cbb", // Michele Barber / First Care (foreign)
-    expectedMetaPatient: "Debra Hudson",
-    targetProviderOrganizationId: "194758c4-9ce4-435b-bab7-498a920620d1",
-    targetProviderLabel: "Brittney K Craig DMD",
-  },
-  {
-    invoiceNumber: "INV-26-38",
-    labOrganizationId: "fe67257e-5cc5-4489-afc9-62afb5b9829c",
-    invoiceId: "aaa001d4-f2df-4390-b8bb-a568c1cd6019",
-    expectedCaseId: "c71181cc-1bc5-4f03-975c-aca8dd6b6e63", // Alba Hurtado / Heartland (foreign)
-    expectedMetaPatient: "Pam Mcgoff",
-    targetProviderOrganizationId: null, // no organization exists for "Dr. Dalton"
-    targetProviderLabel: "(cleared — no provider org)",
-  },
-];
+const PRIVATE_REPAIRS_URL = new URL(
+  "../../support/private-repair-wrongly-adopted-invoices.json",
+  import.meta.url,
+);
+
+function isRepair(value: unknown): value is Repair {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  const uuid = (candidate: unknown): candidate is string =>
+    typeof candidate === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      candidate,
+    );
+  const nonEmpty = (candidate: unknown): candidate is string =>
+    typeof candidate === "string" && candidate.trim().length > 0;
+  return (
+    nonEmpty(item.invoiceNumber) &&
+    /^INV-[A-Z0-9-]+$/i.test(item.invoiceNumber) &&
+    uuid(item.labOrganizationId) &&
+    uuid(item.invoiceId) &&
+    uuid(item.expectedCaseId) &&
+    nonEmpty(item.expectedMetaPatient) &&
+    (item.targetProviderOrganizationId === null ||
+      uuid(item.targetProviderOrganizationId)) &&
+    nonEmpty(item.targetProviderLabel)
+  );
+}
+
+async function loadRepairs(): Promise<Repair[]> {
+  const configPath = fileURLToPath(PRIVATE_REPAIRS_URL);
+  let raw: string;
+  try {
+    raw = await readFile(configPath, "utf8");
+  } catch {
+    throw new Error("Private invoice-repair configuration is unavailable.");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Private invoice-repair configuration is invalid.");
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    !Array.isArray((parsed as { repairs?: unknown }).repairs) ||
+    !(parsed as { repairs: unknown[] }).repairs.length ||
+    !(parsed as { repairs: unknown[] }).repairs.every(isRepair)
+  ) {
+    throw new Error("Private invoice-repair configuration is invalid.");
+  }
+  return (parsed as { repairs: Repair[] }).repairs;
+}
 
 function parseFlags() {
   const args = process.argv.slice(2);
@@ -97,6 +129,7 @@ function norm(value: unknown): string {
 
 async function main() {
   const { apply } = parseFlags();
+  const repairs = await loadRepairs();
   console.log(
     `[repair-wrongly-adopted-invoices] mode=${apply ? "APPLY (writes)" : "DRY-RUN"}`,
   );
@@ -108,7 +141,7 @@ async function main() {
   let alreadyRepaired = 0;
   let refused = 0;
 
-  for (const r of REPAIRS) {
+  for (const r of repairs) {
     const inv = await db.query.invoices.findFirst({
       where: eq(invoices.id, r.invoiceId),
     });

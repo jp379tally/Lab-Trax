@@ -1,537 +1,277 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Loader2 } from "lucide-react";
-import {
-  type OpenInvoice,
-  type ReceivePaymentsInput,
-  type ReceivePaymentsResultData,
-  ReceivePaymentsInputPaymentMethod,
-} from "@workspace/api-client-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useLocation } from "wouter";
+import { loadStripe } from "@stripe/stripe-js";
+import { ReceivePaymentsInputPaymentMethod } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
-import {
-  computeShiftClickRange,
-  shiftKeyFromChangeEvent,
-  suppressShiftClickTextSelection,
-} from "@/lib/shift-click-range";
+import { useAuth } from "@/lib/auth-context";
+import type { Invoice } from "@/lib/types";
 import { FinanceShell } from "@/components/finance/FinanceShell";
-import type { BankAccount, Invoice, Organization } from "@/lib/types";
-import { formatDate, formatMoney } from "@/lib/format";
-import { ColumnTotal } from "@/components/ColumnTotal";
+import { HeadsUpCards, type HeadsUpState } from "@/components/finance/receive-payments/HeadsUpCards";
+import { ReceivePaymentsHeader } from "@/components/finance/receive-payments/PageHeader";
+import { PaymentSummaryPanel } from "@/components/finance/receive-payments/PaymentSummaryPanel";
+import { ReceivingStep } from "@/components/finance/receive-payments/ReceivingStep";
+import {
+  DEFAULT_SELECTION_VIEW,
+  SelectionPanel,
+  type SelectionPanelStatus,
+  type SelectionView,
+} from "@/components/finance/receive-payments/SelectionPanel";
+import {
+  EMPTY_SELECTION,
+  agingAsOf,
+  buildPayableCustomers,
+  pruneSelection,
+  savedSelectionsKey,
+  selectedFigures,
+  selectionTotals,
+  type PayableCustomer,
+  type PayableInvoice,
+} from "@/components/finance/receive-payments/model";
+import { localCalendarDate } from "@/components/finance/receive-payments/payments";
+import {
+  DEFAULT_PAYMENT_OPTIONS,
+  type EligibleAccount,
+  type PaymentDefaults,
+  type PaymentOptions,
+  type Selection,
+} from "@/components/finance/receive-payments/types";
+import { InvoiceEditor } from "@/pages/invoices";
+
+export { localCalendarDate, paymentErrorMessage } from "@/components/finance/receive-payments/payments";
+
+const AR_AGING_PATH = "/finance/aging?side=ar";
+const EMPTY_CUSTOMERS: ReadonlyMap<string, PayableCustomer> = new Map();
 
 export default function ReceivePaymentsPage() {
   return (
     <FinanceShell>
-      {({ organizationId, accounts }) => (
-        <ReceivePayments
-          labOrganizationId={organizationId}
-          accounts={accounts}
-        />
+      {({ organizationId }) => (
+        // A batch belongs to one lab: switching labs starts a fresh selection.
+        <ReceivePayments key={organizationId} labOrganizationId={organizationId} />
       )}
     </FinanceShell>
   );
 }
 
-function ReceivePayments({
+function ReceivePayments({ labOrganizationId }: { labOrganizationId: string }) {
+  const config = useQuery({
+    queryKey: ["billing", "card-config", labOrganizationId],
+    queryFn: () =>
+      apiFetch<{ publishableKey: string }>(
+        `/billing/payment-sessions/card/config?labOrganizationId=${encodeURIComponent(labOrganizationId)}`,
+      ),
+    retry: false,
+  });
+  const stripePromise = useMemo(
+    () => (config.data?.publishableKey ? loadStripe(config.data.publishableKey) : null),
+    [config.data?.publishableKey],
+  );
+  return (
+    <ReceivePaymentsScreen
+      labOrganizationId={labOrganizationId}
+      stripePromise={stripePromise}
+      cardConfigurationError={config.isError ? (config.error as Error).message : null}
+    />
+  );
+}
+
+function errorText(error: unknown): string | null {
+  if (!error) return null;
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Receive Payments: choose customers on the selection surface (heads-up
+ * cards, tabbed customer list and Payment Summary), then receive each
+ * customer's payment in turn. The selection, defaults and options live here
+ * so the selection surface and the receiving step share them.
+ */
+function ReceivePaymentsScreen({
   labOrganizationId,
-  accounts,
+  cardConfigurationError,
+  stripePromise,
 }: {
   labOrganizationId: string;
-  accounts: BankAccount[];
+  cardConfigurationError: string | null;
+  stripePromise: ReturnType<typeof loadStripe> | null;
 }) {
-  const qc = useQueryClient();
+  const { user } = useAuth();
+  const [, navigate] = useLocation();
 
-  const allInvoicesQuery = useQuery({
-    queryKey: ["invoices"],
-    queryFn: () => apiFetch<Invoice[]>("/invoices"),
+  // Statement-led: customers with an unpaid sent statement.
+  const statementAccounts = useQuery({
+    queryKey: ["billing", "eligible-statement-accounts", labOrganizationId],
+    queryFn: () => apiFetch<EligibleAccount[]>(`/billing/${labOrganizationId}/eligible-statement-accounts`),
+  });
+  // Invoice-led: any customer with a finalized open invoice, whether or not a
+  // statement was ever sent.
+  const invoiceAccounts = useQuery({
+    queryKey: ["billing", "eligible-invoice-accounts", labOrganizationId],
+    queryFn: () => apiFetch<EligibleAccount[]>(`/billing/${labOrganizationId}/eligible-invoice-accounts`),
   });
 
-  const providers = useMemo(() => {
-    const seen = new Map<string, { id: string; name: string }>();
-    for (const inv of allInvoicesQuery.data || []) {
-      if (inv.labOrganizationId !== labOrganizationId) continue;
-      if (inv.status === "paid" || inv.status === "void") continue;
-      if (Number(inv.balanceDue ?? 0) <= 0) continue;
-      const id = inv.providerOrganizationId;
-      const name =
-        inv.providerOrganization?.name || `Practice ${id.slice(0, 6)}`;
-      if (id && !seen.has(id)) seen.set(id, { id, name });
-    }
-    return Array.from(seen.values()).sort((a, b) =>
-      a.name.localeCompare(b.name)
-    );
-  }, [allInvoicesQuery.data, labOrganizationId]);
+  const status: SelectionPanelStatus =
+    statementAccounts.isError || invoiceAccounts.isError
+      ? "error"
+      : statementAccounts.isSuccess && invoiceAccounts.isSuccess
+        ? "ready"
+        : "loading";
+  const loadError = errorText(statementAccounts.error) ?? errorText(invoiceAccounts.error);
 
-  const [providerId, setProviderId] = useState<string>("");
+  const customers = useMemo(
+    () => buildPayableCustomers(statementAccounts.data, invoiceAccounts.data, agingAsOf()),
+    [statementAccounts.data, invoiceAccounts.data],
+  );
+  const liveById = useMemo(
+    () => new Map(customers.map((customer) => [customer.id, customer] as const)),
+    [customers],
+  );
+
+  const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
+  const [view, setView] = useState<SelectionView>(DEFAULT_SELECTION_VIEW);
+  const [defaults, setDefaults] = useState<PaymentDefaults>(() => ({
+    paymentMethod: ReceivePaymentsInputPaymentMethod.check,
+    paymentDate: localCalendarDate(),
+    memo: "",
+  }));
+  const [options, setOptions] = useState<PaymentOptions>(DEFAULT_PAYMENT_OPTIONS);
+  const [stage, setStage] = useState<"select" | "receive">("select");
+  const [completed, setCompleted] = useState<string[]>([]);
+  // The selected customers as they were when receiving started, so customers
+  // who drop off the payable lists after paying keep their names in the queue.
+  const [batchSnapshot, setBatchSnapshot] = useState<ReadonlyMap<string, PayableCustomer>>(EMPTY_CUSTOMERS);
+  const [editing, setEditing] = useState<Invoice | null>(null);
+
+  // Drop customers and picks that are no longer payable, but only once both
+  // lists have loaded, and never while a batch is being received.
   useEffect(() => {
-    if (!providerId && providers.length) setProviderId(providers[0].id);
-  }, [providers, providerId]);
+    if (stage !== "select" || status !== "ready") return;
+    setSelection((current) => pruneSelection(current, liveById));
+  }, [stage, status, liveById]);
 
-  const openQuery = useQuery({
-    queryKey: ["receive-payments", "open", labOrganizationId, providerId],
-    enabled: !!providerId,
-    queryFn: () =>
-      apiFetch<OpenInvoice[]>(
-        `/invoices/open?providerOrganizationId=${providerId}&labOrganizationId=${labOrganizationId}`
-      ),
-  });
-
-  const [paymentDate, setPaymentDate] = useState(
-    new Date().toISOString().slice(0, 10)
+  const refetchEligible = useCallback(
+    () => Promise.all([statementAccounts.refetch(), invoiceAccounts.refetch()]),
+    [statementAccounts.refetch, invoiceAccounts.refetch],
   );
-  type PaymentMethod = ReceivePaymentsInputPaymentMethod;
-  const PAYMENT_METHODS: PaymentMethod[] = [
-    ReceivePaymentsInputPaymentMethod.check,
-    ReceivePaymentsInputPaymentMethod.card,
-    ReceivePaymentsInputPaymentMethod.ach,
-    ReceivePaymentsInputPaymentMethod.cash,
-    ReceivePaymentsInputPaymentMethod.other,
-  ];
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
-    ReceivePaymentsInputPaymentMethod.check
-  );
-  const [referenceNumber, setReferenceNumber] = useState("");
-  const [memo, setMemo] = useState("");
-  const [totalReceived, setTotalReceived] = useState<string>("");
-  const [applications, setApplications] = useState<Record<string, string>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [doneMsg, setDoneMsg] = useState<string | null>(null);
 
-  // Reset applied amounts when provider changes
-  useEffect(() => {
-    setApplications({});
-    setTotalReceived("");
-    setReferenceNumber("");
-    setMemo("");
-    setDoneMsg(null);
-    setError(null);
-  }, [providerId]);
+  const totals = useMemo(() => selectionTotals(selectedFigures(selection, liveById)), [selection, liveById]);
+  const headsUp: HeadsUpState =
+    status === "loading"
+      ? { status: "loading" }
+      : status === "error"
+        ? { status: "unavailable", reason: "Balances could not be loaded" }
+        : { status: "ready", totals, payableCount: customers.length };
 
-  function applyOldestFirst(total: number) {
-    const next: Record<string, string> = {};
-    let remaining = total;
-    for (const inv of openQuery.data || []) {
-      if (remaining <= 0) break;
-      const balance = Number(inv.balanceDue);
-      const apply = Math.min(balance, remaining);
-      next[inv.id] = apply.toFixed(2);
-      remaining = +(remaining - apply).toFixed(2);
+  const blockedReason =
+    status === "loading"
+      ? "Loading customers with a balance due…"
+      : status === "error"
+        ? "Customer balances could not be loaded. Retry the list before receiving payments."
+        : !selection.ids.length
+          ? "Select at least one customer to receive payment from."
+          : totals.amount === null
+            ? "A selected customer's balance is not available yet."
+            : "";
+
+  const startReceiving = () => {
+    if (blockedReason) return;
+    const snapshot = new Map<string, PayableCustomer>();
+    for (const id of selection.ids) {
+      const customer = liveById.get(id);
+      if (customer) snapshot.set(id, customer);
     }
-    setApplications(next);
-  }
+    setBatchSnapshot(snapshot);
+    setCompleted([]);
+    setStage("receive");
+  };
 
-  function handleTotalReceived(value: string) {
-    setTotalReceived(value);
-    const n = Number(value);
-    if (Number.isFinite(n) && n > 0) applyOldestFirst(n);
-  }
-
-  function setOne(invoiceId: string, value: string) {
-    setApplications((prev) => ({ ...prev, [invoiceId]: value }));
-  }
-
-  // Shift-click range selection for the invoice checkboxes. A normal click
-  // toggles the single invoice and moves the anchor; a shift-click with a
-  // valid anchor applies the full balance to every unapplied invoice between
-  // the anchor and the clicked invoice (in the current visible order),
-  // keeping already-applied amounts outside and inside the range. If the
-  // anchor is no longer visible, fall back to a normal single toggle.
-  const selectionAnchorIdRef = useRef<string | null>(null);
-  function handleInvoiceCheckboxChange(
-    inv: OpenInvoice,
-    checked: boolean,
-    shiftKey: boolean,
-  ) {
-    const open = openQuery.data || [];
-    if (shiftKey) {
-      const rangeIds = computeShiftClickRange(
-        open.map((i) => i.id),
-        selectionAnchorIdRef.current,
-        inv.id,
-      );
-      if (rangeIds) {
-        setApplications((prev) => {
-          const next = { ...prev };
-          for (const id of rangeIds) {
-            if (Number(next[id]) > 0) continue;
-            const target = open.find((i) => i.id === id);
-            if (target) next[id] = Number(target.balanceDue).toFixed(2);
-          }
-          return next;
-        });
-        return;
-      }
-      // Anchor no longer in the visible list: reset and treat as normal.
-      selectionAnchorIdRef.current = null;
-    }
-    setOne(inv.id, checked ? Number(inv.balanceDue).toFixed(2) : "");
-    selectionAnchorIdRef.current = inv.id;
-  }
-
-  const appliedSum = Object.values(applications).reduce(
-    (s, v) => s + (Number(v) || 0),
-    0
+  const batchCustomersById = useMemo(() => {
+    if (stage !== "receive") return liveById;
+    const merged = new Map(batchSnapshot);
+    for (const [id, customer] of liveById) merged.set(id, customer);
+    return merged;
+  }, [stage, batchSnapshot, liveById]);
+  const queueCustomers = useMemo(
+    () => [...batchCustomersById.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    [batchCustomersById],
   );
-  const totalReceivedNum = Number(totalReceived) || 0;
-  const overApplied =
-    totalReceivedNum > 0 && appliedSum - totalReceivedNum > 0.005;
 
-  const save = useMutation({
-    mutationFn: () => {
-      const apps = Object.entries(applications)
-        .map(([invoiceId, amt]) => ({
-          invoiceId,
-          amount: Number(amt) || 0,
-        }))
-        .filter((a) => a.amount > 0);
-      if (!apps.length) throw new Error("Apply a payment to at least one invoice.");
-      if (overApplied)
-        throw new Error(
-          "Applied total exceeds the payment amount received. Lower a row or raise the total received."
-        );
-      const body: ReceivePaymentsInput = {
-        labOrganizationId,
-        providerOrganizationId: providerId,
-        paymentDate: new Date(paymentDate).toISOString(),
-        paymentMethod,
-        referenceNumber: referenceNumber.trim() || null,
-        memo: memo.trim() || null,
-        applications: apps,
-      };
-      return apiFetch<ReceivePaymentsResultData>("/invoices/receive-payments", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    },
-    onSuccess: (r) => {
-      const total = r.totalApplied ?? "0";
-      const count = Object.values(applications).filter((v) => Number(v) > 0).length;
-      setDoneMsg(
-        `Recorded ${formatMoney(total)} across ${count} invoice(s). Funds are now in Undeposited Funds — go to Make Deposits to move them to a bank account.`
-      );
-      setApplications({});
-      setTotalReceived("");
-      setReferenceNumber("");
-      setMemo("");
-      qc.invalidateQueries({ queryKey: ["receive-payments"] });
-      qc.invalidateQueries({ queryKey: ["invoices"] });
-      qc.invalidateQueries({ queryKey: ["finance"] });
-      const ch = new BroadcastChannel("labtrax:finance");
-      ch.postMessage("undeposited-changed");
-      ch.close();
-    },
-    onError: (e: Error) => setError(e.message),
-  });
+  const backToSelection = () => {
+    setStage("select");
+    setBatchSnapshot(EMPTY_CUSTOMERS);
+  };
+  const finishBatch = () => {
+    setSelection(EMPTY_SELECTION);
+    setCompleted([]);
+    setBatchSnapshot(EMPTY_CUSTOMERS);
+    setStage("select");
+    navigate("/finance/make-deposits");
+  };
 
-  function submit() {
-    setError(null);
-    save.mutate();
-  }
-
-  const open = openQuery.data || [];
+  const editInvoice = (invoice: PayableInvoice) => setEditing(invoice.source as unknown as Invoice);
 
   return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-card border border-border rounded-xl p-5 space-y-4">
-          <h3 className="text-sm font-semibold">Payment</h3>
-          <div>
-            <Label>Received from</Label>
-            <select
-              value={providerId}
-              onChange={(e) => setProviderId(e.target.value)}
-              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-            >
-              {!providers.length && <option value="">No open invoices</option>}
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label>Total amount received</Label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={totalReceived}
-                onChange={(e) => handleTotalReceived(e.target.value)}
-                placeholder="0.00"
-                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm text-right tabular-nums"
-              />
-            </div>
-            <div>
-              <Label>Payment date</Label>
-              <input
-                type="date"
-                value={paymentDate}
-                onChange={(e) => setPaymentDate(e.target.value)}
-                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-              />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label>Method</Label>
-              <select
-                value={paymentMethod}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (PAYMENT_METHODS.includes(v as PaymentMethod)) {
-                    setPaymentMethod(v as PaymentMethod);
-                  }
-                }}
-                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-              >
-                {PAYMENT_METHODS.map((m) => (
-                  <option key={m} value={m}>
-                    {m === "ach" ? "ACH" : m[0].toUpperCase() + m.slice(1)}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <Label>Reference #</Label>
-              <input
-                type="text"
-                value={referenceNumber}
-                onChange={(e) => setReferenceNumber(e.target.value)}
-                placeholder={paymentMethod === "check" ? "Check #" : "Optional"}
-                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm font-mono"
-              />
-            </div>
-          </div>
-          <div>
-            <Label>Memo</Label>
-            <input
-              type="text"
-              value={memo}
-              onChange={(e) => setMemo(e.target.value)}
-              placeholder="Optional"
-              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+    <div className="@container min-w-0 space-y-4">
+      <ReceivePaymentsHeader onViewAging={() => navigate(AR_AGING_PATH)} />
+      {stage === "select" ? (
+        <>
+          <HeadsUpCards state={headsUp} />
+          {/* A narrower summary around 1024 px windows leaves the customer table room for every column. */}
+          <div className="grid grid-cols-1 items-start gap-4 @min-[44rem]:grid-cols-[minmax(0,1fr)_15rem] @min-[54rem]:grid-cols-[minmax(0,1fr)_18rem] @min-[72rem]:grid-cols-[minmax(0,1fr)_20rem]">
+            <SelectionPanel
+              status={status}
+              errorMessage={loadError}
+              onRetry={() => void refetchEligible()}
+              customers={customers}
+              customersById={liveById}
+              selection={selection}
+              onSelectionChange={setSelection}
+              view={view}
+              onViewChange={setView}
+              onEditInvoice={editInvoice}
+              savedSelectionsKey={user?.id ? savedSelectionsKey(user.id, labOrganizationId) : null}
+            />
+            <PaymentSummaryPanel
+              status={status}
+              totals={status === "ready" ? totals : null}
+              defaults={defaults}
+              onDefaultsChange={setDefaults}
+              options={options}
+              onOptionsChange={setOptions}
+              blockedReason={blockedReason}
+              onReceive={startReceiving}
             />
           </div>
-        </div>
-
-        <div className="bg-card border border-border rounded-xl p-5">
-          <h3 className="text-sm font-semibold mb-3">Summary</h3>
-          <dl className="text-sm space-y-2">
-            <Row label="Open invoices" value={String(open.length)} />
-            <Row
-              label="Open balance"
-              value={formatMoney(
-                open.reduce((s, i) => s + Number(i.balanceDue), 0)
-              )}
-            />
-            <Row
-              label="Total received"
-              value={formatMoney(Number(totalReceived) || 0)}
-            />
-            <Row label="Applied" value={formatMoney(appliedSum)} bold />
-            <Row
-              label="Unapplied"
-              value={formatMoney(
-                Math.max(0, (Number(totalReceived) || 0) - appliedSum)
-              )}
-            />
-          </dl>
-          {error && (
-            <div className="mt-4 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
-              {error}
-            </div>
-          )}
-          {overApplied && (
-            <div className="mt-3 text-xs text-amber-700 dark:text-amber-400 bg-amber-500/10 px-3 py-2 rounded-md">
-              Applied total ({formatMoney(appliedSum)}) is greater than the
-              payment received ({formatMoney(totalReceivedNum)}).
-            </div>
-          )}
-          {doneMsg && (
-            <div className="mt-4 text-sm text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 px-3 py-2 rounded-md flex flex-wrap items-center gap-2">
-              <span>{doneMsg}</span>
-              <a
-                href="/finance/make-deposits"
-                className="font-semibold underline underline-offset-2 hover:opacity-80 whitespace-nowrap"
-              >
-                Go to Make Deposits →
-              </a>
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={submit}
-            disabled={save.isPending || appliedSum <= 0 || overApplied}
-            title={
-              overApplied
-                ? "Applied total exceeds payment received"
-                : undefined
-            }
-            className="mt-4 h-10 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
-          >
-            {save.isPending ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <CheckCircle2 size={14} />
-            )}
-            {save.isPending ? "Saving…" : "Save payment"}
-          </button>
-        </div>
-      </div>
-
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Outstanding invoices</h3>
-          {!!open.length && (
-            <button
-              type="button"
-              onClick={() => {
-                const total =
-                  Number(totalReceived) ||
-                  open.reduce((s, i) => s + Number(i.balanceDue), 0);
-                if (!Number(totalReceived)) setTotalReceived(total.toFixed(2));
-                applyOldestFirst(total);
-              }}
-              className="h-8 px-3 rounded-md bg-secondary text-xs font-medium hover:bg-secondary/80"
-            >
-              Auto-apply oldest first
-            </button>
-          )}
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-2 w-8"></th>
-                <th className="text-left font-medium py-2">Invoice</th>
-                <th className="text-left font-medium py-2">Issued</th>
-                <th className="text-right font-medium py-2">Age</th>
-                <th className="text-right font-medium py-2">
-                  Original
-                  <ColumnTotal
-                    values={open.map((inv) => inv.total)}
-                    loading={openQuery.isLoading}
-                    testId="column-total-original"
-                  />
-                </th>
-                <th className="text-right font-medium py-2">
-                  Balance
-                  <ColumnTotal
-                    values={open.map((inv) => inv.balanceDue)}
-                    loading={openQuery.isLoading}
-                    testId="column-total-balance"
-                  />
-                </th>
-                <th className="text-right font-medium px-4 py-2 w-32">Payment</th>
-              </tr>
-            </thead>
-            <tbody>
-              {openQuery.isLoading && (
-                <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center text-muted-foreground">
-                    <Loader2 size={14} className="inline animate-spin mr-2" />
-                    Loading open invoices…
-                  </td>
-                </tr>
-              )}
-              {!openQuery.isLoading && open.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center text-muted-foreground">
-                    No open invoices for this practice.
-                  </td>
-                </tr>
-              )}
-              {open.map((inv) => {
-                const balance = Number(inv.balanceDue);
-                const applied = Number(applications[inv.id] || 0);
-                const overshot = applied > balance + 0.005;
-                const selected = applied > 0;
-                return (
-                  <tr key={inv.id} className="border-t border-border">
-                    <td className="pl-4 pr-1 py-2.5 w-8">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onMouseDown={suppressShiftClickTextSelection}
-                        onChange={(e) =>
-                          handleInvoiceCheckboxChange(
-                            inv,
-                            e.target.checked,
-                            shiftKeyFromChangeEvent(e)
-                          )
-                        }
-                        aria-label={`Select invoice ${inv.invoiceNumber}`}
-                        className="h-3.5 w-3.5 cursor-pointer"
-                      />
-                    </td>
-                    <td className="py-2.5 font-mono text-xs">
-                      {inv.invoiceNumber}
-                    </td>
-                    <td className="py-2.5 text-muted-foreground">
-                      {inv.issuedAt ? formatDate(inv.issuedAt) : "—"}
-                    </td>
-                    <td className="py-2.5 text-right tabular-nums text-muted-foreground">
-                      {inv.ageDays != null ? `${inv.ageDays}d` : "—"}
-                    </td>
-                    <td className="py-2.5 text-right tabular-nums text-muted-foreground">
-                      {formatMoney(inv.total)}
-                    </td>
-                    <td className="py-2.5 text-right tabular-nums font-medium">
-                      {formatMoney(balance)}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max={balance}
-                        value={applications[inv.id] || ""}
-                        onChange={(e) => setOne(inv.id, e.target.value)}
-                        placeholder="0.00"
-                        className={`w-28 h-8 px-2 rounded bg-background border text-sm text-right tabular-nums ${
-                          overshot ? "border-destructive" : "border-input"
-                        }`}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Label({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-      {children}
-    </div>
-  );
-}
-
-function Row({
-  label,
-  value,
-  bold,
-}: {
-  label: string;
-  value: string;
-  bold?: boolean;
-}) {
-  return (
-    <div className="flex items-center justify-between">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd
-        className={`tabular-nums ${
-          bold ? "font-semibold text-foreground" : ""
-        }`}
-      >
-        {value}
-      </dd>
+        </>
+      ) : (
+        <ReceivingStep
+          labOrganizationId={labOrganizationId}
+          cardConfigurationError={cardConfigurationError}
+          stripePromise={stripePromise}
+          customers={queueCustomers}
+          customersById={batchCustomersById}
+          selection={selection}
+          onSelectionChange={setSelection}
+          completed={completed}
+          onCompletedChange={setCompleted}
+          defaults={defaults}
+          options={options}
+          onBack={backToSelection}
+          onFinished={finishBatch}
+          refetchEligible={refetchEligible}
+        />
+      )}
+      {editing && (
+        <InvoiceEditor
+          invoice={editing}
+          onClose={() => {
+            setEditing(null);
+            void refetchEligible();
+          }}
+          onGoToCase={() => setEditing(null)}
+        />
+      )}
     </div>
   );
 }

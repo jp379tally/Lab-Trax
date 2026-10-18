@@ -68,7 +68,7 @@ function makeInvoices(): Invoice[] {
       total: 50,
       balanceDue: 50,
       items: [],
-      displayMetadata: { patientName: "Pam", billTo: "Dr. Dalton" },
+      displayMetadata: { patientName: "Pam", billTo: "Dr. Synthetic028" },
     },
   ] as unknown as Invoice[];
 }

@@ -42,6 +42,14 @@ export default function TemplatesScreen() {
             subtitle="Letter and general correspondence template settings"
             onPress={() => router.push("/settings/correspondence-layout" as never)}
           />
+          <SettingsRow
+            icon="cash-outline"
+            iconColor="#10B981"
+            iconBg="#10B98120"
+            title="Payment Receipt"
+            subtitle="Email subject, message, and supported placeholders"
+            onPress={() => router.push("/settings/payment-receipt" as never)}
+          />
         </SettingsSection>
       </ScrollView>
     </ScreenShell>

@@ -17,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell, SettingsSection, SettingsRow } from "@/components/settings/SettingsRow";
+import { scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
 import { resilientFetch, getApiUrl } from "@/lib/query-client";
 import { ME_QUERY_KEY } from "@/lib/auth-me";
 
@@ -46,7 +47,7 @@ function formatDate(s: string | null | undefined) {
   if (!s) return "—";
   try {
     return new Date(s).toLocaleDateString("en-US", {
-      month: "short", day: "numeric", year: "numeric",
+      month: "2-digit", day: "2-digit", year: "numeric",
     });
   } catch { return s; }
 }
@@ -220,7 +221,11 @@ export default function DesktopAppScreen() {
       onBack={() => router.back()}
       insetTop={insets.top}
     >
-      <ScrollView contentContainerStyle={styles.body}>
+      <ScrollView
+        contentContainerStyle={styles.body}
+        keyboardDismissMode={scrollKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
+      >
         {query.isLoading && <ActivityIndicator color={colors.tint} />}
         {query.error && !query.isLoading && (
           <Text style={[styles.errorText, { color: colors.error }]}>
@@ -476,6 +481,9 @@ export default function DesktopAppScreen() {
                           placeholder={adminInfo.releaseNotes ?? "What's new in this version…"}
                           multiline
                           numberOfLines={3}
+                          autoCorrect={true}
+                          spellCheck={true}
+                          autoCapitalize="sentences"
                           style={[styles.versionInput, styles.versionInputMulti, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceAlt }]}
                           placeholderTextColor={colors.textTertiary}
                         />

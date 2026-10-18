@@ -68,6 +68,19 @@ vi.mock("@workspace/db", async (importOriginal) => {
 
   const proxiedDb = new Proxy(actual.db as object, {
     get(target, prop) {
+      if (prop === "transaction") {
+        return (callback: (tx: unknown) => unknown, ...args: unknown[]) => actual.db.transaction(
+          (tx) => callback(new Proxy(tx, {
+            get(client, key) {
+              const value = Reflect.get(client, key, client);
+              if (key === "insert" || key === "update") {
+                return (table: unknown) => _failTable !== null && table === _failTable
+                  ? makeRejectChain(_failError) : value.call(client, table);
+              }
+              return typeof value === "function" ? value.bind(client) : value;
+            },
+          })) as Promise<unknown>, ...args as []);
+      }
       if (prop === "insert") {
         return (table: unknown) => {
           if (_failTable !== null && table === _failTable) {

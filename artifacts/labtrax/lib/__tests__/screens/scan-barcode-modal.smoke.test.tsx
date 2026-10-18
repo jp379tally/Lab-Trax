@@ -1,5 +1,12 @@
 import React from "react";
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it as vitestIt,
+  vi,
+} from "vitest";
 import { render, fireEvent, waitFor, act } from "@testing-library/react-native";
 import {
   resetMockAppState,
@@ -7,6 +14,7 @@ import {
   setMockFetchHandler,
   resetMockFetchHandler,
   triggerMockBarcodeScan,
+  flushPendingReactUpdates,
 } from "../../../vitest.setup";
 import { resilientFetch } from "@/lib/query-client";
 import * as Haptics from "expo-haptics";
@@ -14,9 +22,8 @@ import * as Haptics from "expo-haptics";
 import CasesListScreen from "@/app/(tabs)/index";
 
 // ── barcode-guide-box mock ────────────────────────────────────────────────────
-// We stub pickBestBarcode so smoke tests can exercise the "out-of-box → ignored"
-// and "in-box → lookup" paths without needing real barcode position data.
-// guideBoxFromLayout is kept real to catch any import-time regressions.
+// We stub pickBestBarcode so smoke tests can verify the screen-level decoded
+// fallback independently from the real guide-box geometry.
 //
 // vi.hoisted is required: vi.mock factories are hoisted to the top of the file
 // by Vitest, so any variable they reference must also be hoisted.
@@ -36,15 +43,30 @@ const LAB_MEMBERSHIP = {
   organization: { type: "lab" },
 };
 
-function openScanModal() {
-  const utils = render(<CasesListScreen />);
-  fireEvent.press(utils.getByTestId("cases-scan-barcode"));
+const it = (
+  name: string,
+  testFn: () => void | Promise<void>,
+  timeout?: number,
+): void => {
+  vitestIt(
+    name,
+    async () => {
+      await testFn();
+      await flushPendingReactUpdates();
+    },
+    timeout,
+  );
+};
+
+async function openScanModal() {
+  const utils = await render(<CasesListScreen />);
+  await fireEvent.press(utils.getByTestId("cases-scan-barcode"));
   return utils;
 }
 
-function simulateCameraLayout(utils: ReturnType<typeof render>) {
+async function simulateCameraLayout(utils: Awaited<Awaited<ReturnType<typeof render>>>) {
   const wrap = utils.getByTestId("scan-camera-wrap");
-  fireEvent(wrap, "layout", {
+  await fireEvent(wrap, "layout", {
     nativeEvent: { layout: { width: 400, height: 600 } },
   });
 }
@@ -68,14 +90,14 @@ afterEach(() => {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describe("CasesListScreen — barcode scan modal", () => {
-  it("opens when the scan button is pressed", () => {
-    const { getByText } = openScanModal();
+  it("opens when the scan button is pressed", async () => {
+    const { getByText } = await openScanModal();
     expect(getByText("Scan Barcode")).toBeTruthy();
     expect(getByText("Find a case by pan barcode")).toBeTruthy();
   });
 
-  it("renders Camera and Manual mode tabs once open", () => {
-    const { getByText } = openScanModal();
+  it("renders Camera and Manual mode tabs once open", async () => {
+    const { getByText } = await openScanModal();
     expect(getByText("Camera")).toBeTruthy();
     expect(getByText("Manual")).toBeTruthy();
   });
@@ -86,19 +108,37 @@ describe("CasesListScreen — barcode scan modal", () => {
       setMockAppState({ meMemberships: [LAB_MEMBERSHIP] });
     });
 
-    it("does NOT issue a lookup when pickBestBarcode returns null (out-of-box barcode)", () => {
+    it("still issues a lookup when geometry picking returns null", async () => {
       mockPickBestBarcode.mockReturnValue(null);
+      setMockFetchHandler(() =>
+        new Response(JSON.stringify({ ok: false }), { status: 404 }),
+      );
 
-      const utils = openScanModal();
-      simulateCameraLayout(utils);
+       const utils = await openScanModal();
+       await simulateCameraLayout(utils);
 
       triggerMockBarcodeScan("OUT-OF-BOX-001", null);
 
       // Run the 120 ms debounce synchronously; no async lookup should follow.
-      act(() => { vi.advanceTimersByTime(200); });
+      await act(() => { vi.advanceTimersByTime(200); });
 
-      expect(resilientFetch).not.toHaveBeenCalledWith(
-        expect.stringContaining("barcode"),
+      expect(resilientFetch).toHaveBeenCalledWith(
+        expect.stringContaining("OUT-OF-BOX-001"),
+      );
+    });
+
+    it("accepts a decoded scan before the camera layout is reported", async () => {
+      mockPickBestBarcode.mockReturnValue(null);
+      setMockFetchHandler(() =>
+        new Response(JSON.stringify({ ok: false }), { status: 404 }),
+      );
+       await openScanModal();
+
+      triggerMockBarcodeScan("NO-LAYOUT-001", null);
+      await act(() => { vi.advanceTimersByTime(200); });
+
+      expect(resilientFetch).toHaveBeenCalledWith(
+        expect.stringContaining("NO-LAYOUT-001"),
       );
     });
 
@@ -111,13 +151,13 @@ describe("CasesListScreen — barcode scan modal", () => {
         ),
       );
 
-      const utils = openScanModal();
-      simulateCameraLayout(utils);
+       const utils = await openScanModal();
+       await simulateCameraLayout(utils);
 
       triggerMockBarcodeScan("IN-BOX-001", null);
 
       // Fire the debounce timer; the lookup is async so we advance real time too.
-      act(() => { vi.advanceTimersByTime(200); });
+      await act(() => { vi.advanceTimersByTime(200); });
 
       // Switch back to real timers so waitFor polling works normally.
       vi.useRealTimers();
@@ -150,13 +190,24 @@ describe("CasesListScreen — barcode scan modal", () => {
         ),
       );
 
-      const utils = openScanModal();
-      simulateCameraLayout(utils);
+       const utils = await openScanModal();
+       await simulateCameraLayout(utils);
 
-      triggerMockBarcodeScan("FOUND-001", null);
-      act(() => { vi.advanceTimersByTime(200); });
+       await act(async () => {
+         triggerMockBarcodeScan("FOUND-001", null);
+         vi.advanceTimersByTime(200);
+         await Promise.resolve();
+         await Promise.resolve();
+       });
+       // The lookup resolves in a microtask and schedules navigation only
+       // after that result is committed. Advance the post-match delay in a
+       // separate act so the timer is not raced by switching timer modes.
+       await act(async () => {
+         vi.advanceTimersByTime(900);
+         await Promise.resolve();
+       });
 
-      // Switch to real timers so the 900 ms post-match nav delay and waitFor work.
+      // Switch to real timers only after the navigation timer has fired.
       vi.useRealTimers();
 
       await waitFor(

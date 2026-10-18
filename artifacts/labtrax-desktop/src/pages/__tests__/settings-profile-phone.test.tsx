@@ -30,6 +30,12 @@ import { render, screen, fireEvent, waitFor, act } from "@testing-library/react"
 import SettingsPage from "@/pages/settings";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
 
+// This file renders the whole SettingsPage, so it is one of the slowest jsdom
+// suites in the desktop gate and it starves under the full 2-worker run (it
+// passes in isolation every time). Raise the budgets so scheduling delay can't
+// trip the 5s/1s defaults — a real regression still fails fast on the assertion.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 const apiFetchMock = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -41,6 +47,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 });
 
 const refreshMock = vi.fn(async () => {});
+const scrollIntoViewMock = vi.fn();
 
 // A user with an unverified phone so the Verify button is visible.
 const UNVERIFIED_PHONE_USER = {
@@ -55,7 +62,6 @@ const UNVERIFIED_PHONE_USER = {
 
 function renderProfile() {
   const Wrapper = makeAuthWrapper("/settings", {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     user: UNVERIFIED_PHONE_USER as any,
     status: "authed",
     restoreStatus: "ok",
@@ -86,6 +92,8 @@ async function openOtpPanel() {
 beforeEach(() => {
   apiFetchMock.mockReset();
   refreshMock.mockClear();
+  scrollIntoViewMock.mockClear();
+  Element.prototype.scrollIntoView = scrollIntoViewMock;
   // shouldAdvanceTime: true — real time advances the fake clock automatically,
   // which lets waitFor's internal setTimeout retries fire without manual
   // time advancement. vi.advanceTimersByTime() can then fast-forward specific
@@ -309,6 +317,21 @@ async function openOtpPanelViaSave() {
 }
 
 describe("ProfilePanel — auto-save OTP path (phone changed on Save)", () => {
+  it("returns the profile panel to the top and shows confirmation after a successful save", async () => {
+    renderProfile();
+    apiFetchMock.mockResolvedValueOnce({});
+
+    fireEvent.click(screen.getByRole("button", { name: /^Save profile$/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Profile saved.")).toBeInTheDocument(),
+    );
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
+
   it("shows the OTP panel automatically after saving with a new phone (no Verify click)", async () => {
     renderProfile();
 
@@ -416,5 +439,6 @@ describe("ProfilePanel — auto-save OTP path (phone changed on Save)", () => {
     expect(
       screen.getByRole("button", { name: /^Verify$/i }),
     ).not.toBeDisabled();
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
   });
 });

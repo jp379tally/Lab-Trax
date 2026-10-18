@@ -3,7 +3,7 @@ node_modules/
 .pnpm-store/
 
 # Git history
-.git/
+.git
 
 # Build outputs
 dist/
@@ -24,6 +24,22 @@ artifacts/mockup-sandbox/
 
 # Large assets not needed for mobile build
 attached_assets/
+
+# Workspace-only tooling, documentation, and local recovery data
+.github/
+.production-api/
+.production-runtime/
+docs/
+e2e/
+playwright-report/
+screenshots/
+support/
+uploads/
+*.md
+*.sql
+*.dump
+*.dump.*
+*.enc
 
 # Replit-internal / cache directories
 .cache/
@@ -46,3 +62,23 @@ attached_assets/
 logs/
 tmp/
 .local/
+
+# LabTrax web/server output and local source-download bundles
+artifacts/labtrax/server/
+artifacts/labtrax/public/downloads/
+artifacts/labtrax/public/labtrax-full-source.txt
+artifacts/labtrax/public/labtrax-source.tar.gz
+
+# Mobile tests and development-only tooling. Keep modules/labtrax-depth/Tests:
+# eas-build-post-install runs those Swift regression tests on iOS builds.
+artifacts/labtrax/**/__tests__/
+artifacts/labtrax/__tests__/
+artifacts/labtrax/**/*.test.*
+artifacts/labtrax/**/*.spec.*
+artifacts/labtrax/vitest.config.ts
+artifacts/labtrax/vitest.setup.ts
+artifacts/labtrax/test-stubs/
+artifacts/labtrax/maestro/
+artifacts/labtrax/scripts/web-bundle-smoke.js
+artifacts/labtrax/scripts/test-write-asc-key.py
+artifacts/labtrax/.replit-artifact/

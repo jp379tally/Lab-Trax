@@ -120,9 +120,9 @@ const RX_RESPONSE = {
 };
 
 const DOCTOR_DIRECTORY = [
-  // Dr. Cory Couch is mostly at Maple Dental (provB) → that's his primary.
-  { doctorName: "Dr. Cory Couch", providerOrganizationId: "provB", caseCount: 5 },
-  { doctorName: "Dr. Cory Couch", providerOrganizationId: "provA", caseCount: 1 },
+  // Dr. Synthetic024 Provider024 is mostly at Maple Dental (provB) → that's his primary.
+  { doctorName: "Dr. Synthetic024 Provider024", providerOrganizationId: "provB", caseCount: 5 },
+  { doctorName: "Dr. Synthetic024 Provider024", providerOrganizationId: "provA", caseCount: 1 },
 ];
 
 const ORGS = [
@@ -183,12 +183,12 @@ describe("DashboardDropZone — doctor → practice auto-fill", () => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path.startsWith("/organizations")) return Promise.resolve(ORGS);
       if (path === "/cases/doctor-names")
-        return Promise.resolve(["Dr. Cory Couch"]);
+        return Promise.resolve(["Dr. Synthetic024 Provider024"]);
       if (path === "/cases/doctor-directory")
         return Promise.resolve(DOCTOR_DIRECTORY);
       if (path === "/analyze-prescription") return Promise.resolve(RX_RESPONSE);
       if (path.startsWith("/rx-practice-aliases"))
-        return Promise.resolve({ data: { found: false } });
+        return Promise.resolve({ found: false, providerOrganizationId: null });
       return Promise.resolve([]);
     });
   });
@@ -222,7 +222,7 @@ describe("DashboardDropZone — doctor → practice auto-fill", () => {
     // User picks the on-record doctor.
     await act(async () => {
       fireEvent.change(doctorInput(container), {
-        target: { value: "Dr. Cory Couch" },
+        target: { value: "Dr. Synthetic024 Provider024" },
       });
     });
 

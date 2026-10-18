@@ -78,10 +78,16 @@ maybe("Cases search and tenant isolation (db integration)", () => {
     patientLast?: string;
     doctorName?: string;
     status?: string;
+    priority?: string;
     panBarcode?: string;
+    createdAt?: Date;
+    dueDate?: Date;
+    id?: string;
+    remakeOfCaseId?: string;
+    remakeCharged?: boolean;
   }) {
     const { db, cases } = dbMod as any;
-    const id = rid("c");
+    const id = opts.id ?? rid("c");
     await db.insert(cases).values({
       id,
       caseNumber: opts.caseNumber,
@@ -91,8 +97,13 @@ maybe("Cases search and tenant isolation (db integration)", () => {
       patientLastName: opts.patientLast ?? "Test",
       doctorName: opts.doctorName ?? "Dr. Test",
       status: opts.status ?? "received",
+      priority: opts.priority ?? "normal",
       createdByUserId: labAdminUserId,
+      ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
+      ...(opts.dueDate ? { dueDate: opts.dueDate } : {}),
       ...(opts.panBarcode ? { casePanBarcode: opts.panBarcode } : {}),
+      ...(opts.remakeOfCaseId ? { remakeOfCaseId: opts.remakeOfCaseId } : {}),
+      ...(opts.remakeCharged !== undefined ? { remakeCharged: opts.remakeCharged } : {}),
     });
     return id;
   }
@@ -105,18 +116,34 @@ maybe("Cases search and tenant isolation (db integration)", () => {
     assignedBarcode: string;
     labId?: string;
     patientName?: string;
+    doctorName?: string;
     caseNumber?: string;
     status?: string;
+    isRush?: boolean;
+    createdAt?: number;
+    omitCreatedAt?: boolean;
+    caseType?: string;
+    material?: string;
+    id?: string;
+    price?: number;
+    remakeOfCaseId?: string;
+    remakeCharged?: boolean;
   }) {
     const { db, labCases } = dbMod as any;
-    const id = rid("lc");
+    const id = opts.id ?? rid("lc");
     const caseData = JSON.stringify({
       patientName: opts.patientName ?? "Bera Brown",
       caseNumber: opts.caseNumber ?? "26-2",
-      doctorName: "Dr. Mobile",
+      doctorName: opts.doctorName ?? "Dr. Mobile",
       status: opts.status ?? "DESIGN",
       assignedBarcode: opts.assignedBarcode,
-      createdAt: Date.now(),
+      ...(opts.omitCreatedAt ? {} : { createdAt: opts.createdAt ?? Date.now() }),
+      isRush: opts.isRush ?? false,
+      ...(opts.caseType ? { caseType: opts.caseType } : {}),
+      ...(opts.material ? { material: opts.material } : {}),
+      ...(opts.price !== undefined ? { price: opts.price } : {}),
+      ...(opts.remakeOfCaseId ? { remakeOfCaseId: opts.remakeOfCaseId } : {}),
+      ...(opts.remakeCharged !== undefined ? { remakeCharged: opts.remakeCharged } : {}),
     });
     await db.insert(labCases).values({
       id,
@@ -207,22 +234,489 @@ maybe("Cases search and tenant isolation (db integration)", () => {
 
   // ── Tenant isolation ──────────────────────────────────────────────────────
 
-  it("GET /api/cases: returns only cases belonging to the user's lab", async () => {
+  it("GET /api/cases returns a bounded newest-first unfiltered worklist page", async () => {
     const myCase = await insertCase({ caseNumber: rid("MY"), labId: labOrgId });
     const otherCase = await insertCase({ caseNumber: rid("OTH"), labId: otherLabOrgId, practiceId: otherProviderOrgId });
 
     const r = await request(appMod.default)
-      .get("/api/cases")
+      .get("/api/cases/worklist")
       .set("Authorization", `Bearer ${tokens.admin}`)
-      .query({ organizationId: labOrgId });
+      .query({ organizationId: labOrgId, pageSize: 1 });
 
     expect(r.status).toBe(200);
-    const ids = r.body.data.map((c: any) => c.id);
-    expect(ids).toContain(myCase);
-    expect(ids).not.toContain(otherCase);
+    expect(r.body.data).toMatchObject({
+      page: 1,
+      pageSize: 1,
+      hasMore: expect.any(Boolean),
+      total: expect.any(Number),
+    });
+    expect(r.body.data.rows).toHaveLength(1);
+    expect(r.body.data.rows[0].id).toBe(myCase);
 
     const { db, cases } = dbMod as any;
     await db.delete(cases).where(inArray(cases.id, [myCase, otherCase]));
+  });
+
+  it("GET /api/cases keeps the legacy array contract", async () => {
+    const caseId = await insertCase({ caseNumber: rid("LEGACY_ARRAY") });
+    const r = await request(appMod.default)
+      .get("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ organizationId: labOrgId });
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.data)).toBe(true);
+    expect(r.body.data.some((row: any) => row.id === caseId)).toBe(true);
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(eq(cases.id, caseId));
+  });
+
+  it("GET /api/cases keeps the legacy array and filters, while pagination is newest-first", async () => {
+    const oldestId = await insertCase({
+      caseNumber: "NONWORKLIST-PAGE-OLD",
+      patientFirst: "Page",
+      patientLast: "Old",
+      status: "received",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    const newestId = await insertCase({
+      caseNumber: "NONWORKLIST-PAGE-NEW",
+      patientFirst: "Page",
+      patientLast: "New",
+      status: "received",
+      createdAt: new Date("2026-03-01T00:00:00.000Z"),
+    });
+    const excludedId = await insertCase({
+      caseNumber: "NONWORKLIST-PAGE-DONE",
+      patientFirst: "Page",
+      patientLast: "Done",
+      status: "delivered",
+      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+
+    const legacy = await request(appMod.default)
+      .get("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ organizationId: labOrgId, search: "NONWORKLIST-PAGE" });
+    expect(legacy.status).toBe(200);
+    expect(Array.isArray(legacy.body.data)).toBe(true);
+    expect(legacy.body.data.map((row: any) => row.id)).toEqual(
+      expect.arrayContaining([oldestId, newestId, excludedId]),
+    );
+
+    const filtered = await request(appMod.default)
+      .get("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        organizationId: labOrgId,
+        search: "NONWORKLIST-PAGE",
+        status: "received",
+        limit: 1,
+        offset: 0,
+      });
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.data).toMatchObject({
+      total: 2,
+      limit: 1,
+      offset: 0,
+      hasMore: true,
+    });
+    expect(filtered.body.data.rows.map((row: any) => row.id)).toEqual([newestId]);
+
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(
+      inArray(cases.id, [oldestId, newestId, excludedId]),
+    );
+  });
+
+  it("GET /api/cases keeps missing-date legacy rows stable across offset pages", async () => {
+    const firstId = await insertLegacyCase({
+      assignedBarcode: rid("stable_pan"),
+      caseNumber: "NONWORKLIST-STABLE-A",
+      omitCreatedAt: true,
+    });
+    const secondId = await insertLegacyCase({
+      assignedBarcode: rid("stable_pan"),
+      caseNumber: "NONWORKLIST-STABLE-B",
+      omitCreatedAt: true,
+    });
+    const query = {
+      organizationId: labOrgId,
+      search: "NONWORKLIST-STABLE",
+      limit: 1,
+    };
+
+    const firstPage = await request(appMod.default)
+      .get("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ ...query, offset: 0 });
+    const secondPage = await request(appMod.default)
+      .get("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ ...query, offset: 1 });
+    const repeatedFirstPage = await request(appMod.default)
+      .get("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ ...query, offset: 0 });
+
+    expect(firstPage.status).toBe(200);
+    expect(secondPage.status).toBe(200);
+    expect(repeatedFirstPage.status).toBe(200);
+    const combined = [
+      firstPage.body.data.rows[0].id,
+      secondPage.body.data.rows[0].id,
+    ];
+    expect(new Set(combined)).toEqual(new Set([firstId, secondId]));
+    expect(repeatedFirstPage.body.data.rows[0].id).toBe(combined[0]);
+  });
+
+  it("worklist isolates tenants and reports an accurate de-duplicated total", async () => {
+    const sharedId = rid("dedupe");
+    await insertCase({ id: sharedId, caseNumber: "WL-DEDUPE", labId: labOrgId });
+    await insertLegacyCase({ id: sharedId, assignedBarcode: rid("pan"), caseNumber: "WL-DEDUPE-OLD" });
+    const foreignId = await insertCase({
+      caseNumber: "WL-DEDUPE-FOREIGN",
+      labId: otherLabOrgId,
+      practiceId: otherProviderOrgId,
+    });
+    const r = await request(appMod.default)
+      .get("/api/cases/worklist")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ organizationId: labOrgId, search: "WL-DEDUPE" });
+    expect(r.status).toBe(200);
+    expect(r.body.data.total).toBe(1);
+    expect(r.body.data.rows).toHaveLength(1);
+    expect(r.body.data.rows[0].id).toBe(sharedId);
+    expect(r.body.data.rows[0]._source).not.toBe("mobile");
+    const { db, cases, labCases } = dbMod as any;
+    await db.delete(labCases).where(eq(labCases.id, sharedId));
+    await db.delete(cases).where(inArray(cases.id, [sharedId, foreignId]));
+  });
+
+  it("worklist uses case-insensitive substring search for every canonical and legacy identity field", async () => {
+    const canonicalId = await insertCase({
+      caseNumber: "CAN-KENNETH-4821",
+      patientFirst: "Kenneth",
+      patientLast: "McArthur",
+      doctorName: "Dr. Rosalind Franklin",
+      panBarcode: "PAN-CAN-778899",
+    });
+    const legacyId = await insertLegacyCase({
+      assignedBarcode: "PAN-LEG-445566",
+      caseNumber: "LEG-KENNETH-9317",
+      patientName: "Kenneth Legacyson",
+      doctorName: "Dr. Mae Jemison",
+    });
+
+    const assertions = [
+      { search: "kenneth", expected: [canonicalId, legacyId] },
+      { search: "NeTh McA", expected: [canonicalId] },
+      { search: "salind fra", expected: [canonicalId] },
+      { search: "mae jemi", expected: [legacyId] },
+      { search: "eth-482", expected: [canonicalId] },
+      { search: "eth-931", expected: [legacyId] },
+      { search: "7788", expected: [canonicalId] },
+      { search: "4455", expected: [legacyId] },
+    ];
+
+    for (const { search, expected } of assertions) {
+      const r = await request(appMod.default)
+        .get("/api/cases/worklist")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .query({ organizationId: labOrgId, caseId: [canonicalId, legacyId], search });
+      expect(r.status, search).toBe(200);
+      expect(r.body.data.rows.map((row: any) => row.id).sort(), search).toEqual([...expected].sort());
+    }
+
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(eq(cases.id, canonicalId));
+  });
+
+  it("worklist applies combined status, priority, category, and bounded dates to both sources", async () => {
+    const createdAt = new Date("2025-04-12T12:00:00.000Z");
+    const canonicalId = await insertCase({
+      caseNumber: "WL-MIX-CANONICAL",
+      status: "received",
+      priority: "rush",
+      createdAt,
+    });
+    const legacyId = await insertLegacyCase({
+      assignedBarcode: rid("mixpan"),
+      caseNumber: "WL-MIX-LEGACY",
+      status: "INTAKE",
+      isRush: true,
+      caseType: "Partial denture",
+      createdAt: createdAt.getTime(),
+      price: 15.5,
+    });
+    const excludedId = await insertCase({
+      caseNumber: "WL-MIX-EXCLUDED",
+      status: "complete",
+      priority: "rush",
+      createdAt,
+    });
+    const { db, caseRestorations, cases } = dbMod as any;
+    await db.insert(caseRestorations).values({
+      caseId: canonicalId,
+      toothNumber: "",
+      restorationType: "Partial denture",
+      material: "Acrylic",
+      quantity: 1,
+      unitPrice: "10.00",
+    });
+    const r = await request(appMod.default)
+      .get("/api/cases/worklist")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        organizationId: labOrgId,
+        status: "received",
+        priority: "rush",
+        caseType: "removable",
+        createdStart: "2025-04-01",
+        createdEnd: "2025-04-30",
+      });
+    expect(r.status).toBe(200);
+    expect(r.body.data.total).toBe(2);
+    expect(r.body.data.salesTotal).toBe("25.50");
+    expect(r.body.data.rows.map((row: any) => row.id).sort()).toEqual([canonicalId, legacyId].sort());
+    await db.delete(caseRestorations).where(eq(caseRestorations.caseId, canonicalId));
+    await db.delete(cases).where(inArray(cases.id, [canonicalId, excludedId]));
+  });
+
+  it("worklist sales total is tenant-scoped, de-duplicated, and independent of pagination", async () => {
+    const rootId = await insertCase({ caseNumber: "WL-SALES-ROOT" });
+    const billedId = await insertCase({ caseNumber: "WL-SALES-BILLED" });
+    const freeRemakeId = await insertCase({
+      caseNumber: "WL-SALES-FREE",
+      remakeOfCaseId: rootId,
+      remakeCharged: false,
+    });
+    const deletedInvoiceFallbackId = await insertCase({
+      caseNumber: "WL-SALES-DELETED-FALLBACK",
+    });
+    const foreignId = await insertCase({
+      caseNumber: "WL-SALES-FOREIGN",
+      labId: otherLabOrgId,
+      practiceId: otherProviderOrgId,
+    });
+    const legacyId = await insertLegacyCase({
+      assignedBarcode: rid("salespan"),
+      caseNumber: "WL-SALES-LEGACY",
+      price: 7.25,
+    });
+    await insertLegacyCase({
+      id: rootId,
+      assignedBarcode: rid("salesdedupe"),
+      caseNumber: "WL-SALES-DUPLICATE",
+      price: 1000,
+    });
+    const freeLegacyId = await insertLegacyCase({
+      assignedBarcode: rid("salesfree"),
+      caseNumber: "WL-SALES-LEGACY-FREE",
+      price: 250,
+      remakeOfCaseId: rootId,
+      remakeCharged: false,
+    });
+    const { db, caseRestorations, cases, invoices } = dbMod as any;
+    await db.insert(caseRestorations).values([
+      { caseId: rootId, toothNumber: "1", restorationType: "Crown", quantity: 1, unitPrice: "10.00" },
+      { caseId: billedId, toothNumber: "2", restorationType: "Crown", quantity: 2, unitPrice: "6.00" },
+      { caseId: freeRemakeId, toothNumber: "3", restorationType: "Crown", quantity: 1, unitPrice: "99.00" },
+      { caseId: foreignId, toothNumber: "4", restorationType: "Crown", quantity: 1, unitPrice: "500.00" },
+      { caseId: deletedInvoiceFallbackId, toothNumber: "5", restorationType: "Crown", quantity: 1, unitPrice: "4.00" },
+    ]);
+    const activeInvoiceId = rid("inv");
+    const deletedInvoiceId = rid("inv");
+    const fallbackDeletedInvoiceId = rid("inv");
+    const voidedInvoiceId = rid("inv");
+    const foreignInvoiceId = rid("inv");
+    await db.insert(invoices).values([
+      {
+        id: activeInvoiceId,
+        invoiceNumber: rid("WL-SALES-ACTIVE"),
+        caseId: billedId,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        total: "20.00",
+        balanceDue: "20.00",
+        createdByUserId: labAdminUserId,
+        createdAt: new Date("2025-01-01T00:00:00.000Z"),
+      },
+      {
+        id: deletedInvoiceId,
+        invoiceNumber: rid("WL-SALES-DELETED"),
+        caseId: billedId,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        total: "999.00",
+        balanceDue: "999.00",
+        createdByUserId: labAdminUserId,
+        createdAt: new Date("2025-02-01T00:00:00.000Z"),
+        deletedAt: new Date("2025-02-02T00:00:00.000Z"),
+      },
+      {
+        id: fallbackDeletedInvoiceId,
+        invoiceNumber: rid("WL-SALES-FALLBACK-DELETED"),
+        caseId: deletedInvoiceFallbackId,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        total: "300.00",
+        balanceDue: "300.00",
+        createdByUserId: labAdminUserId,
+        deletedAt: new Date("2025-02-02T00:00:00.000Z"),
+      },
+      {
+        id: voidedInvoiceId,
+        invoiceNumber: rid("WL-SALES-VOIDED"),
+        caseId: billedId,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        status: "void",
+        voidKind: "write_off",
+        total: "777.00",
+        balanceDue: "0.00",
+        createdByUserId: labAdminUserId,
+        createdAt: new Date("2025-03-01T00:00:00.000Z"),
+      },
+      {
+        id: foreignInvoiceId,
+        invoiceNumber: rid("WL-SALES-FOREIGN-INVOICE"),
+        caseId: billedId,
+        labOrganizationId: otherLabOrgId,
+        providerOrganizationId: otherProviderOrgId,
+        total: "888.00",
+        balanceDue: "888.00",
+        createdByUserId: labAdminUserId,
+        createdAt: new Date("2025-04-01T00:00:00.000Z"),
+      },
+    ]);
+
+    const fetchPage = (page: number) => request(appMod.default)
+      .get("/api/cases/worklist")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ organizationId: labOrgId, search: "WL-SALES", page, pageSize: 1 });
+    const [one, two] = await Promise.all([fetchPage(1), fetchPage(2)]);
+
+    expect(one.status).toBe(200);
+    expect(one.body.data).toMatchObject({ total: 6, salesTotal: "41.25", page: 1, hasMore: true });
+    expect(two.body.data).toMatchObject({ total: 6, salesTotal: "41.25", page: 2, hasMore: true });
+
+    const [billed, fallback] = await Promise.all([
+      request(appMod.default)
+        .get("/api/cases/worklist")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .query({ organizationId: labOrgId, caseId: billedId }),
+      request(appMod.default)
+        .get("/api/cases/worklist")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .query({ organizationId: labOrgId, caseId: deletedInvoiceFallbackId }),
+    ]);
+    expect(billed.body.data).toMatchObject({ salesTotal: "20.00" });
+    expect(billed.body.data.rows[0].totalPrice).toBe("20.00");
+    expect(fallback.body.data).toMatchObject({ salesTotal: "4.00" });
+    expect(fallback.body.data.rows[0].totalPrice).toBe("4.00");
+
+    await db.delete(invoices).where(inArray(invoices.id, [
+      activeInvoiceId,
+      deletedInvoiceId,
+      fallbackDeletedInvoiceId,
+      voidedInvoiceId,
+      foreignInvoiceId,
+    ]));
+    await db.delete(caseRestorations).where(inArray(caseRestorations.caseId, [rootId, billedId, freeRemakeId, foreignId, deletedInvoiceFallbackId]));
+    await db.delete(cases).where(inArray(cases.id, [freeRemakeId, rootId, billedId, foreignId, deletedInvoiceFallbackId]));
+    void legacyId;
+    void freeLegacyId;
+  });
+
+  it("worklist pagination is stable for equal sort keys without duplicates", async () => {
+    const firstId = `a_${rid("tie")}`;
+    const secondId = `z_${rid("tie")}`;
+    await insertCase({ id: firstId, caseNumber: "WL-TIE-A", doctorName: "Dr Equal" });
+    await insertCase({ id: secondId, caseNumber: "WL-TIE-B", doctorName: "Dr Equal" });
+    const fetchPage = (page: number) => request(appMod.default)
+      .get("/api/cases/worklist")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ organizationId: labOrgId, caseId: [firstId, secondId], sortKey: "doctorName", sortDir: "desc", page, pageSize: 1 });
+    const [one, two] = await Promise.all([fetchPage(1), fetchPage(2)]);
+    expect(one.status).toBe(200);
+    expect(two.status).toBe(200);
+    expect(one.body.data).toMatchObject({ total: 2, page: 1, pageSize: 1, hasMore: true });
+    expect(two.body.data).toMatchObject({ total: 2, page: 2, pageSize: 1, hasMore: false });
+    expect([one.body.data.rows[0].id, two.body.data.rows[0].id]).toEqual([firstId, secondId]);
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(inArray(cases.id, [firstId, secondId]));
+  });
+
+  it("worklist imported IDs and conflicts include cross-source duplicate barcodes", async () => {
+    const barcode = rid("CONFLICT").toUpperCase();
+    const canonicalId = await insertCase({ caseNumber: "WL-CONFLICT-C", panBarcode: barcode });
+    const legacyId = await insertLegacyCase({ assignedBarcode: barcode, caseNumber: "WL-CONFLICT-L" });
+    const closedId = await insertCase({ caseNumber: "WL-CONFLICT-CLOSED", panBarcode: barcode, status: "complete" });
+    const r = await request(appMod.default)
+      .get("/api/cases/worklist")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ organizationId: labOrgId, conflictsOnly: true, caseId: [canonicalId, legacyId, closedId] });
+    expect(r.status).toBe(200);
+    expect(r.body.data.total).toBe(2);
+    expect(r.body.data.rows.map((row: any) => row.id).sort()).toEqual([canonicalId, legacyId].sort());
+    const combined = await request(appMod.default)
+      .get("/api/cases/worklist")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        organizationId: labOrgId,
+        conflictsOnly: true,
+        caseId: [canonicalId, legacyId, closedId],
+        status: "received",
+        search: "WL-CONFLICT-C",
+      });
+    expect(combined.status).toBe(200);
+    expect(combined.body.data.total).toBe(1);
+    expect(combined.body.data.rows.map((row: any) => row.id)).toEqual([canonicalId]);
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(inArray(cases.id, [canonicalId, closedId]));
+  });
+
+  it("worklist safely returns an explicitly imported malformed legacy row", async () => {
+    const id = rid("malformed_legacy");
+    const { db, labCases } = dbMod as any;
+    await db.insert(labCases).values({
+      id,
+      organizationId: labOrgId,
+      ownerId: labAdminUserId,
+      caseData: '{"caseNumber":"BROKEN", this is historical malformed json',
+    });
+    legacyCaseIds.push(id);
+    const r = await request(appMod.default)
+      .get("/api/cases/worklist")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ organizationId: labOrgId, caseId: id });
+    expect(r.status).toBe(200);
+    expect(r.body.data).toMatchObject({ total: 1, hasMore: false });
+    expect(r.body.data.rows).toHaveLength(1);
+    expect(r.body.data.rows[0]).toMatchObject({ id, _source: "mobile" });
+  });
+
+  it("worklist does not resurrect a legacy duplicate when its canonical owner fails predicates", async () => {
+    const sharedId = rid("canonical_owner");
+    const canonicalId = await insertCase({
+      id: sharedId,
+      caseNumber: "WL-OWNER-CANONICAL",
+      status: "complete",
+    });
+    await insertLegacyCase({
+      id: sharedId,
+      assignedBarcode: rid("owner-pan"),
+      caseNumber: "WL-OWNER-LEGACY",
+      status: "INTAKE",
+    });
+    const r = await request(appMod.default)
+      .get("/api/cases/worklist")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ organizationId: labOrgId, status: "received" });
+    expect(r.status).toBe(200);
+    expect(r.body.data.rows.some((row: any) => row.id === sharedId)).toBe(false);
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(eq(cases.id, canonicalId));
   });
 
   it("GET /api/cases: returns 401 when unauthenticated", async () => {
@@ -929,5 +1423,205 @@ maybe("Cases search and tenant isolation (db integration)", () => {
     } finally {
       casesMod._testHooks.barcodeWriteHook = undefined;
     }
+  });
+
+  // ── Open cases beyond the most-recent window ──────────────────────────────
+  //
+  // Regression: the unsearched cases list only returned the 500 most-recently
+  // created cases, so a high-volume lab's older OPEN case (e.g. one due today)
+  // never reached the dashboard's Due Today section. Open cases must now always
+  // be returned regardless of age, while completed/delivered/cancelled cases
+  // stay bounded by the same most-recent window as before.
+  describe("open cases outside the most-recent window", () => {
+    // Dedicated tenant so the ~500-row seed does not slow the tests above.
+    const bulkLabOrgId = rid("bulklab");
+    const bulkProviderOrgId = rid("bulkprov");
+    const bulkAdminUserId = rid("ubulkadm");
+    const bulkProviderUserId = rid("ubulkprov");
+
+    const RECENT_WINDOW = 500;
+    let oldOpenCaseId = "";
+    let oldCompletedCaseId = "";
+    let bulkAdminToken = "";
+    let bulkProviderToken = "";
+
+    beforeAll(async () => {
+      if (!SHOULD_RUN) return;
+      const { db, users, organizations, organizationMemberships, cases } =
+        dbMod as any;
+
+      await db.insert(users).values([
+        {
+          id: bulkAdminUserId,
+          username: `bulkadm_${bulkAdminUserId}`,
+          password: "testpass",
+          userType: "lab",
+        },
+        {
+          id: bulkProviderUserId,
+          username: `bulkprov_${bulkProviderUserId}`,
+          password: "testpass",
+          userType: "provider",
+        },
+      ]);
+
+      await db.insert(organizations).values([
+        { id: bulkLabOrgId, type: "lab", name: `Bulk Lab ${bulkLabOrgId}` },
+        {
+          id: bulkProviderOrgId,
+          type: "provider",
+          name: `Bulk Practice ${bulkProviderOrgId}`,
+          parentLabOrganizationId: bulkLabOrgId,
+        },
+      ]);
+
+      await db.insert(organizationMemberships).values([
+        {
+          id: rid("m"),
+          labId: bulkLabOrgId,
+          userId: bulkAdminUserId,
+          role: "admin",
+          status: "active",
+        },
+        {
+          id: rid("m"),
+          labId: bulkProviderOrgId,
+          userId: bulkProviderUserId,
+          role: "owner",
+          status: "active",
+        },
+      ]);
+
+      const dayMs = 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      const today = new Date();
+      today.setHours(12, 0, 0, 0);
+
+      const baseRow = (index: number) => ({
+        labOrganizationId: bulkLabOrgId,
+        providerOrganizationId: bulkProviderOrgId,
+        patientFirstName: "Bulk",
+        patientLastName: `Patient${index}`,
+        doctorName: "Dr. Bulk",
+        createdByUserId: bulkAdminUserId,
+      });
+
+      // The two cases that sit OUTSIDE the most-recent window: both are ~400
+      // days older than every other case in this lab.
+      oldOpenCaseId = rid("c");
+      oldCompletedCaseId = rid("c");
+
+      await db.insert(cases).values([
+        {
+          ...baseRow(-1),
+          id: oldOpenCaseId,
+          caseNumber: rid("OLDOPEN"),
+          status: "model_room",
+          dueDate: today,
+          createdAt: new Date(now - 400 * dayMs),
+        },
+        {
+          ...baseRow(-2),
+          id: oldCompletedCaseId,
+          caseNumber: rid("OLDDONE"),
+          status: "complete",
+          dueDate: today,
+          createdAt: new Date(now - 401 * dayMs),
+        },
+      ]);
+
+      // Fill the window with more recent cases than the cap so the two rows
+      // above can only be reached by the always-include-open query.
+      const filler = Array.from({ length: RECENT_WINDOW + 10 }, (_, i) => ({
+        ...baseRow(i),
+        id: rid("c"),
+        caseNumber: rid("FILL"),
+        status: "complete",
+        createdAt: new Date(now - i * 60_000),
+      }));
+      // Chunked so the parameter count stays well inside Postgres' limit.
+      for (let i = 0; i < filler.length; i += 100) {
+        await db.insert(cases).values(filler.slice(i, i + 100));
+      }
+
+      bulkAdminToken = await makeSession(bulkAdminUserId);
+      bulkProviderToken = await makeSession(bulkProviderUserId);
+    });
+
+    // Same guard the outer suite uses: a concurrent user_sessions wipe must not
+    // invalidate these tokens mid-suite.
+    beforeEach(async () => {
+      if (!SHOULD_RUN) return;
+      bulkAdminToken = await makeSession(bulkAdminUserId);
+      bulkProviderToken = await makeSession(bulkProviderUserId);
+    });
+
+    afterAll(async () => {
+      if (!SHOULD_RUN) return;
+      const {
+        db,
+        cases,
+        invoices,
+        auditLogs,
+        organizationMemberships,
+        organizations,
+        userSessions,
+        users,
+      } = dbMod as any;
+      const orgIds = [bulkLabOrgId, bulkProviderOrgId];
+      const userIds = [bulkAdminUserId, bulkProviderUserId];
+      await db.delete(auditLogs).where(inArray(auditLogs.organizationId, orgIds));
+      await db.delete(invoices).where(inArray(invoices.labOrganizationId, orgIds));
+      await db.delete(cases).where(eq(cases.labOrganizationId, bulkLabOrgId));
+      await db
+        .delete(organizationMemberships)
+        .where(inArray(organizationMemberships.userId, userIds));
+      await db.delete(userSessions).where(inArray(userSessions.userId, userIds));
+      await db.delete(organizations).where(inArray(organizations.id, orgIds));
+      await db.delete(users).where(inArray(users.id, userIds));
+    });
+
+    it("GET /api/cases: returns an open case created far outside the most-recent window", async () => {
+      const r = await request(appMod.default)
+        .get("/api/cases")
+        .set("Authorization", `Bearer ${bulkAdminToken}`)
+        .query({ organizationId: bulkLabOrgId, status: "model_room" });
+
+      expect(r.status).toBe(200);
+      const ids: string[] = r.body.data.map((c: any) => c.id);
+      expect(ids).toContain(oldOpenCaseId);
+      // The equally-old COMPLETED case stays bounded by the recency window.
+      expect(ids).not.toContain(oldCompletedCaseId);
+      // Merging the two queries must not duplicate the overlapping rows.
+      expect(new Set(ids).size).toBe(ids.length);
+    });
+
+    it("GET /api/cases: keeps the response ordered newest-first", async () => {
+      const r = await request(appMod.default)
+        .get("/api/cases")
+        .set("Authorization", `Bearer ${bulkAdminToken}`)
+        .query({ organizationId: bulkLabOrgId, status: "model_room" });
+
+      expect(r.status).toBe(200);
+      const createdAts: number[] = r.body.data.map((c: any) =>
+        new Date(c.createdAt).getTime()
+      );
+      const sorted = [...createdAts].sort((a, b) => b - a);
+      expect(createdAts).toEqual(sorted);
+      // The old open case is the last row precisely because it is the oldest.
+      expect(r.body.data[r.body.data.length - 1].id).toBe(oldOpenCaseId);
+    });
+
+    it("GET /api/cases/provider: returns an open case created far outside the most-recent window", async () => {
+      const r = await request(appMod.default)
+        .get("/api/cases/provider")
+        .set("Authorization", `Bearer ${bulkProviderToken}`);
+
+      expect(r.status).toBe(200);
+      const ids: string[] = (r.body.data ?? []).map((c: any) => c.id);
+      expect(ids).toContain(oldOpenCaseId);
+      expect(ids).not.toContain(oldCompletedCaseId);
+      expect(new Set(ids).size).toBe(ids.length);
+    });
   });
 });

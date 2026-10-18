@@ -9,13 +9,25 @@ import { requireAuth } from "../middlewares/auth";
 const router = Router();
 router.use(requireAuth);
 
+const notificationReadColumns = {
+  id: notifications.id,
+  userId: notifications.userId,
+  type: notifications.type,
+  title: notifications.title,
+  body: notifications.body,
+  dataJson: notifications.dataJson,
+  dedupeKey: notifications.dedupeKey,
+  readAt: notifications.readAt,
+  createdAt: notifications.createdAt,
+};
+
 router.get(
   "/",
   asyncHandler(async (req, res) => {
     const userId = (req as any).auth.userId as string;
 
     const rows = await db
-      .select()
+      .select(notificationReadColumns)
       .from(notifications)
       .where(eq(notifications.userId, userId))
       .orderBy(desc(notifications.createdAt))
@@ -37,7 +49,7 @@ router.patch(
       .where(
         and(eq(notifications.id, id), eq(notifications.userId, userId))
       )
-      .returning();
+      .returning(notificationReadColumns);
 
     if (!updated) {
       return ok(res, { ok: false, error: "not_found" });

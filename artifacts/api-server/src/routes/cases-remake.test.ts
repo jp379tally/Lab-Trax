@@ -13,9 +13,28 @@
  *       new case.
  *   (3) Multiple remakes of the same canonical original get sequential suffix
  *       letters (B → C).
+ *   (3b-mobile) POST /cases with X-LabTrax-Client: mobile/2 on a case that
+ *        is itself a remake yields C not BB. Pins the root-traversal fix for
+ *        the mobile-client code path (remakeOfCaseId in POST /cases body).
+ *   (3c) POST /cases/:id/remake on a case that is itself a remake yields the
+ *        next suffix from the chain root (C), not a double-suffix (BB). Pins
+ *        the root-traversal fix specifically for the :id/remake endpoint used
+ *        by the desktop "Mark as remake" button.
  *   (4) No-charge remake: invoice is still created (not skipped), carries a
  *       no-charge note.
  *   (5) case_number unique-constraint violation returns 409 (not 500).
+ *
+ * PATCH /:caseId/mark-as-remake (Invoice Editor "Mark as remake" action —
+ * reachable for any case regardless of AI-import/review status):
+ *   (6) Links case as remake, assigns the next suffix, saves all
+ *       questionnaire fields on the case row, and writes both the forward
+ *       (remake_of) and backward (remade_by) history events plus a
+ *       case_remake_linked audit log entry.
+ *   (7) A no-charge answer zeros the case's open invoice and its line items.
+ *   (8) Rejects a case remaking itself (400).
+ *   (9) Rejects a case that is already linked as a remake (400).
+ *   (10) Sequential suffix assignment (B taken → next call gets C).
+ *   (11) A user with no lab/practice membership on the case gets 403.
  *
  * Failure-semantic guarantees (architectural, enforced by the transaction):
  *   - Canonical cross-link events are written inside the same database
@@ -31,7 +50,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import request from "supertest";
 import * as path from "node:path";
@@ -51,6 +70,37 @@ vi.mock("../lib/case-media.js", () => ({
 
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
 const maybe = SHOULD_RUN ? describe : describe.skip;
+
+describe("custom remake reason validation", () => {
+  it("accepts and trims a nonblank custom reason", async () => {
+    const { validateCustomRemakeReason } = await import("./cases.js");
+    expect(validateCustomRemakeReason("other", "  Occlusal interference  ")).toBe(
+      "Occlusal interference",
+    );
+  });
+
+  it("rejects blank custom reasons", async () => {
+    const { validateCustomRemakeReason } = await import("./cases.js");
+    expect(() => validateCustomRemakeReason("other", " \t ")).toThrow(
+      /cannot be blank/i,
+    );
+  });
+
+  it("rejects custom reasons over the existing 2000-character limit", async () => {
+    const { validateCustomRemakeReason } = await import("./cases.js");
+    expect(() => validateCustomRemakeReason("other", "x".repeat(2001))).toThrow(
+      /at most 2000/i,
+    );
+  });
+
+  it("does not reinterpret legacy or standard free-text reasons", async () => {
+    const { validateCustomRemakeReason } = await import("./cases.js");
+    expect(validateCustomRemakeReason("fit_margins", "  legacy label ")).toBe(
+      "  legacy label ",
+    );
+    expect(validateCustomRemakeReason(null, null)).toBeNull();
+  });
+});
 
 function rid(prefix: string) {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
@@ -84,6 +134,7 @@ maybe("Remake case creation invariants (db integration)", () => {
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-remake";
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
+    await (await import("./index.js")).labtraxRoutesReady;
     authLib = await import("../lib/auth.js");
 
     const { db, users, organizations, organizationMemberships } = dbMod as any;
@@ -181,7 +232,7 @@ maybe("Remake case creation invariants (db integration)", () => {
       status: "received",
       patientFirstName: "Alice",
       patientLastName: "Original",
-      doctorName: "Dr. Smith",
+      doctorName: "Dr. Synthetic063",
       createdByUserId: labOwnerId,
     });
     createdCaseIds.push(originalId);
@@ -194,7 +245,7 @@ maybe("Remake case creation invariants (db integration)", () => {
         providerOrganizationId: providerOrgId,
         patientFirstName: "Alice",
         patientLastName: "Original",
-        doctorName: "Dr. Smith",
+        doctorName: "Dr. Synthetic063",
         status: "received",
         remakeOfCaseId: originalId,
         remakeReason: "Crown fracture",
@@ -361,6 +412,66 @@ maybe("Remake case creation invariants (db integration)", () => {
     expect(remadeByEntry.metadata?.remakeCaseId).toBe(remake.id);
   });
 
+  it("(2b) standard remake endpoint links an iTero-imported case without clearing its review flag", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable } = dbMod as any;
+    const originalId = rid("iteroReview");
+    const originalNumber = rid("ITR");
+
+    await db.insert(casesTable).values({
+      id: originalId,
+      caseNumber: originalNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Imported",
+      patientLastName: "Patient",
+      doctorName: "Dr. Imported",
+      createdByUserId: labOwnerId,
+      needsAiReview: true,
+      aiImportSource: "itero",
+    });
+    createdCaseIds.push(originalId);
+
+    const r = await request(appMod.default)
+      .post(`/api/cases/${originalId}/remake`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        remakeReasonKey: "fit_margins",
+        remakeReason: "Didn't fit — margins",
+        remakeCharged: true,
+      });
+
+    expect(r.status, `expected 201 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(201);
+    const remakeId = r.body.data.id as string;
+    createdCaseIds.push(remakeId);
+
+    const [original] = await db
+      .select({
+        needsAiReview: casesTable.needsAiReview,
+        aiImportSource: casesTable.aiImportSource,
+      })
+      .from(casesTable)
+      .where(eq(casesTable.id, originalId));
+    expect(original).toEqual({ needsAiReview: true, aiImportSource: "itero" });
+
+    const [remake] = await db
+      .select({
+        caseNumber: casesTable.caseNumber,
+        remakeOfCaseId: casesTable.remakeOfCaseId,
+        needsAiReview: casesTable.needsAiReview,
+        aiImportSource: casesTable.aiImportSource,
+      })
+      .from(casesTable)
+      .where(eq(casesTable.id, remakeId));
+    expect(remake).toMatchObject({
+      caseNumber: `${originalNumber}B`,
+      remakeOfCaseId: originalId,
+      needsAiReview: false,
+      aiImportSource: null,
+    });
+  });
+
   // ── (3) Multiple remakes get sequential suffix letters ───────────────────
 
   it("(3) two remakes of same canonical original get suffix B then C", async () => {
@@ -409,6 +520,358 @@ maybe("Remake case creation invariants (db integration)", () => {
     expect(r2.status).toBe(201);
     createdCaseIds.push(r2.body.data.id);
     expect(r2.body.data.caseNumber).toBe(`${originalNumber}C`);
+  });
+
+  // ── (3b) Remake of a remake gets C, not BB ───────────────────────────────
+  //
+  // This is the canonical regression test for the root-traversal fix.
+  // When "26-334B" is itself remade, the server must resolve the root
+  // ("26-334"), count ALL descendants (1: the existing "B"), and produce
+  // "26-334C" — NOT "26-334BB".
+
+  it("(3b) remake of a remake gets suffix C (not BB) — root traversal regression", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable } = dbMod as any;
+
+    // Seed the root original.
+    const rootId = rid("root3b");
+    const rootNumber = rid("ROOT");
+    await db.insert(casesTable).values({
+      id: rootId,
+      caseNumber: rootNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Root",
+      patientLastName: "Patient",
+      doctorName: "Dr. Root",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(rootId);
+
+    // First remake of root → should be "ROOTB".
+    const r1 = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Root",
+        patientLastName: "Patient",
+        doctorName: "Dr. Root",
+        status: "received",
+        remakeOfCaseId: rootId,
+        remakeReason: "First remake",
+        remakeCharged: true,
+      });
+    expect(r1.status).toBe(201);
+    const remakeBId = r1.body.data.id as string;
+    createdCaseIds.push(remakeBId);
+    expect(r1.body.data.caseNumber).toBe(`${rootNumber}B`);
+
+    // Remake of the remake ("ROOTB") → must produce "ROOTC", not "ROOTBB".
+    const r2 = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Root",
+        patientLastName: "Patient",
+        doctorName: "Dr. Root",
+        status: "received",
+        remakeOfCaseId: remakeBId,
+        remakeReason: "Remake of the remake",
+        remakeCharged: true,
+      });
+    expect(r2.status, `expected 201 but got ${r2.status}: ${JSON.stringify(r2.body)}`).toBe(201);
+    const remakeCId = r2.body.data.id as string;
+    createdCaseIds.push(remakeCId);
+
+    expect(
+      r2.body.data.caseNumber,
+      `remaking "${rootNumber}B" must produce "${rootNumber}C", not "${rootNumber}BB"`,
+    ).toBe(`${rootNumber}C`);
+
+    // Third level: remake the root again → must get "D".
+    const r3 = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Root",
+        patientLastName: "Patient",
+        doctorName: "Dr. Root",
+        status: "received",
+        remakeOfCaseId: rootId,
+        remakeReason: "Third remake of root",
+        remakeCharged: true,
+      });
+    expect(r3.status).toBe(201);
+    createdCaseIds.push(r3.body.data.id);
+    expect(r3.body.data.caseNumber).toBe(`${rootNumber}D`);
+  });
+
+  // ── (3b-mobile) Mobile client remake-of-a-remake gets C, not BB ─────────
+  //
+  // The mobile app creates remakes via POST /cases with remakeOfCaseId in the
+  // body, sending X-LabTrax-Client: mobile/2.  This test fires that exact
+  // request starting from a "B" case and pins that the returned caseNumber is
+  // "C" not "BB".  A client-side field-mapping regression (e.g. sending
+  // the wrong id as remakeOfCaseId) would be caught here independently of the
+  // server-only (3b) test which does not exercise the mobile header path.
+
+  it("(3b-mobile) POST /cases with mobile/2 header: remake of a remake gets suffix C (not BB)", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable } = dbMod as any;
+
+    // Seed the chain root directly in the DB.
+    const rootId = rid("root3bm");
+    const rootNumber = rid("MOB");
+    await db.insert(casesTable).values({
+      id: rootId,
+      caseNumber: rootNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Mobile",
+      patientLastName: "Root",
+      doctorName: "Dr. Mobile",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(rootId);
+
+    // Seed the first remake ("B") directly in the DB so the setup does not
+    // depend on POST /cases itself.
+    const remakeBId = rid("remB3bm");
+    await db.insert(casesTable).values({
+      id: remakeBId,
+      caseNumber: `${rootNumber}B`,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Mobile",
+      patientLastName: "Root",
+      doctorName: "Dr. Mobile",
+      createdByUserId: labOwnerId,
+      remakeOfCaseId: rootId,
+      remakeReason: "First remake (seeded for mobile test)",
+    });
+    createdCaseIds.push(remakeBId);
+
+    // Fire the request exactly as the mobile client would:
+    //   POST /api/cases
+    //   X-LabTrax-Client: mobile/2
+    //   body: { ..., remakeOfCaseId: <the B case id> }
+    //
+    // The server must traverse the chain root (rootId), count all existing
+    // descendants (1: the "B" case already seeded), and produce "C" — NOT "BB".
+    const r = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .set("x-labtrax-client", "mobile/2")
+      .send({
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Mobile",
+        patientLastName: "Root",
+        doctorName: "Dr. Mobile",
+        status: "received",
+        remakeOfCaseId: remakeBId,
+        remakeReason: "Remake of the B remake via mobile client",
+        remakeCharged: true,
+      });
+
+    expect(
+      r.status,
+      `expected 201 but got ${r.status}: ${JSON.stringify(r.body)}`,
+    ).toBe(201);
+    const remakeC = r.body.data;
+    createdCaseIds.push(remakeC.id);
+
+    expect(
+      remakeC.caseNumber,
+      `mobile client remaking "${rootNumber}B" must produce "${rootNumber}C", not "${rootNumber}BB"`,
+    ).toBe(`${rootNumber}C`);
+
+    // remakeOfCaseId must point to the immediate parent (the B case),
+    // not the root — the root-traversal is server-side number computation only.
+    expect(remakeC.remakeOfCaseId).toBe(remakeBId);
+  });
+
+  // ── (3c) :id/remake endpoint — remake-of-a-remake gets C, not BB ──────────
+  //
+  // The desktop "Mark as remake" button calls POST /cases/:id/remake (not
+  // POST /cases).  This code path independently resolves the remake chain root
+  // before computing the suffix letter.  If that traversal were missing,
+  // remaking "26-334B" via the button would produce "26-334BB" instead of
+  // "26-334C".  This test pins that contract specifically for the :id/remake
+  // endpoint so a regression in that handler is caught independently of the
+  // POST /cases path covered by (3b).
+
+  it("(3c) POST /cases/:id/remake on a remake case yields C not BB — :id/remake endpoint regression", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable } = dbMod as any;
+
+    // Seed the root original directly in the DB.
+    const rootId = rid("root3c");
+    const rootNumber = rid("EP");
+    await db.insert(casesTable).values({
+      id: rootId,
+      caseNumber: rootNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Endpoint",
+      patientLastName: "Patient",
+      doctorName: "Dr. Endpoint",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(rootId);
+
+    // Seed the first remake ("B") directly in the DB so we don't rely on the
+    // POST /cases path for setup.
+    const remakeBId = rid("remB3c");
+    await db.insert(casesTable).values({
+      id: remakeBId,
+      caseNumber: `${rootNumber}B`,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Endpoint",
+      patientLastName: "Patient",
+      doctorName: "Dr. Endpoint",
+      createdByUserId: labOwnerId,
+      remakeOfCaseId: rootId,
+      remakeReason: "First remake (seeded)",
+    });
+    createdCaseIds.push(remakeBId);
+
+    // Call POST /cases/:id/remake on the "B" case via the desktop-button endpoint.
+    // The body uses the remake questionnaire schema (remakeReasonKey is required).
+    const r = await request(appMod.default)
+      .post(`/api/cases/${remakeBId}/remake`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        remakeReasonKey: "fit_margins",
+        remakeReason: "Remake of the B remake via :id/remake endpoint",
+        remakeCharged: true,
+      });
+
+    expect(
+      r.status,
+      `expected 201 but got ${r.status}: ${JSON.stringify(r.body)}`,
+    ).toBe(201);
+    const remakeC = r.body.data;
+    createdCaseIds.push(remakeC.id);
+
+    expect(
+      remakeC.caseNumber,
+      `remaking "${rootNumber}B" via POST /cases/:id/remake must produce "${rootNumber}C", not "${rootNumber}BB"`,
+    ).toBe(`${rootNumber}C`);
+
+    // The :id/remake endpoint returns { id, caseNumber } only, so we verify
+    // the DB row directly to confirm remakeOfCaseId points to the immediate
+    // parent (the "B" case) rather than the root.
+    const [dbRow] = await db
+      .select({ remakeOfCaseId: casesTable.remakeOfCaseId })
+      .from(casesTable)
+      .where(eq(casesTable.id, remakeC.id));
+    expect(dbRow?.remakeOfCaseId).toBe(remakeBId);
+  });
+
+  // ── (3d) :id/remake mid-transaction failure rolls back everything ─────────
+  //
+  // POST /cases/:id/remake now inserts the new case and links it (suffix
+  // assignment, remake_of/remade_by events, invoice zeroing) in ONE
+  // transaction via the shared linkCaseAsRemakeCore. A failure that occurs
+  // AFTER the new case row is inserted (here: the 24-remake limit check,
+  // which throws inside the transaction) must roll back the whole bundle —
+  // no orphan placeholder case, no dangling remade_by event on the original.
+
+  it("(3d) POST /cases/:id/remake failing mid-transaction leaves no orphan case and no remade_by event", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable, caseEvents } = dbMod as any;
+
+    const rootId = rid("root3d");
+    const rootNumber = rid("FL");
+    await db.insert(casesTable).values({
+      id: rootId,
+      caseNumber: rootNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Rollback",
+      patientLastName: "Patient",
+      doctorName: "Dr. Rollback",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(rootId);
+
+    // Seed 24 direct remakes so the next remake exceeds the maximum and the
+    // limit check throws inside the transaction (after the placeholder case
+    // insert).
+    for (let i = 0; i < 24; i++) {
+      const id = rid(`rb3d${i}`);
+      await db.insert(casesTable).values({
+        id,
+        caseNumber: `${rootNumber}${String.fromCharCode(66 + i)}`,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        status: "received",
+        patientFirstName: "Rollback",
+        patientLastName: "Patient",
+        doctorName: "Dr. Rollback",
+        createdByUserId: labOwnerId,
+        remakeOfCaseId: rootId,
+        remakeReason: "seeded",
+      });
+      createdCaseIds.push(id);
+    }
+
+    const r = await request(appMod.default)
+      .post(`/api/cases/${rootId}/remake`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        remakeReasonKey: "fit_margins",
+        remakeReason: "Should exceed the remake limit and roll back",
+        remakeCharged: true,
+      });
+    expect(
+      r.status,
+      `expected 409 but got ${r.status}: ${JSON.stringify(r.body)}`,
+    ).toBe(409);
+
+    // No orphan placeholder case may survive the rollback.
+    const orphans = await db
+      .select({ id: casesTable.id })
+      .from(casesTable)
+      .where(
+        and(
+          eq(casesTable.labOrganizationId, labOrgId),
+          sql`${casesTable.caseNumber} LIKE 'RMK-PENDING-%'`,
+        ),
+      );
+    expect(
+      orphans,
+      "a failed remake must not leave an orphan RMK-PENDING case behind",
+    ).toEqual([]);
+
+    // No dangling remade_by event on the original.
+    const [remadeBy] = await db
+      .select()
+      .from(caseEvents)
+      .where(
+        and(
+          eq(caseEvents.caseId, rootId),
+          eq(caseEvents.eventType, "remade_by"),
+        ),
+      );
+    expect(
+      remadeBy,
+      "a failed remake must not leave a remade_by event on the original",
+    ).toBeUndefined();
   });
 
   // ── (4) No-charge remake: invoice still created ───────────────────────────
@@ -589,5 +1052,402 @@ maybe("Remake case creation invariants (db integration)", () => {
     // The message must be user-readable (not a raw pg error).
     expect(typeof r.body.message === "string" && r.body.message.length > 10,
       "409 must include a human-readable message").toBe(true);
+  });
+
+  // ── PATCH /:caseId/mark-as-remake (Invoice Editor "Mark as remake") ──────
+  //
+  // Exercises the same linkExistingCaseAsRemake capability as POST /cases and
+  // POST /:id/remake above, but through the new standalone endpoint that is
+  // reachable for ANY case regardless of AI-import/review status — the
+  // capability the Invoice Editor's "Mark as remake" action calls.
+
+  it("(6) PATCH /:caseId/mark-as-remake: links case as remake, assigns suffix, saves questionnaire fields, writes both history events + audit log", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable, caseEvents, auditLogs } = dbMod as any;
+
+    const originalId = rid("origMR");
+    const originalNumber = rid("MR");
+    await db.insert(casesTable).values({
+      id: originalId,
+      caseNumber: originalNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Frank",
+      patientLastName: "Reviewed",
+      doctorName: "Dr. Reviewed",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(originalId);
+
+    const reviewedCaseId = rid("reviewed");
+    await db.insert(casesTable).values({
+      id: reviewedCaseId,
+      caseNumber: rid("INV"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Frank",
+      patientLastName: "Reviewed",
+      doctorName: "Dr. Reviewed",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(reviewedCaseId);
+
+    const r = await request(appMod.default)
+      .patch(`/api/cases/${reviewedCaseId}/mark-as-remake`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        remakeOfCaseId: originalId,
+        remakeReason: "Shade mismatch found during invoice review",
+        remakeCharged: true,
+        remakeReasonKey: "shade_wrong",
+        remakeShadeLightness: "light",
+        remakeShadePrescribed: "A2",
+        remakeShadeProvided: "A3",
+        remakeReturnedToLab: true,
+        remakeNotes: "Caught during monthly $0-balance invoice review.",
+      });
+
+    expect(r.status, `expected 200 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(200);
+    const expectedCaseNumber = `${originalNumber}B`;
+    expect(r.body.data.caseId).toBe(reviewedCaseId);
+    expect(r.body.data.caseNumber).toBe(expectedCaseNumber);
+    expect(r.body.data.remakeOfCaseId).toBe(originalId);
+    expect(r.body.data.remakeReason).toBe("Shade mismatch found during invoice review");
+    expect(r.body.data.remakeCharged).toBe(true);
+    expect(r.body.data.originalCaseId).toBe(originalId);
+    expect(r.body.data.originalCaseNumber).toBe(originalNumber);
+
+    // Questionnaire fields persisted on the case row itself.
+    const [updatedRow] = await db
+      .select()
+      .from(casesTable)
+      .where(eq(casesTable.id, reviewedCaseId));
+    expect(updatedRow.remakeReasonKey).toBe("shade_wrong");
+    expect(updatedRow.remakeShadeLightness).toBe("light");
+    expect(updatedRow.remakeShadePrescribed).toBe("A2");
+    expect(updatedRow.remakeShadeProvided).toBe("A3");
+    expect(updatedRow.remakeReturnedToLab).toBe(true);
+    expect(updatedRow.remakeNotes).toBe("Caught during monthly $0-balance invoice review.");
+
+    // Forward + backward history events, both using the post-suffix number.
+    const forwardEvent = await db.query.caseEvents.findFirst({
+      where: and(eq(caseEvents.caseId, reviewedCaseId), eq(caseEvents.eventType, "remake_of")),
+    });
+    expect(forwardEvent, "remake_of event must exist on the reviewed case").toBeDefined();
+    expect(forwardEvent.metadataJson?.originalCaseId).toBe(originalId);
+
+    const backwardEvent = await db.query.caseEvents.findFirst({
+      where: and(eq(caseEvents.caseId, originalId), eq(caseEvents.eventType, "remade_by")),
+    });
+    expect(backwardEvent, "remade_by event must exist on the original case").toBeDefined();
+    expect(backwardEvent.metadataJson?.remakeCaseId).toBe(reviewedCaseId);
+    expect(backwardEvent.metadataJson?.remakeCaseNumber).toBe(expectedCaseNumber);
+
+    // Audit log entry for the link action.
+    const auditRow = await db.query.auditLogs.findFirst({
+      where: and(
+        eq(auditLogs.entityType, "case"),
+        eq(auditLogs.entityId, reviewedCaseId),
+        eq(auditLogs.action, "case_remake_linked"),
+      ),
+    });
+    expect(auditRow, "case_remake_linked audit log entry must be written").toBeDefined();
+  });
+
+  it("(7) PATCH /:caseId/mark-as-remake: no-charge zeros the case's open invoice and its line items", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable, invoices, invoiceLineItems } = dbMod as any;
+
+    const originalId = rid("origNC2");
+    const originalNumber = rid("MRNC");
+    await db.insert(casesTable).values({
+      id: originalId,
+      caseNumber: originalNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Gina",
+      patientLastName: "NoCharge",
+      doctorName: "Dr. NoCharge",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(originalId);
+
+    const reviewedCaseId = rid("reviewedNC");
+    await db.insert(casesTable).values({
+      id: reviewedCaseId,
+      caseNumber: rid("INV2"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Gina",
+      patientLastName: "NoCharge",
+      doctorName: "Dr. NoCharge",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(reviewedCaseId);
+
+    const invoiceId = rid("inv");
+    await db.insert(invoices).values({
+      id: invoiceId,
+      invoiceNumber: rid("INVNUM"),
+      caseId: reviewedCaseId,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "open",
+      subtotal: "150.00",
+      total: "150.00",
+      balanceDue: "150.00",
+      createdByUserId: labOwnerId,
+    });
+    const lineItemId = rid("li");
+    await db.insert(invoiceLineItems).values({
+      id: lineItemId,
+      invoiceId,
+      description: "Zirconia Crown",
+      quantity: 1,
+      unitPrice: "150.00",
+      lineTotal: "150.00",
+    });
+
+    const r = await request(appMod.default)
+      .patch(`/api/cases/${reviewedCaseId}/mark-as-remake`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        remakeOfCaseId: originalId,
+        remakeReason: "Lab error, no charge to practice",
+        remakeCharged: false,
+      });
+
+    expect(r.status, `expected 200 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(200);
+    expect(r.body.data.remakeCharged).toBe(false);
+
+    const [zeroedInvoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(Number(zeroedInvoice.subtotal)).toBe(0);
+    expect(Number(zeroedInvoice.total)).toBe(0);
+    expect(Number(zeroedInvoice.balanceDue)).toBe(0);
+    expect(typeof zeroedInvoice.notes === "string" && zeroedInvoice.notes.length > 0).toBe(true);
+
+    const [zeroedLine] = await db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.id, lineItemId));
+    expect(Number(zeroedLine.unitPrice)).toBe(0);
+    expect(Number(zeroedLine.lineTotal)).toBe(0);
+
+    await db.delete(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoiceId));
+    await db.delete(invoices).where(eq(invoices.id, invoiceId));
+  });
+
+  it("(8) PATCH /:caseId/mark-as-remake: rejects a case marked as a remake of itself (400)", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable } = dbMod as any;
+
+    const caseId = rid("selfRemake");
+    await db.insert(casesTable).values({
+      id: caseId,
+      caseNumber: rid("SELF"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Hank",
+      patientLastName: "Self",
+      doctorName: "Dr. Self",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(caseId);
+
+    const r = await request(appMod.default)
+      .patch(`/api/cases/${caseId}/mark-as-remake`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        remakeOfCaseId: caseId,
+        remakeReason: "Should be rejected",
+        remakeCharged: true,
+      });
+
+    expect(r.status, `expected 400 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(400);
+  });
+
+  it("(9) PATCH /:caseId/mark-as-remake: rejects a case that is already linked as a remake (400)", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable } = dbMod as any;
+
+    const originalId = rid("origAlready");
+    await db.insert(casesTable).values({
+      id: originalId,
+      caseNumber: rid("ALR"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Ivy",
+      patientLastName: "Already",
+      doctorName: "Dr. Already",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(originalId);
+
+    const otherOriginalId = rid("origOther");
+    await db.insert(casesTable).values({
+      id: otherOriginalId,
+      caseNumber: rid("OTH"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Ivy",
+      patientLastName: "Already",
+      doctorName: "Dr. Already",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(otherOriginalId);
+
+    const alreadyRemakeId = rid("alreadyRemake");
+    await db.insert(casesTable).values({
+      id: alreadyRemakeId,
+      caseNumber: rid("ALRB"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Ivy",
+      patientLastName: "Already",
+      doctorName: "Dr. Already",
+      createdByUserId: labOwnerId,
+      remakeOfCaseId: originalId,
+      remakeReason: "Already a remake",
+    });
+    createdCaseIds.push(alreadyRemakeId);
+
+    const r = await request(appMod.default)
+      .patch(`/api/cases/${alreadyRemakeId}/mark-as-remake`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        remakeOfCaseId: otherOriginalId,
+        remakeReason: "Trying to relink",
+        remakeCharged: true,
+      });
+
+    expect(r.status, `expected 400 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(400);
+  });
+
+  it("(10) PATCH /:caseId/mark-as-remake: sequential suffix — second call on a different case of the same original gets C", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable } = dbMod as any;
+
+    const originalId = rid("origSeq");
+    const originalNumber = rid("SEQ");
+    await db.insert(casesTable).values({
+      id: originalId,
+      caseNumber: originalNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Jane",
+      patientLastName: "Sequential",
+      doctorName: "Dr. Sequential",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(originalId);
+
+    // Pre-existing remake occupying suffix "B".
+    const existingRemakeId = rid("existingRemake");
+    await db.insert(casesTable).values({
+      id: existingRemakeId,
+      caseNumber: `${originalNumber}B`,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Jane",
+      patientLastName: "Sequential",
+      doctorName: "Dr. Sequential",
+      createdByUserId: labOwnerId,
+      remakeOfCaseId: originalId,
+      remakeReason: "First remake",
+    });
+    createdCaseIds.push(existingRemakeId);
+
+    const reviewedCaseId = rid("reviewedSeq");
+    await db.insert(casesTable).values({
+      id: reviewedCaseId,
+      caseNumber: rid("INV3"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Jane",
+      patientLastName: "Sequential",
+      doctorName: "Dr. Sequential",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(reviewedCaseId);
+
+    const r = await request(appMod.default)
+      .patch(`/api/cases/${reviewedCaseId}/mark-as-remake`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        remakeOfCaseId: originalId,
+        remakeReason: "Second remake via mark-as-remake",
+        remakeCharged: true,
+      });
+
+    expect(r.status, `expected 200 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(200);
+    expect(
+      r.body.data.caseNumber,
+      "second remake of the same original must get suffix C, not collide with the existing B",
+    ).toBe(`${originalNumber}C`);
+  });
+
+  it("(11) PATCH /:caseId/mark-as-remake: non-member of the case's lab/practice gets 403", async () => {
+    const { db, cases: casesTable, users, userSessions } = dbMod as any;
+
+    const outsiderId = rid("uoutsider");
+    await db.insert(users).values({
+      id: outsiderId,
+      username: `outsider_${outsiderId}`,
+      password: "doesnotmatter",
+    });
+    const { access: outsiderAccess } = await makeSession(outsiderId);
+
+    const originalId = rid("origOut");
+    await db.insert(casesTable).values({
+      id: originalId,
+      caseNumber: rid("OUT"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Ken",
+      patientLastName: "Outsider",
+      doctorName: "Dr. Outsider",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(originalId);
+
+    const reviewedCaseId = rid("reviewedOut");
+    await db.insert(casesTable).values({
+      id: reviewedCaseId,
+      caseNumber: rid("INV4"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Ken",
+      patientLastName: "Outsider",
+      doctorName: "Dr. Outsider",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(reviewedCaseId);
+
+    const r = await request(appMod.default)
+      .patch(`/api/cases/${reviewedCaseId}/mark-as-remake`)
+      .set("Authorization", `Bearer ${outsiderAccess}`)
+      .send({
+        remakeOfCaseId: originalId,
+        remakeReason: "Should be forbidden",
+        remakeCharged: true,
+      });
+
+    expect(r.status, `expected 403 but got ${r.status}: ${JSON.stringify(r.body)}`).toBe(403);
+
+    await db.delete(userSessions).where(eq(userSessions.userId, outsiderId));
+    await db.delete(users).where(eq(users.id, outsiderId));
   });
 });

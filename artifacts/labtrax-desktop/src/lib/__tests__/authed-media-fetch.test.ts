@@ -15,11 +15,19 @@
  * Keep this test permanently per the REGRESSION_GUARDRAILS.md policy.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { authedMediaFetch } from "../api";
+import { authedMediaFetch, setProviderOrganizationId } from "../api";
 
 const URL_UNDER_TEST = "https://lab-trax.replit.app/api/cases/x/attachments/y/file";
+const MIGRATED_RELATIVE_URL =
+  "/api/cases/attachment-file/migrated-photo.jpg";
+const MIGRATED_SPECIAL_CHARACTER_URLS = [
+  "/api/cases/attachment-file/migrated%20photo.jpg",
+  "/api/cases/attachment-file/migrated-%D1%84%D0%BE%D1%82%D0%BE-%E9%9B%AA.jpg",
+  "/api/cases/attachment-file/migrated%23photo%3F100%25.jpg",
+];
 
 afterEach(() => {
+  setProviderOrganizationId(null);
   (window as { electronAPI?: unknown }).electronAPI = undefined;
   vi.restoreAllMocks();
 });
@@ -39,12 +47,77 @@ describe("authedMediaFetch", () => {
 
     const resp = await authedMediaFetch(URL_UNDER_TEST);
 
-    expect(fetchAuthenticated).toHaveBeenCalledWith(URL_UNDER_TEST);
+    expect(fetchAuthenticated).toHaveBeenCalledWith(URL_UNDER_TEST, undefined);
     // The browser fetch must NOT be used when the bridge handled it.
     expect(globalFetch).not.toHaveBeenCalled();
     expect(resp.ok).toBe(true);
     expect(resp.headers.get("content-type")).toBe("image/jpeg");
     expect(Array.from(new Uint8Array(await resp.arrayBuffer()))).toEqual([9, 8, 7]);
+  });
+
+  it("sends migrated relative attachment-file references through the authenticated Electron bridge", async () => {
+    const fetchAuthenticated = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      mimeType: "image/jpeg",
+      buffer: new Uint8Array([4, 5, 6]),
+    }));
+    (window as { electronAPI?: unknown }).electronAPI = {
+      media: { fetchAuthenticated },
+    };
+    const globalFetch = vi.spyOn(globalThis, "fetch");
+
+    const resp = await authedMediaFetch(MIGRATED_RELATIVE_URL);
+
+    expect(fetchAuthenticated).toHaveBeenCalledWith(
+      MIGRATED_RELATIVE_URL,
+      undefined,
+    );
+    expect(globalFetch).not.toHaveBeenCalled();
+    expect(resp.ok).toBe(true);
+  });
+
+  it.each(MIGRATED_SPECIAL_CHARACTER_URLS)(
+    "sends encoded migrated reference through the authenticated Electron bridge unchanged: %s",
+    async (relativeUrl) => {
+      const fetchAuthenticated = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        mimeType: "image/jpeg",
+        buffer: new Uint8Array([4, 5, 6]),
+      }));
+      (window as { electronAPI?: unknown }).electronAPI = {
+        media: { fetchAuthenticated },
+      };
+      const globalFetch = vi.spyOn(globalThis, "fetch");
+
+      const resp = await authedMediaFetch(relativeUrl);
+
+      expect(fetchAuthenticated).toHaveBeenCalledWith(relativeUrl, undefined);
+      expect(fetchAuthenticated.mock.calls[0]?.[0]).not.toContain("%2520");
+      expect(fetchAuthenticated.mock.calls[0]?.[0]).not.toContain("%2523");
+      expect(globalFetch).not.toHaveBeenCalled();
+      expect(resp.ok).toBe(true);
+    },
+  );
+
+  it("forwards the selected provider organization through the Electron bridge", async () => {
+    const fetchAuthenticated = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      mimeType: "image/jpeg",
+      buffer: new Uint8Array([1]),
+    }));
+    (window as { electronAPI?: unknown }).electronAPI = {
+      media: { fetchAuthenticated },
+    };
+    setProviderOrganizationId("practice-a");
+
+    await authedMediaFetch(URL_UNDER_TEST);
+
+    expect(fetchAuthenticated).toHaveBeenCalledWith(URL_UNDER_TEST, {
+      "x-provider-organization-id": "practice-a",
+    });
   });
 
   it("returns a non-ok Response when the bridge reports failure", async () => {

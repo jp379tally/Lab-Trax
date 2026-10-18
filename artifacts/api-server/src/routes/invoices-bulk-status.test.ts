@@ -207,8 +207,8 @@ maybe("Bulk invoice status change (db integration)", () => {
   });
 
   it("applies a valid status to a selection spanning two lab orgs", async () => {
-    const a1 = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "draft" });
-    const b1 = await insertInvoice({ labOrganizationId: labBOrgId, providerOrganizationId: practiceBId, status: "draft" });
+    const a1 = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "open" });
+    const b1 = await insertInvoice({ labOrganizationId: labBOrgId, providerOrganizationId: practiceBId, status: "open" });
 
     const r = await request(appMod.default)
       .post("/api/invoices/bulk-status")
@@ -230,8 +230,8 @@ maybe("Bulk invoice status change (db integration)", () => {
   });
 
   it("writes one audit log per invoice scoped to its own lab org", async () => {
-    const a1 = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "draft" });
-    const b1 = await insertInvoice({ labOrganizationId: labBOrgId, providerOrganizationId: practiceBId, status: "draft" });
+    const a1 = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "open" });
+    const b1 = await insertInvoice({ labOrganizationId: labBOrgId, providerOrganizationId: practiceBId, status: "open" });
 
     const r = await request(appMod.default)
       .post("/api/invoices/bulk-status")
@@ -253,12 +253,12 @@ maybe("Bulk invoice status change (db integration)", () => {
 
   it("writes an invoice_updated case-history event for a case-linked invoice on a non-void status", async () => {
     const caseId = await insertCase({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId });
-    const inv = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "draft", caseId });
+    const inv = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "open", caseId });
 
     const r = await request(appMod.default)
       .post("/api/invoices/bulk-status")
       .set("Authorization", `Bearer ${tokens.both}`)
-      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "open" });
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "paid" });
 
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(r.body.data.updatedCount).toBe(1);
@@ -273,8 +273,8 @@ maybe("Bulk invoice status change (db integration)", () => {
     expect(evt.eventType).toBe("invoice_updated");
     expect(evt.actorOrganizationId).toBe(labAOrgId);
     expect(evt.metadataJson.invoiceNumber).toBeTruthy();
-    expect(evt.metadataJson.previousStatus).toBe("draft");
-    expect(evt.metadataJson.newStatus).toBe("open");
+    expect(evt.metadataJson.previousStatus).toBe("open");
+    expect(evt.metadataJson.newStatus).toBe("paid");
   });
 
   it("writes an invoice_voided case-history event for a case-linked invoice when target is void", async () => {
@@ -302,9 +302,212 @@ maybe("Bulk invoice status change (db integration)", () => {
     expect(evt.metadataJson.newStatus).toBe("void");
   });
 
+  it("clears balanceDue and stamps void fields when bulk-voiding, mirroring the single-invoice void action", async () => {
+    const inv = await insertInvoice({
+      labOrganizationId: labAOrgId,
+      providerOrganizationId: practiceAId,
+      status: "open",
+      total: "250.00",
+      balanceDue: "250.00",
+    });
+
+    const r = await request(appMod.default)
+      .post("/api/invoices/bulk-status")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "void" });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.updatedCount).toBe(1);
+
+    const { db, invoices } = dbMod as any;
+    const row = await db.query.invoices.findFirst({
+      where: eq(invoices.id, inv),
+      columns: {
+        status: true,
+        balanceDue: true,
+        voidedAt: true,
+        voidedByUserId: true,
+        voidKind: true,
+      },
+    });
+    expect(row.status).toBe("void");
+    expect(Number(row.balanceDue)).toBe(0);
+    expect(row.voidedAt).toBeTruthy();
+    expect(row.voidedByUserId).toBe(billingUserId);
+    expect(row.voidKind).toBe("void");
+  });
+
+  it("zeroes balanceDue when bulk target status is 'paid'", async () => {
+    const inv = await insertInvoice({
+      labOrganizationId: labAOrgId,
+      providerOrganizationId: practiceAId,
+      status: "open",
+      total: "180.00",
+      balanceDue: "180.00",
+    });
+
+    const r = await request(appMod.default)
+      .post("/api/invoices/bulk-status")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "paid" });
+
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.updatedCount).toBe(1);
+
+    const { db, invoices } = dbMod as any;
+    const row = await db.query.invoices.findFirst({
+      where: eq(invoices.id, inv),
+      columns: { status: true, balanceDue: true },
+    });
+    expect(row.status).toBe("paid");
+    // Bulk-status "paid" must zero balanceDue so lab-side totals don't double-count.
+    expect(Number(row.balanceDue)).toBe(0);
+  });
+
+  it("restores balanceDue to (total − payments) when reversing a bulk-paid invoice back to open", async () => {
+    // Simulates the common correction flow: bulk-paid in error → bulk back to open.
+    // The invoice has no payment rows, so balanceDue must be restored to the full total.
+    const inv = await insertInvoice({
+      labOrganizationId: labAOrgId,
+      providerOrganizationId: practiceAId,
+      status: "open",
+      total: "180.00",
+      balanceDue: "180.00",
+    });
+
+    // Step 1: bulk-paid → zeroes balance.
+    const toPaid = await request(appMod.default)
+      .post("/api/invoices/bulk-status")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "paid" });
+    expect(toPaid.status, JSON.stringify(toPaid.body)).toBe(200);
+
+    // Step 2: reverse back to open → balance must be recalculated from total − payments.
+    const toOpen = await request(appMod.default)
+      .post("/api/invoices/bulk-status")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "open" });
+    expect(toOpen.status, JSON.stringify(toOpen.body)).toBe(200);
+    expect(toOpen.body.data.updatedCount).toBe(1);
+
+    const { db, invoices } = dbMod as any;
+    const row = await db.query.invoices.findFirst({
+      where: eq(invoices.id, inv),
+      columns: { status: true, balanceDue: true },
+    });
+    expect(row.status).toBe("open");
+    // No payment rows exist, so the full $180 must be outstanding again.
+    expect(Number(row.balanceDue)).toBe(180);
+  });
+
+  it("restores balanceDue subtracting an active credit when reversing paid → open (credit-only settlement)", async () => {
+    // Simulates: invoice settled entirely by a credit (no payment row).
+    // After paid → open the balance must be total − credit, not full total.
+    const { db, invoiceCredits: invoiceCreditsTable } = dbMod as any;
+
+    const inv = await insertInvoice({
+      labOrganizationId: labAOrgId,
+      providerOrganizationId: practiceAId,
+      status: "open",
+      total: "200.00",
+      balanceDue: "200.00",
+    });
+
+    // Insert an unreversed credit of $200 (fully covers the invoice).
+    const creditId = rid("cred");
+    await db.insert(invoiceCreditsTable).values({
+      id: creditId,
+      invoiceId: inv,
+      labOrganizationId: labAOrgId,
+      providerOrganizationId: practiceAId,
+      amount: "200.00",
+      sourceKind: "manual",
+      appliedByUserId: billingUserId,
+    });
+
+    // Bulk-paid → balance zeroed.
+    const toPaid = await request(appMod.default)
+      .post("/api/invoices/bulk-status")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "paid" });
+    expect(toPaid.status, JSON.stringify(toPaid.body)).toBe(200);
+
+    // Reverse back to open → balance = total − credit = $0.
+    const toOpen = await request(appMod.default)
+      .post("/api/invoices/bulk-status")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "open" });
+    expect(toOpen.status, JSON.stringify(toOpen.body)).toBe(200);
+
+    const { invoices } = dbMod as any;
+    const row = await db.query.invoices.findFirst({
+      where: eq(invoices.id, inv),
+      columns: { status: true, balanceDue: true },
+    });
+    expect(row.status).toBe("open");
+    // Credit covers the full amount, so nothing is owed.
+    expect(Number(row.balanceDue)).toBe(0);
+  });
+
+  it("restores balanceDue correctly when mixed payment + credit settle part of the invoice on paid → open", async () => {
+    // $300 invoice, $100 payment, $50 credit → $150 should remain.
+    const { db, invoiceCredits: invoiceCreditsTable, payments: paymentsTable } = dbMod as any;
+
+    const inv = await insertInvoice({
+      labOrganizationId: labAOrgId,
+      providerOrganizationId: practiceAId,
+      status: "open",
+      total: "300.00",
+      balanceDue: "300.00",
+    });
+
+    // Insert a $100 payment.
+    await db.insert(paymentsTable).values({
+      id: rid("pay"),
+      invoiceId: inv,
+      amount: "100.00",
+      paymentMethod: "check",
+      paidAt: new Date(),
+      recordedByUserId: billingUserId,
+    });
+
+    // Insert a $50 unreversed credit.
+    await db.insert(invoiceCreditsTable).values({
+      id: rid("cred"),
+      invoiceId: inv,
+      labOrganizationId: labAOrgId,
+      providerOrganizationId: practiceAId,
+      amount: "50.00",
+      sourceKind: "manual",
+      appliedByUserId: billingUserId,
+    });
+
+    // Bulk-paid → balance zeroed.
+    const toPaid = await request(appMod.default)
+      .post("/api/invoices/bulk-status")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "paid" });
+    expect(toPaid.status, JSON.stringify(toPaid.body)).toBe(200);
+
+    // Reverse back to open → balance = 300 − 100 − 50 = 150.
+    const toOpen = await request(appMod.default)
+      .post("/api/invoices/bulk-status")
+      .set("Authorization", `Bearer ${tokens.both}`)
+      .send({ labOrganizationId: labAOrgId, invoiceIds: [inv], status: "open" });
+    expect(toOpen.status, JSON.stringify(toOpen.body)).toBe(200);
+
+    const { invoices } = dbMod as any;
+    const row = await db.query.invoices.findFirst({
+      where: eq(invoices.id, inv),
+      columns: { status: true, balanceDue: true },
+    });
+    expect(row.status).toBe("open");
+    expect(Number(row.balanceDue)).toBe(150);
+  });
+
   it("skips frozen invoices (skippedFrozenCount) and changes them not at all", async () => {
-    const normal = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "draft" });
-    const frozen = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "draft", frozen: true });
+    const normal = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "open" });
+    const frozen = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "open", frozen: true });
 
     const r = await request(appMod.default)
       .post("/api/invoices/bulk-status")
@@ -320,12 +523,12 @@ maybe("Bulk invoice status change (db integration)", () => {
       where: eq(invoices.id, frozen),
       columns: { status: true },
     });
-    expect(frozenRow.status).toBe("draft");
+    expect(frozenRow.status).toBe("open");
   });
 
   it("does not write a case-history event for a skipped frozen case-linked invoice", async () => {
     const caseId = await insertCase({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId });
-    const frozen = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "draft", frozen: true, caseId });
+    const frozen = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "open", frozen: true, caseId });
 
     const r = await request(appMod.default)
       .post("/api/invoices/bulk-status")
@@ -343,7 +546,7 @@ maybe("Bulk invoice status change (db integration)", () => {
       where: eq(invoices.id, frozen),
       columns: { status: true },
     });
-    expect(frozenRow.status).toBe("draft");
+    expect(frozenRow.status).toBe("open");
 
     // No phantom timeline entry for the skipped invoice's case.
     const events = await db.query.caseEvents.findMany({
@@ -355,7 +558,7 @@ maybe("Bulk invoice status change (db integration)", () => {
   });
 
   it("rejects an invalid status value with 400 and changes nothing", async () => {
-    const a1 = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "draft" });
+    const a1 = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "open" });
 
     const r = await request(appMod.default)
       .post("/api/invoices/bulk-status")
@@ -369,12 +572,12 @@ maybe("Bulk invoice status change (db integration)", () => {
       where: eq(invoices.id, a1),
       columns: { status: true },
     });
-    expect(row.status).toBe("draft");
+    expect(row.status).toBe("open");
   });
 
   it("is 403 (and changes nothing) when caller lacks billing role for a touched org", async () => {
-    const a1 = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "draft" });
-    const b1 = await insertInvoice({ labOrganizationId: labBOrgId, providerOrganizationId: practiceBId, status: "draft" });
+    const a1 = await insertInvoice({ labOrganizationId: labAOrgId, providerOrganizationId: practiceAId, status: "open" });
+    const b1 = await insertInvoice({ labOrganizationId: labBOrgId, providerOrganizationId: practiceBId, status: "open" });
 
     const r = await request(appMod.default)
       .post("/api/invoices/bulk-status")
@@ -389,7 +592,7 @@ maybe("Bulk invoice status change (db integration)", () => {
       columns: { id: true, status: true },
     });
     for (const row of rows) {
-      expect(row.status).toBe("draft");
+      expect(row.status).toBe("open");
     }
   });
 

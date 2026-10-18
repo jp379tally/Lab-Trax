@@ -150,7 +150,7 @@ maybe("Cases core lifecycle (db integration)", () => {
         providerOrganizationId: providerOrgId,
         patientFirstName: "John",
         patientLastName: "Doe",
-        doctorName: "Dr. Smith",
+        doctorName: "Dr. Synthetic063",
         status: "received",
       });
 
@@ -161,6 +161,52 @@ maybe("Cases core lifecycle (db integration)", () => {
     expect(r.body.data.labOrganizationId).toBe(labOrgId);
 
     if (r.body.data?.id) createdCaseIds.push(r.body.data.id);
+  });
+
+  it("keeps normal Created timestamps separate from backdated Received dates across list and detail", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("DATE");
+    const requestStartedAt = Date.now();
+    const created = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Created",
+        patientLastName: "VersusReceived",
+        doctorName: "Dr. Date",
+        status: "received",
+        receivedAt: "2020-09-19",
+      });
+
+    expect(created.status).toBe(201);
+    const caseId = created.body?.data?.id;
+    expect(caseId).toBeTruthy();
+    if (!caseId) return;
+    createdCaseIds.push(caseId);
+
+    const createdAt = new Date(created.body.data.createdAt).getTime();
+    expect(createdAt).toBeGreaterThanOrEqual(requestStartedAt - 1_000);
+    expect(createdAt).toBeLessThanOrEqual(Date.now() + 1_000);
+    expect(created.body.data.receivedAt).toContain("2020-09-19");
+
+    const [detail, list] = await Promise.all([
+      request(appMod.default)
+        .get(`/api/cases/${caseId}`)
+        .set("Authorization", `Bearer ${access}`),
+      request(appMod.default)
+        .get(`/api/cases?labOrganizationId=${encodeURIComponent(labOrgId)}`)
+        .set("Authorization", `Bearer ${access}`),
+    ]);
+    expect(detail.status).toBe(200);
+    expect(detail.body.data.createdAt).toBe(created.body.data.createdAt);
+    expect(detail.body.data.receivedAt).toContain("2020-09-19");
+    const listedCase = (list.body?.data ?? []).find((item: any) => item.id === caseId);
+    expect(list.status).toBe(200);
+    expect(listedCase?.createdAt).toBe(created.body.data.createdAt);
+    expect(listedCase?.receivedAt).toContain("2020-09-19");
   });
 
   it("POST /api/cases missing required fields returns 400", async () => {
@@ -203,7 +249,7 @@ maybe("Cases core lifecycle (db integration)", () => {
         providerOrganizationId: providerOrgId,
         patientFirstName: "Jane",
         patientLastName: "Smith",
-        doctorName: "Dr. Jones",
+        doctorName: "Dr. Synthetic047",
       });
     expect(create.status).toBe(201);
     const caseId = create.body.data.id;
@@ -305,7 +351,7 @@ maybe("Cases core lifecycle (db integration)", () => {
         providerOrganizationId: providerOrgId,
         patientFirstName: "List",
         patientLastName: "Test",
-        doctorName: "Dr. List",
+        doctorName: "Dr. Synthetic051",
       });
     expect(create.status).toBe(201);
     const caseId = create.body.data.id;
@@ -635,6 +681,214 @@ maybe("Cases core lifecycle (db integration)", () => {
     expect(sim.status).toBe(200);
     const names: string[] = (sim.body.data?.matches ?? []).map((m: any) => m.doctorName);
     expect(names).toContain("Dr. Priya Nair");
+  });
+
+  // ── expectedDeliveryDate / dueDate precedence ─────────────────────────────
+
+  it("POST /api/cases with explicit dueDate sets expectedDeliveryDate to null", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("EDD");
+    const explicitDue = "2026-07-21";
+
+    const r = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Jane",
+        patientLastName: "Roe",
+        doctorName: "Dr. Due",
+        status: "received",
+        dueDate: explicitDue,
+      });
+
+    expect(r.status).toBe(201);
+    const created = r.body.data;
+    expect(created).toBeDefined();
+    if (created?.id) createdCaseIds.push(created.id);
+
+    expect(created.expectedDeliveryDate).toBeNull();
+    expect(new Date(created.dueDate).toISOString().slice(0, 10)).toBe(explicitDue);
+  });
+
+  it("POST /api/cases stores an optional dueTime and returns it in list and detail", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("DUE_TIME");
+
+    const create = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Due",
+        patientLastName: "Time",
+        doctorName: "Dr. Clock",
+        dueDate: "2026-07-21",
+        dueTime: "09:30",
+      });
+
+    expect(create.status).toBe(201);
+    const caseId = create.body.data.id;
+    createdCaseIds.push(caseId);
+    expect(create.body.data.dueTime).toBe("09:30");
+
+    const detail = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.data.dueTime).toBe("09:30");
+
+    const list = await request(appMod.default)
+      .get(`/api/cases?labOrganizationId=${labOrgId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(list.status).toBe(200);
+    expect(list.body.data.find((item: any) => item.id === caseId)?.dueTime).toBe("09:30");
+  });
+
+  it("rejects a dueTime without a dueDate and invalid due times", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const base = {
+      caseNumber: rid("DUE_TIME_BAD"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      patientFirstName: "Invalid",
+      patientLastName: "Time",
+      doctorName: "Dr. Invalid",
+    };
+
+    const withoutDate = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ ...base, dueTime: "09:30" });
+    expect(withoutDate.status).toBe(400);
+
+    const invalid = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ ...base, caseNumber: rid("DUE_TIME_INVALID"), dueDate: "2026-07-21", dueTime: "25:00" });
+    expect(invalid.status).toBe(400);
+  });
+
+  it("POST /api/cases without dueDate auto-populates expectedDeliveryDate", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("EDDA");
+
+    const r = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Auto",
+        patientLastName: "Date",
+        doctorName: "Dr. Auto",
+        status: "received",
+      });
+
+    expect(r.status).toBe(201);
+    const created = r.body.data;
+    if (created?.id) createdCaseIds.push(created.id);
+
+    expect(created.expectedDeliveryDate).not.toBeNull();
+  });
+
+  it("PATCH /api/cases/:id with dueDate clears expectedDeliveryDate", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("EDDP");
+
+    const create = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Patch",
+        patientLastName: "Due",
+        doctorName: "Dr. Patch",
+        status: "received",
+      });
+    expect(create.status).toBe(201);
+    const caseId = create.body.data.id;
+    createdCaseIds.push(caseId);
+
+    // Sanity: auto-created case has an expectedDeliveryDate set.
+    expect(create.body.data.expectedDeliveryDate).not.toBeNull();
+
+    const newDue = "2026-08-01";
+    const patch = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ dueDate: newDue });
+
+    expect(patch.status).toBe(200);
+    const updated = patch.body.data;
+    expect(updated.expectedDeliveryDate).toBeNull();
+    expect(new Date(updated.dueDate).toISOString().slice(0, 10)).toBe(newDue);
+  });
+
+  it("PATCH /api/cases/:id persists, preserves, and clears dueTime with dueDate", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const create = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("DUE_TIME_PATCH"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Patch",
+        patientLastName: "Time",
+        doctorName: "Dr. Clock",
+        dueDate: "2026-07-21",
+        dueTime: "09:30",
+      });
+    expect(create.status).toBe(201);
+    const caseId = create.body.data.id;
+    createdCaseIds.push(caseId);
+
+    const dateOnly = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ dueDate: "2026-07-22" });
+    expect(dateOnly.status).toBe(200);
+    expect(dateOnly.body.data.dueTime).toBe("09:30");
+
+    const clearDate = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ dueDate: null });
+    expect(clearDate.status).toBe(200);
+    expect(clearDate.body.data.dueDate).toBeNull();
+    expect(clearDate.body.data.dueTime).toBeNull();
+  });
+
+  it("PATCH /api/cases/:id rejects setting dueTime when no dueDate exists", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const create = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber: rid("DUE_TIME_NO_DATE"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "No",
+        patientLastName: "Date",
+        doctorName: "Dr. Empty",
+      });
+    expect(create.status).toBe(201);
+    const caseId = create.body.data.id;
+    createdCaseIds.push(caseId);
+
+    const patch = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ dueTime: "09:30" });
+    expect(patch.status).toBe(400);
   });
 
   it("DELETE /api/cases/:caseId soft-deletes the case (row still exists with deletedAt set)", async () => {

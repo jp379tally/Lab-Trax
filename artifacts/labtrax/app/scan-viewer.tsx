@@ -12,12 +12,19 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
-import { getAuthedMediaUri } from "@/lib/authed-media-cache";
+import { acquireAuthedMediaUri } from "@/lib/authed-media-cache";
 import { shareLocalFile } from "@/lib/open-attachment";
 import { buildViewerHtml, type ScanFormat } from "@workspace/scan-viewer";
 
 function firstParam(v: string | string[] | undefined): string | undefined {
   return Array.isArray(v) ? v[0] : v;
+}
+
+function textureMimeFromBase64(base64: string): string | null {
+  if (base64.startsWith("/9j/")) return "image/jpeg";
+  if (base64.startsWith("iVBORw0KGgo")) return "image/png";
+  if (base64.startsWith("UklGR") && atob(base64.slice(0, 24)).includes("WEBP")) return "image/webp";
+  return null;
 }
 
 type ViewerStatus = "loading" | "ready" | "error";
@@ -29,12 +36,14 @@ export default function ScanViewerScreen() {
     fileName?: string | string[];
     fileType?: string | string[];
     format?: string | string[];
+    textureUrl?: string | string[];
   }>();
 
   const url = firstParam(params.url);
   const fileName = firstParam(params.fileName);
   const fileType = firstParam(params.fileType);
   const format = (firstParam(params.format) ?? "ply") as ScanFormat;
+  const textureUrl = firstParam(params.textureUrl);
 
   const [status, setStatus] = useState<ViewerStatus>("loading");
   const [viewerHtml, setViewerHtml] = useState<string | null>(null);
@@ -42,6 +51,7 @@ export default function ScanViewerScreen() {
 
   useEffect(() => {
     let cancelled = false;
+    let release = () => {};
 
     if (!url) {
       setStatus("error");
@@ -53,12 +63,17 @@ export default function ScanViewerScreen() {
     setLocalUri(null);
 
     (async () => {
-      const uri = await getAuthedMediaUri(url);
-      if (cancelled) return;
-      if (!uri) {
+      const acquired = await acquireAuthedMediaUri(url);
+      if (cancelled) {
+        acquired?.release();
+        return;
+      }
+      if (!acquired) {
         setStatus("error");
         return;
       }
+      release = acquired.release;
+      const uri = acquired.uri;
       setLocalUri(uri);
 
       try {
@@ -66,7 +81,26 @@ export default function ScanViewerScreen() {
           encoding: FileSystem.EncodingType.Base64,
         });
         if (cancelled) return;
-        const html = buildViewerHtml(base64, format);
+        let texture: { base64: string; mimeType: string } | undefined;
+        if (textureUrl) {
+          try {
+            const textureAcquired = await acquireAuthedMediaUri(textureUrl);
+            if (textureAcquired) {
+              try {
+                const textureBase64 = await FileSystem.readAsStringAsync(textureAcquired.uri, {
+                  encoding: FileSystem.EncodingType.Base64,
+                });
+                const mimeType = textureMimeFromBase64(textureBase64);
+                if (mimeType) texture = { base64: textureBase64, mimeType };
+              } finally {
+                textureAcquired.release();
+              }
+            }
+          } catch {
+            // A missing/revoked companion image must not hide the scan itself.
+          }
+        }
+        const html = buildViewerHtml(base64, format, texture);
         setViewerHtml(html);
         setStatus("ready");
       } catch {
@@ -76,8 +110,9 @@ export default function ScanViewerScreen() {
 
     return () => {
       cancelled = true;
+      release();
     };
-  }, [url, fileName, fileType, format]);
+  }, [url, textureUrl, fileName, fileType, format]);
 
   async function handleShare(): Promise<void> {
     if (!localUri) return;

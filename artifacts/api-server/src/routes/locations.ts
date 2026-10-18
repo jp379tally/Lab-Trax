@@ -1,12 +1,23 @@
 import { Router, type Request, type Response } from "express";
+import { randomUUID } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
-import { labLocations, organizationMemberships } from "@workspace/db";
+import {
+  caseEvents,
+  caseLocations,
+  cases,
+  labCases,
+  labLocations,
+  organizationMemberships,
+} from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
 import { ADMIN_ROLES, requireAnyRole } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
+import { BUILT_IN_LAB_STATIONS } from "../lib/lab-locations";
+import { canonicalStatusToLegacy } from "../lib/case-status";
+import { acquireCaseLocationStatusLock } from "../lib/case-location-status";
 
 const router = Router();
 router.use(requireAuth);
@@ -37,22 +48,21 @@ const caseStatusSchema = z.enum(VALID_CASE_STATUSES);
 
 // Built-in stations: `status === code` since their codes are already valid
 // case-status enum values. This preserves the previous behaviour exactly.
-const BUILT_IN_STATIONS: { code: string; name: string; status: string }[] = [
-  { code: "received", name: "Received", status: "received" },
-  { code: "in_design", name: "In Design", status: "in_design" },
-  { code: "scan", name: "Scan", status: "scan" },
-  { code: "in_milling", name: "In Milling", status: "in_milling" },
-  { code: "post_mill", name: "Post Mill", status: "post_mill" },
-  { code: "sintering_furnace", name: "Sintering Furnace", status: "sintering_furnace" },
-  { code: "model_room", name: "Model Room", status: "model_room" },
-  { code: "in_porcelain", name: "Porcelain", status: "in_porcelain" },
-  { code: "qc", name: "Quality Check", status: "qc" },
-  { code: "complete", name: "Complete", status: "complete" },
-  { code: "shipped", name: "Shipping", status: "shipped" },
-  { code: "on_hold", name: "On Hold", status: "on_hold" },
-  { code: "delivered", name: "Delivered", status: "delivered" },
-  { code: "remake", name: "Remake", status: "remake" },
-];
+/**
+ * Derive a workflow status from a station name by matching against known
+ * built-in station names/codes. Falls back to "received" when no match found.
+ * Used when the caller doesn't supply a status (the UI no longer exposes it).
+ */
+function deriveStatusFromName(name: string): string {
+  const normalized = name.trim().toLowerCase();
+  const match = BUILT_IN_LAB_STATIONS.find(
+    (s) =>
+      s.name.toLowerCase() === normalized ||
+      s.code === normalized ||
+      s.status === normalized
+  );
+  return match?.status ?? "received";
+}
 
 /**
  * Derive a stable, unique `code` for a station from its display name when the
@@ -121,7 +131,7 @@ router.get(
     let rows = allRows;
 
     if (allRows.length === 0) {
-      const seedValues = BUILT_IN_STATIONS.map((s, i) => ({
+      const seedValues = BUILT_IN_LAB_STATIONS.map((s, i) => ({
         labOrganizationId: organizationId,
         name: s.name,
         code: s.code,
@@ -157,13 +167,12 @@ router.post(
       .object({
         organizationId: z.string().min(1),
         name: z.string().min(1),
-        // The mapped workflow stage that locating a case at this station
-        // writes to the case's `status`. Required and validated against the
+        // `status` is now optional — when omitted the server derives it from
+        // the station name. When supplied it is validated against the
         // case-status enum so custom stations can never produce an invalid
-        // status (the original bug).
-        status: caseStatusSchema,
-        // `code` is now optional — the UI picks a stage instead of typing a
-        // free-form code. When omitted the server derives a unique one.
+        // status.
+        status: caseStatusSchema.optional(),
+        // `code` is optional — the server derives a unique slug when omitted.
         code: z.string().min(1).optional(),
         isActive: z.boolean().optional().default(true),
         sortOrder: z.number().int().optional().default(0),
@@ -172,9 +181,10 @@ router.post(
 
     await requireAnyRole(userId, body.organizationId, ADMIN_ROLES);
 
+    const status = body.status ?? deriveStatusFromName(body.name);
     const code = body.code?.trim()
       ? body.code.trim()
-      : await generateUniqueCode(body.organizationId, body.name, body.status);
+      : await generateUniqueCode(body.organizationId, body.name, status);
 
     const [created] = await db
       .insert(labLocations)
@@ -182,7 +192,7 @@ router.post(
         labOrganizationId: body.organizationId,
         name: body.name.trim(),
         code,
-        status: body.status,
+        status,
         isActive: body.isActive,
         sortOrder: body.sortOrder,
       })
@@ -222,11 +232,53 @@ router.patch(
     if (body.isActive !== undefined) patch.isActive = body.isActive;
     if (body.sortOrder !== undefined) patch.sortOrder = body.sortOrder;
 
-    const [updated] = await db
-      .update(labLocations)
-      .set(patch)
-      .where(eq(labLocations.id, id))
-      .returning();
+    const updated = await db.transaction(async (tx) => {
+      await acquireCaseLocationStatusLock(tx);
+      const [location] = await tx
+        .update(labLocations)
+        .set(patch)
+        .where(eq(labLocations.id, id))
+        .returning();
+
+      if (body.status !== undefined) {
+        await tx
+          .update(cases)
+          .set({
+            status: body.status,
+            casePanBarcode: body.status === "complete" ? null : undefined,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(cases.labOrganizationId, existing.labOrganizationId),
+              eq(cases.labLocationId, id),
+            ),
+          );
+
+        const legacyRows = await tx
+          .select({ id: labCases.id, caseData: labCases.caseData })
+          .from(labCases)
+          .where(eq(labCases.organizationId, existing.labOrganizationId))
+          .for("update");
+        const legacyStatus = canonicalStatusToLegacy(body.status);
+        for (const row of legacyRows) {
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = JSON.parse(row.caseData);
+          } catch {
+            continue;
+          }
+          if (parsed.labLocationId !== id) continue;
+          parsed.status = legacyStatus;
+          if (body.status === "complete") parsed.assignedBarcode = null;
+          await tx
+            .update(labCases)
+            .set({ caseData: JSON.stringify(parsed), updatedAt: new Date() })
+            .where(eq(labCases.id, row.id));
+        }
+      }
+      return location;
+    });
 
     return ok(res, updated);
   }),
@@ -245,7 +297,108 @@ router.delete(
 
     await requireAnyRole(userId, existing.labOrganizationId, ADMIN_ROLES);
 
-    await db.delete(labLocations).where(eq(labLocations.id, id));
+    const actorInitials = (req as any).user?.initials || "SYS";
+    await db.transaction(async (tx) => {
+      await acquireCaseLocationStatusLock(tx);
+      const [lockedLocation] = await tx
+        .select()
+        .from(labLocations)
+        .where(eq(labLocations.id, id))
+        .for("update");
+      if (!lockedLocation) throw new HttpError(404, "Location not found.");
+
+      const attachedCases = await tx
+        .select({ id: cases.id })
+        .from(cases)
+        .where(
+          and(
+            eq(cases.labOrganizationId, lockedLocation.labOrganizationId),
+            eq(cases.labLocationId, id),
+          ),
+        )
+        .for("update");
+      const movedAt = new Date();
+      for (const attached of attachedCases) {
+        await tx
+          .update(cases)
+          .set({ labLocationId: null, updatedAt: movedAt })
+          .where(eq(cases.id, attached.id));
+        const [history] = await tx
+          .insert(caseLocations)
+          .values({
+            caseId: attached.id,
+            locationCode: "unassigned",
+            locationName: "Unassigned",
+            movedByUserId: userId,
+            movedAt,
+            notes: "Station deleted",
+          })
+          .returning();
+        await tx.insert(caseEvents).values({
+          caseId: attached.id,
+          eventType: "location_changed",
+          actorUserId: userId,
+          actorOrganizationId: lockedLocation.labOrganizationId,
+          actorInitials,
+          occurredAt: movedAt,
+          metadataJson: {
+            locationId: history.id,
+            labLocationId: null,
+            locationCode: "unassigned",
+            locationName: "Unassigned",
+            previousLabLocationId: id,
+            previousLocationCode: lockedLocation.code,
+            previousLocationName: lockedLocation.name,
+            fromLocationId: id,
+            fromLocation: lockedLocation.name,
+            toLocationId: null,
+            toLocation: "Unassigned",
+          },
+        });
+      }
+
+      const legacyRows = await tx
+        .select({ id: labCases.id, caseData: labCases.caseData })
+        .from(labCases)
+        .where(eq(labCases.organizationId, lockedLocation.labOrganizationId))
+        .for("update");
+      for (const row of legacyRows) {
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(row.caseData);
+        } catch {
+          continue;
+        }
+        if (parsed.labLocationId !== id) continue;
+        parsed.labLocationId = null;
+        const locationHistory = Array.isArray(parsed.locationHistory)
+          ? parsed.locationHistory
+          : [];
+        locationHistory.push({
+          id: randomUUID(),
+          previous: {
+            id,
+            code: lockedLocation.code,
+            name: lockedLocation.name,
+          },
+          destination: {
+            id: null,
+            code: "unassigned",
+            name: "Unassigned",
+          },
+          movedAt: movedAt.toISOString(),
+          movedByUserId: userId,
+          actorInitials,
+        });
+        parsed.locationHistory = locationHistory;
+        await tx
+          .update(labCases)
+          .set({ caseData: JSON.stringify(parsed), updatedAt: movedAt })
+          .where(eq(labCases.id, row.id));
+      }
+
+      await tx.delete(labLocations).where(eq(labLocations.id, id));
+    });
 
     return ok(res, { deleted: true });
   }),

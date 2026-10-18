@@ -51,7 +51,10 @@ vi.mock("@/hooks/useColumnWidths", () => ({
   }),
 }));
 
-vi.mock("@/lib/nav-guard", () => ({ setNavBlocker: vi.fn() }));
+vi.mock("@/lib/nav-guard", () => ({
+  setNavBlocker: vi.fn(),
+  guardNavigation: vi.fn(() => false),
+}));
 
 vi.mock("@/lib/format", () => ({
   formatDate: (s: string) => s,
@@ -69,6 +72,7 @@ vi.mock("@/lib/print", () => ({
   printCaseCard: vi.fn(),
   printCaseCardAdvanced: vi.fn(),
   printCaseHistory: vi.fn(),
+  printCaseLabel: vi.fn(),
   printCaseOverview: vi.fn(),
   printInvoice: vi.fn(),
   printTabContent: vi.fn(),

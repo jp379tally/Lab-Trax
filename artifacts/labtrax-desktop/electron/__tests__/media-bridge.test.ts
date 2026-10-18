@@ -15,6 +15,7 @@
  *   2. A third-party URL is REFUSED without any network call, so the bearer
  *      token can never leak to another host.
  *   3. Non-http(s) schemes (data:, file:, blob:) are refused.
+ *   4. Encoded migrated-photo filenames reach net.fetch unchanged and authenticated.
  *
  * Keep this test permanently per the REGRESSION_GUARDRAILS.md policy.
  */
@@ -28,6 +29,11 @@ import { installElectronMock, uninstallElectronMock, type ElectronMock } from ".
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "labtrax-media-bridge-"));
 const API_ORIGIN = "https://api.labtrax.test";
 const ACCESS_TOKEN = "access-token-123";
+const ENCODED_MIGRATED_PHOTO_PATHS = [
+  "/api/cases/attachment-file/migrated%20photo.jpg",
+  "/api/cases/attachment-file/migrated-%D1%84%D0%BE%D1%82%D0%BE-%E9%9B%AA.jpg",
+  "/api/cases/attachment-file/migrated%23photo%3F100%25.jpg",
+];
 
 type MediaResult = {
   ok: boolean;
@@ -43,7 +49,6 @@ const netFetch = vi.fn();
 
 function injectModule(name: string, exports: unknown) {
   const filename = path.join(tmpDir, `__virt_${name.replace(/[^a-z0-9]/gi, "_")}.cjs`);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (require.cache as any)[filename] = {
     id: filename,
     filename,
@@ -54,7 +59,6 @@ function injectModule(name: string, exports: unknown) {
     path: tmpDir,
     parent: null,
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const M = Module as any;
   const orig = M._resolveFilename;
   M._resolveFilename = function (request: string, ...rest: unknown[]) {
@@ -115,14 +119,12 @@ beforeAll(async () => {
     transports: { file: { level: "info" } },
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   require("../main.cjs");
   for (let i = 0; i < 4; i++) {
     await new Promise((r) => setTimeout(r, 0));
   }
 
   // Seed a stored bearer token the handler will read.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const authStore = require("../auth-store.cjs");
   authStore.setTokens({ accessToken: ACCESS_TOKEN, refreshToken: "refresh-token-123" });
 
@@ -159,6 +161,23 @@ describe("media:fetch-authenticated — Electron main-process media bridge", () 
     expect(Buffer.isBuffer(result.buffer)).toBe(true);
     expect(Array.from(result.buffer as Buffer)).toEqual([1, 2, 3]);
   });
+
+  it.each(ENCODED_MIGRATED_PHOTO_PATHS)(
+    "fetches an encoded migrated-photo path unchanged with the stored bearer token: %s",
+    async (encodedPath) => {
+      netFetch.mockClear();
+      const url = `${API_ORIGIN}${encodedPath}`;
+      // Match the preload bridge's IPC payload rather than the older string form.
+      const result = await handler({}, { url, headers: undefined });
+
+      expect(netFetch).toHaveBeenCalledTimes(1);
+      expect(netFetch).toHaveBeenCalledWith(url, {
+        headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe(200);
+    },
+  );
 
   it("refuses a third-party URL without making any network call (token cannot leak)", async () => {
     netFetch.mockClear();

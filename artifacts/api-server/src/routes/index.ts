@@ -2,8 +2,10 @@ import { Router, type IRouter, type Request, type Response, type NextFunction } 
 import healthRouter from "./health";
 import { registerRoutes } from "./labtrax-routes";
 import { logger } from "../lib/logger";
+import scansReadonlyRouter from "./scans-readonly";
 
 const router: IRouter = Router();
+router.use(scansReadonlyRouter);
 
 // Health routes are always available, even before the LabTrax routes finish
 // initialising, so the platform's port-open / health checks pass immediately.
@@ -25,7 +27,7 @@ router.use((_req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-registerRoutes()
+export const labtraxRoutesReady = registerRoutes()
   .then((labtraxRouter) => {
     router.use(labtraxRouter);
     labtraxReady = true;

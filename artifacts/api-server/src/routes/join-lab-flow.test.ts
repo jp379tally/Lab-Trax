@@ -20,6 +20,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { inArray, eq, and } from "drizzle-orm";
 import request from "supertest";
 import * as path from "node:path";
+import { resolveLabLookupToken } from "../lib/lab-lookup-token.js";
 
 vi.mock("../lib/backup.js", () => ({
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
@@ -80,12 +81,15 @@ maybe("Join-a-lab flow (db integration)", () => {
     return { access };
   }
 
-  async function createOwnedLab(access: string): Promise<string> {
+  async function createOwnedLab(
+    access: string,
+    name = rid("JoinLab"),
+  ): Promise<string> {
     const r = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${access}`)
-      .send(labBody(rid("JoinLab")));
-    expect(r.status).toBe(201);
+      .send(labBody(name));
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
     const labId = r.body.data.id;
     createdOrgIds.push(labId);
     return labId;
@@ -97,6 +101,11 @@ maybe("Join-a-lab flow (db integration)", () => {
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
     authLib = await import("../lib/auth.js");
+    // The app opens its health port before asynchronously mounting LabTrax
+    // routes. Probe a read-only protected route before creating fixtures.
+    await vi.waitFor(async () => {
+      expect((await request(appMod.default).get("/api/auth/lab-team")).status).toBe(401);
+    }, { timeout: 10000, interval: 50 });
 
     const { db, users } = dbMod as any;
     await db.insert(users).values({
@@ -193,6 +202,14 @@ maybe("Join-a-lab flow (db integration)", () => {
     expect(myReq, "requester must see their own pending request").toBeTruthy();
     expect(myReq.organizationId).toBe(labId);
 
+    const adminPending = await request(appMod.default)
+      .get(`/api/auth/lab-team?orgId=${labId}`)
+      .set("Authorization", `Bearer ${ownerAccess}`);
+    expect(adminPending.status).toBe(200);
+    expect(adminPending.body.pendingJoinRequests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: joinRequestId, organizationId: labId, message: "Please let me in." }),
+    ]));
+
     // The owner approves it.
     const approve = await request(appMod.default)
       .post(`/api/organizations/join-requests/${joinRequestId}/approve`)
@@ -203,6 +220,10 @@ maybe("Join-a-lab flow (db integration)", () => {
     expect(approve.body.data.membership?.labId).toBe(labId);
     expect(approve.body.data.membership?.status).toBe("active");
     expect(approve.body.data.request?.status).toBe("approved");
+    const adminAfter = await request(appMod.default)
+      .get(`/api/auth/lab-team?orgId=${labId}`)
+      .set("Authorization", `Bearer ${ownerAccess}`);
+    expect(adminAfter.body.pendingJoinRequests.some((r: any) => r.id === joinRequestId)).toBe(false);
 
     // The membership is real: it shows up in the member list.
     const members = await request(appMod.default)
@@ -235,6 +256,92 @@ maybe("Join-a-lab flow (db integration)", () => {
     // Cleanup is handled by afterAll (membership rows are removed by labId).
   });
 
+  it("throttles and redacts anonymous lab search while preserving signed-in lookup", async () => {
+    const { access: ownerAccess } = await makeSession(ownerId);
+    const labName = rid("LookupLab");
+    const labId = await createOwnedLab(ownerAccess, labName);
+
+    const anonymous = await request(appMod.default).get(
+      `/api/labs/lookup?q=${encodeURIComponent(labName)}`,
+    );
+    expect(anonymous.status).toBe(200);
+    const publicEntry = anonymous.body.labs.find(
+      (lab: { id: string; displayName: string }) =>
+        resolveLabLookupToken(lab.id) === labId,
+    );
+    expect(publicEntry).toBeDefined();
+    expect(publicEntry.id).not.toBe(labId);
+    expect(publicEntry).not.toHaveProperty("name");
+    expect(publicEntry).not.toHaveProperty("phone");
+
+    const username = `join${randomBytes(4).toString("hex")}`.slice(0, 12);
+    const registration = await request(appMod.default)
+      .post("/api/auth/register")
+      .send({
+        username,
+        password: "TestPassword1!",
+        email: `${username}@example.com`,
+        userType: "lab",
+        clientType: "desktop",
+        joinOrganizationId: publicEntry.id,
+      });
+    expect(registration.status).toBe(200);
+    expect(registration.body.pendingJoinRequest).toBe(true);
+    if (registration.body.user?.id) allUserIds.push(registration.body.user.id);
+
+    const savedVitest = process.env.VITEST;
+    delete process.env.VITEST;
+    try {
+      for (let i = 0; i < 10; i++) {
+        const response = await request(appMod.default)
+          .get(`/api/labs/lookup?q=${encodeURIComponent(labName)}`)
+          .set("X-Forwarded-For", "198.51.100.77");
+        expect(response.status).toBe(200);
+      }
+      const blocked = await request(appMod.default)
+        .get(`/api/labs/lookup?q=${encodeURIComponent(labName)}`)
+        .set("X-Forwarded-For", "198.51.100.77");
+      expect(blocked.status).toBe(429);
+
+      const username = `rate${randomBytes(4).toString("hex")}`.slice(0, 12);
+      for (let i = 0; i < 5; i++) {
+        const response = await request(appMod.default)
+          .post("/api/check-username")
+          .set("X-Forwarded-For", "198.51.100.78")
+          .send({ username });
+        expect(response.status).toBe(200);
+      }
+      const blockedUsername = await request(appMod.default)
+        .post("/api/check-username")
+        .set("X-Forwarded-For", "198.51.100.78")
+        .send({ username });
+      expect(blockedUsername.status).toBe(429);
+
+      const email = `rate-${randomBytes(4).toString("hex")}@example.com`;
+      for (let i = 0; i < 5; i++) {
+        const response = await request(appMod.default)
+          .get(`/api/auth/check-email?email=${encodeURIComponent(email)}`)
+          .set("X-Forwarded-For", "198.51.100.79");
+        expect(response.status).toBe(200);
+      }
+      const blockedEmail = await request(appMod.default)
+        .get(`/api/auth/check-email?email=${encodeURIComponent(email)}`)
+        .set("X-Forwarded-For", "198.51.100.79");
+      expect(blockedEmail.status).toBe(429);
+    } finally {
+      if (savedVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = savedVitest;
+    }
+
+    const authenticated = await request(appMod.default)
+      .get(`/api/labs/lookup?q=${encodeURIComponent(labName)}`)
+      .set("Authorization", `Bearer ${ownerAccess}`);
+    expect(authenticated.status).toBe(200);
+    expect(authenticated.body.labs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: labId })]),
+    );
+  });
+
   // ── create → cancel removes the pending request ───────────────────────────
 
   it("create → cancel marks the request cancelled and removes it from mine/pending", async () => {
@@ -254,6 +361,10 @@ maybe("Join-a-lab flow (db integration)", () => {
       .set("Authorization", `Bearer ${requesterAccess}`);
     expect(cancel.status).toBe(200);
     expect(cancel.body.data.status).toBe("cancelled");
+    const adminAfter = await request(appMod.default)
+      .get(`/api/auth/lab-team?orgId=${labId}`)
+      .set("Authorization", `Bearer ${ownerAccess}`);
+    expect(adminAfter.body.pendingJoinRequests.some((r: any) => r.id === joinRequestId)).toBe(false);
 
     const mine = await request(appMod.default)
       .get("/api/organizations/join-requests/mine/pending")

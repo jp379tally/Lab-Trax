@@ -15,9 +15,56 @@ const nullComponent = (): null => null;
 
 export const View = makeHost("View");
 export const Text = makeHost("Text");
-export const TextInput = makeHost("TextInput");
+export const TextInput = React.forwardRef<{ focus: () => void }, HostProps>(
+  (props, ref) => {
+    React.useImperativeHandle(ref, () => ({ focus: () => undefined }), []);
+    return React.createElement(
+      "TextInput",
+      props as Record<string, unknown>,
+      props.children as React.ReactNode,
+    );
+  },
+);
 export const Pressable = makeHost("Pressable");
-export const ScrollView = makeHost("ScrollView");
+
+// Native scroll views close the keyboard themselves once `keyboardDismissMode`
+// is "on-drag" / "interactive". Emulate that here so suites can assert the
+// behaviour with `fireEvent(list, "scrollBeginDrag")` instead of only
+// inspecting the prop.
+type ScrollLikeProps = Record<string, unknown> & {
+  keyboardDismissMode?: unknown;
+  onScrollBeginDrag?: (event: unknown) => void;
+};
+const withKeyboardDismissOnDrag = (props: ScrollLikeProps): ScrollLikeProps => {
+  const { keyboardDismissMode, onScrollBeginDrag } = props;
+  if (keyboardDismissMode !== "on-drag" && keyboardDismissMode !== "interactive") {
+    return props;
+  }
+  return {
+    ...props,
+    onScrollBeginDrag: (event: unknown): void => {
+      Keyboard.dismiss();
+      onScrollBeginDrag?.(event);
+    },
+  };
+};
+
+export const mockScrollViewScrollTo = vi.fn();
+export const ScrollView = React.forwardRef<{ scrollTo: typeof mockScrollViewScrollTo }, HostProps>(
+  (props, ref) => {
+    React.useImperativeHandle(
+      ref,
+      () => ({ scrollTo: mockScrollViewScrollTo }),
+      [],
+    );
+    return React.createElement(
+      "ScrollView",
+      withKeyboardDismissOnDrag(props),
+      props.children as React.ReactNode,
+    );
+  },
+);
+ScrollView.displayName = "ScrollView";
 // FlatList in the real RN renders each `data` row via `renderItem`. The
 // trivial host stub used to ignore `data`, which made smoke tests blind
 // to per-row regressions. This minimal implementation invokes
@@ -81,7 +128,7 @@ export const FlatList: React.FC<FlatListProps> = (props) => {
   }
   return React.createElement(
     "FlatList",
-    rest,
+    withKeyboardDismissOnDrag(rest),
     renderListSlot(ListHeaderComponent),
     ...rows,
     renderListSlot(ListFooterComponent),
@@ -91,16 +138,106 @@ export const FlatList: React.FC<FlatListProps> = (props) => {
 FlatList.displayName = "FlatList";
 export const Modal = makeHost("Modal");
 export const KeyboardAvoidingView = makeHost("KeyboardAvoidingView");
+export const TouchableOpacity = makeHost("TouchableOpacity");
 export const TouchableWithoutFeedback = makeHost("TouchableWithoutFeedback");
 export const RefreshControl = makeHost("RefreshControl");
 export const Image = makeHost("Image");
 export const ActivityIndicator = nullComponent;
 export const StatusBar = nullComponent;
+export const Switch: React.FC<{ value?: boolean; onValueChange?: (v: boolean) => void; [key: string]: unknown }> = (props) =>
+  React.createElement("Switch", {
+    ...props,
+    accessibilityRole: "switch",
+    "aria-checked": props.value,
+    onClick: props.onValueChange ? () => props.onValueChange?.(!props.value) : undefined,
+  });
+
+// ── Keyboard ─────────────────────────────────────────────────────────────────
+// Screens dismiss the keyboard on background taps and track whether it is on
+// screen (see `useKeyboardVisible`), so the stub keeps a real listener registry
+// and a visibility flag. `showMockKeyboard()` / `hideMockKeyboard()` let a suite
+// drive that state; `Keyboard.dismiss` stays a spy so dismissal is observable.
+type KeyboardEventName =
+  | "keyboardWillShow"
+  | "keyboardDidShow"
+  | "keyboardWillHide"
+  | "keyboardDidHide"
+  | "keyboardWillChangeFrame"
+  | "keyboardDidChangeFrame";
+type MockKeyboardEvent = {
+  endCoordinates: { screenX: number; screenY: number; width: number; height: number };
+  duration: number;
+};
+type KeyboardListener = (event: MockKeyboardEvent) => void;
+
+const keyboardListeners = new Map<string, Set<KeyboardListener>>();
+let keyboardVisible = false;
+
+const keyboardEvent = (visible: boolean): MockKeyboardEvent => ({
+  endCoordinates: {
+    screenX: 0,
+    screenY: visible ? 476 : 812,
+    width: 375,
+    height: visible ? 336 : 0,
+  },
+  duration: 250,
+});
+
+function emitKeyboardEvent(name: KeyboardEventName, visible: boolean): void {
+  const listeners = keyboardListeners.get(name);
+  if (!listeners) return;
+  // Copy first: a listener may remove itself (or another) while we iterate.
+  for (const listener of [...listeners]) listener(keyboardEvent(visible));
+}
+
+/** Simulate the soft keyboard opening (fires both the will- and did-show events). */
+export function showMockKeyboard(): void {
+  if (keyboardVisible) return;
+  keyboardVisible = true;
+  emitKeyboardEvent("keyboardWillShow", true);
+  emitKeyboardEvent("keyboardDidShow", true);
+}
+
+/** Simulate the soft keyboard closing. No-op when it is already hidden. */
+export function hideMockKeyboard(): void {
+  if (!keyboardVisible) return;
+  keyboardVisible = false;
+  emitKeyboardEvent("keyboardWillHide", false);
+  emitKeyboardEvent("keyboardDidHide", false);
+}
+
+/** Whether the simulated keyboard is currently on screen. */
+export function isMockKeyboardVisible(): boolean {
+  return keyboardVisible;
+}
+
+/** Drops every registered listener and hides the keyboard, between tests. */
+export function resetMockKeyboard(): void {
+  keyboardVisible = false;
+  keyboardListeners.clear();
+}
 
 export const Keyboard = {
-  dismiss: vi.fn(),
-  addListener: vi.fn(() => ({ remove: (): void => {} })),
-  removeAllListeners: vi.fn(),
+  // Dismissing really closes the simulated keyboard, so a screen listening for
+  // the hide event sees it exactly as it would on device.
+  dismiss: vi.fn((): void => {
+    hideMockKeyboard();
+  }),
+  addListener: vi.fn((name: KeyboardEventName, listener: KeyboardListener) => {
+    const listeners = keyboardListeners.get(name) ?? new Set<KeyboardListener>();
+    listeners.add(listener);
+    keyboardListeners.set(name, listeners);
+    return {
+      remove: (): void => {
+        listeners.delete(listener);
+      },
+    };
+  }),
+  removeAllListeners: vi.fn((name?: KeyboardEventName): void => {
+    if (name) keyboardListeners.get(name)?.clear();
+    else keyboardListeners.clear();
+  }),
+  isVisible: (): boolean => keyboardVisible,
 };
 
 export const UIManager = {
@@ -120,9 +257,21 @@ export const LayoutAnimation = {
   Properties: { opacity: "opacity", scaleXY: "scaleXY" },
 };
 
+const flattenStyle = <T,>(style: T): T => {
+  if (!Array.isArray(style)) return style;
+
+  return style.reduce<Record<string, unknown>>((flattened, entry) => {
+    const value = flattenStyle(entry);
+    if (value && typeof value === "object") {
+      Object.assign(flattened, value);
+    }
+    return flattened;
+  }, {}) as T;
+};
+
 export const StyleSheet = {
   create: <T extends Record<string, object>>(s: T): T => s,
-  flatten: <T,>(s: T): T => s,
+  flatten: flattenStyle,
   hairlineWidth: 1,
   absoluteFill: {} as Record<string, unknown>,
   absoluteFillObject: {} as Record<string, unknown>,
@@ -141,9 +290,19 @@ export const Dimensions = {
   addEventListener: () => ({ remove: (): void => {} }),
 };
 
+export const useColorScheme = (): "light" => "light";
+
+export const useWindowDimensions = (): { width: number; height: number; scale: number; fontScale: number } => ({
+  width: 375,
+  height: 812,
+  scale: 2,
+  fontScale: 1,
+});
+
 export const Alert = { alert: vi.fn() };
 export const Linking = {
   openURL: vi.fn(async () => undefined),
+  openSettings: vi.fn(async () => undefined),
   canOpenURL: vi.fn(async () => true),
 };
 export const Share = {
@@ -199,12 +358,15 @@ const reactNativeStub = {
   Image,
   ActivityIndicator,
   StatusBar,
+  Switch,
   Keyboard,
   UIManager,
   LayoutAnimation,
   StyleSheet,
   Platform,
   Dimensions,
+  useColorScheme,
+  useWindowDimensions,
   Alert,
   Linking,
   Share,

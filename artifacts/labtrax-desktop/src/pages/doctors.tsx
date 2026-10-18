@@ -3,12 +3,14 @@ import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  ArrowUpDown,
   ArrowUpRight,
   CheckSquare,
   ChevronDown,
   ChevronUp,
   GitMerge,
   Loader2,
+  Receipt,
   Search,
   Sparkles,
   Square,
@@ -24,12 +26,16 @@ import {
   useGetDoctorDuplicateClusters,
   useDismissDoctorDuplicateCluster,
   useRestoreDoctorDuplicateCluster,
+  useConsolidateDuplicateDoctorAccounts,
+  useUndoDuplicateDoctorAccountConsolidation,
   type DoctorMergeRequest,
   type DoctorSearchEntry,
   type UnassignedDoctorEntry,
   type DoctorDismissedCluster,
+  type DoctorDuplicateCluster,
   searchDoctors,
 } from "@workspace/api-client-react";
+import { formatAccountNumberForDisplay } from "@workspace/account-number";
 import { apiFetch } from "@/lib/api";
 import {
   computeShiftClickRange,
@@ -43,6 +49,7 @@ import {
   RemoveDoctorDialog,
   ReassignUnassignedDialog,
 } from "@/components/RemoveDoctorDialog";
+import { ReceivePaymentModal } from "@/components/receive-payment-modal";
 
 export interface MergeSourceInput {
   doctorName: string;
@@ -50,10 +57,48 @@ export interface MergeSourceInput {
   practiceName: string;
 }
 
+/**
+ * One row in the "Suggested merges" panel. Covers both duplicate doctor *names*
+ * found on cases (the original local scan) and duplicate provider *accounts*
+ * reported by the server, which may have no cases at all.
+ */
+interface PanelCluster {
+  key: string;
+  labId: string;
+  topScore: number;
+  kind: "name" | "account";
+  conflictReason: string | null;
+  /**
+   * For an "account" cluster: the ONE account number that survives
+   * consolidating it (the oldest across every member). The others are retired
+   * onto it, so only this one may be labelled "keeps" next to the Consolidate
+   * action. Null for a name merge, which retires no account at all.
+   */
+  survivingAccountNumber: string | null;
+  rows: Array<{
+    key: string;
+    doctorName: string;
+    practiceName: string;
+    practiceId: string | null;
+    accountCount: number;
+    /**
+     * The provider account number this doctor already has, when they have one.
+     * A merge or consolidation keeps it (Task #4397) — it is never reissued and
+     * no new number is minted — so the panel names it up front.
+     */
+    platformAccountNumber: string | null;
+  }>;
+}
 export interface UndoToast {
   auditLogIds: string[];
   message: string;
   expiresAt: number;
+  /**
+   * "merge" reverses a doctor-name merge; "account-consolidation" reverses a
+   * duplicate provider-account consolidation (Task #4373). They use different
+   * undo endpoints, so the toast has to remember which one produced it.
+   */
+  kind?: "merge" | "account-consolidation";
 }
 
 function normalizeForCompare(name: string): string {
@@ -95,6 +140,7 @@ export interface DoctorRow {
   totalBilled: number;
   lastCaseAt: string | null;
   hasAiImportedCase: boolean;
+  practiceAccountNumber?: string | null;
 }
 
 type SortKey =
@@ -336,6 +382,8 @@ export default function DoctorsPage() {
   const dupClustersQuery = useGetDoctorDuplicateClusters();
   const serverDismissedClusters: DoctorDismissedCluster[] =
     dupClustersQuery.data?.data?.dismissedClusters ?? [];
+  const serverActiveClusters: DoctorDuplicateCluster[] =
+    dupClustersQuery.data?.data?.clusters ?? [];
   const dismissedKeySet = useMemo(
     () => new Set(serverDismissedClusters.map((c) => c.clusterKey ?? "")),
     [serverDismissedClusters],
@@ -352,6 +400,54 @@ export default function DoctorsPage() {
     mutation: {
       onSuccess: () => {
         queryClientPage.invalidateQueries({ queryKey: ["getDoctorDuplicateClusters"] });
+      },
+    },
+  });
+
+  // Duplicate provider *accounts* (Task #4373). The background sweep handles
+  // unambiguous clusters on its own; this is how an admin resolves one whose
+  // contact details disagree.
+  const consolidateAccountsMutation = useConsolidateDuplicateDoctorAccounts({
+    mutation: {
+      onSuccess: (res: any) => {
+        const data = res?.data ?? {};
+        const ids: string[] = (data.consolidations ?? [])
+          .map((c: any) => c.auditLogId)
+          .filter((id: unknown): id is string => typeof id === "string");
+        const retired = Number(data.accountsRetired ?? 0);
+        queryClientPage.invalidateQueries({ queryKey: ["getDoctorDuplicateClusters"] });
+        queryClientPage.invalidateQueries({ queryKey: ["cases"] });
+        queryClientPage.invalidateQueries({ queryKey: ["invoices"] });
+        queryClientPage.invalidateQueries({ queryKey: ["organizations"] });
+        if (ids.length > 0) {
+          setUndoToast({
+            kind: "account-consolidation",
+            auditLogIds: ids,
+            message: `Consolidated onto one account — ${retired} duplicate ${
+              retired === 1 ? "account" : "accounts"
+            } retired.`,
+            expiresAt: Date.now() + Number(data.undoWindowMs ?? 10 * 60 * 1000),
+          });
+        }
+      },
+      onError: (err: any) => {
+        window.alert(
+          err?.response?.data?.error ??
+            err?.message ??
+            "Could not consolidate those accounts.",
+        );
+      },
+    },
+  });
+
+  const undoConsolidationMutation = useUndoDuplicateDoctorAccountConsolidation({
+    mutation: {
+      onSuccess: () => {
+        queryClientPage.invalidateQueries({ queryKey: ["getDoctorDuplicateClusters"] });
+        queryClientPage.invalidateQueries({ queryKey: ["cases"] });
+        queryClientPage.invalidateQueries({ queryKey: ["invoices"] });
+        queryClientPage.invalidateQueries({ queryKey: ["organizations"] });
+        setUndoToast(null);
       },
     },
   });
@@ -428,6 +524,7 @@ export default function DoctorsPage() {
           totalBilled: billed,
           lastCaseAt: created,
           hasAiImportedCase: !!(c.aiImportSource || c.needsAiReview),
+          practiceAccountNumber: c.providerAccountNumber ?? null,
         });
       }
       // If any case for this doctor/practice combo was AI-imported, flag the row.
@@ -440,8 +537,10 @@ export default function DoctorsPage() {
     // and reflects edits made from this page immediately), falling back to
     // names embedded in invoices for orgs the current user can't read.
     const orgNames = new Map<string, string>();
+    const orgAccountNumbers = new Map<string, string | null>();
     for (const o of orgs) {
       orgNames.set(o.id, o.displayName || o.name);
+      orgAccountNumbers.set(o.id, o.accountNumber ?? null);
     }
     for (const inv of invoices) {
       if (inv.providerOrganization?.id && inv.providerOrganization?.name && !orgNames.has(inv.providerOrganization.id)) {
@@ -450,6 +549,10 @@ export default function DoctorsPage() {
     }
     for (const r of map.values()) {
       r.practiceName = orgNames.get(r.practiceId) || "Unknown practice";
+      // Prefer the authoritative org accountNumber over the one baked into the case.
+      if (orgAccountNumbers.has(r.practiceId)) {
+        r.practiceAccountNumber = orgAccountNumbers.get(r.practiceId) ?? null;
+      }
     }
     return Array.from(map.values());
   }, [cases, invoices, orgs]);
@@ -541,10 +644,85 @@ export default function DoctorsPage() {
     );
   }, [rows, adminLabIds, labThresholdById]);
 
-  const visibleDuplicateClusters = useMemo(
+  const localVisibleClusters = useMemo(
     () => suggestedDuplicateClusters.filter((c) => !dismissedKeySet.has(c.key)),
     [suggestedDuplicateClusters, dismissedKeySet],
   );
+
+  // Existing provider account numbers, keyed by the same (lab, name, practice)
+  // row the panel draws. Only the server knows them, and a cluster the local
+  // scan already found is deduped away below, so the numbers are indexed
+  // separately and applied to local rows too (Task #4397).
+  const accountNumberByRow = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const sc of serverActiveClusters) {
+      const labId = sc.labOrganizationId ?? "";
+      for (const d of sc.doctors ?? []) {
+        if (!d.platformAccountNumber) continue;
+        map.set(
+          `${labId}::${(d.doctorName ?? "").trim().toLowerCase()}::${d.providerOrganizationId ?? ""}`,
+          d.platformAccountNumber,
+        );
+      }
+    }
+    return map;
+  }, [serverActiveClusters]);
+
+  // The local scan only ever sees doctors that have *cases*. Duplicate provider
+  // accounts with no cases collapse to a single row here, so the server's
+  // account-level clusters (Task #4373) are folded in — deduped by cluster key
+  // so a cluster detected both ways is only offered once.
+  const visibleDuplicateClusters = useMemo<PanelCluster[]>(() => {
+    const out: PanelCluster[] = localVisibleClusters.map((c) => ({
+      key: c.key,
+      labId: c.labId,
+      topScore: c.topScore,
+      kind: "name",
+      conflictReason: null,
+      survivingAccountNumber: null,
+      rows: c.rows.map((r) => ({
+        key: r.key,
+        doctorName: r.doctorName,
+        practiceName: r.practiceName,
+        practiceId: r.practiceId || null,
+        accountCount: 0,
+        platformAccountNumber:
+          accountNumberByRow.get(
+            `${c.labId}::${r.doctorName.trim().toLowerCase()}::${r.practiceId || ""}`,
+          ) ?? null,
+      })),
+    }));
+    const seen = new Set(out.map((c) => c.key));
+    for (const sc of serverActiveClusters) {
+      const key = sc.clusterKey ?? "";
+      if (!key || seen.has(key)) continue;
+      if (dismissedKeySet.has(key)) continue;
+      seen.add(key);
+      out.push({
+        key,
+        labId: sc.labOrganizationId ?? "",
+        topScore: sc.topScore ?? 0,
+        kind: sc.kind === "account" ? "account" : "name",
+        conflictReason: sc.conflictReason ?? null,
+        survivingAccountNumber:
+          sc.kind === "account" ? (sc.survivingAccountNumber ?? null) : null,
+        rows: (sc.doctors ?? []).map((d) => ({
+          key: `${d.doctorName}|${d.providerOrganizationId ?? ""}`,
+          doctorName: d.doctorName ?? "",
+          practiceName: d.practiceName || "Unknown practice",
+          practiceId: d.providerOrganizationId ?? null,
+          accountCount: d.accountCount ?? 0,
+          platformAccountNumber: d.platformAccountNumber ?? null,
+        })),
+      });
+    }
+    return out.sort((a, b) => b.topScore - a.topScore);
+  }, [
+    localVisibleClusters,
+    serverActiveClusters,
+    dismissedKeySet,
+    accountNumberByRow,
+  ]);
 
   const restoreDismissedCluster = (clusterKey: string, labOrganizationId: string) => {
     restoreMutation.mutate({ data: { labOrganizationId, clusterKey } });
@@ -626,6 +804,16 @@ export default function DoctorsPage() {
                         <span className="text-xs text-muted-foreground">
                           ({r.practiceName})
                         </span>
+                        {r.accountCount > 1 && (
+                          <span className="text-[10px] font-medium rounded px-1 py-0.5 bg-sky-200/70 dark:bg-sky-900/60 text-sky-900 dark:text-sky-200">
+                            {r.accountCount} accounts
+                          </span>
+                        )}
+                        <DuplicateRowAccountBadge
+                          kind={cluster.kind}
+                          survivingAccountNumber={cluster.survivingAccountNumber}
+                          platformAccountNumber={r.platformAccountNumber}
+                        />
                         {i < cluster.rows.length - 1 && (
                           <span className="text-muted-foreground">·</span>
                         )}
@@ -635,25 +823,64 @@ export default function DoctorsPage() {
                   <div className="text-[11px] text-muted-foreground mt-0.5">
                     {Math.round(cluster.topScore * 100)}% name match
                     {cluster.rows.length > 2 && ` · ${cluster.rows.length} doctors`}
+                    {cluster.kind === "account" && " · duplicate accounts"}
                   </div>
+                  {cluster.conflictReason && (
+                    <div className="text-[11px] text-amber-700 dark:text-amber-400 mt-0.5">
+                      {cluster.conflictReason}
+                    </div>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMergeDialog({
-                      labOrganizationId: cluster.labId,
-                      clusterKey: cluster.key,
-                      sources: cluster.rows.map((r) => ({
-                        doctorName: r.doctorName,
-                        providerOrganizationId: r.practiceId || null,
-                        practiceName: r.practiceName,
-                      })),
-                    });
-                  }}
-                  className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90"
-                >
-                  <GitMerge size={12} /> Review
-                </button>
+                {cluster.kind === "account" ? (
+                  <button
+                    type="button"
+                    disabled={consolidateAccountsMutation.isPending}
+                    onClick={() => {
+                      if (
+                        cluster.conflictReason &&
+                        !window.confirm(
+                          `${cluster.conflictReason}\n\nConsolidate them anyway onto the oldest account number?`,
+                        )
+                      ) {
+                        return;
+                      }
+                      consolidateAccountsMutation.mutate({
+                        data: {
+                          labOrganizationId: cluster.labId,
+                          doctors: cluster.rows.map((r) => ({
+                            doctorName: r.doctorName,
+                            providerOrganizationId: r.practiceId,
+                          })),
+                          force: Boolean(cluster.conflictReason),
+                        },
+                      });
+                    }}
+                    className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60"
+                  >
+                    <GitMerge size={12} />
+                    {consolidateAccountsMutation.isPending
+                      ? "Consolidating…"
+                      : "Consolidate"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMergeDialog({
+                        labOrganizationId: cluster.labId,
+                        clusterKey: cluster.key,
+                        sources: cluster.rows.map((r) => ({
+                          doctorName: r.doctorName,
+                          providerOrganizationId: r.practiceId || null,
+                          practiceName: r.practiceName,
+                        })),
+                      });
+                    }}
+                    className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90"
+                  >
+                    <GitMerge size={12} /> Review
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -665,6 +892,8 @@ export default function DoctorsPage() {
                           doctorName: r.doctorName,
                           providerOrganizationId: r.practiceId || null,
                           practiceName: r.practiceName,
+                          accountCount: r.accountCount,
+                          platformAccountNumber: r.platformAccountNumber,
                         })),
                       },
                     });
@@ -903,7 +1132,10 @@ export default function DoctorsPage() {
                           <Stethoscope size={13} />
                         )}
                       </div>
-                      <div className="font-medium">{r.doctorName}</div>
+                      <div>
+                        <div className="font-medium">{r.doctorName}</div>
+                        {r.practiceAccountNumber && <div className="text-[11px] font-mono text-muted-foreground leading-tight">#{r.practiceAccountNumber}</div>}
+                      </div>
                     </div>
                   </td>
                   <td className="py-3">
@@ -1067,16 +1299,22 @@ export default function DoctorsPage() {
           <div className="text-sm">{undoToast.message}</div>
           <button
             type="button"
-            disabled={undoMutation.isPending}
+            disabled={undoMutation.isPending || undoConsolidationMutation.isPending}
             onClick={() => {
               for (const id of undoToast.auditLogIds) {
-                undoMutation.mutate({ auditLogId: id });
+                if (undoToast.kind === "account-consolidation") {
+                  undoConsolidationMutation.mutate({ auditLogId: id });
+                } else {
+                  undoMutation.mutate({ auditLogId: id });
+                }
               }
             }}
             className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-background/10 text-sm font-semibold hover:bg-background/20 disabled:opacity-60"
           >
             <Undo2 size={13} />
-            {undoMutation.isPending ? "Undoing…" : "Undo"}
+            {undoMutation.isPending || undoConsolidationMutation.isPending
+              ? "Undoing…"
+              : "Undo"}
           </button>
           <button
             type="button"
@@ -1094,6 +1332,72 @@ export default function DoctorsPage() {
 
 // Per-lab "Unassigned doctors" holding area. Only rendered for labs where the
 // current user is an admin. Each row can be reassigned to a practice.
+/**
+ * What happens to the provider account a duplicate row already owns
+ * (Task #4397).
+ *
+ * A name merge moves cases and pricing only — every doctor keeps their own
+ * account and no number is minted or reissued — so each row reads "keeps
+ * account #…". Consolidating duplicate ACCOUNTS is a different operation: the
+ * whole cluster collapses onto the oldest account number and the rest are
+ * retired, so only the surviving number may be called kept. The others are
+ * labelled as retiring, right next to the button that does it.
+ */
+function DuplicateRowAccountBadge({
+  kind,
+  survivingAccountNumber,
+  platformAccountNumber,
+}: {
+  kind: "name" | "account";
+  survivingAccountNumber: string | null;
+  platformAccountNumber: string | null;
+}) {
+  if (!platformAccountNumber) return null;
+  const shown = formatAccountNumberForDisplay(platformAccountNumber);
+  const neutral =
+    "text-[10px] font-medium rounded px-1 py-0.5 bg-secondary text-muted-foreground";
+
+  if (kind !== "account") {
+    return (
+      <span
+        className={neutral}
+        title="Merging these names keeps this account — no new account or account number is created."
+      >
+        keeps account #{shown}
+      </span>
+    );
+  }
+  if (!survivingAccountNumber) {
+    // No member has a number we can rank, so claim nothing about survival.
+    return (
+      <span
+        className={neutral}
+        title="Consolidating keeps the oldest of these accounts; no new account number is created."
+      >
+        account #{shown}
+      </span>
+    );
+  }
+  if (survivingAccountNumber === platformAccountNumber) {
+    return (
+      <span
+        className={neutral}
+        title="Consolidating keeps this account number — the duplicates are retired onto it."
+      >
+        keeps account #{shown}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="text-[10px] font-medium rounded px-1 py-0.5 bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200"
+      title={`Consolidating moves this account onto #${formatAccountNumberForDisplay(survivingAccountNumber)} and retires #${shown}. The retired number stays reserved.`}
+    >
+      account #{shown} retires
+    </span>
+  );
+}
+
 function UnassignedDoctorsPanel({
   labOrganizationId,
 }: {
@@ -1101,7 +1405,10 @@ function UnassignedDoctorsPanel({
 }) {
   const unassignedQuery = useListUnassignedDoctors(labOrganizationId);
   const [reassign, setReassign] = useState<{
-    userId: string;
+    // Null for a name-only entry: a doctor removed from a practice who has no
+    // provider account. Removing a doctor never creates one, so the holding
+    // area can hold them by name alone.
+    userId: string | null;
     doctorName: string;
   } | null>(null);
 
@@ -1135,7 +1442,11 @@ function UnassignedDoctorsPanel({
             <div className="min-w-0">
               <div className="text-sm font-medium">{doctorLabel(d)}</div>
               <div className="text-xs text-muted-foreground truncate">
-                {d.platformAccountNumber ? `${d.platformAccountNumber} · ` : ""}
+                {d.platformAccountNumber
+                  ? `${formatAccountNumberForDisplay(d.platformAccountNumber)} · `
+                  : d.hasAccount === false
+                    ? "No account · "
+                    : ""}
                 {d.removedFromPracticeName
                   ? `Removed from ${d.removedFromPracticeName}`
                   : "Removed"}
@@ -1146,11 +1457,10 @@ function UnassignedDoctorsPanel({
               type="button"
               onClick={() =>
                 setReassign({
-                  userId: d.userId ?? "",
+                  userId: d.userId ?? null,
                   doctorName: doctorLabel(d),
                 })
               }
-              disabled={!d.userId}
               className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60"
             >
               Reassign
@@ -1236,6 +1546,23 @@ export function DoctorDrawer({
   const myMembership = labMembersQuery.data?.find((m) => m.userId === user?.id);
   const isLabAdmin = !!myMembership && ADMIN_ROLES.has(myMembership.role);
   const [removeOpen, setRemoveOpen] = useState(false);
+  const [receivePaymentTarget, setReceivePaymentTarget] = useState<{
+    name: string;
+    amount: number;
+    invoiceIds: string[];
+    doctorName?: string | null;
+  } | null>(null);
+
+  const openBalance = useMemo(
+    () =>
+      sortedInvoices
+        .filter((inv) => {
+          const s = (inv.status ?? "").toLowerCase();
+          return s !== "void" && s !== "cancelled" && s !== "canceled";
+        })
+        .reduce((sum, inv) => sum + Number(inv.balanceDue ?? 0), 0),
+    [sortedInvoices],
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -1245,6 +1572,7 @@ export function DoctorDrawer({
           <div>
             <div className="text-xs text-muted-foreground">Doctor</div>
             <div className="text-sm font-semibold">{doctor.doctorName}</div>
+            {doctor.practiceAccountNumber && <div className="text-xs font-mono text-muted-foreground leading-tight">#{doctor.practiceAccountNumber}</div>}
           </div>
           <button type="button" onClick={onClose} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center">
             <X size={16} />
@@ -1256,7 +1584,26 @@ export function DoctorDrawer({
             <Field label="Total cases" value={String(doctor.totalCases)} />
             <Field label="Open cases" value={String(doctor.openCases)} />
             <Field label="Rush cases" value={String(doctor.rushCases)} />
-            <Field label="Total billed" value={formatMoney(doctor.totalBilled)} />
+            <div className="flex flex-col gap-0.5">
+              <div className="text-xs text-muted-foreground">Total billed</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-medium">{formatMoney(doctor.totalBilled)}</span>
+                {isLabAdmin && (
+                  <button
+                    type="button"
+                    disabled={openBalance <= 0}
+                    onClick={() => setReceivePaymentTarget({
+                      name: doctor.doctorName,
+                      amount: openBalance,
+                      invoiceIds: [],
+                    })}
+                    className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-medium border border-emerald-500/20 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Receipt size={10} /> Receive Payment
+                  </button>
+                )}
+              </div>
+            </div>
             <Field label="Last case" value={formatDate(doctor.lastCaseAt)} />
           </div>
 
@@ -1377,32 +1724,66 @@ export function DoctorDrawer({
                 <span className="ml-1.5 text-foreground/70">({sortedInvoices.length})</span>
               </h3>
               <ul className="space-y-1.5">
-                {sortedInvoices.slice(0, 20).map((inv) => (
-                  <li key={inv.id} className="flex items-center justify-between border border-border rounded-md px-3 py-2 text-sm">
-                    <div className="min-w-0">
-                      <div className="font-medium text-xs">{inv.invoiceNumber || "Invoice"}</div>
-                      <div className="text-xs text-muted-foreground truncate">
-                        {formatDate(inv.issuedAt)} · Due {formatDate(inv.dueAt)}
+                {sortedInvoices.slice(0, 20).map((inv) => {
+                  const invStatus = (inv.status ?? "").toLowerCase();
+                  const invBalance = Number(inv.balanceDue ?? 0);
+                  const isPayable = isLabAdmin &&
+                    !invStatus.includes("void") &&
+                    !invStatus.includes("cancel") &&
+                    invBalance > 0;
+                  return (
+                    <li key={inv.id} className="flex items-center justify-between border border-border rounded-md px-3 py-2 text-sm">
+                      <div className="min-w-0">
+                        <div className="font-medium text-xs">{inv.invoiceNumber || "Invoice"}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          {formatDate(inv.issuedAt)} · Due {formatDate(inv.dueAt)}
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="font-medium text-xs tabular-nums">{formatMoney(Number(inv.balanceDue ?? inv.total ?? 0))}</span>
-                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold leading-none ${
-                        (inv.status ?? "").toLowerCase().includes("paid") ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" :
-                        (inv.status ?? "").toLowerCase().includes("overdue") ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" :
-                        (inv.status ?? "").toLowerCase().includes("void") || (inv.status ?? "").toLowerCase().includes("cancel") ? "bg-secondary text-muted-foreground" :
-                        "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
-                      }`}>
-                        {inv.status ?? "unpaid"}
-                      </span>
-                    </div>
-                  </li>
-                ))}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-medium text-xs tabular-nums">{formatMoney(Number(inv.balanceDue ?? inv.total ?? 0))}</span>
+                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold leading-none ${
+                          invStatus.includes("paid") ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" :
+                          invStatus.includes("overdue") ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" :
+                          invStatus.includes("void") || invStatus.includes("cancel") ? "bg-secondary text-muted-foreground" :
+                          "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                        }`}>
+                          {inv.status ?? "unpaid"}
+                        </span>
+                        {isPayable && (
+                          <button
+                            type="button"
+                            onClick={() => setReceivePaymentTarget({
+                              name: doctor.doctorName,
+                              amount: invBalance,
+                              invoiceIds: [inv.id],
+                              doctorName: doctor.doctorName,
+                            })}
+                            className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-medium border border-emerald-500/20 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20"
+                          >
+                            <Receipt size={10} /> Pay
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             </section>
           )}
         </div>
       </aside>
+      {receivePaymentTarget && (
+        <ReceivePaymentModal
+          open={true}
+          onClose={() => setReceivePaymentTarget(null)}
+          practiceOrDoctorName={receivePaymentTarget.name}
+          defaultAmount={receivePaymentTarget.amount}
+          invoiceIds={receivePaymentTarget.invoiceIds}
+          providerOrganizationId={doctor.practiceId ?? ""}
+          labOrganizationId={doctor.labOrganizationId ?? labId ?? ""}
+          doctorName={receivePaymentTarget.doctorName}
+        />
+      )}
     </div>
   );
 }
@@ -1638,6 +2019,27 @@ export function MergeDialog({
   const [searchAccumulated, setSearchAccumulated] = useState<DoctorSearchEntry[]>([]);
   const [searchTotal, setSearchTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const canSwap =
+    !singleReassign &&
+    sources.length === 1 &&
+    targetMode === "existing" &&
+    !!targetName.trim();
+
+  function handleSwap() {
+    if (!canSwap) return;
+    const src = sources[0];
+    setSources([
+      {
+        doctorName: targetName,
+        practiceName: targetPracticeName,
+        providerOrganizationId: targetProviderId,
+      },
+    ]);
+    setTargetName(src.doctorName);
+    setTargetPracticeName(src.practiceName ?? "");
+    setTargetProviderId(src.providerOrganizationId ?? null);
+  }
 
   // Practices in this lab — used as the target practice picker for both
   // "new target" mode and to assign a practice to an existing target that
@@ -1919,6 +2321,20 @@ export function MergeDialog({
               </ul>
             )}
           </section>
+
+          {canSwap && (
+            <div className="flex justify-center -my-1">
+              <button
+                type="button"
+                onClick={handleSwap}
+                className="h-7 w-7 rounded-md border border-border hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                aria-label="Swap source and target doctors"
+                title="Swap source and target"
+              >
+                <ArrowUpDown size={14} />
+              </button>
+            </div>
+          )}
 
           <section>
             <div className="flex items-center justify-between mb-2">

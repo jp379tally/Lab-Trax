@@ -1,5 +1,14 @@
 import { defineConfig } from "vitest/config";
 
+if (
+  process.env.API_TEST_REQUIRE_DATABASE === "1" &&
+  !process.env.DATABASE_URL
+) {
+  throw new Error(
+    "API_TEST_REQUIRE_DATABASE=1 requires DATABASE_URL; refusing to silently skip database integration suites.",
+  );
+}
+
 export default defineConfig({
   test: {
     globals: true,
@@ -17,8 +26,16 @@ export default defineConfig({
     // See REGRESSION_GUARDRAILS.md → "DB Serialization Rule (with-db-lock)".
     exclude: [
       "**/node_modules/**",
+      "src/routes/organization-audit-recovery-rehearsal.test.ts",
       "src/routes/backup-restore.test.ts",
+      "src/routes/case-organization-repair.test.ts",
       "src/routes/restore-session.test.ts",
+      // Off-site restore suites can restore a real archive into whatever
+      // DATABASE_URL points at, so they run ONLY inside the isolated gate
+      // (scripts/run-isolated-backup-restore.sh), never in the ordinary API run.
+      "src/routes/onedrive-restore-integrity.test.ts",
+      "src/routes/onedrive-offsite-restore.test.ts",
+      "src/routes/google-drive-offsite-restore.test.ts",
     ],
     // Keep the suite hermetic regardless of the host environment. Demo seeding
     // is a dev-only convenience; when LABTRAX_ENABLE_DEMO_SEEDS is "true" in the
@@ -34,9 +51,7 @@ export default defineConfig({
       // the run clean and makes any genuinely new warning stand out. Suites that
       // assert on logging mock ../lib/logger.js directly and are unaffected.
       LOG_LEVEL: "silent",
-      // Cap the pg connection pool per worker so two concurrent test workflows
-      // (api-server-tests + regression-tests) stay within the DB's
-      // max_connections.  2 workflows × 2 workers × 5 connections = 20 total.
+      // Cap the pg connection pool for the serialized DB integration gate.
       DB_POOL_MAX: "5",
       // Raise the PG connect timeout under test. When the Run-button aggregate
       // fires every rel-* workflow simultaneously, CPU contention can push the
@@ -45,28 +60,22 @@ export default defineConfig({
       // suites that pass cleanly alone (see lib/db pool config).
       DB_CONNECT_TIMEOUT_MS: "60000",
     },
-    // Cap parallel forks so the shared PG connection pool is not exhausted when
-    // many integration test files run simultaneously.  Each fork imports app.js
-    // and creates its own connection pool (pg default max = 10).  Two concurrent
-    // test workflows each running 2 workers = 4 × 10 = 40 connections, well
-    // within max_connections.  Four workers per workflow (the old cap) caused
-    // 80 concurrent connections when two workflows fired at merge time, which
-    // exhausted the pool and caused beforeAll hooks to time out at 30 s.
+    // Integration files share one development database and perform destructive
+    // fixture teardown. Running two files at once can remove rows while a sibling
+    // file is asserting invoice rebuild behavior, even when every file passes in
+    // isolation. Serialize files so a green release gate is reproducible.
     //
     // NOTE: Vitest 4 removed `test.poolOptions` (the old
     // `poolOptions.forks.maxForks` is silently ignored). The cap is now the
     // top-level `maxWorkers`; without this the suite runs with uncapped
     // parallelism, which is what made this protected regression gate flaky.
     pool: "forks",
-    maxWorkers: 2,
+    fileParallelism: false,
+    maxWorkers: 1,
     minWorkers: 1,
     // Allow slow beforeAll/afterAll hooks (DB imports, heavy setup) more time.
     // Allow slow tests (orphan-cleanup scan, heavy DB queries) the same budget.
-    // 90 s gives the PG pool enough headroom to recover when two concurrent
-    // workflows (api-server-tests + regression-tests) both hit the DB at
-    // merge time.  At maxWorkers=2 per workflow the worst-case concurrent
-    // connections are 2 × 2 × 5 = 20 (see DB_POOL_MAX below), well within
-    // max_connections, but connection setup still takes longer under contention.
+    // 90 s leaves headroom for heavy DB setup and teardown on the shared service.
     hookTimeout: 90000,
     testTimeout: 90000,
   },

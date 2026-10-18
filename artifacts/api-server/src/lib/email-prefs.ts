@@ -11,6 +11,11 @@ export const EMAIL_PREF_KEYS = [
   "installerAlerts",
   "backupAlerts",
   "cleanupAlerts",
+  // Lab-user notification preferences (events triggered by provider activity)
+  "caseCreatedNotifications",
+  "messageReceivedNotifications",
+  "rushCaseNotifications",
+  "providerNoteNotifications",
 ] as const;
 
 export type EmailPrefKey = (typeof EMAIL_PREF_KEYS)[number];
@@ -27,6 +32,11 @@ export const DEFAULT_EMAIL_PREFS: Record<EmailPrefKey, boolean> = {
   installerAlerts: false,
   backupAlerts: false,
   cleanupAlerts: false,
+  // Lab-user event notifications — all default ON.
+  caseCreatedNotifications: true,
+  messageReceivedNotifications: true,
+  rushCaseNotifications: true,
+  providerNoteNotifications: true,
 };
 
 /**

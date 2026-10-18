@@ -57,7 +57,7 @@ vi.mock("@/lib/query-client", () => ({
 
 import { JoinLabCard } from "@/components/JoinLabCard";
 
-function renderCard() {
+async function renderCard() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
@@ -91,12 +91,12 @@ describe("JoinLabCard — search results", () => {
         phone: "(512) 555-0100",
       },
     ];
-    const { getByText, getByPlaceholderText } = renderCard();
+    const { getByText, getByPlaceholderText } = await renderCard();
     await waitFor(() =>
       expect(getByText("Your account is ready")).toBeTruthy(),
     );
 
-    fireEvent.changeText(getByPlaceholderText("Lab name or city"), "Acme");
+    await fireEvent.changeText(getByPlaceholderText("Lab name or city"), "Acme");
 
     await waitFor(() => expect(getByText("Acme Dental Lab")).toBeTruthy(), {
       timeout: 3000,
@@ -111,9 +111,9 @@ describe("JoinLabCard — search results", () => {
 
   it("shows the empty state when no labs match the query", async () => {
     mockState.labResults = [];
-    const { getByText, getByPlaceholderText } = renderCard();
+    const { getByText, getByPlaceholderText } = await renderCard();
 
-    fireEvent.changeText(getByPlaceholderText("Lab name or city"), "zzz");
+    await fireEvent.changeText(getByPlaceholderText("Lab name or city"), "zzz");
 
     await waitFor(
       () =>
@@ -150,13 +150,13 @@ describe("JoinLabCard — send path", () => {
       return { ok: true, data: null };
     });
 
-    const { getByText, getByPlaceholderText } = renderCard();
-    fireEvent.changeText(getByPlaceholderText("Lab name or city"), "Acme");
+    const { getByText, getByPlaceholderText } = await renderCard();
+    await fireEvent.changeText(getByPlaceholderText("Lab name or city"), "Acme");
     await waitFor(() => expect(getByText("Request to join")).toBeTruthy(), {
       timeout: 3000,
     });
 
-    fireEvent.press(getByText("Request to join"));
+    await fireEvent.press(getByText("Request to join"));
 
     await waitFor(() =>
       expect(mockApiRequest).toHaveBeenCalledWith(
@@ -181,7 +181,7 @@ describe("JoinLabCard — pending state", () => {
         organization: { id: "lab-2", displayName: "Bright Smiles Lab" },
       },
     ];
-    const { getByText } = renderCard();
+    const { getByText } = await renderCard();
 
     await waitFor(() => expect(getByText("Request pending")).toBeTruthy());
     expect(getByText(/Bright Smiles Lab/)).toBeTruthy();
@@ -197,10 +197,10 @@ describe("JoinLabCard — pending state", () => {
         organization: { id: "lab-2", displayName: "Bright Smiles Lab" },
       },
     ];
-    const { getByText } = renderCard();
+    const { getByText } = await renderCard();
     await waitFor(() => expect(getByText("Cancel request")).toBeTruthy());
 
-    fireEvent.press(getByText("Cancel request"));
+    await fireEvent.press(getByText("Cancel request"));
 
     await waitFor(() =>
       expect(mockApiRequest).toHaveBeenCalledWith(
@@ -221,7 +221,7 @@ describe("JoinLabCard — declined state", () => {
         organization: { id: "lab-3", displayName: "Crystal Dental Lab" },
       },
     ];
-    const { getByText } = renderCard();
+    const { getByText } = await renderCard();
 
     await waitFor(() => expect(getByText("Request declined")).toBeTruthy());
     expect(getByText(/Crystal Dental Lab/)).toBeTruthy();
@@ -237,10 +237,10 @@ describe("JoinLabCard — declined state", () => {
         organization: { id: "lab-3", displayName: "Crystal Dental Lab" },
       },
     ];
-    const { getByText } = renderCard();
+    const { getByText } = await renderCard();
     await waitFor(() => expect(getByText("Find another lab")).toBeTruthy());
 
-    fireEvent.press(getByText("Find another lab"));
+    await fireEvent.press(getByText("Find another lab"));
 
     await waitFor(() =>
       expect(mockApiRequest).toHaveBeenCalledWith(

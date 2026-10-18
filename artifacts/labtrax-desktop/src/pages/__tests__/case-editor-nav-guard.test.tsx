@@ -18,6 +18,11 @@ vi.mock("react-pdf", () => ({
   pdfjs: { GlobalWorkerOptions: {} },
 }));
 vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({ default: "" }));
+vi.mock("@/components/FieldCombobox", () => ({
+  FieldCombobox: ({ value, onChange, placeholder }: {
+    value: string; onChange: (value: string) => void; placeholder: string;
+  }) => <input placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)} />,
+}));
 
 function withAiPanel(children: React.ReactNode) {
   return (
@@ -32,7 +37,7 @@ const fakeCase: LabCase = {
   caseNumber: "26-1",
   patientFirstName: "Jane",
   patientLastName: "Doe",
-  doctorName: "Dr. Smith",
+  doctorName: "Dr. Synthetic063",
   status: "received",
   priority: "normal",
   dueDate: null,
@@ -87,7 +92,7 @@ function renderDrawer() {
         <CaseDrawer
           labCase={fakeCase}
           onClose={onClose}
-          doctorNames={["Dr. Smith", "Dr. Jones"]}
+          doctorNames={["Dr. Synthetic063", "Dr. Synthetic047"]}
         />,
       )}
     </Wrapper>,
@@ -95,16 +100,12 @@ function renderDrawer() {
   return { onClose, view };
 }
 
-// Stage an unsaved edit by entering edit mode, changing the doctor field, and
-// applying it to the drawer's pending-changes state.
+// Manual restoration additions still stage edits outside the Lab Slip form.
 async function makeDirty() {
-  fireEvent.click(await screen.findByRole("button", { name: /Edit/i }));
-  // Doctor field is now a DoctorNamePicker (button + dropdown)
-  const doctorPicker = await screen.findByRole("button", { name: /Dr\. Smith/i });
-  fireEvent.click(doctorPicker);
-  const drJones = await screen.findByRole("button", { name: /Dr\. Jones/i });
-  fireEvent.click(drJones);
-  fireEvent.click(await screen.findByRole("button", { name: /Save changes/i }));
+  fireEvent.click(await screen.findByRole("button", { name: /Restorations/i }));
+  fireEvent.click(await screen.findByRole("button", { name: /Add manually/i }));
+  fireEvent.change(await screen.findByPlaceholderText("Case Type…"), { target: { value: "Crown" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add restoration" }));
 }
 
 describe("CaseDrawer navigation guard", () => {

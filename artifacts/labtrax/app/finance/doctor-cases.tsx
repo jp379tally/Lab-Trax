@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
+  AppState,
   View,
   Text,
   FlatList,
@@ -10,18 +11,28 @@ import {
   ActivityIndicator,
   RefreshControl,
   Linking,
+  TextInput,
 } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useLocalSearchParams, router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { useQuery } from "@tanstack/react-query";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Typography, Radius } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
+import { DismissKeyboardView, scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
-import { getJson } from "@/lib/read-api";
-import { useMe, primaryLabOrgId } from "@/lib/auth-me";
+import { getJson, sendJson } from "@/lib/read-api";
+import { trackSavedCardSetup } from "@/lib/saved-card-analytics";
+import { useMe, primaryLabOrgId, canEditOrg } from "@/lib/auth-me";
 import { formatDate, formatMoney, titleCase } from "@/lib/format";
+import { CaseQuickActionSheet } from "@/components/CaseQuickActionSheet";
+import { useLongPressGuard } from "@/lib/use-long-press-guard";
+import { isActiveCaseRecord } from "@/lib/case-quick-actions";
+import type { CanonicalCase } from "@workspace/api-client-react";
+import { formatAccountNumberForDisplay } from "@workspace/account-number";
 
 type ViewMode = "open" | "all";
 type InvoiceFilter = "all" | "open" | "paid" | "overdue" | "void";
@@ -32,8 +43,8 @@ interface CaseEntry {
   status: string;
   patientFirstName?: string | null;
   patientLastName?: string | null;
-  expectedDeliveryDate?: string | null;
   createdAt?: string | null;
+  dueDate?: string | null;
 }
 
 interface InvoiceEntry {
@@ -65,6 +76,19 @@ interface InvoiceSummary {
   totalInvoiced: number;
   totalPaid: number;
   outstanding: number;
+}
+
+interface LabCardResponse {
+  hasCard: boolean;
+  card: { brand: string; last4: string; expMonth: number; expYear: number } | null;
+  autoPay: { enabled: boolean; dayOfMonth: number | null };
+}
+
+interface CardChargeResult {
+  checkoutId: string;
+  status: string;
+  totalAmount: number;
+  failureReason?: string;
 }
 
 type ListItem =
@@ -103,7 +127,6 @@ function invoiceVariant(status: string | null | undefined): BadgeVariant {
   if (s.includes("paid")) return "paid";
   if (s.includes("overdue") || s.includes("past")) return "overdue";
   if (s.includes("void") || s.includes("cancel")) return "void";
-  if (s.includes("draft")) return "draft";
   return "unpaid";
 }
 
@@ -115,13 +138,12 @@ function matchesInvoiceFilter(inv: InvoiceEntry, filter: InvoiceFilter): boolean
   const isPaid = s === "paid" || s === "fully_paid";
   const isOverdue = s.includes("overdue") || s.includes("past_due") || s === "past";
   const isVoid = s.includes("void") || s.includes("cancel");
-  const isDraft = s === "draft";
 
   if (filter === "paid") return isPaid;
   if (filter === "overdue") return isOverdue;
   if (filter === "void") return isVoid;
-  // open = unpaid, not overdue, not void/cancelled, not draft, not paid
-  if (filter === "open") return !isPaid && !isOverdue && !isVoid && !isDraft;
+  // open = unpaid, not overdue, not void/cancelled, not paid
+  if (filter === "open") return !isPaid && !isOverdue && !isVoid;
   return true;
 }
 
@@ -166,6 +188,9 @@ export default function DoctorCasesScreen() {
     params.initialViewMode === "all" ? "all" : "open",
   );
   const [invoiceFilter, setInvoiceFilter] = useState<InvoiceFilter>("all");
+  const { markLongPress, consumeLongPress } = useLongPressGuard<string>();
+  const [quickActionCase, setQuickActionCase] = useState<CaseEntry | null>(null);
+
 
   const filterStorageKey = providerOrganizationId
     ? `invoice_filter_v1_${providerOrganizationId}`
@@ -192,6 +217,46 @@ export default function DoctorCasesScreen() {
 
   const me = useMe().data;
   const labOrgId = primaryLabOrgId(me);
+  const canManageCard = canEditOrg(me, labOrgId);
+  const [selectedAmounts, setSelectedAmounts] = useState<Record<string, string>>({});
+  const [isReviewingCharge, setIsReviewingCharge] = useState(false);
+  const [cardActionBusy, setCardActionBusy] = useState(false);
+  const [chargeResult, setChargeResult] = useState<CardChargeResult | null>(null);
+  const [cardActionError, setCardActionError] = useState<string | null>(null);
+
+  const cardQuery = useQuery<LabCardResponse>({
+    queryKey: ["provider-lab-card", labOrgId ?? "", providerOrganizationId],
+    enabled: !!labOrgId && !!providerOrganizationId && canManageCard,
+    staleTime: 15_000,
+    queryFn: async () =>
+      getJson<LabCardResponse>(
+        `/api/provider/lab-card?${new URLSearchParams({
+          labOrganizationId: labOrgId!,
+          providerOrganizationId,
+        }).toString()}`,
+      ),
+  });
+
+  // A hosted card setup hands control to the browser. Refresh when the app is
+  // foregrounded again so the summary always reflects the server's card state.
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        cardQuery.refetch();
+        invoicesQuery.refetch();
+      }
+    });
+    const urlSubscription = Linking.addEventListener("url", () => {
+      cardQuery.refetch();
+      invoicesQuery.refetch();
+    });
+    return () => {
+      subscription.remove();
+      urlSubscription.remove();
+    };
+  // react-query returns stable refetch functions; this avoids re-subscribing for data updates.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labOrgId, providerOrganizationId]);
 
   const orgQuery = useQuery<OrgDetails | null>({
     queryKey: ["org-detail", providerOrganizationId],
@@ -300,8 +365,90 @@ export default function DoctorCasesScreen() {
   const showInfoCard =
     !!effectivePhone ||
     !!(orgData && hasContactInfo(orgData));
-  const accountNum = orgData?.platformAccountNumber ?? orgData?.accountNumber ?? null;
+  const accountNum = orgData?.platformAccountNumber
+    ? formatAccountNumberForDisplay(orgData.platformAccountNumber)
+    : orgData?.accountNumber ?? null;
   const formattedAddress = orgData ? formatAddress(orgData) : null;
+  const payableInvoices = useMemo(
+    () =>
+      (invoicesQuery.data ?? []).filter((inv) => {
+        const status = (inv.status ?? "").toLowerCase();
+        return !status.includes("paid") && !status.includes("void") && Number(inv.balanceDue ?? 0) > 0;
+      }),
+    [invoicesQuery.data],
+  );
+  const allocations = useMemo(
+    () =>
+      payableInvoices
+        .map((invoice) => ({
+          invoiceId: invoice.id,
+          amount: Number(selectedAmounts[invoice.id] ?? 0),
+          invoice,
+        }))
+        .filter((allocation) => allocation.amount > 0 && allocation.amount <= Number(allocation.invoice.balanceDue ?? 0)),
+    [payableInvoices, selectedAmounts],
+  );
+  const allocationTotal = allocations.reduce((sum, allocation) => sum + allocation.amount, 0);
+
+  const updateAllocation = (invoice: InvoiceEntry, raw: string) => {
+    const normalized = raw.replace(/[^0-9.]/g, "");
+    setSelectedAmounts((current) => ({ ...current, [invoice.id]: normalized }));
+    setIsReviewingCharge(false);
+    setChargeResult(null);
+  };
+
+  const startCardSetup = async () => {
+    if (!labOrgId || !providerOrganizationId) return;
+    setCardActionBusy(true);
+    setCardActionError(null);
+    try {
+      trackSavedCardSetup("started");
+      const result = await sendJson<{ url: string }>("POST", "/api/provider/lab-card/setup", {
+        labOrganizationId: labOrgId,
+        providerOrganizationId,
+        successUrl: "labtrax://finance/lab-card-complete",
+        cancelUrl: "labtrax://finance/lab-card-cancelled",
+      });
+      if (!result.url) throw new Error("Card setup link was unavailable.");
+      await Linking.openURL(result.url);
+    } catch (error) {
+      setCardActionError(error instanceof Error ? error.message : "Couldn't open card setup.");
+    } finally {
+      setCardActionBusy(false);
+    }
+  };
+
+  const confirmCharge = async () => {
+    if (!labOrgId || !providerOrganizationId || allocations.length === 0) return;
+    setCardActionBusy(true);
+    setCardActionError(null);
+    try {
+      const chargeKeyStorage = `lab-card-charge:${labOrgId}:${providerOrganizationId}`;
+      const persistedKey = await AsyncStorage.getItem(chargeKeyStorage);
+      const idempotencyKey =
+        persistedKey ?? `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+      if (!persistedKey) await AsyncStorage.setItem(chargeKeyStorage, idempotencyKey);
+      const result = await sendJson<CardChargeResult>("POST", "/api/provider/lab-card/charge", {
+        labOrganizationId: labOrgId,
+        providerOrganizationId,
+        allocations: allocations.map(({ invoiceId, amount }) => ({ invoiceId, amount })),
+        idempotencyKey,
+      });
+      setChargeResult(result);
+      setIsReviewingCharge(false);
+      if (result.status.toLowerCase() !== "pending") {
+        await AsyncStorage.removeItem(chargeKeyStorage);
+      }
+      if (result.status.toLowerCase() === "succeeded" || result.status.toLowerCase() === "success") {
+        setSelectedAmounts({});
+        invoicesQuery.refetch();
+      }
+    } catch (error) {
+      setCardActionError(error instanceof Error ? error.message : "Charge could not be completed.");
+    } finally {
+      setCardActionBusy(false);
+    }
+  };
 
   function renderItem({ item }: { item: ListItem }) {
     if (item.kind === "sectionHeader") {
@@ -341,6 +488,7 @@ export default function DoctorCasesScreen() {
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.filterRow}
           style={styles.filterScroll}
         >
@@ -371,14 +519,35 @@ export default function DoctorCasesScreen() {
     if (item.kind === "case") {
       const c = item.data;
       return (
-        <Card style={styles.row} onPress={() => router.push(`/case/${c.id}` as never)}>
+        <Card
+          style={styles.row}
+          onPress={() => {
+            if (consumeLongPress(c.id)) return;
+            router.push(`/case/${c.id}` as never);
+          }}
+          onLongPress={() => {
+            if (!isActiveCaseRecord(c)) return;
+            markLongPress(c.id);
+            Promise.resolve(Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)).catch(() => {});
+            setQuickActionCase(c);
+          }}
+          delayLongPress={400}
+          testID={`doctor-case-${c.id}`}
+          accessibilityRole="button"
+          accessibilityLabel={`${patientName(c)}${c.caseNumber ? `, case ${c.caseNumber}` : ""}`}
+          accessibilityHint={
+            isActiveCaseRecord(c)
+              ? "Tap to open case details. Long press for quick actions."
+              : "Tap to open case details."
+          }
+        >
           <View style={styles.rowMain}>
             <Text style={styles.rowName} numberOfLines={1}>
               {patientName(c)}
             </Text>
             <Text style={styles.rowMeta} numberOfLines={1}>
               {c.caseNumber}
-              {c.expectedDeliveryDate ? ` · Due ${formatDate(c.expectedDeliveryDate)}` : ""}
+              {c.dueDate ? ` · Due ${formatDate(c.dueDate)}` : ""}
             </Text>
           </View>
           <StatusBadge label={titleCase(c.status ?? "—")} variant={statusVariant(c.status)} size="sm" />
@@ -414,7 +583,10 @@ export default function DoctorCasesScreen() {
   }
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <DismissKeyboardView
+      style={[styles.screen, { paddingTop: insets.top }]}
+      testID="doctor-cases-keyboard-dismiss"
+    >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={8} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={26} color={colors.text} />
@@ -484,6 +656,134 @@ export default function DoctorCasesScreen() {
         </View>
       ) : null}
 
+      {canManageCard && providerOrganizationId ? (
+        <KeyboardAwareScrollView
+          style={styles.paymentScroll}
+          contentContainerStyle={styles.paymentContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={scrollKeyboardDismissMode}
+          bottomOffset={Spacing.xl}
+        >
+          <View style={styles.paymentCard}>
+            <View style={styles.paymentHeading}>
+              <View style={styles.paymentHeadingCopy}>
+                <Text style={styles.paymentTitle}>Practice payment card</Text>
+                {cardQuery.isLoading ? (
+                  <Text style={styles.paymentDetail}>Loading card…</Text>
+                ) : cardQuery.data?.hasCard && cardQuery.data.card ? (
+                  <Text style={styles.paymentDetail}>
+                    {cardQuery.data.card.brand} •••• {cardQuery.data.card.last4} · expires {cardQuery.data.card.expMonth}/{cardQuery.data.card.expYear}
+                  </Text>
+                ) : (
+                  <Text style={styles.paymentDetail}>No shared card on file — add one to charge open invoices.</Text>
+                )}
+              </View>
+              <TouchableOpacity
+                testID="lab-card-setup"
+                style={styles.outlineBtn}
+                disabled={cardActionBusy}
+                onPress={startCardSetup}
+              >
+                <Text style={styles.outlineBtnText}>
+                  {cardQuery.data?.hasCard ? "Replace" : "Add card"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.autoPayNote}>
+              <Ionicons name="information-circle-outline" size={16} color={colors.textSecondary} />
+              <Text style={styles.autoPayText}>
+                Auto-pay is {cardQuery.data?.autoPay.enabled ? `on${cardQuery.data.autoPay.dayOfMonth ? ` for day ${cardQuery.data.autoPay.dayOfMonth}` : ""}` : "off"}. This card is shared for this practice. Invoices are due by the 10th; auto-pay settings are managed outside this screen.
+              </Text>
+            </View>
+            {cardActionError ? <Text style={styles.paymentError}>{cardActionError}</Text> : null}
+            {cardQuery.isError ? (
+              <Text style={styles.paymentError}>Couldn&apos;t load the shared card. Pull to refresh and try again.</Text>
+            ) : null}
+            <TouchableOpacity
+              testID="lab-shared-account"
+              style={styles.accountContextLink}
+              onPress={() =>
+                router.push({
+                  pathname: "/settings/shared-account",
+                  params: {
+                    labOrganizationId: labOrgId!,
+                    providerOrganizationId,
+                    relationshipName: practiceName || doctorName,
+                  },
+                } as never)
+              }
+            >
+              <View style={styles.rowMain}>
+                <Text style={styles.paymentTitle}>Shared account details</Text>
+                <Text style={styles.paymentDetail}>Contact profile, pending approvals, and account history</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+            </TouchableOpacity>
+          </View>
+
+          {cardQuery.data?.hasCard && payableInvoices.length > 0 ? (
+            <View style={styles.paymentCard}>
+              <Text style={styles.paymentTitle}>Pay open invoices</Text>
+              <Text style={styles.paymentDetail}>Enter a full or partial amount for each invoice.</Text>
+              {payableInvoices.map((invoice) => {
+                const balance = Number(invoice.balanceDue ?? 0);
+                return (
+                  <View key={invoice.id} style={styles.allocationRow}>
+                    <View style={styles.allocationInfo}>
+                      <Text style={styles.allocationName}>{invoice.invoiceNumber || "Invoice"}</Text>
+                      <Text style={styles.paymentDetail}>Balance {formatMoney(balance)}</Text>
+                    </View>
+                    <View style={styles.amountEdit}>
+                      <Text style={styles.currencyMark}>$</Text>
+                      <TextInput
+                        testID={`invoice-allocation-${invoice.id}`}
+                        value={selectedAmounts[invoice.id] ?? ""}
+                        onChangeText={(value) => updateAllocation(invoice, value)}
+                        placeholder={balance.toFixed(2)}
+                        placeholderTextColor={colors.textTertiary}
+                        keyboardType="decimal-pad"
+                        style={styles.amountInput}
+                      />
+                    </View>
+                  </View>
+                );
+              })}
+              {isReviewingCharge ? (
+                <View style={styles.reviewBox}>
+                  <Text style={styles.reviewText}>Charge {formatMoney(allocationTotal)} to the shared practice card?</Text>
+                  <View style={styles.reviewActions}>
+                    <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsReviewingCharge(false)}>
+                      <Text style={styles.cancelBtnText}>Back</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity testID="confirm-card-charge" style={styles.primaryBtn} disabled={cardActionBusy} onPress={confirmCharge}>
+                      <Text style={styles.primaryBtnText}>{cardActionBusy ? "Charging…" : "Confirm charge"}</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  testID="review-card-charge"
+                  style={[styles.primaryBtn, allocations.length === 0 && styles.disabledBtn]}
+                  disabled={allocations.length === 0 || cardActionBusy}
+                  onPress={() => setIsReviewingCharge(true)}
+                >
+                  <Text style={styles.primaryBtnText}>Review {allocationTotal > 0 ? formatMoney(allocationTotal) : "payment"}</Text>
+                </TouchableOpacity>
+              )}
+              {chargeResult ? (
+                <View style={chargeResult.status.toLowerCase().includes("success") || chargeResult.status.toLowerCase().includes("succeed") ? styles.successNotice : styles.failureNotice}>
+                  <Text style={styles.noticeText}>
+                    {chargeResult.status.toLowerCase().includes("success") || chargeResult.status.toLowerCase().includes("succeed")
+                      ? `Payment successful: ${formatMoney(chargeResult.totalAmount)}`
+                      : `Payment failed: ${chargeResult.failureReason || "The card was not charged."}`}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+        </KeyboardAwareScrollView>
+      ) : null}
+
       {isLoading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.tint} />
@@ -524,6 +824,8 @@ export default function DoctorCasesScreen() {
             return `${item.kind}-${item.data.id}`;
           }}
           renderItem={renderItem}
+            keyboardDismissMode={scrollKeyboardDismissMode}
+            keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl
@@ -537,7 +839,16 @@ export default function DoctorCasesScreen() {
           }
         />
       )}
-    </View>
+      <CaseQuickActionSheet
+        visible={quickActionCase !== null}
+        caseItem={quickActionCase as CanonicalCase | null}
+        onDismiss={() => setQuickActionCase(null)}
+        labOrganizationId={labOrgId}
+        onActionSuccess={() => {
+          void casesQuery.refetch();
+        }}
+      />
+    </DismissKeyboardView>
   );
 }
 
@@ -609,6 +920,167 @@ function makeStyles(c: ThemeColors) {
     },
     infoLink: {
       color: c.tint,
+    },
+    paymentScroll: {
+      flexGrow: 0,
+      maxHeight: 430,
+    },
+    paymentContent: {
+      paddingHorizontal: Spacing.lg,
+      paddingTop: Spacing.sm,
+      gap: Spacing.sm,
+    },
+    paymentCard: {
+      backgroundColor: c.surface,
+      borderRadius: Radius.md,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      padding: Spacing.md,
+      gap: Spacing.sm,
+    },
+    paymentHeading: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+    },
+    paymentHeadingCopy: {
+      flex: 1,
+      gap: 2,
+    },
+    paymentTitle: {
+      ...Typography.bodySemibold,
+      color: c.text,
+    },
+    paymentDetail: {
+      ...Typography.caption,
+      color: c.textSecondary,
+    },
+    outlineBtn: {
+      borderWidth: 1,
+      borderColor: c.tint,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: 6,
+    },
+    outlineBtnText: {
+      ...Typography.captionSemibold,
+      color: c.tint,
+    },
+    autoPayNote: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: Spacing.xs,
+      paddingTop: Spacing.xs,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+    },
+    accountContextLink: {
+      minHeight: 52,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.md,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+      paddingTop: Spacing.md,
+    },
+    autoPayText: {
+      ...Typography.caption,
+      color: c.textSecondary,
+      flex: 1,
+    },
+    paymentError: {
+      ...Typography.caption,
+      color: c.error,
+    },
+    allocationRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+      paddingTop: Spacing.sm,
+    },
+    allocationInfo: {
+      flex: 1,
+      gap: 1,
+    },
+    allocationName: {
+      ...Typography.bodyMedium,
+      color: c.text,
+    },
+    amountEdit: {
+      flexDirection: "row",
+      alignItems: "center",
+      width: 100,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.sm,
+      backgroundColor: c.backgroundSolid,
+    },
+    currencyMark: {
+      ...Typography.body,
+      color: c.textSecondary,
+    },
+    amountInput: {
+      ...Typography.body,
+      color: c.text,
+      flex: 1,
+      paddingVertical: 7,
+      paddingLeft: 2,
+      textAlign: "right",
+    },
+    primaryBtn: {
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: Radius.sm,
+      backgroundColor: c.tint,
+      paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.md,
+    },
+    primaryBtnText: {
+      ...Typography.bodySemibold,
+      color: c.textInverse,
+    },
+    disabledBtn: {
+      opacity: 0.45,
+    },
+    reviewBox: {
+      gap: Spacing.sm,
+      padding: Spacing.sm,
+      borderRadius: Radius.sm,
+      backgroundColor: c.tintLight,
+    },
+    reviewText: {
+      ...Typography.bodyMedium,
+      color: c.text,
+    },
+    reviewActions: {
+      flexDirection: "row",
+      justifyContent: "flex-end",
+      gap: Spacing.sm,
+    },
+    cancelBtn: {
+      paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.md,
+    },
+    cancelBtnText: {
+      ...Typography.bodySemibold,
+      color: c.textSecondary,
+    },
+    successNotice: {
+      borderRadius: Radius.sm,
+      padding: Spacing.sm,
+      backgroundColor: c.tintLight,
+    },
+    failureNotice: {
+      borderRadius: Radius.sm,
+      padding: Spacing.sm,
+      backgroundColor: c.errorLight,
+    },
+    noticeText: {
+      ...Typography.captionMedium,
+      color: c.text,
     },
     summaryCard: {
       flexDirection: "row",

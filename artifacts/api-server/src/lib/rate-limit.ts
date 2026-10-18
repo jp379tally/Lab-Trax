@@ -23,9 +23,10 @@ setInterval(() => {
 }, 5 * 60 * 1000).unref();
 
 export function getClientIp(req: Request): string {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string") return forwarded.split(",")[0].trim();
-  return req.socket.remoteAddress ?? "unknown";
+  // Express resolves req.ip using the application's configured trust-proxy
+  // policy. Never parse X-Forwarded-For directly: callers can supply that
+  // header, while req.ip only trusts values permitted by the server config.
+  return req.ip || req.socket.remoteAddress || "unknown";
 }
 
 export function createRateLimit(opts: {
@@ -133,6 +134,64 @@ export function createUserRateLimit(opts: {
 }
 
 /**
+ * Imperative SMS abuse limit keyed by both the authenticated sender and the
+ * verified destination. Call only after authorization has resolved the
+ * destination from trusted server-side data.
+ */
+export function createUserAndDestinationRateLimit(opts: {
+  windowMs: number;
+  maxPerUser: number;
+  maxPerDestination: number;
+}) {
+  const userStore = new Map<string, RateLimitEntry>();
+  const destinationStore = new Map<string, RateLimitEntry>();
+
+  const cleanup = setInterval(() => {
+    const now = Date.now();
+    for (const store of [userStore, destinationStore]) {
+      for (const [key, entry] of store.entries()) {
+        if (entry.resetAt < now) store.delete(key);
+      }
+    }
+  }, 5 * 60 * 1000);
+  cleanup.unref();
+
+  return (
+    userId: string,
+    destination: string,
+  ): null | { scope: "user" | "destination"; retryAfter: number } => {
+    const now = Date.now();
+    const getEntry = (store: Map<string, RateLimitEntry>, key: string) => {
+      let entry = store.get(key);
+      if (!entry || entry.resetAt < now) {
+        entry = { count: 0, resetAt: now + opts.windowMs };
+        store.set(key, entry);
+      }
+      return entry;
+    };
+
+    const userEntry = getEntry(userStore, userId);
+    const destinationEntry = getEntry(destinationStore, destination);
+    if (userEntry.count >= opts.maxPerUser) {
+      return {
+        scope: "user",
+        retryAfter: Math.max(1, Math.ceil((userEntry.resetAt - now) / 1000)),
+      };
+    }
+    if (destinationEntry.count >= opts.maxPerDestination) {
+      return {
+        scope: "destination",
+        retryAfter: Math.max(1, Math.ceil((destinationEntry.resetAt - now) / 1000)),
+      };
+    }
+
+    userEntry.count++;
+    destinationEntry.count++;
+    return null;
+  };
+}
+
+/**
  * Dual-key rate limiter for `GET /api/auth/check-email`.
  *
  * Two independent limits are enforced before the handler runs:
@@ -218,10 +277,9 @@ export function createCheckEmailThrottle(opts: {
  *     `windowMs` (stops one host spraying many identifiers).
  *
  * Unlike {@link createRateLimit}, this is NOT disabled under Vitest: it is keyed
- * on the (channel, identifier) and (channel, ip) pair, so tests using distinct
- * identifiers / `X-Forwarded-For` values exercise it deterministically without
- * cross-test bleed. Requests missing an identifier fall through so the handler
- * can return its own 400.
+ * on the (channel, identifier) and (channel, resolved client IP) pair.
+ * Requests missing an identifier fall through so the handler can return its
+ * own 400.
  */
 export function createSendCodeThrottle(opts: {
   channel: string;

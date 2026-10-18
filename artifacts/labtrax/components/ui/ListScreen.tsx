@@ -7,6 +7,8 @@ import {
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
@@ -14,6 +16,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { isForbiddenError } from "@/lib/read-api";
+import {
+  DismissKeyboardView,
+  scrollKeyboardDismissMode,
+} from "@/components/ui/DismissKeyboardView";
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -53,6 +59,12 @@ interface ListScreenProps<T> {
   // Optional element rendered on the right side of the header (e.g. an export
   // or add action).
   headerRight?: React.ReactElement | null;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMore?: () => unknown;
+  onRefresh?: () => unknown;
+  initialScrollOffset?: number;
+  onScrollOffsetChange?: (offset: number) => void;
 }
 
 /**
@@ -74,6 +86,12 @@ export function ListScreen<T>({
   errorTitle = "Couldn’t load",
   blocked = null,
   headerRight = null,
+  hasMore = false,
+  isLoadingMore = false,
+  onLoadMore,
+  onRefresh,
+  initialScrollOffset = 0,
+  onScrollOffsetChange,
 }: ListScreenProps<T>) {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
@@ -81,7 +99,12 @@ export function ListScreen<T>({
   const items = query.data ?? [];
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    // Screens built on this scaffold inherit keyboard dismissal: tapping the
+    // header, a pinned filter row, or empty list space closes the keyboard.
+    <DismissKeyboardView
+      style={[styles.screen, { paddingTop: insets.top }]}
+      testID="list-keyboard-dismiss"
+    >
       <View style={styles.header}>
         <Pressable style={styles.backBtn} onPress={() => router.back()} hitSlop={8} testID="list-back">
           <Ionicons name="chevron-back" size={26} color={colors.text} />
@@ -129,16 +152,37 @@ export function ListScreen<T>({
             <View style={styles.pinnedHeader}>{pinnedHeader}</View>
           ) : null}
           <FlatList
+            testID="list-scroll"
             data={items}
             keyExtractor={keyExtractor}
             renderItem={({ item }) => renderItem(item)}
             contentContainerStyle={styles.listContent}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={scrollKeyboardDismissMode}
+            contentOffset={{ x: 0, y: initialScrollOffset }}
+            onScroll={
+              onScrollOffsetChange
+                ? (event: NativeSyntheticEvent<NativeScrollEvent>) =>
+                    onScrollOffsetChange(event.nativeEvent.contentOffset.y)
+                : undefined
+            }
+            scrollEventThrottle={100}
             ListHeaderComponent={ListHeader}
+            ListFooterComponent={hasMore || isLoadingMore ? (
+              <Pressable
+                style={styles.loadMore}
+                onPress={() => onLoadMore?.()}
+                disabled={isLoadingMore}
+                testID="list-load-more"
+                accessibilityRole="button"
+              >
+                {isLoadingMore ? <ActivityIndicator color={colors.tint} /> : <Text style={styles.loadMoreText}>Load more</Text>}
+              </Pressable>
+            ) : null}
             refreshControl={
               <RefreshControl
-                refreshing={query.isFetching}
-                onRefresh={() => query.refetch()}
+                refreshing={query.isFetching && !isLoadingMore}
+                onRefresh={() => (onRefresh ?? query.refetch)()}
                 tintColor={colors.tint}
               />
             }
@@ -152,7 +196,7 @@ export function ListScreen<T>({
           />
         </>
       )}
-    </View>
+    </DismissKeyboardView>
   );
 }
 
@@ -197,5 +241,16 @@ function makeStyles(c: ThemeColors) {
       backgroundColor: c.tint,
     },
     retryText: { ...Typography.bodySemibold, color: c.textInverse },
+    loadMore: {
+      minHeight: 48,
+      alignItems: "center",
+      justifyContent: "center",
+      marginTop: Spacing.sm,
+      borderRadius: Radius.lg,
+      backgroundColor: c.surface,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    loadMoreText: { ...Typography.bodySemibold, color: c.tint },
   });
 }
