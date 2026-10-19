@@ -218,6 +218,13 @@
       "when": 1791936000000,
       "tag": "0031_case_saved_views",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1792355255029,
+      "tag": "0032_backup_live_status",
+      "breakpoints": true
     }
   ]
 }

@@ -126,7 +126,26 @@ export function requireCompleteDestinationCapacity(
   }
 }
 const excluded = (name: string) =>
-  name.split("/").some(part => [".sessions", ".restore-snapshots", "backups", "backup-downloads"].includes(part));
+  name.split("/").some(part => [
+    ".sessions", ".restore-snapshots", ".labtrax-backup-staging", "backups", "backup-downloads",
+  ].includes(part));
+
+interface BackupStagingObject {
+  relativeName: string;
+  size: number;
+}
+
+/**
+ * Capacity planning must match the objects that the archive appenders include.
+ * Root-level backup/history directories are deliberately excluded from the
+ * private-objects archive and must not force unrelated temp-space reservations.
+ * Case media is handled by its own complete inventory, including nested paths.
+ */
+export function includedBackupStagingObjectSizes(objects: readonly BackupStagingObject[]): number[] {
+  return objects
+    .filter(object => object.relativeName.startsWith("case-media/") || !excluded(object.relativeName))
+    .map(object => object.size);
+}
 
 export interface CompleteRecoveryManifest {
   coverageVersion: number;
@@ -314,7 +333,7 @@ export async function captureCompleteBackup(
         const stagingPlan = planCompleteBackupStaging(
           availableBytes,
           durableBytes,
-          objects.map(item => item.size),
+          includedBackupStagingObjectSizes(objects),
           pgDump.length,
           options.archiveDestination,
         );

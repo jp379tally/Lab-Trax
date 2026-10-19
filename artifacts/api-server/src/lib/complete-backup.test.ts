@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
-  planCompleteBackupStaging, recoveryReferences, requireCompleteBackupCapacity,
+  includedBackupStagingObjectSizes, planCompleteBackupStaging, recoveryReferences, requireCompleteBackupCapacity,
   requireCompleteDestinationCapacity, restoreCompleteFiles,
   validateCompleteRecovery, type CompleteRecoveryManifest,
 } from "./complete-backup";
@@ -46,6 +46,28 @@ function fixture() {
 }
 
 describe("all-content recovery contract", () => {
+  it("sizes only cloud objects included by the archive appenders", () => {
+    const objects = [
+      { relativeName: "case-media/case-file.bin", size: 1_200_000_000 },
+      { relativeName: "case-media/backups/retained-case-file.bin", size: 100_000_000 },
+      { relativeName: "profile-photos/synthetic.png", size: 400_000_000 },
+      { relativeName: "backups/old-archive.zip", size: 40_000_000_000 },
+      { relativeName: "backup-downloads/old-export.zip", size: 30_000_000_000 },
+      { relativeName: ".labtrax-backup-staging/synthetic/production/archives/previous.zip.enc", size: 50_000_000_000 },
+      { relativeName: ".sessions/expired-session.json", size: 20_000_000_000 },
+      { relativeName: ".restore-snapshots/old-snapshot", size: 10_000_000_000 },
+    ];
+    expect(() => planCompleteBackupStaging(
+      2_300_000_000, 1_700_000_000, objects.map(object => object.size), 70_000_000, "cloud",
+    )).toThrow(/capacity failure.*no files were omitted/);
+    const sizes = includedBackupStagingObjectSizes(objects);
+    expect(sizes).toEqual([1_200_000_000, 100_000_000, 400_000_000]);
+    const plan = planCompleteBackupStaging(2_300_000_000, 1_700_000_000, sizes, 70_000_000, "cloud");
+    expect(plan.maxConcurrentFiles).toBe(2);
+    expect(plan.stagedBytes).toBe(1_600_000_000);
+    expect(plan.requiredBytes).toBeLessThanOrEqual(2_300_000_000);
+  });
+
   it("reduces concurrent cloud staging to the available budget without reducing file coverage", () => {
     const plan = planCompleteBackupStaging(
       24_857_124_864,

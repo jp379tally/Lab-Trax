@@ -3,28 +3,33 @@ import type { BackupLiveStatus } from "./backup-phase";
 
 let schemaReady: Promise<void> | undefined;
 
-async function ensureBackupLiveStatusSchema(): Promise<void> {
+export const BACKUP_LIVE_STATUS_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS backup_live_status (
+    run_id uuid PRIMARY KEY,
+    state text NOT NULL CHECK (state IN (
+      'running', 'awaiting_verification', 'completed', 'failed', 'stale'
+    )),
+    phase text NOT NULL,
+    started_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    elapsed_ms bigint NOT NULL CHECK (elapsed_ms >= 0),
+    metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  ALTER TABLE backup_live_status ADD COLUMN IF NOT EXISTS archive_evidence jsonb;
+  CREATE INDEX IF NOT EXISTS backup_live_status_created_at_idx
+    ON backup_live_status (created_at);
+`;
+
+export async function ensureBackupLiveStatusSchema(): Promise<void> {
   if (!schemaReady) {
-    schemaReady = pool.query(`
-      CREATE TABLE IF NOT EXISTS backup_live_status (
-        run_id uuid PRIMARY KEY,
-        state text NOT NULL CHECK (state IN (
-          'running', 'awaiting_verification', 'completed', 'failed', 'stale'
-        )),
-        phase text NOT NULL,
-        started_at timestamptz NOT NULL,
-        updated_at timestamptz NOT NULL,
-        elapsed_ms bigint NOT NULL CHECK (elapsed_ms >= 0),
-        metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      ALTER TABLE backup_live_status ADD COLUMN IF NOT EXISTS archive_evidence jsonb;
-      CREATE INDEX IF NOT EXISTS backup_live_status_created_at_idx
-        ON backup_live_status (created_at);
-    `).then(() => undefined).catch((error) => {
-      schemaReady = undefined;
-      throw error;
-    });
+    schemaReady = pool
+      .query(BACKUP_LIVE_STATUS_SCHEMA_SQL)
+      .then(() => undefined)
+      .catch((error) => {
+        schemaReady = undefined;
+        throw error;
+      });
   }
   await schemaReady;
 }

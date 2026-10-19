@@ -18,6 +18,7 @@ import {
 import { attachCaseEventsWebSocketServer } from "./lib/case-events-ws";
 import { scheduleRecentCaseInvoiceRepair } from "./lib/ai-intake-invoice-repair";
 import { registerHistoricalStartupJobs } from "./lib/startup-maintenance";
+import { ensureBackupLiveStatusSchema } from "./lib/backup-live-status-store";
 
 const rawPort = process.env["PORT"];
 
@@ -71,6 +72,17 @@ const server = app.listen(port, (err) => {
   process.stderr.write(`[startup] server listening on port ${port}\n`);
   logger.info({ port }, "Server listening");
   attachCaseEventsWebSocketServer(server);
+  ensureBackupLiveStatusSchema().catch((err) => {
+    process.stderr.write(
+      `[startup] backup live-status schema setup failed (server still running): ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+    logger.error(
+      { err },
+      "Backup live-status schema setup failed — existing backup status metadata was not removed",
+    );
+  });
   const historicalMaintenance = registerHistoricalStartupJobs([
     { name: "vendor transaction linking", schedule: scheduleVendorLinkBackfillIfNeeded },
     { name: "lab inbox storage normalization", schedule: scheduleLabInboxStorageRepair },
