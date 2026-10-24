@@ -26,6 +26,18 @@ unapplied or ineffective patch must fail the job. Do not expand the exception
 to unrelated advisories. Remove it when an upstream fixed version replaces
 the patch. Other tracked source patches remain installed and tested.
 
+## Cross-platform validation
+
+Browser jobs use Ubuntu 24.04, a supported host for the pinned Playwright release.
+The desktop package declares esbuild directly for its Windows backup smoke
+script. Native build-tool dependencies are no longer removed from the lockfile
+for other operating systems, so Windows and macOS can install their own binaries.
+
+Invoice parity fixtures encode issued dates as UTC calendar days, as the API
+does. Custom aging selections now use the same UTC-day boundaries as the main
+issued-date filter, including midnight and created-date fallback. Regression
+checks cover timezones west and east of UTC.
+
 This update does not deploy the application or publish a desktop installer.
 The public desktop version endpoint follows the published updater manifest;
 an unbuilt source version is not a published desktop release.

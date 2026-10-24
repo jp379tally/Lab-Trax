@@ -17,10 +17,11 @@ export function invoiceFilterParityInvoice(
   };
 }
 
+// API invoice dates encode calendar days at UTC midnight, independent of the test host timezone.
 export const INVOICE_FILTER_PARITY_ROWS: CanonicalInvoice[] = [
   invoiceFilterParityInvoice("open-past", {
-    dueAt: new Date(2026, 6, 6).toISOString(),
-    issuedAt: new Date(2026, 6, 7).toISOString(),
+    dueAt: new Date(Date.UTC(2026, 6, 6)).toISOString(),
+    issuedAt: new Date(Date.UTC(2026, 6, 7)).toISOString(),
     providerOrganizationId: "p2",
     providerOrganization: { name: "Zenith" },
     displayMetadataJson: { patientName: "Amy", billTo: "Dr Z" },
@@ -28,8 +29,8 @@ export const INVOICE_FILTER_PARITY_ROWS: CanonicalInvoice[] = [
   }),
   invoiceFilterParityInvoice("partial-past", {
     status: "partially_paid",
-    dueAt: new Date(2026, 5, 1).toISOString(),
-    issuedAt: new Date(2026, 5, 1).toISOString(),
+    dueAt: new Date(Date.UTC(2026, 5, 1)).toISOString(),
+    issuedAt: new Date(Date.UTC(2026, 5, 1)).toISOString(),
     providerOrganizationId: "p1",
     providerOrganization: { name: "Acme" },
     displayMetadataJson: { patientName: "Ben", billTo: "Dr A" },
@@ -38,28 +39,28 @@ export const INVOICE_FILTER_PARITY_ROWS: CanonicalInvoice[] = [
     status: "overdue",
     total: 80,
     balanceDue: 80,
-    dueAt: new Date(2026, 6, 6).toISOString(),
-    issuedAt: new Date(2026, 6, 6).toISOString(),
+    dueAt: new Date(Date.UTC(2026, 6, 6)).toISOString(),
+    issuedAt: new Date(Date.UTC(2026, 6, 6)).toISOString(),
   }),
   invoiceFilterParityInvoice("paid-zero", {
     status: "paid",
     balanceDue: 0,
-    dueAt: new Date(2026, 6, 1).toISOString(),
-    issuedAt: new Date(2026, 6, 2).toISOString(),
+    dueAt: new Date(Date.UTC(2026, 6, 1)).toISOString(),
+    issuedAt: new Date(Date.UTC(2026, 6, 2)).toISOString(),
     providerOrganizationId: "p1",
     providerOrganization: { name: "Acme" },
   }),
   invoiceFilterParityInvoice("void-zero", {
     status: "void",
     balanceDue: 0,
-    dueAt: new Date(2026, 6, 3).toISOString(),
-    issuedAt: new Date(2026, 6, 3).toISOString(),
+    dueAt: new Date(Date.UTC(2026, 6, 3)).toISOString(),
+    issuedAt: new Date(Date.UTC(2026, 6, 3)).toISOString(),
     frozen: true,
   }),
   invoiceFilterParityInvoice("created-fallback", {
     status: "void",
     issuedAt: null,
-    createdAt: new Date(2026, 6, 7).toISOString(),
+    createdAt: new Date(Date.UTC(2026, 6, 7)).toISOString(),
   }),
 ];
 
