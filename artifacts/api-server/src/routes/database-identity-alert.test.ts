@@ -283,15 +283,20 @@ maybe("POST /api/admin/database-identity/alert", () => {
   }, 60_000);
 
   it("leaves the committed fingerprint untouched", async () => {
-    const { readFileSync } = await import("node:fs");
+    const { existsSync, readFileSync } = await import("node:fs");
     const fingerprintPath = path.resolve(
       __dirname,
       "../../../../scripts/database-fingerprint.json",
     );
-    const before = readFileSync(fingerprintPath, "utf8");
+    // The source-only public repository deliberately excludes the private
+    // production fingerprint. Preserve either its bytes or its absence.
+    const before = existsSync(fingerprintPath)
+      ? readFileSync(fingerprintPath, "utf8")
+      : null;
 
     await report(mismatchReport());
 
-    expect(readFileSync(fingerprintPath, "utf8")).toBe(before);
+    expect(existsSync(fingerprintPath)).toBe(before !== null);
+    if (before !== null) expect(readFileSync(fingerprintPath, "utf8")).toBe(before);
   });
 });

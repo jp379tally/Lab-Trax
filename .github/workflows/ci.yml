@@ -6,6 +6,25 @@ on:
   pull_request:
 
 jobs:
+  dependency-security:
+    name: Dependency security regressions and audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify installed security fixes
+        run: pnpm run test:dependency-security
+      - name: Audit dependency advisories
+        run: pnpm audit --audit-level=low
+
   validate-workflows:
     name: Validate GitHub Actions workflows
     runs-on: ubuntu-latest
@@ -121,10 +140,10 @@ jobs:
       - name: Prepare non-hidden workspace test scratch
         run: bash scripts/with-workspace-test-scratch.sh --prepare-github
 
-      - name: Install PostgreSQL 16 server tools
+      - name: Install PostgreSQL 16 server tools and PDF converters
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-16 postgresql-client-16
+          sudo apt-get install -y postgresql-16 postgresql-client-16 poppler-utils
           echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
 
       - name: Start isolated PostgreSQL with verified TLS

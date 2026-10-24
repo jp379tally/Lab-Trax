@@ -73,7 +73,7 @@
     "@workspace/api-client-react": "workspace:*",
     "google-auth-library": "^10.6.2",
     "tsx": "catalog:",
-    "vitest": "^4.1.11",
+    "vitest": "^4.1.12",
     "yaml": "^2.8.4"
   }
 }

@@ -5937,7 +5937,7 @@ router.patch(
             })
           )
           .optional(),
-        displayMetadata: z.record(z.any()).nullable().optional(),
+        displayMetadata: z.record(z.string(), z.any()).nullable().optional(),
         layoutPresetId: z.string().nullable().optional(),
         depositBankAccountId: z.string().min(1).optional(),
       })

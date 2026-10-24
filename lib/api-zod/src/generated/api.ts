@@ -14,13 +14,13 @@ import * as zod from 'zod';
 export const CreateSubscriptionCheckoutBody = zod.object({
   "priceId": zod.string().optional().describe('Legacy lab checkout only; new provider checkout never trusts this value.'),
   "purchaseChannel": zod.enum(['web', 'native']).optional(),
-  "successUrl": zod.string().url().optional(),
-  "cancelUrl": zod.string().url().optional()
+  "successUrl": zod.url().optional(),
+  "cancelUrl": zod.url().optional()
 })
 
 export const CreateSubscriptionCheckout200Response = zod.object({
   "ok": zod.boolean(),
-  "url": zod.string().url(),
+  "url": zod.url(),
   "attemptId": zod.string().optional()
 })
 
@@ -4400,9 +4400,9 @@ export const GetCaseByBarcodeQueryParams = zod.object({
 export const GetCaseByBarcode200Response = zod.object({
   "ok": zod.boolean().optional(),
   "data": zod.object({
-  "case": zod.object({
+  "case": zod.looseObject({
 
-}).passthrough().optional().describe('The matching case row (Drizzle shape)')
+}).optional().describe('The matching case row (Drizzle shape)')
 }).optional()
 })
 
@@ -5209,9 +5209,9 @@ export const UpdateCaseBody = zod.object({
 
 export const UpdateCase200Response = zod.object({
   "ok": zod.boolean().optional(),
-  "data": zod.object({
+  "data": zod.looseObject({
 
-}).passthrough().optional().describe('Raw updated case row (Drizzle shape)')
+}).optional().describe('Raw updated case row (Drizzle shape)')
 })
 
 export const UpdateCase400Response = zod.unknown()
@@ -8892,7 +8892,7 @@ export const CreateStatementPaymentSessionBody = zod.object({
   "referenceNumber": zod.string().nullish().describe('Required for ACH and other monetary payments'),
   "cardLast4": zod.string().regex(createStatementPaymentSessionBodyCardLast4RegExp).nullish(),
   "memo": zod.string().nullish(),
-  "customerEmail": zod.string().email().nullish(),
+  "customerEmail": zod.email().nullish(),
   "idempotencyKey": zod.string().min(createStatementPaymentSessionBodyIdempotencyKeyMin).max(createStatementPaymentSessionBodyIdempotencyKeyMax).optional(),
   "applications": zod.array(zod.object({
   "invoiceId": zod.string(),
@@ -8942,7 +8942,7 @@ export const CreateStatementCardPaymentSessionBody = zod.object({
   "paymentMethod": zod.enum(['card']),
   "cardLast4": zod.string().regex(createStatementCardPaymentSessionBodyCardLast4RegExp),
   "memo": zod.string().nullish(),
-  "customerEmail": zod.string().email().nullish(),
+  "customerEmail": zod.email().nullish(),
   "idempotencyKey": zod.string().min(createStatementCardPaymentSessionBodyIdempotencyKeyMin).max(createStatementCardPaymentSessionBodyIdempotencyKeyMax),
   "applications": zod.array(zod.object({
   "invoiceId": zod.string(),
@@ -9002,7 +9002,7 @@ export const SendStatementPaymentReceiptParams = zod.object({
 })
 
 export const SendStatementPaymentReceiptBody = zod.object({
-  "to": zod.string().email(),
+  "to": zod.email(),
   "subject": zod.string().optional(),
   "body": zod.string().optional()
 })
@@ -9135,8 +9135,8 @@ export const emailInvoiceBodyAttachmentIdsMax = 20;
 
 
 export const EmailInvoiceBody = zod.object({
-  "to": zod.string().email().optional().describe('Recipient override; falls back to practice billingEmail.'),
-  "cc": zod.array(zod.string().email()).max(emailInvoiceBodyCcMax).optional(),
+  "to": zod.email().optional().describe('Recipient override; falls back to practice billingEmail.'),
+  "cc": zod.array(zod.email()).max(emailInvoiceBodyCcMax).optional(),
   "subject": zod.string().min(1).max(emailInvoiceBodySubjectMax),
   "message": zod.string().min(1).max(emailInvoiceBodyMessageMax),
   "filename": zod.string().min(1).max(emailInvoiceBodyFilenameMax),
@@ -9724,8 +9724,8 @@ export const CreateOrganization401Response = zod.unknown()
  * @summary Get one relationship-scoped provider account
  */
 export const GetSharedProviderAccountQueryParams = zod.object({
-  "labOrganizationId": zod.coerce.string().uuid(),
-  "providerOrganizationId": zod.coerce.string().uuid()
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid()
 })
 
 export const getSharedProviderAccount200ResponseDataCardOneLast4RegExp = new RegExp('^\\d{4}$');
@@ -9757,13 +9757,13 @@ export const GetSharedProviderAccount200Response = zod.object({
   "ok": zod.boolean(),
   "data": zod.object({
   "relationship": zod.object({
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid()
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid()
 }),
   "contact": zod.object({
   "name": zod.string().nullable(),
   "displayName": zod.string().nullable(),
-  "billingEmail": zod.string().email().nullable(),
+  "billingEmail": zod.email().nullable(),
   "phone": zod.string().nullable(),
   "addressLine1": zod.string().nullable(),
   "addressLine2": zod.string().nullable(),
@@ -9784,17 +9784,17 @@ export const GetSharedProviderAccount200Response = zod.object({
   "source": zod.enum(['processor'])
 }).nullable(),
   "profileChangeRequests": zod.array(zod.object({
-  "id": zod.string().uuid(),
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
-  "requestedByOrganizationId": zod.string().uuid(),
+  "id": zod.uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
+  "requestedByOrganizationId": zod.uuid(),
   "requestedByUserId": zod.string(),
   "source": zod.enum(['lab', 'provider']),
   "status": zod.enum(['pending', 'approved', 'rejected', 'stale']),
   "changes": zod.object({
   "name": zod.string().min(1).max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesNameMax).optional(),
   "displayName": zod.string().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesAddressLine2Max).nullish(),
@@ -9842,13 +9842,13 @@ export const createSharedProviderAccountChangeRequestBodyChangesZipMax = 500;
 
 
 export const CreateSharedProviderAccountChangeRequestBody = zod.object({
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
   "clientRequestId": zod.string().max(createSharedProviderAccountChangeRequestBodyClientRequestIdMax).optional(),
   "changes": zod.object({
   "name": zod.string().min(1).max(createSharedProviderAccountChangeRequestBodyChangesNameMax).optional(),
   "displayName": zod.string().max(createSharedProviderAccountChangeRequestBodyChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(createSharedProviderAccountChangeRequestBodyChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(createSharedProviderAccountChangeRequestBodyChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(createSharedProviderAccountChangeRequestBodyChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(createSharedProviderAccountChangeRequestBodyChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(createSharedProviderAccountChangeRequestBodyChangesAddressLine2Max).nullish(),
@@ -9881,17 +9881,17 @@ export const createSharedProviderAccountChangeRequest200ResponseDataChangesZipMa
 export const CreateSharedProviderAccountChangeRequest200Response = zod.object({
   "ok": zod.boolean(),
   "data": zod.object({
-  "id": zod.string().uuid(),
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
-  "requestedByOrganizationId": zod.string().uuid(),
+  "id": zod.uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
+  "requestedByOrganizationId": zod.uuid(),
   "requestedByUserId": zod.string(),
   "source": zod.enum(['lab', 'provider']),
   "status": zod.enum(['pending', 'approved', 'rejected', 'stale']),
   "changes": zod.object({
   "name": zod.string().min(1).max(createSharedProviderAccountChangeRequest200ResponseDataChangesNameMax).optional(),
   "displayName": zod.string().max(createSharedProviderAccountChangeRequest200ResponseDataChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(createSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(createSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(createSharedProviderAccountChangeRequest200ResponseDataChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(createSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(createSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine2Max).nullish(),
@@ -9929,17 +9929,17 @@ export const createSharedProviderAccountChangeRequest201ResponseDataChangesZipMa
 export const CreateSharedProviderAccountChangeRequest201Response = zod.object({
   "ok": zod.boolean(),
   "data": zod.object({
-  "id": zod.string().uuid(),
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
-  "requestedByOrganizationId": zod.string().uuid(),
+  "id": zod.uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
+  "requestedByOrganizationId": zod.uuid(),
   "requestedByUserId": zod.string(),
   "source": zod.enum(['lab', 'provider']),
   "status": zod.enum(['pending', 'approved', 'rejected', 'stale']),
   "changes": zod.object({
   "name": zod.string().min(1).max(createSharedProviderAccountChangeRequest201ResponseDataChangesNameMax).optional(),
   "displayName": zod.string().max(createSharedProviderAccountChangeRequest201ResponseDataChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(createSharedProviderAccountChangeRequest201ResponseDataChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(createSharedProviderAccountChangeRequest201ResponseDataChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(createSharedProviderAccountChangeRequest201ResponseDataChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(createSharedProviderAccountChangeRequest201ResponseDataChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(createSharedProviderAccountChangeRequest201ResponseDataChangesAddressLine2Max).nullish(),
@@ -9961,7 +9961,7 @@ export const CreateSharedProviderAccountChangeRequest409Response = zod.unknown()
  * @summary Approve provider contact changes as the counterpart
  */
 export const ApproveSharedProviderAccountChangeRequestParams = zod.object({
-  "requestId": zod.coerce.string().uuid()
+  "requestId": zod.uuid()
 })
 
 export const approveSharedProviderAccountChangeRequest200ResponseDataChangesNameMax = 200;
@@ -9987,17 +9987,17 @@ export const approveSharedProviderAccountChangeRequest200ResponseDataChangesZipM
 export const ApproveSharedProviderAccountChangeRequest200Response = zod.object({
   "ok": zod.boolean(),
   "data": zod.object({
-  "id": zod.string().uuid(),
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
-  "requestedByOrganizationId": zod.string().uuid(),
+  "id": zod.uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
+  "requestedByOrganizationId": zod.uuid(),
   "requestedByUserId": zod.string(),
   "source": zod.enum(['lab', 'provider']),
   "status": zod.enum(['pending', 'approved', 'rejected', 'stale']),
   "changes": zod.object({
   "name": zod.string().min(1).max(approveSharedProviderAccountChangeRequest200ResponseDataChangesNameMax).optional(),
   "displayName": zod.string().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine2Max).nullish(),
@@ -10019,7 +10019,7 @@ export const ApproveSharedProviderAccountChangeRequest409Response = zod.unknown(
  * @summary Reject provider contact changes as the counterpart
  */
 export const RejectSharedProviderAccountChangeRequestParams = zod.object({
-  "requestId": zod.coerce.string().uuid()
+  "requestId": zod.uuid()
 })
 
 export const rejectSharedProviderAccountChangeRequest200ResponseDataChangesNameMax = 200;
@@ -10045,17 +10045,17 @@ export const rejectSharedProviderAccountChangeRequest200ResponseDataChangesZipMa
 export const RejectSharedProviderAccountChangeRequest200Response = zod.object({
   "ok": zod.boolean(),
   "data": zod.object({
-  "id": zod.string().uuid(),
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
-  "requestedByOrganizationId": zod.string().uuid(),
+  "id": zod.uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
+  "requestedByOrganizationId": zod.uuid(),
   "requestedByUserId": zod.string(),
   "source": zod.enum(['lab', 'provider']),
   "status": zod.enum(['pending', 'approved', 'rejected', 'stale']),
   "changes": zod.object({
   "name": zod.string().min(1).max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesNameMax).optional(),
   "displayName": zod.string().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine2Max).nullish(),
@@ -12501,7 +12501,7 @@ export const CreateProviderAutopayAuthorizationRequestBody = zod.object({
   "labBills": zod.boolean().optional(),
   "labOrganizationIds": zod.array(zod.string()).optional(),
   "labChargeDay": zod.number().min(1).max(createProviderAutopayAuthorizationRequestBodyLabChargeDayMax).optional(),
-  "recipientEmail": zod.string().email().optional(),
+  "recipientEmail": zod.email().optional(),
   "deliveryMode": zod.enum(['email', 'in_person']).optional(),
   "presentInPerson": zod.boolean().optional().describe('Legacy alias for deliveryMode=in_person')
 })

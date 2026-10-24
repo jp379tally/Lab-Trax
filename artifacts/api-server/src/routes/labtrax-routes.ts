@@ -71,6 +71,7 @@ import { extractBearerToken } from "../lib/auth";
 import { getAccessCookie } from "../lib/cookies";
 import { createLabLookupToken, labLookupSelectionKey } from "../lib/lab-lookup-token";
 import { requireAuth, optionalAuth } from "../middlewares/auth";
+import { getPublishedDesktopVersion } from "../lib/published-desktop-version";
 import { createAdminProviderSubscriptionRouter } from "./admin-provider-subscriptions";
 import { writeAuditLog } from "../lib/audit";
 import { softDeleteLegacyCases } from "../lib/legacy-case-delete.js";
@@ -5612,12 +5613,14 @@ Important rules:
   // string so callers can decide whether to surface an "update available" notice
   // without any installer metadata.
   router.get("/desktop/version", async (req, res) => {
-    const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
-    const dbRows = await db
-      .select()
-      .from(systemSettings)
-      .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_VERSION));
-    const version = dbRows[0]?.value ?? envVersion;
+    const version = await getPublishedDesktopVersion(async () => {
+      const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
+      const dbRows = await db
+        .select()
+        .from(systemSettings)
+        .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_VERSION));
+      return dbRows[0]?.value ?? envVersion;
+    });
     return res.json({ version });
   });
 

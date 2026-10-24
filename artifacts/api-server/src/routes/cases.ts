@@ -14295,7 +14295,7 @@ router.post(
     const input = z
       .object({
         submissionType: z.enum(["note", "photo", "video", "document"]),
-        payloadJson: z.record(z.any()),
+        payloadJson: z.record(z.string(), z.any()),
       })
       .parse(req.body);
 

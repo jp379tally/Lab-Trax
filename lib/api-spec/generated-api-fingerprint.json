@@ -7,13 +7,13 @@
   "inputs": {
     "lib/api-spec/fix-zod-constant-order.mjs": "653c3b816fd8c99ecf0e8bdce9eb7dd2fb0af567a0f7ab79f071771d1b1cc7ea",
     "lib/api-spec/openapi.yaml": "5d973a1898e498206c941c7e39ce0c4becccfc55a180efdaa6fec872cd95b06f",
-    "lib/api-spec/orval.config.ts": "08544c9719d7201ea523060bf6a40f103eaf06bc6ae0be1ec6749baf39e66166",
+    "lib/api-spec/orval.config.ts": "a140703ae4eaffde34eb2d1b9c875cbca4f10136d0995850d6eaba8885e1ba9f",
     "lib/api-spec/package.json": "d7332bf22d98d2e35e88a7526f7db05787f3c1cbdeb2b5b54a83f8e3322d856f"
   },
   "outputs": {
     "lib/api-client-react/src/generated/api.schemas.ts": "c3f774cc8e2d1797e1e1d50f5dbcb98593882661a41b4405c0ad1104f15b0974",
     "lib/api-client-react/src/generated/api.ts": "0eca9962de5b2127375284bb61441ce7b181b1ca9202b5be0889e8ce83fb74b3",
-    "lib/api-zod/src/generated/api.ts": "02674dba8440c11e67188853caef5e880c100fe556b406dcabb56471171802b1",
+    "lib/api-zod/src/generated/api.ts": "ff61a09baa5b19ed39483d24c7e195022bfeaf418caba89b17340026c989f000",
     "lib/api-zod/src/generated/types/acceptInvitationResult.ts": "c95725f754a28439e7f53586ae4107f2889eb4223b86fe0f1e1116abcb0d3d5e",
     "lib/api-zod/src/generated/types/acceptInvitationResultData.ts": "ef50a0c463a15fc58ae90d465be41c2fe0368fddf5dc318a853ce6bbce43751b",
     "lib/api-zod/src/generated/types/accountBalance.ts": "81b51bc95145dd9398f918fbfdc43d9f599e11f7318d410ff62926ed2de62143",

@@ -11762,7 +11762,7 @@ function makeStyles(c: ThemeColors) {
       justifyContent: "center",
       gap: Spacing.xs,
       minHeight: 44,
-      paddingHorizontal: Spacing.sm,
+      paddingHorizontal: Spacing.md,
       paddingVertical: Spacing.xs,
       borderRadius: Radius.sm,
       borderWidth: StyleSheet.hairlineWidth,
