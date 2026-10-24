@@ -265,19 +265,28 @@ function queryLabTraxUninstallRegistrations(registryRoot) {
   return registrations;
 }
 
-async function assertInstallerProfileIsClean(phase) {
+async function assertInstallerProfileIsClean(phase, timeoutMs = 0) {
   const shortcutRoots = getInstallerProfileShortcutRoots();
   const registryRoots = [
     "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
     "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
     "HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
   ];
-  const [shortcutsByRoot, registrationsByRoot] = await Promise.all([
-    Promise.all(shortcutRoots.map((root) => findLabTraxShortcuts(root))),
-    Promise.all(registryRoots.map((root) => queryLabTraxUninstallRegistrations(root))),
-  ]);
-  const shortcuts = shortcutsByRoot.flat();
-  const registrations = registrationsByRoot.flat();
+  const deadline = Date.now() + timeoutMs;
+  let shortcuts;
+  let registrations;
+  while (true) {
+    const [shortcutsByRoot, registrationsByRoot] = await Promise.all([
+      Promise.all(shortcutRoots.map((root) => findLabTraxShortcuts(root))),
+      Promise.all(registryRoots.map((root) => queryLabTraxUninstallRegistrations(root))),
+    ]);
+    shortcuts = shortcutsByRoot.flat();
+    registrations = registrationsByRoot.flat();
+    if (shortcuts.length === 0 && registrations.length === 0) return;
+    if (Date.now() >= deadline) break;
+    // NSIS removes shortcuts and registry entries after deleting the app folder.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
   assert(
     shortcuts.length === 0,
     `${phase}: LabTrax shortcut(s) remain in the Windows profile: ${shortcuts.join(", ")}`,
@@ -538,7 +547,7 @@ async function main() {
           );
         }
         await assertPathWasRemoved(installationDirectory, "Selected LabTrax installation folder");
-        await assertInstallerProfileIsClean("After silent NSIS uninstall");
+        await assertInstallerProfileIsClean("After silent NSIS uninstall", 30_000);
       }
     } finally {
       await rm(smokeRoot, { recursive: true, force: true });
