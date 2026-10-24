@@ -406,7 +406,8 @@ jobs:
 
   test-labtrax-desktop:
     name: Desktop client tests
-    runs-on: ubuntu-latest
+    # Playwright 1.60's browser/dependency bundle supports Ubuntu 24.04.
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -519,7 +520,7 @@ jobs:
 
   test-labtrax-mobile:
     name: Mobile client tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
