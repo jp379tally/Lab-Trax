@@ -398,7 +398,9 @@ async function main() {
       outfile: generatedHelper,
     });
     try {
-      const builderConfig = await readFile(path.join(desktopRoot, "electron-builder.yml"), "utf8");
+      // Windows Git checkouts use CRLF; normalize before matching YAML line anchors.
+      const builderConfig = (await readFile(path.join(desktopRoot, "electron-builder.yml"), "utf8"))
+        .replace(/\r\n/g, "\n");
       if (!builderConfig.includes("${UPDATE_FEED_URL}")) {
         fail("electron-builder.yml no longer contains the expected update-feed placeholder.");
       }
