@@ -76,6 +76,10 @@ describe("invoice filter parity", () => {
       expect(range.start.toISOString().slice(0, 10)).toBe(selectedDay);
       expect(matchesDateRange(invoice("midnight", { issuedAt: range.start.toISOString() }), range)).toBe(true);
       expect(matchesDateRange(invoice("next", { issuedAt: range.end.toISOString() }), range)).toBe(false);
+      expect(matchesOverdueFilter(invoice("midnight", { issuedAt: range.start.toISOString() }), "custom", now, now, now)).toBe(true);
+      expect(matchesOverdueFilter(invoice("fallback", { createdAt: range.start.toISOString() }), "custom", now, now, now)).toBe(true);
+      expect(matchesOverdueFilter(invoice("before", { issuedAt: new Date(range.start.getTime() - 1).toISOString() }), "custom", now, now, now)).toBe(false);
+      expect(matchesOverdueFilter(invoice("next", { issuedAt: range.end.toISOString() }), "custom", now, now, now)).toBe(false);
       expect(dateRangeForFilter("yesterday", now)!.end).toEqual(range.start);
     } finally {
       if (previous === undefined) delete process.env.TZ;

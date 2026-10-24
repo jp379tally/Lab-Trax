@@ -3909,7 +3909,7 @@ router.get(
 const additionalEmailSchema = z.object({
   email: z.string().email("Must be a valid email address."),
   type: z.enum(["billing", "correspondence"], {
-    errorMap: () => ({ message: 'Type must be "billing" or "correspondence".' }),
+    error: 'Type must be "billing" or "correspondence".',
   }),
 });
 

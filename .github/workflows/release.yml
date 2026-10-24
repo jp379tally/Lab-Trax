@@ -147,11 +147,11 @@ jobs:
             >playwright-service-logs/desktop.log 2>&1 &
           echo "$!" > playwright-service-logs/desktop.pid
 
-          for attempt in {1..90}; do
+          for _attempt in {1..90}; do
             api_ready=false
             desktop_ready=false
-            curl --fail --silent --output /dev/null http://127.0.0.1:4174/api/healthz && api_ready=true || true
-            curl --fail --silent --output /dev/null http://127.0.0.1:4173/desktop/ && desktop_ready=true || true
+            if curl --fail --silent --output /dev/null http://127.0.0.1:4174/api/healthz; then api_ready=true; fi
+            if curl --fail --silent --output /dev/null http://127.0.0.1:4173/desktop/; then desktop_ready=true; fi
             if [[ "$api_ready" == true && "$desktop_ready" == true ]]; then
               exit 0
             fi
@@ -706,7 +706,7 @@ jobs:
             echo ""
             echo "Required secrets:"
             echo "  MACOS_CERTIFICATE             — base64-encoded .p12 Developer ID Application certificate"
-            echo "                                  (encode with: base64 -i certificate.p12 | tr -d '\\n')"
+            printf '%s\n' "                                  (encode with: base64 -i certificate.p12 | tr -d '\\n')"
             echo "  MACOS_CERTIFICATE_PASSWORD    — password protecting the .p12 file"
             echo "  APPLE_ID                      — Apple ID email (App Store Connect account)"
             echo "  APPLE_APP_SPECIFIC_PASSWORD   — app-specific password for the Apple ID"

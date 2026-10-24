@@ -6,6 +6,7 @@ const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { createServer, get } = require("node:http");
 const { once } = require("node:events");
+const { spawnSync } = require("node:child_process");
 
 // Exercise installed transitive packages, not the temporary patch sources.
 const root = join(__dirname, "..");
@@ -13,7 +14,57 @@ const requireHoistedDependency = createRequire(
   join(root, "node_modules/.pnpm/node_modules/security-check.cjs"),
 );
 const requireApi = createRequire(join(root, "artifacts/api-server/package.json"));
+const requireMobile = createRequire(join(root, "artifacts/labtrax/package.json"));
 const lockfile = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
+
+test("bounded Zod collections reject oversized input before validating elements", async () => {
+  const { z } = requireApi("zod");
+  let visited = 0;
+  const item = z.string().refine(() => { visited++; return true; });
+  for (const [schema, value] of [
+    [z.array(item).max(2), ["a", "b", "c"]],
+    [z.array(item).length(2), ["a", "b", "c"]],
+    [z.set(item).max(2), new Set(["a", "b", "c"])],
+    [z.map(item, item).max(2), new Map([["a", "a"], ["b", "b"], ["c", "c"]])],
+  ]) {
+    assert.equal(schema.safeParse(value).success, false);
+    assert.equal((await schema.safeParseAsync(value)).success, false);
+  }
+  assert.equal(visited, 0, "oversized values must not allocate per-element validation work");
+  assert.deepEqual(z.array(item).max(2).parse(["a", "b"]), ["a", "b"]);
+});
+
+test("compressed JSON with trailing bytes cannot crash the request parser", { timeout: 12000 }, () => {
+  const child = spawnSync(process.execPath, ["-e", `
+    const http = require('node:http');
+    const { gzipSync } = require('node:zlib');
+    const parse = require(process.argv[1]).json();
+    const deadline = setTimeout(() => process.exit(2), 8000);
+    process.on('uncaughtException', () => process.exit(3));
+    const server = http.createServer((req, res) => {
+      if (req.url === '/health') { res.end('alive'); return; }
+      parse(req, res, error => { res.statusCode = error ? 400 : 200; res.end(); });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const data = Buffer.concat([gzipSync(Buffer.from('{"ok":true}')), Buffer.from('trailing bytes')]);
+      const req = http.request({ host: '127.0.0.1', port: server.address().port,
+        method: 'POST', headers: { 'content-type': 'application/json', 'content-encoding': 'gzip', 'content-length': data.length }
+      }, res => { res.resume(); res.on('end', verify); });
+      req.on('error', verify);
+      req.end(data);
+    });
+    let checked = false;
+    function verify() {
+      if (checked) return;
+      checked = true;
+      setTimeout(() => http.get({ host: '127.0.0.1', port: server.address().port, path: '/health' }, res => {
+        let text = ''; res.on('data', b => { text += b; });
+        res.on('end', () => { clearTimeout(deadline); server.close(() => process.exit(text === 'alive' ? 0 : 4)); });
+      }).on('error', () => process.exit(5)), 50);
+    }
+  `, requireApi.resolve("body-parser")], { encoding: "utf8", timeout: 10000 });
+  assert.equal(child.status, 0, child.stderr || "parser process failed to remain healthy");
+});
 const patchedVersions = {
   braces: "3.0.3",
   "node-forge": "1.4.0",
@@ -39,6 +90,10 @@ function requireDependency(name) {
 }
 
 test("dependency consumers resolve the lockfile-pinned source patches", () => {
+  const expoCliRequire = createRequire(requireMobile.resolve("@expo/cli/package.json"));
+  assert.equal(expoCliRequire.resolve("node-forge"),
+    require.resolve(patchedPackagePath("node-forge")),
+    "Expo CLI must also use the patched RSA verifier");
   for (const [consumer, version, dependency] of [
     ["micromatch", "4.0.8", "braces"],
     ["argparse", "1.0.10", "sprintf-js"],

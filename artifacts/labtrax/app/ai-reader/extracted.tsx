@@ -2478,6 +2478,10 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
                 {isAdminForSelectedLab && editedLines !== null ? (
                   /* Admin: full-line editable table */
                   <>
+                    {!invoicePreviewLoading && !invoicePreviewError && editedLines.length === 0 &&
+                      (invoicePreview?.lineItems?.length ?? 0) === 0 && (
+                        <Text style={styles.invoiceMuted}>No billable line items were found in the prescription.</Text>
+                      )}
                     {editedLines.map((line) => {
                       const lineTotal = (Number(line.qty) || 0) * (Number(line.unitPrice) || 0);
                       return (
