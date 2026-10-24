@@ -135,6 +135,8 @@ describe("AI Reader invoice item picker", () => {
       userOverrides: { toothIndices: "", caseType: "", material: "", shade: "" },
     });
     const screen = await render(<AiReaderExtractedScreen />);
+    // Wait for the manual editor to initialize so a transient preview is not enough.
+    await waitFor(() => expect(screen.getByTestId("ai-reader-invoice-add-line")).toBeTruthy());
     await waitFor(() => expect(
       screen.getByText("No billable line items were found in the prescription."),
     ).toBeTruthy(), { timeout: 5000 });

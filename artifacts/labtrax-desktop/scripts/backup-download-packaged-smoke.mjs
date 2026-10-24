@@ -239,7 +239,7 @@ function queryLabTraxUninstallRegistrations(registryRoot) {
   if (result.status !== 0) {
     if (
       result.status === 1 &&
-      /unable to find|unable to locate|specified registry key or value/i.test(output)
+      /unable to find|unable to locate|specified registry key or value|end of search:\s*0 match\(es\) found/i.test(output)
     ) {
       return [];
     }
@@ -289,13 +289,20 @@ async function assertInstallerProfileIsClean(phase) {
 }
 
 async function assertPathWasRemoved(targetPath, description) {
-  try {
-    await stat(targetPath);
-  } catch (error) {
-    if (error.code === "ENOENT") return;
-    throw new Error(`Could not verify ${description} "${targetPath}": ${error.message}`);
+  // NSIS can hand off to a temporary worker before its launcher exits.
+  const deadline = Date.now() + 30_000;
+  while (true) {
+    try {
+      await stat(targetPath);
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw new Error(`Could not verify ${description} "${targetPath}": ${error.message}`);
+    }
+    if (Date.now() >= deadline) {
+      fail(`${description} remains after silent uninstall: ${targetPath}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  fail(`${description} remains after silent uninstall: ${targetPath}`);
 }
 
 function hashFile(filePath) {
