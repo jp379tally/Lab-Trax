@@ -106,17 +106,34 @@ function makeExecutionDeps({
 }
 
 async function expectExecutionFailure(deps, folderPath, messagePart) {
+  const failureReports = [];
+  const observedDeps = {
+    ...deps,
+    apiFetch: async (endpoint, options) => {
+      if (endpoint === "/admin/backup/desktop-run-report") {
+        const report = JSON.parse(options.body);
+        if (report.status === "error") failureReports.push(report);
+      }
+      return deps.apiFetch(endpoint, options);
+    },
+  };
   let failure;
   try {
-    await executeLocalBackup(deps, folderPath, "manual");
+    await executeLocalBackup(observedDeps, folderPath, "manual");
   } catch (error) {
     failure = error;
   }
   assert(failure, `Expected backup execution to fail${messagePart ? ` during ${messagePart}` : ""}.`);
+  assert(
+    String(failure.message).includes("The backup did not complete"),
+    `Expected the safe incomplete-backup message, received "${failure.message}".`,
+  );
+  assert(failureReports.length === 1, "Each failed backup must submit exactly one error history report.");
   if (messagePart) {
+    // Specific filesystem diagnostics belong in history, not the user-facing summary.
     assert(
-      String(failure.message).toLowerCase().includes(messagePart.toLowerCase()),
-      `Expected failure containing "${messagePart}", received "${failure.message}".`,
+      String(failureReports[0].error).toLowerCase().includes(messagePart.toLowerCase()),
+      `Expected history failure containing "${messagePart}", received "${failureReports[0].error}".`,
     );
   }
 }
