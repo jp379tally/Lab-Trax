@@ -8,8 +8,20 @@ const appJsonPath = resolve(__dirname, "../../artifacts/labtrax/app.json");
 const raw = readFileSync(appJsonPath, "utf8");
 const appJson = JSON.parse(raw);
 
-const current = parseInt(appJson.expo.ios.buildNumber ?? "0", 10);
+// Both platforms share a counter. Never lower Android's existing versionCode
+// or silently turn a malformed iOS value (e.g. "341oops") into a valid number.
+const ios = appJson.expo?.ios?.buildNumber ?? "0";
+const android = appJson.expo?.android?.versionCode ?? 0;
+if (typeof ios !== "string" || !/^\d+$/.test(ios) ||
+    !Number.isSafeInteger(Number(ios)) ||
+    !Number.isSafeInteger(android) || android < 0) {
+  throw new Error("Invalid mobile build counter; app.json was not changed.");
+}
+const current = Math.max(Number(ios), android);
 const next = current + 1;
+if (next > 2_100_000_000) {
+  throw new Error("Mobile build counter exceeds Android's versionCode limit; app.json was not changed.");
+}
 
 appJson.expo.ios.buildNumber = String(next);
 appJson.expo.android = {
