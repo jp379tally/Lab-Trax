@@ -303,6 +303,15 @@ export async function run(opts: RunOptions): Promise<{ pushedChunks: number }> {
     url: remoteUrl,
     onAuth,
   });
+  const expectedTip = boundaries[pushed - 1];
+  const verifiedTip = finalRemote.refs?.heads?.[branch];
+  if (verifiedTip !== expectedTip) {
+    console.error(
+      `[github-backup] Remote verification failed: expected ${expectedTip}, ` +
+        `received ${verifiedTip ?? "(branch missing)"}.`,
+    );
+    throw new BackupExitError(4, "remote verification failed");
+  }
   log(
     `done in ${Math.round(
       (now() - startedAt) / 1000,
