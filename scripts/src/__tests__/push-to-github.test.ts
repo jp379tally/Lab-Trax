@@ -275,7 +275,7 @@ describe("run", () => {
   it("stops starting new chunks once the time budget is exceeded", async () => {
     const gitMock = makeGitMock({
       localTip: "e",
-      remoteTips: ["a", "e"],
+      remoteTips: ["a", "b"],
       logOids: ["e", "d", "c", "b", "a"],
     });
 
@@ -296,4 +296,21 @@ describe("run", () => {
     expect(result.pushedChunks).toBe(1);
     expect(gitMock.push).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["b", "another-writer", undefined])(
+    "fails verification when a successful push leaves remote at %s",
+    async (remoteTip) => {
+      const gitMock = makeGitMock({
+        localTip: "e",
+        remoteTips: ["b", remoteTip],
+        logOids: ["e", "d", "c", "b", "a"],
+      });
+
+      await expect(run(baseOpts(gitMock))).rejects.toMatchObject({
+        code: 4,
+        message: "remote verification failed",
+      });
+      expect(gitMock.push).toHaveBeenCalledTimes(1);
+    },
+  );
 });
