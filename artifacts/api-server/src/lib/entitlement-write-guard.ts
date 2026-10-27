@@ -22,6 +22,8 @@ export function isMutationAllowedDuringReadOnly(
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return true;
   const path = originalUrl.split("?")[0]!.replace(/^\/api/, "");
   if (path === "/auth/logout") return true;
+  // This assistant only reads authorized records; it has no mutation tools.
+  if (path === "/support-assistant/account") return true;
   if (
     path === "/billing/checkout-session" ||
     path === "/billing/provider-plan" ||

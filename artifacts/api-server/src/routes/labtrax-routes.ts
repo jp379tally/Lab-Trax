@@ -283,6 +283,7 @@ import vacationRoutes from "./vacation";
 import usersRoutes from "./users";
 import { registerAiChatRoutes } from "./ai-chat";
 import { registerAiAgentRoutes } from "./ai-agent";
+import { registerSupportAssistantRoutes } from "./support-assistant";
 import { registerAiTtsRoutes } from "./ai-tts";
 import { registerAiSttRoutes } from "./ai-stt";
 import labInboxRoutes from "./lab-inbox";
@@ -1681,6 +1682,7 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/vacation", vacationRoutes);
   registerAiChatRoutes(router);
   registerAiAgentRoutes(router);
+  registerSupportAssistantRoutes(router);
   registerAiTtsRoutes(router);
   registerAiSttRoutes(router);
 
