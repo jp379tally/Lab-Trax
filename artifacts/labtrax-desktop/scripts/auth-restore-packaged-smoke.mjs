@@ -13,6 +13,7 @@
  */
 
 import { _electron as electron } from "playwright-core";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -314,13 +315,7 @@ async function main() {
         state: "visible",
         timeout: 30_000,
       });
-      const invalidBlobRemoved = await app.evaluate(({ app: electronApp }) => {
-        const fs = require("node:fs");
-        const path = require("node:path");
-        return !fs.existsSync(
-          path.join(electronApp.getPath("userData"), "auth-tokens.bin"),
-        );
-      });
+      const invalidBlobRemoved = !existsSync(path.join(userDataPath, "auth-tokens.bin"));
       assert(
         invalidBlobRemoved,
         "Unreadable saved sign-in data was not cleared.",
