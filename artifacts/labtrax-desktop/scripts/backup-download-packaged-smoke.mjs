@@ -16,7 +16,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { build as esbuild } from "esbuild";
+import { buildBackupSmokeHelper } from "./lib/backup-smoke-helper.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = path.join(desktopRoot, "electron-dist");
@@ -407,12 +407,9 @@ async function main() {
       CSC_IDENTITY_AUTO_DISCOVERY: "false",
     };
     await mkdir(path.dirname(generatedHelper), { recursive: true });
-    await esbuild({
-      entryPoints: [path.join(desktopRoot, "src", "lib", "local-backup-execution.ts")],
-      bundle: true,
-      platform: "node",
-      format: "cjs",
-      target: "node24",
+    await buildBackupSmokeHelper({
+      desktopRoot,
+      apiOrigin: baseUrl,
       outfile: generatedHelper,
     });
     try {
