@@ -83,7 +83,7 @@ import {
 } from "./database-protection-job";
 import { MAX_DATABASE_DUMP_BYTES, DatabaseProtectionError } from "./database-protection";
 import { captureProductionMedia } from "./production-content-capture";
-import { RECORD_DELTA_FORMAT } from "./postgres-record-delta";
+import { RECORD_DELTA_FORMAT, type RecordInventory } from "./postgres-record-delta";
 import { readBackupLiveStatus } from "./backup-live-status-store";
 import {
   createBackupCloudStage,
@@ -2120,14 +2120,26 @@ async function prepareCompleteBackupArchive(
   triggeredBy: string,
   deadline: BackupDeadline | undefined,
   archiveDestination: CompleteArchiveDestination,
+  seed?: { snapshot: string; previousJournalPosition: string | null; previousRecords: RecordInventory | null;
+    onMediaPinned: () => Promise<void>; captured?: CompleteBackupCaptured },
 ): Promise<CompleteBackupArchive> {
   deadline?.throwIfExpired("complete recovery capture");
   const captured = await measureBackupPhase("recovery capture", () => captureCompleteBackup(
     getUploadsRoot(),
     (snapshot) => buildPgDumpBuffer(deadline, snapshot),
     deadline?.signal,
-    { archiveDestination, allowMissingReferences: true, productionDataOnly: true },
+    { archiveDestination, allowMissingReferences: true, productionDataOnly: true,
+      ...(seed ? { snapshot: seed.snapshot, productionJournalAfterPosition: seed.previousJournalPosition,
+        onMediaPinned: seed.onMediaPinned, recordsWithFullArchive: true,
+        records: { previous: seed.previousRecords, schemaSql: async (snapshot: string) => {
+          const parts: Buffer[] = [];
+          for await (const bytes of buildPgDumpStream(deadline, snapshot, 64 * 1024 * 1024, "plain")) parts.push(bytes);
+          return Buffer.concat(parts).toString("utf8");
+        } },
+      } : {}),
+    },
   ));
+  if (seed) seed.captured = captured;
   const missingFileCount = captured.manifest.missingReferences?.length ?? 0;
   const partialFailure = missingFileCount > 0;
   const warnings = partialFailure
@@ -2667,14 +2679,62 @@ export async function verifyOneDriveArchive(uploaded: OneDriveUploadResult, expe
  * policy are pruned. Pruning failures are non-fatal: the backup is still
  * considered successful and the result is returned normally.
  */
+/** A manual OneDrive archive and the scheduled baseline share one source snapshot
+ * and one read of each original. Both outputs must verify before success. */
+export async function runOneDriveBackupWithBaseline(triggeredBy: string, deadline: BackupDeadline): Promise<BackupRunResult> {
+  let archive: CompleteBackupArchive | undefined;
+  let captured: CompleteBackupCaptured | undefined;
+  let result: BackupRunResult | undefined;
+  const status = await runDatabaseProtectionJob({
+    trigger: "manual", destination: "onedrive", intervalMinutes: 15,
+    codec: { encrypt: encryptBuffer, decrypt: decryptBuffer }, signal: deadline.signal,
+    capture: async (snapshot, previousJournalPosition, onMediaPinned, previousRecords) => {
+      const seed = { snapshot, previousJournalPosition, previousRecords: previousRecords ?? null,
+        onMediaPinned, captured: undefined as CompleteBackupCaptured | undefined };
+      archive = await prepareCompleteBackupArchive(triggeredBy, deadline, "cloud", seed);
+      captured = seed.captured;
+      if (!captured?.recordCapture) throw new Error("Manual baseline record evidence is missing.");
+      const schemaParts: Buffer[] = [];
+      if (!captured.recordCapture.delta) {
+        for await (const bytes of buildPgDumpStream(deadline, snapshot, 64 * 1024 * 1024, "custom")) schemaParts.push(bytes);
+      }
+      return { kind: RECORD_DELTA_FORMAT, records: captured.recordCapture,
+        schemaDump: captured.recordCapture.delta ? null : Buffer.concat(schemaParts) };
+    },
+    captureMedia: async (write, selectPaths) => {
+      if (!archive || !captured) throw new Error("Manual baseline snapshot is missing.");
+      let evidence: Awaited<ReturnType<typeof captureProductionMedia>> | undefined;
+      archive.prepared.appendMedia = async zip => {
+        evidence = await captureProductionMedia(captured!, write, selectPaths, zip);
+      };
+      result = await runOneDriveBackup(triggeredBy, { deadline, preparedArchive: archive });
+      if (!evidence) throw new Error("Manual baseline media evidence is missing.");
+      return evidence;
+    },
+  });
+  deadline.throwIfExpired("OneDrive baseline verification");
+  if (!result || (status.state !== "verified" && status.state !== "partial")) {
+    throw new Error(status.error ?? "The OneDrive incremental baseline did not verify; no successful backup was recorded.");
+  }
+  if (status.state === "partial") {
+    result.partialFailure = true;
+    result.warnings = [result.warnings, status.error,
+      "The incremental point has coverage warnings; it is not a complete recovery point."].filter(Boolean).join(" ");
+  }
+  return result;
+}
+
 export async function runOneDriveBackup(
   triggeredBy: string,
-  options: { archiveKind?: BackupArchiveKind; deadline?: BackupDeadline } = {},
+  options: { archiveKind?: BackupArchiveKind; deadline?: BackupDeadline; preparedArchive?: CompleteBackupArchive } = {},
 ): Promise<BackupRunResult> {
   const archiveKind: BackupArchiveKind = options.archiveKind ?? "full";
   const ownDeadline = !options.deadline ? createBackupDeadline(await getBackupRunTimeoutMs(archiveKind)) : undefined;
   const deadline = options.deadline ?? ownDeadline!;
   try {
+  if (isProductionDeployment() && archiveKind !== "database-only" && !options.preparedArchive) {
+    return await runOneDriveBackupWithBaseline(triggeredBy, deadline);
+  }
   if (archiveKind !== "database-only") {
     const lock = await pool.connect();
     let claimed = false;
@@ -2683,7 +2743,7 @@ export async function runOneDriveBackup(
       "SELECT pg_try_advisory_lock(5109, 15) AS claimed",
     )).rows[0]?.claimed === true;
     if (!claimed) throw new Error("Missed complete recovery point: another server instance is already capturing a full backup. No database-only fallback was taken.");
-    const archive = await prepareCompleteBackupArchive(triggeredBy, deadline, "cloud");
+    const archive = options.preparedArchive ?? await prepareCompleteBackupArchive(triggeredBy, deadline, "cloud");
     // Graph needs the exact final length before the first byte, and a whole
     // archive cannot be spooled locally (the media library exceeds temporary
     // storage). The archive is written once to a private App Storage stage,

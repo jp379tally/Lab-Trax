@@ -8933,6 +8933,10 @@ Important rules:
       (!requestedRunId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestedRunId))) {
       return res.status(400).json({ error: "runId must be a valid backup run UUID." });
     }
+    if (body.archiveKind === "database-only") {
+      res.status(400).json({ error: "In-app backups always include production records and original files. Records-only backups are not available." });
+      return;
+    }
     const isBrowserDelivery = body.destination === "browser";
     const destination = body.destination as BackupDestination | "browser" | undefined;
     if (body.archiveKind !== undefined && body.archiveKind !== "full" && body.archiveKind !== "database-only") {
@@ -9041,6 +9045,11 @@ Important rules:
   // for "Back up now → Local folder / USB" because the user's drive is on
   // their machine, not on the Linux server.
   router.post("/admin/backup/generate", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+    if (req.query.archiveKind === "database-only") {
+      res.status(400).json({ error: "In-app backups always include production records and original files. Records-only backups are not available." });
+      return;
+    }
+
     if (req.query.archiveKind !== undefined && req.query.archiveKind !== "full" && req.query.archiveKind !== "database-only") {
       res.status(400).json({ error: "archiveKind must be full or database-only." });
       return;

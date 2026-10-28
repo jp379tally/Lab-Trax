@@ -151,6 +151,12 @@ describe("production database job coordination (synthetic metadata)", () => {
     expect(fake.saved).toBe(previousOneDrive);
     expect(JSON.parse(fake.settings.get("backup_production_content_protection_v1:google-drive")!).state).toBe("verified");
   });
+  it("an explicit manual archive still captures a baseline after a recent verified interval", async () => {
+    await runDatabaseProtectionJob({ codec, capture: fake.capture, destination: "onedrive" });
+    fake.protect.mockClear();
+    await runDatabaseProtectionJob({ codec, capture: fake.capture, trigger: "manual", destination: "onedrive" });
+    expect(fake.protect).toHaveBeenCalledTimes(1);
+  });
   it("honors a five-minute interval instead of suppressing the next point for fifteen minutes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-27T12:00:00.000Z"));

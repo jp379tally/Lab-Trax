@@ -2571,6 +2571,7 @@ interface BackupScheduleData {
   /** The independent off-site protection job on the deployed server. */
   offsite?: {
     databaseProtection?: {
+      destination?: "onedrive" | "google-drive";
       mode: "incremental-storage-fresh-export" | "incremental-records-and-media";
       scope: "production-database-and-media";
       coverage: "complete" | "partial";
@@ -2959,8 +2960,9 @@ function PlatformBackupPanel() {
     getManualBackupProgress,
   );
   const [scheduledElapsedSeconds, setScheduledElapsedSeconds] = useState(0);
-  const [nowDest, setNowDest] = useState<BackupDestinationType>("local");
-  const [nowArchiveKind, setNowArchiveKind] = useState<"full" | "database-only">("full");
+  const [nowDest, setNowDest] = useState<BackupDestinationType>(() =>
+    (user?.id ? loadManualBackupIdentity(user.id)?.destination : null) ?? "local");
+  const nowArchiveKind = "full" as "full" | "database-only";
   const [nowPath, setNowPath] = useState("");
   const [backupResult, setBackupResult] = useState<{ size: number; completedAt: string; fileName: string; savedTo?: string | null; viaBrowser?: boolean; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null; databaseOnly?: boolean } | null>(null);
   const [backupError, setBackupError] = useState<string | null>(null);
@@ -2998,14 +3000,18 @@ function PlatformBackupPanel() {
   });
 
   useEffect(() => {
-    if (!user?.id || manualProgress.runId) return;
+    if (!user?.id) return;
     const identity = loadManualBackupIdentity(user.id);
+    if (identity && (!manualProgress.runId || manualProgress.runId === identity.runId)) {
+      setNowDest(identity.destination);
+      setNowPath(identity.path);
+    }
+    if (manualProgress.runId) return;
     const identityKey = identity ? `${user.id}:${identity.runId}` : null;
     if (!identity || !identityKey || rehydratedManualRunRef.current === identityKey) return;
     rehydratedManualRunRef.current = identityKey;
     setManualReconnectUnconfirmed(true);
     setNowDest(identity.destination);
-    setNowArchiveKind(identity.archiveKind);
     setNowPath(identity.path);
     resetManualBackupProgress(identity.runId, "Reconnecting to your manual backup", identity.startedAt);
     void apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
@@ -4043,10 +4049,10 @@ function PlatformBackupPanel() {
 
       {scheduleQuery.data?.offsite?.databaseProtection && (
         <section className="rounded-md border bg-card p-4 space-y-2" data-testid="database-protection-status">
-          <h3 className="font-semibold text-sm">Production records and media · OneDrive · every 15 minutes</h3>
+          <h3 className="font-semibold text-sm">Production records and media · {scheduleQuery.data.offsite.databaseProtection.destination === "google-drive" ? "Google Drive" : "OneDrive"} · every {scheduleQuery.data.offsite.intervalMinutes ?? 15} minutes</h3>
           <p className="text-xs text-muted-foreground">
             {scheduleQuery.data.offsite.databaseProtection.mode === "incremental-records-and-media"
-              ? "Protects changed records and files after a verified baseline, retaining previous versions."
+              ? "The first production OneDrive backup establishes the incremental baseline. Later 15-minute runs check saved content and upload only new or changed records and files, retaining previous versions and recording deletions."
               : "Fresh consistent database exports plus encrypted content reuse for pictures, attachments, videos and other production files."}
             No development database or application source is uploaded. A long verification skips overlapping intervals.
           </p>
@@ -4608,27 +4614,9 @@ function PlatformBackupPanel() {
             )}
           </div>
         )}
-        <label className="block text-xs font-medium">
-          Backup contents
-          <select aria-label="Backup contents" value={nowArchiveKind}
-            disabled={manualBackupRunning}
-            onChange={(event) => { setNowArchiveKind(event.target.value as "full" | "database-only"); setBackupResult(null); }}
-            className="mt-1 block h-9 w-full rounded-md border border-border bg-background px-2">
-            <option value="full">Production records + original files (recommended)</option>
-            <option value="database-only">Advanced: records only — excludes pictures, videos and files</option>
-          </select>
-        </label>
-        {nowArchiveKind === "full" && (
-          <p role="note" className="break-words text-xs text-muted-foreground">
-            Includes the database and original media stored outside it. Large backups can take several hours. Missing originals are listed in the encrypted archive and make the backup incomplete; a warning is not a complete recovery point.
-          </p>
-        )}
-        {nowArchiveKind === "database-only" && (
-          <p role="note" className="break-words text-xs text-amber-700">
-            Preserves database records and file references, but excludes file bytes. Missing originals remain unresolved.
-            This does not establish complete recovery or reset complete-backup freshness. Normal in-app restore refuses database-only archives.
-          </p>
-        )}
+        <p role="note" className="break-words text-xs text-muted-foreground">
+          Every backup includes production records and original pictures, videos and files. Large initial backups can take several hours. Missing originals are reported and make the backup incomplete.
+        </p>
         {backupResult?.databaseOnly && (
           <Alert tone="warning">Database-only backup delivered. Media is excluded; complete recovery is not verified.</Alert>
         )}
@@ -4736,6 +4724,7 @@ function PlatformBackupPanel() {
                     name="now-destination"
                     value={d}
                     checked={nowDest === d}
+                    disabled={manualBackupRunning}
                     onChange={() => { setNowDest(d); setBackupResult(null); setBackupError(null); }}
                     className="shrink-0 accent-primary"
                   />

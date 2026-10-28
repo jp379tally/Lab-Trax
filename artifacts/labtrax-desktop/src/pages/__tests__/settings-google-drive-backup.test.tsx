@@ -150,20 +150,17 @@ async function renderBackupSettings() {
 }
 
 describe("Settings → Backup → Google Drive", () => {
-  it("requires an explicit database-only choice and labels the result as excluding media", async () => {
+  it("always sends production records plus originals, without a scope selector", async () => {
     googleStatus = { ...googleStatus, connected: true, error: null };
     schedule.sourceEnvironment = "production";
     await renderBackupSettings();
     fireEvent.click(await screen.findByRole("radio", { name: "Google Drive" }));
-    const contents = await screen.findByRole("combobox", { name: "Backup contents" });
-    expect(contents).toHaveValue("full");
-    fireEvent.change(contents, { target: { value: "database-only" } });
+    expect(screen.queryByRole("combobox", { name: "Backup contents" })).not.toBeInTheDocument();
     const button = screen.getByRole("button", { name: "Back up now" });
     await waitFor(() => expect(button).toBeEnabled());
     fireEvent.click(button);
-    await waitFor(() => expect(manualRunBody).toMatchObject({ destination: "google-drive", archiveKind: "database-only" }));
-    await screen.findByText(/Database-only backup delivered\. Media is excluded/);
-    expect(screen.queryByText(/^Backup complete\./)).not.toBeInTheDocument();
+    await waitFor(() => expect(manualRunBody).toMatchObject({ destination: "google-drive" }));
+    expect(manualRunBody).not.toHaveProperty("archiveKind");
   });
   it.each(["development", "production"] as const)("labels the connected %s database source", async (source) => {
     schedule.sourceEnvironment = source;
@@ -281,6 +278,9 @@ describe("Settings → Backup → Google Drive", () => {
     await renderBackupSettings();
     await waitFor(() => expect(screen.getByTestId("backup-overall-percent")).toHaveTextContent("65%"));
     expect(screen.getByRole("button", { name: "Backing up…" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "Google Drive" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Local folder / USB" })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: "Local folder / USB" })).toBeDisabled();
     expect(manualRunCount).toBe(1);
 
     manualLiveStatus = {
@@ -339,7 +339,7 @@ describe("Settings → Backup → Google Drive", () => {
 
     const first = await renderBackupSettings();
     fireEvent.click(await screen.findByRole("radio", { name: "Local folder / USB" }));
-    const folder = await screen.findByPlaceholderText(/Backups/);
+    const folder = await screen.findByPlaceholderText("C:\\Backups\\LabTrax");
     fireEvent.change(folder, { target: { value: "/synthetic-usb" } });
     fireEvent.click(screen.getByRole("button", { name: "Back up now" }));
     await waitFor(() => expect(downloadBackupToFolder).toHaveBeenCalledOnce());
@@ -353,6 +353,7 @@ describe("Settings → Backup → Google Drive", () => {
       metrics: { transferredBytes: 65, transferTotalBytes: 100 },
     };
     await renderBackupSettings();
+    fireEvent.click(await screen.findByRole("radio", { name: "Local folder / USB" }));
     await waitFor(() => expect(screen.getByTestId("backup-overall-percent")).toHaveTextContent("65%"));
     expect(downloadBackupToFolder).toHaveBeenCalledOnce();
 

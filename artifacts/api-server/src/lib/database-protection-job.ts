@@ -435,7 +435,7 @@ export async function runDatabaseProtectionJob(options: {
     // per 15-minute wall-clock slot, including after process restart.
     status = await getDatabaseProtectionStatus(undefined, destination);
     const now = Date.now();
-    if (!attempt.isCatchup && status.state === "verified" && status.recoveryPointAt &&
+    if (trigger !== "manual" && !attempt.isCatchup && status.state === "verified" && status.recoveryPointAt &&
         now - Date.parse(status.recoveryPointAt) < intervalMinutes * 60_000) {
       logger.info("[backup] Production database interval already verified; duplicate timer skipped.");
       return status;

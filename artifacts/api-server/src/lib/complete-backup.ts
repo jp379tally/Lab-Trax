@@ -431,6 +431,8 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     archiveDestination?: CompleteArchiveDestination;
     allowMissingReferences?: boolean;
     productionDataOnly?: boolean;
+    /** Seed changed-record protection while retaining a standalone full archive. */
+    recordsWithFullArchive?: boolean;
     productionJournalAfterPosition?: string | null;
     /** Import the same exported snapshot used by the scheduled pg_dump. */
     snapshot?: string;
@@ -444,7 +446,7 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
   let dumpScratch: string | undefined;
   let ownMediaLock = false;
   try {
-    if (options.records && (!options.productionDataOnly || !options.snapshot || !options.streamDatabaseDump)) {
+    if (options.records && (!options.productionDataOnly || !options.snapshot || (!options.streamDatabaseDump && !options.recordsWithFullArchive))) {
       throw new Error("Record-change capture requires the scheduled production snapshot path.");
     }
     if (!options.snapshot) { await lockMediaCheckpoint(client); ownMediaLock = true; }
@@ -585,12 +587,13 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     `)).rows[0]!;
     // Only a new/schema baseline exports schema definitions. No data pg_dump
     // runs for record points, and unchanged intervals export no row bodies.
-    const dumpSource = recordCapture?.delta ? Buffer.alloc(0) : await dump(snapshotToken);
+    const deltaOnly = recordCapture?.delta && !options.recordsWithFullArchive;
+    const dumpSource = deltaOnly ? Buffer.alloc(0) : await dump(snapshotToken);
     let pgDump: Buffer | AsyncIterable<Uint8Array>;
     let pgDumpBytes: number;
     let databaseSha256: string;
     let dispose: (() => Promise<void>) | undefined;
-    if (recordCapture?.delta) {
+    if (deltaOnly) {
       // No unused fs.ReadStream/file descriptor or scratch dump for an interval
       // whose schema is retained. Only selected row bodies were captured.
       pgDump = (async function* () {})(); pgDumpBytes=0;databaseSha256=recordInventoryHash(recordCapture.inventory);
@@ -651,7 +654,7 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
       pgDumpBytes = dumpSource.length;
       databaseSha256 = createHash("sha256").update(dumpSource).digest("hex");
     }
-    if (recordCapture) databaseSha256 = recordInventoryHash(recordCapture.inventory);
+    if (recordCapture && !options.recordsWithFullArchive) databaseSha256 = recordInventoryHash(recordCapture.inventory);
     let sourceRevision: string | null = null;
     let releaseIdentity: DesktopReleaseIdentity | undefined;
     let releaseIdentityBytes: Buffer | undefined;
@@ -797,7 +800,7 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     const count = (name: string) => tables.find(table => table.schema === "public" && table.name === name)?.rows ?? 0;
     return {
       pgDump, dispose, append,
-      manifest: recordCapture ? {...manifest,databaseCapture:"postgresql-record-state-v1" as const} : manifest,
+      manifest: recordCapture && !options.recordsWithFullArchive ? {...manifest,databaseCapture:"postgresql-record-state-v1" as const} : manifest,
       ...(recordCapture ? {recordCapture} : {}),
       productionMediaSources: [
         ...media.sourceVersions.map(source => ({
