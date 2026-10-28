@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  isPrivateBackupPath,
   computeMissingCommits,
   computeChunkBoundaries,
   run,
@@ -27,6 +28,7 @@ function makeGitMock(
 ): GitLike & {
   resolveRef: ReturnType<typeof vi.fn>;
   getRemoteInfo: ReturnType<typeof vi.fn>;
+  listFiles: ReturnType<typeof vi.fn>;
   log: ReturnType<typeof vi.fn>;
   writeRef: ReturnType<typeof vi.fn>;
   push: ReturnType<typeof vi.fn>;
@@ -54,6 +56,7 @@ function makeGitMock(
   });
 
   return {
+    listFiles: vi.fn().mockResolvedValue(["src/app.ts", "lib/db/migrations/0001.sql"]),
     resolveRef: vi.fn().mockResolvedValue(localTip),
     getRemoteInfo,
     log: vi.fn().mockResolvedValue(logOids.map((oid) => ({ oid }))),
@@ -313,4 +316,26 @@ describe("run", () => {
       expect(gitMock.push).toHaveBeenCalledTimes(1);
     },
   );
+});
+
+
+describe("private history fence", () => {
+  it.each(["labtrax_prod_2026-10-05.sql", "production.sql", "backup.dump", "AuthKey_example.p8", ".env.production", "attached_assets/patient.png", "support/report.json", "uploads/case.pdf", "scripts/database-fingerprint.json"])("blocks %s", (file) => {
+    expect(isPrivateBackupPath(file)).toBe(true);
+  });
+  it.each(["artifacts/labtrax/assets/icon.png", "lib/db/migrations/0001.sql", "scripts/src/push-to-github.ts"])("allows source %s", (file) => {
+    expect(isPrivateBackupPath(file)).toBe(false);
+  });
+  it.each([false, true])("refuses private data removed from HEAD, even with force=%s", async (force) => {
+    const mock = makeGitMock({localTip: "c", remoteTips: ["a"], logOids: ["c", "b", "a"]});
+    mock.listFiles.mockImplementation(async ({ ref }: {ref: string}) => ref === "b" ? ["labtrax_prod_private.sql"] : ["src/app.ts"]);
+    await expect(run(baseOpts(mock, {force, chunkSize: 1}))).rejects.toMatchObject({code: 5});
+    expect(mock.push).not.toHaveBeenCalled();
+  });
+  it("fails closed when history cannot be inspected", async () => {
+    const mock = makeGitMock({localTip: "b", remoteTips: ["a"], logOids: ["b", "a"]});
+    mock.listFiles.mockRejectedValue(new Error("unreadable history"));
+    await expect(run(baseOpts(mock))).rejects.toThrow("unreadable history");
+    expect(mock.push).not.toHaveBeenCalled();
+  });
 });
