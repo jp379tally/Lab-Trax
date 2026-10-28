@@ -121,7 +121,6 @@ export async function createFullSchemaLabBackupFixture(actual: typeof childProce
   const run = promisify(actual.execFile);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "lab-backup-full-schema-"));
   const pgdata = path.join(directory, "pgdata");
-  const socket = path.join(directory, "socket");
   let started = false;
   const clients: Client[] = [];
   const cleanup = async () => {
@@ -133,8 +132,10 @@ export async function createFullSchemaLabBackupFixture(actual: typeof childProce
     }
   };
   try {
-    await fs.mkdir(socket);
     await run("initdb", ["-D", pgdata, "-A", "trust", "--no-instructions"]);
+    // All clients use loopback TCP. A socket pathname under deep CI scratch
+    // can exceed Unix's path limit even though the data directory is valid.
+    await fs.appendFile(path.join(pgdata, "postgresql.conf"), "\nunix_socket_directories = ''\n");
     const port = await new Promise<number>((resolve, reject) => {
       const server = createServer();
       server.on("error", reject);
@@ -143,7 +144,7 @@ export async function createFullSchemaLabBackupFixture(actual: typeof childProce
         server.close(() => resolve(address.port));
       });
     });
-    await run("pg_ctl", ["-D", pgdata, "-o", `-k ${socket} -p ${port} -h 127.0.0.1`,
+    await run("pg_ctl", ["-D", pgdata, "-o", `-p ${port} -h 127.0.0.1`,
       "-l", path.join(directory, "postgres.log"), "start"]);
     started = true;
     // This fixture's private local cluster intentionally runs without TLS.
