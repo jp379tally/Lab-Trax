@@ -38,6 +38,18 @@ export function saveManualBackupIdentity(userId: string, identity: ManualBackupI
   try { window.localStorage.setItem(storageKey(userId), JSON.stringify(identity)); } catch { /* storage may be unavailable */ }
 }
 
+export function clearManualBackupIdentity(userId: string): void {
+  try { window.localStorage.removeItem(storageKey(userId)); } catch { /* storage may be unavailable */ }
+}
+
+/** Clear only this browser's obsolete job marker after the server confirms absence. */
+export function clearUnavailableManualBackup(userId: string): void {
+  clearManualBackupIdentity(userId);
+  resetManualBackupProgress("", "");
+  updateManualBackupProgress({ error:
+    "The previous backup run is no longer available on the server. Its old status was cleared; no completed backup is confirmed. Check Recent Backups, then start a new backup." });
+}
+
 export function loadManualBackupIdentity(userId: string): ManualBackupIdentity | null {
   try {
     const raw = window.localStorage.getItem(storageKey(userId));

@@ -14,6 +14,7 @@ import {
 } from "../lib/manual-backup-job";
 import {
   cancelManualBackupRun,
+  reconnectManualBackupSession,
   claimManualBackupFinalization,
   manualBackupRunAccessibleTo,
 } from "../lib/backup-live-status-store";
@@ -9712,6 +9713,30 @@ Important rules:
     }
   });
 
+  router.post("/admin/backup/reconnect/:runId", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+    if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Admin access required." });
+    const runId = String(req.params.runId ?? "");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) {
+      return res.status(400).json({ error: "A valid backup run ID is required." });
+    }
+    const user = (req as any).user;
+    const userId = typeof user?.id === "string" ? user.id : null;
+    const sessionHash = getManualBackupSessionHash(req);
+    if (!sessionHash) return res.status(403).json({ error: "Sign in as the administrator who started this backup." });
+    const access = await reconnectManualBackupSession(runId, userId, sessionHash);
+    if (access === "forbidden") return res.status(404).json({ error: "This backup is not available to this administrator." });
+    if (access === "not_found") return res.json({ ok: true, runId, state: "unavailable" });
+    const status = await getBackupLiveStatus(runId);
+    if (!status) {
+      // The status reader can return undefined on a database outage. Confirm
+      // absence separately before allowing the client to discard its marker.
+      const confirmed = await reconnectManualBackupSession(runId, userId, sessionHash);
+      if (confirmed === "not_found") return res.json({ ok: true, runId, state: "unavailable" });
+      return res.status(503).json({ error: "Backup status cannot be confirmed. Retry before starting another backup." });
+    }
+    return res.json({ ok: true, runId, state: status.state, status });
+  });
+
   router.post("/admin/backup/cancel/:runId", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
     if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Admin access required." });
     const runId = String(req.params.runId ?? "");
@@ -9724,12 +9749,24 @@ Important rules:
     if (!sessionHash) {
       return res.status(403).json({ error: "Only the administrator session that started this backup can cancel it." });
     }
+    const access = await reconnectManualBackupSession(runId, userId, sessionHash);
+    if (access === "forbidden") return res.status(404).json({ error: "This backup is not available to this administrator." });
+    if (access === "not_found") return res.json({ ok: true, runId, state: "unavailable" });
     const result = await cancelManualBackupRun(runId, userId, sessionHash);
-    if (result === "not_found") return res.status(404).json({ error: "This manual backup run was not found." });
+    if (result === "not_found") {
+      const confirmed = await reconnectManualBackupSession(runId, userId, sessionHash);
+      if (confirmed === "not_found") return res.json({ ok: true, runId, state: "unavailable" });
+      return res.status(409).json({ error: "Backup ownership changed. Retry cancellation before starting another backup." });
+    }
     if (result === "terminal") {
       const status = await getBackupLiveStatus(runId);
       if (status?.state === "cancelled") return res.json({ ok: true, runId, state: "cancelled" });
-      return res.status(409).json({ error: "This backup has already reached a terminal state." });
+      if (!status) {
+        const confirmed = await reconnectManualBackupSession(runId, userId, sessionHash);
+        if (confirmed === "not_found") return res.json({ ok: true, runId, state: "unavailable" });
+        return res.status(503).json({ error: "Backup status cannot be confirmed. Check Recent Backups before starting another backup." });
+      }
+      return res.json({ ok: true, runId, state: status.state, status });
     }
     cancelManualBackupJob(runId);
     await finishBackupLiveRun(runId, "cancelled");

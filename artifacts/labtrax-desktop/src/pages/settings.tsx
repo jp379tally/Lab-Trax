@@ -44,6 +44,8 @@ import {
 } from "@/lib/local-backup-progress";
 import {
   applyManualBackupLiveStatus,
+  clearManualBackupIdentity,
+  clearUnavailableManualBackup,
   getManualBackupProgress,
   loadManualBackupIdentity,
   resetManualBackupProgress,
@@ -3470,11 +3472,31 @@ function PlatformBackupPanel() {
     }
   }
 
+  function releaseUnavailableManualRun() {
+    if (!user?.id) return;
+    clearUnavailableManualBackup(user.id);
+    setManualReconnectUnconfirmed(false);
+    setBackupResult(null);
+    queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
+  }
+
+  useEffect(() => {
+    if (user?.id && ["completed", "failed", "cancelled", "stale"].includes(manualProgress.state)) {
+      clearManualBackupIdentity(user.id);
+    }
+  }, [user?.id, manualProgress.state]);
+
   async function retryManualBackupReconnect() {
     const runId = manualProgress.runId;
     if (!runId || !user?.id) return;
     setManualReconnectUnconfirmed(true);
     try {
+      const reconnected = await apiFetch<{ runId: string; state: string }>(
+        `/admin/backup/reconnect/${encodeURIComponent(runId)}`,
+        { method: "POST", headers: backupSourceHeaders() },
+      );
+      if (reconnected.runId !== runId) throw new Error("The server returned a different backup run.");
+      if (reconnected.state === "unavailable") { releaseUnavailableManualRun(); return; }
       const status = await apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
         `/admin/backup/status/${encodeURIComponent(runId)}`,
         { headers: backupSourceHeaders() },
@@ -3493,10 +3515,19 @@ function PlatformBackupPanel() {
     if (!runId || cancelPending || manualProgress.state !== "running") return;
     setCancelPending(true);
     try {
-      await apiFetch(`/admin/backup/cancel/${encodeURIComponent(runId)}`, {
+      const cancelled = await apiFetch<{ runId: string; state: string; status?: LocalBackupLiveStatus }>(`/admin/backup/cancel/${encodeURIComponent(runId)}`, {
         method: "POST",
         headers: backupSourceHeaders(),
       });
+      if (cancelled.runId !== runId) throw new Error("The server returned a different backup run.");
+      if (cancelled.state === "unavailable") { releaseUnavailableManualRun(); return; }
+      if (cancelled.state !== "cancelled") {
+        if (!cancelled.status) throw new Error("The server did not confirm cancellation. Check Recent Backups before starting another backup.");
+        applyManualBackupLiveStatus(cancelled.status);
+        setManualReconnectUnconfirmed(false);
+        queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
+        return;
+      }
       updateManualBackupProgress({
         state: "cancelled",
         phase: "backup cancelled",

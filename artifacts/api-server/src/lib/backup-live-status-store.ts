@@ -219,6 +219,30 @@ export async function manualBackupRunAccessibleTo(
     owner.requestedBySessionHash === sessionHash);
 }
 
+/** Explicitly reconnect only the authenticated owner of a manual run.
+ * Status/download reads still require the owning session. Shared-secret
+ * sessions cannot take over a user-owned run or another secret's run.
+ */
+export async function reconnectManualBackupSession(
+  runId: string, userId: string | null, sessionHash: string,
+): Promise<"reconnected" | "not_found" | "forbidden"> {
+  await ensureBackupLiveStatusSchema();
+  if (userId) {
+    const changed = await pool.query(
+      "UPDATE backup_live_status SET requested_by_session_hash = $3 WHERE run_id = $1::uuid AND requested_by_user_id = $2 RETURNING run_id",
+      [runId, userId, sessionHash],
+    );
+    if (changed.rowCount) return "reconnected";
+  }
+  const existing = await pool.query<{
+    requested_by_user_id: string | null; requested_by_session_hash: string | null;
+  }>("SELECT requested_by_user_id, requested_by_session_hash FROM backup_live_status WHERE run_id = $1::uuid", [runId]);
+  const owner = existing.rows[0];
+  if (!owner) return "not_found";
+  return (owner.requested_by_user_id ?? null) === userId &&
+    owner.requested_by_session_hash === sessionHash ? "reconnected" : "forbidden";
+}
+
 /** Atomic cross-worker claim. Phase updates never overwrite this fingerprint. */
 export async function claimManualBackupRun(
   runId: string,
